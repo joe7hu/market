@@ -154,6 +154,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "valuations")
 
+    @app.get("/api/memos")
+    def memos() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "ticker_memos")
+
     @app.get("/api/provider-runs")
     def provider_runs() -> dict[str, Any]:
         _, panel_data = _context()

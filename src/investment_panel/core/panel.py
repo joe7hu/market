@@ -93,7 +93,19 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
 
 def theses(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(con, "SELECT symbol, thesis_json, updated_at FROM theses ORDER BY updated_at DESC")
-    return [decode_fields(row, ("thesis_json",)) for row in rows]
+    decoded = [decode_fields(row, ("thesis_json",)) for row in rows]
+    if decoded:
+        return decoded
+    birdclaw_rows = query_rows(
+        con,
+        """
+        SELECT symbol, author, created_at AS updated_at, thesis_summary, claims, engagement, source_url
+        FROM birdclaw_theses
+        ORDER BY created_at DESC
+        LIMIT 200
+        """,
+    )
+    return [decode_fields(row, ("claims", "engagement")) for row in birdclaw_rows]
 
 
 def catalysts(con: Any) -> list[dict[str, Any]]:
@@ -305,6 +317,12 @@ def disclosures(con: Any) -> list[dict[str, Any]]:
             row["holdings_count"] = raw.get("holdings_count")
             row["holdings_value_thousands"] = raw.get("holdings_value_thousands")
             row["lag_caveat"] = raw.get("lag_caveat")
+            holdings = raw.get("holdings")
+            if isinstance(holdings, list):
+                row["holding_sample"] = holdings[:25]
+                trimmed_raw = dict(raw)
+                trimmed_raw.pop("holdings", None)
+                row["raw"] = trimmed_raw
     return decoded
 
 

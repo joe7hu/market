@@ -112,6 +112,7 @@ h3 {
 .pulse-list button,
 .catalyst-list button,
 .generic-list button,
+.summary-list button,
 .ticker-link,
 .text-link,
 .ghost-button,
@@ -573,6 +574,7 @@ h3 {
 .pulse-list,
 .catalyst-list,
 .generic-list,
+.summary-list,
 .alert-list,
 .correlation-list,
 .job-runs,
@@ -584,7 +586,8 @@ h3 {
 
 .pulse-list button,
 .catalyst-list button,
-.generic-list button {
+.generic-list button,
+.summary-list button {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
@@ -599,6 +602,7 @@ h3 {
 .pulse-list small,
 .catalyst-list small,
 .generic-list p,
+.summary-list small,
 .panel-copy,
 .detail-rows dd {
   color: var(--muted);
@@ -1232,6 +1236,26 @@ h3 {
   color: var(--green);
   font-size: 0.68rem;
   font-weight: 900;
+}
+
+.summary-list button {
+  grid-template-columns: minmax(72px, 1fr) auto;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.summary-list span {
+  color: #cbd7e1;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.summary-list strong {
+  justify-self: end;
+  font-size: 0.78rem;
+}
+
+.summary-list small {
+  grid-column: 1 / -1;
 }
 
 .spin {

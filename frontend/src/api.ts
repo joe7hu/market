@@ -62,6 +62,7 @@ export async function loadPanelData(): Promise<PanelData> {
     settle("analystEstimates", getJson<TablePayload>("/api/analyst-estimates")),
     settle("earnings", getJson<TablePayload>("/api/earnings")),
     settle("valuations", getJson<TablePayload>("/api/valuations")),
+    settle("memos", getJson<TablePayload>("/api/memos")),
     settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
     settle("settings", getJson<SettingsPayload>("/api/settings")),
@@ -90,6 +91,7 @@ export async function loadPanelData(): Promise<PanelData> {
     analystEstimates: EMPTY_TABLE,
     earnings: EMPTY_TABLE,
     valuations: EMPTY_TABLE,
+    memos: EMPTY_TABLE,
     providerRuns: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     settings: {},
@@ -164,6 +166,9 @@ export async function loadPanelData(): Promise<PanelData> {
         break;
       case "valuations":
         data.valuations = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "memos":
+        data.memos = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "providerRuns":
         data.providerRuns = (result.value as TablePayload) ?? EMPTY_TABLE;

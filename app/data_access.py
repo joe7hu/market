@@ -383,6 +383,11 @@ def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[
         if isinstance(related, list) and any(str(item).split(":")[-1].upper() == ticker for item in related):
             matches.append(row)
             continue
+        if isinstance(related, str):
+            symbols = [item.strip().split(":")[-1].upper() for item in related.replace(";", ",").split(",")]
+            if ticker in symbols:
+                matches.append(row)
+                continue
         for field in ticker_fields:
             value = row.get(field)
             if isinstance(value, str) and value.split(":")[-1].upper() == ticker:

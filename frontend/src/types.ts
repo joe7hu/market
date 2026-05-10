@@ -60,6 +60,7 @@ export type PanelData = {
   analystEstimates: TablePayload;
   earnings: TablePayload;
   valuations: TablePayload;
+  memos: TablePayload;
   providerRuns: TablePayload;
   sourceHealth: TablePayload;
   settings: SettingsPayload;
@@ -88,6 +89,7 @@ export type PanelEndpoint =
   | "analystEstimates"
   | "earnings"
   | "valuations"
+  | "memos"
   | "providerRuns"
   | "sourceHealth"
   | "settings";
