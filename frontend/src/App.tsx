@@ -18,12 +18,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { deletePortfolioPosition, loadPanelData, loadTicker, savePortfolioPosition } from "./api";
-import type { PanelData, RowRecord, TickerPayload } from "./types";
+import type { JsonValue, PanelData, RowRecord, TickerPayload } from "./types";
 import { displayValue, rows, symbolFromRow } from "./utils";
 
 const initialData: PanelData = {
   dashboard: {},
   signals: { rows: [], count: 0 },
+  opportunitiesRanked: { rows: [], count: 0 },
+  opportunitySources: { rows: [], count: 0 },
   candidates: { rows: [], count: 0 },
   portfolio: { rows: [], count: 0 },
   theses: { rows: [], count: 0 },
@@ -43,6 +45,8 @@ const initialData: PanelData = {
   analystEstimates: { rows: [], count: 0 },
   earnings: { rows: [], count: 0 },
   valuations: { rows: [], count: 0 },
+  technicals: { rows: [], count: 0 },
+  researchPackets: { rows: [], count: 0 },
   memos: { rows: [], count: 0 },
   providerRuns: { rows: [], count: 0 },
   sourceHealth: { rows: [], count: 0 },
@@ -109,6 +113,24 @@ type Filing = {
   value: number;
   filed: string;
   event: string;
+};
+
+type TraderFilingCard = {
+  investor: string;
+  filed: string;
+  event: string;
+  holdings: Filing[];
+  totalValue: number;
+  tickerCount: number;
+  topTicker: string;
+};
+
+type SignalSourcePanel = {
+  key: string;
+  title: string;
+  state: DataSourceState;
+  count: number;
+  leaders: SummaryItem[];
 };
 
 type HealthRow = {
@@ -199,7 +221,7 @@ export function App() {
         {activePage === "dashboard" && <DashboardPage model={model} lastRefresh={lastRefresh} loading={loading} onRefresh={refresh} onOpenTicker={openTicker} />}
         {activePage === "opportunities" && <OpportunitiesPage model={model} onOpenTicker={openTicker} />}
         {activePage === "portfolio" && <PortfolioPage model={model} onOpenTicker={openTicker} onRefresh={refresh} />}
-        {activePage === "research" && <ResearchPage data={data} onOpenTicker={openTicker} />}
+        {activePage === "research" && <ResearchPage data={data} model={model} onOpenTicker={openTicker} />}
         {activePage === "filings" && <FilingsPage model={model} onOpenTicker={openTicker} />}
         {activePage === "calendar" && <CalendarPage model={model} onOpenTicker={openTicker} />}
         {activePage === "health" && <HealthPage model={model} data={data} />}
@@ -259,7 +281,7 @@ function DashboardPage({
   return (
     <PageFrame
       title="Good morning, Joe"
-      subtitle={lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()}` : loading ? "Loading DuckDB data..." : "No data loaded"}
+      subtitle={lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()}` : loading ? "Loading market data..." : "No data loaded"}
       action={
         <div className="button-row">
           <IconButton label="Refresh" onClick={onRefresh}>
@@ -310,6 +332,7 @@ function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: T
   const setup = model.setupRows.find((item) => item.symbol === symbol);
   const liquidity = model.liquidityRows.find((item) => item.symbol === symbol);
   const valuation = model.valuationRows.find((item) => item.symbol === symbol);
+  const technical = model.technicalRows.find((item) => item.symbol === symbol);
   const evidenceRows = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).length : 0;
   const foundTables = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).map(([name]) => name) : [];
 
@@ -343,9 +366,13 @@ function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: T
       </div>
       <TabBar tabs={["Overview", "Evidence Stack", "Fundamentals", "Estimates", "Financials", "News", "Filings", "Memos"]} active={activeTab} onSelect={setActiveTab} />
       {activeTab === "Overview" ? <div className="ticker-grid">
-        <Panel className="span-7" title="Price & Setup">
+        <Panel className="span-7" title="TradingView Technical Chart">
+          <TradingViewChart symbol={symbol} />
+        </Panel>
+        <Panel className="span-5" title="Price & Setup">
           <SummaryList rows={[
             { label: "Latest Quote", value: quote?.price ?? "-", caption: quote ? `Move ${formatPct(quote.change)}` : "No quote row", tone: quote ? "info" : "warn" },
+            technical ? { ...technical, label: "Technical Score" } : { label: "Technical Score", value: "-", caption: "No technical feature row", tone: "warn" },
             setup ?? { label: "SEPA Setup", value: "-", caption: "No setup row", tone: "warn" },
             liquidity ?? { label: "Liquidity", value: "-", caption: "No liquidity row", tone: "warn" },
             valuation ?? { label: "Valuation", value: "-", caption: "No valuation row", tone: "warn" },
@@ -388,7 +415,7 @@ function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppModel; on
       <MetricStrip
         metrics={[
           ["Net Liquidity", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", hasHoldings ? "Derived from imported holdings" : "Portfolio CSV absent", hasHoldings ? "good" : "warn"],
-          ["Total Value", hasHoldings ? formatMoney(model.portfolioValue) : "Awaiting positions", hasHoldings ? "DuckDB portfolio rows" : "Manual entry below", hasHoldings ? "info" : "muted"],
+          ["Total Value", hasHoldings ? formatMoney(model.portfolioValue) : "Awaiting positions", hasHoldings ? "Imported portfolio rows" : "Manual entry below", hasHoldings ? "info" : "muted"],
           ["Unrealized P/L", hasHoldings ? formatMoney(model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0)) : "Requires import", hasHoldings ? "From position rows" : "Requires cost basis", hasHoldings ? "good" : "muted"],
           ["Positions", hasHoldings ? String(model.holdings.length) : "0 imported", hasHoldings ? "Holdings" : "No owned exposure", "info"],
           ["Concentration", hasHoldings ? "Available" : "Needs holdings", hasHoldings ? "Risk" : "Enter positions first", hasHoldings ? "warn" : "muted"],
@@ -408,7 +435,7 @@ function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppModel; on
           <SummaryList rows={model.liquidityRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Portfolio Fit Insights">
-          <BulletList tone={model.holdings.length ? "warn" : "info"} items={model.holdings.length ? ["Portfolio rows loaded", "Review concentration against signal strength", "Liquidity check available from source tables"] : ["Manual position entry writes to local DuckDB", "Use ticker, share count, and average cost", "No broker credentials or account data are required"]} />
+          <BulletList tone={model.holdings.length ? "warn" : "info"} items={model.holdings.length ? ["Portfolio rows loaded", "Review concentration against signal strength", "Liquidity check available from source tables"] : ["Manual position entry writes to local storage", "Use ticker, share count, and average cost", "No broker credentials or account data are required"]} />
         </Panel>
         <Panel className="span-4" title="Top Correlations">
           <SummaryList rows={model.correlationRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
@@ -422,12 +449,21 @@ function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; onOpenTic
   const [decision, setDecision] = useState("");
   const [tickerQuery, setTickerQuery] = useState("");
   const [minScore, setMinScore] = useState(0);
+  const [assetClass, setAssetClass] = useState("");
+  const [minConfidence, setMinConfidence] = useState(0);
+  const [source, setSource] = useState("");
   const filtered = model.opportunities.filter((item) => {
     const decisionMatches = !decision || item.decision === decision;
     const tickerMatches = !tickerQuery || item.ticker.includes(tickerQuery.trim().toUpperCase());
-    return decisionMatches && tickerMatches && item.score >= minScore;
+    const assetMatches = !assetClass || item.assetClass === assetClass;
+    const confidenceMatches = item.confidence >= minConfidence;
+    const sourceMatches = !source || item.components.some(([label, value]) => label === source && value > 0);
+    return decisionMatches && tickerMatches && assetMatches && confidenceMatches && sourceMatches && item.score >= minScore;
   });
   const decisions = Array.from(new Set(model.opportunities.map((item) => item.decision)));
+  const assetClasses = Array.from(new Set(model.opportunities.map((item) => item.assetClass).filter(Boolean))).sort();
+  const sources = Array.from(new Set(model.opportunities.flatMap((item) => item.components.map(([label]) => label)))).sort();
+  const leader = filtered[0];
   return (
     <div className="split-page">
       <FilterRail
@@ -435,28 +471,51 @@ function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; onOpenTic
         decisions={decisions}
         tickerQuery={tickerQuery}
         minScore={minScore}
+        assetClass={assetClass}
+        assetClasses={assetClasses}
+        minConfidence={minConfidence}
+        sources={sources}
+        source={source}
         onDecision={setDecision}
         onTickerQuery={setTickerQuery}
         onMinScore={setMinScore}
+        onAssetClass={setAssetClass}
+        onMinConfidence={setMinConfidence}
+        onSource={setSource}
         onReset={() => {
           setDecision("");
           setTickerQuery("");
           setMinScore(0);
+          setAssetClass("");
+          setMinConfidence(0);
+          setSource("");
         }}
       />
       <PageFrame
         title="Opportunities"
         subtitle={`${filtered.length} of ${model.opportunities.length} results`}
         action={
-          <GhostButton disabled title="Saved views are not persisted yet">
-            <Database size={14} /> Current View
+          <GhostButton title="Filters apply immediately to the loaded source rows">
+            <Database size={14} /> Source-backed View
           </GhostButton>
         }
       >
         <SourceNotice items={[["Signals", model.sources.opportunities], ["Quotes", model.sources.watchlist]]} />
+        {leader ? (
+          <TopOpportunityTicker opportunity={leader} onOpenTicker={onOpenTicker} />
+        ) : (
+          <EmptyState title="No top ticker for this filter set" detail="The ranked ticker card appears when at least one opportunity matches the active filters." />
+        )}
+        <div className="source-panel-grid">
+          {model.signalSources.map((panel) => (
+            <Panel key={panel.key} title={panel.title} headerAction={<SourcePill state={panel.state} />}>
+              <SummaryList rows={panel.leaders} onOpenTicker={onOpenTicker} />
+              <small className="panel-footnote">{panel.count} source rows</small>
+            </Panel>
+          ))}
+        </div>
         <Panel title="Ranked Screen">
           <OpportunityTable rows={filtered} onOpenTicker={onOpenTicker} />
-          <button className="load-more" type="button">Load more</button>
         </Panel>
       </PageFrame>
     </div>
@@ -464,31 +523,35 @@ function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; onOpenTic
 }
 
 function FilingsPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (symbol: string) => void }) {
-  const selected = model.filings[0];
+  const [investorQuery, setInvestorQuery] = useState("");
+  const [tickerQuery, setTickerQuery] = useState("");
+  const cards = model.traderFilingCards.filter((card) => {
+    const investorMatches = !investorQuery || card.investor.toLowerCase().includes(investorQuery.trim().toLowerCase());
+    const tickerMatches = !tickerQuery || card.holdings.some((holding) => holding.ticker.includes(tickerQuery.trim().toUpperCase()));
+    return investorMatches && tickerMatches;
+  });
   return (
     <div className="split-page">
-      <FilterRail compact />
-      <PageFrame title="Trader Filings" subtitle="Track notable investors">
+      <FilterRail
+        compact
+        tickerQuery={tickerQuery}
+        onTickerQuery={setTickerQuery}
+        investorQuery={investorQuery}
+        onInvestorQuery={setInvestorQuery}
+        onReset={() => {
+          setInvestorQuery("");
+          setTickerQuery("");
+        }}
+      />
+      <PageFrame title="Trader Filings" subtitle={`${cards.length} tracked investors`}>
         <SourceNotice items={[["Disclosures", model.sources.filings]]} />
-        {model.filings.length > 0 && <TabBar tabs={Array.from(new Set(model.filings.map((filing) => filing.investor))).slice(0, 6)} />}
-        <div className="filings-grid">
-          <Panel className="span-8" title="Recent Filings">
-            <FilingsTable rows={model.filings} onOpenTicker={onOpenTicker} />
-          </Panel>
-          <Panel className="span-4" title={selected?.investor ?? "Filing Detail"} headerAction={<X size={14} />}>
-            {selected ? (
-              <>
-                <DetailRows rows={[["Form", "13F-HR"], ["Event Date", selected.event], ["Filed Date", selected.filed], ["Holdings Count", "Source row"], ["Holdings Value", formatMoney(selected.value)]]} />
-                <div className="holding-detail">
-                  <h3>Holding Detail</h3>
-                  <strong>{selected.security}</strong>
-                  <DetailRows rows={[["Action", selected.action], ["Shares", formatNumber(selected.shares)], ["Value (K)", formatMoney(selected.value)], ["Ticker", selected.ticker || "CUSIP-only 13F row"]]} />
-                  <button className="primary-button" type="button" disabled={!selected.ticker} onClick={() => selected.ticker && onOpenTicker(selected.ticker)}>View Ticker</button>
-                </div>
-              </>
-            ) : <EmptyState title="No filing selected" detail="Disclosure import has no rows for the current database." />}
-          </Panel>
-          <Panel className="span-8" title="About 13F Filings">
+        <div className="filings-grid trader-card-grid">
+          {cards.length ? cards.map((card) => <TraderFilingCardView key={card.investor} card={card} onOpenTicker={onOpenTicker} />) : (
+            <Panel className="span-12" title="No matching traders">
+              <EmptyState title="No filing rows matched" detail="Adjust the investor or ticker filter to see tracked trader filings." />
+            </Panel>
+          )}
+          <Panel className="span-12" title="About 13F Filings">
             <p className="panel-copy">13F filings are delayed quarterly position disclosures. They do not prove live fund ownership; they are useful for pattern recognition, optionality, and holdings map review.</p>
           </Panel>
         </div>
@@ -553,22 +616,22 @@ function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
 
 function TickerTabContent({ activeTab, ticker, data }: { activeTab: string; ticker: TickerPayload | null; data: PanelData }) {
   const keyByTab: Record<string, string[]> = {
-    "Evidence Stack": ["signals", "sepa", "liquidity", "correlations", "valuations"],
+    "Evidence Stack": ["opportunities_ranked", "opportunity_sources", "signals", "technicals", "sepa", "liquidity", "correlations", "valuations"],
     Fundamentals: ["fundamentals"],
     Estimates: ["analyst_estimates", "earnings"],
     Financials: ["fundamentals", "valuations"],
     News: ["news"],
     Filings: ["disclosures"],
-    Memos: ["memos", "theses"],
+    Memos: ["research_packets", "memos", "theses"],
   };
   const fallbackByTab: Record<string, RowRecord[]> = {
-    "Evidence Stack": [...rows(data.signals), ...rows(data.sepa), ...rows(data.liquidity), ...rows(data.valuations)],
+    "Evidence Stack": [...rows(data.opportunitiesRanked), ...rows(data.opportunitySources), ...rows(data.signals), ...rows(data.technicals), ...rows(data.sepa), ...rows(data.liquidity), ...rows(data.valuations)],
     Fundamentals: rows(data.fundamentals),
     Estimates: [...rows(data.analystEstimates), ...rows(data.earnings)],
     Financials: [...rows(data.fundamentals), ...rows(data.valuations)],
     News: rows(data.news),
     Filings: rows(data.disclosures),
-    Memos: [...rows(data.memos), ...rows(data.theses)],
+    Memos: [...rows(data.researchPackets), ...rows(data.memos), ...rows(data.theses)],
   };
   const keys = keyByTab[activeTab] ?? [];
   const sourceRows = keys.flatMap((key) => ticker?.tables?.[key] ?? []);
@@ -585,30 +648,77 @@ function TickerTabContent({ activeTab, ticker, data }: { activeTab: string; tick
   );
 }
 
-function ResearchPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: (symbol: string) => void }) {
+function ResearchPage({ data, model, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: (symbol: string) => void }) {
+  const [selectedSymbol, setSelectedSymbol] = useState(model.opportunities[0]?.ticker ?? symbolFromRow(rows(data.signals)[0]) ?? "");
   const thesisRows = rows(data.theses);
   const newsRows = rows(data.news);
   const fundamentalsRows = rows(data.fundamentals);
   const memoRows = rows(data.memos);
   const signalRows = rows(data.signals);
+  const packetRows = rows(data.researchPackets);
+  const selected = selectedSymbol || model.opportunities[0]?.ticker || "";
+  const selectedOpportunity = model.opportunities.find((item) => item.ticker === selected);
+  const selectedPacket = packetRows.find((row) => symbolFromRow(row) === selected);
+  const relatedTheses = thesisRows.filter((row) => symbolFromRow(row) === selected);
+  const relatedNews = newsRows.filter((row) => symbolFromRow(row) === selected);
+  const relatedFundamentals = fundamentalsRows.filter((row) => symbolFromRow(row) === selected);
+  const relatedMemos = memoRows.filter((row) => symbolFromRow(row) === selected);
+  const relatedSignals = signalRows.filter((row) => symbolFromRow(row) === selected);
+  const researchUniverse = model.opportunities.slice(0, 12);
   return (
     <PageFrame title="Research" subtitle="Evidence, theses, memos, and source-backed notes">
       <SourceNotice items={[["Theses", thesisRows.length ? "live" : "empty"], ["News", newsRows.length ? "live" : "empty"], ["Fundamentals", fundamentalsRows.length ? "live" : "empty"]]} />
+      <div className="research-workbench">
+        <Panel title="Research Universe">
+          <div className="research-picker">
+            {researchUniverse.length ? researchUniverse.map((item) => (
+              <button key={item.ticker} className={item.ticker === selected ? "active" : ""} type="button" onClick={() => setSelectedSymbol(item.ticker)}>
+                <strong>{item.ticker}</strong>
+                <span>{item.grade}</span>
+                <small>{item.decision}</small>
+              </button>
+            )) : <EmptyState title="No research universe" detail="Signals and candidates have no rows yet." />}
+          </div>
+        </Panel>
+        <Panel title={selected ? `${selected} Deep Analysis` : "Deep Analysis"}>
+          {selectedOpportunity || selectedPacket ? (
+            <div className="deep-analysis">
+              <div className="analysis-score">
+                <strong>{selectedOpportunity?.score ?? "-"}</strong>
+                <span>{selectedOpportunity ? `${selectedOpportunity.grade} · ${selectedOpportunity.confidence}% confidence` : `${displayValue(selectedPacket?.conviction)} conviction`}</span>
+                <DecisionBadge value={selectedOpportunity?.decision ?? displayValue(selectedPacket?.decision)} />
+              </div>
+              <DetailRows rows={[
+                ["Why Now", selectedOpportunity?.whyNow ?? displayValue(selectedPacket?.why_now)],
+                ["Next Action", selectedOpportunity?.nextAction ?? displayValue(selectedPacket?.entry_plan)],
+                ["Invalidation", selectedOpportunity?.invalidation ?? displayValue(selectedPacket?.invalidation)],
+                ["Evidence", selectedPacket ? `${displayValue(selectedPacket.evidence_count)} thesis items · ${displayValue(selectedPacket.price_rows)} price rows` : `${selectedOpportunity?.evidenceCount ?? 0} signal citations`],
+                ["Freshness", selectedOpportunity?.freshness ?? displayValue(selectedPacket?.created_at)],
+              ]} />
+              <BarList rows={selectedOpportunity?.components ?? []} />
+              {selectedPacket && <ResearchPacketSummary packet={selectedPacket} />}
+              <button className="primary-button" type="button" onClick={() => selected && onOpenTicker(selected)}>Open Ticker Dossier</button>
+            </div>
+          ) : (
+            <EmptyState title="No selected analysis" detail="Pick a ticker from the research universe to build a source-backed dossier." />
+          )}
+        </Panel>
+      </div>
       <div className="research-grid">
-        <Panel className="span-6" title="Active Thesis Tracker">
-          <GenericRows rows={thesisRows} emptyTitle="No thesis rows" emptyDetail="Thesis tracker is empty for this database." onOpenTicker={onOpenTicker} />
+        <Panel className="span-6" title="Ticker Thesis">
+          <GenericRows rows={relatedTheses.length ? relatedTheses : thesisRows} emptyTitle="No thesis rows" emptyDetail="Thesis tracker is empty for this database." onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-6" title="Evidence Feed">
-          <GenericRows rows={newsRows} emptyTitle="No evidence feed rows" emptyDetail="News/evidence rows are empty." onOpenTicker={onOpenTicker} />
+          <GenericRows rows={relatedNews.length ? relatedNews : newsRows} emptyTitle="No evidence feed rows" emptyDetail="News/evidence rows are empty." onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Fundamental Watch">
-          <GenericRows rows={fundamentalsRows} emptyTitle="No fundamental rows" emptyDetail="Run fundamentals ingestion to fill this panel." onOpenTicker={onOpenTicker} />
+          <GenericRows rows={relatedFundamentals.length ? relatedFundamentals : fundamentalsRows} emptyTitle="No fundamental rows" emptyDetail="Run fundamentals ingestion to fill this panel." onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Invalidation Queue">
-          <GenericRows rows={signalRows.map((row) => ({ ...row, title: row.invalidation ?? row.next_action ?? row.why_now }))} emptyTitle="No invalidation rows" emptyDetail="Signals have not produced invalidation text." onOpenTicker={onOpenTicker} />
+          <GenericRows rows={(relatedSignals.length ? relatedSignals : signalRows).map((row) => ({ ...row, title: row.invalidation ?? row.next_action ?? row.why_now }))} emptyTitle="No invalidation rows" emptyDetail="Signals have not produced invalidation text." onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Memo Queue">
-          <GenericRows rows={memoRows} emptyTitle="No memo rows" emptyDetail="Run research_candidate or weekly_portfolio_review to create memos." onOpenTicker={onOpenTicker} />
+          <GenericRows rows={relatedMemos.length ? relatedMemos : memoRows} emptyTitle="No memo rows" emptyDetail="Run research_candidate or weekly_portfolio_review to create memos." onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
     </PageFrame>
@@ -640,6 +750,7 @@ type AppModel = {
   opportunities: Opportunity[];
   holdings: Holding[];
   filings: Filing[];
+  traderFilingCards: TraderFilingCard[];
   calendar: CalendarEvent[];
   healthRows: HealthRow[];
   portfolioValue: number;
@@ -648,6 +759,8 @@ type AppModel = {
   liquidityRows: SummaryItem[];
   correlationRows: SummaryItem[];
   valuationRows: SummaryItem[];
+  technicalRows: SummaryItem[];
+  signalSources: SignalSourcePanel[];
   memoRows: RowRecord[];
   latestHealthCheck: string;
   sources: {
@@ -662,7 +775,7 @@ type AppModel = {
 
 function buildModel(data: PanelData): AppModel {
   const watchlist = buildWatchlist(rows(data.quotes));
-  const opportunities = buildOpportunities(rows(data.signals), rows(data.candidates));
+  const opportunities = buildOpportunities(rows(data.opportunitiesRanked), rows(data.signals), rows(data.candidates));
   const holdings = buildHoldings(rows(data.portfolio));
   const filings = buildFilings(rows(data.disclosures));
   const calendar = buildCalendar(rows(data.catalysts), rows(data.earnings));
@@ -674,6 +787,7 @@ function buildModel(data: PanelData): AppModel {
     opportunities,
     holdings,
     filings,
+    traderFilingCards: buildTraderFilingCards(filings),
     calendar,
     healthRows,
     portfolioValue,
@@ -682,6 +796,8 @@ function buildModel(data: PanelData): AppModel {
     liquidityRows: buildLiquidityRows(rows(data.liquidity)),
     correlationRows: buildCorrelationRows(rows(data.correlations)),
     valuationRows: buildValuationRows(rows(data.valuations)),
+    technicalRows: buildTechnicalRows(rows(data.technicals)),
+    signalSources: buildSignalSourcePanels(data),
     memoRows: rows(data.memos),
     latestHealthCheck,
     sources: {
@@ -703,10 +819,10 @@ function buildWatchlist(quoteRows: RowRecord[]): WatchItem[] {
   })).filter((item) => item.symbol);
 }
 
-function buildOpportunities(signalRows: RowRecord[], candidateRows: RowRecord[]): Opportunity[] {
-  const sourceRows = signalRows.length ? signalRows : candidateRows;
+function buildOpportunities(rankedRows: RowRecord[], signalRows: RowRecord[], candidateRows: RowRecord[]): Opportunity[] {
+  const sourceRows = rankedRows.length ? rankedRows : signalRows.length ? signalRows : candidateRows;
   return sourceRows.slice(0, 25).map((row, index) => ({
-    rank: index + 1,
+    rank: Math.round(numberField(row, ["rank"], index + 1)),
     ticker: stringField(row, ["symbol", "ticker", "security", "name"]).toUpperCase() || `ITEM-${index + 1}`,
     name: stringField(row, ["name"]) || stringField(row, ["symbol", "ticker"]) || `Item ${index + 1}`,
     assetClass: stringField(row, ["asset_class"]) || "unknown",
@@ -721,7 +837,7 @@ function buildOpportunities(signalRows: RowRecord[], candidateRows: RowRecord[])
     freshness: stringField(row, ["freshness", "source_freshness", "updated_at", "as_of", "run_date"]) || "recent",
     tags: ["T", "C", "H"].slice(0, 1 + (index % 3)),
     components: componentRows(row),
-    evidenceCount: Math.round(numberField(row, ["evidence_count"], 0)),
+    evidenceCount: Math.round(numberField(row, ["evidence_count", "source_count"], 0)),
   }));
 }
 
@@ -777,6 +893,90 @@ function buildFilings(disclosureRows: RowRecord[]): Filing[] {
     });
   }
   return filings.slice(0, 25);
+}
+
+function buildTraderFilingCards(filings: Filing[]): TraderFilingCard[] {
+  const grouped = new Map<string, Filing[]>();
+  for (const filing of filings) {
+    const existing = grouped.get(filing.investor) ?? [];
+    existing.push(filing);
+    grouped.set(filing.investor, existing);
+  }
+  return Array.from(grouped.entries()).map(([investor, holdings]) => {
+    const sorted = [...holdings].sort((a, b) => b.value - a.value);
+    const tickerCount = new Set(sorted.map((holding) => holding.ticker).filter(Boolean)).size;
+    return {
+      investor,
+      filed: newestDateLabel(sorted.map((holding) => holding.filed)),
+      event: newestDateLabel(sorted.map((holding) => holding.event)),
+      holdings: sorted,
+      totalValue: sorted.reduce((total, holding) => total + holding.value, 0),
+      tickerCount,
+      topTicker: sorted.find((holding) => holding.ticker)?.ticker ?? "",
+    };
+  }).sort((a, b) => b.totalValue - a.totalValue);
+}
+
+function buildSignalSourcePanels(data: PanelData): SignalSourcePanel[] {
+  const backendRows = rows(data.opportunitySources);
+  if (backendRows.length) {
+    const grouped = new Map<string, { title: string; rows: RowRecord[] }>();
+    for (const row of backendRows) {
+      const key = stringField(row, ["source_key"]) || "source";
+      const title = stringField(row, ["title"]) || titleLabel(key);
+      const existing = grouped.get(key) ?? { title, rows: [] };
+      existing.rows.push(row);
+      grouped.set(key, existing);
+    }
+    return Array.from(grouped.entries()).map(([key, value]) => ({
+      key,
+      title: value.title,
+      count: value.rows.length,
+      state: value.rows.length ? "live" : "empty",
+      leaders: value.rows.slice(0, 4).map((row) => sourceLeaderRow(row, ["score"])).filter((row): row is SummaryItem => row !== null),
+    }));
+  }
+  const definitions: Array<[string, string, RowRecord[], string[]]> = [
+    ["technicals", "Technical Setups", rows(data.sepa), ["score", "setup_score"]],
+    ["liquidity", "Liquidity", rows(data.liquidity), ["avg_dollar_volume", "score"]],
+    ["valuation", "Valuation", rows(data.valuations), ["upside_pct", "score"]],
+    ["thesis", "Thesis / Memos", [...rows(data.theses), ...rows(data.memos)], ["conviction", "score"]],
+    ["filings", "Trader Filings", rows(data.disclosures), ["holdings_value_thousands", "value"]],
+    ["news", "News / Catalysts", [...rows(data.news), ...rows(data.earnings), ...rows(data.catalysts)], ["score", "importance"]],
+  ];
+  return definitions.map(([key, title, sourceRows, scoreKeys]) => {
+    const leaders = sourceRows
+      .map((row) => sourceLeaderRow(row, scoreKeys))
+      .filter((row): row is SummaryItem => row !== null)
+      .sort((a, b) => Number(b.value.replace(/[^0-9.-]/g, "")) - Number(a.value.replace(/[^0-9.-]/g, "")))
+      .slice(0, 4);
+    return {
+      key,
+      title,
+      count: sourceRows.length,
+      state: sourceRows.length ? "live" : "empty",
+      leaders,
+    };
+  });
+}
+
+function sourceLeaderRow(row: RowRecord, scoreKeys: string[]): SummaryItem | null {
+  const symbol = symbolFromRow(row);
+  if (!symbol) {
+    return null;
+  }
+  const score = numberField(row, scoreKeys, Number.NaN);
+  const label = symbol;
+  const value = Number.isFinite(score)
+    ? (Math.abs(score) <= 1 ? formatPct(score * 100) : Math.round(score).toString())
+    : titleLabel(stringField(row, ["grade", "verdict", "status", "event_type"]) || "Loaded");
+  return {
+    label,
+    value,
+    caption: displayValue(row.caption ?? row.summary ?? row.title ?? row.stage ?? row.method ?? row.source ?? row.event_date ?? row.filed_date),
+    tone: Number.isFinite(score) ? score >= 0 ? "good" : "bad" : "info",
+    symbol,
+  };
 }
 
 function buildCalendar(catalystRows: RowRecord[], earningsRows: RowRecord[]): CalendarEvent[] {
@@ -880,6 +1080,22 @@ function buildValuationRows(valuationRows: RowRecord[]): SummaryItem[] {
   });
 }
 
+function buildTechnicalRows(technicalRows: RowRecord[]): SummaryItem[] {
+  return technicalRows.slice(0, 12).map((row) => {
+    const symbol = stringField(row, ["symbol"]).toUpperCase();
+    const score = numberField(row, ["technical_score"], 0);
+    const return20 = numberField(row, ["return_20d"], 0);
+    const close = numberField(row, ["close"], 0);
+    return {
+      label: symbol || "Technical",
+      value: `${Math.round(score)}`,
+      caption: `20d ${formatPct(return20 * 100)} · close ${formatMoney(close)}`,
+      tone: score >= 70 ? "good" : score >= 45 ? "warn" : "bad",
+      symbol,
+    };
+  });
+}
+
 function holdingSummaryRows(holdings: Holding[]): SummaryItem[] {
   return holdings.slice(0, 6).map((holding) => ({
     label: holding.ticker,
@@ -949,7 +1165,7 @@ function SourceNotice({ items }: { items: Array<[string, DataSourceState]> }) {
 }
 
 function SourcePill({ state }: { state: DataSourceState }) {
-  const label = state === "live" ? "Live DuckDB" : "No rows";
+  const label = state === "live" ? "Rows loaded" : "No rows";
   return <i className={`source-pill ${state}`}>{label}</i>;
 }
 
@@ -975,6 +1191,27 @@ function WatchlistStrip({ items, onOpenTicker }: { items: WatchItem[]; onOpenTic
           <small>{item.price}</small>
         </button>
       ))}
+    </section>
+  );
+}
+
+function TopOpportunityTicker({ opportunity, onOpenTicker }: { opportunity: Opportunity; onOpenTicker: (symbol: string) => void }) {
+  return (
+    <section className="top-opportunity">
+      <button type="button" onClick={() => onOpenTicker(opportunity.ticker)}>
+        <span>Top Ranked Ticker</span>
+        <strong>{opportunity.ticker}</strong>
+        <small>{opportunity.name}</small>
+      </button>
+      <div className="top-opportunity-score">
+        <MetricBadge label="Composite" value={`${opportunity.score}`} caption={opportunity.grade} tone="good" />
+        <MetricBadge label="Confidence" value={`${opportunity.confidence}%`} tone={opportunity.confidence >= 70 ? "good" : "warn"} />
+        <DecisionBadge value={opportunity.decision} />
+      </div>
+      <div className="top-opportunity-copy">
+        <p>{opportunity.whyNow}</p>
+        <small>{opportunity.nextAction}</small>
+      </div>
     </section>
   );
 }
@@ -1017,6 +1254,52 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function TraderFilingCardView({ card, onOpenTicker }: { card: TraderFilingCard; onOpenTicker: (symbol: string) => void }) {
+  return (
+    <Panel className="span-4 trader-card" title={card.investor}>
+      <div className="trader-card-metrics">
+        <MetricBadge label="Holdings" value={String(card.tickerCount)} caption={card.event} />
+        <MetricBadge label="Value (K)" value={formatMoney(card.totalValue)} caption={`Filed ${card.filed}`} tone="info" />
+        <MetricBadge label="Top Ticker" value={card.topTicker || "-"} tone={card.topTicker ? "good" : "muted"} />
+      </div>
+      <div className="trader-holdings">
+        {card.holdings.slice(0, 5).map((holding) => (
+          <button key={`${holding.ticker}-${holding.security}`} type="button" disabled={!holding.ticker} onClick={() => holding.ticker && onOpenTicker(holding.ticker)}>
+            <span>{holding.ticker || "CUSIP"}</span>
+            <strong>{holding.security}</strong>
+            <small>{formatMoney(holding.value)} · {formatNumber(holding.shares)} sh</small>
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function TradingViewChart({ symbol }: { symbol: string }) {
+  const widgetSymbol = tradingViewSymbol(symbol);
+  const params = new URLSearchParams({
+    symbol: widgetSymbol,
+    interval: "D",
+    theme: "dark",
+    style: "1",
+    timezone: "America/New_York",
+    withdateranges: "1",
+    hide_side_toolbar: "0",
+    studies: "MASimple@tv-basicstudies\u001ERSI@tv-basicstudies\u001EMACD@tv-basicstudies",
+  });
+  return (
+    <div className="tradingview-frame">
+      <iframe
+        title={`${symbol} TradingView chart`}
+        src={`https://s.tradingview.com/widgetembed/?${params.toString()}`}
+        loading="lazy"
+        referrerPolicy="no-referrer-when-downgrade"
+      />
+      <small>Daily candles with moving average, RSI, and MACD overlays from TradingView.</small>
     </div>
   );
 }
@@ -1260,6 +1543,21 @@ function InfoPanel({ title, items, tone }: { title: string; items: string[]; ton
   );
 }
 
+function ResearchPacketSummary({ packet }: { packet: RowRecord }) {
+  return (
+    <div className="packet-summary">
+      <section>
+        <h3>Bull Case</h3>
+        <BulletList tone="good" items={arrayText(packet.bull_case)} />
+      </section>
+      <section>
+        <h3>Bear Case</h3>
+        <BulletList tone="bad" items={arrayText(packet.bear_case)} />
+      </section>
+    </div>
+  );
+}
+
 function BulletList({ items, tone }: { items: string[]; tone: Tone }) {
   return (
     <ul className={`bullet-list ${tone}`}>
@@ -1314,9 +1612,19 @@ function FilterRail({
   decisions = [],
   tickerQuery = "",
   minScore = 0,
+  assetClass = "",
+  assetClasses = [],
+  minConfidence = 0,
+  source = "",
+  sources = [],
+  investorQuery = "",
   onDecision,
   onTickerQuery,
   onMinScore,
+  onAssetClass,
+  onMinConfidence,
+  onSource,
+  onInvestorQuery,
   onReset,
 }: {
   compact?: boolean;
@@ -1324,9 +1632,19 @@ function FilterRail({
   decisions?: string[];
   tickerQuery?: string;
   minScore?: number;
+  assetClass?: string;
+  assetClasses?: string[];
+  minConfidence?: number;
+  source?: string;
+  sources?: string[];
+  investorQuery?: string;
   onDecision?: (value: string) => void;
   onTickerQuery?: (value: string) => void;
   onMinScore?: (value: number) => void;
+  onAssetClass?: (value: string) => void;
+  onMinConfidence?: (value: number) => void;
+  onSource?: (value: string) => void;
+  onInvestorQuery?: (value: string) => void;
   onReset?: () => void;
 }) {
   return (
@@ -1335,29 +1653,58 @@ function FilterRail({
         <strong>Filters</strong>
         <button type="button" onClick={onReset}>Reset</button>
       </div>
-      <label>
-        <span>Decision</span>
-        <select value={decision} onChange={(event) => onDecision?.(event.target.value)}>
-          <option value="">All</option>
-          {decisions.map((item) => <option key={item} value={item}>{item}</option>)}
-        </select>
-      </label>
+      {(!compact || decisions.length > 0) && (
+        <label>
+          <span>Decision</span>
+          <select value={decision} onChange={(event) => onDecision?.(event.target.value)}>
+            <option value="">All</option>
+            {decisions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+      )}
       <label>
         <span>Ticker</span>
         <input value={tickerQuery} onChange={(event) => onTickerQuery?.(event.target.value)} placeholder="Any" />
       </label>
-      <label>
-        <span>Score Range</span>
-        <input type="range" min="0" max="100" value={minScore} onChange={(event) => onMinScore?.(Number(event.target.value))} />
-        <small>{minScore}+ minimum</small>
-      </label>
-      {!compact && ["Asset", "Confidence", "Catalyst Window", "Liquidity Grade"].map((label) => (
-        <label key={label}>
-          <span>{label}</span>
-          <select disabled value=""><option value="">Source-backed</option></select>
+      {compact && (
+        <label>
+          <span>Investor</span>
+          <input value={investorQuery} onChange={(event) => onInvestorQuery?.(event.target.value)} placeholder="Any" />
         </label>
-      ))}
-      <button className="primary-button" type="button" disabled>Filters apply live</button>
+      )}
+      {!compact && (
+        <label>
+          <span>Score Range</span>
+          <input type="range" min="0" max="100" value={minScore} onChange={(event) => onMinScore?.(Number(event.target.value))} />
+          <small>{minScore}+ minimum</small>
+        </label>
+      )}
+      {!compact && (
+        <label>
+          <span>Asset</span>
+          <select value={assetClass} onChange={(event) => onAssetClass?.(event.target.value)}>
+            <option value="">All</option>
+            {assetClasses.map((item) => <option key={item} value={item}>{titleLabel(item)}</option>)}
+          </select>
+        </label>
+      )}
+      {!compact && (
+        <label>
+          <span>Confidence</span>
+          <input type="range" min="0" max="100" value={minConfidence} onChange={(event) => onMinConfidence?.(Number(event.target.value))} />
+          <small>{minConfidence}+ minimum</small>
+        </label>
+      )}
+      {!compact && (
+        <label>
+          <span>Signal Source</span>
+          <select value={source} onChange={(event) => onSource?.(event.target.value)}>
+            <option value="">All</option>
+            {sources.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+      )}
+      <button className="primary-button" type="button" onClick={onReset}>Reset Filters</button>
     </aside>
   );
 }
@@ -1422,7 +1769,7 @@ function GenericRows({ rows: sourceRows, emptyTitle, emptyDetail, onOpenTicker }
 
 function SummaryList({ rows, onOpenTicker }: { rows: SummaryItem[]; onOpenTicker?: (symbol: string) => void }) {
   if (!rows.length) {
-    return <EmptyState title="No source rows" detail="The backing DuckDB table has no rows for this panel." />;
+    return <EmptyState title="No source rows" detail="The backing source table has no rows for this panel." />;
   }
   return (
     <div className="summary-list">
@@ -1540,6 +1887,11 @@ function arrayField(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function arrayText(value: unknown): string[] {
+  const items = arrayField(value).map((item) => displayValue(item as JsonValue)).filter((item) => item && item !== "-");
+  return items.length ? items : ["No source-backed packet row available."];
+}
+
 function numberField(row: RowRecord, keys: string[], fallback: number): number {
   for (const key of keys) {
     const value = row[key];
@@ -1644,6 +1996,21 @@ function companyName(symbol: string): string {
     SPY: "SPDR S&P 500 ETF",
     QQQ: "Invesco QQQ Trust",
   }[symbol] ?? "Market Instrument";
+}
+
+function tradingViewSymbol(symbol: string): string {
+  const normalized = symbol.toUpperCase();
+  const exchangeMap: Record<string, string> = {
+    SPY: "AMEX",
+    QQQ: "NASDAQ",
+    IWM: "AMEX",
+    DIA: "AMEX",
+    BTC: "COINBASE",
+    ETH: "COINBASE",
+  };
+  const exchange = exchangeMap[normalized] ?? "NASDAQ";
+  const suffix = exchange === "COINBASE" ? "USD" : "";
+  return `${exchange}:${normalized}${suffix}`;
 }
 
 function formatPct(value: number): string {

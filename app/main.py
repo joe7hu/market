@@ -65,6 +65,16 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return signals_payload(panel_data)
 
+    @app.get("/api/opportunities-ranked")
+    def opportunities_ranked() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "opportunities_ranked")
+
+    @app.get("/api/opportunity-sources")
+    def opportunity_sources() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "opportunity_sources")
+
     @app.get("/api/tickers/{ticker}")
     def ticker_detail(ticker: str) -> dict[str, Any]:
         _, panel_data = _context()
@@ -184,6 +194,16 @@ def create_app() -> FastAPI:
     def valuations() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "valuations")
+
+    @app.get("/api/technicals")
+    def technicals() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "technicals")
+
+    @app.get("/api/research-packets")
+    def research_packets() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "research_packets")
 
     @app.get("/api/memos")
     def memos() -> dict[str, Any]:

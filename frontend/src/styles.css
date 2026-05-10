@@ -320,6 +320,68 @@ h3 {
   text-align: left;
 }
 
+.top-opportunity,
+.source-panel-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.top-opportunity {
+  grid-template-columns: minmax(180px, 0.42fr) auto minmax(0, 1fr);
+  align-items: center;
+  border: 1px solid rgba(67, 229, 143, 0.25);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(67, 229, 143, 0.13), rgba(104, 168, 255, 0.07)),
+    #09131d;
+  padding: 12px;
+}
+
+.top-opportunity button {
+  display: grid;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+}
+
+.top-opportunity span,
+.top-opportunity small,
+.panel-footnote {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.top-opportunity strong {
+  color: #f2fbf5;
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.top-opportunity-score {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.top-opportunity-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.top-opportunity-copy p {
+  color: #e2edf5;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.source-panel-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .watchlist span,
 .metric-box span,
 .metric-badge span {
@@ -341,6 +403,7 @@ h3 {
 .filings-grid,
 .health-grid,
 .research-grid,
+.research-workbench,
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -349,6 +412,10 @@ h3 {
 
 .settings-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.research-workbench {
+  grid-template-columns: minmax(250px, 0.7fr) minmax(0, 1.3fr);
 }
 
 .panel {
@@ -864,6 +931,25 @@ h3 {
   font-size: 0.68rem;
 }
 
+.tradingview-frame {
+  display: grid;
+  gap: 8px;
+  min-height: 380px;
+}
+
+.tradingview-frame iframe {
+  width: 100%;
+  min-height: 340px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #06101a;
+}
+
+.tradingview-frame small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .score-total strong {
   font-size: 1.35rem;
 }
@@ -877,6 +963,113 @@ h3 {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
+}
+
+.research-picker,
+.deep-analysis,
+.packet-summary,
+.trader-card,
+.trader-holdings {
+  display: grid;
+  gap: 10px;
+}
+
+.research-picker {
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+}
+
+.research-picker button {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0a1420;
+  padding: 8px;
+  text-align: left;
+}
+
+.research-picker button.active {
+  border-color: var(--blue);
+  background: rgba(104, 168, 255, 0.13);
+}
+
+.research-picker span,
+.research-picker small,
+.trader-holdings small {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.analysis-score,
+.trader-card-metrics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.analysis-score > strong {
+  color: var(--green);
+  font-size: 2.1rem;
+  line-height: 1;
+}
+
+.analysis-score > span {
+  color: #dbe6ef;
+  font-size: 0.76rem;
+}
+
+.packet-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+}
+
+.packet-summary section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.trader-card-metrics {
+  align-items: stretch;
+}
+
+.trader-card-metrics .metric-badge {
+  flex: 1;
+  min-width: 0;
+}
+
+.trader-holdings button {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  text-align: left;
+}
+
+.trader-holdings span {
+  color: #f0f7fc;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.trader-holdings strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #dbe6ef;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trader-holdings small {
+  grid-column: 2;
 }
 
 .bullet-list {
@@ -1289,8 +1482,13 @@ h3 {
 @media (max-width: 1180px) {
   .watchlist,
   .metric-strip,
-  .snapshot-grid {
+  .snapshot-grid,
+  .source-panel-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .source-panel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .span-3,
@@ -1358,8 +1556,11 @@ h3 {
   .filings-grid,
   .health-grid,
   .research-grid,
+  .research-workbench,
   .calendar-grid-wrap,
-  .split-page {
+  .split-page,
+  .source-panel-grid,
+  .top-opportunity {
     grid-template-columns: 1fr;
   }
 
@@ -1391,7 +1592,8 @@ h3 {
 
   .watchlist,
   .metric-strip,
-  .snapshot-grid {
+  .snapshot-grid,
+  .source-panel-grid {
     grid-template-columns: 1fr;
   }
 

@@ -363,6 +363,8 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     normalized_ticker = ticker.upper()
     tables = {
         "candidates": _matching_ticker_rows(panel_data.rows("candidates"), normalized_ticker),
+        "opportunities_ranked": _matching_ticker_rows(panel_data.rows("opportunities_ranked"), normalized_ticker),
+        "opportunity_sources": _matching_ticker_rows(panel_data.rows("opportunity_sources"), normalized_ticker),
         "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
         "theses": _matching_ticker_rows(panel_data.rows("theses"), normalized_ticker),
         "catalysts": _matching_ticker_rows(panel_data.rows("catalysts"), normalized_ticker),
@@ -380,6 +382,8 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "analyst_estimates": _matching_ticker_rows(panel_data.rows("analyst_estimates"), normalized_ticker),
         "earnings": _matching_ticker_rows(panel_data.rows("earnings"), normalized_ticker),
         "valuations": _matching_ticker_rows(panel_data.rows("valuations"), normalized_ticker),
+        "technicals": _matching_ticker_rows(panel_data.rows("technicals"), normalized_ticker),
+        "research_packets": _matching_ticker_rows(panel_data.rows("research_packets"), normalized_ticker),
         "memos": _matching_ticker_rows(
             panel_data.rows("ticker_memos") or panel_data.rows("memos"),
             normalized_ticker,

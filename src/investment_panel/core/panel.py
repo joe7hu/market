@@ -8,6 +8,7 @@ from typing import Any
 
 from investment_panel.core.config import AppConfig, config_to_dict, load_config
 from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
 
 
@@ -26,6 +27,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
     with db(db_path, read_only=False) as con:
         tables = {
             "signals": signal_rows(con),
+            "opportunities_ranked": opportunities_ranked(con),
+            "opportunity_sources": opportunity_sources(con),
             "candidates": candidates(con),
             "portfolio": portfolio(con),
             "theses": theses(con),
@@ -44,6 +47,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "analyst_estimates": analyst_estimates(con),
             "earnings": earnings(con),
             "valuations": valuations(con),
+            "technicals": technicals(con),
+            "research_packets": research_packets(con),
             "provider_runs": provider_runs(con),
             "ticker_memos": reports(con),
             "trader_twins": trader_profiles(app_config.trader_profile_dir),
@@ -83,6 +88,265 @@ def candidates(con: Any) -> list[dict[str, Any]]:
         row["evidence_count"] = len(evidence) if isinstance(evidence, list) else 0
         row["freshness"] = row.get("run_date")
     return decoded
+
+
+def opportunities_ranked(con: Any) -> list[dict[str, Any]]:
+    """Composite opportunity read model used by the workstation UI."""
+
+    source_counts = opportunity_source_counts(con)
+    latest_quotes = {
+        row["symbol"]: row
+        for row in query_rows(
+            con,
+            """
+            SELECT symbol, observed_at, price, change_pct
+            FROM quotes_intraday
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+            """,
+        )
+    }
+    ranked = []
+    for index, row in enumerate(signal_rows(con), start=1):
+        symbol = str(row.get("symbol") or "").upper()
+        counts = source_counts.get(symbol, {})
+        quote = latest_quotes.get(symbol, {})
+        source_count = sum(counts.values())
+        components = row.get("components") if isinstance(row.get("components"), dict) else {}
+        score = float(row.get("score") or 0)
+        confidence = row.get("confidence")
+        confidence_score = confidence_to_number(str(confidence or ""), score, source_count)
+        ranked.append(
+            {
+                **row,
+                "rank": index,
+                "composite_score": score,
+                "score": score,
+                "confidence_score": confidence_score,
+                "source_counts": counts,
+                "source_count": source_count,
+                "latest_price": quote.get("price"),
+                "change_pct": quote.get("change_pct"),
+                "observed_at": quote.get("observed_at"),
+                "top_source": top_source_label(counts, components),
+            }
+        )
+    return sorted(ranked, key=lambda item: (item.get("score") or 0, item.get("source_count") or 0), reverse=True)
+
+
+def opportunity_source_counts(con: Any) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+
+    def add(source: str, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            symbol = str(row.get("symbol") or row.get("target_symbol") or "").upper()
+            if not symbol:
+                continue
+            counts.setdefault(symbol, {})[source] = int(row.get("count") or 0)
+
+    add("technical", query_rows(con, "SELECT symbol, count(*) AS count FROM technical_features GROUP BY symbol"))
+    add("sepa", query_rows(con, "SELECT symbol, count(*) AS count FROM sepa_analyses GROUP BY symbol"))
+    add("liquidity", query_rows(con, "SELECT symbol, count(*) AS count FROM liquidity_metrics GROUP BY symbol"))
+    add("valuation", query_rows(con, "SELECT symbol, count(*) AS count FROM valuation_models GROUP BY symbol"))
+    add("thesis", query_rows(con, "SELECT symbol, count(*) AS count FROM birdclaw_theses GROUP BY symbol"))
+    add("filing", query_rows(con, "SELECT symbol, count(*) AS count FROM disclosures WHERE symbol IS NOT NULL GROUP BY symbol"))
+    add("earnings", query_rows(con, "SELECT symbol, count(*) AS count FROM earnings_events GROUP BY symbol"))
+    return counts
+
+
+def opportunity_sources(con: Any) -> list[dict[str, Any]]:
+    """One row per symbol/source leader for the Opportunities source panels."""
+
+    panels: list[dict[str, Any]] = []
+    panels.extend(
+        source_rows(
+            "technical",
+            "Technical Setups",
+            query_rows(
+                con,
+                """
+                SELECT symbol, as_of AS source_date, score, verdict AS label, stage AS caption
+                FROM sepa_analyses
+                ORDER BY score DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "liquidity",
+            "Liquidity",
+            query_rows(
+                con,
+                """
+                SELECT symbol, as_of AS source_date, avg_dollar_volume AS score,
+                       grade AS label, 'average dollar volume' AS caption
+                FROM liquidity_metrics
+                ORDER BY avg_dollar_volume DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "valuation",
+            "Valuation",
+            query_rows(
+                con,
+                """
+                SELECT symbol, as_of AS source_date, upside_pct AS score,
+                       method AS label, 'modeled upside' AS caption
+                FROM valuation_models
+                ORDER BY upside_pct DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "thesis",
+            "Thesis / Memos",
+            query_rows(
+                con,
+                """
+                SELECT symbol, created_at AS source_date, 1 AS score,
+                       author AS label, thesis_summary AS caption
+                FROM birdclaw_theses
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "filings",
+            "Trader Filings",
+            query_rows(
+                con,
+                """
+                SELECT symbol, filed_date AS source_date,
+                       TRY_CAST(json_extract(raw, '$.holdings_value_thousands') AS DOUBLE) AS score,
+                       coalesce(trader_name, filer_name) AS label, action AS caption
+                FROM disclosures
+                WHERE symbol IS NOT NULL
+                ORDER BY filed_date DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "news",
+            "News / Catalysts",
+            query_rows(
+                con,
+                """
+                SELECT symbol, event_date AS source_date, 1 AS score,
+                       event AS label, expected_impact AS caption
+                FROM catalysts
+                ORDER BY event_date ASC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    return panels
+
+
+def source_rows(source_key: str, title: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_key": source_key,
+            "title": title,
+            "symbol": str(row.get("symbol") or "").upper(),
+            "score": row.get("score"),
+            "label": row.get("label"),
+            "caption": row.get("caption"),
+            "source_date": row.get("source_date"),
+        }
+        for row in rows
+        if row.get("symbol")
+    ]
+
+
+def technicals(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, date, features
+        FROM technical_features
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+        ORDER BY date DESC, symbol
+        LIMIT 200
+        """,
+    )
+    decoded = [decode_fields(row, ("features",)) for row in rows]
+    for row in decoded:
+        features = row.get("features") if isinstance(row.get("features"), dict) else {}
+        row["close"] = features.get("close")
+        row["ma20"] = features.get("ma20")
+        row["ma50"] = features.get("ma50")
+        row["ma200"] = features.get("ma200")
+        row["return_20d"] = features.get("return_20d")
+        row["return_60d"] = features.get("return_60d")
+        row["technical_score"] = features.get("technical_score")
+        row["drawdown_from_high"] = features.get("drawdown_from_high")
+        row["volume_ratio_20_60"] = features.get("volume_ratio_20_60")
+        row["source"] = features.get("source") or features.get("price_source")
+    return decoded
+
+
+def research_packets(con: Any) -> list[dict[str, Any]]:
+    symbols = [str(row.get("symbol") or "").upper() for row in opportunities_ranked(con)[:25]]
+    packets: list[dict[str, Any]] = []
+    for symbol in symbols:
+        if not symbol:
+            continue
+        packet = build_research_packet(con, symbol)
+        memo = generate_deterministic_memo(packet)
+        report = memo.get("json") or {}
+        packets.append(
+            {
+                "symbol": symbol,
+                "created_at": packet.get("created_at"),
+                "decision": report.get("decision"),
+                "conviction": report.get("conviction"),
+                "why_now": report.get("why_now"),
+                "bull_case": report.get("bull_case"),
+                "bear_case": report.get("bear_case"),
+                "invalidation": report.get("invalidation"),
+                "entry_plan": report.get("entry_plan"),
+                "position_sizing": report.get("position_sizing"),
+                "portfolio_impact": report.get("portfolio_impact"),
+                "evidence_count": len(packet.get("arco_thesis_evidence") or []),
+                "price_rows": len(packet.get("prices_recent") or []),
+                "has_position": bool(packet.get("portfolio_position")),
+            }
+        )
+    return packets
+
+
+def confidence_to_number(label: str, score: float, source_count: int) -> int:
+    normalized = label.lower()
+    if "high" in normalized:
+        return 85
+    if "medium" in normalized:
+        return 65
+    if "low" in normalized:
+        return 35
+    return int(max(20, min(95, score * 0.7 + min(source_count, 8) * 4)))
+
+
+def top_source_label(counts: dict[str, int], components: dict[str, Any]) -> str:
+    if counts:
+        return max(counts.items(), key=lambda item: item[1])[0]
+    if components:
+        return max(components.items(), key=lambda item: float(item[1] or 0))[0]
+    return "candidate"
 
 
 def portfolio(con: Any) -> list[dict[str, Any]]:

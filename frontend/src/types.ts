@@ -41,6 +41,8 @@ export type SettingsPayload = {
 export type PanelData = {
   dashboard: DashboardPayload;
   signals: TablePayload;
+  opportunitiesRanked: TablePayload;
+  opportunitySources: TablePayload;
   candidates: TablePayload;
   portfolio: TablePayload;
   theses: TablePayload;
@@ -60,6 +62,8 @@ export type PanelData = {
   analystEstimates: TablePayload;
   earnings: TablePayload;
   valuations: TablePayload;
+  technicals: TablePayload;
+  researchPackets: TablePayload;
   memos: TablePayload;
   providerRuns: TablePayload;
   sourceHealth: TablePayload;
@@ -70,6 +74,8 @@ export type PanelData = {
 export type PanelEndpoint =
   | "dashboard"
   | "signals"
+  | "opportunitiesRanked"
+  | "opportunitySources"
   | "candidates"
   | "portfolio"
   | "theses"
@@ -89,6 +95,8 @@ export type PanelEndpoint =
   | "analystEstimates"
   | "earnings"
   | "valuations"
+  | "technicals"
+  | "researchPackets"
   | "memos"
   | "providerRuns"
   | "sourceHealth"

@@ -8,7 +8,9 @@ from investment_panel.analysis.valuation import metrics_pass_sanity_checks
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.free_sources import infer_event_date, store_expiries, store_news_rows, store_options_chain, store_screener_rows, upsert_quote
+from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import sample_prices, upsert_prices
+from investment_panel.core.scoring import score_and_store
 from investment_panel.core.technicals import compute_and_store
 from investment_panel.providers.tradingview import TradingViewProvider
 
@@ -76,6 +78,7 @@ def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
         store_options_chain(con, "NVDA", "2026-05-10T12:00:00Z", FakeRunner().read_json(["tradingview", "options-chain"]))
         store_news_rows(con, FakeRunner().read_json(["tradingview", "news"]), "tradingview")
         result = run_all_analyses(con, load_config())
+        score_and_store(con, ["NVDA"], load_config().scoring.weights)
 
         assert result["sepa_rows"] >= 1
         assert result["liquidity_rows"] >= 1
@@ -83,3 +86,10 @@ def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
         assert query_rows(con, "SELECT * FROM quotes_intraday WHERE symbol = 'NVDA'")
         assert query_rows(con, "SELECT * FROM options_chain WHERE symbol = 'NVDA'")
         assert query_rows(con, "SELECT * FROM news_items WHERE id = 'n1'")
+
+    panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
+    tables = panel["tables"]
+    assert tables["opportunities_ranked"][0]["symbol"] == "NVDA"
+    assert tables["opportunity_sources"]
+    assert tables["technicals"][0]["technical_score"] is not None
+    assert tables["research_packets"][0]["symbol"] == "NVDA"

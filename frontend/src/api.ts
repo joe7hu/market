@@ -57,6 +57,8 @@ export async function loadPanelData(): Promise<PanelData> {
   const results = await Promise.all([
     settle("dashboard", getJson<DashboardPayload>("/api/dashboard")),
     settle("signals", getJson<TablePayload>("/api/signals")),
+    settle("opportunitiesRanked", getJson<TablePayload>("/api/opportunities-ranked")),
+    settle("opportunitySources", getJson<TablePayload>("/api/opportunity-sources")),
     settle("candidates", getJson<TablePayload>("/api/candidates")),
     settle("portfolio", getJson<TablePayload>("/api/portfolio")),
     settle("theses", getJson<TablePayload>("/api/theses")),
@@ -76,6 +78,8 @@ export async function loadPanelData(): Promise<PanelData> {
     settle("analystEstimates", getJson<TablePayload>("/api/analyst-estimates")),
     settle("earnings", getJson<TablePayload>("/api/earnings")),
     settle("valuations", getJson<TablePayload>("/api/valuations")),
+    settle("technicals", getJson<TablePayload>("/api/technicals")),
+    settle("researchPackets", getJson<TablePayload>("/api/research-packets")),
     settle("memos", getJson<TablePayload>("/api/memos")),
     settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
@@ -86,6 +90,8 @@ export async function loadPanelData(): Promise<PanelData> {
   const data: PanelData = {
     dashboard: {},
     signals: EMPTY_TABLE,
+    opportunitiesRanked: EMPTY_TABLE,
+    opportunitySources: EMPTY_TABLE,
     candidates: EMPTY_TABLE,
     portfolio: EMPTY_TABLE,
     theses: EMPTY_TABLE,
@@ -105,6 +111,8 @@ export async function loadPanelData(): Promise<PanelData> {
     analystEstimates: EMPTY_TABLE,
     earnings: EMPTY_TABLE,
     valuations: EMPTY_TABLE,
+    technicals: EMPTY_TABLE,
+    researchPackets: EMPTY_TABLE,
     memos: EMPTY_TABLE,
     providerRuns: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
@@ -123,6 +131,12 @@ export async function loadPanelData(): Promise<PanelData> {
         break;
       case "signals":
         data.signals = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "opportunitiesRanked":
+        data.opportunitiesRanked = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "opportunitySources":
+        data.opportunitySources = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "candidates":
         data.candidates = (result.value as TablePayload) ?? EMPTY_TABLE;
@@ -180,6 +194,12 @@ export async function loadPanelData(): Promise<PanelData> {
         break;
       case "valuations":
         data.valuations = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "technicals":
+        data.technicals = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "researchPackets":
+        data.researchPackets = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "memos":
         data.memos = (result.value as TablePayload) ?? EMPTY_TABLE;
