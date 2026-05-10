@@ -35,6 +35,11 @@ def test_daily_screen_builds_candidates_from_local_arco(tmp_path: Path) -> None:
         f"""
 database:
   duckdb_path: {tmp_path / "investment.duckdb"}
+nas:
+  source_root: {tmp_path / "nas"}
+  status_dir: {tmp_path / "nas" / "status"}
+  market_dir: {tmp_path / "nas" / "market-mini"}
+  duckdb_snapshot_dir: {tmp_path / "nas" / "market-mini" / "duckdb-snapshots"}
 arco:
   raw_dir: {arco_dir}
 market_data:
@@ -52,6 +57,8 @@ watchlist:
     result = run_daily(str(config_path))
 
     assert result["candidates"] >= 1
+    assert Path(result["status_path"]).is_relative_to(tmp_path)
+    assert Path(result["duckdb_snapshot"]).is_relative_to(tmp_path)
     with db(tmp_path / "investment.duckdb", read_only=True) as con:
         rows = query_rows(con, "SELECT symbol, score, decision FROM candidates WHERE symbol = 'COIN'")
     assert rows
@@ -76,7 +83,15 @@ def test_research_packet_and_memo(tmp_path: Path) -> None:
 
 def test_config_loads_paths(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    path.write_text("database:\n  duckdb_path: data/test.duckdb\n", encoding="utf-8")
+    path.write_text(
+        f"""
+database:
+  duckdb_path: data/test.duckdb
+nas:
+  status_dir: {tmp_path / "nas" / "status"}
+""",
+        encoding="utf-8",
+    )
     config = load_config(path)
     assert config.database.duckdb_path.name == "test.duckdb"
-
+    assert config.nas.status_dir == tmp_path / "nas" / "status"

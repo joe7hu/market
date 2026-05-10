@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -137,10 +138,19 @@ CREATE TABLE IF NOT EXISTS source_health (
 """
 
 
-def connect(path: str | Path, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+def connect(path: str | Path, read_only: bool = False, retries: int = 30, delay_seconds: float = 1.0) -> duckdb.DuckDBPyConnection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return duckdb.connect(str(db_path), read_only=read_only)
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return duckdb.connect(str(db_path), read_only=read_only)
+        except duckdb.IOException as exc:
+            if "Could not set lock on file" not in str(exc) or attempt >= retries:
+                raise
+            last_error = exc
+            time.sleep(delay_seconds)
+    raise last_error or RuntimeError(f"Could not connect to DuckDB: {db_path}")
 
 
 def init_db(path: str | Path) -> None:
@@ -189,4 +199,3 @@ def query_rows(con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | Non
     result = con.execute(sql, params or [])
     columns = [column[0] for column in result.description]
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
-

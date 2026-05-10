@@ -143,6 +143,11 @@ def test_update_disclosures_reads_configured_13f_trackers(monkeypatch: Any, tmp_
         f"""
 database:
   duckdb_path: {tmp_path / "investment.duckdb"}
+nas:
+  source_root: {tmp_path / "nas"}
+  status_dir: {tmp_path / "nas" / "status"}
+  market_dir: {tmp_path / "nas" / "market-mini"}
+  duckdb_snapshot_dir: {tmp_path / "nas" / "market-mini" / "duckdb-snapshots"}
 market_data:
   user_agent: test-agent
 disclosures:
