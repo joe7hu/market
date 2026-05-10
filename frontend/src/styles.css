@@ -1072,6 +1072,214 @@ h3 {
   grid-column: 2;
 }
 
+.trader-portfolio-page,
+.trader-portfolio-grid,
+.trader-performance,
+.trader-distribution,
+.allocation-history {
+  display: grid;
+  gap: 12px;
+}
+
+.trader-portfolio-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.trader-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.9fr);
+  gap: 14px;
+  border: 1px solid rgba(67, 229, 143, 0.22);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(67, 229, 143, 0.12), rgba(104, 168, 255, 0.08)),
+    #09131d;
+  padding: 16px;
+}
+
+.trader-hero-main {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.trader-hero-main span,
+.trader-hero-main small,
+.trader-sector-row span,
+.trader-sector-row i,
+.trader-holdings-head {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.trader-hero-main h2 {
+  color: #f4fbf7;
+  font-size: 2rem;
+  line-height: 1;
+  text-transform: none;
+}
+
+.trader-hero-main p {
+  max-width: 680px;
+  color: #dce8ef;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.trader-hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trader-sector-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+
+.trader-sector-row strong {
+  color: var(--green);
+  font-size: 1rem;
+}
+
+.trader-sector-row i {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-style: normal;
+}
+
+.performance-chart {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  min-height: 240px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(67, 229, 143, 0.06), transparent 60%),
+    #07111b;
+  padding: 14px;
+}
+
+.performance-chart i {
+  flex: 1;
+  min-width: 10px;
+  border-radius: 999px 999px 2px 2px;
+  background: linear-gradient(180deg, var(--green), #1d7c55);
+}
+
+.performance-compare {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trader-current-holdings {
+  display: grid;
+  gap: 7px;
+}
+
+.trader-holdings-head,
+.trader-current-holdings button {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) minmax(92px, 1fr) 62px;
+  align-items: center;
+  gap: 8px;
+}
+
+.trader-current-holdings button,
+.allocation-history button {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.trader-current-holdings strong {
+  color: #f2f8fc;
+  font-size: 0.78rem;
+}
+
+.trader-current-holdings span,
+.trader-current-holdings i {
+  color: #cbd8e2;
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.distribution-stack {
+  display: flex;
+  gap: 3px;
+  min-height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: #07111b;
+  padding: 4px;
+}
+
+.distribution-stack i {
+  min-width: 7px;
+  border-radius: 3px;
+  background: var(--green);
+}
+
+.distribution-stack i:nth-child(2n) {
+  background: var(--blue);
+}
+
+.distribution-stack i:nth-child(3n) {
+  background: var(--yellow);
+}
+
+.distribution-stack i:nth-child(4n) {
+  background: var(--orange);
+}
+
+.allocation-history button {
+  display: grid;
+  grid-template-columns: 54px 70px minmax(92px, 1fr) minmax(92px, 1fr) 78px;
+  align-items: center;
+  gap: 8px;
+}
+
+.allocation-history span {
+  border-radius: 999px;
+  padding: 4px 7px;
+  text-align: center;
+  font-size: 0.66rem;
+  font-weight: 900;
+}
+
+.allocation-history span.buy {
+  background: rgba(67, 229, 143, 0.12);
+  color: var(--green);
+}
+
+.allocation-history span.sell {
+  background: rgba(255, 107, 95, 0.12);
+  color: var(--red);
+}
+
+.allocation-history strong,
+.allocation-history i,
+.allocation-history em {
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.allocation-history small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .bullet-list {
   display: grid;
   gap: 8px;
@@ -1554,13 +1762,15 @@ h3 {
   .ticker-grid,
   .portfolio-grid,
   .filings-grid,
+  .trader-portfolio-grid,
   .health-grid,
   .research-grid,
   .research-workbench,
   .calendar-grid-wrap,
   .split-page,
   .source-panel-grid,
-  .top-opportunity {
+  .top-opportunity,
+  .trader-hero {
     grid-template-columns: 1fr;
   }
 
@@ -1582,6 +1792,19 @@ h3 {
   .calendar-month button {
     min-height: 74px;
     padding: 7px;
+  }
+
+  .trader-hero-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .allocation-history button {
+    grid-template-columns: 50px minmax(0, 1fr) 82px;
+  }
+
+  .allocation-history small,
+  .allocation-history em {
+    grid-column: 2 / -1;
   }
 }
 

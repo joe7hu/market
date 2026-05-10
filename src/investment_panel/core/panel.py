@@ -628,6 +628,16 @@ def disclosures(con: Any) -> list[dict[str, Any]]:
         if isinstance(raw, dict):
             row["holdings_count"] = raw.get("holdings_count")
             row["holdings_value_thousands"] = raw.get("holdings_value_thousands")
+            row["total_value"] = raw.get("total_value")
+            row["estimated_invested_usd"] = raw.get("estimated_invested_usd")
+            row["performance_percent"] = raw.get("performance_percent")
+            row["platform_stats"] = raw.get("platform_stats")
+            row["metadata"] = raw.get("metadata")
+            row["transactions_count"] = raw.get("transactions_count")
+            row["transactions"] = raw.get("transactions")
+            row["portfolio_history"] = raw.get("portfolio_history")
+            row["sp500_history"] = raw.get("sp500_history")
+            row["source_caveat"] = raw.get("source_caveat")
             row["lag_caveat"] = raw.get("lag_caveat")
             holdings = raw.get("holdings")
             if isinstance(holdings, list):

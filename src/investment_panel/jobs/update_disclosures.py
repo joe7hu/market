@@ -7,7 +7,14 @@ import json
 
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
-from investment_panel.core.disclosures import ingest_13f_trackers, load_13f_trackers_from_config
+from investment_panel.core.disclosures import (
+    ingest_public_disclosure_csvs,
+    ingest_13f_trackers,
+    load_13f_trackers_from_config,
+    load_public_disclosure_csvs_from_config,
+    purge_direct_tracker_rows,
+    rebuild_trader_replica_portfolios,
+)
 from investment_panel.core.sources import lightweight_online_check, record_verified_sources
 from investment_panel.core.status import write_source_status
 
@@ -20,11 +27,14 @@ def run(
 ) -> dict[str, str | bool | int]:
     config = load_config(config_path)
     trackers = load_13f_trackers_from_config(config_path)
+    public_disclosure_csvs = load_public_disclosure_csvs_from_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
+        purge_direct_tracker_rows(con)
         record_verified_sources(con)
         if online_check:
             lightweight_online_check(con, config.market_data.user_agent)
+        public_disclosure_result = ingest_public_disclosure_csvs(con, public_disclosure_csvs)
         ingest_result = ingest_13f_trackers(
             con,
             trackers,
@@ -32,12 +42,16 @@ def run(
             default_max_filings=max_filings,
             fetch_holdings=fetch_holdings,
         )
+        replica_result = rebuild_trader_replica_portfolios(con)
     result = {
         "database": str(config.database.duckdb_path),
         "online_check": online_check,
         "status": "disclosures_updated",
         "trackers_configured": len(trackers),
+        "public_disclosure_csvs_configured": len(public_disclosure_csvs),
+        **public_disclosure_result,
         **ingest_result,
+        **replica_result,
     }
     status_path = write_source_status(
         config,

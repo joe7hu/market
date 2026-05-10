@@ -29,6 +29,7 @@ market-snapshot-database = "investment_panel.jobs.snapshot_database:main"
 market-weekly-review = "investment_panel.jobs.weekly_portfolio_review:main"
 market-research-candidate = "investment_panel.jobs.research_candidate:main"
 market-update-free-sources = "investment_panel.jobs.update_free_sources:main"
+market-backfill-trader-disclosures = "investment_panel.jobs.backfill_trader_disclosures:main"
 
 [build-system]
 requires = ["hatchling"]

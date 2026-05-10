@@ -48,6 +48,21 @@ uv run python -m investment_panel.jobs.research_candidate TSLA --config config.y
 uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.yaml
 ```
 
+Disclosure ingestion should also run daily. The scheduled command is:
+
+```bash
+uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --skip-holdings
+```
+
+Use the backfill job once when onboarding a trader with full historical filings:
+
+```bash
+uv run python -m investment_panel.jobs.backfill_trader_disclosures --config config.yaml --trader "Trader Name"
+```
+
+New trader onboarding and the normalized public-disclosure CSV contract are
+documented in [docs/trader-disclosure-pipeline.md](docs/trader-disclosure-pipeline.md).
+
 ## API
 
 - `GET /api/status`
@@ -79,6 +94,10 @@ uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.y
 ## Data Sources
 
 Verified source notes are in [docs/data-sources.md](docs/data-sources.md).
+
+Trader portfolios are modeled from primary public disclosure records. Market
+does not ingest third-party tracker pages as source data; comparable tracker
+products are useful only as UI/product references.
 
 The app defaults to deterministic sample market data for local development.
 Set `market_data.mode: online` in `config.yaml` to attempt online price fetches

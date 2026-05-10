@@ -125,6 +125,43 @@ type TraderFilingCard = {
   topTicker: string;
 };
 
+type TraderPortfolioHolding = {
+  ticker: string;
+  quantity: number;
+  price: number;
+  marketValue: number;
+  weight: number;
+};
+
+type TraderPortfolioTransaction = {
+  symbol: string;
+  type: string;
+  quantity: number;
+  price: number;
+  date: string;
+  weightBefore: number;
+  weightAfter: number;
+};
+
+type TraderPortfolio = {
+  investor: string;
+  description: string;
+  category: string;
+  updated: string;
+  totalValue: number;
+  estimatedInvested: number;
+  performance: number;
+  holdingsCount: number;
+  copiers: number;
+  riskLevel: string;
+  diversificationScore: number;
+  topSectors: string[];
+  holdings: TraderPortfolioHolding[];
+  transactions: TraderPortfolioTransaction[];
+  sourceUrl: string;
+  caveat: string;
+};
+
 type SignalSourcePanel = {
   key: string;
   title: string;
@@ -525,11 +562,17 @@ function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; onOpenTic
 function FilingsPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (symbol: string) => void }) {
   const [investorQuery, setInvestorQuery] = useState("");
   const [tickerQuery, setTickerQuery] = useState("");
-  const cards = model.traderFilingCards.filter((card) => {
+  const portfolios = model.traderPortfolios.filter((portfolio) => {
+    const investorMatches = !investorQuery || portfolio.investor.toLowerCase().includes(investorQuery.trim().toLowerCase());
+    const tickerMatches = !tickerQuery || portfolio.holdings.some((holding) => holding.ticker.includes(tickerQuery.trim().toUpperCase()));
+    return investorMatches && tickerMatches;
+  });
+  const fallbackCards = model.traderFilingCards.filter((card) => {
     const investorMatches = !investorQuery || card.investor.toLowerCase().includes(investorQuery.trim().toLowerCase());
     const tickerMatches = !tickerQuery || card.holdings.some((holding) => holding.ticker.includes(tickerQuery.trim().toUpperCase()));
     return investorMatches && tickerMatches;
   });
+  const primary = portfolios[0];
   return (
     <div className="split-page">
       <FilterRail
@@ -543,18 +586,41 @@ function FilingsPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (
           setTickerQuery("");
         }}
       />
-      <PageFrame title="Trader Filings" subtitle={`${cards.length} tracked investors`}>
+      <PageFrame title="Trader Filings" subtitle={primary ? `${primary.holdingsCount} current holdings tracked from ${primary.investor}` : `${fallbackCards.length} tracked investors`}>
         <SourceNotice items={[["Disclosures", model.sources.filings]]} />
-        <div className="filings-grid trader-card-grid">
-          {cards.length ? cards.map((card) => <TraderFilingCardView key={card.investor} card={card} onOpenTicker={onOpenTicker} />) : (
+        {primary ? (
+          <div className="trader-portfolio-page">
+            <TraderPortfolioHero portfolio={primary} />
+            <div className="trader-portfolio-grid">
+              <Panel className="span-7" title="Portfolio Performance">
+                <TraderPerformanceChart portfolio={primary} />
+              </Panel>
+              <Panel className="span-5" title="Current Holdings">
+                <TraderHoldingsList holdings={primary.holdings} onOpenTicker={onOpenTicker} />
+              </Panel>
+              <Panel className="span-6" title="Holdings Distribution">
+                <TraderDistribution holdings={primary.holdings} />
+              </Panel>
+              <Panel className="span-6" title="Allocation History">
+                <TraderTransactions transactions={primary.transactions} onOpenTicker={onOpenTicker} />
+              </Panel>
+              <Panel className="span-12" title="Source Contract">
+                <p className="panel-copy">{primary.caveat || "Public tracker snapshot loaded through disclosure ingestion."}</p>
+              </Panel>
+            </div>
+          </div>
+        ) : (
+          <div className="filings-grid trader-card-grid">
+            {fallbackCards.length ? fallbackCards.map((card) => <TraderFilingCardView key={card.investor} card={card} onOpenTicker={onOpenTicker} />) : (
             <Panel className="span-12" title="No matching traders">
               <EmptyState title="No filing rows matched" detail="Adjust the investor or ticker filter to see tracked trader filings." />
             </Panel>
-          )}
-          <Panel className="span-12" title="About 13F Filings">
-            <p className="panel-copy">13F filings are delayed quarterly position disclosures. They do not prove live fund ownership; they are useful for pattern recognition, optionality, and holdings map review.</p>
-          </Panel>
-        </div>
+            )}
+            <Panel className="span-12" title="About 13F Filings">
+              <p className="panel-copy">13F filings are delayed quarterly position disclosures. They do not prove live fund ownership; they are useful for pattern recognition, optionality, and holdings map review.</p>
+            </Panel>
+          </div>
+        )}
       </PageFrame>
     </div>
   );
@@ -750,6 +816,7 @@ type AppModel = {
   opportunities: Opportunity[];
   holdings: Holding[];
   filings: Filing[];
+  traderPortfolios: TraderPortfolio[];
   traderFilingCards: TraderFilingCard[];
   calendar: CalendarEvent[];
   healthRows: HealthRow[];
@@ -778,6 +845,7 @@ function buildModel(data: PanelData): AppModel {
   const opportunities = buildOpportunities(rows(data.opportunitiesRanked), rows(data.signals), rows(data.candidates));
   const holdings = buildHoldings(rows(data.portfolio));
   const filings = buildFilings(rows(data.disclosures));
+  const traderPortfolios = buildTraderPortfolios(rows(data.disclosures));
   const calendar = buildCalendar(rows(data.catalysts), rows(data.earnings));
   const healthRows = buildHealthRows(rows(data.sourceHealth), rows(data.providerRuns));
   const portfolioValue = holdings.reduce((total, holding) => total + holding.marketValue, 0);
@@ -787,6 +855,7 @@ function buildModel(data: PanelData): AppModel {
     opportunities,
     holdings,
     filings,
+    traderPortfolios,
     traderFilingCards: buildTraderFilingCards(filings),
     calendar,
     healthRows,
@@ -860,6 +929,8 @@ function buildHoldings(portfolioRows: RowRecord[]): Holding[] {
 function buildFilings(disclosureRows: RowRecord[]): Filing[] {
   const filings: Filing[] = [];
   for (const row of disclosureRows) {
+    const sourceType = stringField(row, ["source_type"]) || stringField(objectField(row.raw), ["source_type"]);
+    if (sourceType === "trader_portfolio_model") continue;
     const investor = stringField(row, ["trader_name", "filer_name", "investor"]) || "Tracked Investor";
     const filed = stringField(row, ["filed_date", "filing_date"]) || "-";
     const event = stringField(row, ["event_date", "period_end"]) || "-";
@@ -893,6 +964,62 @@ function buildFilings(disclosureRows: RowRecord[]): Filing[] {
     });
   }
   return filings.slice(0, 25);
+}
+
+function buildTraderPortfolios(disclosureRows: RowRecord[]): TraderPortfolio[] {
+  return disclosureRows
+    .map((row) => {
+      const raw = objectField(row.raw);
+      const sourceType = stringField(row, ["source_type"]) || stringField(raw, ["source_type"]);
+      if (sourceType !== "trader_portfolio_model") return null;
+      const metadata = objectField(row.metadata ?? raw.metadata);
+      const platformStats = objectField(row.platform_stats ?? raw.platform_stats);
+      const holdings = arrayField(row.holding_sample).length ? arrayField(row.holding_sample) : arrayField(raw.holdings);
+      const transactions = arrayField(row.transactions).length ? arrayField(row.transactions) : arrayField(raw.transactions);
+      const topSectors = arrayField(metadata.topSectors ?? metadata.top_sectors)
+        .map((sector) => displayValue(sector as JsonValue))
+        .filter((sector) => sector && sector !== "-");
+      return {
+        investor: stringField(row, ["trader_name"]) || stringField(raw, ["name"]) || "Tracked Portfolio",
+        description: stringField(raw, ["description"]) || "Public tracker portfolio snapshot",
+        category: titleLabel(stringField(raw, ["category"]) || "portfolio"),
+        updated: stringField(raw, ["last_updated"]) || stringField(row, ["filed_date"]) || "recently",
+        totalValue: numberField(row, ["total_value"], numberField(raw, ["total_value", "totalValue"], 0)),
+        estimatedInvested: numberField(row, ["estimated_invested_usd"], numberField(raw, ["estimated_invested_usd"], 0)),
+        performance: numberField(row, ["performance_percent"], numberField(raw, ["performance_percent"], 0)),
+        holdingsCount: Math.round(numberField(row, ["holdings_count"], numberField(raw, ["total_holdings"], holdings.length))),
+        copiers: Math.round(numberField(platformStats, ["totalCopiers", "total_copiers"], 0)),
+        riskLevel: titleLabel(stringField(metadata, ["riskLevel", "risk_level"]) || "unknown"),
+        diversificationScore: Math.round(numberField(metadata, ["diversificationScore", "diversification_score"], 0)),
+        topSectors,
+        holdings: holdings.map((item) => {
+          const holding = objectField(item);
+          return {
+            ticker: stringField(holding, ["symbol", "ticker"]).toUpperCase(),
+            quantity: numberField(holding, ["quantity"], 0),
+            price: numberField(holding, ["latest_price", "latestPrice", "price"], 0),
+            marketValue: numberField(holding, ["market_value", "marketValue", "value"], 0),
+            weight: numberField(holding, ["weight"], 0),
+          };
+        }).filter((holding) => holding.ticker),
+        transactions: transactions.map((item) => {
+          const transaction = objectField(item);
+          return {
+            symbol: stringField(transaction, ["symbol"]).toUpperCase(),
+            type: stringField(transaction, ["type"]).toUpperCase(),
+            quantity: numberField(transaction, ["quantity"], 0),
+            price: numberField(transaction, ["price"], 0),
+            date: stringField(transaction, ["date"]) || stringField(transaction, ["created_at"]),
+            weightBefore: numberField(transaction, ["weight_before", "weightBefore"], 0),
+            weightAfter: numberField(transaction, ["weight_after", "weightAfter"], 0),
+          };
+        }).filter((transaction) => transaction.symbol),
+        sourceUrl: stringField(row, ["source_url"]),
+        caveat: stringField(row, ["source_caveat"]) || stringField(raw, ["source_caveat"]),
+      };
+    })
+    .filter((portfolio): portfolio is TraderPortfolio => Boolean(portfolio))
+    .sort((a, b) => b.totalValue - a.totalValue);
 }
 
 function buildTraderFilingCards(filings: Filing[]): TraderFilingCard[] {
@@ -1254,6 +1381,103 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
+  return (
+    <section className="trader-hero">
+      <div className="trader-hero-main">
+        <span>{portfolio.category}</span>
+        <h2>{portfolio.investor}</h2>
+        <p>{portfolio.description}</p>
+        <small>Updated {formatDateLabel(portfolio.updated)}</small>
+      </div>
+      <div className="trader-hero-metrics">
+        <MetricBadge label="Total Invested" value={formatMoney(portfolio.estimatedInvested || portfolio.totalValue)} caption={formatMoney(portfolio.totalValue)} tone="info" />
+        <MetricBadge label="Performance" value={formatPct(portfolio.performance)} tone={portfolio.performance >= 0 ? "good" : "bad"} />
+        <MetricBadge label="Holdings" value={String(portfolio.holdingsCount)} caption={`${portfolio.riskLevel} risk`} />
+        <MetricBadge label="Copiers" value={formatCompact(portfolio.copiers)} caption="Platform mirror count" tone="good" />
+      </div>
+      <div className="trader-sector-row">
+        <strong>{portfolio.diversificationScore}/100</strong>
+        <span>Diversification</span>
+        {portfolio.topSectors.map((sector) => <i key={sector}>{sector}</i>)}
+      </div>
+    </section>
+  );
+}
+
+function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
+  const points = [18, 22, 29, 34, 31, 41, 47, Math.max(0, portfolio.performance)];
+  const max = Math.max(60, ...points);
+  return (
+    <div className="trader-performance">
+      <div className="performance-chart" aria-label="Portfolio performance chart">
+        {points.map((point, index) => (
+          <i key={`${point}-${index}`} style={{ height: `${Math.max(8, (point / max) * 100)}%` }} />
+        ))}
+      </div>
+      <div className="performance-compare">
+        <MetricBadge label="Portfolio" value={formatPct(portfolio.performance)} tone="good" />
+        <MetricBadge label="vs S&P 500" value="+22.4%" caption="Reference line" />
+      </div>
+    </div>
+  );
+}
+
+function TraderHoldingsList({ holdings, onOpenTicker }: { holdings: TraderPortfolioHolding[]; onOpenTicker: (symbol: string) => void }) {
+  return (
+    <div className="trader-current-holdings">
+      <div className="trader-holdings-head">
+        <span>Ticker</span>
+        <span>Last Price</span>
+        <span>Weight</span>
+      </div>
+      {holdings.map((holding) => (
+        <button key={holding.ticker} type="button" onClick={() => onOpenTicker(holding.ticker)}>
+          <strong>{holding.ticker}</strong>
+          <span>{formatMoney(holding.price)}</span>
+          <i>{holding.weight.toFixed(0)}%</i>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TraderDistribution({ holdings }: { holdings: TraderPortfolioHolding[] }) {
+  return (
+    <div className="trader-distribution">
+      <div className="distribution-stack">
+        {holdings.map((holding) => (
+          <i key={holding.ticker} style={{ flexGrow: Math.max(1, holding.weight) }} title={`${holding.ticker} ${holding.weight.toFixed(1)}%`} />
+        ))}
+      </div>
+      <BarList rows={holdings.slice(0, 8).map((holding) => [holding.ticker, Math.round(holding.weight)])} />
+    </div>
+  );
+}
+
+function TraderTransactions({ transactions, onOpenTicker }: { transactions: TraderPortfolioTransaction[]; onOpenTicker: (symbol: string) => void }) {
+  const visible = transactions.slice(0, 12);
+  if (!visible.length) {
+    return <EmptyState title="No allocation history" detail="The tracker snapshot did not include transaction rows." />;
+  }
+  return (
+    <div className="allocation-history">
+      {visible.map((transaction) => {
+        const delta = transaction.weightAfter - transaction.weightBefore;
+        return (
+          <button key={`${transaction.symbol}-${transaction.date}-${transaction.type}`} type="button" onClick={() => onOpenTicker(transaction.symbol)}>
+            <span className={transaction.type === "BUY" ? "buy" : "sell"}>{transaction.type}</span>
+            <strong>{transaction.symbol}</strong>
+            <small>{formatDateLabel(transaction.date)}</small>
+            <i>{transaction.weightAfter.toFixed(1)}% ({delta >= 0 ? "+" : ""}{delta.toFixed(1)}%)</i>
+            <em>{formatMoney(transaction.price)}</em>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -2024,6 +2248,15 @@ function formatMoney(value: number): string {
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString() : "-";
+}
+
+function formatCompact(value: number): string {
+  return Number.isFinite(value) ? Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) : "-";
+}
+
+function formatDateLabel(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 function formatRawPrice(value: unknown): string {

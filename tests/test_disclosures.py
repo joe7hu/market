@@ -7,10 +7,15 @@ from typing import Any
 from investment_panel.core import sec
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.disclosures import (
+    backfill_trader_disclosure_history,
     extract_13f_trackers,
+    extract_public_disclosure_csvs,
+    extract_tracked_traders,
+    ingest_public_disclosure_csvs,
     ingest_13f_trackers,
     parse_information_table_xml,
     recent_13f_filings,
+    rebuild_trader_replica_portfolios,
 )
 from investment_panel.jobs.update_disclosures import run as run_update_disclosures
 
@@ -176,3 +181,111 @@ def test_extract_13f_trackers_accepts_aliases() -> None:
     trackers = extract_13f_trackers({"disclosures": {"thirteen_f_trackers": [{"name": "Fund", "cik": "123"}]}})
 
     assert trackers == [{"cik": "123", "name": "Fund", "max_filings": None}]
+
+
+def test_public_disclosure_csv_builds_replica_portfolio(tmp_path: Path) -> None:
+    csv_path = tmp_path / "nancy.csv"
+    csv_path.write_text(
+        """trader_name,symbol,transaction_type,transaction_date,filed_date,amount_min,amount_max,source_url
+Nancy Pelosi,NVDA,BUY,2025-01-15,2025-02-10,1000000,5000000,https://disclosures-clerk.house.gov/
+Nancy Pelosi,NVDA,SELL,2025-04-15,2025-05-10,250000,500000,https://disclosures-clerk.house.gov/
+Nancy Pelosi,AAPL,BUY,2025-02-01,2025-02-20,500000,1000000,https://disclosures-clerk.house.gov/
+""",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2025-01-15', 90, 100, 80, 100, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2025-04-15', 110, 120, 100, 120, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-01-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2025-02-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2026-01-01', 225, 250, 220, 250, 1, 'test')")
+        result = ingest_public_disclosure_csvs(
+            con,
+            [{"path": str(csv_path), "trader_name": "Nancy Pelosi", "filer_name": "House periodic transaction report"}],
+        )
+        replica = rebuild_trader_replica_portfolios(con)
+
+    assert result["public_disclosure_rows_ingested"] == 3
+    assert replica["trader_replica_portfolios_built"] == 1
+    with db(db_path, read_only=True) as con:
+        rows = query_rows(con, "SELECT source_type, trader_name, action, raw FROM disclosures ORDER BY source_type DESC")
+    model = next(row for row in rows if row["source_type"] == "trader_portfolio_model")
+    raw = json.loads(model["raw"])
+    assert model["trader_name"] == "Nancy Pelosi"
+    assert model["action"] == "PORTFOLIO_MODEL"
+    assert raw["holdings"][0]["symbol"] == "NVDA"
+    assert raw["transactions_count"] == 3
+    assert raw["source_caveat"].startswith("Replica portfolios")
+
+
+def test_extract_public_disclosure_csvs_from_config(tmp_path: Path) -> None:
+    sources = extract_public_disclosure_csvs(
+        {"disclosures": {"public_disclosure_csvs": [{"path": "nancy.csv", "trader_name": "Nancy Pelosi"}]}},
+        tmp_path,
+    )
+
+    assert sources == [
+        {
+            "path": str(tmp_path / "nancy.csv"),
+            "trader_name": "Nancy Pelosi",
+            "source_type": "public_disclosure_transaction",
+            "filer_name": "Nancy Pelosi",
+            "source_kind": "public_disclosure",
+        }
+    ]
+
+
+def test_tracked_trader_backfill_replaces_history_and_rebuilds_model(tmp_path: Path) -> None:
+    historical = tmp_path / "historical.csv"
+    daily = tmp_path / "daily.csv"
+    historical.write_text(
+        """symbol,transaction_type,transaction_date,filed_date,amount_min,amount_max,source_url
+NVDA,BUY,2024-01-02,2024-02-01,100000,200000,https://source/historical
+""",
+        encoding="utf-8",
+    )
+    daily.write_text(
+        """symbol,transaction_type,transaction_date,filed_date,amount_min,amount_max,source_url
+AAPL,BUY,2024-02-01,2024-02-15,50000,100000,https://source/daily
+""",
+        encoding="utf-8",
+    )
+    traders = extract_tracked_traders(
+        {
+            "disclosures": {
+                "tracked_traders": [
+                    {
+                        "name": "Nancy Pelosi",
+                        "filer_name": "House PTR",
+                        "source_kind": "house_ptr",
+                        "historical_csvs": [{"path": "historical.csv"}],
+                        "daily_csvs": [{"path": "daily.csv"}],
+                    }
+                ]
+            }
+        },
+        tmp_path,
+    )
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2024-01-02', 90, 100, 80, 100, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-01-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2024-02-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2026-01-01', 225, 250, 220, 250, 1, 'test')")
+        result = backfill_trader_disclosure_history(con, traders[0])
+
+    assert result["historical_files_configured"] == 1
+    assert result["daily_files_configured"] == 1
+    assert result["public_disclosure_rows_ingested"] == 2
+    assert result["trader_replica_portfolios_built"] == 1
+    with db(db_path, read_only=True) as con:
+        rows = query_rows(con, "SELECT source_type, trader_name, raw FROM disclosures ORDER BY source_type")
+    assert [row["source_type"] for row in rows].count("public_disclosure_transaction") == 2
+    model = next(row for row in rows if row["source_type"] == "trader_portfolio_model")
+    raw = json.loads(model["raw"])
+    assert model["trader_name"] == "Nancy Pelosi"
+    assert {holding["symbol"] for holding in raw["holdings"]} == {"NVDA", "AAPL"}
