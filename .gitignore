@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+frontend/dist/
+data/*.duckdb
+data/*.duckdb.wal
+data/packets/*.json
+*.duckdb
+__pycache__/
+.pytest_cache/
+.DS_Store

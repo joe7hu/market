@@ -1,0 +1,374 @@
+"""Data loading and JSON normalization for the investment panel API."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from importlib import import_module
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+
+SETUP_INSTRUCTIONS = (
+    "No investment panel data is available yet. Configure `config.yaml`, run the "
+    "daily screen job that imports Arco evidence and market data, then refresh the app."
+)
+
+
+@dataclass(frozen=True)
+class DataStatus:
+    """Status summary for data loaded into the API."""
+
+    ready: bool
+    message: str
+    source: str = "empty"
+
+
+@dataclass
+class PanelData:
+    """Normalized tables consumed by API routes."""
+
+    status: DataStatus
+    tables: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def table(self, name: str) -> Any:
+        return self.tables.get(name)
+
+    def rows(self, name: str) -> list[dict[str, Any]]:
+        return normalize_rows(self.table(name))
+
+
+CORE_MODULE_CANDIDATES = (
+    "src.investment_panel.core",
+    "investment_panel.core",
+)
+
+CORE_HELPER_CANDIDATES = (
+    "load_panel_data",
+    "load_dashboard_data",
+    "get_panel_snapshot",
+    "get_dashboard_snapshot",
+)
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    """Load config.yaml when PyYAML is installed; fall back to sensible defaults."""
+
+    config_path = Path(path) if path else project_root() / "config.yaml"
+    defaults: dict[str, Any] = {
+        "database": {"duckdb_path": "data/investment.duckdb"},
+        "nas": {
+            "source_root": "/Volumes/agent/data-sources",
+            "status_dir": "/Volumes/agent/data-sources/status",
+            "market_dir": "/Volumes/agent/data-sources/market-mini",
+            "duckdb_snapshot_dir": "/Volumes/agent/data-sources/market-mini/duckdb-snapshots",
+        },
+        "arco": {"raw_dir": "/Users/joehu/brain/raw/sources/arco"},
+        "trader_profile_dir": "data/trader_profiles",
+        "prompt_dir": "prompts",
+    }
+    if not config_path.exists():
+        return defaults
+
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        return defaults | {"config_warning": "Install PyYAML to read config.yaml."}
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        parsed = yaml.safe_load(handle) or {}
+    return _deep_merge(defaults, parsed)
+
+
+def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:
+    """Load panel data through future core helpers, if present."""
+
+    active_config = config or load_config()
+    helper = _resolve_core_helper()
+    if helper is None:
+        return PanelData(
+            status=DataStatus(
+                ready=False,
+                message=(
+                    "Core data helpers are not installed yet. Expected one of "
+                    f"{', '.join(CORE_HELPER_CANDIDATES)} under "
+                    "`src.investment_panel.core` or `investment_panel.core`."
+                ),
+                source="missing-core",
+            ),
+            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
+        )
+
+    try:
+        raw_data = helper(active_config)
+    except TypeError:
+        raw_data = helper()
+    except Exception as exc:  # pragma: no cover - defensive UI boundary
+        return PanelData(
+            status=DataStatus(
+                ready=False,
+                message=f"Core data helper failed: {exc}",
+                source="core-error",
+            ),
+            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
+        )
+
+    panel_data = _normalize_panel_data(raw_data)
+    if _is_empty(panel_data):
+        panel_data.status = DataStatus(
+            ready=False,
+            message="Core helpers returned no rows for the configured DuckDB.",
+            source="empty-db",
+        )
+        panel_data.metadata.setdefault("setup_instructions", SETUP_INSTRUCTIONS)
+    return panel_data
+
+
+def _resolve_core_helper() -> Callable[..., Any] | None:
+    for module_name in CORE_MODULE_CANDIDATES:
+        try:
+            module = import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for helper_name in CORE_HELPER_CANDIDATES:
+            helper = getattr(module, helper_name, None)
+            if callable(helper):
+                return helper
+    return None
+
+
+def _normalize_panel_data(raw_data: Any) -> PanelData:
+    if isinstance(raw_data, PanelData):
+        return raw_data
+
+    if isinstance(raw_data, dict):
+        status = raw_data.get("status")
+        if isinstance(status, DataStatus):
+            data_status = status
+        else:
+            data_status = DataStatus(
+                ready=bool(raw_data.get("ready", True)),
+                message=str(raw_data.get("message", "Loaded data from core helpers.")),
+                source=str(raw_data.get("source", "core")),
+            )
+        tables = raw_data.get("tables")
+        if tables is None:
+            tables = {
+                key: value
+                for key, value in raw_data.items()
+                if key not in {"status", "ready", "message", "source", "metadata"}
+            }
+        return PanelData(
+            status=data_status,
+            tables=dict(tables),
+            metadata=dict(raw_data.get("metadata", {})),
+        )
+
+    tables = {
+        name: getattr(raw_data, name)
+        for name in (
+            "candidates",
+            "signals",
+            "ticker_memos",
+            "portfolio",
+            "theses",
+            "trader_twins",
+            "catalysts",
+            "fundamentals",
+            "disclosures",
+            "source_health",
+            "settings",
+        )
+        if hasattr(raw_data, name)
+    }
+    return PanelData(
+        status=DataStatus(True, "Loaded data from core helpers.", "core"),
+        tables=tables,
+        metadata={},
+    )
+
+
+def status_payload(panel_data: PanelData) -> dict[str, Any]:
+    return {
+        "ready": panel_data.status.ready,
+        "message": panel_data.status.message,
+        "source": panel_data.status.source,
+        "metadata": jsonable(panel_data.metadata),
+    }
+
+
+def table_payload(panel_data: PanelData, table_name: str) -> dict[str, Any]:
+    rows = panel_data.rows(table_name)
+    return {"rows": rows, "count": len(rows), "status": status_payload(panel_data)}
+
+
+def signals_payload(panel_data: PanelData) -> dict[str, Any]:
+    rows = panel_data.rows("signals") or panel_data.rows("candidates")
+    return {"rows": rows, "count": len(rows), "status": status_payload(panel_data)}
+
+
+def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
+    candidates = panel_data.rows("candidates")
+    portfolio = panel_data.rows("portfolio")
+    theses = panel_data.rows("theses")
+    catalysts = panel_data.rows("catalysts")
+    fundamentals = panel_data.rows("fundamentals")
+    disclosures = panel_data.rows("disclosures")
+    source_health = panel_data.rows("source_health")
+    return {
+        "status": status_payload(panel_data),
+        "metrics": {
+            "candidates": len(candidates),
+            "holdings": len(portfolio),
+            "theses": len(theses),
+            "catalysts": len(catalysts),
+            "fundamentals": len(fundamentals),
+            "disclosures": len(disclosures),
+            "sources": len(source_health),
+        },
+        "priority_candidates": candidates[:8],
+        "near_term_catalysts": catalysts[:8],
+        "portfolio": portfolio[:8],
+        "source_health": source_health[:8],
+        "disclosures": disclosures[:8],
+    }
+
+
+def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
+    normalized_ticker = ticker.upper()
+    tables = {
+        "candidates": _matching_ticker_rows(panel_data.rows("candidates"), normalized_ticker),
+        "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
+        "theses": _matching_ticker_rows(panel_data.rows("theses"), normalized_ticker),
+        "catalysts": _matching_ticker_rows(panel_data.rows("catalysts"), normalized_ticker),
+        "signals": _matching_ticker_rows(panel_data.rows("signals"), normalized_ticker),
+        "fundamentals": _matching_ticker_rows(panel_data.rows("fundamentals"), normalized_ticker),
+        "disclosures": _matching_ticker_rows(panel_data.rows("disclosures"), normalized_ticker),
+        "memos": _matching_ticker_rows(
+            panel_data.rows("ticker_memos") or panel_data.rows("memos"),
+            normalized_ticker,
+        ),
+    }
+    return {
+        "ticker": normalized_ticker,
+        "status": status_payload(panel_data),
+        "tables": tables,
+        "found": any(tables.values()),
+    }
+
+
+def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
+    return {
+        "status": status_payload(panel_data),
+        "config": jsonable(config),
+        "integration": {
+            "core_modules": list(CORE_MODULE_CANDIDATES),
+            "helper_names": list(CORE_HELPER_CANDIDATES),
+            "duckdb_path": config.get("database", {}).get("duckdb_path"),
+            "arco_output_dir": config.get("arco", {}).get("output_dir"),
+            "birdclaw_command": config.get("birdclaw", {}).get("command"),
+        },
+    }
+
+
+def normalize_rows(table: Any) -> list[dict[str, Any]]:
+    """Convert common table shapes into JSON-ready row dictionaries."""
+
+    if table is None:
+        return []
+    if hasattr(table, "to_dict"):
+        try:
+            records = table.to_dict(orient="records")
+            return [_row_dict(row) for row in records]
+        except TypeError:
+            pass
+    if isinstance(table, dict):
+        if "rows" in table:
+            return normalize_rows(table["rows"])
+        return [_row_dict(table)]
+    if isinstance(table, Iterable) and not isinstance(table, (str, bytes)):
+        return [_row_dict(row) for row in table]
+    return [_row_dict(table)]
+
+
+def jsonable(value: Any) -> Any:
+    if is_dataclass(value):
+        return jsonable(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    if is_dataclass(row):
+        return jsonable(asdict(row))
+    if isinstance(row, dict):
+        return jsonable(row)
+    if hasattr(row, "_asdict"):
+        return jsonable(row._asdict())
+    if hasattr(row, "dict"):
+        return jsonable(row.dict())
+    if hasattr(row, "model_dump"):
+        return jsonable(row.model_dump())
+    if hasattr(row, "__dict__"):
+        return jsonable(vars(row))
+    return {"value": jsonable(row)}
+
+
+def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[str, Any]]:
+    ticker_fields = ("ticker", "symbol", "security", "name")
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        for field in ticker_fields:
+            value = row.get(field)
+            if isinstance(value, str) and value.upper() == ticker:
+                matches.append(row)
+                break
+    return matches
+
+
+def _is_empty(panel_data: PanelData) -> bool:
+    if not panel_data.tables:
+        return True
+    for table in panel_data.tables.values():
+        if table is None:
+            continue
+        if hasattr(table, "empty"):
+            if not table.empty:
+                return False
+            continue
+        try:
+            if len(table) > 0:
+                return False
+        except TypeError:
+            return False
+    return True
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
