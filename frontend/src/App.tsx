@@ -4,7 +4,6 @@ import {
   ChevronRight,
   ClipboardList,
   Database,
-  Download,
   FileSearch,
   HeartPulse,
   Home,
@@ -17,8 +16,8 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { loadPanelData, loadTicker } from "./api";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { deletePortfolioPosition, loadPanelData, loadTicker, savePortfolioPosition } from "./api";
 import type { PanelData, RowRecord, TickerPayload } from "./types";
 import { displayValue, rows, symbolFromRow } from "./utils";
 
@@ -84,7 +83,11 @@ type Holding = {
   weight: number;
   marketValue: number;
   averageCost: number;
+  purchaseDate: string;
+  holdingDays: number;
+  taxLotTerm: string;
   unrealizedPnl: number;
+  unrealizedPnlPct: number;
   signal: string;
   action: string;
 };
@@ -195,13 +198,13 @@ export function App() {
       <main className="desk-main">
         {activePage === "dashboard" && <DashboardPage model={model} lastRefresh={lastRefresh} loading={loading} onRefresh={refresh} onOpenTicker={openTicker} />}
         {activePage === "opportunities" && <OpportunitiesPage model={model} onOpenTicker={openTicker} />}
-        {activePage === "portfolio" && <PortfolioPage model={model} onOpenTicker={openTicker} />}
+        {activePage === "portfolio" && <PortfolioPage model={model} onOpenTicker={openTicker} onRefresh={refresh} />}
         {activePage === "research" && <ResearchPage data={data} onOpenTicker={openTicker} />}
         {activePage === "filings" && <FilingsPage model={model} onOpenTicker={openTicker} />}
         {activePage === "calendar" && <CalendarPage model={model} onOpenTicker={openTicker} />}
         {activePage === "health" && <HealthPage model={model} data={data} />}
         {activePage === "settings" && <SettingsPage data={data} />}
-        {activePage === "ticker" && <TickerPage symbol={selectedTicker} ticker={ticker} model={model} onOpenTicker={openTicker} />}
+        {activePage === "ticker" && <TickerPage symbol={selectedTicker} ticker={ticker} model={model} data={data} onOpenTicker={openTicker} />}
       </main>
     </div>
   );
@@ -300,7 +303,7 @@ function DashboardPage({
   );
 }
 
-function TickerPage({ symbol, ticker, model }: { symbol: string; ticker: TickerPayload | null; model: AppModel; onOpenTicker: (symbol: string) => void }) {
+function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: (symbol: string) => void }) {
   const [activeTab, setActiveTab] = useState("Overview");
   const opportunity = model.opportunities.find((item) => item.ticker === symbol);
   const quote = model.watchlist.find((item) => item.symbol === symbol);
@@ -369,44 +372,43 @@ function TickerPage({ symbol, ticker, model }: { symbol: string; ticker: TickerP
             <MetricBadge label="Decision" value={opportunity?.decision ?? "None"} caption="Backend signal" tone="info" />
           </div>
         </Panel>
-      </div> : <TickerTabContent activeTab={activeTab} ticker={ticker} />}
+      </div> : <TickerTabContent activeTab={activeTab} ticker={ticker} data={data} />}
     </PageFrame>
   );
 }
 
-function PortfolioPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (symbol: string) => void }) {
+function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppModel; onOpenTicker: (symbol: string) => void; onRefresh: () => Promise<void> }) {
+  const hasHoldings = model.holdings.length > 0;
   return (
     <PageFrame
       title="Portfolio Overview"
-      subtitle={model.holdings.length ? `As of ${new Date().toLocaleDateString()}` : "No portfolio CSV configured; showing watchlist risk inputs"}
-      action={
-        <GhostButton>
-          <Download size={14} /> CSV Export
-        </GhostButton>
-      }
+      subtitle={hasHoldings ? `As of ${new Date().toLocaleDateString()}` : "Enter your real positions to enable portfolio analytics"}
     >
       <SourceNotice items={[["Holdings", model.sources.holdings], ["Signals", model.sources.opportunities], ["Quotes", model.sources.watchlist]]} />
       <MetricStrip
         metrics={[
-          ["Net Liquidity", model.holdings.length ? formatMoney(model.portfolioValue) : "-", model.holdings.length ? "Derived from imported holdings" : "No portfolio import", model.holdings.length ? "good" : "warn"],
-          ["Total Value", model.holdings.length ? formatMoney(model.portfolioValue) : "-", "DuckDB portfolio rows", model.holdings.length ? "info" : "warn"],
-          ["Unrealized P/L", model.holdings.length ? formatMoney(model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0)) : "-", model.holdings.length ? "From position rows" : "No P/L source", model.holdings.length ? "good" : "warn"],
-          ["Positions", String(model.holdings.length), "Holdings", "info"],
-          ["Concentration", model.holdings.length ? "Available" : "-", model.holdings.length ? "Risk" : "Needs holdings", model.holdings.length ? "warn" : "muted"],
+          ["Net Liquidity", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", hasHoldings ? "Derived from imported holdings" : "Portfolio CSV absent", hasHoldings ? "good" : "warn"],
+          ["Total Value", hasHoldings ? formatMoney(model.portfolioValue) : "Awaiting positions", hasHoldings ? "DuckDB portfolio rows" : "Manual entry below", hasHoldings ? "info" : "muted"],
+          ["Unrealized P/L", hasHoldings ? formatMoney(model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0)) : "Requires import", hasHoldings ? "From position rows" : "Requires cost basis", hasHoldings ? "good" : "muted"],
+          ["Positions", hasHoldings ? String(model.holdings.length) : "0 imported", hasHoldings ? "Holdings" : "No owned exposure", "info"],
+          ["Concentration", hasHoldings ? "Available" : "Needs holdings", hasHoldings ? "Risk" : "Enter positions first", hasHoldings ? "warn" : "muted"],
         ]}
       />
       <div className="portfolio-grid">
         <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
-          <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} />
+          <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
+        </Panel>
+        <Panel className="span-4" title="Add / Update Position">
+          <PortfolioEntryForm onSaved={onRefresh} />
         </Panel>
         <Panel className="span-4" title="Exposure Breakdown">
-          <SummaryList rows={model.holdings.length ? holdingSummaryRows(model.holdings) : model.sectors.slice(0, 5)} />
+          <SummaryList rows={hasHoldings ? holdingSummaryRows(model.holdings) : model.sectors.slice(0, 5)} />
         </Panel>
         <Panel className="span-4" title="Risk & Concentration">
           <SummaryList rows={model.liquidityRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Portfolio Fit Insights">
-          <BulletList tone={model.holdings.length ? "warn" : "info"} items={model.holdings.length ? ["Portfolio rows loaded", "Review concentration against signal strength", "Liquidity check available from source tables"] : [`${model.opportunities.length} watchlist signals loaded`, `${model.liquidityRows.length} liquidity rows available`, "Import a portfolio CSV to calculate owned exposure"]} />
+          <BulletList tone={model.holdings.length ? "warn" : "info"} items={model.holdings.length ? ["Portfolio rows loaded", "Review concentration against signal strength", "Liquidity check available from source tables"] : ["Manual position entry writes to local DuckDB", "Use ticker, share count, and average cost", "No broker credentials or account data are required"]} />
         </Panel>
         <Panel className="span-4" title="Top Correlations">
           <SummaryList rows={model.correlationRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
@@ -549,7 +551,7 @@ function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
   );
 }
 
-function TickerTabContent({ activeTab, ticker }: { activeTab: string; ticker: TickerPayload | null }) {
+function TickerTabContent({ activeTab, ticker, data }: { activeTab: string; ticker: TickerPayload | null; data: PanelData }) {
   const keyByTab: Record<string, string[]> = {
     "Evidence Stack": ["signals", "sepa", "liquidity", "correlations", "valuations"],
     Fundamentals: ["fundamentals"],
@@ -559,14 +561,24 @@ function TickerTabContent({ activeTab, ticker }: { activeTab: string; ticker: Ti
     Filings: ["disclosures"],
     Memos: ["memos", "theses"],
   };
+  const fallbackByTab: Record<string, RowRecord[]> = {
+    "Evidence Stack": [...rows(data.signals), ...rows(data.sepa), ...rows(data.liquidity), ...rows(data.valuations)],
+    Fundamentals: rows(data.fundamentals),
+    Estimates: [...rows(data.analystEstimates), ...rows(data.earnings)],
+    Financials: [...rows(data.fundamentals), ...rows(data.valuations)],
+    News: rows(data.news),
+    Filings: rows(data.disclosures),
+    Memos: [...rows(data.memos), ...rows(data.theses)],
+  };
   const keys = keyByTab[activeTab] ?? [];
   const sourceRows = keys.flatMap((key) => ticker?.tables?.[key] ?? []);
+  const displayRows = sourceRows.length ? sourceRows : fallbackByTab[activeTab] ?? [];
   return (
     <Panel title={activeTab}>
       <GenericRows
-        rows={sourceRows}
+        rows={displayRows}
         emptyTitle={`No ${activeTab.toLowerCase()} rows`}
-        emptyDetail={`The ticker API returned no rows for ${activeTab}.`}
+        emptyDetail={`No ticker-specific or global rows are available for ${activeTab}.`}
         onOpenTicker={() => undefined}
       />
     </Panel>
@@ -706,7 +718,7 @@ function buildOpportunities(signalRows: RowRecord[], candidateRows: RowRecord[])
     whyNow: stringField(row, ["why_now", "rationale", "summary", "notes", "thesis"]) || "Evidence recently updated",
     nextAction: stringField(row, ["next_action", "action_required", "next_step"]) || "Review setup",
     invalidation: stringField(row, ["invalidation", "invalidates_if", "risk", "bear_case"]) || "No explicit invalidation in source row.",
-    freshness: stringField(row, ["freshness", "updated_at", "as_of", "run_date"]) || "2h",
+    freshness: stringField(row, ["freshness", "source_freshness", "updated_at", "as_of", "run_date"]) || "recent",
     tags: ["T", "C", "H"].slice(0, 1 + (index % 3)),
     components: componentRows(row),
     evidenceCount: Math.round(numberField(row, ["evidence_count"], 0)),
@@ -719,7 +731,11 @@ function buildHoldings(portfolioRows: RowRecord[]): Holding[] {
     weight: numberField(row, ["weight", "portfolio_weight"], 0),
     marketValue: numberField(row, ["market_value", "value", "position"], 0),
     averageCost: numberField(row, ["cost_basis", "average_cost", "avg_cost"], 0),
+    purchaseDate: stringField(row, ["purchase_date"]) || "",
+    holdingDays: numberField(row, ["holding_days"], 0),
+    taxLotTerm: normalizeTaxLotTerm(stringField(row, ["tax_lot_term"])),
     unrealizedPnl: numberField(row, ["pnl", "unrealized_pnl", "gain_loss"], 0),
+    unrealizedPnlPct: numberField(row, ["unrealized_pnl_pct"], 0),
     signal: normalizeDecision(stringField(row, ["signal", "thesis_status", "decision"]) || "Hold"),
     action: stringField(row, ["action", "next_action"]) || "Hold",
   })).filter((row) => row.ticker !== "UNKNOWN");
@@ -868,7 +884,7 @@ function holdingSummaryRows(holdings: Holding[]): SummaryItem[] {
   return holdings.slice(0, 6).map((holding) => ({
     label: holding.ticker,
     value: holding.weight ? `${holding.weight.toFixed(1)}%` : formatMoney(holding.marketValue),
-    caption: `${holding.action} · ${formatMoney(holding.unrealizedPnl)} P/L`,
+    caption: `${holding.taxLotTerm} · ${formatMoney(holding.unrealizedPnl)} P/L`,
     tone: holding.unrealizedPnl >= 0 ? "good" : "bad",
     symbol: holding.ticker,
   }));
@@ -1005,10 +1021,79 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
   );
 }
 
-function HoldingsTable({ holdings, onOpenTicker }: { holdings: Holding[]; onOpenTicker: (symbol: string) => void }) {
+function PortfolioEntryForm({ onSaved }: { onSaved: () => Promise<void> }) {
+  const [symbol, setSymbol] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [avgCost, setAvgCost] = useState("");
+  const [purchaseDate, setPurchaseDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const canSave = symbol.trim() && Number(quantity) > 0 && Number(avgCost) >= 0;
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSave) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await savePortfolioPosition({
+        symbol,
+        quantity: Number(quantity),
+        avg_cost: Number(avgCost),
+        purchase_date: purchaseDate || undefined,
+        notes,
+      });
+      setSymbol("");
+      setQuantity("");
+      setAvgCost("");
+      setPurchaseDate("");
+      setNotes("");
+      setMessage("Position saved");
+      await onSaved();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="portfolio-form" onSubmit={submit}>
+      <label>
+        <span>Symbol</span>
+        <input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="NVDA" />
+      </label>
+      <label>
+        <span>Shares</span>
+        <input value={quantity} onChange={(event) => setQuantity(event.target.value)} inputMode="decimal" placeholder="10" />
+      </label>
+      <label>
+        <span>Average Cost</span>
+        <input value={avgCost} onChange={(event) => setAvgCost(event.target.value)} inputMode="decimal" placeholder="125.50" />
+      </label>
+      <label>
+        <span>Purchase Date</span>
+        <input value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} type="date" />
+      </label>
+      <label>
+        <span>Notes</span>
+        <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Core AI exposure" />
+      </label>
+      <button className="primary-button" type="submit" disabled={!canSave || saving}>{saving ? "Saving..." : "Save Position"}</button>
+      {message && <small>{message}</small>}
+    </form>
+  );
+}
+
+function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding[]; onOpenTicker: (symbol: string) => void; onDelete: () => Promise<void> }) {
   if (!holdings.length) {
-    return <EmptyState title="No holdings loaded" detail="The portfolio table is empty. Import positions before using portfolio analytics." />;
+    return <EmptyState title="No holdings loaded" detail="Add your real positions with the form on this page." />;
   }
+  const remove = async (symbol: string) => {
+    await deletePortfolioPosition(symbol);
+    await onDelete();
+  };
   return (
     <div className="table-wrap">
       <table className="desk-table">
@@ -1018,9 +1103,12 @@ function HoldingsTable({ holdings, onOpenTicker }: { holdings: Holding[]; onOpen
             <th>Weight</th>
             <th>Market Value</th>
             <th>Avg Cost</th>
+            <th>Purchase Date</th>
+            <th>Term</th>
             <th>Unreal P/L</th>
             <th>Signal</th>
             <th>Action</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -1030,9 +1118,12 @@ function HoldingsTable({ holdings, onOpenTicker }: { holdings: Holding[]; onOpen
               <td>{holding.weight ? `${holding.weight.toFixed(1)}%` : "-"}</td>
               <td>{formatMoney(holding.marketValue)}</td>
               <td>{formatMoney(holding.averageCost)}</td>
-              <td className={holding.unrealizedPnl >= 0 ? "positive" : "negative"}>{formatMoney(holding.unrealizedPnl)}</td>
+              <td>{holding.purchaseDate || "Not set"}</td>
+              <td>{holding.taxLotTerm}{holding.holdingDays ? ` (${holding.holdingDays}d)` : ""}</td>
+              <td className={holding.unrealizedPnl >= 0 ? "positive" : "negative"}>{formatMoney(holding.unrealizedPnl)} · {formatPct(holding.unrealizedPnlPct)}</td>
               <td><DecisionBadge value={holding.signal} /></td>
               <td>{holding.action}</td>
+              <td><button className="text-link" type="button" onClick={() => void remove(holding.ticker)}>Remove</button></td>
             </tr>
           ))}
         </tbody>
@@ -1299,7 +1390,23 @@ function GenericRows({ rows: sourceRows, emptyTitle, emptyDetail, onOpenTicker }
   }
   const items = sourceRows.slice(0, 6).map((row) => ({
     symbol: symbolFromRow(row),
-    text: displayValue(row.title ?? row.summary ?? row.notes ?? row.status ?? row.source ?? JSON.stringify(row)),
+    text: displayValue(
+      row.title ??
+      row.thesis_summary ??
+      row.report_markdown ??
+      row.event ??
+      row.event_type ??
+      row.summary ??
+      row.notes ??
+      row.status ??
+      row.detail ??
+      row.form_type ??
+      row.metrics ??
+      row.estimates ??
+      row.report_json ??
+      row.source ??
+      JSON.stringify(row),
+    ),
   }));
   return (
     <div className="generic-list">
@@ -1346,7 +1453,11 @@ function DetailRows({ rows }: { rows: Array<[string, string]> }) {
 function AlertList({ rows }: { rows: HealthRow[] }) {
   const alerts = rows.filter((row) => row.status !== "Healthy");
   if (!alerts.length) {
-    return <EmptyState title="No active alerts" detail="No degraded or warning source-health rows are loaded." />;
+    return (
+      <div className="alert-list">
+        <div><HeartPulse size={15} /><strong>All clear</strong><small>No degraded or warning source-health rows are loaded.</small></div>
+      </div>
+    );
   }
   return (
     <div className="alert-list">
@@ -1458,7 +1569,7 @@ function confidenceValue(row: RowRecord): number {
 }
 
 function componentRows(row: RowRecord): Array<[string, number]> {
-  const raw = row.components;
+  const raw = row.components ?? row.score_breakdown;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return [];
   }
@@ -1497,6 +1608,13 @@ function normalizeDecision(value: string): string {
   if (normalized.includes("hold")) return "Hold";
   if (normalized.includes("monitor") || normalized.includes("watch")) return "Watch";
   return value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : "Watch";
+}
+
+function normalizeTaxLotTerm(value: string): string {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("long")) return "Long term";
+  if (normalized.includes("short")) return "Short term";
+  return "Unknown term";
 }
 
 function gradeFromScore(score: number): string {

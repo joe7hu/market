@@ -25,6 +25,20 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function sendJson<T>(path: string, method: "POST" | "DELETE", body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as T;
+}
+
 async function settle<T>(
   endpoint: PanelEndpoint,
   request: Promise<T>,
@@ -187,4 +201,22 @@ export async function loadPanelData(): Promise<PanelData> {
 
 export async function loadTicker(symbol: string): Promise<TickerPayload> {
   return getJson<TickerPayload>(`/api/tickers/${encodeURIComponent(symbol)}`);
+}
+
+export type PortfolioPositionInput = {
+  symbol: string;
+  quantity: number;
+  avg_cost: number;
+  purchase_date?: string;
+  notes?: string;
+};
+
+export async function savePortfolioPosition(position: PortfolioPositionInput): Promise<TablePayload> {
+  const payload = await sendJson<{ portfolio: TablePayload }>("/api/portfolio/positions", "POST", position);
+  return payload.portfolio;
+}
+
+export async function deletePortfolioPosition(symbol: string): Promise<TablePayload> {
+  const payload = await sendJson<{ portfolio: TablePayload }>(`/api/portfolio/positions/${encodeURIComponent(symbol)}`, "DELETE");
+  return payload.portfolio;
 }

@@ -987,7 +987,8 @@ h3 {
 }
 
 .filter-rail select,
-.filter-rail input {
+.filter-rail input,
+.portfolio-form input {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -997,9 +998,26 @@ h3 {
   font-size: 0.72rem;
 }
 
-.filter-rail small {
+.filter-rail small,
+.portfolio-form small {
   color: var(--muted);
   font-size: 0.64rem;
+}
+
+.portfolio-form {
+  display: grid;
+  gap: 10px;
+}
+
+.portfolio-form label {
+  display: grid;
+  gap: 5px;
+}
+
+.portfolio-form label span {
+  color: var(--muted);
+  font-size: 0.64rem;
+  text-transform: uppercase;
 }
 
 .load-more {

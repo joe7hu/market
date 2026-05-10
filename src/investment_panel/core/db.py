@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS portfolio_positions (
     symbol TEXT PRIMARY KEY,
     quantity DOUBLE,
     avg_cost DOUBLE,
+    purchase_date DATE,
     notes TEXT
 );
 
@@ -302,6 +303,13 @@ def connect(path: str | Path, read_only: bool = False, retries: int = 30, delay_
 def init_db(path: str | Path) -> None:
     with connect(path) as con:
         con.sql(SCHEMA_SQL)
+        _migrate_schema(con)
+
+
+def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
+    columns = {row[1] for row in con.execute("PRAGMA table_info('portfolio_positions')").fetchall()}
+    if "purchase_date" not in columns:
+        con.execute("ALTER TABLE portfolio_positions ADD COLUMN purchase_date DATE")
 
 
 @contextmanager

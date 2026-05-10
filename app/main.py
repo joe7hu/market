@@ -5,15 +5,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from app.data_access import (
     dashboard_payload,
     load_config,
     load_panel_data,
+    delete_portfolio_position,
+    save_portfolio_position,
     settings_payload,
     signals_payload,
     table_payload,
@@ -22,6 +25,14 @@ from app.data_access import (
 
 
 APP_TITLE = "Personal Investment Panel"
+
+
+class PortfolioPositionInput(BaseModel):
+    symbol: str
+    quantity: float
+    avg_cost: float
+    purchase_date: str | None = None
+    notes: str = ""
 
 
 def create_app() -> FastAPI:
@@ -63,6 +74,26 @@ def create_app() -> FastAPI:
     def portfolio() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "portfolio")
+
+    @app.post("/api/portfolio/positions")
+    def save_position(position: PortfolioPositionInput) -> dict[str, Any]:
+        config = load_config()
+        try:
+            saved = save_portfolio_position(config, position.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _, panel_data = _context()
+        return {"position": saved, "portfolio": table_payload(panel_data, "portfolio")}
+
+    @app.delete("/api/portfolio/positions/{symbol}")
+    def delete_position(symbol: str) -> dict[str, Any]:
+        config = load_config()
+        try:
+            deleted = delete_portfolio_position(config, symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _, panel_data = _context()
+        return {"position": deleted, "portfolio": table_payload(panel_data, "portfolio")}
 
     @app.get("/api/theses")
     def theses() -> dict[str, Any]:

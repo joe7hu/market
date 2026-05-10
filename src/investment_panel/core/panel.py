@@ -76,16 +76,46 @@ def candidates(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("score_breakdown", "evidence")) for row in rows]
+    decoded = [decode_fields(row, ("score_breakdown", "evidence")) for row in rows]
+    for row in decoded:
+        row["components"] = row.get("score_breakdown") or {}
+        evidence = row.get("evidence")
+        row["evidence_count"] = len(evidence) if isinstance(evidence, list) else 0
+        row["freshness"] = row.get("run_date")
+    return decoded
 
 
 def portfolio(con: Any) -> list[dict[str, Any]]:
     return query_rows(
         con,
         """
-        SELECT p.symbol, i.name, i.asset_class, i.category, p.quantity, p.avg_cost, p.notes
+        SELECT p.symbol, i.name, i.asset_class, i.category, p.quantity,
+               p.avg_cost, p.avg_cost AS average_cost,
+               p.purchase_date,
+               CASE
+                   WHEN p.purchase_date IS NULL THEN NULL
+                   ELSE date_diff('day', p.purchase_date, current_date)
+               END AS holding_days,
+               CASE
+                   WHEN p.purchase_date IS NULL THEN 'unknown'
+                   WHEN date_diff('day', p.purchase_date, current_date) > 365 THEN 'long_term'
+                   ELSE 'short_term'
+               END AS tax_lot_term,
+               q.price,
+               CASE WHEN q.price IS NOT NULL THEN p.quantity * q.price ELSE NULL END AS market_value,
+               CASE WHEN q.price IS NOT NULL THEN p.quantity * (q.price - p.avg_cost) ELSE NULL END AS unrealized_pnl,
+               CASE
+                   WHEN q.price IS NOT NULL AND p.avg_cost > 0 THEN ((q.price - p.avg_cost) / p.avg_cost) * 100
+                   ELSE NULL
+               END AS unrealized_pnl_pct,
+               p.notes
         FROM portfolio_positions p
         LEFT JOIN instruments i ON i.symbol = p.symbol
+        LEFT JOIN (
+            SELECT symbol, price
+            FROM quotes_intraday
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+        ) q ON q.symbol = p.symbol
         ORDER BY p.symbol
         """,
     )
@@ -110,7 +140,25 @@ def theses(con: Any) -> list[dict[str, Any]]:
 
 def catalysts(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(con, "SELECT * FROM catalysts ORDER BY event_date ASC NULLS LAST LIMIT 200")
-    return [decode_fields(row, ("raw",)) for row in rows]
+    decoded = [decode_fields(row, ("raw",)) for row in rows]
+    if decoded:
+        return decoded
+    earnings_rows = query_rows(
+        con,
+        """
+        SELECT 'earnings-' || symbol || '-' || CAST(event_date AS TEXT) AS id,
+               symbol,
+               event_date,
+               event_type AS event,
+               'Earnings event from yfinance calendar snapshot' AS expected_impact,
+               source,
+               metrics AS raw
+        FROM earnings_events
+        ORDER BY event_date ASC, symbol
+        LIMIT 200
+        """,
+    )
+    return [decode_fields(row, ("raw",)) for row in earnings_rows]
 
 
 def fundamentals(con: Any) -> list[dict[str, Any]]:

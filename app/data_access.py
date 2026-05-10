@@ -58,6 +58,11 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _database_path(config: dict[str, Any]) -> Path:
+    db_path = Path(config.get("database", {}).get("duckdb_path", "data/investment.duckdb"))
+    return db_path if db_path.is_absolute() else project_root() / db_path
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load config.yaml when PyYAML is installed; fall back to sensible defaults."""
 
@@ -129,6 +134,90 @@ def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:
         )
         panel_data.metadata.setdefault("setup_instructions", SETUP_INSTRUCTIONS)
     return panel_data
+
+
+def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
+    """Insert or update a manually entered portfolio position."""
+
+    symbol = str(position.get("symbol", "")).strip().upper()
+    if not symbol:
+        raise ValueError("symbol is required")
+    quantity = _positive_number(position.get("quantity"), "quantity")
+    avg_cost = _positive_number(position.get("avg_cost"), "avg_cost", allow_zero=True)
+    purchase_date = _optional_date(position.get("purchase_date"))
+    notes = str(position.get("notes", "") or "").strip()
+
+    _resolve_core_helper()
+    from investment_panel.core.db import db, init_db
+
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO portfolio_positions (symbol, quantity, avg_cost, purchase_date, notes)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [symbol, quantity, avg_cost, purchase_date, notes],
+        )
+        con.execute(
+            """
+            INSERT OR IGNORE INTO theses (symbol, thesis_json, updated_at)
+            VALUES (?, ?, now())
+            """,
+            [
+                symbol,
+                '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
+            ],
+        )
+    return {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes}
+
+
+def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+    normalized = symbol.strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+
+    _resolve_core_helper()
+    from investment_panel.core.db import db, init_db
+
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute("DELETE FROM portfolio_positions WHERE symbol = ?", [normalized])
+        con.execute(
+            """
+            DELETE FROM theses
+            WHERE symbol = ?
+              AND thesis_json = ?
+            """,
+            [
+                normalized,
+                '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
+            ],
+        )
+    return {"symbol": normalized, "deleted": True}
+
+
+def _positive_number(value: Any, name: str, allow_zero: bool = False) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if parsed < 0 or (parsed == 0 and not allow_zero):
+        raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
+    return parsed
+
+
+def _optional_date(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        return datetime.fromisoformat(str(value)).date().isoformat()
+    except ValueError as exc:
+        raise ValueError("purchase_date must be YYYY-MM-DD") from exc
 
 
 def _resolve_core_helper() -> Callable[..., Any] | None:
@@ -312,8 +401,8 @@ def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str,
             "core_modules": list(CORE_MODULE_CANDIDATES),
             "helper_names": list(CORE_HELPER_CANDIDATES),
             "duckdb_path": config.get("database", {}).get("duckdb_path"),
-            "arco_output_dir": config.get("arco", {}).get("output_dir"),
-            "birdclaw_command": config.get("birdclaw", {}).get("command"),
+            "arco_raw_dir": config.get("arco", {}).get("raw_dir"),
+            "birdclaw_command": config.get("birdclaw", {}).get("command") or "Not configured",
         },
     }
 
