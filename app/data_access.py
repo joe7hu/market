@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
+import sys
 from typing import Any, Callable, Iterable
 
 
@@ -131,6 +132,9 @@ def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:
 
 
 def _resolve_core_helper() -> Callable[..., Any] | None:
+    src_path = project_root() / "src"
+    if src_path.exists() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
     for module_name in CORE_MODULE_CANDIDATES:
         try:
             module = import_module(module_name)

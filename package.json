@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "api": "uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+    "api": "uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
