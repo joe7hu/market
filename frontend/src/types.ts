@@ -22,6 +22,7 @@ export type DashboardPayload = {
   priority_candidates?: RowRecord[];
   near_term_catalysts?: RowRecord[];
   portfolio?: RowRecord[];
+  news?: RowRecord[];
 };
 
 export type TickerPayload = {
@@ -47,6 +48,19 @@ export type PanelData = {
   catalysts: TablePayload;
   fundamentals: TablePayload;
   disclosures: TablePayload;
+  quotes: TablePayload;
+  screener: TablePayload;
+  optionsExpiries: TablePayload;
+  optionsChain: TablePayload;
+  news: TablePayload;
+  sepa: TablePayload;
+  liquidity: TablePayload;
+  correlations: TablePayload;
+  etfPremiums: TablePayload;
+  analystEstimates: TablePayload;
+  earnings: TablePayload;
+  valuations: TablePayload;
+  providerRuns: TablePayload;
   sourceHealth: TablePayload;
   settings: SettingsPayload;
   errors: Partial<Record<PanelEndpoint, string>>;
@@ -62,5 +76,18 @@ export type PanelEndpoint =
   | "catalysts"
   | "fundamentals"
   | "disclosures"
+  | "quotes"
+  | "screener"
+  | "optionsExpiries"
+  | "optionsChain"
+  | "news"
+  | "sepa"
+  | "liquidity"
+  | "correlations"
+  | "etfPremiums"
+  | "analystEstimates"
+  | "earnings"
+  | "valuations"
+  | "providerRuns"
   | "sourceHealth"
   | "settings";

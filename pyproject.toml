@@ -11,11 +11,11 @@ dependencies = [
   "pydantic>=2.9.0",
   "pyyaml>=6.0.0",
   "uvicorn>=0.30.0",
+  "yfinance>=0.2.60",
 ]
 
 [project.optional-dependencies]
 market-data = [
-  "yfinance>=0.2.60",
   "pandas-datareader>=0.10.0",
 ]
 test = [
@@ -28,6 +28,7 @@ market-daily-screen = "investment_panel.jobs.daily_screen:main"
 market-snapshot-database = "investment_panel.jobs.snapshot_database:main"
 market-weekly-review = "investment_panel.jobs.weekly_portfolio_review:main"
 market-research-candidate = "investment_panel.jobs.research_candidate:main"
+market-update-free-sources = "investment_panel.jobs.update_free_sources:main"
 
 [build-system]
 requires = ["hatchling"]

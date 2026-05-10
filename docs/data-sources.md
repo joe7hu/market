@@ -68,3 +68,18 @@ Sources:
 - https://pypi.org/project/yfinance/
 - https://pydata.github.io/pandas-datareader/readers/stooq.html
 
+## OpenCLI / TradingView
+
+- OpenCLI provides local read adapters. Market uses it through a narrow
+  allowlisted provider interface, not by letting arbitrary app code construct
+  commands.
+- The TradingView adapter in `himself65/finance-skills` is read-only and
+  attaches to the logged-in TradingView desktop app over CDP.
+- Useful data surfaces: quotes, screeners, news, watchlists, alerts, chart
+  state/screenshots, options expiries, and options chains with greeks/IV.
+- Caveat: availability follows the logged-in TradingView account/session and
+  desktop app state.
+
+Sources:
+- https://github.com/jackwener/opencli
+- https://github.com/himself65/finance-skills/tree/main/opencli-plugins/tradingview

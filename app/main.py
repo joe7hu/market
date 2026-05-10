@@ -94,6 +94,71 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "source_health")
 
+    @app.get("/api/quotes")
+    def quotes() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "quotes")
+
+    @app.get("/api/screener")
+    def screener() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "screener")
+
+    @app.get("/api/options-expiries")
+    def options_expiries() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_expiries")
+
+    @app.get("/api/options-chain")
+    def options_chain() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_chain")
+
+    @app.get("/api/news")
+    def news() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "news")
+
+    @app.get("/api/sepa")
+    def sepa() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "sepa")
+
+    @app.get("/api/liquidity")
+    def liquidity() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "liquidity")
+
+    @app.get("/api/correlations")
+    def correlations() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "correlations")
+
+    @app.get("/api/etf-premiums")
+    def etf_premiums() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "etf_premiums")
+
+    @app.get("/api/analyst-estimates")
+    def analyst_estimates() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "analyst_estimates")
+
+    @app.get("/api/earnings")
+    def earnings() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "earnings")
+
+    @app.get("/api/valuations")
+    def valuations() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "valuations")
+
+    @app.get("/api/provider-runs")
+    def provider_runs() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "provider_runs")
+
     @app.get("/api/settings")
     def settings() -> dict[str, Any]:
         config, panel_data = _context()

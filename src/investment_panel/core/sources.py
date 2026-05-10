@@ -39,6 +39,16 @@ VERIFIED_SOURCES = [
         "source_url": "https://pydata.github.io/pandas-datareader/readers/stooq.html",
         "detail": "Available through pandas-datareader StooqDailyReader; website-backed, not a contracted API.",
     },
+    {
+        "source": "opencli",
+        "source_url": "https://github.com/jackwener/opencli",
+        "detail": "Local CLI adapter registry used read-only for research sources; Market allowlists commands through provider adapters.",
+    },
+    {
+        "source": "tradingview_opencli",
+        "source_url": "https://github.com/himself65/finance-skills/tree/main/opencli-plugins/tradingview",
+        "detail": "Read-only TradingView desktop adapter for quotes, screeners, news, watchlists, alerts, chart state, and options chains.",
+    },
 ]
 
 
@@ -78,4 +88,3 @@ def lightweight_online_check(con: Any, user_agent: str) -> None:
                 """,
                 [source, datetime.utcnow().isoformat(), status, detail, url],
             )
-

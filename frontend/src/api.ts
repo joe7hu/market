@@ -50,6 +50,19 @@ export async function loadPanelData(): Promise<PanelData> {
     settle("catalysts", getJson<TablePayload>("/api/catalysts")),
     settle("fundamentals", getJson<TablePayload>("/api/fundamentals")),
     settle("disclosures", getJson<TablePayload>("/api/disclosures")),
+    settle("quotes", getJson<TablePayload>("/api/quotes")),
+    settle("screener", getJson<TablePayload>("/api/screener")),
+    settle("optionsExpiries", getJson<TablePayload>("/api/options-expiries")),
+    settle("optionsChain", getJson<TablePayload>("/api/options-chain")),
+    settle("news", getJson<TablePayload>("/api/news")),
+    settle("sepa", getJson<TablePayload>("/api/sepa")),
+    settle("liquidity", getJson<TablePayload>("/api/liquidity")),
+    settle("correlations", getJson<TablePayload>("/api/correlations")),
+    settle("etfPremiums", getJson<TablePayload>("/api/etf-premiums")),
+    settle("analystEstimates", getJson<TablePayload>("/api/analyst-estimates")),
+    settle("earnings", getJson<TablePayload>("/api/earnings")),
+    settle("valuations", getJson<TablePayload>("/api/valuations")),
+    settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
     settle("settings", getJson<SettingsPayload>("/api/settings")),
   ]);
@@ -65,6 +78,19 @@ export async function loadPanelData(): Promise<PanelData> {
     catalysts: EMPTY_TABLE,
     fundamentals: EMPTY_TABLE,
     disclosures: EMPTY_TABLE,
+    quotes: EMPTY_TABLE,
+    screener: EMPTY_TABLE,
+    optionsExpiries: EMPTY_TABLE,
+    optionsChain: EMPTY_TABLE,
+    news: EMPTY_TABLE,
+    sepa: EMPTY_TABLE,
+    liquidity: EMPTY_TABLE,
+    correlations: EMPTY_TABLE,
+    etfPremiums: EMPTY_TABLE,
+    analystEstimates: EMPTY_TABLE,
+    earnings: EMPTY_TABLE,
+    valuations: EMPTY_TABLE,
+    providerRuns: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     settings: {},
     errors,
@@ -102,6 +128,45 @@ export async function loadPanelData(): Promise<PanelData> {
         break;
       case "disclosures":
         data.disclosures = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "quotes":
+        data.quotes = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "screener":
+        data.screener = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "optionsExpiries":
+        data.optionsExpiries = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "optionsChain":
+        data.optionsChain = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "news":
+        data.news = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sepa":
+        data.sepa = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "liquidity":
+        data.liquidity = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "correlations":
+        data.correlations = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "etfPremiums":
+        data.etfPremiums = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "analystEstimates":
+        data.analystEstimates = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "earnings":
+        data.earnings = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "valuations":
+        data.valuations = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "providerRuns":
+        data.providerRuns = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "sourceHealth":
         data.sourceHealth = (result.value as TablePayload) ?? EMPTY_TABLE;

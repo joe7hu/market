@@ -42,6 +42,7 @@ uv run python -m investment_panel.jobs.update_equity_data --config config.yaml
 uv run python -m investment_panel.jobs.update_crypto_data --config config.yaml
 uv run python -m investment_panel.jobs.update_arco_data --config config.yaml
 uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --online-check
+uv run python -m investment_panel.jobs.update_free_sources --config config.yaml
 uv run python -m investment_panel.jobs.snapshot_database --config config.yaml
 uv run python -m investment_panel.jobs.research_candidate TSLA --config config.yaml
 uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.yaml
@@ -57,6 +58,22 @@ uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.y
 - `GET /api/theses`
 - `GET /api/trader-twins`
 - `GET /api/catalysts`
+- `GET /api/fundamentals`
+- `GET /api/disclosures`
+- `GET /api/quotes`
+- `GET /api/screener`
+- `GET /api/options-expiries`
+- `GET /api/options-chain`
+- `GET /api/news`
+- `GET /api/sepa`
+- `GET /api/liquidity`
+- `GET /api/correlations`
+- `GET /api/etf-premiums`
+- `GET /api/analyst-estimates`
+- `GET /api/earnings`
+- `GET /api/valuations`
+- `GET /api/provider-runs`
+- `GET /api/source-health`
 - `GET /api/settings`
 
 ## Data Sources
@@ -66,6 +83,17 @@ Verified source notes are in [docs/data-sources.md](docs/data-sources.md).
 The app defaults to deterministic sample market data for local development.
 Set `market_data.mode: online` in `config.yaml` to attempt online price fetches
 through optional adapters while preserving fallback behavior.
+
+Free-source enrichment is handled by `market-update-free-sources`. It uses the
+local OpenCLI TradingView adapter for quotes, screeners, options, and news, plus
+yfinance for estimates, earnings, and ETF NAV/premium data. Funda and Adanos are
+intentionally not integrated.
+
+The web app renders the derived data as an operational workbench: score bars,
+positive/negative percentage pills, status badges, and summary cards highlight
+quote breadth, SEPA strength, liquidity coverage, valuation signal, and source
+health. The valuation endpoint is a low-confidence proxy only; it drops rows
+with implausible fundamentals and reports upside in percentage points.
 
 ## Current Limitation
 
@@ -90,5 +118,6 @@ Default shared paths:
 
 The daily screen and update jobs write status JSON files such as
 `mini-market-ingest.json`, `mini-market-equity.json`,
-`mini-market-crypto.json`, and `mini-market-disclosures.json`. The snapshot job
-copies the local DuckDB file to the NAS without running DuckDB over SMB.
+`mini-market-crypto.json`, `mini-market-disclosures.json`, and
+`mini-market-free-sources.json`. The snapshot job copies the local DuckDB file
+to the NAS without running DuckDB over SMB.

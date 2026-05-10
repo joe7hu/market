@@ -135,6 +135,152 @@ CREATE TABLE IF NOT EXISTS source_health (
     detail TEXT,
     source_url TEXT
 );
+
+CREATE TABLE IF NOT EXISTS provider_runs (
+    id TEXT PRIMARY KEY,
+    provider TEXT,
+    capability TEXT,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    status TEXT,
+    detail TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS quotes_intraday (
+    symbol TEXT,
+    observed_at TIMESTAMP,
+    price DOUBLE,
+    change_pct DOUBLE,
+    change_abs DOUBLE,
+    currency TEXT,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(symbol, observed_at, source)
+);
+
+CREATE TABLE IF NOT EXISTS market_screener_rows (
+    run_id TEXT,
+    symbol TEXT,
+    observed_at TIMESTAMP,
+    name TEXT,
+    metrics JSON,
+    source TEXT,
+    PRIMARY KEY(run_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS options_expiries (
+    symbol TEXT,
+    expiry DATE,
+    dte INTEGER,
+    contracts_count INTEGER,
+    observed_at TIMESTAMP,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(symbol, expiry, source)
+);
+
+CREATE TABLE IF NOT EXISTS options_chain (
+    symbol TEXT,
+    expiry DATE,
+    strike DOUBLE,
+    option_type TEXT,
+    bid DOUBLE,
+    ask DOUBLE,
+    mid DOUBLE,
+    iv DOUBLE,
+    delta DOUBLE,
+    gamma DOUBLE,
+    theta DOUBLE,
+    vega DOUBLE,
+    observed_at TIMESTAMP,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(symbol, expiry, strike, option_type, observed_at, source)
+);
+
+CREATE TABLE IF NOT EXISTS news_items (
+    id TEXT PRIMARY KEY,
+    published_at TIMESTAMP,
+    provider TEXT,
+    title TEXT,
+    related_symbols JSON,
+    link TEXT,
+    source TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS sepa_analyses (
+    symbol TEXT,
+    as_of DATE,
+    score DOUBLE,
+    stage TEXT,
+    verdict TEXT,
+    checklist JSON,
+    metrics JSON,
+    PRIMARY KEY(symbol, as_of)
+);
+
+CREATE TABLE IF NOT EXISTS liquidity_metrics (
+    symbol TEXT,
+    as_of DATE,
+    grade TEXT,
+    avg_daily_volume DOUBLE,
+    avg_dollar_volume DOUBLE,
+    turnover_ratio DOUBLE,
+    amihud_illiquidity DOUBLE,
+    impact_1pct_adv_bps DOUBLE,
+    metrics JSON,
+    PRIMARY KEY(symbol, as_of)
+);
+
+CREATE TABLE IF NOT EXISTS correlation_runs (
+    id TEXT PRIMARY KEY,
+    target_symbol TEXT,
+    as_of DATE,
+    lookback_days INTEGER,
+    peers JSON,
+    metrics JSON
+);
+
+CREATE TABLE IF NOT EXISTS etf_premiums (
+    symbol TEXT,
+    as_of DATE,
+    market_price DOUBLE,
+    nav DOUBLE,
+    premium_pct DOUBLE,
+    metrics JSON,
+    source TEXT,
+    PRIMARY KEY(symbol, as_of, source)
+);
+
+CREATE TABLE IF NOT EXISTS analyst_estimates (
+    symbol TEXT,
+    as_of DATE,
+    estimates JSON,
+    source TEXT,
+    PRIMARY KEY(symbol, as_of, source)
+);
+
+CREATE TABLE IF NOT EXISTS earnings_events (
+    symbol TEXT,
+    event_date DATE,
+    event_type TEXT,
+    metrics JSON,
+    source TEXT,
+    PRIMARY KEY(symbol, event_date, event_type, source)
+);
+
+CREATE TABLE IF NOT EXISTS valuation_models (
+    symbol TEXT,
+    as_of DATE,
+    method TEXT,
+    fair_value DOUBLE,
+    upside_pct DOUBLE,
+    assumptions JSON,
+    diagnostics JSON,
+    PRIMARY KEY(symbol, as_of, method)
+);
 """
 
 

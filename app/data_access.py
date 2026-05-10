@@ -182,6 +182,19 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "catalysts",
             "fundamentals",
             "disclosures",
+            "quotes",
+            "screener",
+            "options_expiries",
+            "options_chain",
+            "news",
+            "sepa",
+            "liquidity",
+            "correlations",
+            "etf_premiums",
+            "analyst_estimates",
+            "earnings",
+            "valuations",
+            "provider_runs",
             "source_health",
             "settings",
         )
@@ -220,6 +233,12 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     catalysts = panel_data.rows("catalysts")
     fundamentals = panel_data.rows("fundamentals")
     disclosures = panel_data.rows("disclosures")
+    quotes = panel_data.rows("quotes")
+    news = panel_data.rows("news")
+    sepa = panel_data.rows("sepa")
+    liquidity = panel_data.rows("liquidity")
+    earnings = panel_data.rows("earnings")
+    valuations = panel_data.rows("valuations")
     source_health = panel_data.rows("source_health")
     return {
         "status": status_payload(panel_data),
@@ -230,6 +249,12 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "catalysts": len(catalysts),
             "fundamentals": len(fundamentals),
             "disclosures": len(disclosures),
+            "quotes": len(quotes),
+            "news": len(news),
+            "sepa": len(sepa),
+            "liquidity": len(liquidity),
+            "earnings": len(earnings),
+            "valuations": len(valuations),
             "sources": len(source_health),
         },
         "priority_candidates": candidates[:8],
@@ -237,6 +262,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "portfolio": portfolio[:8],
         "source_health": source_health[:8],
         "disclosures": disclosures[:8],
+        "news": news[:8],
     }
 
 
@@ -250,6 +276,17 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "signals": _matching_ticker_rows(panel_data.rows("signals"), normalized_ticker),
         "fundamentals": _matching_ticker_rows(panel_data.rows("fundamentals"), normalized_ticker),
         "disclosures": _matching_ticker_rows(panel_data.rows("disclosures"), normalized_ticker),
+        "quotes": _matching_ticker_rows(panel_data.rows("quotes"), normalized_ticker),
+        "options_expiries": _matching_ticker_rows(panel_data.rows("options_expiries"), normalized_ticker),
+        "options_chain": _matching_ticker_rows(panel_data.rows("options_chain"), normalized_ticker),
+        "news": _matching_ticker_rows(panel_data.rows("news"), normalized_ticker),
+        "sepa": _matching_ticker_rows(panel_data.rows("sepa"), normalized_ticker),
+        "liquidity": _matching_ticker_rows(panel_data.rows("liquidity"), normalized_ticker),
+        "correlations": _matching_ticker_rows(panel_data.rows("correlations"), normalized_ticker),
+        "etf_premiums": _matching_ticker_rows(panel_data.rows("etf_premiums"), normalized_ticker),
+        "analyst_estimates": _matching_ticker_rows(panel_data.rows("analyst_estimates"), normalized_ticker),
+        "earnings": _matching_ticker_rows(panel_data.rows("earnings"), normalized_ticker),
+        "valuations": _matching_ticker_rows(panel_data.rows("valuations"), normalized_ticker),
         "memos": _matching_ticker_rows(
             panel_data.rows("ticker_memos") or panel_data.rows("memos"),
             normalized_ticker,
@@ -338,9 +375,13 @@ def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[
     ticker_fields = ("ticker", "symbol", "security", "name")
     matches: list[dict[str, Any]] = []
     for row in rows:
+        related = row.get("related_symbols")
+        if isinstance(related, list) and any(str(item).split(":")[-1].upper() == ticker for item in related):
+            matches.append(row)
+            continue
         for field in ticker_fields:
             value = row.get(field)
-            if isinstance(value, str) and value.upper() == ticker:
+            if isinstance(value, str) and value.split(":")[-1].upper() == ticker:
                 matches.append(row)
                 break
     return matches

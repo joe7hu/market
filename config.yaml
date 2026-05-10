@@ -8,7 +8,7 @@ nas:
   duckdb_snapshot_dir: /Volumes/agent/data-sources/market-mini/duckdb-snapshots
 
 arco:
-  raw_dir: /Users/joehu/brain/raw/sources/arco
+  raw_dir: $HOME/brain/raw/sources/arco
   signals_path: signals.json
   beliefs_path: beliefs.json
   source_manifest_glob: source-manifest-*.json
@@ -22,6 +22,27 @@ market_data:
   equity_provider: yahoo-chart
   crypto_provider: coingecko
   user_agent: "joehu-market-panel/0.1 contact:local"
+
+data_sources:
+  opencli:
+    enabled: true
+    command: opencli
+    timeout_seconds: 25
+  tradingview:
+    enabled: true
+    # Empty means quote every configured equity/ETF and pull options for the
+    # highest-scored symbols when the free-source job runs after a screen.
+    options_symbols: []
+    screener_limit: 50
+    news_limit: 50
+    strikes_around_spot: 6
+  yfinance:
+    enabled: true
+
+analysis:
+  enabled: true
+  correlation_lookback_days: 180
+  max_correlation_peers: 8
 
 disclosures:
   13f_trackers:

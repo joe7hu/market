@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ def project_root() -> Path:
 
 
 def resolve_path(value: str | Path, base: Path | None = None) -> Path:
-    path = Path(value).expanduser()
+    path = Path(os.path.expandvars(str(value))).expanduser()
     if path.is_absolute():
         return path
     return (base or project_root()) / path
@@ -52,6 +53,41 @@ class MarketDataConfig:
 
 
 @dataclass(frozen=True)
+class OpenCliConfig:
+    enabled: bool = True
+    command: str = "opencli"
+    timeout_seconds: int = 25
+
+
+@dataclass(frozen=True)
+class TradingViewConfig:
+    enabled: bool = True
+    options_symbols: list[str] = field(default_factory=list)
+    screener_limit: int = 50
+    news_limit: int = 50
+    strikes_around_spot: int = 6
+
+
+@dataclass(frozen=True)
+class YFinanceConfig:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class DataSourcesConfig:
+    opencli: OpenCliConfig = OpenCliConfig()
+    tradingview: TradingViewConfig = TradingViewConfig()
+    yfinance: YFinanceConfig = YFinanceConfig()
+
+
+@dataclass(frozen=True)
+class AnalysisConfig:
+    enabled: bool = True
+    correlation_lookback_days: int = 180
+    max_correlation_peers: int = 8
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     weights: dict[str, float] = field(
         default_factory=lambda: {
@@ -72,6 +108,8 @@ class AppConfig:
     nas: NasConfig = NasConfig()
     arco: ArcoConfig = ArcoConfig()
     market_data: MarketDataConfig = MarketDataConfig()
+    data_sources: DataSourcesConfig = DataSourcesConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
     scoring: ScoringConfig = ScoringConfig()
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     portfolio_csv: Path | None = None
@@ -118,6 +156,31 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         crypto_provider=str(market_data_raw.get("crypto_provider", "coingecko")),
         user_agent=str(market_data_raw.get("user_agent", "joehu-market-panel/0.1 contact:local")),
     )
+    data_sources_raw = raw.get("data_sources", {})
+    opencli_raw = data_sources_raw.get("opencli", {})
+    tradingview_raw = data_sources_raw.get("tradingview", {})
+    yfinance_raw = data_sources_raw.get("yfinance", {})
+    data_sources = DataSourcesConfig(
+        opencli=OpenCliConfig(
+            enabled=bool(opencli_raw.get("enabled", True)),
+            command=str(opencli_raw.get("command", "opencli")),
+            timeout_seconds=int(opencli_raw.get("timeout_seconds", 25)),
+        ),
+        tradingview=TradingViewConfig(
+            enabled=bool(tradingview_raw.get("enabled", True)),
+            options_symbols=list(tradingview_raw.get("options_symbols", [])),
+            screener_limit=int(tradingview_raw.get("screener_limit", 50)),
+            news_limit=int(tradingview_raw.get("news_limit", 50)),
+            strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
+        ),
+        yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
+    )
+    analysis_raw = raw.get("analysis", {})
+    analysis = AnalysisConfig(
+        enabled=bool(analysis_raw.get("enabled", True)),
+        correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
+        max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
+    )
     scoring_raw = raw.get("scoring", {})
     scoring = ScoringConfig(
         weights={**ScoringConfig().weights, **dict(scoring_raw.get("weights", {}))},
@@ -129,6 +192,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         nas=nas,
         arco=arco,
         market_data=market_data,
+        data_sources=data_sources,
+        analysis=analysis,
         scoring=scoring,
         watchlist=list(raw.get("watchlist", [])),
         portfolio_csv=resolve_path(portfolio_csv, base) if portfolio_csv else None,
@@ -158,6 +223,26 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "lookback_days": config.market_data.lookback_days,
             "equity_provider": config.market_data.equity_provider,
             "crypto_provider": config.market_data.crypto_provider,
+        },
+        "data_sources": {
+            "opencli": {
+                "enabled": config.data_sources.opencli.enabled,
+                "command": config.data_sources.opencli.command,
+                "timeout_seconds": config.data_sources.opencli.timeout_seconds,
+            },
+            "tradingview": {
+                "enabled": config.data_sources.tradingview.enabled,
+                "options_symbols": config.data_sources.tradingview.options_symbols,
+                "screener_limit": config.data_sources.tradingview.screener_limit,
+                "news_limit": config.data_sources.tradingview.news_limit,
+                "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,
+            },
+            "yfinance": {"enabled": config.data_sources.yfinance.enabled},
+        },
+        "analysis": {
+            "enabled": config.analysis.enabled,
+            "correlation_lookback_days": config.analysis.correlation_lookback_days,
+            "max_correlation_peers": config.analysis.max_correlation_peers,
         },
         "scoring": {
             "weights": config.scoring.weights,
