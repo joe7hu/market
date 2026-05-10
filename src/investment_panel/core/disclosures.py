@@ -418,7 +418,7 @@ def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: l
             if baseline_date not in baseline_dates_applied:
                 lots.clear()
                 baseline_dates_applied.add(baseline_date)
-            lots[symbol] = max(0.0, quantity)
+            lots[symbol] = max(0.0, lots.get(symbol, 0.0) + quantity)
         else:
             lots[symbol] = max(0.0, lots.get(symbol, 0.0) + direction * quantity)
         if direction > 0:

@@ -65,6 +65,19 @@ disclosures:
           - PTR Original
           - FD Original
         user_agent: "joehu-market-panel/0.1 contact:local"
+    - name: Kevin Hern
+      filer_name: House financial disclosures
+      source_kind: house_disclosures
+      official_house:
+        last_name: Hern
+        state: OK
+        district: 1
+        start_year: 2020
+        end_year: 2026
+        filing_types:
+          - PTR Original
+          - FD Original
+        user_agent: "joehu-market-panel/0.1 contact:local"
   13f_trackers:
     - name: Berkshire / Buffett
       cik: "0001067983"

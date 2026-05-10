@@ -178,3 +178,37 @@ Root causes:
 Do not mark this replication as done until those source/model gaps are either
 resolved from primary disclosures or explicitly accepted as reference-specific
 calibration rules.
+
+## Kevin Hern Verification Status
+
+As of 2026-05-10, Kevin Hern is configured through the same official House
+disclosure pipeline and is also `not_close` against the visible PelosiTracker
+politician page benchmark.
+
+The current run uses official House search for Kevin Hern, OK-01, 2020-2026,
+with `PTR Original` and `FD Original` filings enabled. It ingested 76 official
+House PDFs, normalized 751 disclosure rows, refreshed missing historical prices,
+and rebuilt the replica portfolio.
+
+Benchmark file:
+`/Volumes/agent/data-sources/status/mini-market-trader-benchmark-kevin-hern.json`
+
+Latest benchmark:
+
+- Verdict: `not_close`
+- Reference coverage: `top_holdings_only`
+- Symbol overlap: `1.0` (`5/5` visible top symbols)
+- Top-five overlap: `0.4`
+- Mean weight error: `2.6029`
+- Total value error: `8.0555%`
+- Reference top five: `DVN`, `WMB`, `XOM`, `JPM`, `RTX`
+- Model top five: `DVN`, `TXN`, `RTX`, `ROK`, `GOOGL`
+
+Root causes:
+
+- The visible reference page publishes only top holdings plus `OTHER`, not a
+  full holdings ledger.
+- Official annual FD rows contain many disclosed holdings outside the reference
+  top five. The model ranks several of them above `WMB`, `XOM`, and `JPM`.
+- The value and visible-symbol weights are close, but top-rank ordering is not
+  close enough under the current benchmark gate.

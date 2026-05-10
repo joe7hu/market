@@ -31,6 +31,19 @@ REFERENCE_HOLDINGS = {
             {"symbol": "MSFT", "weight": 3.0},
             {"symbol": "AAPL", "weight": 3.0},
         ],
+    },
+    "kevin-hern-2026-05-10": {
+        "source": "https://pelositracker.app/politicians/kevin-hern",
+        "note": "External top-holdings reference only; not an ingestion source. The public page groups the remaining allocation as OTHER.",
+        "coverage": "top_holdings_only",
+        "current_market_value": 28578854.0,
+        "holdings": [
+            {"symbol": "DVN", "weight": 19.1},
+            {"symbol": "WMB", "weight": 7.5},
+            {"symbol": "XOM", "weight": 4.5},
+            {"symbol": "JPM", "weight": 4.1},
+            {"symbol": "RTX", "weight": 3.9},
+        ],
     }
 }
 
@@ -60,6 +73,7 @@ def run(config_path: str | None = None, trader: str = "Nancy Pelosi", reference:
         "reference": reference,
         "reference_source": reference_row["source"],
         "reference_note": reference_row["note"],
+        "reference_coverage": reference_row.get("coverage", "full_holdings"),
         **result,
     }
     status_path = write_source_status(
@@ -82,7 +96,7 @@ def benchmark_model(model: dict[str, Any], reference: dict[str, Any]) -> dict[st
     missing = sorted(set(reference_holdings) - set(model_holdings))
     extra = sorted(set(model_holdings) - set(reference_holdings))
     top_reference = [row["symbol"] for row in reference.get("holdings", [])[:6]]
-    top_model = [row["symbol"] for row in model.get("holdings", [])[:6]]
+    top_model = [row["symbol"] for row in model.get("holdings", [])[: len(top_reference)]]
     top_overlap = [symbol for symbol in top_reference if symbol in top_model]
     weight_errors = {
         symbol: abs(float(model_holdings[symbol].get("weight") or 0) - float(reference_holdings[symbol].get("weight") or 0))

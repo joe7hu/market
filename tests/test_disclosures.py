@@ -227,7 +227,8 @@ def test_replica_baseline_replaces_prior_inferred_lots(tmp_path: Path) -> None:
         """trader_name,symbol,transaction_type,transaction_date,filed_date,amount_min,amount_max,source_url
 Nancy Pelosi,NVDA,BUY,2023-01-01,2023-02-01,100000,100000,https://source/old
 Nancy Pelosi,AAPL,BASELINE,2024-12-31,2025-08-01,100000,100000,https://source/fd
-Nancy Pelosi,MSFT,BASELINE,2024-12-31,2025-08-01,200000,200000,https://source/fd
+Nancy Pelosi,MSFT,BASELINE,2024-12-31,2025-08-01,200000,200000,https://source/fd#trust
+Nancy Pelosi,MSFT,BASELINE,2024-12-31,2025-08-01,200000,200000,https://source/fd#foundation
 Nancy Pelosi,MSFT,BUY,2025-01-15,2025-02-01,100000,100000,https://source/ptr
 """,
         encoding="utf-8",
@@ -249,6 +250,8 @@ Nancy Pelosi,MSFT,BUY,2025-01-15,2025-02-01,100000,100000,https://source/ptr
         model = query_rows(con, "SELECT raw FROM disclosures WHERE source_type = 'trader_portfolio_model'")[0]
     raw = json.loads(model["raw"])
     assert {holding["symbol"] for holding in raw["holdings"]} == {"AAPL", "MSFT"}
+    msft = next(holding for holding in raw["holdings"] if holding["symbol"] == "MSFT")
+    assert msft["quantity"] == 2500
 
 
 def test_house_annual_parser_only_reads_holding_rows() -> None:
