@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Database,
   Gauge,
+  LineChart,
   RefreshCw,
   Search,
   Settings,
@@ -16,7 +17,7 @@ import {
   Target,
   UserRoundCog,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -72,14 +73,12 @@ const candidateColumnOrder = [
 
 const signalColumnOrder = [
   "symbol",
+  "score",
   "signal_grade",
   "confidence",
   "decision",
   "why_now",
-  "evidence_count",
-  "invalidation",
   "next_action",
-  "source_freshness",
 ];
 
 const portfolioColumnOrder = [
@@ -146,6 +145,7 @@ function App() {
   const [tickerLoading, setTickerLoading] = useState(false);
   const [tickerError, setTickerError] = useState("");
   const [activeSourceGroup, setActiveSourceGroup] = useState("Market");
+  const [expandedSignal, setExpandedSignal] = useState("");
 
   const refresh = async () => {
     setLoading(true);
@@ -221,13 +221,34 @@ function App() {
   const valuationRows = rows(data.valuations);
   const providerRunRows = rows(data.providerRuns);
   const sourceHealthRows = rows(data.sourceHealth);
-  const analysisCards = buildAnalysisCards({
+  const decisionSignals = buildDecisionSignals({
+    signalRows,
+    candidateRows,
     quoteRows,
     sepaRows,
     liquidityRows,
     valuationRows,
-    sourceHealthRows,
   });
+  const signalGroups = buildSignalGroups(decisionSignals);
+  const operationCards = buildOperationCards({ status, providerRunRows, sourceHealthRows });
+  const tickerInsight = buildTickerInsight({
+    symbol: selectedSymbol,
+    decisionSignals,
+    quoteRows,
+    sepaRows,
+    liquidityRows,
+    valuationRows,
+    thesisRows,
+    catalystRows,
+    disclosureRows,
+  });
+  const marketCharts = buildMarketCharts({
+    signalRows,
+    quoteRows,
+    sepaRows,
+    valuationRows,
+  });
+  const traderPortfolios = buildTraderPortfolios(disclosureRows);
   const sourceGroups: SourceGroup[] = [
     {
       name: "Market",
@@ -294,8 +315,10 @@ function App() {
       <header className="topbar">
         <div>
           <p className="eyebrow">Market intelligence</p>
-          <h1>Market Workbench</h1>
-          <p className="topbar-subtitle">On-demand free-source data, setup analysis, options flow, news, and fundamentals.</p>
+          <h1>Decision Desk</h1>
+          <p className="topbar-subtitle">
+            A personal investment command center that turns watchlists, portfolio state, Arco evidence, catalysts, and free-source market data into a daily attention queue.
+          </p>
         </div>
         <div className="topbar-actions">
           <StatusPill status={status} />
@@ -307,24 +330,40 @@ function App() {
 
       <StatusBanner status={status} errors={data.errors} />
 
-      <section className="dashboard-grid" aria-label="Dashboard signals">
-        <MetricCard icon={<Target size={18} />} label="Candidates" value={getMetric(data.dashboard.metrics, "candidates", candidateRows.length)} />
-        <MetricCard icon={<Activity size={18} />} label="Signals" value={signalRows.length} />
-        <MetricCard icon={<CircleDollarSign size={18} />} label="Holdings" value={getMetric(data.dashboard.metrics, "holdings", portfolioRows.length)} />
-        <MetricCard icon={<ClipboardList size={18} />} label="Theses" value={getMetric(data.dashboard.metrics, "theses", thesisRows.length)} />
-        <MetricCard icon={<CalendarClock size={18} />} label="Catalysts" value={getMetric(data.dashboard.metrics, "catalysts", catalystRows.length)} />
-        <MetricCard icon={<Database size={18} />} label="Fundamentals" value={getMetric(data.dashboard.metrics, "fundamentals", fundamentalRows.length)} />
-        <MetricCard icon={<Activity size={18} />} label="Quotes" value={getMetric(data.dashboard.metrics, "quotes", quoteRows.length)} />
-        <MetricCard icon={<Gauge size={18} />} label="SEPA" value={getMetric(data.dashboard.metrics, "sepa", sepaRows.length)} />
-        <MetricCard icon={<Activity size={18} />} label="News" value={getMetric(data.dashboard.metrics, "news", newsRows.length)} />
-        <MetricCard icon={<ShieldCheck size={18} />} label="Disclosures" value={getMetric(data.dashboard.metrics, "disclosures", disclosureRows.length)} />
-        <MetricCard icon={<Database size={18} />} label="Source" value={status?.source ?? "unknown"} tone={status?.ready ? "ok" : "warn"} />
+      <section className="market-zone" aria-label="Market signals">
+        <SectionIntro
+          eyebrow="Market signals"
+          title="Signal Command"
+          detail="Ranked names, setup quality, exposure, catalysts, and valuation cues."
+        />
+
+        <section className="decision-cockpit" aria-label="Decision cockpit">
+          <SignalHierarchy
+            groups={signalGroups}
+            selectedSymbol={selectedSymbol}
+            expandedSignal={expandedSignal}
+            onSelectSymbol={(symbol) => {
+              setSelectedSymbol(symbol);
+              setTickerInput(symbol);
+            }}
+            onExpandedSignal={setExpandedSignal}
+          />
+          <TickerInsightPanel insight={tickerInsight} />
+        </section>
+
+        <section className="market-evidence-grid" aria-label="Market evidence">
+          <MarketChartsPanel charts={marketCharts} />
+          <TraderPortfolioPanel portfolios={traderPortfolios} />
+        </section>
       </section>
 
-      <section className="insight-grid" aria-label="Analysis summary">
-        {analysisCards.map((card) => (
-          <InsightCard key={card.label} {...card} />
-        ))}
+      <section className="operations-zone" aria-label="Service operation health">
+        <SectionIntro
+          eyebrow="Service operation health"
+          title="Pipeline & Source Health"
+          detail="Ingestion, provider run, and source readiness checks kept separate from market decisions."
+        />
+        <OperationHealthPanel cards={operationCards} sourceRows={sourceHealthRows} providerRows={providerRunRows} serviceSource={status?.source} />
       </section>
 
       <section className="workbench">
@@ -408,6 +447,7 @@ function buildSignalRows(signalRows: RowRecord[], candidateRows: RowRecord[]): R
   const sourceRows = signalRows.length ? signalRows : candidateRows;
   return sourceRows.map((row) => ({
     symbol: signalField(row, ["symbol", "ticker", "security", "name"]),
+    score: signalField(row, ["score", "final_score"]),
     signal_grade: signalField(row, ["signal_grade", "grade", "signal", "rating", "score"]),
     confidence: signalField(row, ["confidence", "confidence_score", "probability", "conviction"]),
     decision: signalField(row, ["decision", "action", "recommendation", "stance", "status"]),
@@ -445,18 +485,347 @@ type AnalysisCard = {
   progress?: number;
 };
 
+type DecisionSignal = {
+  symbol: string;
+  name: string;
+  score: number;
+  grade: string;
+  confidence: string;
+  decision: string;
+  tier: "action" | "research" | "monitor" | "gated";
+  whyNow: string;
+  setup: string;
+  quote: string;
+  liquidity: string;
+  valuation: string;
+  invalidation: string;
+  nextAction: string;
+  freshness: string;
+};
+
+type SignalGroup = {
+  key: DecisionSignal["tier"];
+  title: string;
+  description: string;
+  tone: "positive" | "negative" | "warning" | "neutral";
+  items: DecisionSignal[];
+};
+
+type PulseItem = {
+  label: string;
+  title: string;
+  detail: string;
+  tone: "positive" | "negative" | "warning" | "neutral";
+};
+
+type ExposureCard = {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "positive" | "negative" | "warning" | "neutral";
+};
+
+type OperationCard = ExposureCard;
+
+type SignalOverview = {
+  leadCount: number;
+  researchCount: number;
+  monitoredCount: number;
+  gatedCount: number;
+  averageScore: number;
+  scoreBuckets: number[];
+  breadthPositive: number;
+  breadthTotal: number;
+  sepaCoverage: number;
+  valuationRows: number;
+};
+
+type FactorBar = {
+  label: string;
+  value: number;
+  detail: string;
+  tone: "positive" | "negative" | "warning" | "neutral";
+};
+
+type TickerInsight = {
+  symbol: string;
+  name: string;
+  decision: string;
+  score: number;
+  factors: FactorBar[];
+  rationale: string;
+  nextAction: string;
+  invalidation: string;
+  evidence: Array<{ label: string; value: string; tone: "positive" | "negative" | "warning" | "neutral" }>;
+};
+
+type ChartItem = {
+  label: string;
+  value: number;
+  detail: string;
+  tone: "positive" | "negative" | "warning" | "neutral";
+};
+
+type MarketCharts = {
+  scoreBuckets: number[];
+  movers: ChartItem[];
+  upside: ChartItem[];
+  setups: ChartItem[];
+};
+
+type TraderHolding = {
+  name: string;
+  value: number;
+  share: number;
+};
+
+type TraderPortfolio = {
+  name: string;
+  filer: string;
+  filedDate: string;
+  eventDate: string;
+  holdingsCount: number;
+  totalValue: number;
+  caveat: string;
+  topHoldings: TraderHolding[];
+};
+
+function buildSignalOverview({
+  signalGroups,
+  signalRows,
+  quoteRows,
+  sepaRows,
+  valuationRows,
+}: {
+  signalGroups: SignalGroup[];
+  signalRows: RowRecord[];
+  quoteRows: RowRecord[];
+  sepaRows: RowRecord[];
+  valuationRows: RowRecord[];
+}): SignalOverview {
+  const scores = signalRows.map((row) => numericValue(row.score ?? row.final_score)).filter(Number.isFinite);
+  const scoreBuckets = [0, 0, 0, 0, 0];
+  for (const score of scores) {
+    const normalized = score > 10 ? score : score * 10;
+    const bucket = clamp(Math.floor(normalized / 20), 0, 4);
+    scoreBuckets[bucket] += 1;
+  }
+  const countByTier = (tier: SignalGroup["key"]) => signalGroups.find((group) => group.key === tier)?.items.length ?? 0;
+
+  return {
+    leadCount: countByTier("action"),
+    researchCount: countByTier("research"),
+    monitoredCount: countByTier("monitor"),
+    gatedCount: countByTier("gated"),
+    averageScore: scores.length ? scores.reduce((total, score) => total + (score > 10 ? score : score * 10), 0) / scores.length : 0,
+    scoreBuckets,
+    breadthPositive: quoteRows.filter((row) => numericValue(row.change_pct) > 0).length,
+    breadthTotal: quoteRows.length,
+    sepaCoverage: sepaRows.length,
+    valuationRows: valuationRows.length,
+  };
+}
+
+function buildTickerInsight({
+  symbol,
+  decisionSignals,
+  quoteRows,
+  sepaRows,
+  liquidityRows,
+  valuationRows,
+  thesisRows,
+  catalystRows,
+  disclosureRows,
+}: {
+  symbol: string;
+  decisionSignals: DecisionSignal[];
+  quoteRows: RowRecord[];
+  sepaRows: RowRecord[];
+  liquidityRows: RowRecord[];
+  valuationRows: RowRecord[];
+  thesisRows: RowRecord[];
+  catalystRows: RowRecord[];
+  disclosureRows: RowRecord[];
+}): TickerInsight {
+  const fallback = decisionSignals[0];
+  const active = decisionSignals.find((item) => item.symbol === symbol) ?? fallback;
+  const activeSymbol = active?.symbol ?? symbol;
+  const quote = findBySymbol(quoteRows, activeSymbol);
+  const sepa = findBySymbol(sepaRows, activeSymbol);
+  const liquidity = findBySymbol(liquidityRows, activeSymbol);
+  const valuation = findBySymbol(valuationRows, activeSymbol);
+  const thesis = findBySymbol(thesisRows, activeSymbol);
+  const catalyst = findBySymbol(catalystRows, activeSymbol);
+  const disclosure = findBySymbol(disclosureRows, activeSymbol);
+  const score = active?.score ?? 0;
+  const move = numericValue(quote?.change_pct);
+  const upside = numericValue(valuation?.upside_pct);
+  const setupScore = bestNumeric(sepa ?? {}, active ?? {}, ["score", "final_score"]);
+  const liquidityScore = liquidityQuality(liquidity);
+  const evidenceCount = [thesis, catalyst, disclosure].filter(Boolean).length;
+
+  return {
+    symbol: activeSymbol || "Select",
+    name: active?.name ?? "Select a ticker from the queue",
+    decision: active?.decision ?? "-",
+    score,
+    rationale: active?.whyNow ?? displayValue(signalField(thesis ?? {}, ["summary", "notes", "status"])),
+    nextAction: active?.nextAction ?? displayValue(signalField(catalyst ?? {}, ["summary", "notes", "event_date", "due_date"])),
+    invalidation: active?.invalidation ?? "-",
+    factors: [
+      {
+        label: "Composite",
+        value: clamp(score > 10 ? score : score * 10, 0, 100),
+        detail: active ? `${formatScore(score)} score` : "No signal row",
+        tone: toneForValue(score, "score"),
+      },
+      {
+        label: "Setup",
+        value: clamp(setupScore > 10 ? setupScore : setupScore * 10, 0, 100),
+        detail: displayValue(signalField(sepa ?? {}, ["verdict", "stage", "score"])),
+        tone: toneForValue(signalField(sepa ?? {}, ["verdict", "stage", "score"]), "verdict"),
+      },
+      {
+        label: "Tape",
+        value: Number.isFinite(move) ? clamp(((move + 10) / 20) * 100, 0, 100) : 0,
+        detail: Number.isFinite(move) ? formatPercent(move) : "No quote",
+        tone: toneForValue(move, "change_pct"),
+      },
+      {
+        label: "Upside",
+        value: Number.isFinite(upside) ? clamp(((upside + 25) / 75) * 100, 0, 100) : 0,
+        detail: Number.isFinite(upside) ? formatPercent(upside) : "No valuation",
+        tone: toneForValue(upside, "upside_pct"),
+      },
+      {
+        label: "Liquidity",
+        value: liquidityScore,
+        detail: displayValue(signalField(liquidity ?? {}, ["grade", "avg_dollar_volume", "avg_daily_volume"])),
+        tone: liquidityScore >= 70 ? "positive" : liquidityScore >= 40 ? "warning" : "negative",
+      },
+      {
+        label: "Evidence",
+        value: evidenceCount * 33.3,
+        detail: `${evidenceCount}/3 supporting rows`,
+        tone: evidenceCount >= 2 ? "positive" : evidenceCount ? "warning" : "neutral",
+      },
+    ],
+    evidence: [
+      { label: "Thesis", value: displayValue(signalField(thesis ?? {}, ["status", "summary", "notes"])), tone: thesis ? "positive" : "neutral" },
+      { label: "Catalyst", value: displayValue(signalField(catalyst ?? {}, ["event_date", "due_date", "summary", "notes"])), tone: catalyst ? "warning" : "neutral" },
+      { label: "Trader", value: displayValue(signalField(disclosure ?? {}, ["trader_name", "filer_name", "action", "filed_date"])), tone: disclosure ? "positive" : "neutral" },
+    ],
+  };
+}
+
+function buildMarketCharts({
+  signalRows,
+  quoteRows,
+  sepaRows,
+  valuationRows,
+}: {
+  signalRows: RowRecord[];
+  quoteRows: RowRecord[];
+  sepaRows: RowRecord[];
+  valuationRows: RowRecord[];
+}): MarketCharts {
+  const scoreBuckets = [0, 0, 0, 0, 0];
+  for (const row of signalRows) {
+    const rawScore = numericValue(row.score ?? row.final_score);
+    if (!Number.isFinite(rawScore)) {
+      continue;
+    }
+    const score = rawScore > 10 ? rawScore : rawScore * 10;
+    scoreBuckets[clamp(Math.floor(score / 20), 0, 4)] += 1;
+  }
+
+  const movers = quoteRows
+    .map((row) => ({
+      label: symbolFromRow(row) || displayValue(signalField(row, ["name", "title"])),
+      value: numericValue(row.change_pct),
+      detail: displayValue(signalField(row, ["price", "observed_at", "source"])),
+      tone: toneForValue(row.change_pct, "change_pct"),
+    }))
+    .filter((item) => Number.isFinite(item.value))
+    .sort((left, right) => Math.abs(right.value) - Math.abs(left.value))
+    .slice(0, 6);
+
+  const upside = valuationRows
+    .map((row) => ({
+      label: symbolFromRow(row),
+      value: numericValue(row.upside_pct),
+      detail: displayValue(signalField(row, ["fair_value", "method", "as_of"])),
+      tone: toneForValue(row.upside_pct, "upside_pct"),
+    }))
+    .filter((item) => item.label && Number.isFinite(item.value))
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 6);
+
+  const setupCounts = new Map<string, number>();
+  for (const row of sepaRows) {
+    const label = displayValue(signalField(row, ["verdict", "stage", "grade"]));
+    setupCounts.set(label, (setupCounts.get(label) ?? 0) + 1);
+  }
+  const setups = [...setupCounts.entries()]
+    .map(([label, value]) => ({
+      label,
+      value,
+      detail: `${value} setup${value === 1 ? "" : "s"}`,
+      tone: toneForValue(label, "verdict"),
+    }))
+    .sort((left, right) => right.value - left.value)
+    .slice(0, 5);
+
+  return { scoreBuckets, movers, upside, setups };
+}
+
+function buildTraderPortfolios(disclosureRows: RowRecord[]): TraderPortfolio[] {
+  return disclosureRows
+    .map((row) => {
+      const raw = objectValue(row.raw);
+      const holdings = arrayObjectValue(raw?.holdings);
+      const totalValue = numericValue(row.holdings_value_thousands ?? raw?.holdings_value_thousands);
+      const parsedHoldings = holdings
+        .map((holding) => ({
+          name: displayValue(holding.name ?? holding.title ?? holding.cusip),
+          value: numericValue(holding.value_thousands),
+          share: 0,
+        }))
+        .filter((holding) => Number.isFinite(holding.value) && holding.value > 0)
+        .sort((left, right) => right.value - left.value)
+        .slice(0, 5);
+      const topTotal = parsedHoldings.reduce((sum, holding) => sum + holding.value, 0);
+      const topHoldings = parsedHoldings.map((holding) => ({
+        ...holding,
+        share: topTotal ? holding.value / topTotal : 0,
+      }));
+
+      return {
+        name: displayValue(signalField(row, ["trader_name", "filer_name", "source_type"])),
+        filer: displayValue(signalField(row, ["filer_name", "source_type"])),
+        filedDate: displayValue(signalField(row, ["filed_date"])),
+        eventDate: displayValue(signalField(row, ["event_date"])),
+        holdingsCount: numericValue(row.holdings_count ?? raw?.holdings_count) || 0,
+        totalValue: Number.isFinite(totalValue) ? totalValue : 0,
+        caveat: displayValue(raw?.lag_caveat ?? row.lag_caveat),
+        topHoldings,
+      };
+    })
+    .filter((portfolio) => portfolio.name !== "-" || portfolio.holdingsCount || portfolio.totalValue)
+    .sort((left, right) => right.totalValue - left.totalValue)
+    .slice(0, 4);
+}
+
 function buildAnalysisCards({
   quoteRows,
   sepaRows,
   liquidityRows,
   valuationRows,
-  sourceHealthRows,
 }: {
   quoteRows: RowRecord[];
   sepaRows: RowRecord[];
   liquidityRows: RowRecord[];
   valuationRows: RowRecord[];
-  sourceHealthRows: RowRecord[];
 }): AnalysisCard[] {
   const positiveQuotes = quoteRows.filter((row) => numericValue(row.change_pct) > 0).length;
   const topMover = [...quoteRows].sort((left, right) => Math.abs(numericValue(right.change_pct)) - Math.abs(numericValue(left.change_pct)))[0];
@@ -464,7 +833,6 @@ function buildAnalysisCards({
   const liquidSetups = liquidityRows.filter((row) => String(row.grade ?? "").includes("high")).length;
   const validUpsideRows = valuationRows.filter((row) => typeof row.upside_pct === "number");
   const medianUpside = median(validUpsideRows.map((row) => numericValue(row.upside_pct)));
-  const healthySources = sourceHealthRows.filter((row) => ["ok", "verified_docs"].includes(String(row.status ?? ""))).length;
 
   return [
     {
@@ -495,19 +863,351 @@ function buildAnalysisCards({
       tone: medianUpside > 0 ? "positive" : medianUpside < 0 ? "negative" : "neutral",
       progress: clamp((medianUpside + 50) / 100, 0, 1),
     },
+  ];
+}
+
+function buildDecisionSignals({
+  signalRows,
+  candidateRows,
+  quoteRows,
+  sepaRows,
+  liquidityRows,
+  valuationRows,
+}: {
+  signalRows: RowRecord[];
+  candidateRows: RowRecord[];
+  quoteRows: RowRecord[];
+  sepaRows: RowRecord[];
+  liquidityRows: RowRecord[];
+  valuationRows: RowRecord[];
+}): DecisionSignal[] {
+  const quoteBySymbol = indexBySymbol(quoteRows);
+  const sepaBySymbol = indexBySymbol(sepaRows);
+  const liquidityBySymbol = indexBySymbol(liquidityRows);
+  const valuationBySymbol = indexBySymbol(valuationRows);
+  const candidatesBySymbol = indexBySymbol(candidateRows);
+  const sourceRows = signalRows.length ? signalRows : candidateRows;
+
+  return sourceRows
+    .map((row) => {
+      const symbol = symbolFromRow(row);
+      const candidate = candidatesBySymbol.get(symbol) ?? row;
+      const quote = quoteBySymbol.get(symbol);
+      const sepa = sepaBySymbol.get(symbol);
+      const liquidity = liquidityBySymbol.get(symbol);
+      const valuation = valuationBySymbol.get(symbol);
+      const score = bestNumeric(row, candidate, ["final_score", "score", "confidence", "signal_grade"]);
+      return {
+        symbol,
+        name: displayValue(signalField(candidate, ["name", "title", "category", "asset_class"]) ?? "Watchlist name"),
+        score,
+        grade: displayValue(signalField(row, ["signal_grade", "grade", "rating"])),
+        confidence: displayValue(signalField(row, ["confidence", "confidence_score", "probability", "conviction"])),
+        decision: displayValue(signalField(row, ["decision", "action", "recommendation", "stance", "status"])),
+        tier: signalTier(row, candidate, score, sepa),
+        whyNow: displayValue(signalField(row, ["why_now", "rationale", "summary", "notes", "catalyst", "thesis"])),
+        setup: displayValue(signalField(sepa ?? row, ["verdict", "stage", "signal_grade", "grade"])),
+        quote: formatSignedPercent(quote?.change_pct),
+        liquidity: displayValue(signalField(liquidity ?? {}, ["grade", "avg_dollar_volume", "avg_daily_volume"])),
+        valuation: formatSignedPercent(valuation?.upside_pct),
+        invalidation: displayValue(signalField(row, ["invalidation", "invalidates_if", "risk", "bear_case", "stop_loss"])),
+        nextAction: displayValue(signalField(row, ["next_action", "action_required", "follow_up", "next_step"])),
+        freshness: displayValue(signalField(row, ["source_freshness", "freshness", "latest_source_at", "updated_at", "as_of", "date"])),
+      };
+    })
+    .filter((item) => item.symbol)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 7);
+}
+
+function buildSignalGroups(items: DecisionSignal[]): SignalGroup[] {
+  const groups: SignalGroup[] = [
+    {
+      key: "action",
+      title: "Action",
+      description: "High-conviction names where signal quality clears the bar.",
+      tone: "positive",
+      items: [],
+    },
+    {
+      key: "research",
+      title: "Research Next",
+      description: "Promising setups that need thesis, catalyst, or valuation work.",
+      tone: "warning",
+      items: [],
+    },
+    {
+      key: "monitor",
+      title: "Monitor",
+      description: "On watch, but not yet urgent.",
+      tone: "neutral",
+      items: [],
+    },
+    {
+      key: "gated",
+      title: "Gated",
+      description: "Blocked by invalidation, missing thesis evidence, or explicit no-action gates.",
+      tone: "negative",
+      items: [],
+    },
+  ];
+
+  for (const item of items) {
+    groups.find((group) => group.key === item.tier)?.items.push(item);
+  }
+  return groups;
+}
+
+function signalTier(
+  row: RowRecord,
+  candidate: RowRecord,
+  score: number,
+  sepa: RowRecord | undefined,
+): DecisionSignal["tier"] {
+  const grade = String(row.signal_grade ?? row.grade ?? candidate.signal_grade ?? candidate.grade ?? "").trim().toLowerCase();
+  const text = [
+    row.decision,
+    row.next_action,
+    row.why_now,
+    row.invalidation,
+    row.signal_grade,
+    candidate.decision,
+    sepa?.verdict,
+  ]
+    .map((value) => String(value ?? "").toLowerCase())
+    .join(" ");
+
+  if (text.includes("do not") || text.includes("ignore") || text.includes("gated") || /\bf\b/.test(text)) {
+    return "gated";
+  }
+  if (score >= 70 || ["a", "b"].includes(grade) || text.includes("buy") || text.includes("act now")) {
+    return "action";
+  }
+  if (score >= 53 || text.includes("strong_setup") || text.includes("watch")) {
+    return "research";
+  }
+  return "monitor";
+}
+
+function buildPulseItems({
+  newsRows,
+  catalystRows,
+  thesisRows,
+  disclosureRows,
+}: {
+  newsRows: RowRecord[];
+  catalystRows: RowRecord[];
+  thesisRows: RowRecord[];
+  disclosureRows: RowRecord[];
+}): PulseItem[] {
+  const items: PulseItem[] = [];
+  for (const row of catalystRows.slice(0, 2)) {
+    items.push({
+      label: "Catalyst",
+      title: displayValue(signalField(row, ["symbol", "ticker", "title", "name", "event_type"])),
+      detail: displayValue(signalField(row, ["due_date", "event_date", "date", "summary", "notes"])),
+      tone: "warning",
+    });
+  }
+  for (const row of newsRows.slice(0, 2)) {
+    items.push({
+      label: "News",
+      title: displayValue(signalField(row, ["title", "summary", "provider"])),
+      detail: displayValue(signalField(row, ["published_at", "related_symbols", "source"])),
+      tone: "neutral",
+    });
+  }
+  for (const row of thesisRows.slice(0, 2)) {
+    items.push({
+      label: "Thesis",
+      title: displayValue(signalField(row, ["symbol", "ticker", "title", "name", "status"])),
+      detail: displayValue(signalField(row, ["summary", "notes", "updated_at", "status"])),
+      tone: String(row.status ?? "").toLowerCase().includes("active") ? "positive" : "neutral",
+    });
+  }
+  for (const row of disclosureRows.slice(0, 1)) {
+    items.push({
+      label: "Disclosure",
+      title: displayValue(signalField(row, ["trader_name", "filer_name", "source_type"])),
+      detail: displayValue(signalField(row, ["action", "event_date", "filed_date"])),
+      tone: "neutral",
+    });
+  }
+  return items.slice(0, 5);
+}
+
+function buildExposureCards({
+  portfolioRows,
+  quoteRows,
+  catalystRows,
+  valuationRows,
+}: {
+  portfolioRows: RowRecord[];
+  quoteRows: RowRecord[];
+  catalystRows: RowRecord[];
+  valuationRows: RowRecord[];
+}): ExposureCard[] {
+  const positiveQuotes = quoteRows.filter((row) => numericValue(row.change_pct) > 0).length;
+  const totalMarketValue = portfolioRows.reduce((total, row) => {
+    const value = numericValue(row.market_value);
+    return Number.isFinite(value) ? total + value : total;
+  }, 0);
+  const upcomingCatalysts = catalystRows.length;
+  const validUpsideRows = valuationRows.filter((row) => Number.isFinite(numericValue(row.upside_pct)));
+  const medianUpside = median(validUpsideRows.map((row) => numericValue(row.upside_pct)));
+
+  return [
+    {
+      label: "Portfolio",
+      value: totalMarketValue ? `$${compactNumber(totalMarketValue)}` : String(portfolioRows.length),
+      detail: totalMarketValue ? `${portfolioRows.length} tracked holdings` : "Tracked holdings",
+      tone: "neutral",
+    },
+    {
+      label: "Breadth",
+      value: `${positiveQuotes}/${quoteRows.length || 0}`,
+      detail: "Quotes positive today",
+      tone: positiveQuotes >= quoteRows.length / 2 ? "positive" : "warning",
+    },
+    {
+      label: "Catalysts",
+      value: String(upcomingCatalysts),
+      detail: "Events to monitor",
+      tone: upcomingCatalysts ? "warning" : "neutral",
+    },
+    {
+      label: "Proxy Upside",
+      value: validUpsideRows.length ? formatPercent(medianUpside) : "-",
+      detail: "Median valuation signal",
+      tone: medianUpside > 0 ? "positive" : medianUpside < 0 ? "negative" : "neutral",
+    },
+  ];
+}
+
+function buildOperationCards({
+  status,
+  providerRunRows,
+  sourceHealthRows,
+}: {
+  status?: ApiStatus;
+  providerRunRows: RowRecord[];
+  sourceHealthRows: RowRecord[];
+}): OperationCard[] {
+  const healthySources = sourceHealthRows.filter((row) => ["ok", "verified_docs"].includes(String(row.status ?? ""))).length;
+  const failedRuns = providerRunRows.filter((row) => toneForValue(row.status, "status") === "negative").length;
+  const latestRun = providerRunRows[0];
+  return [
+    {
+      label: "Data Store",
+      value: status?.ready ? "Ready" : "Setup",
+      detail: status?.source ?? "unknown source",
+      tone: status?.ready ? "positive" : "warning",
+    },
     {
       label: "Source Health",
       value: `${healthySources}/${sourceHealthRows.length || 0}`,
-      detail: "OK or verified source rows",
+      detail: "OK or verified checks",
       tone: healthySources === sourceHealthRows.length && sourceHealthRows.length ? "positive" : "warning",
-      progress: sourceHealthRows.length ? healthySources / sourceHealthRows.length : 0,
+    },
+    {
+      label: "Provider Runs",
+      value: failedRuns ? `${failedRuns} failed` : String(providerRunRows.length),
+      detail: latestRun ? displayValue(signalField(latestRun, ["finished_at", "provider", "capability"])) : "No provider run rows",
+      tone: failedRuns ? "negative" : "positive",
     },
   ];
+}
+
+function indexBySymbol(sourceRows: RowRecord[]): Map<string, RowRecord> {
+  const index = new Map<string, RowRecord>();
+  for (const row of sourceRows) {
+    const symbol = symbolFromRow(row);
+    if (symbol && !index.has(symbol)) {
+      index.set(symbol, row);
+    }
+  }
+  return index;
+}
+
+function findBySymbol(sourceRows: RowRecord[], symbol: string): RowRecord | undefined {
+  if (!symbol) {
+    return undefined;
+  }
+  return sourceRows.find((row) => symbolFromRow(row) === symbol);
+}
+
+function liquidityQuality(row: RowRecord | undefined): number {
+  if (!row) {
+    return 0;
+  }
+  const grade = String(signalField(row, ["grade", "liquidity_grade"]) ?? "").toLowerCase();
+  if (grade.includes("very") && grade.includes("high")) {
+    return 95;
+  }
+  if (grade.includes("high")) {
+    return 82;
+  }
+  if (grade.includes("medium")) {
+    return 55;
+  }
+  if (grade.includes("low")) {
+    return 22;
+  }
+  const impact = numericValue(row.impact_1pct_adv_bps);
+  if (Number.isFinite(impact)) {
+    return clamp(100 - impact, 0, 100);
+  }
+  const dollarVolume = numericValue(row.avg_dollar_volume);
+  if (Number.isFinite(dollarVolume)) {
+    return clamp(Math.log10(Math.max(dollarVolume, 1)) * 12, 0, 100);
+  }
+  return 0;
+}
+
+function objectValue(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+function arrayObjectValue(value: JsonValue | undefined): Array<Record<string, JsonValue>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, JsonValue> => typeof item === "object" && item !== null && !Array.isArray(item))
+    : [];
+}
+
+function bestNumeric(primary: RowRecord, fallback: RowRecord, keys: string[]): number {
+  for (const key of keys) {
+    const value = numericValue(primary[key] ?? fallback[key]);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function formatSignedPercent(value: JsonValue | undefined): string {
+  const numeric = numericValue(value);
+  return Number.isFinite(numeric) ? formatPercent(numeric) : "-";
+}
+
+function scoreValue(value: JsonValue | undefined): number {
+  const numeric = numericValue(value);
+  if (!Number.isFinite(numeric)) {
+    return Number.NaN;
+  }
+  return numeric > 10 ? numeric / 10 : numeric;
+}
+
+function formatScore(value: JsonValue | undefined): string {
+  const scaled = scoreValue(value);
+  return Number.isFinite(scaled) ? String(Math.round(scaled)) : "-";
 }
 
 function formattedCellValue(value: JsonValue | undefined, columnId: string): string {
   const numeric = numericValue(value);
   if (Number.isFinite(numeric)) {
+    if (isScoreColumn(columnId)) {
+      return formatScore(value);
+    }
     if (isPercentColumn(columnId)) {
       return formatPercent(numeric);
     }
@@ -584,6 +1284,569 @@ function median(values: number[]): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function SectionIntro({ eyebrow, title, detail }: { eyebrow: string; title: string; detail: string }) {
+  return (
+    <div className="section-intro">
+      <div>
+        <p className="eyebrow">{eyebrow}</p>
+        <h2>{title}</h2>
+      </div>
+      <p>{detail}</p>
+    </div>
+  );
+}
+
+function SignalOverviewPanel({ overview, groups }: { overview: SignalOverview; groups: SignalGroup[] }) {
+  const tierItems = groups.map((group) => ({
+    label: group.title,
+    value: group.items.length,
+    tone: group.tone,
+  }));
+  const breadthProgress = overview.breadthTotal ? overview.breadthPositive / overview.breadthTotal : 0;
+  const averageScoreProgress = clamp(overview.averageScore / 100, 0, 1);
+
+  return (
+    <section className="signal-overview" aria-label="Signal overview">
+      <article className="overview-card primary">
+        <div>
+          <span>Decision queue</span>
+          <strong>{overview.leadCount}</strong>
+        </div>
+        <p>Action tier names</p>
+        <DistributionBar items={tierItems} />
+      </article>
+      <article className="overview-card">
+        <div>
+          <span>Avg score</span>
+          <strong>{overview.averageScore ? Math.round(overview.averageScore) : "-"}</strong>
+        </div>
+        <p>Normalized 0-100 conviction</p>
+        <div className="overview-track" aria-hidden="true">
+          <i style={{ width: `${averageScoreProgress * 100}%` }} />
+        </div>
+      </article>
+      <article className="overview-card">
+        <div>
+          <span>Breadth</span>
+          <strong>
+            {overview.breadthPositive}/{overview.breadthTotal || 0}
+          </strong>
+        </div>
+        <p>Positive quote rows</p>
+        <div className="overview-track positive" aria-hidden="true">
+          <i style={{ width: `${breadthProgress * 100}%` }} />
+        </div>
+      </article>
+      <article className="overview-card">
+        <div>
+          <span>Score shape</span>
+          <strong>{overview.scoreBuckets.reduce((total, value) => total + value, 0)}</strong>
+        </div>
+        <p>Low to high distribution</p>
+        <MiniHistogram values={overview.scoreBuckets} />
+      </article>
+      <article className="overview-card">
+        <div>
+          <span>Coverage</span>
+          <strong>{overview.sepaCoverage + overview.valuationRows}</strong>
+        </div>
+        <p>{overview.sepaCoverage} SEPA / {overview.valuationRows} valuation</p>
+        <DistributionBar
+          items={[
+            { label: "SEPA", value: overview.sepaCoverage, tone: "positive" },
+            { label: "Valuation", value: overview.valuationRows, tone: "warning" },
+          ]}
+        />
+      </article>
+    </section>
+  );
+}
+
+function DistributionBar({
+  items,
+}: {
+  items: Array<{ label: string; value: number; tone: "positive" | "negative" | "warning" | "neutral" }>;
+}) {
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  return (
+    <div className="distribution" aria-label={items.map((item) => `${item.label} ${item.value}`).join(", ")}>
+      {items.map((item) => (
+        <span
+          key={item.label}
+          className={item.tone}
+          style={{ width: `${total ? Math.max((item.value / total) * 100, item.value ? 8 : 0) : 0}%` }}
+          title={`${item.label}: ${item.value}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MiniHistogram({ values }: { values: number[] }) {
+  const max = Math.max(...values, 1);
+  return (
+    <div className="mini-histogram" aria-label={`Score buckets ${values.join(", ")}`}>
+      {values.map((value, index) => (
+        <span key={index} style={{ height: `${Math.max((value / max) * 100, value ? 16 : 4)}%` }} title={`${value} names`} />
+      ))}
+    </div>
+  );
+}
+
+function TickerInsightPanel({ insight }: { insight: TickerInsight }) {
+  return (
+    <section className="decision-panel ticker-insight">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Why this decision</p>
+          <h2>{insight.symbol === "Select" ? "Ticker Explanation" : insight.symbol}</h2>
+        </div>
+        <span className={`score-chip ${toneForValue(insight.score, "score")}`}>{formatScore(insight.score)}</span>
+      </div>
+      <div className="ticker-insight-body">
+        <div className="ticker-hero">
+          <div>
+            <strong>{insight.name}</strong>
+            <span className={`badge-cell ${toneForValue(insight.decision, "decision")}`}>{insight.decision}</span>
+          </div>
+          <p>{insight.rationale}</p>
+        </div>
+
+        <FactorBars factors={insight.factors} />
+
+        <div className="decision-notes">
+          <KeyValue label="Next action" value={insight.nextAction} />
+          <KeyValue label="Invalidation" value={insight.invalidation} />
+        </div>
+
+        <div className="evidence-strip">
+          {insight.evidence.map((item) => (
+            <article key={item.label} className={`evidence-pill ${item.tone}`}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FactorBars({ factors }: { factors: FactorBar[] }) {
+  return (
+    <div className="factor-bars">
+      {factors.map((factor) => (
+        <div key={factor.label} className="factor-row">
+          <div>
+            <span>{factor.label}</span>
+            <strong>{factor.detail}</strong>
+          </div>
+          <div className={`factor-track ${factor.tone}`} aria-hidden="true">
+            <i style={{ width: `${clamp(factor.value, 0, 100)}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MarketChartsPanel({ charts }: { charts: MarketCharts }) {
+  return (
+    <section className="decision-panel market-charts">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Analysis charts</p>
+          <h2>Signal Shape</h2>
+        </div>
+        <LineChart size={18} />
+      </div>
+      <div className="chart-grid">
+        <article className="chart-card">
+          <h3>Score distribution</h3>
+          <MiniHistogram values={charts.scoreBuckets} />
+          <div className="axis-labels">
+            <span>0</span>
+            <span>100</span>
+          </div>
+        </article>
+        <HorizontalBarChart title="Largest moves" items={charts.movers} valueFormat={formatPercent} symmetric />
+        <HorizontalBarChart title="Valuation upside" items={charts.upside} valueFormat={formatPercent} />
+        <SetupMix items={charts.setups} />
+      </div>
+    </section>
+  );
+}
+
+function HorizontalBarChart({
+  title,
+  items,
+  valueFormat,
+  symmetric = false,
+}: {
+  title: string;
+  items: ChartItem[];
+  valueFormat: (value: number) => string;
+  symmetric?: boolean;
+}) {
+  const max = Math.max(...items.map((item) => Math.abs(item.value)), 1);
+  return (
+    <article className="chart-card">
+      <h3>{title}</h3>
+      {items.length ? (
+        <div className={`bar-chart ${symmetric ? "symmetric" : ""}`}>
+          {items.map((item) => (
+            <div key={`${title}-${item.label}`} className="bar-row">
+              <span>{item.label}</span>
+              <div className={`bar-track ${item.tone}`} aria-hidden="true">
+                <i style={{ width: `${Math.max((Math.abs(item.value) / max) * 100, 3)}%` }} />
+              </div>
+              <strong>{valueFormat(item.value)}</strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-note">No chart rows.</p>
+      )}
+    </article>
+  );
+}
+
+function SetupMix({ items }: { items: ChartItem[] }) {
+  return (
+    <article className="chart-card">
+      <h3>Setup mix</h3>
+      <DistributionBar items={items.length ? items : [{ label: "None", value: 0, tone: "neutral" }]} />
+      <div className="setup-list">
+        {items.length ? (
+          items.map((item) => (
+            <div key={item.label}>
+              <span className={`health-dot ${item.tone}`} />
+              <strong>{item.label}</strong>
+              <em>{item.value}</em>
+            </div>
+          ))
+        ) : (
+          <p className="empty-note">No setup rows.</p>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function TraderPortfolioPanel({ portfolios }: { portfolios: TraderPortfolio[] }) {
+  return (
+    <section className="decision-panel trader-portfolios">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Notable trader portfolio</p>
+          <h2>13F Evidence</h2>
+        </div>
+        <span className="source-chip">{portfolios.length} filings</span>
+      </div>
+      <div className="trader-list">
+        {portfolios.length ? (
+          portfolios.map((portfolio) => (
+            <article key={`${portfolio.name}-${portfolio.filedDate}`} className="trader-card">
+              <div className="trader-card-header">
+                <div>
+                  <strong>{portfolio.name}</strong>
+                  <span>{portfolio.filer}</span>
+                </div>
+                <div>
+                  <b>{portfolio.holdingsCount || "-"}</b>
+                  <span>holdings</span>
+                </div>
+              </div>
+              <div className="trader-meta">
+                <span>Filed {portfolio.filedDate}</span>
+                <span>As of {portfolio.eventDate}</span>
+                <span>{portfolio.totalValue ? `$${compactNumber(portfolio.totalValue * 1000)}` : "Value unavailable"}</span>
+              </div>
+              <div className="holding-bars">
+                {portfolio.topHoldings.length ? (
+                  portfolio.topHoldings.map((holding) => (
+                    <div key={holding.name}>
+                      <span>{holding.name}</span>
+                      <div className="holding-track" aria-hidden="true">
+                        <i style={{ width: `${Math.max(holding.share * 100, 4)}%` }} />
+                      </div>
+                      <strong>${compactNumber(holding.value * 1000)}</strong>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty-note">Holding table not parsed for this filing.</p>
+                )}
+              </div>
+              {portfolio.caveat !== "-" ? <p className="filing-caveat">{portfolio.caveat}</p> : null}
+            </article>
+          ))
+        ) : (
+          <p className="empty-note">No notable trader 13F filings are available yet.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SignalHierarchy({
+  groups,
+  selectedSymbol,
+  expandedSignal,
+  onSelectSymbol,
+  onExpandedSignal,
+}: {
+  groups: SignalGroup[];
+  selectedSymbol: string;
+  expandedSignal: string;
+  onSelectSymbol: (symbol: string) => void;
+  onExpandedSignal: (symbol: string) => void;
+}) {
+  const total = groups.reduce((count, group) => count + group.items.length, 0);
+
+  return (
+    <section className="decision-panel signal-panel">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Today&apos;s queue</p>
+          <h2>Decision Signal Hierarchy</h2>
+        </div>
+        <span className="source-chip">{total} ranked</span>
+      </div>
+      <div className="signal-groups">
+        {groups.map((group) => (
+          <section key={group.key} className={`signal-group ${group.tone}`}>
+            <div className="signal-group-header">
+              <div>
+                <h3>{group.title}</h3>
+                <p>{group.description}</p>
+              </div>
+              <strong>{group.items.length}</strong>
+            </div>
+            {group.items.length ? (
+              <div className="signal-table-frame">
+                <table className="signal-table">
+                  <thead>
+                    <tr>
+                      <th>Ticker</th>
+                      <th>Score</th>
+                      <th>Signal</th>
+                      <th>Setup</th>
+                      <th>Move</th>
+                      <th>Upside</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.items.map((item) => {
+                      const expanded = expandedSignal === item.symbol;
+                      return (
+                        <Fragment key={item.symbol}>
+                          <tr
+                            className={`${item.symbol === selectedSymbol ? "selected" : ""} ${expanded ? "expanded" : ""}`}
+                            onClick={() => {
+                              onSelectSymbol(item.symbol);
+                              onExpandedSignal(expanded ? "" : item.symbol);
+                            }}
+                          >
+                            <td>
+                              <span className="signal-symbol">
+                                <strong>{item.symbol}</strong>
+                                <small>{item.name}</small>
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`score-chip ${toneForValue(item.score, "score")}`}>{formatScore(item.score)}</span>
+                            </td>
+                            <td>
+                              <span className={`badge-cell ${toneForValue(item.decision, "decision")}`}>{item.decision}</span>
+                            </td>
+                            <td>
+                              <span className={`badge-cell ${toneForValue(item.setup, "verdict")}`}>{item.setup}</span>
+                            </td>
+                            <td>
+                              <span className={`value-pill ${toneForValue(item.quote, "change_pct")}`}>{item.quote}</span>
+                            </td>
+                            <td>
+                              <span className={`value-pill ${toneForValue(item.valuation, "upside_pct")}`}>{item.valuation}</span>
+                            </td>
+                          </tr>
+                          {expanded ? (
+                            <tr className="signal-detail-row">
+                              <td colSpan={6}>
+                                <div className="signal-detail-grid">
+                                  <KeyValue label="Why now" value={item.whyNow} />
+                                  <KeyValue label="Next action" value={item.nextAction} />
+                                  <KeyValue label="Invalidation" value={item.invalidation} />
+                                  <KeyValue label="Move" value={item.quote} />
+                                  <KeyValue label="Upside" value={item.valuation} />
+                                  <KeyValue label="Setup" value={item.setup} />
+                                  <KeyValue label="Confidence" value={item.confidence} />
+                                  <KeyValue label="Grade" value={item.grade} />
+                                  <KeyValue label="Liquidity" value={item.liquidity} />
+                                  <KeyValue label="Freshness" value={item.freshness} />
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="empty-note signal-empty">No names in this tier.</p>
+            )}
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function KeyValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ExposurePanel({ cards }: { cards: ExposureCard[] }) {
+  return (
+    <section className="decision-panel exposure-panel">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Operating picture</p>
+          <h2>Exposure & Timing</h2>
+        </div>
+      </div>
+      <div className="exposure-grid">
+        {cards.map((card) => (
+          <article key={card.label} className={`exposure-card ${card.tone}`}>
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <p>{card.detail}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PulsePanel({ items }: { items: PulseItem[] }) {
+  return (
+    <section className="decision-panel pulse-panel">
+      <div className="decision-panel-header">
+        <div>
+          <p className="eyebrow">Evidence flow</p>
+          <h2>What Changed</h2>
+        </div>
+      </div>
+      <div className="pulse-list">
+        {items.length ? (
+          items.map((item, index) => (
+            <article key={`${item.label}-${index}`} className={`pulse-item ${item.tone}`}>
+              <span>{item.label}</span>
+              <strong>{item.title}</strong>
+              <p>{item.detail}</p>
+            </article>
+          ))
+        ) : (
+          <p className="empty-note">No catalysts, news, theses, or source-health rows returned.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OperationHealthPanel({
+  cards,
+  sourceRows,
+  providerRows,
+  serviceSource,
+}: {
+  cards: OperationCard[];
+  sourceRows: RowRecord[];
+  providerRows: RowRecord[];
+  serviceSource?: string;
+}) {
+  const sourceRowsToShow = sourceRows.slice(0, 4);
+  const providerRowsToShow = providerRows.slice(0, 4);
+
+  return (
+    <section className="operation-health" aria-label="Operation health">
+      <div className="operation-header">
+        <div>
+          <p className="eyebrow">Service checks</p>
+          <h2>Runtime Health</h2>
+        </div>
+        <span className="source-chip">{serviceSource ?? "unknown source"}</span>
+      </div>
+      <div className="operation-grid">
+        {cards.map((card) => (
+          <article key={card.label} className={`operation-card ${card.tone}`}>
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <p>{card.detail}</p>
+          </article>
+        ))}
+        <article className="operation-card">
+          <span>Latest Source</span>
+          <strong>{displayValue(signalField(sourceRows[0] ?? {}, ["source", "provider", "capability"]))}</strong>
+          <p>{displayValue(signalField(sourceRows[0] ?? {}, ["status", "checked_at", "detail"]))}</p>
+        </article>
+        <article className="operation-card">
+          <span>Latest Run</span>
+          <strong>{displayValue(signalField(providerRows[0] ?? {}, ["provider", "capability", "status"]))}</strong>
+          <p>{displayValue(signalField(providerRows[0] ?? {}, ["finished_at", "detail", "status"]))}</p>
+        </article>
+      </div>
+      <div className="operation-lists">
+        <div>
+          <h3>Source checks</h3>
+          <HealthRows rows={sourceRowsToShow} primaryKeys={["source", "provider", "capability"]} secondaryKeys={["status", "checked_at", "detail"]} />
+        </div>
+        <div>
+          <h3>Provider runs</h3>
+          <HealthRows rows={providerRowsToShow} primaryKeys={["provider", "capability"]} secondaryKeys={["status", "finished_at", "detail"]} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HealthRows({
+  rows,
+  primaryKeys,
+  secondaryKeys,
+}: {
+  rows: RowRecord[];
+  primaryKeys: string[];
+  secondaryKeys: string[];
+}) {
+  if (!rows.length) {
+    return <p className="empty-note">No rows returned.</p>;
+  }
+
+  return (
+    <div className="health-row-list">
+      {rows.map((row, index) => {
+        const statusValue = signalField(row, ["status", "state", "result"]);
+        return (
+          <article key={index} className="health-row">
+            <span className={`health-dot ${toneForValue(statusValue, "status")}`} />
+            <div>
+              <strong>{displayValue(signalField(row, primaryKeys))}</strong>
+              <p>{displayValue(signalField(row, secondaryKeys))}</p>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
 }
 
 function StatusPill({ status }: { status?: ApiStatus }) {
