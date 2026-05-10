@@ -9,9 +9,12 @@ from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
 from investment_panel.core.disclosures import (
     ingest_public_disclosure_csvs,
+    ensure_disclosure_symbol_prices,
+    ingest_official_house_disclosures_for_trader,
     ingest_13f_trackers,
     load_13f_trackers_from_config,
     load_public_disclosure_csvs_from_config,
+    load_tracked_traders_from_config,
     purge_direct_tracker_rows,
     rebuild_trader_replica_portfolios,
 )
@@ -28,6 +31,7 @@ def run(
     config = load_config(config_path)
     trackers = load_13f_trackers_from_config(config_path)
     public_disclosure_csvs = load_public_disclosure_csvs_from_config(config_path)
+    tracked_traders = load_tracked_traders_from_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
         purge_direct_tracker_rows(con)
@@ -35,6 +39,8 @@ def run(
         if online_check:
             lightweight_online_check(con, config.market_data.user_agent)
         public_disclosure_result = ingest_public_disclosure_csvs(con, public_disclosure_csvs)
+        official_house_results = [ingest_official_house_disclosures_for_trader(con, trader) for trader in tracked_traders]
+        price_result = ensure_disclosure_symbol_prices(con)
         ingest_result = ingest_13f_trackers(
             con,
             trackers,
@@ -49,7 +55,12 @@ def run(
         "status": "disclosures_updated",
         "trackers_configured": len(trackers),
         "public_disclosure_csvs_configured": len(public_disclosure_csvs),
+        "tracked_traders_configured": len(tracked_traders),
+        "official_house_filings_found": sum(row["official_house_filings_found"] for row in official_house_results),
+        "official_house_filings_ingested": sum(row["official_house_filings_ingested"] for row in official_house_results),
+        "official_house_rows_ingested": sum(row["official_house_rows_ingested"] for row in official_house_results),
         **public_disclosure_result,
+        **price_result,
         **ingest_result,
         **replica_result,
     }

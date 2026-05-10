@@ -16,11 +16,16 @@ The job:
 
 1. Loads configured public disclosure CSV feeds from `disclosures.public_disclosure_csvs`
    and each tracked trader's `daily_csvs`.
-2. Normalizes transaction rows into `source_type = public_disclosure_transaction`.
-3. Refreshes configured SEC 13F metadata rows.
-4. Rebuilds one `source_type = trader_portfolio_model` row per trader from
-   normalized transactions and local `prices_daily`.
-5. Writes job status to `mini-market-disclosures.json`.
+2. Searches configured official House disclosure feeds, downloads matching PTR
+   and annual FD PDFs, and parses reproducible rows from the PDFs.
+3. Normalizes transaction/baseline rows into
+   `source_type = public_disclosure_transaction`.
+4. Ensures local price history reaches back to each trader's earliest
+   disclosure event.
+5. Refreshes configured SEC 13F metadata rows.
+6. Rebuilds one `source_type = trader_portfolio_model` row per trader from
+   normalized disclosures and local `prices_daily`.
+7. Writes job status to `mini-market-disclosures.json`.
 
 Use `--skip-holdings` for the daily scheduler until 13F holding fetch volume is
 intentionally widened. Remove it for manual deeper 13F refreshes.
@@ -59,23 +64,28 @@ estimated model, not proof of current holdings.
    source location. Historical feeds should cover the trader's full disclosed
    activity back to the desired model inception date. Daily feeds should contain
    new or recently changed filings only.
-3. Add the trader to `config.yaml`:
+3. Add the trader to `config.yaml`. For House members, prefer the official
+   House search configuration so backfill can download the full PDF history:
 
 ```yaml
 disclosures:
   tracked_traders:
     - name: Nancy Pelosi
-      filer_name: House periodic transaction reports
-      source_kind: house_ptr
-      historical_csvs:
-        - path: /absolute/path/to/nancy-pelosi-ptrs-history.csv
-      daily_csvs:
-        - path: /absolute/path/to/nancy-pelosi-ptrs-daily.csv
+      filer_name: House financial disclosures
+      source_kind: house_disclosures
+      official_house:
+        last_name: Pelosi
+        state: CA
+        start_year: 2018
+        end_year: 2026
+        filing_types:
+          - PTR Original
+          - FD Original
 ```
 
-4. Make sure symbols are market tickers already covered by `prices_daily`.
-   Add missing symbols to `watchlist` and run the relevant price job before
-   expecting high-quality replica weights.
+4. Make sure symbols are market tickers that can be priced. Backfill will fetch
+   missing price history for disclosure symbols, but unsupported symbols or
+   ambiguous assets still need a defended mapping before they can be modeled.
 5. Run the one-time historical backfill:
 
 ```bash
@@ -129,28 +139,42 @@ unverified model, not as a completed tracker.
 
 ## Current Verification Status
 
-As of 2026-05-10, the scalable pipeline is not yet close enough to reproduce a
-third-party Pelosi-style tracker portfolio from official filings alone.
+As of 2026-05-10, the scalable pipeline is still `not_close` against the live
+PelosiTracker reference. This is a verified result, not a completed replication.
 
-A benchmark using the official House PTR filing `20033725` produced a model with
-6 holdings and 5 of 12 benchmark symbols overlapping. The model was dominated by
-`AB`, missed historical positions such as `AVGO`, `PANW`, `CRWD`, `TSLA`, and
-`MSFT`, and had a materially different estimated value/performance profile.
+The current run uses official House search for Nancy Pelosi, CA, 2018-2026,
+with `PTR Original` and `FD Original` filings enabled. It deleted prior
+third-party tracker rows, ingested 58 official House PDFs, normalized 224
+disclosure rows, refreshed missing historical prices, and rebuilt the replica
+portfolio.
+
+Benchmark file:
+`/Volumes/agent/data-sources/status/mini-market-trader-benchmark-nancy-pelosi.json`
+
+Latest benchmark:
+
+- Verdict: `not_close`
+- Symbol overlap: `0.8333` (`10/12`)
+- Top-six overlap: `0.6667`
+- Mean weight error: `5.3801`
+- Missing reference symbols: `IBTA.L`, `TSLA`
+- Extra official-model symbols include `AB`, `AXP`, `CRM`, `DIS`, `V`, and
+  other holdings that appear in House annual disclosures but not in the
+  reference portfolio.
 
 Root causes:
 
-- The current importer consumes already-normalized CSV rows; it does not yet
-  discover and parse new House/Senate PTR PDFs itself.
-- A single PTR only captures recent transactions, not the full historical
-  position ledger required to reconstruct current holdings.
-- Congressional PTRs disclose ranges and comments. Close replication needs
-  comment parsing for exact share counts, option exercise semantics, spinoffs,
-  gifts/contributions, and historical open lots.
-- Missing ticker coverage in `prices_daily` degrades reconstruction unless new
-  trader symbols are added to the watchlist and refreshed.
+- The reference includes `IBTA.L`, which is not the ticker disclosed in the
+  official House rows. The official 2026 filing contains
+  `AllianceBernstein Holding L.P. Units (AB)`, not `IBTA.L`.
+- The latest annual FD shows `Tesla, Inc. (TSLA)` with no current asset value
+  and a capital-loss note, while the reference includes TSLA as a current
+  allocation.
+- Congressional annual reports disclose broad ranges, not exact quantities.
+  Weight matching remains approximate even when the symbol appears.
+- The reference appears to be a third-party/model portfolio allocation, not a
+  directly reproducible current-position statement from House disclosures.
 
-Before treating this as a close replication engine, build the official
-House/Senate PTR importer, ingest each trader's historical filing set, parse
-share-count comments where present, and add a benchmark report that compares
-derived holdings against a chosen reference portfolio without ingesting that
-reference as source data.
+Do not mark this replication as done until those source/model gaps are either
+resolved from primary disclosures or explicitly accepted as reference-specific
+calibration rules.

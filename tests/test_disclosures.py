@@ -17,6 +17,7 @@ from investment_panel.core.disclosures import (
     recent_13f_filings,
     rebuild_trader_replica_portfolios,
 )
+from investment_panel.core.house_disclosures import parse_house_annual_text
 from investment_panel.jobs.update_disclosures import run as run_update_disclosures
 
 
@@ -218,6 +219,59 @@ Nancy Pelosi,AAPL,BUY,2025-02-01,2025-02-20,500000,1000000,https://disclosures-c
     assert raw["holdings"][0]["symbol"] == "NVDA"
     assert raw["transactions_count"] == 3
     assert raw["source_caveat"].startswith("Replica portfolios")
+
+
+def test_replica_baseline_replaces_prior_inferred_lots(tmp_path: Path) -> None:
+    csv_path = tmp_path / "baseline.csv"
+    csv_path.write_text(
+        """trader_name,symbol,transaction_type,transaction_date,filed_date,amount_min,amount_max,source_url
+Nancy Pelosi,NVDA,BUY,2023-01-01,2023-02-01,100000,100000,https://source/old
+Nancy Pelosi,AAPL,BASELINE,2024-12-31,2025-08-01,100000,100000,https://source/fd
+Nancy Pelosi,MSFT,BASELINE,2024-12-31,2025-08-01,200000,200000,https://source/fd
+Nancy Pelosi,MSFT,BUY,2025-01-15,2025-02-01,100000,100000,https://source/ptr
+""",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2023-01-01', 90, 100, 80, 100, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-01-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2024-12-31', 90, 100, 80, 100, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('AAPL', '2026-01-01', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2024-12-31', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2025-01-15', 180, 200, 170, 200, 1, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-01-01', 270, 300, 250, 300, 1, 'test')")
+        ingest_public_disclosure_csvs(con, [{"path": str(csv_path), "trader_name": "Nancy Pelosi"}])
+        rebuild_trader_replica_portfolios(con)
+
+    with db(db_path, read_only=True) as con:
+        model = query_rows(con, "SELECT raw FROM disclosures WHERE source_type = 'trader_portfolio_model'")[0]
+    raw = json.loads(model["raw"])
+    assert {holding["symbol"] for holding in raw["holdings"]} == {"AAPL", "MSFT"}
+
+
+def test_house_annual_parser_only_reads_holding_rows() -> None:
+    filing = {
+        "name": "Pelosi, Hon.. Nancy",
+        "filing_year": 2024,
+        "document_id": "10000000",
+        "url": "https://disclosures-clerk.house.gov/public_disc/financial-pdfs/2024/10000000.pdf",
+    }
+    text = """
+Financial Disclosure Report
+Alphabet Inc. - Class A (GOOGL) [ST] SP $5,000,001 - $25,000,000 Dividends $15,001 - $50,000
+Tesla, Inc. (TSLA) [ST] SP None Capital Loss $100,001 - $1,000,000
+Asset Owner Date Tx. Amount
+Broadcom Inc. - Common Stock (AVGO) [OP] SP 06/24/2024 P $1,000,001 - $5,000,000
+Filing Date: 08/01/2025
+"""
+
+    rows = parse_house_annual_text(text, filing, "Nancy Pelosi")
+
+    assert [row["symbol"] for row in rows] == ["GOOGL"]
+    assert rows[0]["transaction_type"] == "BASELINE"
+    assert rows[0]["filed_date"] == "2025-08-01"
 
 
 def test_extract_public_disclosure_csvs_from_config(tmp_path: Path) -> None:

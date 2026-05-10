@@ -9,6 +9,7 @@ dependencies = [
   "httpx>=0.27.0",
   "pandas>=2.2.0",
   "pydantic>=2.9.0",
+  "pypdf>=6.11.0",
   "pyyaml>=6.0.0",
   "uvicorn>=0.30.0",
   "yfinance>=0.2.60",
@@ -30,6 +31,7 @@ market-weekly-review = "investment_panel.jobs.weekly_portfolio_review:main"
 market-research-candidate = "investment_panel.jobs.research_candidate:main"
 market-update-free-sources = "investment_panel.jobs.update_free_sources:main"
 market-backfill-trader-disclosures = "investment_panel.jobs.backfill_trader_disclosures:main"
+market-benchmark-trader-replica = "investment_panel.jobs.benchmark_trader_replica:main"
 
 [build-system]
 requires = ["hatchling"]

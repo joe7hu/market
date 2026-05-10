@@ -52,7 +52,19 @@ disclosures:
   public_disclosure_csvs: []
   # Onboard new traders here. Run backfill_trader_disclosures once after adding
   # historical_csvs; daily_csvs are included in the scheduled disclosure refresh.
-  tracked_traders: []
+  tracked_traders:
+    - name: Nancy Pelosi
+      filer_name: House financial disclosures
+      source_kind: house_disclosures
+      official_house:
+        last_name: Pelosi
+        state: CA
+        start_year: 2018
+        end_year: 2026
+        filing_types:
+          - PTR Original
+          - FD Original
+        user_agent: "joehu-market-panel/0.1 contact:local"
   13f_trackers:
     - name: Berkshire / Buffett
       cik: "0001067983"

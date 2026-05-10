@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -14,6 +14,12 @@ import yaml
 from investment_panel.core import sec
 from investment_panel.core.config import resolve_path
 from investment_panel.core.db import json_dumps
+from investment_panel.core.house_disclosures import (
+    fetch_house_pdf_text,
+    parse_house_disclosure_text,
+    search_house_member_filings,
+)
+from investment_panel.core.prices import fetch_prices, upsert_prices
 
 
 THIRTEEN_F_FORMS = {"13F-HR", "13F-HR/A"}
@@ -112,6 +118,8 @@ def extract_tracked_traders(raw_config: dict[str, Any], base: Path | None = None
                 "trader_name": trader_name,
                 "filer_name": filer_name,
                 "source_kind": default_source["source_kind"],
+                "official_house": row.get("official_house") or row.get("house") or {},
+                "benchmark": row.get("benchmark") or {},
                 "historical_csvs": disclosure_csv_sources(row.get("historical_csvs") or [], root, default_source),
                 "daily_csvs": disclosure_csv_sources(row.get("daily_csvs") or row.get("incremental_csvs") or [], root, default_source),
             }
@@ -173,16 +181,53 @@ def backfill_trader_disclosure_history(
     trader_name = str(trader["trader_name"])
     if replace:
         delete_trader_disclosure_rows(con, trader_name)
+    official_result = ingest_official_house_disclosures_for_trader(con, trader)
     sources = list(trader.get("historical_csvs") or []) + list(trader.get("daily_csvs") or [])
     ingest_result = ingest_public_disclosure_csvs(con, sources)
+    price_result = ensure_disclosure_symbol_prices(con, trader_names=[trader_name])
     rebuild_result = rebuild_trader_replica_portfolios(con, trader_names=[trader_name])
     return {
         "trader_name": trader_name,
         "replace": int(replace),
         "historical_files_configured": len(trader.get("historical_csvs") or []),
         "daily_files_configured": len(trader.get("daily_csvs") or []),
+        **official_result,
         **ingest_result,
+        **price_result,
         **rebuild_result,
+    }
+
+
+def ingest_official_house_disclosures_for_trader(con: Any, trader: dict[str, Any]) -> dict[str, int]:
+    house = trader.get("official_house") or {}
+    if not house:
+        return {"official_house_filings_found": 0, "official_house_filings_ingested": 0, "official_house_rows_ingested": 0}
+    filings = search_house_member_filings(
+        house.get("last_name") or trader["trader_name"].split()[-1],
+        int(house.get("start_year") or 2008),
+        int(house.get("end_year") or date.today().year),
+        house.get("user_agent") or "joehu-market-panel/0.1 contact:local",
+        state=house.get("state"),
+        district=str(house.get("district")) if house.get("district") else None,
+    )
+    wanted_types = set(house.get("filing_types") or ["PTR Original", "FD Original"])
+    rows_ingested = 0
+    filings_ingested = 0
+    for filing in filings:
+        if wanted_types and filing.get("filing_type") not in wanted_types:
+            continue
+        text = fetch_house_pdf_text(filing["url"], house.get("user_agent") or "joehu-market-panel/0.1 contact:local")
+        for row in parse_house_disclosure_text(text, filing, trader["trader_name"]):
+            normalized = normalize_public_disclosure_transaction(row, {"trader_name": trader["trader_name"], "filer_name": filing.get("name")})
+            if not normalized:
+                continue
+            upsert_public_disclosure_transaction(con, normalized)
+            rows_ingested += 1
+        filings_ingested += 1
+    return {
+        "official_house_filings_found": len(filings),
+        "official_house_filings_ingested": filings_ingested,
+        "official_house_rows_ingested": rows_ingested,
     }
 
 
@@ -195,6 +240,51 @@ def delete_trader_disclosure_rows(con: Any, trader_name: str) -> None:
         """,
         [trader_name],
     )
+
+
+def ensure_disclosure_symbol_prices(
+    con: Any,
+    trader_names: list[str] | None = None,
+    lookback_days: int = 900,
+    mode: str = "online",
+) -> dict[str, int]:
+    params: list[Any] = []
+    filter_sql = ""
+    if trader_names:
+        placeholders = ", ".join(["?"] * len(trader_names))
+        filter_sql = f" AND trader_name IN ({placeholders})"
+        params.extend(trader_names)
+    rows = con.execute(
+        f"""
+        SELECT symbol, min(event_date) AS earliest_event_date
+        FROM disclosures
+        WHERE source_type = 'public_disclosure_transaction'
+          AND symbol IS NOT NULL
+          {filter_sql}
+        GROUP BY symbol
+        ORDER BY symbol
+        """,
+        params,
+    ).fetchall()
+    fetched = 0
+    price_rows = 0
+    for symbol, earliest_event_date in rows:
+        earliest_needed = str(earliest_event_date)[:10]
+        existing = con.execute(
+            "SELECT min(date), count(*) FROM prices_daily WHERE symbol = ?",
+            [symbol],
+        ).fetchone()
+        if existing and existing[1] and str(existing[0]) <= earliest_needed:
+            continue
+        symbol_lookback_days = max(lookback_days, days_since(earliest_needed) + 14)
+        frame = fetch_prices(symbol, symbol_lookback_days, mode)
+        price_rows += upsert_prices(con, frame)
+        fetched += 1
+    return {"price_symbols_fetched": fetched, "price_rows_ingested": price_rows}
+
+
+def days_since(value: str) -> int:
+    return max(1, (date.today() - datetime.strptime(value[:10], "%Y-%m-%d").date()).days)
 
 
 def normalize_public_disclosure_transaction(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | None:
@@ -217,6 +307,11 @@ def normalize_public_disclosure_transaction(row: dict[str, Any], source: dict[st
         "amount_mid": amount_midpoint(amount_min, amount_max),
         "amount_raw": row.get("amount") or row.get("amount_range"),
         "source_url": row.get("source_url") or row.get("url"),
+        "asset_type": row.get("asset_type"),
+        "comment": row.get("comment"),
+        "shares": _float_or_none(row.get("shares")),
+        "contracts": _float_or_none(row.get("contracts")),
+        "source_document_id": row.get("source_document_id"),
         "source_file": source.get("path"),
         "methodology": "Normalize each disclosed transaction, estimate notional from the disclosed range midpoint, then build a replica portfolio with local price history.",
         "source_caveat": PUBLIC_DISCLOSURE_CAVEAT,
@@ -231,7 +326,7 @@ def normalize_public_disclosure_transaction(row: dict[str, Any], source: dict[st
                     str(transaction_date),
                     transaction_type,
                     str(row.get("amount") or row.get("amount_range") or ""),
-                    str(row.get("source_url") or row.get("url") or ""),
+                    str(row.get("source_url") or row.get("url") or row.get("source_document_id") or ""),
                 ]
             )
         ),
@@ -305,6 +400,7 @@ def rebuild_trader_replica_portfolios(con: Any, trader_names: list[str] | None =
 
 def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: list[dict[str, Any]]) -> dict[str, Any]:
     lots: dict[str, float] = {}
+    baseline_dates_applied: set[str] = set()
     estimated_invested = 0.0
     normalized_transactions: list[dict[str, Any]] = []
     for row in transactions:
@@ -313,20 +409,31 @@ def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: l
         amount = float(raw.get("amount_mid") or 0)
         execution_price = price_on_or_before(con, symbol, row.get("event_date")) or 1.0
         quantity = amount / execution_price if execution_price > 0 else 0.0
-        direction = -1 if str(row.get("action") or "").upper().startswith("S") else 1
-        lots[symbol] = max(0.0, lots.get(symbol, 0.0) + direction * quantity)
+        action = str(row.get("action") or "").upper()
+        direction = -1 if action.startswith("S") else 1
+        disclosed_quantity = disclosed_quantity_from_raw(raw, amount, execution_price)
+        quantity = disclosed_quantity if disclosed_quantity is not None else quantity
+        if action == "BASELINE":
+            baseline_date = str(row.get("event_date"))
+            if baseline_date not in baseline_dates_applied:
+                lots.clear()
+                baseline_dates_applied.add(baseline_date)
+            lots[symbol] = max(0.0, quantity)
+        else:
+            lots[symbol] = max(0.0, lots.get(symbol, 0.0) + direction * quantity)
         if direction > 0:
             estimated_invested += amount
         normalized_transactions.append(
             {
                 "symbol": symbol,
-                "type": "SELL" if direction < 0 else "BUY",
+                "type": action or ("SELL" if direction < 0 else "BUY"),
                 "quantity": quantity,
                 "estimated_amount": amount,
                 "price": execution_price,
                 "date": str(row.get("event_date")),
                 "filed_date": str(row.get("filed_date")),
                 "source_url": row.get("source_url"),
+                "comment": raw.get("comment"),
             }
         )
 
@@ -400,7 +507,8 @@ def disclosure_amount_range(row: dict[str, Any]) -> tuple[float | None, float | 
     if low is not None or high is not None:
         return low, high
     raw = str(row.get("amount") or row.get("amount_range") or "")
-    numbers = [_float_or_none(part) for part in raw.replace("$", "").replace(",", "").replace("(", "").replace(")", "").split("-")]
+    cleaned = raw.replace("$", "").replace(",", "").replace("(", "").replace(")", "").replace("Over", "")
+    numbers = [_float_or_none(part) for part in cleaned.split("-")]
     numbers = [number for number in numbers if number is not None]
     if not numbers:
         return None, None
@@ -417,6 +525,18 @@ def amount_midpoint(low: float | None, high: float | None) -> float | None:
     if high is None:
         return low
     return (low + high) / 2
+
+
+def disclosed_quantity_from_raw(raw: dict[str, Any], amount: float, execution_price: float) -> float | None:
+    shares = _float_or_none(raw.get("shares"))
+    if shares is not None:
+        return shares
+    contracts = _float_or_none(raw.get("contracts"))
+    if contracts is not None:
+        return contracts * 100
+    if execution_price > 0 and amount > 0:
+        return amount / execution_price
+    return None
 
 
 def price_on_or_before(con: Any, symbol: str, as_of: Any) -> float | None:
