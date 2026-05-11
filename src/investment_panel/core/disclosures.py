@@ -400,8 +400,10 @@ def rebuild_trader_replica_portfolios(con: Any, trader_names: list[str] | None =
 
 def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: list[dict[str, Any]]) -> dict[str, Any]:
     lots: dict[str, float] = {}
+    cost_basis: dict[str, float] = {}
     baseline_dates_applied: set[str] = set()
-    estimated_invested = 0.0
+    gross_buys = 0.0
+    gross_sells = 0.0
     normalized_transactions: list[dict[str, Any]] = []
     for row in transactions:
         raw = row.get("raw") or {}
@@ -413,16 +415,28 @@ def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: l
         direction = -1 if action.startswith("S") else 1
         disclosed_quantity = disclosed_quantity_from_raw(raw, amount, execution_price)
         quantity = disclosed_quantity if disclosed_quantity is not None else quantity
+        weight_before = allocation_weight(con, lots, symbol, row.get("event_date"))
         if action == "BASELINE":
             baseline_date = str(row.get("event_date"))
             if baseline_date not in baseline_dates_applied:
                 lots.clear()
+                cost_basis.clear()
                 baseline_dates_applied.add(baseline_date)
             lots[symbol] = max(0.0, lots.get(symbol, 0.0) + quantity)
+            cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) + amount)
         else:
-            lots[symbol] = max(0.0, lots.get(symbol, 0.0) + direction * quantity)
-        if direction > 0:
-            estimated_invested += amount
+            if direction > 0:
+                lots[symbol] = max(0.0, lots.get(symbol, 0.0) + quantity)
+                cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) + amount)
+                gross_buys += amount
+            else:
+                current_quantity = lots.get(symbol, 0.0)
+                sold_quantity = min(quantity, current_quantity)
+                average_cost = (cost_basis.get(symbol, 0.0) / current_quantity) if current_quantity > 0 else 0.0
+                lots[symbol] = max(0.0, current_quantity - sold_quantity)
+                cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) - sold_quantity * average_cost)
+                gross_sells += amount
+        weight_after = allocation_weight(con, lots, symbol, row.get("event_date"))
         normalized_transactions.append(
             {
                 "symbol": symbol,
@@ -432,6 +446,8 @@ def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: l
                 "price": execution_price,
                 "date": str(row.get("event_date")),
                 "filed_date": str(row.get("filed_date")),
+                "weight_before": weight_before,
+                "weight_after": weight_after,
                 "source_url": row.get("source_url"),
                 "comment": raw.get("comment"),
             }
@@ -451,28 +467,35 @@ def build_replica_portfolio_snapshot(con: Any, trader_name: str, transactions: l
                 "quantity": quantity,
                 "latest_price": latest_price,
                 "market_value": market_value,
+                "cost_basis": cost_basis.get(symbol, 0.0),
+                "unrealized_pnl": market_value - cost_basis.get(symbol, 0.0),
                 "weight": 0.0,
             }
         )
     for holding in holdings:
         holding["weight"] = (holding["market_value"] / total_value * 100) if total_value else 0.0
     holdings.sort(key=lambda item: item["weight"], reverse=True)
-    performance = ((total_value - estimated_invested) / estimated_invested * 100) if estimated_invested else 0.0
+    current_cost_basis = sum(float(holding.get("cost_basis") or 0.0) for holding in holdings)
+    performance = ((total_value - current_cost_basis) / current_cost_basis * 100) if current_cost_basis else 0.0
+    portfolio_history = build_portfolio_history(con, transactions)
     return {
         "source_type": "trader_portfolio_model",
         "name": trader_name,
         "description": "Replica portfolio estimated from normalized public disclosure transactions.",
         "category": "public disclosures",
         "total_value": total_value,
-        "estimated_invested_usd": estimated_invested,
+        "estimated_invested_usd": current_cost_basis,
+        "gross_buys_usd": gross_buys,
+        "gross_sells_usd": gross_sells,
         "total_holdings": len(holdings),
         "last_updated": date.today().isoformat(),
         "performance_percent": performance,
+        "performance_methodology": "Unrealized return on current reconstructed lots: (current market value - current cost basis) / current cost basis.",
         "metadata": {"riskLevel": "source-limited", "diversificationScore": diversification_score(holdings), "topSectors": []},
-        "platform_stats": {"totalCopiers": 0},
         "holdings": holdings,
         "transactions": normalized_transactions,
         "transactions_count": len(normalized_transactions),
+        "portfolio_history": portfolio_history,
         "source_caveat": PUBLIC_DISCLOSURE_CAVEAT,
     }
 
@@ -550,6 +573,94 @@ def price_on_or_before(con: Any, symbol: str, as_of: Any) -> float | None:
         [symbol, str(as_of)[:10]],
     ).fetchone()
     return float(row[0]) if row and row[0] is not None else None
+
+
+def allocation_weight(con: Any, lots: dict[str, float], symbol: str, as_of: Any) -> float:
+    values = holding_values_at(con, lots, as_of)
+    total = sum(values.values())
+    if total <= 0:
+        return 0.0
+    return values.get(symbol, 0.0) / total * 100
+
+
+def holding_values_at(con: Any, lots: dict[str, float], as_of: Any) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for symbol, quantity in lots.items():
+        if quantity <= 0:
+            continue
+        price = price_on_or_before(con, symbol, as_of) or latest_price_for_symbol(con, symbol) or 0.0
+        values[symbol] = quantity * price
+    return values
+
+
+def build_portfolio_history(con: Any, transactions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lots: dict[str, float] = {}
+    cost_basis: dict[str, float] = {}
+    baseline_dates_applied: set[str] = set()
+    history: list[dict[str, Any]] = []
+    for row in transactions:
+        raw = row.get("raw") or {}
+        symbol = str(row.get("symbol") or "").upper()
+        amount = float(raw.get("amount_mid") or 0)
+        execution_price = price_on_or_before(con, symbol, row.get("event_date")) or 1.0
+        quantity = disclosed_quantity_from_raw(raw, amount, execution_price)
+        if quantity is None:
+            quantity = amount / execution_price if execution_price > 0 else 0.0
+        action = str(row.get("action") or "").upper()
+        if action == "BASELINE":
+            baseline_date = str(row.get("event_date"))
+            if baseline_date not in baseline_dates_applied:
+                lots.clear()
+                cost_basis.clear()
+                baseline_dates_applied.add(baseline_date)
+            lots[symbol] = max(0.0, lots.get(symbol, 0.0) + quantity)
+            cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) + amount)
+        elif action.startswith("S"):
+            current_quantity = lots.get(symbol, 0.0)
+            sold_quantity = min(quantity, current_quantity)
+            average_cost = (cost_basis.get(symbol, 0.0) / current_quantity) if current_quantity > 0 else 0.0
+            lots[symbol] = max(0.0, current_quantity - sold_quantity)
+            cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) - sold_quantity * average_cost)
+        else:
+            lots[symbol] = max(0.0, lots.get(symbol, 0.0) + quantity)
+            cost_basis[symbol] = max(0.0, cost_basis.get(symbol, 0.0) + amount)
+        as_of = str(row.get("event_date"))[:10]
+        values = holding_values_at(con, lots, as_of)
+        total_value = sum(values.values())
+        current_cost_basis = sum(cost_basis.values())
+        performance = ((total_value - current_cost_basis) / current_cost_basis * 100) if current_cost_basis else 0.0
+        history.append(
+            {
+                "date": as_of,
+                "value": total_value,
+                "cost_basis": current_cost_basis,
+                "performance_percent": performance,
+                "holdings_count": sum(1 for quantity in lots.values() if quantity > 0),
+            }
+        )
+    today = date.today().isoformat()
+    if lots and (not history or history[-1]["date"] != today):
+        values = holding_values_at(con, lots, today)
+        total_value = sum(values.values())
+        current_cost_basis = sum(cost_basis.values())
+        performance = ((total_value - current_cost_basis) / current_cost_basis * 100) if current_cost_basis else 0.0
+        history.append(
+            {
+                "date": today,
+                "value": total_value,
+                "cost_basis": current_cost_basis,
+                "performance_percent": performance,
+                "holdings_count": sum(1 for quantity in lots.values() if quantity > 0),
+            }
+        )
+    return compact_history(history)
+
+
+def compact_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_date: dict[str, dict[str, Any]] = {}
+    for point in history:
+        by_date[str(point["date"])] = point
+    return [by_date[key] for key in sorted(by_date)]
 
 
 def latest_price_for_symbol(con: Any, symbol: str) -> float | None:
