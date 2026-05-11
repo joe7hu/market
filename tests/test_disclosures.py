@@ -17,7 +17,7 @@ from investment_panel.core.disclosures import (
     recent_13f_filings,
     rebuild_trader_replica_portfolios,
 )
-from investment_panel.core.house_disclosures import parse_house_annual_text
+from investment_panel.core.house_disclosures import AMOUNT_RE, parse_house_annual_text, parse_house_ptr_text
 from investment_panel.jobs.update_disclosures import run as run_update_disclosures
 
 
@@ -275,6 +275,35 @@ Filing Date: 08/01/2025
     assert [row["symbol"] for row in rows] == ["GOOGL"]
     assert rows[0]["transaction_type"] == "BASELINE"
     assert rows[0]["filed_date"] == "2025-08-01"
+
+
+def test_house_amount_parser_rejects_incomplete_comma_groups() -> None:
+    text = "JT $15,001 - $50,000Dividends $201 -\n$1,000"
+
+    assert AMOUNT_RE.search(text).group(0) == "$15,001 - $50,000"
+
+
+def test_house_ptr_parser_splits_joint_owner_rows() -> None:
+    filing = {
+        "name": "Hern, Hon.. Kevin",
+        "document_id": "20000000",
+        "url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2024/20000000.pdf",
+    }
+    text = """
+Periodic Transaction Report
+JT JP Morgan Chase & Co. Common Stock (JPM) [ST] P 04/30/202405/01/2024$1,001 - $15,000
+D: Dividend Reinvestment
+JT Microsoft Corporation (MSFT) [ST] S 05/01/202405/02/2024$15,001 - $50,000
+D: Sell close
+Digitally Signed: Hon. Kevin Hern , 05/12/2024
+"""
+
+    rows = parse_house_ptr_text(text, filing, "Kevin Hern")
+
+    assert [(row["symbol"], row["transaction_type"], row["amount"]) for row in rows] == [
+        ("JPM", "BUY", "$1,001 - $15,000"),
+        ("MSFT", "SELL", "$15,001 - $50,000"),
+    ]
 
 
 def test_extract_public_disclosure_csvs_from_config(tmp_path: Path) -> None:

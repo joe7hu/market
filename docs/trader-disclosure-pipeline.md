@@ -144,7 +144,7 @@ PelosiTracker reference. This is a verified result, not a completed replication.
 
 The current run uses official House search for Nancy Pelosi, CA, 2018-2026,
 with `PTR Original` and `FD Original` filings enabled. It deleted prior
-third-party tracker rows, ingested 58 official House PDFs, normalized 224
+third-party tracker rows, ingested 58 official House PDFs, normalized 223
 disclosure rows, refreshed missing historical prices, and rebuilt the replica
 portfolio.
 
@@ -156,7 +156,7 @@ Latest benchmark:
 - Verdict: `not_close`
 - Symbol overlap: `0.8333` (`10/12`)
 - Top-six overlap: `0.6667`
-- Mean weight error: `5.3801`
+- Mean weight error: `5.3979`
 - Missing reference symbols: `IBTA.L`, `TSLA`
 - Extra official-model symbols include `AB`, `AXP`, `CRM`, `DIS`, `V`, and
   other holdings that appear in House annual disclosures but not in the
@@ -187,7 +187,7 @@ politician page benchmark.
 
 The current run uses official House search for Kevin Hern, OK-01, 2020-2026,
 with `PTR Original` and `FD Original` filings enabled. It ingested 76 official
-House PDFs, normalized 751 disclosure rows, refreshed missing historical prices,
+House PDFs, normalized 1048 disclosure rows, refreshed missing historical prices,
 and rebuilt the replica portfolio.
 
 Benchmark file:
@@ -198,11 +198,11 @@ Latest benchmark:
 - Verdict: `not_close`
 - Reference coverage: `top_holdings_only`
 - Symbol overlap: `1.0` (`5/5` visible top symbols)
-- Top-five overlap: `0.4`
-- Mean weight error: `2.6029`
-- Total value error: `8.0555%`
+- Top-five overlap: `0.6`
+- Mean weight error: `2.4392`
+- Total value error: `11.9961%`
 - Reference top five: `DVN`, `WMB`, `XOM`, `JPM`, `RTX`
-- Model top five: `DVN`, `TXN`, `RTX`, `ROK`, `GOOGL`
+- Model top five: `DVN`, `RTX`, `ROK`, `GOOGL`, `WMB`
 
 Root causes:
 

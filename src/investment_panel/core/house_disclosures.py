@@ -15,9 +15,12 @@ HOUSE_SEARCH_URL = "https://disclosures-clerk.house.gov/FinancialDisclosure/View
 HOUSE_BASE_URL = "https://disclosures-clerk.house.gov/"
 ASSET_RE = re.compile(r"\((?P<symbol>[A-Z][A-Z0-9.]{0,9})\)\s*\[(?P<asset_type>[A-Z]{2})\]")
 DATE_PAIR_RE = re.compile(r"(?P<date>\d{2}/\d{2}/\d{4})(?P<notification>\d{2}/\d{2}/\d{4})")
-AMOUNT_RE = re.compile(r"\$[\d,]+(?:\.\d+)?(?:\s*-\s*\$[\d,]+(?:\.\d+)?)?|Over\s+\$[\d,]+|None", re.I)
+CURRENCY_PATTERN = r"\$(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?!,)"
+AMOUNT_PATTERN = rf"{CURRENCY_PATTERN}(?:\s*-\s*{CURRENCY_PATTERN})?|Over\s+{CURRENCY_PATTERN}|None"
+AMOUNT_RE = re.compile(AMOUNT_PATTERN, re.I)
+OWNER_PREFIX_RE = re.compile(r"(?m)^(?=\s*(?:SP|JT|DC|dependent child)\s+)")
 ANNUAL_HOLDING_RE = re.compile(
-    r"^\s*(?P<owner>SP|JT|DC|dependent child)\s+(?P<amount>\$[\d,]+(?:\.\d+)?(?:\s*-\s*\$[\d,]+(?:\.\d+)?)?|Over\s+\$[\d,]+|None)\b",
+    rf"^\s*(?P<owner>SP|JT|DC|dependent child)\s+(?P<amount>{AMOUNT_PATTERN})",
     re.I | re.S,
 )
 SHARES_RE = re.compile(r"(?P<shares>[\d,]+)\s+shares", re.I)
@@ -97,37 +100,40 @@ def parse_house_disclosure_text(text: str, filing: dict[str, Any], trader_name: 
 
 def parse_house_ptr_text(text: str, filing: dict[str, Any], trader_name: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    chunks = re.split(r"\n(?=SP\s+)", text)
+    chunks = OWNER_PREFIX_RE.split(text)
     for chunk in chunks:
-        asset_match = ASSET_RE.search(chunk)
-        date_match = DATE_PAIR_RE.search(chunk)
-        if not asset_match or not date_match:
-            continue
-        before_date = chunk[: date_match.start()]
-        action_match = re.search(r"(S\s+\(partial\)|S|P|E)\s*$", before_date.strip())
-        if not action_match:
-            continue
-        amount_match = AMOUNT_RE.search(chunk[date_match.end() :])
-        comment = comment_text(chunk)
-        rows.append(
-            {
-                "id": f"house:{filing['document_id']}:{len(rows)}",
-                "trader_name": trader_name,
-                "filer_name": filing.get("name") or trader_name,
-                "symbol": asset_match.group("symbol"),
-                "asset_name": clean_asset_name(before_date[: action_match.start()]),
-                "asset_type": asset_match.group("asset_type"),
-                "transaction_type": normalize_house_action(action_match.group(1)),
-                "transaction_date": _iso_date(date_match.group("date")),
-                "filed_date": filing_signed_date(text) or _iso_date(date_match.group("notification")),
-                "amount": amount_match.group(0) if amount_match else "",
-                "source_url": filing["url"],
-                "source_document_id": filing["document_id"],
-                "comment": comment,
-                "shares": shares_from_comment(comment),
-                "contracts": contracts_from_comment(comment),
-            }
-        )
+        asset_matches = list(ASSET_RE.finditer(chunk))
+        for index, asset_match in enumerate(asset_matches):
+            next_start = asset_matches[index + 1].start() if index + 1 < len(asset_matches) else len(chunk)
+            row_tail = chunk[asset_match.end() : next_start]
+            date_match = DATE_PAIR_RE.search(row_tail)
+            if not date_match:
+                continue
+            before_date = row_tail[: date_match.start()]
+            action_match = re.search(r"(S\s+\(partial\)|S|P|E)\s*$", before_date.strip())
+            if not action_match:
+                continue
+            amount_match = AMOUNT_RE.search(row_tail[date_match.end() :])
+            comment = comment_text(row_tail)
+            rows.append(
+                {
+                    "id": f"house:{filing['document_id']}:{len(rows)}",
+                    "trader_name": trader_name,
+                    "filer_name": filing.get("name") or trader_name,
+                    "symbol": asset_match.group("symbol"),
+                    "asset_name": clean_asset_name(asset_name_before_match(chunk, asset_match.start())),
+                    "asset_type": asset_match.group("asset_type"),
+                    "transaction_type": normalize_house_action(action_match.group(1)),
+                    "transaction_date": _iso_date(date_match.group("date")),
+                    "filed_date": filing_signed_date(text) or _iso_date(date_match.group("notification")),
+                    "amount": amount_match.group(0) if amount_match else "",
+                    "source_url": filing["url"],
+                    "source_document_id": filing["document_id"],
+                    "comment": comment,
+                    "shares": shares_from_comment(comment),
+                    "contracts": contracts_from_comment(comment),
+                }
+            )
     return rows
 
 
@@ -186,9 +192,16 @@ def _clean(value: str) -> str:
 
 def clean_asset_name(value: str) -> str:
     value = re.sub(r"^SP\s+", "", value.strip())
+    value = re.sub(r"^(JT|DC|dependent child)\s+", "", value.strip(), flags=re.I)
     value = re.sub(r"Filing ID #\d+", "", value)
     value = re.sub(r"Asset Owner Value.*", "", value, flags=re.S)
     return " ".join(value.split())
+
+
+def asset_name_before_match(chunk: str, match_start: int) -> str:
+    prefix = chunk[:match_start]
+    boundary = max(prefix.rfind("\n"), prefix.rfind("⇒"), prefix.rfind("D:"))
+    return prefix[boundary + 1 :] if boundary >= 0 else prefix
 
 
 def comment_text(chunk: str) -> str:
