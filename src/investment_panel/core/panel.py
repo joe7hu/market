@@ -615,14 +615,32 @@ def disclosures(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH recent_non_13f AS (
+            SELECT source_type, trader_name, filer_name, symbol, event_date, filed_date,
+                   action, amount, raw, source_url
+            FROM disclosures
+            WHERE source_type != '13f'
+            ORDER BY filed_date DESC NULLS LAST
+            LIMIT 200
+        ),
+        all_13f AS (
+            SELECT source_type, trader_name, filer_name, symbol, event_date, filed_date,
+                   action, amount, raw, source_url
+            FROM disclosures
+            WHERE source_type = '13f'
+        )
         SELECT source_type, trader_name, filer_name, symbol, event_date, filed_date,
                action, amount, raw, source_url
-        FROM disclosures
+        FROM recent_non_13f
+        UNION ALL
+        SELECT source_type, trader_name, filer_name, symbol, event_date, filed_date,
+               action, amount, raw, source_url
+        FROM all_13f
         ORDER BY filed_date DESC NULLS LAST
-        LIMIT 200
         """,
     )
     decoded = [decode_fields(row, ("raw",)) for row in rows]
+    enrich_13f_disclosure_rows(decoded)
     for row in decoded:
         raw = row.get("raw") or {}
         if isinstance(raw, dict):
@@ -635,17 +653,94 @@ def disclosures(con: Any) -> list[dict[str, Any]]:
             row["metadata"] = raw.get("metadata")
             row["transactions_count"] = raw.get("transactions_count")
             row["transactions"] = raw.get("transactions")
-            row["portfolio_history"] = raw.get("portfolio_history")
+            row["portfolio_history"] = row.get("portfolio_history") or raw.get("portfolio_history")
             row["sp500_history"] = raw.get("sp500_history")
             row["source_caveat"] = raw.get("source_caveat")
             row["lag_caveat"] = raw.get("lag_caveat")
+            row["next_filing_due_date"] = raw.get("next_filing_due_date")
             holdings = raw.get("holdings")
             if isinstance(holdings, list):
-                row["holding_sample"] = holdings[:25]
+                row["holding_sample"] = sorted_13f_holdings(holdings)[:25] if row.get("source_type") == "13f" else holdings[:25]
                 trimmed_raw = dict(raw)
                 trimmed_raw.pop("holdings", None)
                 row["raw"] = trimmed_raw
     return decoded
+
+
+def enrich_13f_disclosure_rows(rows: list[dict[str, Any]]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+        if row.get("source_type") != "13f" or not isinstance(raw, dict):
+            continue
+        key = str(row.get("trader_name") or row.get("filer_name") or raw.get("cik") or "")
+        grouped.setdefault(key, []).append(row)
+
+    for group_rows in grouped.values():
+        ordered = sorted(group_rows, key=lambda row: str(row.get("event_date") or ""))
+        previous_weights: dict[str, float] = {}
+        filing_history = []
+        for row in ordered:
+            raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+            holdings = sorted_13f_holdings(raw.get("holdings") if isinstance(raw, dict) else [])
+            current_weights = {holding_key(holding): float(holding.get("weight") or 0.0) for holding in holdings}
+            filing_history.append(
+                {
+                    "date": str(row.get("event_date") or ""),
+                    "filed_date": str(row.get("filed_date") or ""),
+                    "value": float(raw.get("holdings_value_thousands") or sum(float(holding.get("market_value") or 0.0) for holding in holdings)),
+                    "holdings_count": raw.get("holdings_count") or len(holdings),
+                }
+            )
+            history = []
+            for holding in holdings[:25]:
+                key = holding_key(holding)
+                weight = float(holding.get("weight") or 0.0)
+                previous = previous_weights.get(key, 0.0)
+                history.append(
+                    {
+                        "symbol": holding.get("symbol"),
+                        "security": holding.get("name"),
+                        "put_call": holding.get("put_call"),
+                        "date": str(row.get("event_date") or ""),
+                        "filed_date": str(row.get("filed_date") or ""),
+                        "type": "ADD" if previous == 0 and weight > 0 else "INCREASE" if weight > previous else "DECREASE" if weight < previous else "UNCHANGED",
+                        "quantity": holding.get("shares_or_principal_amount") or 0,
+                        "estimated_amount": float(holding.get("market_value") or 0.0),
+                        "price": None,
+                        "weight_before": previous,
+                        "weight_after": weight,
+                    }
+                )
+            row["allocation_history"] = history
+            row["portfolio_history"] = list(filing_history)
+            previous_weights = current_weights
+
+
+def sorted_13f_holdings(holdings: Any) -> list[dict[str, Any]]:
+    if not isinstance(holdings, list):
+        return []
+    total_value = sum(float(row.get("value_thousands") or 0.0) for row in holdings if isinstance(row, dict))
+    sorted_rows = []
+    for holding in holdings:
+        if not isinstance(holding, dict):
+            continue
+        value = float(holding.get("value_thousands") or 0.0)
+        row = dict(holding)
+        row["market_value"] = value
+        row["weight"] = (value / total_value * 100) if total_value else 0.0
+        sorted_rows.append(row)
+    return sorted(sorted_rows, key=lambda row: float(row.get("weight") or 0.0), reverse=True)
+
+
+def holding_key(holding: dict[str, Any]) -> str:
+    return ":".join(
+        [
+            str(holding.get("symbol") or holding.get("cusip") or holding.get("name") or ""),
+            str(holding.get("put_call") or ""),
+            str(holding.get("title") or ""),
+        ]
+    )
 
 
 def reports(con: Any) -> list[dict[str, Any]]:

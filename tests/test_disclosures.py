@@ -117,7 +117,7 @@ def test_ingest_13f_trackers_stores_metadata_and_holdings(monkeypatch: Any, tmp_
     with db(db_path) as con:
         result = ingest_13f_trackers(
             con,
-            [{"cik": "1067983", "name": "Berkshire tracker"}],
+            [{"cik": "1067983", "name": "Berkshire tracker", "ticker_map": {"037833100": "AAPL", "060505104": "BAC"}}],
             "test-agent",
             default_max_filings=1,
             fetch_holdings=True,
@@ -137,10 +137,12 @@ def test_ingest_13f_trackers_stores_metadata_and_holdings(monkeypatch: Any, tmp_
     assert rows[0]["action"] == "13F-HR"
     raw = json.loads(rows[0]["raw"])
     assert "delayed quarterly disclosure" in raw["lag_caveat"]
-    assert raw["ticker_mapping_caveat"].startswith("No ticker symbols")
+    assert raw["ticker_mapping_status"] == "mapped"
+    assert raw["ticker_mapping_count"] == 2
+    assert raw["next_filing_due_date"] == "2026-05-15"
     assert raw["holdings_parse_status"] == "parsed"
     assert raw["holdings"][0]["cusip"] == "037833100"
-    assert "symbol" not in raw["holdings"][0]
+    assert raw["holdings"][0]["symbol"] == "AAPL"
 
 
 def test_update_disclosures_reads_configured_13f_trackers(monkeypatch: Any, tmp_path: Path) -> None:
@@ -181,7 +183,7 @@ disclosures:
 def test_extract_13f_trackers_accepts_aliases() -> None:
     trackers = extract_13f_trackers({"disclosures": {"thirteen_f_trackers": [{"name": "Fund", "cik": "123"}]}})
 
-    assert trackers == [{"cik": "123", "name": "Fund", "max_filings": None}]
+    assert trackers == [{"cik": "123", "name": "Fund", "max_filings": None, "ticker_map": {}}]
 
 
 def test_public_disclosure_csv_builds_replica_portfolio(tmp_path: Path) -> None:

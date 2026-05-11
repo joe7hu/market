@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -49,6 +49,13 @@ def load_13f_trackers_from_config(config_path: str | Path | None = None) -> list
 
 def extract_13f_trackers(raw_config: dict[str, Any]) -> list[dict[str, Any]]:
     disclosures = raw_config.get("disclosures") or {}
+    global_ticker_map = normalize_13f_ticker_map(
+        disclosures.get("13f_ticker_map")
+        or disclosures.get("thirteen_f_ticker_map")
+        or raw_config.get("13f_ticker_map")
+        or raw_config.get("thirteen_f_ticker_map")
+        or {}
+    )
     tracker_rows = (
         disclosures.get("13f_trackers")
         or disclosures.get("thirteen_f_trackers")
@@ -66,9 +73,26 @@ def extract_13f_trackers(raw_config: dict[str, Any]) -> list[dict[str, Any]]:
                 "cik": cik,
                 "name": row.get("name") or row.get("trader_name") or row.get("filer_name") or cik,
                 "max_filings": row.get("max_filings"),
+                "ticker_map": global_ticker_map | normalize_13f_ticker_map(row.get("ticker_map") or row.get("cusip_ticker_map") or {}),
             }
         )
     return trackers
+
+
+def normalize_13f_ticker_map(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw.items():
+        cusip = normalize_cusip(key)
+        symbol = str(value or "").strip().upper()
+        if cusip and symbol:
+            normalized[cusip] = symbol
+    return normalized
+
+
+def normalize_cusip(value: Any) -> str:
+    return str(value or "").strip().upper().replace(" ", "")
 
 
 def load_public_disclosure_csvs_from_config(config_path: str | Path | None = None) -> list[dict[str, Any]]:
@@ -751,9 +775,10 @@ def upsert_13f_disclosure(
 ) -> None:
     cik = str(tracker["cik"])
     accession_number = filing["accession_number"]
-    holdings = holding_payload.get("holdings") or []
+    holdings = resolve_13f_holding_tickers(holding_payload.get("holdings") or [], tracker.get("ticker_map") or {})
     total_value = sum(int(row.get("value_thousands") or 0) for row in holdings)
     source_url = holding_payload.get("source_url") or sec.filing_index_url(cik, accession_number)
+    mapped_count = sum(1 for row in holdings if row.get("symbol"))
     raw = {
         "source_type": "13f",
         "tracker_name": tracker.get("name"),
@@ -768,12 +793,15 @@ def upsert_13f_disclosure(
         "primary_doc_description": filing.get("primary_doc_description"),
         "lag_caveat": THIRTEEN_F_CAVEAT,
         "as_of_caveat": "Holdings are as of the filing report date, not the ingestion date.",
-        "ticker_mapping_caveat": "No ticker symbols are inferred from CUSIPs; holdings are stored without symbol mapping.",
+        "ticker_mapping_status": "mapped" if mapped_count == len(holdings) and holdings else "partial" if mapped_count else "unmapped",
+        "ticker_mapping_count": mapped_count,
+        "ticker_unmapped_count": len(holdings) - mapped_count,
         "holdings_parse_status": holding_payload.get("status"),
         "holdings_parse_error": holding_payload.get("error"),
         "holdings_source_url": holding_payload.get("source_url"),
         "holdings_count": len(holdings),
         "holdings_value_thousands": total_value if holdings else None,
+        "next_filing_due_date": next_13f_filing_due_date(filing.get("report_date")),
         "holdings": holdings,
     }
     con.execute(
@@ -796,6 +824,41 @@ def upsert_13f_disclosure(
             source_url,
         ],
     )
+
+
+def resolve_13f_holding_tickers(holdings: list[dict[str, Any]], ticker_map: dict[str, str]) -> list[dict[str, Any]]:
+    resolved = []
+    for holding in holdings:
+        row = dict(holding)
+        cusip = normalize_cusip(row.get("cusip"))
+        symbol = ticker_map.get(cusip)
+        if symbol:
+            row["symbol"] = symbol
+            row["ticker_mapping_source"] = "configured_cusip_map"
+        else:
+            row["symbol"] = None
+            row["ticker_mapping_source"] = "unresolved"
+        resolved.append(row)
+    return resolved
+
+
+def next_13f_filing_due_date(report_date: Any) -> str | None:
+    try:
+        current = datetime.strptime(str(report_date)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    month = current.month + 3
+    year = current.year + (month - 1) // 12
+    month = ((month - 1) % 12) + 1
+    next_quarter_end = quarter_end_date(year, month)
+    return (next_quarter_end + timedelta(days=45)).isoformat()
+
+
+def quarter_end_date(year: int, month: int) -> date:
+    quarter_end_month = ((month - 1) // 3 + 1) * 3
+    if quarter_end_month == 12:
+        return date(year, 12, 31)
+    return date(year, quarter_end_month + 1, 1) - timedelta(days=1)
 
 
 def fetch_13f_holding_payload(

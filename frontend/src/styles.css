@@ -584,6 +584,33 @@ h3 {
   color: var(--blue);
 }
 
+.holding-label {
+  display: grid;
+  gap: 3px;
+  min-width: 180px;
+}
+
+.holding-label strong {
+  color: #f1f7fb;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.holding-label small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.muted-cell {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.holding-name {
+  color: #f1f7fb;
+  font-weight: 900;
+}
+
 .clip {
   max-width: 190px;
   overflow: hidden;

@@ -94,6 +94,52 @@ disclosures:
     - name: Point72
       cik: "0001603466"
       max_filings: 1
+    - name: Leopold Aschenbrenner / Situational Awareness
+      cik: "0002045724"
+      max_filings: 4
+      ticker_map:
+        "038169207": APLD
+        "05614L209": BW
+        "09173B107": BITF
+        "093712AH0": BE
+        "093712107": BE
+        "11135F101": AVGO
+        "17253J106": CIFR
+        "17253JAA4": CIFR
+        "18452B209": CLSK
+        "19247G107": COHR
+        "21037T109": CEG
+        "21873S108": CRWV
+        "21874A106": CORZ
+        "26884L109": EQT
+        "36317J209": GLXY
+        "44812J104": HUT
+        "456788108": INFY
+        "458140100": INTC
+        "49427F108": KRC
+        "53115L104": LBRT
+        "55024UAD1": LITE
+        "55024U109": LITE
+        "595112103": MU
+        "607828100": MOD
+        "67066G104": NVDA
+        "683344105": ONTO
+        "73933G202": PSIX
+        "74347M108": PUMP
+        "767292105": RIOT
+        "80004C200": SNDK
+        "83418M103": SEI
+        "874039100": TSM
+        "87422Q109": TLN
+        "92189F106": GDX
+        "92189F676": SMH
+        "92840M102": VST
+        "958102AT2": WDC
+        "G11448100": BTDR
+        "G7997R103": STX
+        "G96115103": WYFI
+        "M87915274": TSEM
+        "Q4982L109": IREN
 
 portfolio:
   csv_path:

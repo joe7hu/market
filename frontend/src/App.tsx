@@ -151,6 +151,10 @@ type TraderFilingCard = {
 
 type TraderPortfolioHolding = {
   ticker: string;
+  label: string;
+  security: string;
+  identifier: string;
+  isTickerMapped: boolean;
   quantity: number;
   price: number;
   marketValue: number;
@@ -189,6 +193,7 @@ type TraderPortfolio = {
   sourceUrl: string;
   caveat: string;
   performanceMethodology: string;
+  nextFilingDueDate: string;
 };
 
 type TraderPortfolioHistoryPoint = {
@@ -196,6 +201,7 @@ type TraderPortfolioHistoryPoint = {
   value: number;
   costBasis: number;
   performance: number;
+  holdingsCount?: number;
 };
 
 type SignalSourcePanel = {
@@ -631,7 +637,12 @@ function FilingsPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (
   const fallbackCards = model.traderFilingCards;
   const traderMatches = model.traderPortfolios.filter((portfolio) => {
     const query = traderQuery.trim().toLowerCase();
-    return !query || portfolio.investor.toLowerCase().includes(query) || portfolio.holdings.some((holding) => holding.ticker.toLowerCase().includes(query));
+    return !query || portfolio.investor.toLowerCase().includes(query) || portfolio.holdings.some((holding) => (
+      holding.ticker.toLowerCase().includes(query)
+      || holding.label.toLowerCase().includes(query)
+      || holding.security.toLowerCase().includes(query)
+      || holding.identifier.toLowerCase().includes(query)
+    ));
   });
   const primary = traderMatches.find((portfolio) => portfolio.investor === selectedInvestor)
     ?? model.traderPortfolios.find((portfolio) => portfolio.investor === selectedInvestor)
@@ -662,7 +673,7 @@ function FilingsPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: (
           <div className="trader-portfolio-page">
             <TraderPortfolioHero portfolio={primary} />
             <div className="trader-portfolio-grid">
-              <Panel className="span-8" title="Portfolio Performance">
+              <Panel className="span-8" title={primary.estimatedInvested > 0 ? "Portfolio Performance" : "Filing Value History"}>
                 <TraderPerformanceChart portfolio={primary} />
               </Panel>
               <Panel className="span-4" title="Holdings Distribution">
@@ -1038,10 +1049,35 @@ function buildFilings(disclosureRows: RowRecord[]): Filing[] {
 }
 
 function buildTraderPortfolios(disclosureRows: RowRecord[]): TraderPortfolio[] {
-  return disclosureRows
+  const latest13fRows = new Map<string, RowRecord>();
+  const grouped13fRows = new Map<string, RowRecord[]>();
+  for (const row of disclosureRows) {
+    const raw = objectField(row.raw);
+    const sourceType = stringField(row, ["source_type"]) || stringField(raw, ["source_type"]);
+    if (sourceType !== "13f") continue;
+    const investor = stringField(row, ["trader_name"]) || stringField(raw, ["tracker_name", "filer_name"]) || "13F Tracker";
+    grouped13fRows.set(investor, [...(grouped13fRows.get(investor) ?? []), row]);
+    const current = latest13fRows.get(investor);
+    const currentDate = current ? stringField(current, ["event_date", "filed_date"]) : "";
+    const rowDate = stringField(row, ["event_date", "filed_date"]);
+    if (!current || rowDate > currentDate) latest13fRows.set(investor, row);
+  }
+  const rowsToBuild = [
+    ...disclosureRows.filter((row) => {
+      const raw = objectField(row.raw);
+      return (stringField(row, ["source_type"]) || stringField(raw, ["source_type"])) !== "13f";
+    }),
+    ...latest13fRows.values(),
+  ];
+
+  return rowsToBuild
     .map((row) => {
       const raw = objectField(row.raw);
       const sourceType = stringField(row, ["source_type"]) || stringField(raw, ["source_type"]);
+      if (sourceType === "13f") {
+        const investor = stringField(row, ["trader_name"]) || stringField(raw, ["tracker_name", "filer_name"]) || "13F Tracker";
+        return buildThirteenFPortfolio(row, raw, grouped13fRows.get(investor) ?? [row]);
+      }
       if (sourceType !== "trader_portfolio_model") return null;
       const metadata = objectField(row.metadata ?? raw.metadata);
       const holdings = arrayField(row.holding_sample).length ? arrayField(row.holding_sample) : arrayField(raw.holdings);
@@ -1066,6 +1102,10 @@ function buildTraderPortfolios(disclosureRows: RowRecord[]): TraderPortfolio[] {
           const holding = objectField(item);
           return {
             ticker: stringField(holding, ["symbol", "ticker"]).toUpperCase(),
+            label: stringField(holding, ["symbol", "ticker"]).toUpperCase(),
+            security: stringField(holding, ["symbol", "ticker"]).toUpperCase(),
+            identifier: stringField(holding, ["symbol", "ticker"]).toUpperCase(),
+            isTickerMapped: true,
             quantity: numberField(holding, ["quantity"], 0),
             price: numberField(holding, ["latest_price", "latestPrice", "price"], 0),
             marketValue: numberField(holding, ["market_value", "marketValue", "value"], 0),
@@ -1100,10 +1140,176 @@ function buildTraderPortfolios(disclosureRows: RowRecord[]): TraderPortfolio[] {
         sourceUrl: stringField(row, ["source_url"]),
         caveat: stringField(row, ["source_caveat"]) || stringField(raw, ["source_caveat"]),
         performanceMethodology: stringField(raw, ["performance_methodology"]),
+        nextFilingDueDate: "",
       };
     })
     .filter((portfolio): portfolio is TraderPortfolio => Boolean(portfolio))
     .sort((a, b) => b.totalValue - a.totalValue);
+}
+
+function buildThirteenFPortfolio(row: RowRecord, raw: RowRecord, groupRows: RowRecord[] = [row]): TraderPortfolio | null {
+  const holdings = arrayField(row.holding_sample).length ? arrayField(row.holding_sample) : arrayField(raw.holdings);
+  const allocationHistory = arrayField(row.allocation_history).length
+    ? arrayField(row.allocation_history)
+    : arrayField(raw.allocation_history).length
+      ? arrayField(raw.allocation_history)
+      : buildThirteenFAllocationHistory(groupRows);
+  if (!holdings.length) return null;
+  const totalValue = numberField(row, ["amount", "holdings_value_thousands"], numberField(raw, ["holdings_value_thousands"], 0));
+  const mappedHoldings = holdings.map((item) => {
+    const holding = objectField(item);
+    const marketValue = numberField(holding, ["market_value", "value_thousands", "value"], 0);
+    const ticker = stringField(holding, ["ticker", "symbol"]).toUpperCase();
+    const security = stringField(holding, ["name", "title"]) || "13F holding";
+    const putCall = stringField(holding, ["put_call", "putCall"]).toUpperCase();
+    const label = ticker ? `${ticker}${putCall ? ` ${putCall}` : ""}` : security;
+    return {
+      ticker,
+      label,
+      security,
+      identifier: "",
+      isTickerMapped: Boolean(ticker),
+      quantity: numberField(holding, ["shares_or_principal_amount", "shares"], 0),
+      price: 0,
+      marketValue,
+      costBasis: 0,
+      unrealizedPnl: 0,
+      weight: numberField(holding, ["weight"], totalValue ? (marketValue / totalValue) * 100 : 0),
+    };
+  }).filter((holding) => holding.label).sort((a, b) => b.weight - a.weight);
+  const filingHistory = buildThirteenFFilingHistory(groupRows, row, raw, totalValue);
+  return {
+    investor: stringField(row, ["trader_name"]) || stringField(raw, ["tracker_name", "filer_name"]) || "13F Tracker",
+    description: "Latest Form 13F holdings disclosure. Positions are reported as of quarter end and may omit shorts, many derivatives, and current trade intent.",
+    category: "13F Filing",
+    updated: stringField(row, ["filed_date"]) || stringField(raw, ["filed_date"]) || "recently",
+    totalValue,
+    estimatedInvested: 0,
+    performance: 0,
+    holdingsCount: Math.round(numberField(row, ["holdings_count"], numberField(raw, ["holdings_count"], mappedHoldings.length))),
+    riskLevel: "Disclosure-Lagged",
+    diversificationScore: diversificationScoreFromWeights(mappedHoldings.map((holding) => holding.weight)),
+    topSectors: [],
+    holdings: mappedHoldings,
+    transactions: allocationHistory.map((item) => {
+      const change = objectField(item);
+      const symbol = stringField(change, ["symbol"]).toUpperCase();
+      const security = stringField(change, ["security"]);
+      const putCall = stringField(change, ["put_call", "putCall"]).toUpperCase();
+      const type = stringField(change, ["type"]).toUpperCase();
+      return {
+        symbol: symbol ? `${symbol}${putCall ? ` ${putCall}` : ""}` : security,
+        type,
+        quantity: numberField(change, ["quantity"], 0),
+        price: numberField(change, ["price"], 0),
+        estimatedAmount: numberField(change, ["estimated_amount", "estimatedAmount"], 0),
+        date: stringField(change, ["date"]) || stringField(row, ["event_date"]),
+        filedDate: stringField(change, ["filed_date", "filedDate"]) || stringField(row, ["filed_date"]),
+        weightBefore: numberField(change, ["weight_before", "weightBefore"], 0),
+        weightAfter: numberField(change, ["weight_after", "weightAfter"], 0),
+      };
+    }).filter((transaction) => transaction.symbol),
+    history: filingHistory,
+    sourceUrl: stringField(row, ["source_url"]) || stringField(raw, ["holdings_source_url"]),
+    caveat: stringField(row, ["lag_caveat"]) || stringField(raw, ["lag_caveat"]),
+    performanceMethodology: "13F rows are reported holdings snapshots, not reconstructed transaction ledgers; performance is not calculated for this source type.",
+    nextFilingDueDate: stringField(row, ["next_filing_due_date"]) || stringField(raw, ["next_filing_due_date"]),
+  };
+}
+
+function buildThirteenFFilingHistory(groupRows: RowRecord[], latestRow: RowRecord, latestRaw: RowRecord, latestValue: number): TraderPortfolioHistoryPoint[] {
+  const points = groupRows
+    .map((item) => {
+      const raw = objectField(item.raw);
+      const value = numberField(item, ["amount", "holdings_value_thousands"], numberField(raw, ["holdings_value_thousands"], 0));
+      return {
+        date: stringField(item, ["event_date"]) || stringField(raw, ["report_date"]) || stringField(item, ["filed_date"]),
+        value,
+        costBasis: 0,
+        performance: 0,
+        holdingsCount: Math.round(numberField(item, ["holdings_count"], numberField(raw, ["holdings_count"], 0))),
+      };
+    })
+    .filter((point) => point.date && point.value > 0)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  if (points.length) return dedupeHistoryPoints(points);
+  return [{
+    date: stringField(latestRow, ["event_date"]) || stringField(latestRaw, ["report_date"]) || stringField(latestRow, ["filed_date"]),
+    value: latestValue,
+    costBasis: 0,
+    performance: 0,
+    holdingsCount: Math.round(numberField(latestRow, ["holdings_count"], numberField(latestRaw, ["holdings_count"], 0))),
+  }];
+}
+
+function dedupeHistoryPoints(points: TraderPortfolioHistoryPoint[]): TraderPortfolioHistoryPoint[] {
+  const byDate = new Map<string, TraderPortfolioHistoryPoint>();
+  for (const point of points) byDate.set(point.date, point);
+  return [...byDate.values()].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+function buildThirteenFAllocationHistory(groupRows: RowRecord[]): RowRecord[] {
+  const ordered = [...groupRows]
+    .sort((a, b) => {
+      const aDate = stringField(a, ["event_date", "filed_date"]);
+      const bDate = stringField(b, ["event_date", "filed_date"]);
+      return aDate.localeCompare(bDate);
+    });
+  const latest = ordered.at(-1);
+  const previous = ordered.at(-2);
+  if (!latest) return [];
+  const latestHoldings = normalizedThirteenFHoldings(latest);
+  const previousWeights = new Map(normalizedThirteenFHoldings(previous).map((holding) => [holding.key, holding.weight]));
+  return latestHoldings.slice(0, 25).map((holding) => {
+    const before = previousWeights.get(holding.key) ?? 0;
+    const after = holding.weight;
+    return {
+      symbol: holding.symbol,
+      security: holding.security,
+      put_call: holding.putCall,
+      date: stringField(latest, ["event_date"]),
+      filed_date: stringField(latest, ["filed_date"]),
+      type: before === 0 && after > 0 ? "ADD" : after > before ? "INCREASE" : after < before ? "DECREASE" : "UNCHANGED",
+      quantity: holding.quantity,
+      estimated_amount: holding.marketValue,
+      price: null,
+      weight_before: before,
+      weight_after: after,
+    };
+  });
+}
+
+function normalizedThirteenFHoldings(row?: RowRecord): Array<{ key: string; symbol: string; security: string; putCall: string; quantity: number; marketValue: number; weight: number }> {
+  if (!row) return [];
+  const raw = objectField(row.raw);
+  const holdings = arrayField(row.holding_sample).length ? arrayField(row.holding_sample) : arrayField(raw.holdings);
+  const fallbackTotalValue = holdings.reduce<number>((sum, item) => sum + numberField(objectField(item), ["market_value", "value_thousands", "value"], 0), 0);
+  const totalValue = numberField(row, ["amount", "holdings_value_thousands"], numberField(raw, ["holdings_value_thousands"], fallbackTotalValue));
+  return holdings.map((item) => {
+    const holding = objectField(item);
+    const marketValue = numberField(holding, ["market_value", "value_thousands", "value"], 0);
+    const symbol = stringField(holding, ["ticker", "symbol"]).toUpperCase();
+    const security = stringField(holding, ["name", "title"]) || "13F holding";
+    const putCall = stringField(holding, ["put_call", "putCall"]).toUpperCase();
+    return {
+      key: [symbol || security, putCall, stringField(holding, ["title"])].join(":"),
+      symbol,
+      security,
+      putCall,
+      quantity: numberField(holding, ["shares_or_principal_amount", "shares"], 0),
+      marketValue,
+      weight: numberField(holding, ["weight"], totalValue ? (marketValue / totalValue) * 100 : 0),
+    };
+  }).sort((a, b) => b.weight - a.weight);
+}
+
+function diversificationScoreFromWeights(weights: number[]): number {
+  if (!weights.length) return 0;
+  return Math.max(0, Math.min(100, Math.round(100 - Math.max(...weights))));
+}
+
+function isLikelyTicker(value: string): boolean {
+  return /^[A-Z][A-Z0-9.-]{0,9}$/.test(value);
 }
 
 function buildTraderFilingCards(filings: Filing[]): TraderFilingCard[] {
@@ -1470,6 +1676,7 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
 }
 
 function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
+  const hasCostBasis = portfolio.estimatedInvested > 0;
   return (
     <section className="trader-hero">
       <div className="trader-hero-main">
@@ -1479,10 +1686,11 @@ function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
         <small>Updated {formatDateLabel(portfolio.updated)}</small>
       </div>
       <div className="trader-hero-metrics">
-        <MetricBadge label="Current Value" value={formatMoney(portfolio.totalValue)} caption={`${formatMoney(portfolio.estimatedInvested)} cost basis`} tone="info" />
-        <MetricBadge label="Open-Lot Return" value={formatPct(portfolio.performance)} caption="current holdings" tone={portfolio.performance >= 0 ? "good" : "bad"} />
+        <MetricBadge label={hasCostBasis ? "Current Value" : "Reported Value"} value={formatMoney(portfolio.totalValue)} caption={hasCostBasis ? `${formatMoney(portfolio.estimatedInvested)} cost basis` : "latest filing"} tone="info" />
+        <MetricBadge label={hasCostBasis ? "Open-Lot Return" : "Performance"} value={hasCostBasis ? formatPct(portfolio.performance) : "N/A"} caption={hasCostBasis ? "current holdings" : "not reconstructed"} tone={hasCostBasis ? (portfolio.performance >= 0 ? "good" : "bad") : "muted"} />
         <MetricBadge label="Holdings" value={String(portfolio.holdingsCount)} caption={`${portfolio.riskLevel} risk`} />
-        <MetricBadge label="Largest Weight" value={`${Math.round(portfolio.holdings[0]?.weight ?? 0)}%`} caption={portfolio.holdings[0]?.ticker ?? "No holdings"} tone="warn" />
+        <MetricBadge label="Next Filing" value={portfolio.nextFilingDueDate ? formatDateLabel(portfolio.nextFilingDueDate) : "N/A"} caption="expected due date" tone="info" />
+        <MetricBadge label="Largest Weight" value={`${Math.round(portfolio.holdings[0]?.weight ?? 0)}%`} caption={portfolio.holdings[0]?.label ?? "No holdings"} tone="warn" />
       </div>
       <div className="trader-sector-row">
         <strong>{portfolio.diversificationScore}/100</strong>
@@ -1494,6 +1702,7 @@ function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
 }
 
 function TraderPortfolioRow({ portfolio, active, onSelect }: { portfolio: TraderPortfolio; active: boolean; onSelect: () => void }) {
+  const hasCostBasis = portfolio.estimatedInvested > 0;
   return (
     <button type="button" className={`trader-directory-row ${active ? "active" : ""}`} onClick={onSelect}>
       <div>
@@ -1501,7 +1710,7 @@ function TraderPortfolioRow({ portfolio, active, onSelect }: { portfolio: Trader
         <small>{portfolio.holdingsCount} holdings</small>
       </div>
       <div>
-        <i className={portfolio.performance >= 0 ? "good" : "bad"}>{formatPct(portfolio.performance)}</i>
+        <i className={hasCostBasis ? (portfolio.performance >= 0 ? "good" : "bad") : "muted"}>{hasCostBasis ? formatPct(portfolio.performance) : "N/A"}</i>
         <small>{formatCompactMoney(portfolio.totalValue)}</small>
       </div>
     </button>
@@ -1510,20 +1719,22 @@ function TraderPortfolioRow({ portfolio, active, onSelect }: { portfolio: Trader
 
 function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
   const [windowKey, setWindowKey] = useState<"1Y" | "3Y" | "5Y" | "ALL">("3Y");
+  const hasCostBasis = portfolio.estimatedInvested > 0;
   const sourcePoints = portfolio.history.length ? portfolio.history : [{ date: portfolio.updated, value: portfolio.totalValue, costBasis: portfolio.estimatedInvested, performance: portfolio.performance }];
   const chartData = filterHistoryWindow(sourcePoints, windowKey).map((point) => ({
     date: point.date,
     performance: Number(point.performance.toFixed(2)),
     value: point.value,
     costBasis: point.costBasis,
+    holdingsCount: point.holdingsCount,
   }));
   const last = chartData[chartData.length - 1];
   return (
     <div className="trader-performance">
       <div className="chart-toolbar">
         <div>
-          <strong>{formatPct(portfolio.performance)}</strong>
-          <span>Open-lot return on current reconstructed holdings</span>
+          <strong>{hasCostBasis ? formatPct(portfolio.performance) : formatMoney(last?.value ?? portfolio.totalValue)}</strong>
+          <span>{hasCostBasis ? "Open-lot return on current reconstructed holdings" : `${chartData.length} reported filing snapshots`}</span>
         </div>
         <SegmentedControl
           options={["1Y", "3Y", "5Y", "ALL"]}
@@ -1545,9 +1756,9 @@ function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
             />
             <YAxis
               tick={{ fill: "#8b99a8", fontSize: 11 }}
-              tickFormatter={(value) => `${Number(value).toFixed(0)}%`}
+              tickFormatter={(value) => hasCostBasis ? `${Number(value).toFixed(0)}%` : formatCompactMoney(Number(value))}
               width={52}
-              domain={["dataMin - 5", "dataMax + 5"]}
+              domain={hasCostBasis ? ["dataMin - 5", "dataMax + 5"] : ["dataMin", "dataMax"]}
               axisLine={{ stroke: "#223141" }}
               tickLine={{ stroke: "#223141" }}
             />
@@ -1557,25 +1768,28 @@ function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
               labelFormatter={(label) => formatDateLabel(String(label))}
               formatter={(value, name) => [name === "performance" ? formatPct(Number(value)) : formatMoney(Number(value)), titleLabel(String(name))]}
             />
-            <Line type="monotone" dataKey="performance" name="open-lot return" stroke="#43e58f" strokeWidth={2.4} dot={false} activeDot={{ r: 4 }} />
+            {hasCostBasis
+              ? <Line type="monotone" dataKey="performance" name="open-lot return" stroke="#43e58f" strokeWidth={2.4} dot={false} activeDot={{ r: 4 }} />
+              : <Line type="monotone" dataKey="value" name="reported value" stroke="#68a8ff" strokeWidth={2.4} dot={{ r: 3 }} activeDot={{ r: 4 }} />}
           </LineChart>
         </ResponsiveContainer>
       </div>
       <div className="performance-compare">
-        <MetricBadge label="Portfolio" value={formatPct(portfolio.performance)} tone={portfolio.performance >= 0 ? "good" : "bad"} />
-        <MetricBadge label="Latest Value" value={formatMoney(last?.value ?? portfolio.totalValue)} caption={last ? formatDateLabel(last.date) : formatDateLabel(portfolio.updated)} />
-        <MetricBadge label="Cost Basis" value={formatMoney(last?.costBasis ?? portfolio.estimatedInvested)} caption={`${chartData.length} visible points`} />
+        <MetricBadge label={hasCostBasis ? "Portfolio" : "Filings"} value={hasCostBasis ? formatPct(portfolio.performance) : String(chartData.length)} tone={hasCostBasis ? (portfolio.performance >= 0 ? "good" : "bad") : "info"} />
+        <MetricBadge label="Reported Value" value={formatMoney(last?.value ?? portfolio.totalValue)} caption={last ? formatDateLabel(last.date) : formatDateLabel(portfolio.updated)} />
+        <MetricBadge label={hasCostBasis ? "Cost Basis" : "Holdings"} value={hasCostBasis ? formatMoney(last?.costBasis ?? portfolio.estimatedInvested) : String(last?.holdingsCount ?? portfolio.holdingsCount)} caption={hasCostBasis ? `${chartData.length} visible points` : "latest filing"} />
       </div>
     </div>
   );
 }
 
 function TraderDistribution({ holdings }: { holdings: TraderPortfolioHolding[] }) {
-  const top = holdings.slice(0, 7);
-  const restWeight = holdings.slice(7).reduce((total, holding) => total + holding.weight, 0);
+  const ranked = [...holdings].sort((a, b) => b.weight - a.weight);
+  const top = ranked.slice(0, 7);
+  const restWeight = ranked.slice(7).reduce((total, holding) => total + holding.weight, 0);
   const data = [
-    ...top.map((holding) => ({ name: holding.ticker, value: Number(holding.weight.toFixed(2)), marketValue: holding.marketValue })),
-    ...(restWeight > 0 ? [{ name: "OTHER", value: Number(restWeight.toFixed(2)), marketValue: holdings.slice(7).reduce((total, holding) => total + holding.marketValue, 0) }] : []),
+    ...top.map((holding) => ({ name: holding.label, value: Number(holding.weight.toFixed(2)), marketValue: holding.marketValue })),
+    ...(restWeight > 0 ? [{ name: "OTHER", value: Number(restWeight.toFixed(2)), marketValue: ranked.slice(7).reduce((total, holding) => total + holding.marketValue, 0) }] : []),
   ];
   return (
     <div className="trader-distribution">
@@ -1675,9 +1889,21 @@ const traderTransactionColumn = createColumnHelper<TraderPortfolioTransaction>()
 
 function traderHoldingColumns(onOpenTicker: (symbol: string) => void): ColumnDef<TraderPortfolioHolding, any>[] {
   return [
-    traderHoldingColumn.accessor("ticker", {
-      header: "Ticker",
-      cell: ({ row, getValue }) => <button className="ticker-link" type="button" onClick={() => onOpenTicker(row.original.ticker)}>{String(getValue())}</button>,
+    traderHoldingColumn.accessor("label", {
+      header: "Holding",
+      cell: ({ row, getValue }) => {
+        const holding = row.original;
+        const label = String(getValue());
+        if (holding.isTickerMapped && holding.ticker) {
+          return <button className="ticker-link" type="button" onClick={() => onOpenTicker(holding.ticker)}>{label}</button>;
+        }
+        return (
+          <div className="holding-label">
+            <strong>{label}</strong>
+            {holding.identifier && <small>{holding.identifier}</small>}
+          </div>
+        );
+      },
     }),
     traderHoldingColumn.accessor("marketValue", {
       header: "Value",
@@ -1689,15 +1915,16 @@ function traderHoldingColumns(onOpenTicker: (symbol: string) => void): ColumnDef
     }),
     traderHoldingColumn.accessor("price", {
       header: "Last Price",
-      cell: ({ getValue }) => formatMoney(Number(getValue())),
+      cell: ({ getValue }) => Number(getValue()) > 0 ? formatMoney(Number(getValue())) : <span className="muted-cell">N/A</span>,
     }),
     traderHoldingColumn.accessor("costBasis", {
       header: "Cost Basis",
-      cell: ({ getValue }) => formatMoney(Number(getValue())),
+      cell: ({ row, getValue }) => row.original.costBasis > 0 ? formatMoney(Number(getValue())) : <span className="muted-cell">N/A</span>,
     }),
     traderHoldingColumn.accessor("unrealizedPnl", {
       header: "Open P/L",
-      cell: ({ getValue }) => {
+      cell: ({ row, getValue }) => {
+        if (row.original.costBasis <= 0) return <span className="muted-cell">N/A</span>;
         const value = Number(getValue());
         return <span className={value >= 0 ? "money-good" : "money-bad"}>{formatMoney(value)}</span>;
       },
@@ -1712,8 +1939,13 @@ function traderTransactionColumns(onOpenTicker: (symbol: string) => void): Colum
       cell: ({ getValue }) => formatDateLabel(String(getValue())),
     }),
     traderTransactionColumn.accessor("symbol", {
-      header: "Ticker",
-      cell: ({ row, getValue }) => <button className="ticker-link" type="button" onClick={() => onOpenTicker(row.original.symbol)}>{String(getValue())}</button>,
+      header: "Holding",
+      cell: ({ row, getValue }) => {
+        const value = String(getValue());
+        return isLikelyTicker(value)
+          ? <button className="ticker-link" type="button" onClick={() => onOpenTicker(row.original.symbol)}>{value}</button>
+          : <span className="holding-name">{value}</span>;
+      },
     }),
     traderTransactionColumn.accessor("type", {
       header: "Action",
@@ -1725,7 +1957,7 @@ function traderTransactionColumns(onOpenTicker: (symbol: string) => void): Colum
     }),
     traderTransactionColumn.accessor("price", {
       header: "Exec. Price",
-      cell: ({ getValue }) => formatMoney(Number(getValue())),
+      cell: ({ getValue }) => Number(getValue()) > 0 ? formatMoney(Number(getValue())) : <span className="muted-cell">N/A</span>,
     }),
     traderTransactionColumn.accessor("weightAfter", {
       header: "New Weight",
@@ -2602,7 +2834,10 @@ function formatCompact(value: number): string {
 }
 
 function formatDateLabel(value: string): string {
-  const date = new Date(value);
+  const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = dateOnly
+    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+    : new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
