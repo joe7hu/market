@@ -34,6 +34,43 @@ def test_ticker_payload_matches_symbol() -> None:
     assert payload["tables"]["candidates"][0]["symbol"] == "ABC"
 
 
+def test_ticker_payload_includes_quote_and_signal_context_for_deep_links() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "decision_queue": [{"symbol": "NVDA", "score": 91, "action_grade": "research"}],
+            "quotes": [{"symbol": "NVDA", "price": 135.25, "change_pct": 1.4}],
+            "technicals": [{"symbol": "NVDA", "technical_score": 82}],
+            "opportunity_sources": [{"symbol": "NVDA", "source_key": "technicals", "title": "Technical setup"}],
+        },
+    )
+
+    payload = data_access.ticker_payload(panel_data, "nvda")
+
+    assert payload["found"] is True
+    assert payload["tables"]["decision_queue"][0]["score"] == 91
+    assert payload["tables"]["quotes"][0]["price"] == 135.25
+    assert payload["tables"]["technicals"][0]["technical_score"] == 82
+    assert payload["tables"]["opportunity_sources"][0]["source_key"] == "technicals"
+
+
+def test_settings_payload_exposes_config_and_integration_metadata() -> None:
+    config = {
+        "database": {"duckdb_path": "/tmp/market.duckdb"},
+        "arco": {"raw_dir": "/Users/joehu/brain/raw/sources/arco"},
+        "birdclaw": {"command": "birdclaw export"},
+    }
+    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+
+    payload = data_access.settings_payload(config, panel_data)
+
+    assert payload["status"]["ready"] is True
+    assert payload["config"]["database"]["duckdb_path"] == "/tmp/market.duckdb"
+    assert payload["integration"]["duckdb_path"] == "/tmp/market.duckdb"
+    assert payload["integration"]["arco_raw_dir"] == "/Users/joehu/brain/raw/sources/arco"
+    assert payload["integration"]["birdclaw_command"] == "birdclaw export"
+
+
 def test_save_and_delete_portfolio_position(tmp_path) -> None:
     config = {"database": {"duckdb_path": str(tmp_path / "portfolio.duckdb")}}
 

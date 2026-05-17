@@ -30,6 +30,22 @@ import {
   YAxis,
 } from "recharts";
 import {
+  EmptyState,
+  FilterRail,
+  GhostButton,
+  IconButton,
+  MetricBadge,
+  MetricStrip,
+  PageFrame,
+  Panel,
+  SegmentedControl,
+  SourceNotice,
+  SourcePill,
+  TabBar,
+  TableFrame,
+  TextLink,
+} from "./components/primitives";
+import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
@@ -41,7 +57,7 @@ import {
   type Table,
 } from "@tanstack/react-table";
 import { deletePortfolioPosition, savePortfolioPosition } from "./api";
-import type { JsonValue, PanelData, RowRecord, TickerPayload } from "./types";
+import type { JsonValue, PanelData, RowRecord, TablePayload, TickerPayload } from "./types";
 import { displayValue, rows, symbolFromRow, tickerSymbol } from "./utils";
 
 type Tone = "good" | "warn" | "bad" | "info" | "muted";
@@ -272,7 +288,7 @@ type SummaryItem = {
 type DataSourceState = "live" | "empty";
 type FreshnessStatus = "fresh" | "stale" | "degraded" | "unknown";
 type DecisionBucket = "Act" | "Research" | "Watch" | "Reject" | "Stale";
-const CHART_COLORS = ["#43e58f", "#68a8ff", "#f3bd45", "#ff9b4b", "#ff6b5f", "#9fc2ff", "#7ce0b5", "#d7a4ff", "#b5c7d8", "#5fd4ff"];
+const CHART_COLORS = ["#34c759", "#0a84ff", "#ffcc00", "#af52de", "#ff9f0a", "#5ac8fa", "#ff375f", "#8e8e93", "#30d158", "#64d2ff"];
 const TRADINGVIEW_EXCHANGES: Record<string, string> = {
   AAPL: "NASDAQ",
   AMD: "NASDAQ",
@@ -320,9 +336,8 @@ export function DashboardPage({
   const blockedRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) !== "ready").slice(0, 5);
   return (
     <PageFrame
-      eyebrow="Daily Decision Desk"
-      title="Market Queue"
-      subtitle={lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()} · ${model.discoveredUniverseCount || model.opportunities.length} discovered symbols` : loading ? "Loading market data..." : "No data loaded"}
+      title="Good morning, Joe"
+      subtitle={lastRefresh ? `${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} · Refreshed ${lastRefresh.toLocaleTimeString()}` : loading ? "Loading market data..." : "No data loaded"}
       action={
         <div className="button-row">
           <IconButton label="Refresh" onClick={onRefresh}>
@@ -334,40 +349,12 @@ export function DashboardPage({
         </div>
       }
     >
-      <SourceNotice
-        items={[
-          ["Decision Queue", model.sources.opportunities],
-          ["Watchlist", model.sources.watchlist],
-          ["Portfolio", model.sources.holdings],
-          ["Calendar", model.sources.calendar],
-        ]}
-      />
-      {!readyRows.length && blockedRows.length > 0 && (
-        <Panel className="decision-blocker" title="No investable candidates right now" headerAction={<AlertTriangle size={14} />}>
-          <GenericRows
-            rows={blockedRows.map((row) => ({
-              ...row,
-              title: [stringField(row, ["symbol"]), titleLabel(stringField(row, ["status"]))].filter(Boolean).join(" · "),
-              detail: stringField(row, ["next_action"]) || listField(row, ["blockers"]).join(" · "),
-            }))}
-            emptyTitle="No blocked candidates"
-            emptyDetail="Decision readiness has no rows."
-            onOpenTicker={onOpenTicker}
-          />
-        </Panel>
-      )}
-      <SignalCommandCenter model={model} onOpenTicker={onOpenTicker} />
-      <SignalCoverageStrip coverage={model.signalCoverage} />
-      <SignalMatrix rows={model.signalMatrix.slice(0, 10)} onOpenTicker={onOpenTicker} />
-      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
-      <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
-      <DecisionQueueBoard queues={model.decisionQueues} onOpenTicker={onOpenTicker} />
       <div className="dashboard-layout">
-        <Panel className="span-8" title="Decision Basis / Blocking Gates">
-          <DecisionBasisList rows={model.opportunities.slice(0, 8)} onOpenTicker={onOpenTicker} />
+        <Panel className="span-12" title="Watchlist">
+          <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel className="span-4" title="Stale / Source-Thin Warnings" headerAction={<AlertTriangle size={14} />}>
-          <DecisionWarningList rows={model.opportunities.filter((item) => item.isStale || item.isSourceThin || item.blockingGates.length).slice(0, 6)} onOpenTicker={onOpenTicker} />
+        <Panel className="span-12" title="Actionable Queue">
+          <DashboardQueueTable rows={model.opportunities.slice(0, 6)} onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-4" title="Portfolio Exposure" headerAction={<SourcePill state={model.sources.holdings} />}>
           {model.holdings.length ? <SummaryList rows={holdingSummaryRows(model.holdings)} /> : <EmptyState title="No portfolio holdings" detail="Enter or import positions before treating portfolio exposure as a decision gate." />}
@@ -380,7 +367,14 @@ export function DashboardPage({
           <CatalystList events={model.calendar.slice(0, 5)} />
           <TextLink>View calendar</TextLink>
         </Panel>
+        <Panel className="span-12 dashboard-brief-panel" title="Decision Readiness">
+          <DecisionBrief model={model} readyCount={readyRows.length} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
+        </Panel>
       </div>
+      <SignalCommandCenter model={model} onOpenTicker={onOpenTicker} />
+      <SignalCoverageStrip coverage={model.signalCoverage} />
+      <SignalMatrix rows={model.signalMatrix.slice(0, 10)} onOpenTicker={onOpenTicker} />
+      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
     </PageFrame>
   );
 }
@@ -390,16 +384,19 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   useEffect(() => {
     setActiveTab("Overview");
   }, [symbol]);
-  const opportunity = model.opportunities.find((item) => item.ticker === symbol);
-  const quote = model.watchlist.find((item) => item.symbol === symbol);
-  const setup = model.setupRows.find((item) => item.symbol === symbol);
-  const liquidity = model.liquidityRows.find((item) => item.symbol === symbol);
-  const valuation = model.valuationRows.find((item) => item.symbol === symbol);
-  const technical = model.technicalRows.find((item) => item.symbol === symbol);
-  const financeAnalysis = model.financeAnalyses.find((item) => item.symbol === symbol);
+  const tickerScopedData = useMemo(() => ticker ? panelDataWithTickerTables(data, ticker) : data, [data, ticker]);
+  const dossierModel = useMemo(() => ticker ? buildModel(tickerScopedData) : model, [model, ticker, tickerScopedData]);
+  const opportunity = dossierModel.opportunities.find((item) => item.ticker === symbol);
+  const quote = dossierModel.watchlist.find((item) => item.symbol === symbol);
+  const setup = dossierModel.setupRows.find((item) => item.symbol === symbol);
+  const liquidity = dossierModel.liquidityRows.find((item) => item.symbol === symbol);
+  const valuation = dossierModel.valuationRows.find((item) => item.symbol === symbol);
+  const technical = dossierModel.technicalRows.find((item) => item.symbol === symbol);
+  const financeAnalysis = dossierModel.financeAnalyses.find((item) => item.symbol === symbol);
   const evidenceRows = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).length : 0;
   const foundTables = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).map(([name]) => name) : [];
-  const signalRow = model.signalMatrix.find((row) => row.ticker === symbol);
+  const signalRow = dossierModel.signalMatrix.find((row) => row.ticker === symbol);
+  const decisionBrief = objectField(ticker?.decision_brief);
 
   return (
     <PageFrame
@@ -417,27 +414,30 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         </div>
       }
     >
-      <SourceNotice
-        items={[
-          ["Ticker API", ticker?.found ? "live" : "empty"],
-          ["Quote", model.watchlist.some((item) => item.symbol === symbol) ? model.sources.watchlist : "empty"],
-          ["Signal", opportunity ? model.sources.opportunities : "empty"],
-        ]}
+      <TickerDossierHeader
+        symbol={symbol}
+        decisionBrief={decisionBrief}
+        quote={quote}
+        opportunity={opportunity}
+        evidenceRows={evidenceRows}
+        foundTables={foundTables}
+        tickerFound={Boolean(ticker?.found)}
       />
-      <div className="ticker-price-row">
-        <strong>{quote?.price ?? "-"}</strong>
-        {quote && <span className={quote.change >= 0 ? "positive" : "negative"}>{formatPct(quote.change)}</span>}
-        <span className="muted">{quote ? "Latest quote snapshot" : "No latest quote row"} · {opportunity?.asOf ?? "No signal freshness"}</span>
-      </div>
-      {signalRow && <TickerSignalRibbon row={signalRow} />}
+      <DecisionTicket brief={decisionBrief} opportunity={opportunity} />
+      {signalRow && <TickerSignalRibbon row={signalRow} brief={decisionBrief} />}
       <TabBar tabs={["Overview", "Evidence Stack", "Fundamentals", "Estimates", "Financials", "Options", "TradingView", "News", "Filings", "Memos"]} active={activeTab} onSelect={setActiveTab} />
       {activeTab === "Overview" ? <div className="ticker-grid">
+        <DecisionBriefOverview brief={decisionBrief} opportunity={opportunity} />
+        <TradeSetupPanel brief={decisionBrief} />
         <Panel className="span-7" title="TradingView Technical Chart">
           <TradingViewChart symbol={symbol} />
         </Panel>
-        <Panel className="span-5" title="Price & Setup">
+        <Panel className="span-5" title="Chart Context">
+          <ChartContextSummary brief={decisionBrief} />
+        </Panel>
+        <Panel className="span-5" title="Price & Setup Source Rows">
           <SummaryList rows={[
-            { label: "Latest Quote", value: opportunity?.latestQuote ?? quote?.price ?? "-", caption: quote ? `Move ${formatPct(quote.change)}` : "No quote row", tone: quote ? "info" : "warn" },
+            { label: "Canonical Quote", value: canonicalQuoteLabel(decisionBrief) || quote?.price || "-", caption: canonicalQuoteCaption(decisionBrief) || "No canonical quote", tone: canonicalQuoteLabel(decisionBrief) ? "info" : "warn" },
             { label: "Catalyst", value: opportunity?.catalystWindow ?? "-", caption: "Nearest visible event window", tone: opportunity?.catalystWindow && opportunity.catalystWindow !== "-" ? "info" : "muted" },
             { label: "Portfolio", value: opportunity?.portfolioImpact ?? "-", caption: opportunity?.owned ? "Owned exposure" : "Unowned", tone: opportunity?.owned ? "warn" : "muted" },
             technical ? { ...technical, label: "Technical Score" } : { label: "Technical Score", value: "-", caption: "No technical feature row", tone: "warn" },
@@ -445,6 +445,13 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
             liquidity ?? { label: "Liquidity", value: opportunity?.liquidity ?? "-", caption: "No liquidity row", tone: "warn" },
             valuation ?? { label: "Valuation", value: "-", caption: "No valuation row", tone: "warn" },
           ]} />
+        </Panel>
+        <RiskPlanPanel brief={decisionBrief} />
+        <Panel className="span-4" title="Options Viability">
+          <OptionsContextSummary brief={decisionBrief} />
+        </Panel>
+        <Panel className="span-4" title="Portfolio Fit">
+          <PortfolioFitSummary brief={decisionBrief} />
         </Panel>
         <Panel className="span-5" title="Score Breakdown">
           <div className="score-total">
@@ -471,7 +478,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
           </div>
           {opportunity && <BulletList tone={opportunity.isStale || opportunity.isSourceThin ? "warn" : "info"} items={opportunity.inclusionReasons} />}
         </Panel>
-      </div> : <TickerTabContent activeTab={activeTab} ticker={ticker} data={data} />}
+      </div> : <TickerTabContent activeTab={activeTab} ticker={ticker} data={data} decisionBrief={decisionBrief} />}
     </PageFrame>
   );
 }
@@ -493,13 +500,27 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
           ["Concentration", hasHoldings ? "Available" : "Needs holdings", hasHoldings ? "Risk" : "Enter positions first", hasHoldings ? "warn" : "muted"],
         ]}
       />
-      <div className="portfolio-grid">
-        <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
-          <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
-        </Panel>
-        <Panel className="span-4" title="Add / Update Position">
-          <PortfolioEntryForm onSaved={onRefresh} />
-        </Panel>
+      {!hasHoldings ? (
+        <div className="portfolio-onboarding">
+          <Panel title="Add First Position">
+            <div className="portfolio-onboarding-copy">
+              <strong>Build the local portfolio model from explicit positions.</strong>
+              <p>Manual entries write to DuckDB and unlock exposure, liquidity, tax-lot, and signal-fit checks without broker credentials.</p>
+            </div>
+            <PortfolioEntryForm onSaved={onRefresh} />
+          </Panel>
+          <Panel title="Workspace Readiness">
+            <BulletList tone="info" items={["Add ticker, shares, average cost, and purchase date.", "Portfolio risk panels remain quiet until owned exposure exists.", "Signal decisions continue to show unowned candidates separately."]} />
+          </Panel>
+        </div>
+      ) : (
+        <div className="portfolio-grid">
+          <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
+            <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
+          </Panel>
+          <Panel className="span-4" title="Add / Update Position">
+            <PortfolioEntryForm onSaved={onRefresh} />
+          </Panel>
         <Panel className="span-4" title="Exposure Breakdown">
           {hasHoldings ? <SummaryList rows={holdingSummaryRows(model.holdings)} /> : <EmptyState title="No portfolio holdings" detail="Manual CSV import or DB-backed entries are required before exposure breakdown is meaningful." />}
         </Panel>
@@ -512,7 +533,8 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         <Panel className="span-4" title="Top Correlations">
           <SummaryList rows={model.correlationRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
         </Panel>
-      </div>
+        </div>
+      )}
     </PageFrame>
   );
 }
@@ -769,7 +791,7 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
   );
 }
 
-function TickerTabContent({ activeTab, ticker, data }: { activeTab: string; ticker: TickerPayload | null; data: PanelData }) {
+function TickerTabContent({ activeTab, ticker, data, decisionBrief }: { activeTab: string; ticker: TickerPayload | null; data: PanelData; decisionBrief: RowRecord }) {
   const keyByTab: Record<string, string[]> = {
     "Evidence Stack": ["symbol_decision_snapshot", "decision_snapshot", "decision_queue", "opportunities_ranked", "opportunity_sources", "signals", "technicals", "sepa", "liquidity", "correlations", "valuations"],
     Fundamentals: ["fundamentals"],
@@ -787,18 +809,25 @@ function TickerTabContent({ activeTab, ticker, data }: { activeTab: string; tick
     ...keys.flatMap((key) => ticker?.tables?.[key] ?? []),
   ];
   const displayRows = sourceRows;
+  const summaryRows = tabSummaryRows(decisionBrief, activeTab);
   return (
     <Panel title={activeTab}>
-      {activeTab === "Options" ? (
-        <OptionsEvidence rows={displayRows} />
-      ) : (
-        <GenericRows
-          rows={displayRows}
-          emptyTitle={`No ${activeTab.toLowerCase()} rows`}
-          emptyDetail={`No ticker-specific rows are available for ${activeTab}.`}
-          onOpenTicker={() => undefined}
-        />
-      )}
+      <div className="ticker-tab-workbench">
+        {activeTab === "Evidence Stack" && <EvidenceTriad brief={decisionBrief} />}
+        {summaryRows.length > 0 && <SummaryList rows={summaryRows} />}
+        {activeTab === "Options" && <OptionsEvidence rows={displayRows} />}
+        {activeTab !== "Options" && (
+          <div className="ticker-source-drilldown">
+            <strong>Loaded Source Rows</strong>
+            <GenericRows
+              rows={displayRows}
+              emptyTitle={`No ${activeTab.toLowerCase()} rows`}
+              emptyDetail={`No ticker-specific rows are available for ${activeTab}.`}
+              onOpenTicker={() => undefined}
+            />
+          </div>
+        )}
+      </div>
     </Panel>
   );
 }
@@ -885,14 +914,16 @@ export function ResearchPage({ data, model, onOpenTicker }: { data: PanelData; m
 export function SettingsPage({ data }: { data: PanelData }) {
   const config = data.settings.config ?? {};
   const integration = data.settings.integration ?? {};
+  const hasSettings = Object.keys(config).length > 0 || Object.keys(integration).length > 0;
   return (
-    <PageFrame title="Settings" subtitle="Local app configuration and source wiring">
+    <PageFrame title="Settings" subtitle={hasSettings ? "Local app configuration and source wiring" : "Waiting for /api/settings metadata"}>
+      <SourceNotice items={[["Settings API", hasSettings ? "live" : "empty"]]} />
       <div className="settings-grid">
         <Panel title="Configuration">
-          <DetailRows rows={Object.entries(config).slice(0, 8).map(([key, value]) => [key, displayValue(value)])} />
+          {Object.keys(config).length ? <DetailRows rows={Object.entries(config).slice(0, 8).map(([key, value]) => [key, displayValue(value)])} /> : <EmptyState title="No configuration metadata" detail="The frontend will populate this panel after /api/settings returns config fields." />}
         </Panel>
         <Panel title="Integration">
-          <DetailRows rows={Object.entries(integration).map(([key, value]) => [key, displayValue(value)])} />
+          {Object.keys(integration).length ? <DetailRows rows={Object.entries(integration).map(([key, value]) => [key, displayValue(value)])} /> : <EmptyState title="No integration metadata" detail="DuckDB, Arco, and Birdclaw wiring appear here when settings metadata is loaded." />}
         </Panel>
         <Panel title="Source Rules">
           <BulletList tone="info" items={["No secrets are displayed in this UI.", "Arco evidence is consumed from the durable brain raw source path.", "Investment logic remains in the Python backend.", "Frontend pages only format and group source-backed rows."]} />
@@ -1004,6 +1035,59 @@ export function buildModel(data: PanelData): AppModel {
       health: healthRows.length ? "live" : "empty",
     },
   };
+}
+
+function panelDataWithTickerTables(base: PanelData, ticker: TickerPayload): PanelData {
+  const next: PanelData = { ...base };
+  const tableMap: Record<string, keyof PanelData> = {
+    candidates: "candidates",
+    decision_queue: "decisionQueue",
+    decision_readiness: "decisionReadiness",
+    discovered_universe: "discoveredUniverse",
+    symbol_decision_snapshots: "symbolDecisionSnapshots",
+    symbol_decision_snapshot: "symbolDecisionSnapshots",
+    opportunities_ranked: "opportunitiesRanked",
+    opportunity_sources: "opportunitySources",
+    portfolio: "portfolio",
+    theses: "theses",
+    catalysts: "catalysts",
+    signals: "signals",
+    fundamentals: "fundamentals",
+    disclosures: "disclosures",
+    quotes: "quotes",
+    options_expiries: "optionsExpiries",
+    options_chain: "optionsChain",
+    options_payoff_scenarios: "optionsPayoffScenarios",
+    news: "news",
+    tradingview_symbol_search: "tradingviewSymbolSearch",
+    tradingview_watchlists: "tradingviewWatchlists",
+    tradingview_alerts: "tradingviewAlerts",
+    tradingview_chart_state: "tradingviewChartState",
+    sepa: "sepa",
+    liquidity: "liquidity",
+    correlations: "correlations",
+    etf_premiums: "etfPremiums",
+    analyst_estimates: "analystEstimates",
+    earnings: "earnings",
+    earnings_setups: "earningsSetups",
+    valuations: "valuations",
+    technicals: "technicals",
+    research_packets: "researchPackets",
+    memos: "memos",
+  };
+
+  for (const [apiKey, tableRows] of Object.entries(ticker.tables ?? {})) {
+    const dataKey = tableMap[apiKey];
+    if (!dataKey || dataKey === "dashboard" || dataKey === "settings" || dataKey === "errors") continue;
+    const payload: TablePayload = { rows: tableRows ?? [], count: tableRows?.length ?? 0 };
+    (next[dataKey] as TablePayload) = payload;
+  }
+
+  if (ticker.decision_snapshot && !rows(next.symbolDecisionSnapshots).length) {
+    next.symbolDecisionSnapshots = { rows: [ticker.decision_snapshot], count: 1 };
+  }
+
+  return next;
 }
 
 function buildWatchlist(quoteRows: RowRecord[]): WatchItem[] {
@@ -2072,58 +2156,31 @@ function calendarType(value: string): CalendarEvent["type"] {
   return "event";
 }
 
-function PageFrame({ eyebrow, title, subtitle, action, children }: { eyebrow?: string; title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
+function DecisionBrief({ model, readyCount, blockedRows, onOpenTicker }: { model: AppModel; readyCount: number; blockedRows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  const lead = model.signalMatrix.find((row) => row.actionGrade !== "Stale") ?? model.signalMatrix[0];
+  const blockers = blockedRows
+    .map((row) => [stringField(row, ["symbol"]), stringField(row, ["status"]), stringField(row, ["next_action"]) || listField(row, ["blockers"]).join(" · ")].filter(Boolean).join(" · "))
+    .filter(Boolean);
+  const loadedFamilies = model.signalCoverage.filter((item) => item.count > 0).length;
+  const nextAction = lead?.blockingGates[0] || model.opportunities.find((item) => item.nextAction)?.nextAction || blockers[0] || "Load decision sources before acting.";
   return (
-    <section className="page-frame">
-      <header className="page-header">
-        <div>
-          {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-          <h1>{title}</h1>
-          {subtitle && <p>{subtitle}</p>}
+    <section className="decision-brief" aria-label="Decision brief">
+      <div className="decision-brief-main">
+        <span>Readiness</span>
+        <strong>{readyCount ? `${readyCount} ready` : "Blocked"}</strong>
+        <p>{nextAction}</p>
+        <div className="decision-brief-actions">
+          {lead && <button type="button" onClick={() => onOpenTicker(lead.ticker)}>Open {lead.ticker}<ChevronRight size={14} /></button>}
+          <small>{loadedFamilies}/11 source families loaded</small>
         </div>
-        {action}
-      </header>
-      {children}
+      </div>
+      <div className="decision-brief-grid">
+        <MetricBadge label="Lead Ticker" value={lead?.ticker ?? "-"} caption={lead?.primaryReason ?? "No ranked source row"} tone={lead ? "info" : "muted"} />
+        <MetricBadge label="Blockers" value={String(blockers.length)} caption={blockers[0] ?? "No visible blockers"} tone={blockers.length ? "warn" : "good"} />
+        <MetricBadge label="Health" value={model.sources.health === "live" ? "Loaded" : "No rows"} caption={model.latestHealthCheck} tone={model.sources.health === "live" ? "good" : "muted"} />
+        <MetricBadge label="Portfolio" value={model.holdings.length ? `${model.holdings.length} rows` : "Empty"} caption={model.holdings.length ? formatMoney(model.portfolioValue) : "No owned exposure"} tone={model.holdings.length ? "info" : "muted"} />
+      </div>
     </section>
-  );
-}
-
-function Panel({ title, children, className = "", headerAction }: { title: string; children: ReactNode; className?: string; headerAction?: ReactNode }) {
-  return (
-    <section className={`panel ${className}`}>
-      <header className="panel-header">
-        <h2>{title}</h2>
-        {headerAction && <span>{headerAction}</span>}
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function SourceNotice({ items }: { items: Array<[string, DataSourceState]> }) {
-  return (
-    <section className="source-notice" aria-label="Data source status">
-      {items.map(([label, state]) => (
-        <span key={label}>
-          {label}
-          <SourcePill state={state} />
-        </span>
-      ))}
-    </section>
-  );
-}
-
-function SourcePill({ state }: { state: DataSourceState }) {
-  const label = state === "live" ? "Rows loaded" : "No rows";
-  return <i className={`source-pill ${state}`}>{label}</i>;
-}
-
-function EmptyState({ title, detail }: { title: string; detail: string }) {
-  return (
-    <div className="empty-state">
-      <strong>{title}</strong>
-      <p>{detail}</p>
-    </div>
   );
 }
 
@@ -2242,20 +2299,25 @@ function SignalMatrix({ rows: matrixRows, onOpenTicker }: { rows: SignalMatrixRo
   );
 }
 
-function TickerSignalRibbon({ row }: { row: SignalMatrixRow }) {
+function TickerSignalRibbon({ row, brief }: { row: SignalMatrixRow; brief?: RowRecord }) {
+  const optionsExpired = stringField(objectField(brief?.options_context), ["status"]).toLowerCase() === "expired";
+  const activeSignalCount = row.signals.filter((signal) => signal.count > 0 && !(optionsExpired && signal.key === "options")).length;
   return (
     <section className="ticker-signal-ribbon" aria-label="Ticker signal stack">
       <div>
         <strong>Signal Stack</strong>
-        <span>{row.signals.filter((signal) => signal.count > 0).length}/11 families · {row.sourceCount} sources</span>
+        <span>{activeSignalCount}/11 families · {row.sourceCount} sources</span>
       </div>
       <div>
-        {row.signals.map((signal) => (
-          <span key={signal.key} className={`signal-chip ${signal.count ? signal.tone : "muted"}`}>
-            <b>{signal.label}</b>
-            <small>{signal.count ? signal.value : "none"}</small>
-          </span>
-        ))}
+        {row.signals.map((signal) => {
+          const expiredOptionSignal = optionsExpired && signal.key === "options";
+          return (
+            <span key={signal.key} className={`signal-chip ${expiredOptionSignal ? "bad" : signal.count ? signal.tone : "muted"}`}>
+              <b>{signal.label}</b>
+              <small>{expiredOptionSignal ? "expired" : signal.count ? signal.value : "none"}</small>
+            </span>
+          );
+        })}
       </div>
     </section>
   );
@@ -2400,12 +2462,321 @@ function TopOpportunityTicker({ opportunity, onOpenTicker }: { opportunity: Oppo
   );
 }
 
+function TickerDossierHeader({
+  symbol,
+  decisionBrief,
+  quote,
+  opportunity,
+  evidenceRows,
+  foundTables,
+  tickerFound,
+}: {
+  symbol: string;
+  decisionBrief: RowRecord;
+  quote?: WatchItem;
+  opportunity?: Opportunity;
+  evidenceRows: number;
+  foundTables: string[];
+  tickerFound: boolean;
+}) {
+  const verdict = objectField(decisionBrief.verdict);
+  const blockers = listField(verdict, ["blockers"]);
+  const blockerLabels = listField(verdict, ["blocker_labels"]);
+  const canonicalQuote = objectField(decisionBrief.canonical_quote);
+  const price = numberField(canonicalQuote, ["price"], Number.NaN);
+  const change = numberField(canonicalQuote, ["change_pct"], Number.NaN);
+  const action = stringField(verdict, ["action"]) || opportunity?.actionGrade || "-";
+  const freshness = stringField(verdict, ["freshness"]) || (opportunity ? titleLabel(opportunity.freshnessStatus) : "-");
+  const confidence = numberField(verdict, ["confidence"], Number.NaN);
+  return (
+    <section className="ticker-dossier-header" aria-label={`${symbol} ticker dossier summary`}>
+      <div className="ticker-dossier-price">
+        <span>{tickerFound ? stringField(canonicalQuote, ["label"]) || "Canonical quote" : "Ticker API empty"}</span>
+        <strong>{Number.isFinite(price) ? formatRawPrice(price) : quote?.price ?? "-"}</strong>
+        <p>
+          {Number.isFinite(change) ? <b className={change >= 0 ? "positive" : "negative"}>{formatPct(change)}</b> : quote ? <b className={quote.change >= 0 ? "positive" : "negative"}>{formatPct(quote.change)}</b> : <b className="muted">No quote row</b>}
+          <small>{canonicalQuoteCaption(decisionBrief) || opportunity?.asOf || "No signal freshness"}</small>
+        </p>
+      </div>
+      <div className="ticker-dossier-context">
+        <MetricBadge label="Verdict" value={action} tone={action === "Act" ? "good" : action === "Stale" || action === "Reject" ? "bad" : action === "Watch" ? "warn" : "info"} />
+        <MetricBadge label="Freshness" value={titleLabel(freshness)} tone={freshnessTone(normalizeFreshnessStatus(freshness))} />
+        <MetricBadge label="Confidence" value={Number.isFinite(confidence) ? `${Math.round(confidence)}` : "-"} caption="decision score" tone={Number.isFinite(confidence) && confidence >= 70 ? "good" : "warn"} />
+        <MetricBadge label="Blockers" value={String(blockers.length)} caption={(blockerLabels[0] || blockers[0] || "none").slice(0, 44)} tone={blockers.length ? "warn" : "good"} />
+        <MetricBadge label="Evidence" value={String(opportunity?.evidenceCount ?? 0)} caption={`${opportunity?.sourceCount ?? 0} sources`} tone={(opportunity?.evidenceCount ?? 0) > 0 ? "good" : "warn"} />
+        <MetricBadge label="API Tables" value={String(evidenceRows)} caption={foundTables.slice(0, 2).join(", ") || "No rows"} tone={evidenceRows ? "info" : "muted"} />
+      </div>
+      <p className="ticker-dossier-note">{stringField(verdict, ["summary"]) || opportunity?.decisionBasis || "Ticker context is derived from ticker-specific API tables for deep-link correctness."}</p>
+      <p className="ticker-dossier-note next-action"><b>Next action:</b> {stringField(verdict, ["next_action"]) || opportunity?.nextAction || "Review setup before action."}</p>
+    </section>
+  );
+}
+
+function DecisionTicket({ brief, opportunity }: { brief: RowRecord; opportunity?: Opportunity }) {
+  const verdict = objectField(brief.verdict);
+  const setup = objectField(brief.setup);
+  const risk = objectField(brief.risk_plan);
+  const options = objectField(brief.options_context);
+  const tasks = arrayField(verdict.blocker_tasks).filter((item): item is RowRecord => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+  const blockers = listField(verdict, ["blocker_labels", "blockers"]);
+  const action = stringField(verdict, ["action"]) || opportunity?.actionGrade || "Watch";
+  const noTrade = blockers.length > 0 || action.toLowerCase().includes("reject") || stringField(options, ["status"]).toLowerCase() === "expired";
+  const deskCall = noTrade ? "No Trade" : action.toLowerCase().includes("act") ? "Trade Candidate" : "Watch";
+  return (
+    <section className={`decision-ticket ${noTrade ? "blocked" : "open"}`} aria-label="Ticker decision ticket">
+      <div className="decision-ticket-call">
+        <span>Desk Call</span>
+        <strong>{deskCall}</strong>
+        <small>{noTrade ? "Do not initiate until blockers clear" : "Review sizing and execution before action"}</small>
+      </div>
+      <div className="decision-ticket-grid">
+        <div>
+          <span>Direction</span>
+          <strong>{noTrade ? "No new exposure" : stringField(setup, ["stance"]) || "Undefined"}</strong>
+        </div>
+        <div>
+          <span>Entry</span>
+          <strong>{stringField(setup, ["entry_zone"]) || "-"}</strong>
+        </div>
+        <div>
+          <span>Stop / Invalidation</span>
+          <strong>{stringField(setup, ["invalidation_level"]) || stringField(risk, ["invalidation"]) || "-"}</strong>
+        </div>
+        <div>
+          <span>Target / Edge</span>
+          <strong>{stringField(setup, ["target_range"]) || "-"}</strong>
+        </div>
+        <div>
+          <span>Max Loss</span>
+          <strong>{stringField(risk, ["max_loss"]) || "-"}</strong>
+        </div>
+        <div>
+          <span>Next Review</span>
+          <strong>{stringField(setup, ["review_date"]) || "-"}</strong>
+        </div>
+      </div>
+      <div className="blocker-task-list">
+        {(tasks.length ? tasks : blockers.map((label, index) => ({ key: `blocker-${index}`, label, action: "Review blocker", detail: label, severity: "warn" }))).slice(0, 6).map((task) => (
+          <div key={stringField(task, ["key"]) || stringField(task, ["label"])} className={`blocker-task ${stringField(task, ["severity"]) || "warn"}`}>
+            <span>{stringField(task, ["label"]) || "Decision blocker"}</span>
+            <strong>{stringField(task, ["action"]) || "Review"}</strong>
+            <small>{stringField(task, ["detail"])}</small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DecisionBriefOverview({ brief, opportunity }: { brief: RowRecord; opportunity?: Opportunity }) {
+  const verdict = objectField(brief.verdict);
+  const blockers = listField(verdict, ["blockers"]);
+  const blockerLabels = listField(verdict, ["blocker_labels"]);
+  return (
+    <Panel className="span-12 decision-brief-panel" title="Decision Brief">
+      <div className="decision-brief-layout">
+        <div>
+          <span>Trader Stance</span>
+          <strong>{stringField(objectField(brief.setup), ["stance"]) || opportunity?.decisionBasis || "No structured stance loaded."}</strong>
+          <p>{stringField(verdict, ["summary"]) || "No source-backed decision summary is loaded."}</p>
+        </div>
+        <div className="decision-brief-actions">
+          <MetricBadge label="Verdict" value={stringField(verdict, ["action"]) || opportunity?.actionGrade || "-"} tone={opportunity?.actionGrade === "Act" ? "good" : blockers.length ? "warn" : "info"} />
+          <MetricBadge label="Confidence" value={displayValue(verdict.confidence as JsonValue)} caption="0-100 decision score" tone={numberField(verdict, ["confidence"], 0) >= 70 ? "good" : "warn"} />
+          <MetricBadge label="Next Action" value={shortActionLabel(stringField(verdict, ["next_action"]))} caption={(blockerLabels[0] || blockers.slice(0, 1).map(shortGateLabel).join(", ")) || "no blocker"} tone={blockers.length ? "warn" : "info"} />
+        </div>
+      </div>
+      <EvidenceTriad brief={brief} compact />
+      <ChangedSinceReview brief={brief} />
+    </Panel>
+  );
+}
+
+function TradeSetupPanel({ brief }: { brief: RowRecord }) {
+  const setup = objectField(brief.setup);
+  return (
+    <Panel className="span-12 trade-setup-panel" title="Trade Setup">
+      <SummaryList rows={[
+        { label: "Stance", value: stringField(setup, ["stance"]) || "-", caption: "advisory only", tone: "info" },
+        { label: "Timeframe", value: stringField(setup, ["timeframe"]) || "-", caption: "review horizon", tone: "info" },
+        { label: "Catalyst", value: stringField(setup, ["catalyst"]) || "-", caption: "why this could move", tone: "info" },
+        { label: "Entry Zone", value: stringField(setup, ["entry_zone"]) || "-", caption: "avoid undefined entries", tone: "warn" },
+        { label: "Invalidation", value: stringField(setup, ["invalidation_level"]) || "-", caption: "setup breaks if violated", tone: "bad" },
+        { label: "Target", value: stringField(setup, ["target_range"]) || "-", caption: "valuation or setup target", tone: "info" },
+        { label: "Risk/Reward", value: stringField(setup, ["risk_reward"]) || "-", caption: "rough source-derived estimate", tone: stringField(setup, ["risk_reward"]).startsWith("-") ? "bad" : "info" },
+        { label: "Review", value: stringField(setup, ["review_date"]) || "-", caption: "next required look", tone: "info" },
+      ]} />
+    </Panel>
+  );
+}
+
+function RiskPlanPanel({ brief }: { brief: RowRecord }) {
+  const risk = objectField(brief.risk_plan);
+  return (
+    <Panel className="span-4" title="Risk Plan">
+      <SummaryList rows={[
+        { label: "Max Sizing", value: stringField(risk, ["max_sizing"]) || "-", caption: "portfolio-aware sizing guidance", tone: "warn" },
+        { label: "Max Loss", value: stringField(risk, ["max_loss"]) || "-", caption: "selected options scenario", tone: "bad" },
+        { label: "Liquidity", value: stringField(risk, ["liquidity_ceiling"]) || "-", caption: "capacity and impact", tone: "info" },
+        { label: "Invalidation", value: stringField(risk, ["invalidation"]) || "-", caption: "do not ignore", tone: "bad" },
+      ]} />
+    </Panel>
+  );
+}
+
+function PortfolioFitSummary({ brief }: { brief: RowRecord }) {
+  const fit = objectField(brief.portfolio_fit);
+  return (
+    <SummaryList rows={[
+      { label: "Exposure", value: stringField(fit, ["current_exposure"]) || "-", caption: fit.owned ? "already owned" : "unowned", tone: fit.owned ? "warn" : "muted" },
+      { label: "Concentration", value: stringField(fit, ["theme_concentration"]) || "-", caption: "theme overlap", tone: "info" },
+      { label: "Duplicate Risk", value: fit.duplicates_risk ? "Yes" : "No", caption: "existing position check", tone: fit.duplicates_risk ? "warn" : "good" },
+    ]} />
+  );
+}
+
+function ChartContextSummary({ brief }: { brief: RowRecord }) {
+  const chart = objectField(brief.chart_context);
+  return (
+    <SummaryList rows={[
+      { label: "20d / 50d / 200d", value: [chart.ma20, chart.ma50, chart.ma200].map((value) => formatMoney(numberField({ value }, ["value"], Number.NaN))).join(" / "), caption: "moving averages", tone: "info" },
+      { label: "20d / 60d Return", value: `${formatPct(numberField(chart, ["return_20d"], 0) * 100)} / ${formatPct(numberField(chart, ["return_60d"], 0) * 100)}`, caption: stringField(chart, ["extension_warning"]) || "trend context", tone: stringField(chart, ["extension_warning"]) ? "warn" : "info" },
+      { label: "High / Low", value: `${formatMoney(numberField(chart, ["high_52w"], Number.NaN))} / ${formatMoney(numberField(chart, ["low_52w"], Number.NaN))}`, caption: "52-week range", tone: "info" },
+      { label: "Support / Resistance", value: `${formatMoney(numberField(chart, ["support"], Number.NaN))} / ${formatMoney(numberField(chart, ["resistance"], Number.NaN))}`, caption: "rough levels from source rows", tone: "info" },
+    ]} />
+  );
+}
+
+function OptionsContextSummary({ brief }: { brief: RowRecord }) {
+  const options = objectField(brief.options_context);
+  const status = stringField(options, ["status"]);
+  const expired = status.toLowerCase() === "expired";
+  return (
+    <SummaryList rows={[
+      { label: "Status", value: status ? titleLabel(status) : "Missing", caption: `${numberField(options, ["live_scenario_count"], 0)} live / ${numberField(options, ["expired_scenario_count"], 0)} expired`, tone: expired ? "bad" : status === "live" ? "good" : "muted" },
+      { label: "Scenario", value: stringField(options, ["summary"]) || "No options context", caption: `${numberField(options, ["scenario_count"], 0)} scenarios`, tone: expired ? "bad" : numberField(options, ["scenario_count"], 0) ? "info" : "muted" },
+      { label: "IV / DTE", value: expired ? "-" : `${formatUnsignedPct(numberField(options, ["iv"], 0) * 100)} / ${Math.round(numberField(options, ["dte"], 0))}`, caption: expired ? "expired option data hidden from live setup" : "implied vol and days to expiry", tone: expired ? "bad" : "info" },
+      { label: "Breakeven", value: expired ? "-" : formatMoney(numberField(options, ["breakeven"], Number.NaN)), caption: expired ? "refresh options before using breakeven" : stringField(options, ["max_loss"]) ? `max loss ${stringField(options, ["max_loss"])}` : "no bounded loss row", tone: "warn" },
+    ]} />
+  );
+}
+
+function EvidenceTriad({ brief, compact = false }: { brief: RowRecord; compact?: boolean }) {
+  return (
+    <div className={`evidence-triad ${compact ? "compact" : ""}`}>
+      <EvidenceColumn title="For" tone="good" items={listField(brief, ["evidence_for"])} />
+      <EvidenceColumn title="Against" tone="bad" items={listField(brief, ["evidence_against"])} />
+      <EvidenceColumn title="Unknown" tone="warn" items={listField(brief, ["unknowns"])} />
+    </div>
+  );
+}
+
+function EvidenceColumn({ title, tone, items }: { title: string; tone: Tone; items: string[] }) {
+  return (
+    <section className={`evidence-column ${tone}`}>
+      <h3>{title}</h3>
+      <BulletList tone={tone} items={items.length ? items.slice(0, 6) : ["No rows loaded."]} />
+    </section>
+  );
+}
+
+function ChangedSinceReview({ brief }: { brief: RowRecord }) {
+  const items = listField(brief, ["changed_since_last_review"]);
+  return (
+    <div className="changed-review">
+      <strong>What Changed</strong>
+      <BulletList tone="info" items={items.length ? items.slice(0, 6) : ["No change summary is available."]} />
+    </div>
+  );
+}
+
+function tabSummaryRows(brief: RowRecord, activeTab: string): SummaryItem[] {
+  const summaries = objectField(brief.tab_summaries);
+  const rawRows = Array.isArray(summaries[activeTab]) ? summaries[activeTab] as RowRecord[] : [];
+  return rawRows.map((row) => ({
+    label: stringField(row, ["label"]) || "Summary",
+    value: stringField(row, ["value"]) || "-",
+    caption: stringField(row, ["caption"]),
+    tone: summaryTone(row),
+  }));
+}
+
+function summaryTone(row: RowRecord): Tone {
+  const value = stringField(row, ["value"]).toLowerCase();
+  if (value.includes("missing") || value.includes("blocked") || value.includes("reject")) return "warn";
+  if (value.includes("-")) return "bad";
+  if (value.includes("loaded") || value.includes("constructive") || value.includes("embedded")) return "good";
+  return "info";
+}
+
+function canonicalQuoteLabel(brief: RowRecord): string {
+  const quote = objectField(brief.canonical_quote);
+  const price = numberField(quote, ["price"], Number.NaN);
+  return Number.isFinite(price) ? formatRawPrice(price) : "";
+}
+
+function canonicalQuoteCaption(brief: RowRecord): string {
+  const quote = objectField(brief.canonical_quote);
+  return [stringField(quote, ["label"]), stringField(quote, ["source"]), stringField(quote, ["observed_at"])].filter(Boolean).join(" · ");
+}
+
+function shortActionLabel(value: string): string {
+  const normalized = value.toLowerCase();
+  if (!value) return "Review";
+  if (normalized.includes("thesis")) return "Research thesis";
+  if (normalized.includes("refresh")) return "Refresh data";
+  if (normalized.includes("clear")) return "Clear gates";
+  if (normalized.includes("monitor")) return "Monitor";
+  return value.length > 22 ? `${value.slice(0, 19)}...` : value;
+}
+
+function shortGateLabel(value: string): string {
+  if (!value) return "";
+  return titleLabel(value.replaceAll("_", " ")).slice(0, 28);
+}
+
+function DashboardQueueTable({ rows, onOpenTicker }: { rows: Opportunity[]; onOpenTicker: (symbol: string) => void }) {
+  if (!rows.length) {
+    return <EmptyState title="No actionable queue rows" detail="Decision queue rows have not loaded yet." />;
+  }
+  return (
+    <TableFrame>
+      <table className="desk-table dashboard-queue-table">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Ticker</th>
+            <th>Score</th>
+            <th>Grade</th>
+            <th>Decision</th>
+            <th>Why Now</th>
+            <th>Next Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`dashboard-${row.rank}-${row.ticker}`}>
+              <td className="rank">{row.rank}</td>
+              <td><button className="ticker-link" type="button" onClick={() => onOpenTicker(row.ticker)}>{row.ticker}</button></td>
+              <td>{row.score}</td>
+              <td>{row.grade}</td>
+              <td><DecisionBadge value={row.actionGrade} /></td>
+              <td className="clip">{row.inclusionReasons[0] ?? row.whyNow}</td>
+              <td className="clip">{row.nextAction}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableFrame>
+  );
+}
+
 function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Opportunity[]; compact?: boolean; onOpenTicker: (symbol: string) => void }) {
   if (!rows.length) {
     return <EmptyState title="No opportunities" detail="No signal or candidate rows matched this view." />;
   }
   return (
-    <div className="table-wrap">
+    <TableFrame>
       <table className="desk-table">
         <thead>
           <tr>
@@ -2440,18 +2811,24 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
           ))}
         </tbody>
       </table>
-    </div>
+    </TableFrame>
   );
 }
 
 function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
   const hasCostBasis = portfolio.estimatedInvested > 0;
+  const lastMove = traderLastMoveSummary(portfolio);
   return (
     <section className="trader-hero">
       <div className="trader-hero-main">
         <span>{portfolio.category}</span>
         <h2>{portfolio.investor}</h2>
         <p>{portfolio.description}</p>
+        <div className={`trader-last-move ${lastMove.tone}`}>
+          <strong>Last move</strong>
+          <span>{lastMove.headline}</span>
+          <small>{lastMove.detail}</small>
+        </div>
         <small>Updated {formatDateLabel(portfolio.updated)}</small>
       </div>
       <div className="trader-hero-metrics">
@@ -2472,11 +2849,13 @@ function TraderPortfolioHero({ portfolio }: { portfolio: TraderPortfolio }) {
 
 function TraderPortfolioRow({ portfolio, active, onSelect }: { portfolio: TraderPortfolio; active: boolean; onSelect: () => void }) {
   const hasCostBasis = portfolio.estimatedInvested > 0;
+  const lastMove = traderLastMoveSummary(portfolio);
   return (
     <button type="button" className={`trader-directory-row ${active ? "active" : ""}`} onClick={onSelect}>
       <div>
         <strong>{portfolio.investor}</strong>
         <small>{portfolio.holdingsCount} holdings</small>
+        <small className={`trader-directory-move ${lastMove.tone}`}>{lastMove.headline}: {lastMove.detail}</small>
       </div>
       <div>
         <i className={hasCostBasis ? (portfolio.performance >= 0 ? "good" : "bad") : "muted"}>{hasCostBasis ? formatPct(portfolio.performance) : "N/A"}</i>
@@ -2484,6 +2863,75 @@ function TraderPortfolioRow({ portfolio, active, onSelect }: { portfolio: Trader
       </div>
     </button>
   );
+}
+
+function traderLastMoveSummary(portfolio: TraderPortfolio): { headline: string; detail: string; tone: "good" | "bad" | "info" | "muted" } {
+  const datedTransactions = portfolio.transactions
+    .filter((transaction) => transaction.date || transaction.filedDate)
+    .sort((a, b) => transactionTime(b) - transactionTime(a));
+  const latest = datedTransactions[0];
+  if (!latest) {
+    const largest = portfolio.holdings[0];
+    return {
+      headline: "Latest filing",
+      detail: largest ? `Top weight ${largest.label} at ${largest.weight.toFixed(1)}%` : "No allocation history loaded",
+      tone: largest ? "info" : "muted",
+    };
+  }
+
+  const latestKey = transactionDateKey(latest);
+  const sameMove = datedTransactions
+    .filter((transaction) => transactionDateKey(transaction) === latestKey)
+    .filter((transaction) => !transaction.type.includes("UNCHANGED"));
+  const moveRows = sameMove.length ? sameMove : datedTransactions.filter((transaction) => transactionDateKey(transaction) === latestKey);
+  const buys = moveRows.filter((transaction) => isBuyLikeMove(transaction.type)).length;
+  const sells = moveRows.filter((transaction) => isSellLikeMove(transaction.type)).length;
+  const headlineAction = buys && sells ? "Rebalanced" : buys ? "Added" : sells ? "Trimmed" : "Held";
+  const ranked = [...moveRows].sort((a, b) => transactionMoveMagnitude(b) - transactionMoveMagnitude(a));
+  const detail = ranked.slice(0, 2).map(transactionMoveLabel).filter(Boolean).join(", ");
+  const overflow = ranked.length > 2 ? ` +${ranked.length - 2}` : "";
+  return {
+    headline: `${headlineAction} ${formatDateLabel(latest.date || latest.filedDate)}`,
+    detail: `${detail || `${portfolio.holdingsCount} reported holdings`}${overflow}`,
+    tone: buys && !sells ? "good" : sells && !buys ? "bad" : headlineAction === "Held" ? "muted" : "info",
+  };
+}
+
+function transactionTime(transaction: TraderPortfolioTransaction): number {
+  const time = new Date(transaction.date || transaction.filedDate).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function transactionDateKey(transaction: TraderPortfolioTransaction): string {
+  return (transaction.date || transaction.filedDate || "").slice(0, 10);
+}
+
+function isBuyLikeMove(type: string): boolean {
+  return /ADD|BUY|INCREASE|NEW|OPEN/.test(type);
+}
+
+function isSellLikeMove(type: string): boolean {
+  return /SELL|DECREASE|REDUCE|TRIM|EXIT|CLOSE/.test(type);
+}
+
+function transactionMoveMagnitude(transaction: TraderPortfolioTransaction): number {
+  const delta = Math.abs(transaction.weightAfter - transaction.weightBefore);
+  return delta || Math.abs(transaction.estimatedAmount);
+}
+
+function transactionMoveLabel(transaction: TraderPortfolioTransaction): string {
+  const symbol = transaction.symbol || "Holding";
+  const delta = transaction.weightAfter - transaction.weightBefore;
+  if ((transaction.type.includes("ADD") || transaction.type.includes("NEW")) && transaction.weightBefore === 0 && transaction.weightAfter > 0) {
+    return `${symbol} ${transaction.weightAfter.toFixed(1)}%`;
+  }
+  if (Math.abs(delta) >= 0.05) {
+    return `${symbol} ${delta >= 0 ? "+" : ""}${delta.toFixed(1)} pts`;
+  }
+  if (transaction.estimatedAmount) {
+    return `${symbol} ${formatCompactMoney(transaction.estimatedAmount)}`;
+  }
+  return symbol;
 }
 
 function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
@@ -2533,7 +2981,7 @@ function TraderPerformanceChart({ portfolio }: { portfolio: TraderPortfolio }) {
             />
             <Tooltip
               cursor={{ stroke: "#68a8ff", strokeDasharray: "4 4" }}
-              contentStyle={{ background: "#0b141e", border: "1px solid #223141", borderRadius: 6, color: "#e8f1f8" }}
+              contentStyle={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: 10, color: "#111827", boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)" }}
               labelFormatter={(label) => formatDateLabel(String(label))}
               formatter={(value, name) => [name === "performance" ? formatPct(Number(value)) : formatMoney(Number(value)), titleLabel(String(name))]}
             />
@@ -2556,6 +3004,7 @@ function TraderDistribution({ holdings }: { holdings: TraderPortfolioHolding[] }
   const ranked = [...holdings].sort((a, b) => b.weight - a.weight);
   const top = ranked.slice(0, 7);
   const restWeight = ranked.slice(7).reduce((total, holding) => total + holding.weight, 0);
+  const largest = ranked[0];
   const data = [
     ...top.map((holding) => ({ name: holding.label, value: Number(holding.weight.toFixed(2)), marketValue: holding.marketValue })),
     ...(restWeight > 0 ? [{ name: "OTHER", value: Number(restWeight.toFixed(2)), marketValue: ranked.slice(7).reduce((total, holding) => total + holding.marketValue, 0) }] : []),
@@ -2571,18 +3020,19 @@ function TraderDistribution({ holdings }: { holdings: TraderPortfolioHolding[] }
               nameKey="name"
               cx="50%"
               cy="50%"
-              innerRadius="54%"
-              outerRadius="82%"
-              paddingAngle={2}
-              cornerRadius={2}
-              stroke="#07111b"
-              strokeWidth={3}
+              innerRadius="58%"
+              outerRadius="84%"
+              paddingAngle={3}
+              cornerRadius={6}
+              stroke="#ffffff"
+              strokeWidth={4}
               isAnimationActive={false}
             >
-              {data.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} stroke="#07111b" strokeWidth={3} />)}
+              {data.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} stroke="#ffffff" strokeWidth={4} />)}
             </Pie>
             <Tooltip
-              contentStyle={{ background: "#0b141e", border: "1px solid #223141", borderRadius: 6, color: "#e8f1f8" }}
+              cursor={false}
+              contentStyle={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: 10, color: "#111827", boxShadow: "0 12px 30px rgba(15, 23, 42, 0.12)" }}
               formatter={(value, name, item) => [
                 `${Number(value).toFixed(1)}% · ${formatMoney(Number((item.payload as { marketValue?: number }).marketValue ?? 0))}`,
                 String(name),
@@ -2590,6 +3040,10 @@ function TraderDistribution({ holdings }: { holdings: TraderPortfolioHolding[] }
             />
           </PieChart>
         </ResponsiveContainer>
+        <div className="distribution-center">
+          <strong>{largest ? `${largest.weight.toFixed(0)}%` : "-"}</strong>
+          <span>{largest?.label ?? "No holdings"}</span>
+        </div>
       </div>
       <div className="distribution-legend">
         {data.map((holding, index) => (
@@ -2750,7 +3204,7 @@ function DataTable<T>({ table, emptyTitle, emptyDetail }: { table: Table<T>; emp
   }
   return (
     <div className="data-table-shell">
-      <div className="table-wrap">
+      <TableFrame>
         <table className="desk-table data-table">
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -2776,7 +3230,7 @@ function DataTable<T>({ table, emptyTitle, emptyDetail }: { table: Table<T>; emp
             ))}
           </tbody>
         </table>
-      </div>
+      </TableFrame>
       {table.getPageCount() > 1 && (
         <div className="table-pagination">
           <button type="button" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}>Prev</button>
@@ -2916,7 +3370,7 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
     await onDelete();
   };
   return (
-    <div className="table-wrap">
+    <TableFrame>
       <table className="desk-table">
         <thead>
           <tr>
@@ -2949,7 +3403,7 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
           ))}
         </tbody>
       </table>
-    </div>
+    </TableFrame>
   );
 }
 
@@ -2958,7 +3412,7 @@ function FilingsTable({ rows, onOpenTicker }: { rows: Filing[]; onOpenTicker: (s
     return <EmptyState title="No filing rows loaded" detail="13F/disclosure tables are empty for this run." />;
   }
   return (
-    <div className="table-wrap">
+    <TableFrame>
       <table className="desk-table">
         <thead>
           <tr>
@@ -2985,7 +3439,7 @@ function FilingsTable({ rows, onOpenTicker }: { rows: Filing[]; onOpenTicker: (s
           ))}
         </tbody>
       </table>
-    </div>
+    </TableFrame>
   );
 }
 
@@ -2994,7 +3448,7 @@ function HealthTable({ rows }: { rows: HealthRow[] }) {
     return <EmptyState title="No source-health rows" detail="Run provider/source health jobs to populate this page." />;
   }
   return (
-    <div className="table-wrap">
+    <TableFrame>
       <table className="desk-table">
         <thead>
           <tr>
@@ -3023,7 +3477,7 @@ function HealthTable({ rows }: { rows: HealthRow[] }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </TableFrame>
   );
 }
 
@@ -3152,30 +3606,6 @@ function BulletList({ items, tone }: { items: string[]; tone: Tone }) {
   );
 }
 
-function MetricStrip({ metrics }: { metrics: Array<[string, string, string, string]> }) {
-  return (
-    <section className="metric-strip">
-      {metrics.map(([label, value, caption, tone]) => (
-        <div key={label} className={`metric-box ${tone}`}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-          <small>{caption}</small>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function MetricBadge({ label, value, caption, tone = "info" }: { label: string; value: string; caption?: string; tone?: Tone }) {
-  return (
-    <div className={`metric-badge ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {caption && <small>{caption}</small>}
-    </div>
-  );
-}
-
 function DecisionBadge({ value }: { value: string }) {
   return <span className={`decision-badge ${toneClass(value)}`}>{value}</span>;
 }
@@ -3186,203 +3616,6 @@ function FreshnessBadge({ status }: { status: FreshnessStatus }) {
 
 function StatusDot({ status }: { status: HealthRow["status"] }) {
   return <span className={`status-dot ${status.toLowerCase()}`}><i />{status}</span>;
-}
-
-function TabBar({ tabs, active, onSelect }: { tabs: string[]; active?: string; onSelect?: (tab: string) => void }) {
-  return (
-    <div className="tab-bar">
-      {tabs.map((tab, index) => <button key={tab} className={(active ?? tabs[0]) === tab || (!active && index === 0) ? "active" : ""} type="button" onClick={() => onSelect?.(tab)}>{tab}</button>)}
-    </div>
-  );
-}
-
-function SegmentedControl({ options, value, onChange }: { options: string[]; value: string; onChange: (value: string) => void }) {
-  return (
-    <div className="segmented-control">
-      {options.map((option) => (
-        <button key={option} className={value === option ? "active" : ""} type="button" onClick={() => onChange(option)}>{option}</button>
-      ))}
-    </div>
-  );
-}
-
-function FilterRail({
-  compact = false,
-  decision = "",
-  decisionLabel = "Decision",
-  decisions = [],
-  tickerQuery = "",
-  minScore = 0,
-  assetClass = "",
-  assetClasses = [],
-  minConfidence = 0,
-  source = "",
-  sources = [],
-  freshness = "",
-  freshnessOptions = [],
-  sourceCluster = "",
-  sourceClusters = [],
-  catalystFilter = "",
-  liquidityFilter = "",
-  ownership = "",
-  investorQuery = "",
-  onDecision,
-  onTickerQuery,
-  onMinScore,
-  onAssetClass,
-  onMinConfidence,
-  onSource,
-  onFreshness,
-  onSourceCluster,
-  onCatalystFilter,
-  onLiquidityFilter,
-  onOwnership,
-  onInvestorQuery,
-  onReset,
-}: {
-  compact?: boolean;
-  decision?: string;
-  decisionLabel?: string;
-  decisions?: string[];
-  tickerQuery?: string;
-  minScore?: number;
-  assetClass?: string;
-  assetClasses?: string[];
-  minConfidence?: number;
-  source?: string;
-  sources?: string[];
-  freshness?: string;
-  freshnessOptions?: string[];
-  sourceCluster?: string;
-  sourceClusters?: string[];
-  catalystFilter?: string;
-  liquidityFilter?: string;
-  ownership?: string;
-  investorQuery?: string;
-  onDecision?: (value: string) => void;
-  onTickerQuery?: (value: string) => void;
-  onMinScore?: (value: number) => void;
-  onAssetClass?: (value: string) => void;
-  onMinConfidence?: (value: number) => void;
-  onSource?: (value: string) => void;
-  onFreshness?: (value: string) => void;
-  onSourceCluster?: (value: string) => void;
-  onCatalystFilter?: (value: string) => void;
-  onLiquidityFilter?: (value: string) => void;
-  onOwnership?: (value: string) => void;
-  onInvestorQuery?: (value: string) => void;
-  onReset?: () => void;
-}) {
-  return (
-    <aside className="filter-rail">
-      <div className="rail-title">
-        <strong>Filters</strong>
-        <button type="button" onClick={onReset}>Reset</button>
-      </div>
-      {(!compact || decisions.length > 0) && (
-        <label>
-          <span>{decisionLabel}</span>
-          <select value={decision} onChange={(event) => onDecision?.(event.target.value)}>
-            <option value="">All</option>
-            {decisions.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-        </label>
-      )}
-      <label>
-        <span>Ticker</span>
-        <input value={tickerQuery} onChange={(event) => onTickerQuery?.(event.target.value)} placeholder="Any" />
-      </label>
-      {compact && (
-        <label>
-          <span>Investor</span>
-          <input value={investorQuery} onChange={(event) => onInvestorQuery?.(event.target.value)} placeholder="Any" />
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Score Range</span>
-          <input type="range" min="0" max="100" value={minScore} onChange={(event) => onMinScore?.(Number(event.target.value))} />
-          <small>{minScore}+ minimum</small>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Asset</span>
-          <select value={assetClass} onChange={(event) => onAssetClass?.(event.target.value)}>
-            <option value="">All</option>
-            {assetClasses.map((item) => <option key={item} value={item}>{titleLabel(item)}</option>)}
-          </select>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Confidence</span>
-          <input type="range" min="0" max="100" value={minConfidence} onChange={(event) => onMinConfidence?.(Number(event.target.value))} />
-          <small>{minConfidence}+ minimum</small>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Signal Source</span>
-          <select value={source} onChange={(event) => onSource?.(event.target.value)}>
-            <option value="">All</option>
-            {sources.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-        </label>
-      )}
-      {!compact && freshnessOptions.length > 0 && (
-        <label>
-          <span>Freshness</span>
-          <select value={freshness} onChange={(event) => onFreshness?.(event.target.value)}>
-            <option value="">All</option>
-            {freshnessOptions.map((item) => <option key={item} value={item}>{titleLabel(item)}</option>)}
-          </select>
-        </label>
-      )}
-      {!compact && sourceClusters.length > 0 && (
-        <label>
-          <span>Source Cluster</span>
-          <select value={sourceCluster} onChange={(event) => onSourceCluster?.(event.target.value)}>
-            <option value="">All</option>
-            {sourceClusters.map((item) => <option key={item} value={item}>{titleLabel(item)}</option>)}
-          </select>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Catalyst</span>
-          <select value={catalystFilter} onChange={(event) => onCatalystFilter?.(event.target.value)}>
-            <option value="">All</option>
-            <option value="has">Has window</option>
-            <option value="none">No window</option>
-          </select>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Liquidity</span>
-          <select value={liquidityFilter} onChange={(event) => onLiquidityFilter?.(event.target.value)}>
-            <option value="">All</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-      )}
-      {!compact && (
-        <label>
-          <span>Ownership</span>
-          <select value={ownership} onChange={(event) => onOwnership?.(event.target.value)}>
-            <option value="">All</option>
-            <option value="owned">Owned</option>
-            <option value="unowned">Unowned</option>
-          </select>
-        </label>
-      )}
-      <button className="primary-button" type="button" onClick={onReset}>Reset Filters</button>
-    </aside>
-  );
 }
 
 function CalendarMonth({ events, onOpenTicker }: { events: CalendarEvent[]; onOpenTicker: (symbol: string) => void }) {
@@ -3442,12 +3675,13 @@ function OptionsEvidence({ rows: sourceRows }: { rows: RowRecord[] }) {
           const maxLoss = formatMoney(numberField(row, ["max_loss"], Number.NaN));
           const breakevens = formatStrikeList(listField(row, ["breakevens"]));
           const legCount = Array.isArray(row.legs) ? row.legs.length : Math.round(numberField(row, ["leg_count"], 0));
+          const expired = isExpiredOptionRow(row);
           return (
-            <section key={String(row.id ?? `${symbol}-${strategy}-${expiry}-${index}`)} className="option-scenario">
+            <section key={String(row.id ?? `${symbol}-${strategy}-${expiry}-${index}`)} className={`option-scenario ${expired ? "expired" : ""}`}>
               <div className="option-scenario-head">
                 <span>{symbol}</span>
                 <strong>{strategy}</strong>
-                <small>{expiry}</small>
+                <small>{expired ? `Expired ${expiry}` : expiry}</small>
               </div>
               <div className="option-metrics">
                 <div>
@@ -3467,7 +3701,7 @@ function OptionsEvidence({ rows: sourceRows }: { rows: RowRecord[] }) {
                   <strong>{breakevens || "-"}</strong>
                 </div>
               </div>
-              <p>{[
+              <p>{expired ? "Expired option context. Historical only; refresh the chain before using for trade setup." : [
                 Number.isFinite(spot) ? `spot ${formatMoney(spot)}` : "",
                 Number.isFinite(dte) ? `${Math.round(dte)} DTE` : "",
                 Number.isFinite(iv) ? `IV ${formatUnsignedPct(iv > 0 && iv <= 1 ? iv * 100 : iv)}` : "",
@@ -3486,36 +3720,136 @@ function GenericRows({ rows: sourceRows, emptyTitle, emptyDetail, onOpenTicker }
   if (!sourceRows.length) {
     return <EmptyState title={emptyTitle} detail={emptyDetail} />;
   }
-  const items = sourceRows.slice(0, 6).map((row) => ({
-    symbol: symbolFromRow(row),
-    text: displayValue(
-      row.title ??
-      row.thesis_summary ??
-      row.report_markdown ??
-      row.event ??
-      row.event_type ??
-      row.summary ??
-      row.notes ??
-      row.status ??
-      row.detail ??
-      row.form_type ??
-      row.metrics ??
-      row.estimates ??
-      row.report_json ??
-      row.source ??
-      JSON.stringify(row),
-    ),
-  }));
   return (
-    <div className="generic-list">
-      {items.map((item) => (
-        <button key={item.text} type="button" onClick={() => item.symbol && onOpenTicker(item.symbol)}>
-          <span>{item.symbol || "MARKET"}</span>
-          <p>{item.text}</p>
-        </button>
-      ))}
-    </div>
+    <SourceRowsTable rows={sourceRows} onOpenTicker={onOpenTicker} />
   );
+}
+
+function SourceRowsTable({ rows: sourceRows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  const displayRows = sourceRows.slice(0, 30);
+  return (
+    <TableFrame>
+      <table className="desk-table source-row-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Source</th>
+            <th>As Of</th>
+            <th>Field</th>
+            <th>Value</th>
+            <th>Freshness</th>
+          </tr>
+        </thead>
+        <tbody>
+          {displayRows.map((row, index) => {
+            const symbol = symbolFromRow(row);
+            const source = sourceNameForRow(row);
+            const asOf = asOfForRow(row);
+            const field = sourceFieldForRow(row);
+            const value = readableRowText(row);
+            const freshness = freshnessForSourceRow(row);
+            return (
+              <tr key={`${source}-${asOf}-${field}-${value}-${index}`}>
+                <td>{symbol ? <button className="ticker-link" type="button" onClick={() => onOpenTicker(symbol)}>{symbol}</button> : "MARKET"}</td>
+                <td>{source}</td>
+                <td>{asOf || "-"}</td>
+                <td>{field}</td>
+                <td className="clip">{value}</td>
+                <td><span className={`row-freshness ${freshnessTone(normalizeFreshnessStatus(freshness))}`}>{freshness}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {sourceRows.length > displayRows.length && <small className="panel-footnote">{sourceRows.length - displayRows.length} additional source rows hidden.</small>}
+    </TableFrame>
+  );
+}
+
+function readableRowText(row: RowRecord): string {
+  const explicit = displayValue(
+    row.title ??
+    row.thesis_summary ??
+    row.report_markdown ??
+    row.event ??
+    row.event_type ??
+    row.summary ??
+    row.notes ??
+    row.status ??
+    row.detail ??
+    row.form_type ??
+    row.source,
+  );
+  if (explicit && explicit !== "-") return explicit;
+  const decisionBasis = objectField(row.decision_basis);
+  if (stringField(decisionBasis, ["summary"])) return stringField(decisionBasis, ["summary"]);
+  if (stringField(row, ["action_grade", "freshness_status"])) {
+    return [
+      stringField(row, ["action_grade"]) ? `action ${stringField(row, ["action_grade"])}` : "",
+      stringField(row, ["freshness_status"]) ? `freshness ${stringField(row, ["freshness_status"])}` : "",
+      stringField(row, ["source_cluster"]) ? `source ${stringField(row, ["source_cluster"])}` : "",
+    ].filter(Boolean).join(" · ");
+  }
+  if (row.metrics !== undefined) {
+    const metrics = objectField(row.metrics);
+    const parts = [
+      stringField(row, ["verdict", "stage", "method", "source"]),
+      numberField(metrics, ["close", "current", "last_close"], Number.NaN),
+      numberField(metrics, ["score", "conditions_passed"], Number.NaN),
+    ];
+    const metricText = [
+      parts[0] ? titleLabel(String(parts[0])) : "",
+      Number.isFinite(parts[1] as number) ? `price ${formatMoney(parts[1] as number)}` : "",
+      Number.isFinite(parts[2] as number) ? `metric ${parts[2]}` : "",
+    ].filter(Boolean).join(" · ");
+    if (metricText) return metricText;
+  }
+  if (row.estimates !== undefined) return "Analyst estimate snapshot loaded.";
+  if (row.report_json !== undefined) return "Research report JSON loaded.";
+  return `${Object.keys(row).length} source fields loaded.`;
+}
+
+function sourceNameForRow(row: RowRecord): string {
+  return titleLabel(stringField(row, ["source", "provider", "source_key", "method", "form_type"]) || "source");
+}
+
+function asOfForRow(row: RowRecord): string {
+  const value = stringField(row, ["as_of", "observed_at", "date", "event_date", "filing_date", "created_at", "published_at", "expiry"]);
+  return value ? formatDateLabel(value) : "";
+}
+
+function sourceFieldForRow(row: RowRecord): string {
+  if (stringField(row, ["action_grade"])) return "Decision";
+  if (stringField(row, ["strategy_type", "option_type"])) return "Options";
+  if (stringField(row, ["verdict", "stage"])) return "Setup";
+  if (stringField(row, ["method"])) return "Valuation";
+  if (row.metrics !== undefined) return "Metrics";
+  if (row.estimates !== undefined) return "Estimates";
+  if (stringField(row, ["form_type"])) return "Filing";
+  if (stringField(row, ["event", "event_type"])) return "Catalyst";
+  return Object.keys(row).slice(0, 2).map(titleLabel).join(" / ") || "Row";
+}
+
+function freshnessForSourceRow(row: RowRecord): string {
+  if (isExpiredOptionRow(row)) return "Expired";
+  const explicit = stringField(row, ["freshness_status", "overall_decision_freshness", "source_freshness", "status"]);
+  if (explicit) return titleLabel(explicit);
+  return asOfForRow(row) ? "Loaded" : "Unknown";
+}
+
+function isExpiredOptionRow(row: RowRecord): boolean {
+  if (!isOptionsPayoffScenario(row) && !stringField(row, ["expiry", "expiration"])) return false;
+  const expiry = stringField(row, ["expiry", "expiration"]);
+  if (expiry) {
+    const parsed = new Date(`${expiry.slice(0, 10)}T00:00:00`);
+    if (!Number.isNaN(parsed.getTime())) {
+      const today = new Date();
+      const todayLocal = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      return parsed.getTime() < todayLocal.getTime();
+    }
+  }
+  const dte = numberField(row, ["dte", "days_to_expiry"], Number.NaN);
+  return Number.isFinite(dte) && dte < 0;
 }
 
 function SummaryList({ rows, onOpenTicker }: { rows: SummaryItem[]; onOpenTicker?: (symbol: string) => void }) {
@@ -3603,18 +3937,6 @@ function FreshnessGrid({ rows }: { rows: HealthRow[] }) {
 
 function healthRowKey(row: HealthRow): string {
   return `${row.kind}:${row.provider}:${row.freshness}:${row.status}`;
-}
-
-function TextLink({ children }: { children: ReactNode }) {
-  return <button className="text-link" type="button">{children} <ChevronRight size={13} /></button>;
-}
-
-function GhostButton({ children, disabled = false, title }: { children: ReactNode; disabled?: boolean; title?: string }) {
-  return <button className="ghost-button" type="button" disabled={disabled} title={title}>{children}</button>;
-}
-
-function IconButton({ children, label, onClick }: { children: ReactNode; label: string; onClick?: () => void }) {
-  return <button className="icon-button" type="button" aria-label={label} title={label} onClick={onClick}>{children}</button>;
 }
 
 function TagRow({ tags }: { tags: string[] }) {

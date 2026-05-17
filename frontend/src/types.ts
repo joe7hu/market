@@ -30,6 +30,7 @@ export type TickerPayload = {
   status?: ApiStatus;
   tables?: Record<string, RowRecord[] | undefined>;
   decision_snapshot?: RowRecord;
+  decision_brief?: RowRecord;
   found?: boolean;
 };
 

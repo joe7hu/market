@@ -1,25 +1,30 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    -apple-system, BlinkMacSystemFont, Inter, ui-sans-serif, "SF Pro Text", "Segoe UI",
     sans-serif;
-  background: #04080d;
-  color: #e7eef4;
+  background: #f6f7f9;
+  color: #111827;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --bg: #050a10;
-  --panel: #0b141e;
-  --panel-2: #101c28;
-  --line: #223141;
-  --line-soft: #172434;
-  --muted: #8b99a8;
-  --text: #e8f1f8;
-  --green: #43e58f;
-  --green-dim: #153827;
-  --yellow: #f3bd45;
-  --red: #ff6b5f;
-  --blue: #68a8ff;
-  --orange: #ff9b4b;
+  --bg: #f6f7f9;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-strong: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --line: #e5e7eb;
+  --line-soft: #eef0f3;
+  --muted: #6b7280;
+  --muted-2: #9ca3af;
+  --text: #111827;
+  --green: #16a34a;
+  --green-dim: #183826;
+  --yellow: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --orange: #ea580c;
+  --purple: #7c3aed;
+  --shadow-soft: 0 16px 40px rgba(15, 23, 42, 0.06);
   --radius: 8px;
 }
 
@@ -37,8 +42,10 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    linear-gradient(180deg, rgba(12, 23, 35, 0.94), rgba(4, 8, 13, 1)),
-    #04080d;
+    radial-gradient(circle at 50% -10%, rgba(148, 163, 184, 0.16), transparent 38%),
+    linear-gradient(180deg, #fbfcfd, #f5f7fa 46%, #f3f5f8),
+    var(--bg);
+  font-variant-numeric: tabular-nums;
 }
 
 button,
@@ -50,6 +57,11 @@ select {
 button {
   color: inherit;
   cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(106, 169, 255, 0.86);
+  outline-offset: 2px;
 }
 
 a {
@@ -92,9 +104,9 @@ h3 {
 
 .terminal-shell {
   display: grid;
-  grid-template-columns: 138px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   min-height: 100vh;
-  background: var(--bg);
+  background: transparent;
 }
 
 .sidebar {
@@ -103,11 +115,12 @@ h3 {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  border-right: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line);
   background:
-    linear-gradient(180deg, rgba(12, 21, 31, 0.98), rgba(6, 11, 18, 0.98)),
-    #07101a;
-  padding: 18px 12px;
+    linear-gradient(180deg, rgba(34, 36, 41, 0.82), rgba(18, 20, 24, 0.86)),
+    rgba(19, 21, 25, 0.86);
+  backdrop-filter: blur(22px) saturate(1.16);
+  padding: 18px 14px;
 }
 
 .brand,
@@ -145,11 +158,12 @@ h3 {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border: 1px solid #79df70;
-  border-radius: 4px;
-  color: #79df70;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(106, 169, 255, 0.42);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d9e8ff;
   font-size: 0.68rem;
   font-weight: 900;
 }
@@ -189,8 +203,8 @@ h3 {
   min-height: 34px;
   border-radius: 6px;
   padding: 8px;
-  color: #b7c2cd;
-  font-size: 0.72rem;
+  color: #bfc6cf;
+  font-size: 0.78rem;
   text-align: left;
 }
 
@@ -205,6 +219,7 @@ h3 {
 
 .side-nav button.active,
 .side-nav a.active {
+  background: rgba(255, 255, 255, 0.085);
   box-shadow: inset 2px 0 0 var(--blue);
 }
 
@@ -218,7 +233,67 @@ h3 {
 
 .desk-main {
   min-width: 0;
-  padding: 22px;
+  padding: 14px 22px 28px;
+}
+
+.app-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 1510px;
+  margin: 0 auto 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(25, 27, 32, 0.72);
+  backdrop-filter: blur(22px) saturate(1.2);
+  box-shadow: var(--shadow-soft);
+  padding: 8px 12px;
+}
+
+.app-toolbar > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.app-toolbar strong {
+  color: #f5f6f8;
+  font-size: 0.82rem;
+}
+
+.app-toolbar span,
+.toolbar-status b {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbar-status span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.toolbar-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--muted-2);
+}
+
+.toolbar-status i.live {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(69, 212, 131, 0.12);
 }
 
 .page-frame {
@@ -320,8 +395,9 @@ h3 {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
-    linear-gradient(180deg, rgba(16, 28, 40, 0.96), rgba(9, 17, 26, 0.96)),
+    linear-gradient(180deg, rgba(42, 45, 52, 0.76), rgba(23, 25, 30, 0.86)),
     var(--panel);
+  backdrop-filter: blur(16px) saturate(1.08);
 }
 
 .watchlist button {
@@ -635,20 +711,22 @@ h3 {
   gap: 12px;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding: 14px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
 .source-notice {
   align-self: start;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: rgba(10, 20, 31, 0.72);
-  padding: 8px 10px;
+  width: fit-content;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 6px 9px;
 }
 
 .source-notice span {
@@ -1233,8 +1311,11 @@ h3 {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .desk-table {
@@ -1970,6 +2051,16 @@ h3 {
   font-size: 0.64rem;
 }
 
+.trader-directory-move {
+  display: -webkit-box;
+  max-width: 165px;
+  overflow: hidden;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .trader-directory-row i {
   font-size: 0.75rem;
   font-style: normal;
@@ -2079,6 +2170,30 @@ h3 {
   color: #dce8ef;
   font-size: 0.82rem;
   line-height: 1.45;
+}
+
+.trader-last-move {
+  display: grid;
+  gap: 3px;
+  max-width: 560px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 9px 10px;
+}
+
+.trader-last-move strong {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+}
+
+.trader-last-move span {
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.trader-last-move small {
+  font-size: 0.7rem;
 }
 
 .trader-hero-metrics {
@@ -2340,8 +2455,9 @@ h3 {
 }
 
 .allocation-cell span {
-  color: #dce8ef;
+  color: #111827;
   font-size: 0.72rem;
+  font-weight: 800;
   text-align: right;
 }
 
@@ -2570,17 +2686,25 @@ h3 {
 }
 
 .detail-rows div {
+  min-width: 0;
   border-bottom: 1px solid var(--line-soft);
   padding-bottom: 7px;
 }
 
 .detail-rows dd {
+  min-width: 0;
   margin: 0;
   max-width: 58%;
   overflow: hidden;
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.detail-rows dt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .holding-detail {
@@ -2863,6 +2987,707 @@ h3 {
   grid-column: 1 / -1;
 }
 
+/* Light macOS workstation pass inspired by the attached Apple-style mock. */
+.terminal-shell {
+  grid-template-columns: 152px minmax(0, 1fr);
+}
+
+.sidebar {
+  background: rgba(250, 251, 253, 0.86);
+  border-right-color: var(--line);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
+}
+
+.brand strong,
+.app-toolbar strong,
+.page-header h1,
+.panel-header h2,
+.signal-matrix-panel h2,
+.finance-analysis-panel h2,
+.decision-brief-main strong,
+.ticker-dossier-price strong,
+.trader-hero-main h2,
+.empty-state strong {
+  color: #111827;
+}
+
+.brand-mark {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.brand small,
+.sidebar-footer span,
+.page-header p,
+.metric-box small,
+.metric-badge small,
+.eyebrow,
+.coverage-item span,
+.ticker-signal-ribbon > div:first-child span,
+.signal-command-head p,
+.finance-analysis-panel p,
+.decision-card-meta small,
+.decision-facts dt,
+.pulse-list small,
+.catalyst-list small,
+.generic-list p,
+.summary-list small,
+.panel-copy,
+.detail-rows dd,
+.ticker-dossier-price small,
+.ticker-dossier-note,
+.portfolio-onboarding-copy p,
+.app-toolbar span,
+.toolbar-status b {
+  color: #6b7280;
+}
+
+.side-nav button,
+.side-nav a,
+.sidebar-footer button {
+  color: #475569;
+}
+
+.side-nav button:hover,
+.side-nav a:hover,
+.side-nav a.active,
+.side-nav button.active,
+.sidebar-footer button:hover {
+  background: #eef4ff;
+  color: var(--blue);
+}
+
+.side-nav a.active {
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.desk-main {
+  padding-top: 12px;
+}
+
+.app-toolbar,
+.panel,
+.watchlist button,
+.metric-box,
+.filter-rail,
+.decision-bucket,
+.signal-command-center,
+.signal-coverage-strip .coverage-item,
+.signal-matrix-panel,
+.finance-analysis-panel,
+.finance-analysis-card,
+.ticker-signal-ribbon,
+.trader-directory,
+.trader-hero,
+.ticker-dossier-header,
+.decision-brief,
+.top-opportunity {
+  border-color: var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: none;
+}
+
+.app-toolbar {
+  min-height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.panel,
+.metric-box,
+.metric-badge,
+.watchlist button,
+.decision-card,
+.decision-basis-list button,
+.decision-warning-list button,
+.research-picker button,
+.trader-directory-row,
+.trader-holdings button,
+.option-metrics div,
+.finance-analysis-item,
+.signal-chip {
+  background: #ffffff;
+}
+
+.panel {
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+h2,
+h3,
+.panel-header h2,
+.rail-title,
+.signal-command-head span,
+.coverage-item strong,
+.source-notice span,
+.watchlist span,
+.metric-box span,
+.metric-badge span {
+  color: #111827;
+}
+
+.watchlist {
+  grid-template-columns: repeat(8, minmax(92px, 1fr));
+}
+
+.watchlist button {
+  min-height: 74px;
+  border-radius: 9px;
+}
+
+.watchlist strong {
+  font-size: 0.92rem;
+}
+
+.desk-table th,
+.signal-matrix th {
+  color: #6b7280;
+}
+
+.desk-table td,
+.signal-matrix td,
+.decision-card p,
+.decision-basis-list p,
+.ticker-signal-ribbon strong,
+.finance-analysis-card > button strong,
+.finance-analysis-item strong,
+.summary-list span,
+.summary-list strong,
+.summary-list button:disabled strong,
+.summary-list button:disabled span,
+.bar-list span,
+.score-total span,
+.detail-rows dt,
+.risk-meters span,
+.option-scenario-head strong,
+.option-metrics strong,
+.bullet-list li {
+  color: #1f2937;
+}
+
+.desk-table th,
+.desk-table td,
+.signal-matrix th,
+.signal-matrix td {
+  border-color: var(--line-soft);
+}
+
+.desk-table tr:hover td {
+  background: #f8fafc;
+}
+
+.ticker-link {
+  color: #111827;
+}
+
+.source-notice {
+  background: #f8fafc;
+}
+
+.source-pill.live,
+.decision-badge.good,
+.freshness-badge.fresh,
+.action-chip.buy {
+  background: #ecfdf3;
+  color: var(--green);
+}
+
+.source-pill.empty,
+.freshness-badge.unknown {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.decision-badge.warn,
+.freshness-badge.degraded {
+  background: #fffbeb;
+  color: var(--yellow);
+}
+
+.decision-badge.bad,
+.freshness-badge.stale,
+.action-chip.sell {
+  background: #fef2f2;
+  color: var(--red);
+}
+
+.decision-badge.info {
+  background: #eff6ff;
+  color: var(--blue);
+}
+
+.metric-badge {
+  border-color: var(--line);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.metric-badge strong,
+.metric-box strong {
+  color: #111827;
+}
+
+.metric-badge.good strong,
+.metric-box.good strong,
+.positive,
+.money-good {
+  color: var(--green) !important;
+}
+
+.metric-badge.warn strong,
+.metric-box.warn strong {
+  color: var(--yellow);
+}
+
+.metric-badge.bad strong,
+.metric-box.bad strong,
+.negative,
+.money-bad {
+  color: var(--red) !important;
+}
+
+.ghost-button,
+.icon-button,
+.primary-button,
+.load-more,
+.table-pagination button {
+  border-color: var(--line);
+  background: #ffffff;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.primary-button {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #ffffff;
+}
+
+.tab-bar {
+  border-bottom-color: var(--line);
+}
+
+.tab-bar button {
+  color: #64748b;
+}
+
+.tab-bar button.active {
+  color: var(--blue);
+  border-color: var(--blue);
+  filter: none;
+}
+
+.segmented-control {
+  border-color: var(--line);
+  background: #f1f5f9;
+}
+
+.segmented-control button {
+  color: #64748b;
+}
+
+.segmented-control button.active {
+  background: #ffffff;
+  color: var(--blue);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.decision-brief,
+.signal-command-center,
+.top-opportunity,
+.trader-hero {
+  background: #ffffff;
+}
+
+.decision-brief-main strong {
+  font-size: 1.55rem;
+}
+
+.decision-brief-actions button,
+.signal-command-head button {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: var(--blue);
+}
+
+.dashboard-brief-panel .decision-brief {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.signal-command-head strong {
+  color: #111827;
+}
+
+.signal-chip,
+.finance-analysis-item,
+.decision-facts div,
+.packet-summary,
+.holding-detail,
+.performance-chart,
+.distribution-chart,
+.option-metrics div {
+  border-color: var(--line);
+  background: #f8fafc;
+}
+
+.signal-chip.good,
+.finance-analysis-item.good {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.signal-chip.warn {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.signal-chip.bad,
+.finance-analysis-item.bad {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.signal-chip.info,
+.finance-analysis-item.info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.coverage-item i,
+.bar-list div div,
+.allocation-cell div {
+  background: #e5e7eb;
+}
+
+.matrix-dot {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.matrix-dot.good {
+  background: #dcfce7;
+  color: var(--green);
+}
+
+.matrix-dot.warn {
+  background: #fef3c7;
+  color: var(--yellow);
+}
+
+.matrix-dot.bad {
+  background: #fee2e2;
+  color: var(--red);
+}
+
+.matrix-dot.info {
+  background: #dbeafe;
+  color: var(--blue);
+}
+
+.filter-rail select,
+.filter-rail input,
+.portfolio-form input,
+.trader-directory input {
+  border-color: var(--line);
+  background: #ffffff;
+  color: #111827;
+}
+
+.empty-state {
+  border-color: #dbe3ee;
+  background: #f8fafc;
+}
+
+.calendar-month {
+  border-color: var(--line);
+}
+
+.calendar-month strong {
+  background: #f8fafc;
+  color: #475569;
+}
+
+.calendar-month button {
+  border-color: var(--line-soft);
+}
+
+.calendar-month button.today span {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.calendar-month .earnings {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.calendar-month .economic {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.calendar-month .event {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.calendar-month .filing {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.calendar-month .options {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.alert-list div {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.tradingview-frame iframe {
+  border-color: var(--line);
+  background: #ffffff;
+}
+
+.trader-directory-row.active,
+.research-picker button.active,
+.trader-portfolio-card.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.summary-list button:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.summary-list button:disabled small,
+.signal-chip small,
+.finance-analysis-item small {
+  color: #64748b;
+}
+
+.signal-chip b {
+  color: #111827;
+}
+
+.catalyst-list button,
+.generic-list button,
+.pulse-list button,
+.text-link {
+  color: #1f2937;
+}
+
+.text-link:hover,
+.ticker-link:hover {
+  color: var(--blue);
+}
+
+.decision-brief,
+.ticker-dossier-header,
+.portfolio-onboarding {
+  display: grid;
+  gap: 12px;
+}
+
+.decision-brief {
+  grid-template-columns: minmax(280px, 0.95fr) minmax(0, 1.35fr);
+  align-items: stretch;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(106, 169, 255, 0.08)),
+    rgba(26, 28, 33, 0.82);
+  box-shadow: var(--shadow-soft);
+  padding: 14px;
+}
+
+.decision-brief-main {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.decision-brief-main span,
+.ticker-dossier-price span,
+.ticker-dossier-note {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.decision-brief-main strong {
+  color: #f5f6f8;
+  font-size: 2.15rem;
+  line-height: 0.96;
+}
+
+.decision-brief-main p {
+  max-width: 720px;
+  color: #dfe4ea;
+  font-size: 0.84rem;
+  line-height: 1.42;
+}
+
+.decision-brief-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.decision-brief-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  border: 1px solid rgba(106, 169, 255, 0.36);
+  border-radius: 7px;
+  background: rgba(106, 169, 255, 0.12);
+  color: #e8f1ff;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.decision-brief-actions small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.decision-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ticker-dossier-header {
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(25, 27, 32, 0.74);
+  padding: 12px;
+}
+
+.ticker-dossier-price {
+  display: grid;
+  gap: 6px;
+  align-content: center;
+}
+
+.ticker-dossier-price strong {
+  color: #f6f7f9;
+  font-size: 2.2rem;
+  line-height: 1;
+}
+
+.ticker-dossier-price p {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ticker-dossier-price b {
+  font-size: 0.88rem;
+}
+
+.ticker-dossier-price small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.ticker-dossier-context {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ticker-dossier-note {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  text-transform: none;
+  font-weight: 500;
+}
+
+.portfolio-onboarding {
+  grid-template-columns: minmax(320px, 0.72fr) minmax(260px, 0.28fr);
+}
+
+.portfolio-onboarding-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.portfolio-onboarding-copy strong {
+  color: #f5f6f8;
+  font-size: 1.05rem;
+}
+
+.portfolio-onboarding-copy p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.desk-table th,
+.desk-table td,
+.signal-matrix th,
+.signal-matrix td {
+  font-variant-numeric: tabular-nums;
+}
+
+.ghost-button:hover,
+.icon-button:hover,
+.primary-button:hover,
+.load-more:hover,
+.segmented-control button.active,
+.tab-bar button.active {
+  filter: brightness(1.08);
+}
+
+.decision-brief,
+.ticker-dossier-header {
+  border-color: var(--line);
+  background: #ffffff;
+  box-shadow: var(--shadow-soft);
+}
+
+.decision-brief-main strong,
+.ticker-dossier-price strong,
+.portfolio-onboarding-copy strong {
+  color: #111827;
+}
+
+.decision-brief-main p,
+.decision-brief-actions small,
+.ticker-dossier-price small,
+.ticker-dossier-note {
+  color: #6b7280;
+}
+
+.decision-brief-actions button {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: var(--blue);
+}
+
+.dashboard-brief-panel .decision-brief {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -2870,6 +3695,17 @@ h3 {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
@@ -2915,6 +3751,17 @@ h3 {
   .settings-grid {
     grid-template-columns: 1fr;
   }
+
+  .decision-brief,
+  .ticker-dossier-header,
+  .portfolio-onboarding {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-brief-grid,
+  .ticker-dossier-context {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 820px) {
@@ -2927,16 +3774,24 @@ h3 {
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line-soft);
+    padding: 12px;
+  }
+
+  .brand {
+    padding-bottom: 10px;
   }
 
   .side-nav {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 3px;
   }
 
   .side-nav button,
   .side-nav a,
   .sidebar-footer button {
     justify-content: center;
+    min-height: 31px;
+    padding: 6px;
   }
 
   .side-nav span,
@@ -2945,12 +3800,35 @@ h3 {
     display: none;
   }
 
+  .sidebar-footer {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+
   .desk-main {
     padding: 14px;
   }
 
+  .app-toolbar {
+    position: static;
+    display: grid;
+  }
+
   .page-header {
     display: grid;
+  }
+
+  .detail-rows div {
+    display: grid;
+    gap: 4px;
+  }
+
+  .detail-rows dd {
+    max-width: none;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .watchlist,
@@ -2983,6 +3861,11 @@ h3 {
   .finance-analysis-panel,
   .top-opportunity,
   .trader-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-brief-grid,
+  .ticker-dossier-context {
     grid-template-columns: 1fr;
   }
 
@@ -3051,6 +3934,10 @@ h3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .toolbar-status {
+    justify-content: flex-start;
+  }
+
   .donut-card {
     grid-template-columns: 1fr;
     justify-items: center;
@@ -3058,5 +3945,609 @@ h3 {
 
   .legend {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Final light-theme contrast sweep. Keep after responsive and legacy dark selectors. */
+.brand strong,
+.app-toolbar strong,
+.page-header h1,
+.panel-header h2,
+.signal-matrix-panel h2,
+.finance-analysis-panel h2,
+.watchlist span,
+.watchlist strong,
+.metric-box span,
+.metric-badge span,
+.metric-badge strong,
+.metric-box strong,
+.decision-card-head strong,
+.decision-basis-list strong,
+.decision-warning-list strong,
+.decision-card p,
+.decision-basis-list p,
+.signal-command-head strong,
+.signal-command-head span,
+.signal-chip b,
+.finance-analysis-card > button strong,
+.finance-analysis-item strong,
+.coverage-item strong,
+.ticker-signal-ribbon strong,
+.ticker-price-row strong,
+.summary-list span,
+.summary-list strong,
+.detail-rows dt,
+.bar-list span,
+.score-total span,
+.desk-table td,
+.signal-matrix td,
+.research-picker button,
+.research-picker strong,
+.analysis-score > span,
+.trader-directory-head strong,
+.trader-directory-row strong,
+.trader-hero-main h2,
+.trader-hero-main p,
+.trader-current-holdings strong,
+.holding-label strong,
+.holding-name,
+.trader-holdings span,
+.trader-holdings strong,
+.distribution-legend strong,
+.option-scenario-head strong,
+.option-metrics strong,
+.bullet-list li,
+.job-runs div,
+.freshness-grid span,
+.portfolio-onboarding-copy strong,
+.ticker-dossier-price strong,
+.decision-brief-main strong,
+.empty-state strong {
+  color: #111827;
+}
+
+.brand small,
+.page-header p,
+.eyebrow,
+.app-toolbar span,
+.toolbar-status b,
+.source-notice span,
+.decision-card-meta small,
+.decision-basis-list small,
+.decision-facts dt,
+.watchlist small,
+.metric-box small,
+.metric-badge small,
+.signal-command-head p,
+.signal-chip small,
+.finance-analysis-card > button span,
+.finance-analysis-card > p,
+.finance-analysis-item small,
+.coverage-item span,
+.coverage-item small,
+.ticker-signal-ribbon > div:first-child span,
+.empty-state p,
+.desk-table th,
+.signal-matrix th,
+.pulse-list small,
+.catalyst-list small,
+.generic-list p,
+.summary-list small,
+.panel-copy,
+.detail-rows dd,
+.tradingview-frame small,
+.research-picker span,
+.research-picker small,
+.trader-directory-head span,
+.trader-directory-row small,
+.trader-hero-main span,
+.trader-hero-main small,
+.trader-sector-row span,
+.trader-sector-row i,
+.chart-toolbar span,
+.distribution-legend span,
+.allocation-history small,
+.portfolio-form label span,
+.portfolio-form small,
+.filter-rail label span,
+.filter-rail small,
+.ticker-dossier-price span,
+.ticker-dossier-price small,
+.ticker-dossier-note,
+.decision-brief-main span,
+.decision-brief-main p,
+.decision-brief-actions small,
+.portfolio-onboarding-copy p,
+.option-scenario-head small,
+.option-scenario p,
+.options-evidence .panel-footnote {
+  color: #475569;
+}
+
+.summary-list button:disabled,
+.generic-list button:disabled,
+.trader-holdings button:disabled,
+.finance-analysis-card > button:disabled {
+  opacity: 1;
+}
+
+.muted,
+.muted-cell {
+  color: #64748b !important;
+}
+
+.text-link,
+.catalyst-list a,
+.calendar-event-row a {
+  color: #2563eb;
+}
+
+.catalyst-list button,
+.generic-list button,
+.pulse-list button {
+  color: #1f2937;
+}
+
+.distribution-chart {
+  position: relative;
+  overflow: hidden;
+  border-color: #e5e7eb;
+  background:
+    radial-gradient(circle at 50% 50%, #ffffff 0 36%, transparent 37%),
+    linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.distribution-center {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  gap: 2px;
+  width: 92px;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.distribution-center strong {
+  color: #111827;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.distribution-center span {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.distribution-legend div {
+  border-bottom-color: #e5e7eb;
+}
+
+:root {
+  --green: #166534;
+  --yellow: #92400e;
+  --red: #991b1b;
+  --blue: #1d4ed8;
+}
+
+.positive,
+.money-good,
+.metric-badge.good,
+.metric-box.good,
+.decision-card-head span {
+  color: var(--green) !important;
+}
+
+.rank {
+  color: var(--yellow) !important;
+}
+
+.negative,
+.money-bad,
+.metric-badge.bad,
+.metric-box.bad {
+  color: var(--red) !important;
+}
+
+.source-pill.live,
+.decision-badge.good,
+.freshness-badge.fresh,
+.action-chip.buy {
+  background: #dcfce7;
+  color: var(--green);
+}
+
+.decision-badge.warn,
+.freshness-badge.degraded {
+  background: #fef3c7;
+  color: var(--yellow);
+}
+
+.decision-badge.bad,
+.freshness-badge.stale,
+.action-chip.sell {
+  background: #fee2e2;
+  color: var(--red);
+}
+
+.source-pill.empty,
+.freshness-badge.unknown,
+.segmented-control button,
+.tab-bar button {
+  color: #475569;
+}
+
+.primary-button {
+  background: var(--green);
+  border-color: var(--green);
+  color: #ffffff;
+}
+
+.primary-button:disabled,
+.ghost-button:disabled {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #475569;
+  opacity: 1;
+}
+
+.event-status {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.event-status.confirmed {
+  background: #dcfce7;
+  color: var(--green);
+}
+
+.event-status.tentative,
+.event-status.watch {
+  background: #fef3c7;
+  color: var(--yellow);
+}
+
+.top-opportunity strong,
+.top-opportunity-copy p,
+.top-opportunity-copy small,
+.trader-portfolio-card strong,
+.trader-portfolio-card b,
+.chart-toolbar strong {
+  color: #111827;
+}
+
+.top-opportunity span,
+.top-opportunity small,
+.panel-footnote,
+.trader-portfolio-card span,
+.trader-portfolio-card small {
+  color: #475569;
+}
+
+.allocation-cell span,
+.trader-last-move span,
+.trader-last-move strong {
+  color: #111827;
+}
+
+.trader-last-move {
+  border-color: #dbe4ef;
+  background: #f8fafc;
+}
+
+.trader-last-move small,
+.trader-directory-move {
+  color: #475569;
+}
+
+.trader-last-move.good span,
+.trader-directory-move.good {
+  color: var(--green);
+}
+
+.trader-last-move.bad span,
+.trader-directory-move.bad {
+  color: var(--red);
+}
+
+.trader-last-move.info span,
+.trader-directory-move.info {
+  color: var(--blue);
+}
+
+.ticker-dossier-header {
+  grid-template-columns: minmax(230px, 0.55fr) minmax(0, 1.45fr);
+}
+
+.ticker-dossier-context {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.ticker-dossier-note.next-action {
+  color: var(--text);
+}
+
+.decision-ticket {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.26fr) minmax(0, 0.74fr);
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px;
+}
+
+.decision-ticket.blocked {
+  border-color: color-mix(in srgb, var(--red) 28%, var(--line));
+}
+
+.decision-ticket-call {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.decision-ticket-call span,
+.decision-ticket-grid span,
+.blocker-task span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.decision-ticket-call strong {
+  color: var(--red);
+  font-size: 1.35rem;
+}
+
+.decision-ticket.open .decision-ticket-call strong {
+  color: var(--green);
+}
+
+.decision-ticket-call small,
+.blocker-task small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.decision-ticket-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.decision-ticket-grid > div,
+.blocker-task {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  padding: 10px;
+}
+
+.decision-ticket-grid strong,
+.blocker-task strong {
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.blocker-task-list {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.blocker-task.bad {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+}
+
+.blocker-task.warn {
+  border-color: color-mix(in srgb, var(--yellow) 30%, var(--line));
+}
+
+.blocker-task.info {
+  border-color: color-mix(in srgb, var(--blue) 24%, var(--line));
+}
+
+.ticker-grid > .decision-brief-panel,
+.ticker-grid > .trade-setup-panel {
+  grid-column: span 12;
+}
+
+.decision-brief-panel .panel-body,
+.trade-setup-panel .panel-body {
+  display: grid;
+  gap: 12px;
+}
+
+.decision-brief-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.decision-brief-layout > div:first-child {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.decision-brief-layout span,
+.changed-review > strong,
+.ticker-source-drilldown > strong {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.decision-brief-layout strong {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.decision-brief-layout p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.decision-brief-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.evidence-triad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.evidence-column {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 150px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.evidence-column h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.evidence-column.good {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
+}
+
+.evidence-column.bad {
+  border-color: color-mix(in srgb, var(--red) 28%, var(--line));
+}
+
+.evidence-column.warn {
+  border-color: color-mix(in srgb, var(--yellow) 28%, var(--line));
+}
+
+.changed-review,
+.ticker-tab-workbench,
+.ticker-source-drilldown {
+  display: grid;
+  gap: 10px;
+}
+
+.ticker-source-drilldown {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.source-row-table th,
+.source-row-table td {
+  vertical-align: top;
+}
+
+.source-row-table td:nth-child(5) {
+  max-width: 520px;
+}
+
+.row-freshness {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.row-freshness.good {
+  color: var(--green);
+}
+
+.row-freshness.bad {
+  color: var(--red);
+}
+
+.row-freshness.warn {
+  color: var(--yellow);
+}
+
+.option-scenario.expired {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+  opacity: 0.82;
+}
+
+.option-scenario.expired .option-scenario-head small,
+.option-scenario.expired p {
+  color: var(--red);
+}
+
+@media (max-width: 1100px) {
+  .ticker-dossier-context,
+  .decision-brief-actions,
+  .decision-ticket-grid,
+  .blocker-task-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .decision-brief-layout,
+  .evidence-triad {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .ticker-dossier-header,
+  .decision-ticket {
+    grid-template-columns: 1fr;
+  }
+
+  .ticker-dossier-context,
+  .decision-ticket-grid,
+  .blocker-task-list {
+    grid-template-columns: 1fr;
+  }
+
+  .ticker-dossier-price p {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .ticker-dossier-price small {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .decision-brief-actions {
+    grid-template-columns: 1fr 1fr;
   }
 }

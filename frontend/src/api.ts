@@ -108,7 +108,11 @@ export async function loadPanelData(): Promise<PanelData> {
 
 export async function loadPanelScope(scope: string, existing?: PanelData): Promise<PanelData> {
   const snapshot = await getJson<PanelSnapshotPayload>(`/api/panel-snapshot?scope=${encodeURIComponent(scope)}`);
-  return mergeSnapshot(existing ?? emptyPanelData(), snapshot);
+  const data = mergeSnapshot(existing ?? emptyPanelData(), snapshot);
+  if (scope === "settings") {
+    data.settings = await getJson<SettingsPayload>("/api/settings");
+  }
+  return data;
 }
 
 export function emptyPanelData(): PanelData {

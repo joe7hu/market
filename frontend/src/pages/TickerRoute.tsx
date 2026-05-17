@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { useTicker } from "../hooks";
+import { usePanelScope, useTicker } from "../hooks";
 import { useMarketData } from "../marketData";
 import { TickerPage } from "../marketViews";
 
@@ -8,6 +8,7 @@ export function TickerRoute() {
   const symbol = (params.symbol ?? "").toUpperCase();
   const ticker = useTicker(symbol);
   const { data, model, openTicker } = useMarketData();
+  usePanelScope("dashboard");
 
   return <TickerPage symbol={symbol} ticker={ticker} model={model} data={data} onOpenTicker={openTicker} />;
 }

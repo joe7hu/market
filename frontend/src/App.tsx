@@ -11,8 +11,8 @@ import {
   Sun,
   UserRound,
 } from "lucide-react";
-import { NavLink, Outlet, Route, Routes } from "react-router-dom";
-import { MarketDataProvider } from "./marketData";
+import { NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { MarketDataProvider, useMarketData } from "./marketData";
 import { CalendarRoute } from "./pages/CalendarRoute";
 import { DashboardRoute } from "./pages/DashboardRoute";
 import { FilingsRoute } from "./pages/FilingsRoute";
@@ -57,6 +57,10 @@ export function App() {
 }
 
 function AppShell() {
+  const { model, lastRefresh, loading } = useMarketData();
+  const location = useLocation();
+  const active = [...navItems].reverse().find((item) => location.pathname === item.to || (!item.end && location.pathname.startsWith(item.to)));
+  const loadedSources = Object.values(model.sources).filter((state) => state === "live").length;
   return (
     <div className="terminal-shell">
       <aside className="sidebar">
@@ -88,6 +92,18 @@ function AppShell() {
         </div>
       </aside>
       <main className="desk-main">
+        <header className="app-toolbar">
+          <div>
+            <strong>{active?.label ?? (location.pathname.startsWith("/tickers/") ? "Ticker Dossier" : "Market")}</strong>
+            <span>{loading ? "Loading sources" : lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()}` : "Local source workspace"}</span>
+          </div>
+          <div className="toolbar-status" aria-label="Loaded source status">
+            <span><i className={model.sources.opportunities} />Signals</span>
+            <span><i className={model.sources.watchlist} />Quotes</span>
+            <span><i className={model.sources.health} />Health</span>
+            <b>{loadedSources}/6 live</b>
+          </div>
+        </header>
         <Outlet />
       </main>
     </div>
