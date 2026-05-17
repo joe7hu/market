@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -58,3 +61,27 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     response = client.post("/api/refresh-jobs/not-a-real-job")
     assert response.status_code == 400
     assert "allowlisted" in response.text
+
+
+def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
+    dist_index = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
+    if not dist_index.exists():
+        pytest.skip("frontend build output is not present")
+
+    client = TestClient(app)
+    for path in [
+        "/",
+        "/opportunities",
+        "/portfolio",
+        "/research",
+        "/filings",
+        "/calendar",
+        "/health",
+        "/settings",
+        "/tickers/NVDA",
+        "/not-a-market-route",
+    ]:
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert '<div id="root">' in response.text

@@ -111,7 +111,7 @@ export async function loadPanelScope(scope: string, existing?: PanelData): Promi
   return mergeSnapshot(existing ?? emptyPanelData(), snapshot);
 }
 
-function emptyPanelData(): PanelData {
+export function emptyPanelData(): PanelData {
   return {
     dashboard: {},
     discoveredUniverse: EMPTY_TABLE,
