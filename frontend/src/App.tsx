@@ -901,7 +901,8 @@ function CalendarPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: 
 }
 
 function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
-  const providerRows = model.sourceHealthRows.length ? model.sourceHealthRows.filter((row) => row.kind !== "documentation") : model.providerRunRows;
+  const liveProviderRows = model.sourceHealthRows.filter((row) => row.kind !== "documentation");
+  const providerRows = liveProviderRows.length ? liveProviderRows : model.providerRunRows;
   const freshnessRows = model.freshnessHealthRows.filter((row) => row.kind !== "documentation");
   const jobRows = model.providerRunRows;
   const operationalRows = model.healthRows.filter((row) => row.kind !== "documentation");
@@ -3726,7 +3727,7 @@ function AlertList({ rows }: { rows: HealthRow[] }) {
   if (!alerts.length) {
     return (
       <div className="alert-list">
-        <div><HeartPulse size={15} /><strong>All clear</strong><small>No degraded or warning source-health rows are loaded.</small></div>
+        <div><HeartPulse size={15} /><strong>All clear</strong><small>No degraded or warning health rows are loaded.</small></div>
       </div>
     );
   }
@@ -3760,7 +3761,7 @@ function JobRuns({ rows }: { rows: HealthRow[] }) {
 
 function FreshnessGrid({ rows }: { rows: HealthRow[] }) {
   if (!rows.length) {
-    return <EmptyState title="No freshness rows" detail="Source-health checks have not produced rows." />;
+    return <EmptyState title="No freshness rows" detail="Source-freshness checks have not produced rows." />;
   }
   return (
     <div className="freshness-grid">
