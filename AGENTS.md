@@ -25,3 +25,11 @@ timelines, and cross-project lessons should be written back to the brain.
   data, or paid-provider keys into the brain.
 - Consume Arco evidence from `/Users/joehu/brain/raw/sources/arco`.
 - Link to files and docs from the brain instead of duplicating large content.
+
+## Local App Run Preference
+
+When Joe asks to start or run the Market app, bind both the API and frontend to
+all interfaces so the app can be browsed from another local device:
+
+- API: `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+- Frontend: `npx vite --host 0.0.0.0`

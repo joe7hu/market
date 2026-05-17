@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from datetime import date, datetime, timedelta
 import hashlib
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -755,6 +756,9 @@ def ingest_13f_trackers(
             holding_payload = {"holdings": [], "source_url": None, "status": "not_requested", "error": None}
             if fetch_holdings:
                 holding_payload = fetch_13f_holding_payload(cik, filing["accession_number"], filing.get("primary_document"), user_agent)
+            else:
+                disclosure_id = stable_id(f"13f:{str(cik).zfill(10)}:{filing['accession_number']}")
+                holding_payload = preserve_existing_13f_holdings_when_not_requested(con, disclosure_id, holding_payload)
             holdings = holding_payload["holdings"]
             holdings_ingested += len(holdings)
             upsert_13f_disclosure(con, tracker, filing, holding_payload)
@@ -775,6 +779,8 @@ def upsert_13f_disclosure(
 ) -> None:
     cik = str(tracker["cik"])
     accession_number = filing["accession_number"]
+    disclosure_id = stable_id(f"13f:{str(cik).zfill(10)}:{accession_number}")
+    holding_payload = preserve_existing_13f_holdings_when_not_requested(con, disclosure_id, holding_payload)
     holdings = resolve_13f_holding_tickers(holding_payload.get("holdings") or [], tracker.get("ticker_map") or {})
     total_value = sum(int(row.get("value_thousands") or 0) for row in holdings)
     source_url = holding_payload.get("source_url") or sec.filing_index_url(cik, accession_number)
@@ -811,7 +817,7 @@ def upsert_13f_disclosure(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            stable_id(f"13f:{str(cik).zfill(10)}:{accession_number}"),
+            disclosure_id,
             "13f",
             tracker.get("name"),
             filing.get("filer_name") or tracker.get("name"),
@@ -824,6 +830,33 @@ def upsert_13f_disclosure(
             source_url,
         ],
     )
+
+
+def preserve_existing_13f_holdings_when_not_requested(con: Any, disclosure_id: str, holding_payload: dict[str, Any]) -> dict[str, Any]:
+    if holding_payload.get("status") != "not_requested":
+        return holding_payload
+    row = con.execute("SELECT raw FROM disclosures WHERE id = ?", [disclosure_id]).fetchone()
+    if not row:
+        return holding_payload
+    raw_value = row[0]
+    if isinstance(raw_value, str):
+        try:
+            raw = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return holding_payload
+    elif isinstance(raw_value, dict):
+        raw = raw_value
+    else:
+        return holding_payload
+    holdings = raw.get("holdings")
+    if not isinstance(holdings, list) or not holdings:
+        return holding_payload
+    return {
+        "holdings": holdings,
+        "source_url": raw.get("holdings_source_url"),
+        "status": raw.get("holdings_parse_status") or "parsed",
+        "error": raw.get("holdings_parse_error"),
+    }
 
 
 def resolve_13f_holding_tickers(holdings: list[dict[str, Any]], ticker_map: dict[str, str]) -> list[dict[str, Any]]:

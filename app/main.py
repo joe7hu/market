@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.data_access import (
+    database_path,
     dashboard_payload,
     load_config,
     load_panel_data,
+    panel_snapshot_payload,
     delete_portfolio_position,
     save_portfolio_position,
     settings_payload,
@@ -22,6 +25,7 @@ from app.data_access import (
     table_payload,
     ticker_payload,
 )
+from investment_panel.core.refresh_jobs import ALLOWLIST, refresh_job_rows, run_refresh_job
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -33,6 +37,10 @@ class PortfolioPositionInput(BaseModel):
     avg_cost: float
     purchase_date: str | None = None
     notes: str = ""
+
+
+CONTEXT_CACHE_TTL_SECONDS = 3.0
+_CONTEXT_CACHE: dict[str, Any] = {"expires_at": 0.0, "config_key": None, "value": None}
 
 
 def create_app() -> FastAPI:
@@ -55,6 +63,16 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return dashboard_payload(panel_data)
 
+    @app.get("/api/panel-snapshot")
+    def panel_snapshot(scope: str = "dashboard") -> dict[str, Any]:
+        _, panel_data = _context()
+        return panel_snapshot_payload(panel_data, scope)
+
+    @app.get("/api/decision-readiness")
+    def decision_readiness() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "decision_readiness")
+
     @app.get("/api/candidates")
     def candidates() -> dict[str, Any]:
         _, panel_data = _context()
@@ -75,10 +93,43 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "opportunity_sources")
 
+    @app.get("/api/discovered-universe")
+    def discovered_universe() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "discovered_universe")
+
+    @app.get("/api/decision-queue")
+    def decision_queue() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "decision_queue")
+
+    @app.get("/api/source-freshness")
+    def source_freshness() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_freshness")
+
+    @app.get("/api/symbol-decision-snapshots")
+    def symbol_decision_snapshots() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "symbol_decision_snapshots")
+
     @app.get("/api/tickers/{ticker}")
     def ticker_detail(ticker: str) -> dict[str, Any]:
         _, panel_data = _context()
         return ticker_payload(panel_data, ticker)
+
+    @app.get("/api/tickers/{ticker}/decision-snapshot")
+    def ticker_decision_snapshot(ticker: str) -> dict[str, Any]:
+        _, panel_data = _context()
+        normalized = ticker.upper()
+        rows = [
+            row
+            for row in table_payload(panel_data, "symbol_decision_snapshot")["rows"]
+            if str(row.get("symbol") or "").upper() == normalized
+        ]
+        if rows:
+            return rows[0]
+        return {"symbol": normalized, "found": False}
 
     @app.get("/api/portfolio")
     def portfolio() -> dict[str, Any]:
@@ -155,10 +206,35 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "options_chain")
 
+    @app.get("/api/options-payoff-scenarios")
+    def options_payoff_scenarios() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_payoff_scenarios")
+
     @app.get("/api/news")
     def news() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "news")
+
+    @app.get("/api/tradingview-symbol-search")
+    def tradingview_symbol_search() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "tradingview_symbol_search")
+
+    @app.get("/api/tradingview-watchlists")
+    def tradingview_watchlists() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "tradingview_watchlists")
+
+    @app.get("/api/tradingview-alerts")
+    def tradingview_alerts() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "tradingview_alerts")
+
+    @app.get("/api/tradingview-chart-state")
+    def tradingview_chart_state() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "tradingview_chart_state")
 
     @app.get("/api/sepa")
     def sepa() -> dict[str, Any]:
@@ -190,6 +266,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "earnings")
 
+    @app.get("/api/earnings-setups")
+    def earnings_setups() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "earnings_setups")
+
     @app.get("/api/valuations")
     def valuations() -> dict[str, Any]:
         _, panel_data = _context()
@@ -215,6 +296,22 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "provider_runs")
 
+    @app.get("/api/refresh-jobs")
+    def refresh_jobs() -> dict[str, Any]:
+        config = load_config()
+        rows = refresh_job_rows(database_path(config))
+        return {"rows": rows, "count": len(rows), "allowlist": sorted(ALLOWLIST)}
+
+    @app.post("/api/refresh-jobs/{job_name}")
+    def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        try:
+            result = run_refresh_job(job_name, database_path(config), "config.yaml")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result
+
     @app.get("/api/settings")
     def settings() -> dict[str, Any]:
         config, panel_data = _context()
@@ -226,7 +323,20 @@ def create_app() -> FastAPI:
 
 def _context() -> tuple[dict[str, Any], Any]:
     config = load_config()
-    return config, load_panel_data(config)
+    config_key = str(database_path(config))
+    now = time.monotonic()
+    cached = _CONTEXT_CACHE.get("value")
+    if cached is not None and _CONTEXT_CACHE.get("config_key") == config_key and now < float(_CONTEXT_CACHE.get("expires_at") or 0):
+        return cached
+    value = (config, load_panel_data(config))
+    _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
+    return value
+
+
+def _require_local_request(request: Request) -> None:
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        raise HTTPException(status_code=403, detail="Refresh jobs are available only from the local machine.")
 
 
 def _mount_frontend(app: FastAPI) -> None:

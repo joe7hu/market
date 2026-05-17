@@ -1,0 +1,86 @@
+# Full-Market Refresh
+
+The decision-grade app needs one daily workflow that refreshes every source
+cluster before the UI ranks opportunities. The workflow is intentionally
+sequential because later steps depend on earlier evidence and market-data rows.
+
+## Command
+
+```bash
+uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
+```
+
+For LAN access after the refresh:
+
+```bash
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+npx vite --host 0.0.0.0
+```
+
+Verify the API from another local device:
+
+```text
+http://192.168.50.197:8000/api/status
+```
+
+## Step Order
+
+1. `update_arco_data`: import the latest Arco brief evidence from
+   `/Users/joehu/brain/raw/sources/arco`.
+2. `daily_screen`: rebuild the configured and evidence-derived universe, daily
+   prices, fundamentals, technicals, candidates, and base analyses.
+3. `update_free_sources`: refresh TradingView/OpenCLI and yfinance rows for
+   quotes, screeners, options, news, TradingView symbol/watchlist/alert/chart
+   metadata, estimates, earnings, ETF premiums, SEPA, liquidity, correlations,
+   options payoff scenarios, earnings setup scores, and deterministic
+   DCF/relative/blended valuations.
+4. `update_disclosures`: refresh public disclosures, official House filings,
+   configured 13F trackers, disclosure symbol prices, and trader replicas.
+   Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
+   a heavier 13F holdings refresh is intended.
+5. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
+   events.
+6. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
+
+The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
+Each underlying job still writes its own status file.
+
+## Freshness Contracts
+
+- Intraday quotes, options, and news are stale after `4` market hours.
+- Daily prices, technicals, SEPA, liquidity, and correlation rows are stale
+  after `1` trading day.
+- Fundamentals, 13F rows, and disclosure rows are stale by filing cadence, not
+  daily market time.
+- Arco thesis evidence is stale after `7` days unless refreshed or reinforced.
+- Documentation rows are documentation. They must not count as healthy provider
+  runs.
+
+## Daily Acceptance Checks
+
+After a successful refresh:
+
+- `/api/source-freshness` shows no stale source as healthy.
+- `/api/decision-queue` has nonempty `Act`, `Research`, `Watch`, `Reject`, and
+  `Stale` buckets when seeded data supports them.
+- Top `Act` rows have current `as_of` values, nonzero source/evidence counts,
+  no stale-data blocking gates, and explicit invalidation.
+- Source-thin or stale opportunities are not silently promoted into the top
+  ranked queue.
+- `/api/tickers/{symbol}/decision-snapshot` explains action grade, source
+  cluster, freshness, decision basis, blocking gates, portfolio impact, and
+  invalidation.
+
+## Suggested Daily Schedule
+
+Use the existing automation runner or launchd to run once before the local
+investment review window, for example:
+
+```bash
+cd /Users/joehu/proj/market
+uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
+```
+
+Keep the separate disclosure automation if it already exists; this full refresh
+is the missing broad-market workflow that ensures the decision desk has current
+market, evidence, event, analysis, and snapshot state.

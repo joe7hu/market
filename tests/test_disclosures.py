@@ -145,6 +145,32 @@ def test_ingest_13f_trackers_stores_metadata_and_holdings(monkeypatch: Any, tmp_
     assert raw["holdings"][0]["symbol"] == "AAPL"
 
 
+def test_skip_holdings_refresh_preserves_existing_13f_holdings(monkeypatch: Any, tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+
+    monkeypatch.setattr(sec, "company_submissions", lambda cik, user_agent: SUBMISSIONS_PAYLOAD)
+    monkeypatch.setattr(
+        sec,
+        "filing_directory_index",
+        lambda cik, accession_number, user_agent: {"directory": {"item": [{"name": "form13fInfoTable.xml"}]}},
+    )
+    monkeypatch.setattr(sec, "filing_document_text", lambda cik, accession_number, filename, user_agent: INFO_TABLE_XML)
+    tracker = {"cik": "1067983", "name": "Berkshire tracker", "ticker_map": {"037833100": "AAPL", "060505104": "BAC"}}
+
+    with db(db_path) as con:
+        ingest_13f_trackers(con, [tracker], "test-agent", default_max_filings=1, fetch_holdings=True)
+        result = ingest_13f_trackers(con, [tracker], "test-agent", default_max_filings=1, fetch_holdings=False)
+
+    assert result["holdings_ingested"] == 2
+    with db(db_path, read_only=True) as con:
+        rows = query_rows(con, "SELECT raw FROM disclosures")
+    raw = json.loads(rows[0]["raw"])
+    assert raw["holdings_parse_status"] == "parsed"
+    assert raw["holdings_count"] == 2
+    assert {holding["symbol"] for holding in raw["holdings"]} == {"AAPL", "BAC"}
+
+
 def test_update_disclosures_reads_configured_13f_trackers(monkeypatch: Any, tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

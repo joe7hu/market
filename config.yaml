@@ -33,11 +33,40 @@ data_sources:
     # Empty means quote every configured equity/ETF and pull options for the
     # highest-scored symbols when the free-source job runs after a screen.
     options_symbols: []
+    # Empty means resolve TradingView symbol search for the configured
+    # watchlist plus the highest-scored symbols.
+    search_symbols: []
+    # Read-only personal TradingView surfaces. Failures are recorded as source
+    # health/provider-run rows without blocking quote/options ingestion.
+    personal_surfaces_enabled: true
+    chart_state_enabled: true
+    watchlist_colors:
+      - red
+      - orange
+      - yellow
+      - green
+      - blue
+      - purple
+    alert_types:
+      - active
+      - triggered
+      - offline
     screener_limit: 50
     news_limit: 50
     strikes_around_spot: 6
   yfinance:
     enabled: true
+
+event_sources:
+  enabled: true
+  # Seeds the May 11-15, 2026 macro watch week that Joe requested. Future
+  # refreshes should upsert source-derived rows over these deterministic IDs.
+  seed_requested_week: true
+  bls_enabled: true
+  federal_reserve_enabled: true
+  treasury_enabled: true
+  sec_enabled: true
+  watchlist_enabled: true
 
 analysis:
   enabled: true

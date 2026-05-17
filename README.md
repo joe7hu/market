@@ -43,7 +43,9 @@ uv run python -m investment_panel.jobs.update_crypto_data --config config.yaml
 uv run python -m investment_panel.jobs.update_arco_data --config config.yaml
 uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --online-check
 uv run python -m investment_panel.jobs.update_free_sources --config config.yaml
+uv run python -m investment_panel.jobs.update_event_calendar --config config.yaml
 uv run python -m investment_panel.jobs.snapshot_database --config config.yaml
+uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
 uv run python -m investment_panel.jobs.research_candidate TSLA --config config.yaml
 uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.yaml
 ```
@@ -63,6 +65,11 @@ uv run python -m investment_panel.jobs.backfill_trader_disclosures --config conf
 New trader onboarding and the normalized public-disclosure CSV contract are
 documented in [docs/trader-disclosure-pipeline.md](docs/trader-disclosure-pipeline.md).
 
+The broad daily refresh workflow is documented in
+[docs/full-market-refresh.md](docs/full-market-refresh.md). It coordinates
+Arco import, daily screening, free-source refresh, disclosures, event calendar,
+analyses, and the DB snapshot before the decision desk reads the data.
+
 ## API
 
 - `GET /api/status`
@@ -79,16 +86,26 @@ documented in [docs/trader-disclosure-pipeline.md](docs/trader-disclosure-pipeli
 - `GET /api/screener`
 - `GET /api/options-expiries`
 - `GET /api/options-chain`
+- `GET /api/options-payoff-scenarios`
 - `GET /api/news`
+- `GET /api/tradingview-symbol-search`
+- `GET /api/tradingview-watchlists`
+- `GET /api/tradingview-alerts`
+- `GET /api/tradingview-chart-state`
 - `GET /api/sepa`
 - `GET /api/liquidity`
 - `GET /api/correlations`
 - `GET /api/etf-premiums`
 - `GET /api/analyst-estimates`
 - `GET /api/earnings`
+- `GET /api/earnings-setups`
 - `GET /api/valuations`
 - `GET /api/provider-runs`
 - `GET /api/source-health`
+- `GET /api/discovered-universe`
+- `GET /api/decision-queue`
+- `GET /api/source-freshness`
+- `GET /api/tickers/{symbol}/decision-snapshot`
 - `GET /api/settings`
 
 ## Data Sources
@@ -104,9 +121,17 @@ Set `market_data.mode: online` in `config.yaml` to attempt online price fetches
 through optional adapters while preserving fallback behavior.
 
 Free-source enrichment is handled by `market-update-free-sources`. It uses the
-local OpenCLI TradingView adapter for quotes, screeners, options, and news, plus
-yfinance for estimates, earnings, and ETF NAV/premium data. Funda and Adanos are
-intentionally not integrated.
+local OpenCLI TradingView adapter for quotes, screeners, options, news, symbol
+search, watchlists, alerts, and chart state, plus yfinance for estimates,
+earnings, and ETF NAV/premium data. Funda and Adanos are intentionally not
+integrated.
+
+Market codifies high-value finance-skills workflows as deterministic backend
+read models where possible: options payoff scenarios, earnings setup scoring,
+estimate revision analysis, TradingView metadata, liquidity/correlation/SEPA,
+and DCF/relative/blended valuation rows. LLMs should only be used for
+unstructured interpretation, memo prose, or parsing a user-submitted options
+screenshot/free-form strategy into structured legs.
 
 The web app renders the derived data as an operational workbench: score bars,
 positive/negative percentage pills, status badges, and summary cards highlight

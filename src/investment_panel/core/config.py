@@ -63,6 +63,11 @@ class OpenCliConfig:
 class TradingViewConfig:
     enabled: bool = True
     options_symbols: list[str] = field(default_factory=list)
+    search_symbols: list[str] = field(default_factory=list)
+    watchlist_colors: list[str] = field(default_factory=lambda: ["red", "orange", "yellow", "green", "blue", "purple"])
+    alert_types: list[str] = field(default_factory=lambda: ["active", "triggered", "offline"])
+    personal_surfaces_enabled: bool = True
+    chart_state_enabled: bool = True
     screener_limit: int = 50
     news_limit: int = 50
     strikes_around_spot: int = 6
@@ -78,6 +83,17 @@ class DataSourcesConfig:
     opencli: OpenCliConfig = OpenCliConfig()
     tradingview: TradingViewConfig = TradingViewConfig()
     yfinance: YFinanceConfig = YFinanceConfig()
+
+
+@dataclass(frozen=True)
+class EventSourcesConfig:
+    enabled: bool = True
+    seed_requested_week: bool = True
+    bls_enabled: bool = True
+    federal_reserve_enabled: bool = True
+    treasury_enabled: bool = True
+    sec_enabled: bool = True
+    watchlist_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -109,6 +125,7 @@ class AppConfig:
     arco: ArcoConfig = ArcoConfig()
     market_data: MarketDataConfig = MarketDataConfig()
     data_sources: DataSourcesConfig = DataSourcesConfig()
+    event_sources: EventSourcesConfig = EventSourcesConfig()
     analysis: AnalysisConfig = AnalysisConfig()
     scoring: ScoringConfig = ScoringConfig()
     watchlist: list[dict[str, Any]] = field(default_factory=list)
@@ -169,11 +186,28 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         tradingview=TradingViewConfig(
             enabled=bool(tradingview_raw.get("enabled", True)),
             options_symbols=list(tradingview_raw.get("options_symbols", [])),
+            search_symbols=list(tradingview_raw.get("search_symbols", [])),
+            watchlist_colors=list(
+                tradingview_raw.get("watchlist_colors", ["red", "orange", "yellow", "green", "blue", "purple"])
+            ),
+            alert_types=list(tradingview_raw.get("alert_types", ["active", "triggered", "offline"])),
+            personal_surfaces_enabled=bool(tradingview_raw.get("personal_surfaces_enabled", True)),
+            chart_state_enabled=bool(tradingview_raw.get("chart_state_enabled", True)),
             screener_limit=int(tradingview_raw.get("screener_limit", 50)),
             news_limit=int(tradingview_raw.get("news_limit", 50)),
             strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
         ),
         yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
+    )
+    event_sources_raw = raw.get("event_sources", {})
+    event_sources = EventSourcesConfig(
+        enabled=bool(event_sources_raw.get("enabled", True)),
+        seed_requested_week=bool(event_sources_raw.get("seed_requested_week", True)),
+        bls_enabled=bool(event_sources_raw.get("bls_enabled", True)),
+        federal_reserve_enabled=bool(event_sources_raw.get("federal_reserve_enabled", True)),
+        treasury_enabled=bool(event_sources_raw.get("treasury_enabled", True)),
+        sec_enabled=bool(event_sources_raw.get("sec_enabled", True)),
+        watchlist_enabled=bool(event_sources_raw.get("watchlist_enabled", True)),
     )
     analysis_raw = raw.get("analysis", {})
     analysis = AnalysisConfig(
@@ -193,6 +227,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         arco=arco,
         market_data=market_data,
         data_sources=data_sources,
+        event_sources=event_sources,
         analysis=analysis,
         scoring=scoring,
         watchlist=list(raw.get("watchlist", [])),
@@ -233,11 +268,25 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "tradingview": {
                 "enabled": config.data_sources.tradingview.enabled,
                 "options_symbols": config.data_sources.tradingview.options_symbols,
+                "search_symbols": config.data_sources.tradingview.search_symbols,
+                "watchlist_colors": config.data_sources.tradingview.watchlist_colors,
+                "alert_types": config.data_sources.tradingview.alert_types,
+                "personal_surfaces_enabled": config.data_sources.tradingview.personal_surfaces_enabled,
+                "chart_state_enabled": config.data_sources.tradingview.chart_state_enabled,
                 "screener_limit": config.data_sources.tradingview.screener_limit,
                 "news_limit": config.data_sources.tradingview.news_limit,
                 "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,
             },
             "yfinance": {"enabled": config.data_sources.yfinance.enabled},
+        },
+        "event_sources": {
+            "enabled": config.event_sources.enabled,
+            "seed_requested_week": config.event_sources.seed_requested_week,
+            "bls_enabled": config.event_sources.bls_enabled,
+            "federal_reserve_enabled": config.event_sources.federal_reserve_enabled,
+            "treasury_enabled": config.event_sources.treasury_enabled,
+            "sec_enabled": config.event_sources.sec_enabled,
+            "watchlist_enabled": config.event_sources.watchlist_enabled,
         },
         "analysis": {
             "enabled": config.analysis.enabled,

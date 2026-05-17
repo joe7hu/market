@@ -9,6 +9,7 @@ from investment_panel.analysis import run_all_analyses
 from investment_panel.core.arco import flatten_arco_items, ingest_arco_theses, load_arco_context
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, upsert_instrument
+from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.fundamentals import update_equity_fundamentals
 from investment_panel.core.instruments import universe_from_config_and_arco
 from investment_panel.core.portfolio import import_portfolio_csv, seed_empty_theses_for_portfolio
@@ -48,6 +49,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
                 feature_rows += 1
         candidates = score_and_store(con, [row["symbol"] for row in universe], config.scoring.weights)
         analysis_result = run_all_analyses(con, config)
+        decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {
         "database": str(config.database.duckdb_path),
         "instruments": len(universe),
@@ -58,6 +60,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         "fundamental_rows": fundamental_rows,
         "candidates": len(candidates),
         "analysis": analysis_result,
+        "decision_models": decision_result,
         "top_candidates": candidates[:10],
     }
     snapshot_path = snapshot_duckdb(config, "market-daily-screen")

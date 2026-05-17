@@ -71,6 +71,23 @@ class TradingViewProvider:
             args.extend(["--symbol", symbol])
         return ensure_list(self.runner.read_json(args))
 
+    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        return ensure_list(self.runner.read_json(["tradingview", "search", "--query", query, "--limit", str(limit)]))
+
+    def watchlists(self, watchlist_id: str | None = None, color: str | None = None) -> list[dict[str, Any]]:
+        args = ["tradingview", "watchlists"]
+        if watchlist_id:
+            args.extend(["--id", watchlist_id])
+        if color:
+            args.extend(["--color", color])
+        return ensure_list(self.runner.read_json(args))
+
+    def alerts(self, alert_type: str = "active") -> list[dict[str, Any]]:
+        return ensure_list(self.runner.read_json(["tradingview", "alerts", "--type", alert_type]))
+
+    def chart_state(self) -> list[dict[str, Any]]:
+        return ensure_list(self.runner.read_json(["tradingview", "chart-state"]))
+
 
 def split_tradingview_symbol(symbol: str) -> tuple[str, str | None]:
     value = symbol.upper()

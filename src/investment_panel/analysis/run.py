@@ -6,7 +6,9 @@ from datetime import date
 from typing import Any
 
 from investment_panel.analysis.correlation import store_correlation_runs
+from investment_panel.analysis.earnings_setup import store_earnings_setups
 from investment_panel.analysis.liquidity import store_liquidity_metrics
+from investment_panel.analysis.options_payoff import store_options_payoff_scenarios
 from investment_panel.analysis.sepa import store_sepa_analyses
 from investment_panel.analysis.valuation import store_valuation_models
 from investment_panel.core.config import AppConfig
@@ -28,5 +30,7 @@ def run_all_analyses(con: Any, config: AppConfig) -> dict[str, int | str]:
             lookback_days=config.analysis.correlation_lookback_days,
             max_peers=config.analysis.max_correlation_peers,
         ),
+        "earnings_setups": store_earnings_setups(con, symbols),
+        "options_payoff_scenarios": store_options_payoff_scenarios(con, symbols),
         "valuation_rows": store_valuation_models(con, symbols),
     }

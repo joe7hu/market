@@ -9,6 +9,7 @@ from typing import Any
 from investment_panel.analysis import run_all_analyses
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
+from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.free_sources import update_tradingview_sources, update_yfinance_sources
 from investment_panel.core.status import write_source_status
 
@@ -25,11 +26,13 @@ def run(
         tradingview_result = update_tradingview_sources(con, config) if tradingview else {"status": "skipped"}
         yfinance_result = update_yfinance_sources(con, config) if yfinance else {"status": "skipped"}
         analysis_result = run_all_analyses(con, config) if analyses else {"status": "skipped"}
+        decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {
         "database": str(config.database.duckdb_path),
         "tradingview": tradingview_result,
         "yfinance": yfinance_result,
         "analysis": analysis_result,
+        "decision_models": decision_result,
     }
     status_path = write_source_status(
         config,

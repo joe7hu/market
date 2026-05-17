@@ -27,10 +27,15 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         "chains": 0,
         "screener_rows": 0,
         "news_items": 0,
+        "search_rows": 0,
+        "watchlists": 0,
+        "alerts": 0,
+        "chart_states": 0,
     }
     try:
         status_rows = provider.status()
         record_provider_run(con, run_id, "tradingview", "status", observed_at, "ok", f"{len(status_rows)} status rows", status_rows)
+        tradingview_ready = any(row.get("connected") or row.get("app_running") for row in status_rows)
         quote_symbols = equity_symbols(con)
         quote_errors = []
         for symbol in quote_symbols:
@@ -51,6 +56,11 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         result["screener_rows"] = len(screener_rows)
         news_rows = provider.news(limit=config.data_sources.tradingview.news_limit)
         result["news_items"] = store_news_rows(con, news_rows, "tradingview")
+        if tradingview_ready:
+            personal_result = update_tradingview_personal_surfaces(con, config, provider, run_id, observed_at)
+            result.update(personal_result)
+        else:
+            result["personal_surfaces"] = "skipped_cdp_not_connected"
         for symbol in option_symbols(con, config):
             expiries = []
             for candidate in tradingview_symbol_candidates(symbol):
@@ -86,6 +96,117 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         return result
     record_provider_run(con, run_id, "tradingview", "refresh", observed_at, "ok", json_dumps(result), result)
     record_source_health(con, "tradingview", "ok", json_dumps(result), "opencli tradingview")
+    return result
+
+
+def update_tradingview_personal_surfaces(
+    con: Any,
+    config: AppConfig,
+    provider: TradingViewProvider,
+    run_id: str,
+    observed_at: str,
+) -> dict[str, Any]:
+    """Refresh read-only TradingView surfaces that require the desktop session."""
+
+    result: dict[str, Any] = {"personal_surfaces": "ok", "search_rows": 0, "watchlists": 0, "alerts": 0, "chart_states": 0}
+    errors: list[str] = []
+
+    def record_error(capability: str, exc: OpenCliError) -> None:
+        detail = str(exc)
+        errors.append(f"{capability}:{detail}")
+        record_provider_run(
+            con,
+            stable_id(f"{run_id}:{capability}:error"),
+            "tradingview",
+            capability,
+            observed_at,
+            "error",
+            detail,
+            {"error": detail},
+        )
+
+    if config.data_sources.tradingview.chart_state_enabled:
+        try:
+            chart_rows = provider.chart_state()
+            result["chart_states"] = store_chart_state_rows(con, observed_at, chart_rows)
+            record_provider_run(
+                con,
+                stable_id(f"{run_id}:chart-state"),
+                "tradingview",
+                "chart-state",
+                observed_at,
+                "ok",
+                f"{result['chart_states']} chart-state rows",
+                chart_rows,
+            )
+        except OpenCliError as exc:
+            record_error("chart-state", exc)
+
+    search_symbols = tradingview_search_symbols(con, config)
+    for symbol in search_symbols:
+        try:
+            search_rows = provider.search(symbol, limit=5)
+            result["search_rows"] += store_symbol_search_rows(con, symbol, observed_at, search_rows)
+        except OpenCliError as exc:
+            record_error(f"search:{symbol}", exc)
+    if search_symbols:
+        record_provider_run(
+            con,
+            stable_id(f"{run_id}:search"),
+            "tradingview",
+            "search",
+            observed_at,
+            "ok" if not any(error.startswith("search:") for error in errors) else "partial",
+            f"{result['search_rows']} search rows across {len(search_symbols)} symbols",
+            {"symbols": search_symbols, "rows": result["search_rows"]},
+        )
+
+    if config.data_sources.tradingview.personal_surfaces_enabled:
+        try:
+            watchlist_rows = provider.watchlists()
+            result["watchlists"] += store_watchlist_rows(con, observed_at, watchlist_rows)
+            for color in config.data_sources.tradingview.watchlist_colors:
+                color_rows = provider.watchlists(color=color)
+                result["watchlists"] += store_watchlist_rows(con, observed_at, color_rows, color=color)
+            record_provider_run(
+                con,
+                stable_id(f"{run_id}:watchlists"),
+                "tradingview",
+                "watchlists",
+                observed_at,
+                "ok",
+                f"{result['watchlists']} watchlist rows",
+                {"rows": result["watchlists"]},
+            )
+        except OpenCliError as exc:
+            record_error("watchlists", exc)
+
+        alert_rows_total = 0
+        for alert_type in config.data_sources.tradingview.alert_types:
+            try:
+                alert_rows = provider.alerts(alert_type)
+                alert_rows_total += store_alert_rows(con, observed_at, alert_rows, alert_type)
+            except OpenCliError as exc:
+                record_error(f"alerts:{alert_type}", exc)
+        result["alerts"] = alert_rows_total
+        if config.data_sources.tradingview.alert_types:
+            record_provider_run(
+                con,
+                stable_id(f"{run_id}:alerts"),
+                "tradingview",
+                "alerts",
+                observed_at,
+                "ok" if not any(error.startswith("alerts:") for error in errors) else "partial",
+                f"{alert_rows_total} alert rows",
+                {"types": config.data_sources.tradingview.alert_types, "rows": alert_rows_total},
+            )
+
+    if errors:
+        result["personal_surfaces"] = "partial"
+        result["personal_errors"] = errors[:10]
+        record_source_health(con, "tradingview_personal", "warning", json_dumps(result), "opencli tradingview")
+    else:
+        record_source_health(con, "tradingview_personal", "ok", json_dumps(result), "opencli tradingview")
     return result
 
 
@@ -175,6 +296,37 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
     if rows:
         return [row["symbol"] for row in rows]
     return equity_symbols(con)[:5]
+
+
+def tradingview_search_symbols(con: Any, config: AppConfig) -> list[str]:
+    configured = [symbol.upper() for symbol in config.data_sources.tradingview.search_symbols]
+    if configured:
+        return unique_symbols(configured)[:25]
+    watchlist = [str(item.get("symbol") or "").upper() for item in config.watchlist if item.get("symbol")]
+    candidate_rows = query_rows(
+        con,
+        """
+        SELECT symbol
+        FROM candidates
+        WHERE symbol NOT LIKE '%-USD'
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY run_date DESC, score DESC) = 1
+        ORDER BY score DESC
+        LIMIT 15
+        """,
+    )
+    return unique_symbols([*watchlist, *[row["symbol"] for row in candidate_rows]])[:25]
+
+
+def unique_symbols(symbols: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        normalized = normalize_symbol(symbol)
+        if not normalized or normalized in seen or normalized.endswith("-USD"):
+            continue
+        seen.add(normalized)
+        output.append(normalized)
+    return output
 
 
 def upsert_quote(con: Any, symbol: str, observed_at: str, row: dict[str, Any]) -> None:
@@ -289,6 +441,117 @@ def store_news_rows(con: Any, rows: list[dict[str, Any]], source: str) -> int:
                 json_dumps(row.get("related_symbols") or []),
                 link,
                 source,
+                json_dumps(row),
+            ],
+        )
+        count += 1
+    return count
+
+
+def store_symbol_search_rows(con: Any, query: str, observed_at: str, rows: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in rows:
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        row_id = stable_id(f"tradingview-search:{query}:{observed_at}:{row.get('symbol')}:{row.get('exchange')}")
+        con.execute(
+            """
+            INSERT OR REPLACE INTO tradingview_symbol_search
+            (id, query, observed_at, symbol, description, instrument_type, exchange, country, currency, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row_id,
+                query.upper(),
+                observed_at,
+                symbol,
+                row.get("description"),
+                row.get("type"),
+                row.get("exchange"),
+                row.get("country"),
+                row.get("currency"),
+                "tradingview",
+                json_dumps(row),
+            ],
+        )
+        count += 1
+    return count
+
+
+def store_watchlist_rows(con: Any, observed_at: str, rows: list[dict[str, Any]], color: str | None = None) -> int:
+    count = 0
+    for row in rows:
+        watchlist_id = str(row.get("id") or stable_id(f"watchlist:{color}:{row.get('name')}:{row.get('symbols')}"))
+        symbols = row.get("symbols") or []
+        con.execute(
+            """
+            INSERT OR REPLACE INTO tradingview_watchlists
+            (id, observed_at, name, color, symbol_count, symbols, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                watchlist_id,
+                observed_at,
+                row.get("name") or color or watchlist_id,
+                row.get("color") or color,
+                as_int(row.get("symbol_count")) or (len(symbols) if isinstance(symbols, list) else None),
+                json_dumps(symbols),
+                "tradingview",
+                json_dumps(row),
+            ],
+        )
+        count += 1
+    return count
+
+
+def store_alert_rows(con: Any, observed_at: str, rows: list[dict[str, Any]], alert_type: str) -> int:
+    count = 0
+    for row in rows:
+        alert_id = str(row.get("id") or stable_id(f"alert:{alert_type}:{row.get('name')}:{row.get('symbol')}:{row.get('fired_at')}"))
+        con.execute(
+            """
+            INSERT OR REPLACE INTO tradingview_alerts
+            (id, observed_at, name, symbol, alert_type, condition, value, active, status, fired_at, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                alert_id,
+                observed_at,
+                row.get("name"),
+                normalize_symbol(row.get("symbol")),
+                row.get("type") or alert_type,
+                row.get("condition"),
+                as_float(row.get("value")),
+                bool(row.get("active")) if row.get("active") is not None else None,
+                row.get("status"),
+                row.get("fired_at"),
+                "tradingview",
+                json_dumps(row),
+            ],
+        )
+        count += 1
+    return count
+
+
+def store_chart_state_rows(con: Any, observed_at: str, rows: list[dict[str, Any]]) -> int:
+    count = 0
+    for row in rows:
+        row_id = stable_id(f"chart-state:{observed_at}:{row.get('layout_id')}:{row.get('symbol')}:{row.get('url')}")
+        con.execute(
+            """
+            INSERT OR REPLACE INTO tradingview_chart_state
+            (id, observed_at, layout_id, symbol, interval, url, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row_id,
+                observed_at,
+                row.get("layout_id"),
+                normalize_symbol(row.get("symbol")),
+                row.get("interval"),
+                row.get("url"),
+                "tradingview",
                 json_dumps(row),
             ],
         )

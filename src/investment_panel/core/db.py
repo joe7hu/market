@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS catalysts (
     event TEXT,
     expected_impact TEXT,
     source TEXT,
+    start_at TIMESTAMP,
+    end_at TIMESTAMP,
+    timezone TEXT,
+    event_scope TEXT,
+    event_kind TEXT,
+    importance TEXT,
+    verification_status TEXT,
+    source_url TEXT,
+    source_name TEXT,
     raw JSON
 );
 
@@ -211,6 +220,59 @@ CREATE TABLE IF NOT EXISTS news_items (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS tradingview_symbol_search (
+    id TEXT PRIMARY KEY,
+    query TEXT,
+    observed_at TIMESTAMP,
+    symbol TEXT,
+    description TEXT,
+    instrument_type TEXT,
+    exchange TEXT,
+    country TEXT,
+    currency TEXT,
+    source TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS tradingview_watchlists (
+    id TEXT,
+    observed_at TIMESTAMP,
+    name TEXT,
+    color TEXT,
+    symbol_count INTEGER,
+    symbols JSON,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(id, observed_at, source)
+);
+
+CREATE TABLE IF NOT EXISTS tradingview_alerts (
+    id TEXT,
+    observed_at TIMESTAMP,
+    name TEXT,
+    symbol TEXT,
+    alert_type TEXT,
+    condition TEXT,
+    value DOUBLE,
+    active BOOLEAN,
+    status TEXT,
+    fired_at TIMESTAMP,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(id, observed_at, source)
+);
+
+CREATE TABLE IF NOT EXISTS tradingview_chart_state (
+    id TEXT PRIMARY KEY,
+    observed_at TIMESTAMP,
+    layout_id TEXT,
+    symbol TEXT,
+    interval TEXT,
+    url TEXT,
+    source TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS sepa_analyses (
     symbol TEXT,
     as_of DATE,
@@ -272,6 +334,22 @@ CREATE TABLE IF NOT EXISTS earnings_events (
     PRIMARY KEY(symbol, event_date, event_type, source)
 );
 
+CREATE TABLE IF NOT EXISTS earnings_setups (
+    symbol TEXT,
+    as_of DATE,
+    event_date DATE,
+    setup_type TEXT,
+    score DOUBLE,
+    revision_score DOUBLE,
+    surprise_score DOUBLE,
+    estimate_spread_score DOUBLE,
+    sentiment_score DOUBLE,
+    verdict TEXT,
+    metrics JSON,
+    source TEXT,
+    PRIMARY KEY(symbol, as_of, setup_type, source)
+);
+
 CREATE TABLE IF NOT EXISTS valuation_models (
     symbol TEXT,
     as_of DATE,
@@ -281,6 +359,119 @@ CREATE TABLE IF NOT EXISTS valuation_models (
     assumptions JSON,
     diagnostics JSON,
     PRIMARY KEY(symbol, as_of, method)
+);
+
+CREATE TABLE IF NOT EXISTS options_payoff_scenarios (
+    id TEXT PRIMARY KEY,
+    symbol TEXT,
+    as_of TIMESTAMP,
+    expiry DATE,
+    strategy_type TEXT,
+    spot DOUBLE,
+    dte INTEGER,
+    iv DOUBLE,
+    net_premium DOUBLE,
+    max_profit DOUBLE,
+    max_loss DOUBLE,
+    breakevens JSON,
+    legs JSON,
+    curve JSON,
+    diagnostics JSON,
+    source TEXT
+);
+
+CREATE TABLE IF NOT EXISTS discovered_universe (
+    symbol TEXT PRIMARY KEY,
+    name TEXT,
+    asset_class TEXT,
+    inclusion_reasons JSON,
+    source_counts JSON,
+    latest_source_timestamp TIMESTAMP,
+    latest_observed_at TIMESTAMP,
+    next_event_at TIMESTAMP,
+    eligibility_status TEXT,
+    eligibility_detail TEXT,
+    evidence_score DOUBLE,
+    discovery_score DOUBLE,
+    liquidity_score DOUBLE,
+    recency_score DOUBLE,
+    universe_rank INTEGER,
+    decision_universe_member BOOLEAN,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS decision_queue (
+    symbol TEXT PRIMARY KEY,
+    as_of TIMESTAMP,
+    rank INTEGER,
+    action_grade TEXT,
+    decision_bucket TEXT,
+    score DOUBLE,
+    discovery_score DOUBLE,
+    decision_score DOUBLE,
+    action_score DOUBLE,
+    freshness_status TEXT,
+    quote_freshness TEXT,
+    daily_analysis_freshness TEXT,
+    filing_freshness TEXT,
+    thesis_freshness TEXT,
+    overall_decision_freshness TEXT,
+    source_cluster TEXT,
+    evidence_count INTEGER,
+    raw_source_rows INTEGER,
+    independent_source_count INTEGER,
+    evidence_items_count INTEGER,
+    primary_evidence_count INTEGER,
+    inclusion_reasons JSON,
+    blocking_gates JSON,
+    decision_basis JSON,
+    latest_quote DOUBLE,
+    latest_quote_at TIMESTAMP,
+    latest_observed_at TIMESTAMP,
+    next_event_at TIMESTAMP,
+    catalyst_window TEXT,
+    liquidity_grade TEXT,
+    portfolio_impact JSON,
+    invalidation TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_freshness (
+    source_key TEXT PRIMARY KEY,
+    source_type TEXT,
+    provider TEXT,
+    last_observed_at TIMESTAMP,
+    freshness_status TEXT,
+    stale_after TEXT,
+    status TEXT,
+    detail TEXT,
+    docs_only BOOLEAN,
+    checked_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS symbol_decision_snapshots (
+    symbol TEXT PRIMARY KEY,
+    as_of TIMESTAMP,
+    action_grade TEXT,
+    freshness_status TEXT,
+    quote_freshness TEXT,
+    daily_analysis_freshness TEXT,
+    filing_freshness TEXT,
+    thesis_freshness TEXT,
+    source_cluster TEXT,
+    inclusion_reasons JSON,
+    blocking_gates JSON,
+    decision_basis JSON,
+    snapshot JSON
+);
+
+CREATE TABLE IF NOT EXISTS refresh_jobs (
+    id TEXT PRIMARY KEY,
+    job_name TEXT,
+    status TEXT,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    error TEXT,
+    summary JSON
 );
 """
 
@@ -310,6 +501,53 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
     columns = {row[1] for row in con.execute("PRAGMA table_info('portfolio_positions')").fetchall()}
     if "purchase_date" not in columns:
         con.execute("ALTER TABLE portfolio_positions ADD COLUMN purchase_date DATE")
+    catalyst_columns = {row[1] for row in con.execute("PRAGMA table_info('catalysts')").fetchall()}
+    for column, column_type in {
+        "start_at": "TIMESTAMP",
+        "end_at": "TIMESTAMP",
+        "timezone": "TEXT",
+        "event_scope": "TEXT",
+        "event_kind": "TEXT",
+        "importance": "TEXT",
+        "verification_status": "TEXT",
+        "source_url": "TEXT",
+        "source_name": "TEXT",
+    }.items():
+        if column not in catalyst_columns:
+            con.execute(f"ALTER TABLE catalysts ADD COLUMN {column} {column_type}")
+    for table, columns_to_add in {
+        "discovered_universe": {
+            "latest_observed_at": "TIMESTAMP",
+            "next_event_at": "TIMESTAMP",
+            "discovery_score": "DOUBLE",
+        },
+        "decision_queue": {
+            "discovery_score": "DOUBLE",
+            "decision_score": "DOUBLE",
+            "action_score": "DOUBLE",
+            "quote_freshness": "TEXT",
+            "daily_analysis_freshness": "TEXT",
+            "filing_freshness": "TEXT",
+            "thesis_freshness": "TEXT",
+            "overall_decision_freshness": "TEXT",
+            "raw_source_rows": "INTEGER",
+            "independent_source_count": "INTEGER",
+            "evidence_items_count": "INTEGER",
+            "primary_evidence_count": "INTEGER",
+            "latest_observed_at": "TIMESTAMP",
+            "next_event_at": "TIMESTAMP",
+        },
+        "symbol_decision_snapshots": {
+            "quote_freshness": "TEXT",
+            "daily_analysis_freshness": "TEXT",
+            "filing_freshness": "TEXT",
+            "thesis_freshness": "TEXT",
+        },
+    }.items():
+        existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        for column, column_type in columns_to_add.items():
+            if column not in existing_columns:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
 @contextmanager

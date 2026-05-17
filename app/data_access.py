@@ -63,6 +63,10 @@ def _database_path(config: dict[str, Any]) -> Path:
     return db_path if db_path.is_absolute() else project_root() / db_path
 
 
+def database_path(config: dict[str, Any]) -> Path:
+    return _database_path(config)
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load config.yaml when PyYAML is installed; fall back to sensible defaults."""
 
@@ -267,6 +271,12 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
         name: getattr(raw_data, name)
         for name in (
             "candidates",
+            "discovered_universe",
+            "decision_queue",
+            "decision_readiness",
+            "source_freshness",
+            "symbol_decision_snapshot",
+            "symbol_decision_snapshots",
             "signals",
             "ticker_memos",
             "portfolio",
@@ -279,13 +289,19 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "screener",
             "options_expiries",
             "options_chain",
+            "options_payoff_scenarios",
             "news",
+            "tradingview_symbol_search",
+            "tradingview_watchlists",
+            "tradingview_alerts",
+            "tradingview_chart_state",
             "sepa",
             "liquidity",
             "correlations",
             "etf_premiums",
             "analyst_estimates",
             "earnings",
+            "earnings_setups",
             "valuations",
             "provider_runs",
             "source_health",
@@ -320,6 +336,10 @@ def signals_payload(panel_data: PanelData) -> dict[str, Any]:
 
 
 def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
+    decision_queue = panel_data.rows("decision_queue")
+    decision_readiness = panel_data.rows("decision_readiness")
+    discovered_universe = panel_data.rows("discovered_universe")
+    source_freshness = panel_data.rows("source_freshness")
     candidates = panel_data.rows("candidates")
     portfolio = panel_data.rows("portfolio")
     theses = panel_data.rows("theses")
@@ -331,11 +351,16 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     sepa = panel_data.rows("sepa")
     liquidity = panel_data.rows("liquidity")
     earnings = panel_data.rows("earnings")
+    earnings_setups = panel_data.rows("earnings_setups")
     valuations = panel_data.rows("valuations")
+    option_payoffs = panel_data.rows("options_payoff_scenarios")
     source_health = panel_data.rows("source_health")
+    priority_rows = decision_queue or candidates
     return {
         "status": status_payload(panel_data),
         "metrics": {
+            "decision_queue": len(decision_queue),
+            "discovered_universe": len(discovered_universe),
             "candidates": len(candidates),
             "holdings": len(portfolio),
             "theses": len(theses),
@@ -347,15 +372,69 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "sepa": len(sepa),
             "liquidity": len(liquidity),
             "earnings": len(earnings),
+            "earnings_setups": len(earnings_setups),
             "valuations": len(valuations),
-            "sources": len(source_health),
+            "options_payoff_scenarios": len(option_payoffs),
+            "sources": len(source_freshness) or len(source_health),
         },
-        "priority_candidates": candidates[:8],
+        "decision_queue": decision_queue[:12],
+        "decision_readiness": decision_readiness[:12],
+        "priority_candidates": priority_rows[:8],
         "near_term_catalysts": catalysts[:8],
         "portfolio": portfolio[:8],
+        "source_freshness": source_freshness[:12],
         "source_health": source_health[:8],
         "disclosures": disclosures[:8],
         "news": news[:8],
+    }
+
+
+def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
+    scopes: dict[str, list[str]] = {
+        "dashboard": [
+            "decision_readiness",
+            "decision_queue",
+            "discovered_universe",
+            "source_freshness",
+            "quotes",
+            "portfolio",
+            "catalysts",
+            "earnings",
+            "liquidity",
+            "technicals",
+            "sepa",
+            "valuations",
+            "opportunity_sources",
+            "source_health",
+            "provider_runs",
+        ],
+        "opportunities": [
+            "decision_readiness",
+            "decision_queue",
+            "opportunities_ranked",
+            "opportunity_sources",
+            "signals",
+            "candidates",
+            "quotes",
+            "catalysts",
+            "earnings",
+            "liquidity",
+            "portfolio",
+            "discovered_universe",
+        ],
+        "portfolio": ["portfolio", "decision_readiness", "decision_queue", "quotes", "liquidity", "correlations"],
+        "research": ["decision_readiness", "decision_queue", "research_packets", "ticker_memos", "theses", "news", "fundamentals", "signals"],
+        "filings": ["disclosures"],
+        "calendar": ["catalysts", "earnings"],
+        "health": ["source_freshness", "source_health", "provider_runs"],
+        "settings": [],
+    }
+    selected = scopes.get(scope, scopes["dashboard"])
+    return {
+        "scope": scope,
+        "status": status_payload(panel_data),
+        "dashboard": dashboard_payload(panel_data) if scope == "dashboard" else None,
+        "tables": {name: {"rows": panel_data.rows(name), "count": len(panel_data.rows(name))} for name in selected},
     }
 
 
@@ -363,6 +442,11 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     normalized_ticker = ticker.upper()
     tables = {
         "candidates": _matching_ticker_rows(panel_data.rows("candidates"), normalized_ticker),
+        "decision_queue": _matching_ticker_rows(panel_data.rows("decision_queue"), normalized_ticker),
+        "decision_readiness": _matching_ticker_rows(panel_data.rows("decision_readiness"), normalized_ticker),
+        "discovered_universe": _matching_ticker_rows(panel_data.rows("discovered_universe"), normalized_ticker),
+        "symbol_decision_snapshots": _matching_ticker_rows(panel_data.rows("symbol_decision_snapshots"), normalized_ticker),
+        "symbol_decision_snapshot": _matching_ticker_rows(panel_data.rows("symbol_decision_snapshot"), normalized_ticker),
         "opportunities_ranked": _matching_ticker_rows(panel_data.rows("opportunities_ranked"), normalized_ticker),
         "opportunity_sources": _matching_ticker_rows(panel_data.rows("opportunity_sources"), normalized_ticker),
         "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
@@ -374,13 +458,19 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "quotes": _matching_ticker_rows(panel_data.rows("quotes"), normalized_ticker),
         "options_expiries": _matching_ticker_rows(panel_data.rows("options_expiries"), normalized_ticker),
         "options_chain": _matching_ticker_rows(panel_data.rows("options_chain"), normalized_ticker),
+        "options_payoff_scenarios": _matching_ticker_rows(panel_data.rows("options_payoff_scenarios"), normalized_ticker),
         "news": _matching_ticker_rows(panel_data.rows("news"), normalized_ticker),
+        "tradingview_symbol_search": _matching_ticker_rows(panel_data.rows("tradingview_symbol_search"), normalized_ticker),
+        "tradingview_watchlists": _matching_ticker_rows(panel_data.rows("tradingview_watchlists"), normalized_ticker),
+        "tradingview_alerts": _matching_ticker_rows(panel_data.rows("tradingview_alerts"), normalized_ticker),
+        "tradingview_chart_state": _matching_ticker_rows(panel_data.rows("tradingview_chart_state"), normalized_ticker),
         "sepa": _matching_ticker_rows(panel_data.rows("sepa"), normalized_ticker),
         "liquidity": _matching_ticker_rows(panel_data.rows("liquidity"), normalized_ticker),
         "correlations": _matching_ticker_rows(panel_data.rows("correlations"), normalized_ticker),
         "etf_premiums": _matching_ticker_rows(panel_data.rows("etf_premiums"), normalized_ticker),
         "analyst_estimates": _matching_ticker_rows(panel_data.rows("analyst_estimates"), normalized_ticker),
         "earnings": _matching_ticker_rows(panel_data.rows("earnings"), normalized_ticker),
+        "earnings_setups": _matching_ticker_rows(panel_data.rows("earnings_setups"), normalized_ticker),
         "valuations": _matching_ticker_rows(panel_data.rows("valuations"), normalized_ticker),
         "technicals": _matching_ticker_rows(panel_data.rows("technicals"), normalized_ticker),
         "research_packets": _matching_ticker_rows(panel_data.rows("research_packets"), normalized_ticker),
@@ -393,6 +483,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "ticker": normalized_ticker,
         "status": status_payload(panel_data),
         "tables": tables,
+        "decision_snapshot": (tables["symbol_decision_snapshot"] or tables["symbol_decision_snapshots"] or [None])[0],
         "found": any(tables.values()),
     }
 
@@ -478,6 +569,15 @@ def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[
             continue
         if isinstance(related, str):
             symbols = [item.strip().split(":")[-1].upper() for item in related.replace(";", ",").split(",")]
+            if ticker in symbols:
+                matches.append(row)
+                continue
+        symbols_value = row.get("symbols")
+        if isinstance(symbols_value, list) and any(str(item).split(":")[-1].upper() == ticker for item in symbols_value):
+            matches.append(row)
+            continue
+        if isinstance(symbols_value, str):
+            symbols = [item.strip().split(":")[-1].upper() for item in symbols_value.replace(";", ",").split(",")]
             if ticker in symbols:
                 matches.append(row)
                 continue

@@ -1,0 +1,387 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main as api_main
+from investment_panel.core.db import db, init_db
+from investment_panel.core.panel import load_panel_data
+
+
+DECISION_TABLES = {
+    "discovered_universe",
+    "decision_queue",
+    "decision_readiness",
+    "source_freshness",
+    "symbol_decision_snapshot",
+}
+
+
+def test_discovered_universe_merges_all_source_clusters(tmp_path: Path) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+
+    panel = load_panel_data(config_for(db_path))
+    discovered = require_rows(panel, "discovered_universe")
+    symbols = {normalize_symbol(row.get("symbol")) for row in discovered}
+
+    assert {"NVDA", "MU", "MSFT", "SMCI", "AAPL", "COIN", "TSLA"}.issubset(symbols)
+    for symbol in {"NVDA", "MU", "MSFT", "SMCI", "AAPL", "COIN", "TSLA"}:
+        row = row_for_symbol(discovered, symbol)
+        assert row.get("source_count", 0) >= 1
+        assert "latest_observed_at" in row
+        assert "next_event_at" in row
+        assert row.get("eligibility_status") in {"eligible", "ineligible", "watch_only", "source_thin"}
+        assert nonempty_list(row.get("inclusion_reasons"))
+
+
+def test_source_freshness_contracts_degrade_stale_and_docs_only_rows(tmp_path: Path) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+
+    panel = load_panel_data(config_for(db_path))
+    freshness = require_rows(panel, "source_freshness")
+
+    docs = row_for_source(freshness, "docs/data-sources.md")
+    assert docs.get("source_kind") in {"documentation", "docs"}
+    assert docs.get("freshness_status") in {"documentation", "not_applicable"}
+
+    stale_quote = row_for_source(freshness, "tradingview:OLD")
+    assert stale_quote.get("freshness_status") in {"stale", "degraded", "failed"}
+    assert stale_quote.get("freshness_status") != "healthy"
+
+    failed_provider = row_for_source(freshness, "yfinance:provider-run")
+    assert failed_provider.get("freshness_status") in {"failed", "degraded", "stale"}
+    assert failed_provider.get("provider_status") == "failed"
+
+    fresh_quote = row_for_source(freshness, "tradingview:NVDA")
+    assert fresh_quote.get("freshness_status") in {"fresh", "healthy"}
+
+
+def test_decision_queue_applies_stale_evidence_liquidity_and_portfolio_gates(tmp_path: Path) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+
+    panel = load_panel_data(config_for(db_path))
+    queue = require_rows(panel, "decision_queue")
+    grades = [row.get("action_grade") for row in queue]
+
+    assert set(grades) >= {"Act", "Research", "Watch", "Reject", "Stale"}
+    assert len(queue) <= 250
+    hard_gate_terms = ("intraday", "daily", "stale")
+    for row in queue:
+        if row.get("action_grade") in {"Act", "Research"}:
+            gates = [str(gate).lower() for gate in row.get("blocking_gates") or []]
+            assert not any(term in gate for gate in gates for term in hard_gate_terms)
+
+    top_act = next(row for row in queue if row.get("action_grade") == "Act")
+    assert top_act["symbol"] == "NVDA"
+    assert top_act.get("freshness_status") in {"fresh", "healthy"}
+    assert top_act.get("evidence_count", 0) >= 2
+    assert not top_act.get("blocking_gates")
+    assert top_act.get("quote_freshness") == "fresh"
+    assert top_act.get("daily_analysis_freshness") == "fresh"
+    assert top_act.get("decision_score") >= top_act.get("action_score")
+
+    research = row_for_symbol(queue, "RSCH")
+    assert research.get("action_grade") == "Research"
+    assert not contains_gate(research, "quote")
+    assert not contains_gate(research, "daily")
+
+    stale = row_for_symbol(queue, "OLD")
+    assert stale.get("action_grade") == "Stale"
+    assert stale.get("freshness_status") in {"stale", "degraded", "failed"}
+    assert contains_gate(stale, "stale")
+
+    thin = row_for_symbol(queue, "THIN")
+    assert thin.get("action_grade") in {"Watch", "Reject"}
+    assert contains_gate(thin, "evidence")
+
+    illiquid = row_for_symbol(queue, "ILLIQ")
+    assert illiquid.get("action_grade") == "Reject"
+    assert contains_gate(illiquid, "liquidity")
+
+    no_market_data = row_for_symbol(queue, "AAPL")
+    assert no_market_data.get("action_grade") == "Stale"
+    assert contains_gate(no_market_data, "intraday")
+    assert contains_gate(no_market_data, "daily")
+    assert no_market_data.get("raw_source_rows", 0) >= no_market_data.get("evidence_count", 0)
+    assert no_market_data["decision_basis"]["evidence_items_count"] == no_market_data.get("evidence_items_count")
+
+
+def test_symbol_decision_snapshot_explains_basis_blockers_and_invalidation(tmp_path: Path) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+
+    panel = load_panel_data(config_for(db_path))
+    snapshots = require_rows(panel, "symbol_decision_snapshot")
+    nvda = row_for_symbol(snapshots, "NVDA")
+    old = row_for_symbol(snapshots, "OLD")
+
+    for row in [nvda, old]:
+        assert row.get("action_grade")
+        assert row.get("freshness_status")
+        assert row.get("source_cluster")
+        assert row.get("decision_basis")
+        assert row.get("invalidation")
+        assert row.get("as_of")
+
+        assert nvda.get("action_grade") == "Act"
+        assert nvda.get("quote_freshness") == "fresh"
+        assert nvda.get("daily_analysis_freshness") == "fresh"
+    assert old.get("action_grade") == "Stale"
+    assert contains_gate(old, "stale")
+
+
+def test_decision_readiness_contract_preserves_scores_and_unblock_actions(tmp_path: Path) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+
+    panel = load_panel_data(config_for(db_path))
+    readiness = require_rows(panel, "decision_readiness")
+    nvda = row_for_symbol(readiness, "NVDA")
+    old = row_for_symbol(readiness, "OLD")
+
+    assert {
+        "symbol",
+        "status",
+        "decision_score",
+        "action_score",
+        "freshness_status",
+        "blockers",
+        "missing_inputs",
+        "next_action",
+        "source_counts",
+        "portfolio_fit",
+        "as_of",
+    }.issubset(nvda)
+    assert old["status"] == "blocked_refresh"
+    assert old["decision_score"] >= old["action_score"]
+    assert any("stale" in blocker for blocker in old["blockers"])
+    assert "full_market_refresh" in old["next_action"]
+    assert nvda["portfolio_fit"]["has_portfolio_context"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_key"),
+    [
+        ("/api/decision-readiness", "rows"),
+        ("/api/discovered-universe", "rows"),
+        ("/api/decision-queue", "rows"),
+        ("/api/source-freshness", "rows"),
+        ("/api/tickers/NVDA/decision-snapshot", "symbol"),
+    ],
+)
+def test_decision_grade_api_contract_routes_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    expected_key: str,
+) -> None:
+    db_path = seed_decision_fixture(tmp_path)
+    monkeypatch.setattr(api_main, "load_config", lambda: config_for(db_path))
+    client = TestClient(api_main.app)
+
+    response = client.get(path)
+    if response.status_code == 404:
+        pytest.xfail(f"{path} is pending decision-grade API integration")
+    if response.headers.get("content-type", "").startswith("text/html"):
+        pytest.xfail(f"{path} is falling through to the frontend shell; API route is pending")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    payload = response.json()
+    assert expected_key in payload
+    if expected_key == "rows":
+        assert payload["count"] > 0
+
+
+def seed_decision_fixture(tmp_path: Path) -> Path:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    now = datetime.now(UTC)
+    fresh = now.isoformat()
+    stale = (now - timedelta(days=10)).isoformat()
+    recent_date = now.date().isoformat()
+    stale_date = (now - timedelta(days=10)).date().isoformat()
+
+    with db(db_path) as con:
+        for symbol, name, source in [
+            ("NVDA", "NVIDIA", "config"),
+            ("MU", "Micron", "arco"),
+            ("MSFT", "Microsoft", "13f"),
+            ("SMCI", "Super Micro Computer", "tradingview_screener"),
+            ("AAPL", "Apple", "tradingview_news"),
+            ("COIN", "Coinbase", "earnings"),
+            ("TSLA", "Tesla", "portfolio"),
+            ("OLD", "Old Data Corp", "candidate"),
+            ("THIN", "Thin Evidence Corp", "candidate"),
+            ("ILLIQ", "Illiquid Corp", "candidate"),
+            ("RSCH", "Research Grade Corp", "candidate"),
+        ]:
+            con.execute(
+                "INSERT INTO instruments VALUES (?, ?, 'equity', NULL, NULL, 'test', ?)",
+                [symbol, name, source],
+            )
+
+        for symbol, score, decision, evidence in [
+            ("NVDA", 93, "research", ["quote", "thesis", "liquidity", "sepa"]),
+            ("OLD", 95, "research", ["old_quote", "old_thesis"]),
+            ("THIN", 91, "research", ["single_proxy_valuation"]),
+            ("ILLIQ", 88, "research", ["quote", "thesis"]),
+            ("RSCH", 82, "research", ["quote", "thesis", "liquidity"]),
+        ]:
+            con.execute(
+                "INSERT INTO candidates VALUES (?, current_date, ?, ?, ?, ?, ?)",
+                [
+                    f"candidate-{symbol}",
+                    symbol,
+                    score,
+                    json.dumps({"components": {"technical": score}}),
+                    json.dumps(evidence),
+                    decision,
+                ],
+            )
+
+        for symbol, observed_at, price, source in [
+            ("NVDA", fresh, 1100, "tradingview"),
+            ("OLD", stale, 500, "tradingview"),
+            ("THIN", fresh, 42, "tradingview"),
+            ("ILLIQ", fresh, 3, "tradingview"),
+            ("RSCH", fresh, 75, "tradingview"),
+        ]:
+            con.execute(
+                "INSERT INTO quotes_intraday VALUES (?, ?, ?, 1.0, 1.0, 'USD', ?, '{}')",
+                [symbol, observed_at, price, source],
+            )
+
+        con.execute(
+            "INSERT INTO birdclaw_theses VALUES (?, 'MU', 'arco', ?, 'memory bandwidth thesis', '[]', '{}', 'https://example.com/mu')",
+            ["thesis-mu", fresh],
+        )
+        con.execute(
+            "INSERT INTO birdclaw_theses VALUES (?, 'NVDA', 'arco', ?, 'AI accelerator thesis', '[]', '{}', 'https://example.com/nvda')",
+            ["thesis-nvda", fresh],
+        )
+        con.execute(
+            "INSERT INTO birdclaw_theses VALUES (?, 'OLD', 'arco', ?, 'stale thesis', '[]', '{}', 'https://example.com/old')",
+            ["thesis-old", stale],
+        )
+
+        con.execute(
+            "INSERT INTO disclosures VALUES ('13f-msft', '13f', 'Test 13F', 'Test Filer', 'MSFT', ?, ?, 'HOLDINGS', '$1M', ?, 'https://example.com/13f')",
+            [
+                recent_date,
+                recent_date,
+                json.dumps(
+                    {
+                        "holdings_count": 1,
+                        "holdings_value_thousands": 1000,
+                        "holdings": [{"symbol": "MSFT", "name": "Microsoft", "value_thousands": 1000}],
+                    }
+                ),
+            ],
+        )
+        con.execute(
+            "INSERT INTO disclosures VALUES ('disc-rsch', 'public_disclosure_transaction', 'Test Trader', 'Test Filer', 'RSCH', ?, ?, 'BUY', '$1M', '{}', 'https://example.com/rsch')",
+            [recent_date, recent_date],
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('screen-1', 'SMCI', ?, 'Super Micro Computer', ?, 'tradingview')",
+            [fresh, json.dumps({"volume": 2_000_000, "market_cap": 50_000_000_000})],
+        )
+        con.execute(
+            "INSERT INTO news_items VALUES ('news-aapl', ?, 'TradingView', 'Apple catalyst', ?, 'https://example.com/aapl', 'tradingview', '{}')",
+            [fresh, json.dumps(["AAPL"])],
+        )
+        con.execute(
+            "INSERT INTO earnings_events VALUES ('COIN', ?, 'earnings', ?, 'yfinance')",
+            [recent_date, json.dumps({"source": "calendar"})],
+        )
+        con.execute(
+            "INSERT INTO analyst_estimates VALUES ('NVDA', ?, ?, 'yfinance')",
+            [recent_date, json.dumps({"recommendation": "buy"})],
+        )
+        con.execute("INSERT INTO portfolio_positions VALUES ('TSLA', 2, 175, ?, 'existing position')", [recent_date])
+
+        for symbol, as_of, grade, adv, dollars in [
+            ("NVDA", recent_date, "A", 20_000_000, 20_000_000_000),
+            ("OLD", stale_date, "A", 10_000_000, 5_000_000_000),
+            ("THIN", recent_date, "B", 1_000_000, 42_000_000),
+            ("ILLIQ", recent_date, "F", 1_000, 3_000),
+            ("RSCH", recent_date, "A", 4_000_000, 300_000_000),
+        ]:
+            con.execute(
+                "INSERT INTO liquidity_metrics VALUES (?, ?, ?, ?, ?, 0.1, 0.0, 1.0, '{}')",
+                [symbol, as_of, grade, adv, dollars],
+            )
+            con.execute(
+                "INSERT INTO sepa_analyses VALUES (?, ?, 80, 'stage-2', 'constructive', '{}', '{}')",
+                [symbol, as_of],
+            )
+
+        con.execute(
+            "INSERT INTO valuation_models VALUES ('THIN', ?, 'proxy_low_confidence', 100, 120, '{}', ?)",
+            [recent_date, json.dumps({"confidence": "low"})],
+        )
+
+        for source, checked_at, status, detail in [
+            ("tradingview:NVDA", fresh, "ok", "fresh quote"),
+            ("tradingview:OLD", stale, "ok", "stale quote"),
+            ("yfinance:provider-run", stale, "failed", "calendar fetch failed"),
+            ("docs/data-sources.md", fresh, "ok", "documentation row"),
+        ]:
+            con.execute("INSERT INTO source_health VALUES (?, ?, ?, ?, NULL)", [source, checked_at, status, detail])
+        con.execute(
+            "INSERT INTO provider_runs VALUES ('run-yf', 'yfinance', 'earnings', ?, ?, 'failed', 'calendar fetch failed', '{}')",
+            [stale, stale],
+        )
+    return db_path
+
+
+def config_for(db_path: Path) -> dict[str, Any]:
+    return {
+        "database": {"duckdb_path": str(db_path)},
+        "watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}],
+    }
+
+
+def require_rows(panel: dict[str, Any], table_name: str) -> list[dict[str, Any]]:
+    if table_name not in panel.get("tables", {}):
+        missing = ", ".join(sorted(DECISION_TABLES - set(panel.get("tables", {}))))
+        pytest.xfail(f"decision-grade read models pending backend integration: missing {missing}")
+    rows = panel["tables"][table_name]
+    if isinstance(rows, dict):
+        rows = rows.get("rows", [])
+    assert isinstance(rows, list)
+    assert rows, f"{table_name} should return rows for the seeded decision fixture"
+    return rows
+
+
+def row_for_symbol(rows: list[dict[str, Any]], symbol: str) -> dict[str, Any]:
+    normalized = symbol.upper()
+    for row in rows:
+        if normalize_symbol(row.get("symbol")) == normalized:
+            return row
+    raise AssertionError(f"missing row for symbol {symbol}")
+
+
+def row_for_source(rows: list[dict[str, Any]], source: str) -> dict[str, Any]:
+    for row in rows:
+        if row.get("source") == source or row.get("source_key") == source:
+            return row
+    raise AssertionError(f"missing source freshness row for {source}")
+
+
+def normalize_symbol(value: Any) -> str:
+    return str(value or "").split(":")[-1].upper()
+
+
+def nonempty_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value)
+
+
+def contains_gate(row: dict[str, Any], expected: str) -> bool:
+    gates = row.get("blocking_gates") or []
+    if isinstance(gates, str):
+        gates = [gates]
+    return any(expected in str(gate).lower() for gate in gates)

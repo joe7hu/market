@@ -79,7 +79,48 @@ Sources:
   state/screenshots, options expiries, and options chains with greeks/IV.
 - Caveat: availability follows the logged-in TradingView account/session and
   desktop app state.
+- Market stores TradingView personal surfaces as read-only metadata:
+  `tradingview_symbol_search`, `tradingview_watchlists`,
+  `tradingview_alerts`, and `tradingview_chart_state`. Failures on these
+  personal surfaces are non-blocking and should be recorded through
+  `provider_runs` / `source_health`.
 
 Sources:
 - https://github.com/jackwener/opencli
 - https://github.com/himself65/finance-skills/tree/main/opencli-plugins/tradingview
+
+## Decision Freshness
+
+Decision-grade read models must evaluate source freshness from source-specific
+contracts, not from row existence alone.
+
+- Intraday quotes, options, and news: stale after `4` market hours.
+- Daily prices, technicals, SEPA, liquidity, and correlations: stale after `1`
+  trading day.
+- Fundamentals, 13F filings, and trader disclosures: stale by filing cadence.
+- Arco thesis evidence: stale after `7` days unless refreshed or reinforced.
+- Documentation rows, including this file, are documentation coverage only and
+  must not be surfaced as healthy provider runs.
+
+## Finance-Skills Codification Contract
+
+Market imports ideas from `himself65/finance-skills`, but it should not run a
+skill prompt where deterministic code is enough.
+
+Codified in backend code:
+
+- TradingView reader: provider adapter plus normalized tables for quotes,
+  screeners, options, news, symbol search, watchlists, alerts, and chart state.
+- Options payoff: Black-Scholes/theoretical and expiry payoff scenarios from
+  stored option-chain rows.
+- Earnings/estimate analysis: revision momentum, surprise quality, estimate
+  spread, and analyst-target setup scores from stored yfinance rows.
+- Valuation: DCF base case, relative revenue multiple, and blended valuation
+  rows from stored fundamentals, quotes, and market caps.
+- SEPA, liquidity, correlation, and ETF premium analyses remain deterministic
+  read models.
+
+LLM use is reserved for unstructured inputs: transcript/filing/news synthesis,
+memo prose, qualitative assumption selection when structured data is absent, or
+parsing a user-provided options screenshot/free-form strategy into normalized
+legs before the deterministic payoff engine runs.

@@ -9,6 +9,55 @@ import type {
 
 const EMPTY_TABLE: TablePayload = { rows: [], count: 0 };
 
+type PanelSnapshotPayload = {
+  scope?: string;
+  status?: DashboardPayload["status"];
+  dashboard?: DashboardPayload | null;
+  tables?: Record<string, TablePayload>;
+};
+
+const TABLE_KEYS: Record<string, keyof PanelData> = {
+  discovered_universe: "discoveredUniverse",
+  decision_queue: "decisionQueue",
+  decision_readiness: "decisionReadiness",
+  source_freshness: "sourceFreshness",
+  symbol_decision_snapshots: "symbolDecisionSnapshots",
+  signals: "signals",
+  opportunities_ranked: "opportunitiesRanked",
+  opportunity_sources: "opportunitySources",
+  candidates: "candidates",
+  portfolio: "portfolio",
+  theses: "theses",
+  trader_twins: "traderTwins",
+  catalysts: "catalysts",
+  fundamentals: "fundamentals",
+  disclosures: "disclosures",
+  quotes: "quotes",
+  screener: "screener",
+  options_expiries: "optionsExpiries",
+  options_chain: "optionsChain",
+  options_payoff_scenarios: "optionsPayoffScenarios",
+  news: "news",
+  tradingview_symbol_search: "tradingviewSymbolSearch",
+  tradingview_watchlists: "tradingviewWatchlists",
+  tradingview_alerts: "tradingviewAlerts",
+  tradingview_chart_state: "tradingviewChartState",
+  sepa: "sepa",
+  liquidity: "liquidity",
+  correlations: "correlations",
+  etf_premiums: "etfPremiums",
+  analyst_estimates: "analystEstimates",
+  earnings: "earnings",
+  earnings_setups: "earningsSetups",
+  valuations: "valuations",
+  technicals: "technicals",
+  research_packets: "researchPackets",
+  ticker_memos: "memos",
+  provider_runs: "providerRuns",
+  source_health: "sourceHealth",
+  refresh_jobs: "refreshJobs",
+};
+
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${path}${path.includes("?") ? "&" : "?"}_=${Date.now()}`, {
     cache: "no-store",
@@ -54,41 +103,22 @@ async function settle<T>(
 }
 
 export async function loadPanelData(): Promise<PanelData> {
-  const results = await Promise.all([
-    settle("dashboard", getJson<DashboardPayload>("/api/dashboard")),
-    settle("signals", getJson<TablePayload>("/api/signals")),
-    settle("opportunitiesRanked", getJson<TablePayload>("/api/opportunities-ranked")),
-    settle("opportunitySources", getJson<TablePayload>("/api/opportunity-sources")),
-    settle("candidates", getJson<TablePayload>("/api/candidates")),
-    settle("portfolio", getJson<TablePayload>("/api/portfolio")),
-    settle("theses", getJson<TablePayload>("/api/theses")),
-    settle("traderTwins", getJson<TablePayload>("/api/trader-twins")),
-    settle("catalysts", getJson<TablePayload>("/api/catalysts")),
-    settle("fundamentals", getJson<TablePayload>("/api/fundamentals")),
-    settle("disclosures", getJson<TablePayload>("/api/disclosures")),
-    settle("quotes", getJson<TablePayload>("/api/quotes")),
-    settle("screener", getJson<TablePayload>("/api/screener")),
-    settle("optionsExpiries", getJson<TablePayload>("/api/options-expiries")),
-    settle("optionsChain", getJson<TablePayload>("/api/options-chain")),
-    settle("news", getJson<TablePayload>("/api/news")),
-    settle("sepa", getJson<TablePayload>("/api/sepa")),
-    settle("liquidity", getJson<TablePayload>("/api/liquidity")),
-    settle("correlations", getJson<TablePayload>("/api/correlations")),
-    settle("etfPremiums", getJson<TablePayload>("/api/etf-premiums")),
-    settle("analystEstimates", getJson<TablePayload>("/api/analyst-estimates")),
-    settle("earnings", getJson<TablePayload>("/api/earnings")),
-    settle("valuations", getJson<TablePayload>("/api/valuations")),
-    settle("technicals", getJson<TablePayload>("/api/technicals")),
-    settle("researchPackets", getJson<TablePayload>("/api/research-packets")),
-    settle("memos", getJson<TablePayload>("/api/memos")),
-    settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
-    settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
-    settle("settings", getJson<SettingsPayload>("/api/settings")),
-  ]);
+  return loadPanelScope("dashboard");
+}
 
-  const errors: PanelData["errors"] = {};
-  const data: PanelData = {
+export async function loadPanelScope(scope: string, existing?: PanelData): Promise<PanelData> {
+  const snapshot = await getJson<PanelSnapshotPayload>(`/api/panel-snapshot?scope=${encodeURIComponent(scope)}`);
+  return mergeSnapshot(existing ?? emptyPanelData(), snapshot);
+}
+
+function emptyPanelData(): PanelData {
+  return {
     dashboard: {},
+    discoveredUniverse: EMPTY_TABLE,
+    decisionQueue: EMPTY_TABLE,
+    decisionReadiness: EMPTY_TABLE,
+    sourceFreshness: EMPTY_TABLE,
+    symbolDecisionSnapshots: EMPTY_TABLE,
     signals: EMPTY_TABLE,
     opportunitiesRanked: EMPTY_TABLE,
     opportunitySources: EMPTY_TABLE,
@@ -103,19 +133,130 @@ export async function loadPanelData(): Promise<PanelData> {
     screener: EMPTY_TABLE,
     optionsExpiries: EMPTY_TABLE,
     optionsChain: EMPTY_TABLE,
+    optionsPayoffScenarios: EMPTY_TABLE,
     news: EMPTY_TABLE,
+    tradingviewSymbolSearch: EMPTY_TABLE,
+    tradingviewWatchlists: EMPTY_TABLE,
+    tradingviewAlerts: EMPTY_TABLE,
+    tradingviewChartState: EMPTY_TABLE,
     sepa: EMPTY_TABLE,
     liquidity: EMPTY_TABLE,
     correlations: EMPTY_TABLE,
     etfPremiums: EMPTY_TABLE,
     analystEstimates: EMPTY_TABLE,
     earnings: EMPTY_TABLE,
+    earningsSetups: EMPTY_TABLE,
     valuations: EMPTY_TABLE,
     technicals: EMPTY_TABLE,
     researchPackets: EMPTY_TABLE,
     memos: EMPTY_TABLE,
     providerRuns: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
+    refreshJobs: EMPTY_TABLE,
+    settings: {},
+    errors: {},
+  };
+}
+
+function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload): PanelData {
+  const next: PanelData = { ...existing, errors: { ...existing.errors } };
+  if (snapshot.dashboard) {
+    next.dashboard = snapshot.dashboard;
+  }
+  for (const [apiKey, table] of Object.entries(snapshot.tables ?? {})) {
+    const dataKey = TABLE_KEYS[apiKey];
+    if (dataKey && dataKey !== "dashboard" && dataKey !== "settings" && dataKey !== "errors") {
+      (next[dataKey] as TablePayload) = table ?? EMPTY_TABLE;
+    }
+  }
+  return next;
+}
+
+export async function loadLegacyPanelData(): Promise<PanelData> {
+  const results = await Promise.all([
+    settle("dashboard", getJson<DashboardPayload>("/api/dashboard")),
+    settle("discoveredUniverse", getJson<TablePayload>("/api/discovered-universe")),
+    settle("decisionQueue", getJson<TablePayload>("/api/decision-queue")),
+    settle("sourceFreshness", getJson<TablePayload>("/api/source-freshness")),
+    settle("symbolDecisionSnapshots", getJson<TablePayload>("/api/symbol-decision-snapshots")),
+    settle("signals", getJson<TablePayload>("/api/signals")),
+    settle("opportunitiesRanked", getJson<TablePayload>("/api/opportunities-ranked")),
+    settle("opportunitySources", getJson<TablePayload>("/api/opportunity-sources")),
+    settle("candidates", getJson<TablePayload>("/api/candidates")),
+    settle("portfolio", getJson<TablePayload>("/api/portfolio")),
+    settle("theses", getJson<TablePayload>("/api/theses")),
+    settle("traderTwins", getJson<TablePayload>("/api/trader-twins")),
+    settle("catalysts", getJson<TablePayload>("/api/catalysts")),
+    settle("fundamentals", getJson<TablePayload>("/api/fundamentals")),
+    settle("disclosures", getJson<TablePayload>("/api/disclosures")),
+    settle("quotes", getJson<TablePayload>("/api/quotes")),
+    settle("screener", getJson<TablePayload>("/api/screener")),
+    settle("optionsExpiries", getJson<TablePayload>("/api/options-expiries")),
+    settle("optionsChain", getJson<TablePayload>("/api/options-chain")),
+    settle("optionsPayoffScenarios", getJson<TablePayload>("/api/options-payoff-scenarios")),
+    settle("news", getJson<TablePayload>("/api/news")),
+    settle("tradingviewSymbolSearch", getJson<TablePayload>("/api/tradingview-symbol-search")),
+    settle("tradingviewWatchlists", getJson<TablePayload>("/api/tradingview-watchlists")),
+    settle("tradingviewAlerts", getJson<TablePayload>("/api/tradingview-alerts")),
+    settle("tradingviewChartState", getJson<TablePayload>("/api/tradingview-chart-state")),
+    settle("sepa", getJson<TablePayload>("/api/sepa")),
+    settle("liquidity", getJson<TablePayload>("/api/liquidity")),
+    settle("correlations", getJson<TablePayload>("/api/correlations")),
+    settle("etfPremiums", getJson<TablePayload>("/api/etf-premiums")),
+    settle("analystEstimates", getJson<TablePayload>("/api/analyst-estimates")),
+    settle("earnings", getJson<TablePayload>("/api/earnings")),
+    settle("earningsSetups", getJson<TablePayload>("/api/earnings-setups")),
+    settle("valuations", getJson<TablePayload>("/api/valuations")),
+    settle("technicals", getJson<TablePayload>("/api/technicals")),
+    settle("researchPackets", getJson<TablePayload>("/api/research-packets")),
+    settle("memos", getJson<TablePayload>("/api/memos")),
+    settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
+    settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
+    settle("settings", getJson<SettingsPayload>("/api/settings")),
+  ]);
+
+  const errors: PanelData["errors"] = {};
+  const data: PanelData = {
+    dashboard: {},
+    discoveredUniverse: EMPTY_TABLE,
+    decisionQueue: EMPTY_TABLE,
+    decisionReadiness: EMPTY_TABLE,
+    sourceFreshness: EMPTY_TABLE,
+    symbolDecisionSnapshots: EMPTY_TABLE,
+    signals: EMPTY_TABLE,
+    opportunitiesRanked: EMPTY_TABLE,
+    opportunitySources: EMPTY_TABLE,
+    candidates: EMPTY_TABLE,
+    portfolio: EMPTY_TABLE,
+    theses: EMPTY_TABLE,
+    traderTwins: EMPTY_TABLE,
+    catalysts: EMPTY_TABLE,
+    fundamentals: EMPTY_TABLE,
+    disclosures: EMPTY_TABLE,
+    quotes: EMPTY_TABLE,
+    screener: EMPTY_TABLE,
+    optionsExpiries: EMPTY_TABLE,
+    optionsChain: EMPTY_TABLE,
+    optionsPayoffScenarios: EMPTY_TABLE,
+    news: EMPTY_TABLE,
+    tradingviewSymbolSearch: EMPTY_TABLE,
+    tradingviewWatchlists: EMPTY_TABLE,
+    tradingviewAlerts: EMPTY_TABLE,
+    tradingviewChartState: EMPTY_TABLE,
+    sepa: EMPTY_TABLE,
+    liquidity: EMPTY_TABLE,
+    correlations: EMPTY_TABLE,
+    etfPremiums: EMPTY_TABLE,
+    analystEstimates: EMPTY_TABLE,
+    earnings: EMPTY_TABLE,
+    earningsSetups: EMPTY_TABLE,
+    valuations: EMPTY_TABLE,
+    technicals: EMPTY_TABLE,
+    researchPackets: EMPTY_TABLE,
+    memos: EMPTY_TABLE,
+    providerRuns: EMPTY_TABLE,
+    sourceHealth: EMPTY_TABLE,
+    refreshJobs: EMPTY_TABLE,
     settings: {},
     errors,
   };
@@ -128,6 +269,18 @@ export async function loadPanelData(): Promise<PanelData> {
     switch (result.endpoint) {
       case "dashboard":
         data.dashboard = (result.value as DashboardPayload) ?? {};
+        break;
+      case "discoveredUniverse":
+        data.discoveredUniverse = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "decisionQueue":
+        data.decisionQueue = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceFreshness":
+        data.sourceFreshness = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "symbolDecisionSnapshots":
+        data.symbolDecisionSnapshots = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "signals":
         data.signals = (result.value as TablePayload) ?? EMPTY_TABLE;
@@ -171,8 +324,23 @@ export async function loadPanelData(): Promise<PanelData> {
       case "optionsChain":
         data.optionsChain = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
+      case "optionsPayoffScenarios":
+        data.optionsPayoffScenarios = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
       case "news":
         data.news = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tradingviewSymbolSearch":
+        data.tradingviewSymbolSearch = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tradingviewWatchlists":
+        data.tradingviewWatchlists = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tradingviewAlerts":
+        data.tradingviewAlerts = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tradingviewChartState":
+        data.tradingviewChartState = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "sepa":
         data.sepa = (result.value as TablePayload) ?? EMPTY_TABLE;
@@ -191,6 +359,9 @@ export async function loadPanelData(): Promise<PanelData> {
         break;
       case "earnings":
         data.earnings = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "earningsSetups":
+        data.earningsSetups = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "valuations":
         data.valuations = (result.value as TablePayload) ?? EMPTY_TABLE;

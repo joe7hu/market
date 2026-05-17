@@ -7,6 +7,7 @@ import json
 
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
+from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.disclosures import (
     ingest_public_disclosure_csvs,
     ensure_disclosure_symbol_prices,
@@ -49,6 +50,7 @@ def run(
             fetch_holdings=fetch_holdings,
         )
         replica_result = rebuild_trader_replica_portfolios(con)
+        decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {
         "database": str(config.database.duckdb_path),
         "online_check": online_check,
@@ -63,6 +65,7 @@ def run(
         **price_result,
         **ingest_result,
         **replica_result,
+        "decision_models": decision_result,
     }
     status_path = write_source_status(
         config,

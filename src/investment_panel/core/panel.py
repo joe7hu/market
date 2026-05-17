@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from investment_panel.core.config import AppConfig, config_to_dict, load_config
 from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.decision import decision_readiness_rows, refresh_decision_read_models
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
+
+
+DECISION_REFRESH_LOCK = Lock()
 
 
 def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
@@ -19,16 +24,26 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
         db_path = Path(config.get("database", {}).get("duckdb_path", "data/investment.duckdb"))
         if not db_path.is_absolute():
             db_path = Path.cwd() / db_path
+        config_watchlist = list(config.get("watchlist", []))
     else:
         db_path = app_config.database.duckdb_path
+        config_watchlist = app_config.watchlist
     init_db(db_path)
     # Keep the API read connection in the same mode as init/write jobs. DuckDB
     # rejects simultaneous connections to one file when read_only differs.
     with db(db_path, read_only=False) as con:
+        decision_refresh = ensure_decision_read_models(con, config_watchlist)
+        decision_snapshots = symbol_decision_snapshots(con)
         tables = {
             "signals": signal_rows(con),
             "opportunities_ranked": opportunities_ranked(con),
             "opportunity_sources": opportunity_sources(con),
+            "discovered_universe": discovered_universe(con),
+            "decision_queue": decision_queue(con),
+            "decision_readiness": decision_readiness(con),
+            "source_freshness": source_freshness(con),
+            "symbol_decision_snapshot": decision_snapshots,
+            "symbol_decision_snapshots": decision_snapshots,
             "candidates": candidates(con),
             "portfolio": portfolio(con),
             "theses": theses(con),
@@ -39,13 +54,19 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "screener": screener(con),
             "options_expiries": options_expiries(con),
             "options_chain": options_chain(con),
+            "options_payoff_scenarios": options_payoff_scenarios(con),
             "news": news(con),
+            "tradingview_symbol_search": tradingview_symbol_search(con),
+            "tradingview_watchlists": tradingview_watchlists(con),
+            "tradingview_alerts": tradingview_alerts(con),
+            "tradingview_chart_state": tradingview_chart_state(con),
             "sepa": sepa(con),
             "liquidity": liquidity(con),
             "correlations": correlations(con),
             "etf_premiums": etf_premiums(con),
             "analyst_estimates": analyst_estimates(con),
             "earnings": earnings(con),
+            "earnings_setups": earnings_setups(con),
             "valuations": valuations(con),
             "technicals": technicals(con),
             "research_packets": research_packets(con),
@@ -59,9 +80,39 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
         "ready": ready,
         "message": "Loaded investment panel data." if ready else "Database is initialized but contains no screened candidates yet.",
         "source": "duckdb",
-        "metadata": {"config": config_to_dict(app_config)},
+        "metadata": {"config": config_to_dict(app_config), "decision_refresh": decision_refresh},
         "tables": tables,
     }
+
+
+def ensure_decision_read_models(con: Any, config_watchlist: list[dict[str, Any]]) -> dict[str, int | str]:
+    counts = query_rows(
+        con,
+        """
+        SELECT
+            (SELECT count(*) FROM discovered_universe) AS discovered_universe,
+            (SELECT count(*) FROM decision_queue) AS decision_queue,
+            (SELECT count(*) FROM source_freshness) AS source_freshness,
+            (SELECT count(*) FROM symbol_decision_snapshots) AS symbol_decision_snapshots
+        """,
+    )[0]
+    if all(int(counts.get(key) or 0) > 0 for key in counts):
+        return {**counts, "status": "cached"}
+    with DECISION_REFRESH_LOCK:
+        counts = query_rows(
+            con,
+            """
+            SELECT
+                (SELECT count(*) FROM discovered_universe) AS discovered_universe,
+                (SELECT count(*) FROM decision_queue) AS decision_queue,
+                (SELECT count(*) FROM source_freshness) AS source_freshness,
+                (SELECT count(*) FROM symbol_decision_snapshots) AS symbol_decision_snapshots
+            """,
+        )[0]
+        if all(int(counts.get(key) or 0) > 0 for key in counts):
+            return {**counts, "status": "cached"}
+        result = refresh_decision_read_models(con, config_watchlist)
+        return {**result, "status": "refreshed"}
 
 
 def get_panel_snapshot(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
@@ -92,6 +143,25 @@ def candidates(con: Any) -> list[dict[str, Any]]:
 
 def opportunities_ranked(con: Any) -> list[dict[str, Any]]:
     """Composite opportunity read model used by the workstation UI."""
+
+    decision_rows = decision_queue(con)
+    if decision_rows:
+        for row in decision_rows:
+            row["composite_score"] = row.get("score")
+            row["confidence_score"] = confidence_to_number(
+                str(row.get("freshness_status") or ""),
+                float(row.get("score") or 0),
+                int(row.get("evidence_count") or 0),
+            )
+            basis = row.get("decision_basis") if isinstance(row.get("decision_basis"), dict) else {}
+            row["source_counts"] = basis.get("source_counts") or {}
+            row["source_count"] = sum(int(value or 0) for value in row["source_counts"].values())
+            row["latest_price"] = row.get("latest_quote")
+            row["observed_at"] = row.get("latest_quote_at")
+            row["top_source"] = row.get("source_cluster")
+            row["decision"] = row.get("action_grade")
+            row["gates"] = row.get("blocking_gates") or []
+        return decision_rows
 
     source_counts = opportunity_source_counts(con)
     latest_quotes = {
@@ -147,10 +217,97 @@ def opportunity_source_counts(con: Any) -> dict[str, dict[str, int]]:
     add("sepa", query_rows(con, "SELECT symbol, count(*) AS count FROM sepa_analyses GROUP BY symbol"))
     add("liquidity", query_rows(con, "SELECT symbol, count(*) AS count FROM liquidity_metrics GROUP BY symbol"))
     add("valuation", query_rows(con, "SELECT symbol, count(*) AS count FROM valuation_models GROUP BY symbol"))
+    add("earnings_setup", query_rows(con, "SELECT symbol, count(*) AS count FROM earnings_setups GROUP BY symbol"))
+    add("options_payoff", query_rows(con, "SELECT symbol, count(*) AS count FROM options_payoff_scenarios GROUP BY symbol"))
     add("thesis", query_rows(con, "SELECT symbol, count(*) AS count FROM birdclaw_theses GROUP BY symbol"))
     add("filing", query_rows(con, "SELECT symbol, count(*) AS count FROM disclosures WHERE symbol IS NOT NULL GROUP BY symbol"))
     add("earnings", query_rows(con, "SELECT symbol, count(*) AS count FROM earnings_events GROUP BY symbol"))
     return counts
+
+
+def discovered_universe(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, name, asset_class, inclusion_reasons, source_counts,
+               latest_source_timestamp, latest_observed_at, next_event_at,
+               eligibility_status, eligibility_detail, evidence_score, discovery_score,
+               liquidity_score, recency_score, universe_rank,
+               decision_universe_member, updated_at
+        FROM discovered_universe
+        ORDER BY decision_universe_member DESC, universe_rank ASC, symbol
+        LIMIT 1000
+        """,
+    )
+    decoded = [decode_fields(row, ("inclusion_reasons", "source_counts")) for row in rows]
+    for row in decoded:
+        row["latest_source_at"] = row.get("latest_source_timestamp")
+        counts = row.get("source_counts") if isinstance(row.get("source_counts"), dict) else {}
+        row["source_count"] = sum(int(value or 0) for key, value in counts.items() if key not in {"config_watchlist", "config", "instrument", "instruments", "candidate"})
+        row["total_source_count"] = sum(int(value or 0) for value in counts.values())
+    return decoded
+
+
+def decision_queue(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, as_of, rank, action_grade, decision_bucket, score,
+               discovery_score, decision_score, action_score,
+               freshness_status, quote_freshness, daily_analysis_freshness,
+               filing_freshness, thesis_freshness, overall_decision_freshness,
+               source_cluster, evidence_count, raw_source_rows, independent_source_count,
+               evidence_items_count, primary_evidence_count,
+               inclusion_reasons, blocking_gates, decision_basis,
+               latest_quote, latest_quote_at, latest_observed_at, next_event_at,
+               catalyst_window, liquidity_grade,
+               portfolio_impact, invalidation
+        FROM decision_queue
+        ORDER BY rank ASC, score DESC
+        LIMIT 250
+        """,
+    )
+    return [decode_fields(row, ("inclusion_reasons", "blocking_gates", "decision_basis", "portfolio_impact")) for row in rows]
+
+
+def decision_readiness(con: Any) -> list[dict[str, Any]]:
+    return decision_readiness_rows(con)
+
+
+def source_freshness(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT source_key, source_type, provider, last_observed_at, freshness_status,
+               stale_after, status, detail, docs_only, checked_at
+        FROM source_freshness
+        ORDER BY docs_only ASC, freshness_status DESC, source_key
+        """,
+    )
+    for row in rows:
+        row["source"] = row.get("source_key")
+        row["source_kind"] = "documentation" if row.get("docs_only") else row.get("source_type")
+        row["provider_status"] = row.get("status")
+    return rows
+
+
+def symbol_decision_snapshots(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, as_of, action_grade, freshness_status, quote_freshness,
+               daily_analysis_freshness, filing_freshness, thesis_freshness, source_cluster,
+               inclusion_reasons, blocking_gates, decision_basis, snapshot
+        FROM symbol_decision_snapshots
+        ORDER BY as_of DESC, symbol
+        LIMIT 250
+        """,
+    )
+    decoded = [decode_fields(row, ("inclusion_reasons", "blocking_gates", "decision_basis", "snapshot")) for row in rows]
+    for row in decoded:
+        snapshot = row.get("snapshot") if isinstance(row.get("snapshot"), dict) else {}
+        row["invalidation"] = snapshot.get("invalidation")
+    return decoded
 
 
 def opportunity_sources(con: Any) -> list[dict[str, Any]]:
@@ -199,6 +356,38 @@ def opportunity_sources(con: Any) -> list[dict[str, Any]]:
                        method AS label, 'modeled upside' AS caption
                 FROM valuation_models
                 ORDER BY upside_pct DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "earnings_setup",
+            "Earnings Setups",
+            query_rows(
+                con,
+                """
+                SELECT symbol, as_of AS source_date, score,
+                       verdict AS label, 'revision/surprise setup' AS caption
+                FROM earnings_setups
+                ORDER BY score DESC NULLS LAST
+                LIMIT 50
+                """,
+            ),
+        )
+    )
+    panels.extend(
+        source_rows(
+            "options_payoff",
+            "Options Payoff",
+            query_rows(
+                con,
+                """
+                SELECT symbol, as_of AS source_date, COALESCE(max_profit, 0) AS score,
+                       strategy_type AS label, 'deterministic payoff scenario' AS caption
+                FROM options_payoff_scenarios
+                ORDER BY as_of DESC, symbol
                 LIMIT 50
                 """,
             ),
@@ -301,12 +490,26 @@ def technicals(con: Any) -> list[dict[str, Any]]:
 
 
 def research_packets(con: Any) -> list[dict[str, Any]]:
-    symbols = [str(row.get("symbol") or "").upper() for row in opportunities_ranked(con)[:25]]
+    symbols = [
+        str(row.get("symbol") or "").upper()
+        for row in query_rows(
+            con,
+            """
+            SELECT symbol
+            FROM candidates
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY run_date DESC, score DESC) = 1
+            ORDER BY score DESC
+            LIMIT 25
+            """,
+        )
+    ]
     packets: list[dict[str, Any]] = []
     for symbol in symbols:
         if not symbol:
             continue
         packet = build_research_packet(con, symbol)
+        if not packet.get("candidate"):
+            continue
         memo = generate_deterministic_memo(packet)
         report = memo.get("json") or {}
         packets.append(
@@ -403,26 +606,66 @@ def theses(con: Any) -> list[dict[str, Any]]:
 
 
 def catalysts(con: Any) -> list[dict[str, Any]]:
-    rows = query_rows(con, "SELECT * FROM catalysts ORDER BY event_date ASC NULLS LAST LIMIT 200")
-    decoded = [decode_fields(row, ("raw",)) for row in rows]
-    if decoded:
-        return decoded
-    earnings_rows = query_rows(
+    rows = query_rows(
         con,
         """
-        SELECT 'earnings-' || symbol || '-' || CAST(event_date AS TEXT) AS id,
-               symbol,
-               event_date,
-               event_type AS event,
-               'Earnings event from yfinance calendar snapshot' AS expected_impact,
-               source,
-               metrics AS raw
-        FROM earnings_events
-        ORDER BY event_date ASC, symbol
+        WITH calendar_rows AS (
+            SELECT id, symbol, event_date, event, expected_impact, source,
+                   start_at, end_at, timezone, event_scope, event_kind, importance,
+                   COALESCE(verification_status, 'confirmed') AS verification_status,
+                   source_url, source_name, raw
+            FROM catalysts
+            UNION ALL
+            SELECT 'earnings-' || symbol || '-' || CAST(event_date AS TEXT) AS id,
+                   symbol,
+                   event_date,
+                   event_type AS event,
+                   'Earnings event from yfinance calendar snapshot' AS expected_impact,
+                   source,
+                   CAST(NULL AS TIMESTAMP) AS start_at,
+                   CAST(NULL AS TIMESTAMP) AS end_at,
+                   'America/New_York' AS timezone,
+                   'watchlist' AS event_scope,
+                   'earnings' AS event_kind,
+                   'medium' AS importance,
+                   'watch' AS verification_status,
+                   CAST(NULL AS TEXT) AS source_url,
+                   'yfinance' AS source_name,
+                   metrics AS raw
+            FROM earnings_events
+            UNION ALL
+            SELECT 'filing-' || id AS id,
+                   symbol,
+                   COALESCE(filed_date, event_date) AS event_date,
+                   COALESCE(source_type, 'filing') || ' filed' AS event,
+                   COALESCE(action, amount, 'Public disclosure filing') AS expected_impact,
+                   source_type AS source,
+                   CAST(NULL AS TIMESTAMP) AS start_at,
+                   CAST(NULL AS TIMESTAMP) AS end_at,
+                   'America/New_York' AS timezone,
+                   'filing' AS event_scope,
+                   'filing' AS event_kind,
+                   'medium' AS importance,
+                   'confirmed' AS verification_status,
+                   source_url,
+                   trader_name AS source_name,
+                   raw
+            FROM disclosures
+            WHERE COALESCE(filed_date, event_date) IS NOT NULL
+        )
+        SELECT *
+        FROM calendar_rows
+        ORDER BY
+            CASE WHEN event_date >= current_date THEN 0 ELSE 1 END,
+            CASE WHEN event_date >= current_date THEN event_date END ASC NULLS LAST,
+            CASE WHEN event_date < current_date THEN event_date END DESC NULLS LAST,
+            start_at ASC NULLS LAST,
+            event
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("raw",)) for row in earnings_rows]
+    decoded = [decode_fields(row, ("raw",)) for row in rows]
+    return decoded
 
 
 def fundamentals(con: Any) -> list[dict[str, Any]]:
@@ -493,6 +736,21 @@ def options_chain(con: Any) -> list[dict[str, Any]]:
     return [decode_fields(row, ("raw",)) for row in rows]
 
 
+def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT id, symbol, as_of, expiry, strategy_type, spot, dte, iv,
+               net_premium, max_profit, max_loss, breakevens, legs, curve,
+               diagnostics, source
+        FROM options_payoff_scenarios
+        ORDER BY as_of DESC, symbol, expiry, strategy_type
+        LIMIT 300
+        """,
+    )
+    return [decode_fields(row, ("breakevens", "legs", "curve", "diagnostics")) for row in rows]
+
+
 def news(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
@@ -504,6 +762,60 @@ def news(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [decode_fields(row, ("related_symbols", "raw")) for row in rows]
+
+
+def tradingview_symbol_search(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT id, query, observed_at, symbol, description, instrument_type,
+               exchange, country, currency, source, raw
+        FROM tradingview_symbol_search
+        ORDER BY observed_at DESC, query, symbol
+        LIMIT 300
+        """,
+    )
+    return [decode_fields(row, ("raw",)) for row in rows]
+
+
+def tradingview_watchlists(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT id, observed_at, name, color, symbol_count, symbols, source, raw
+        FROM tradingview_watchlists
+        ORDER BY observed_at DESC, color NULLS LAST, name
+        LIMIT 200
+        """,
+    )
+    return [decode_fields(row, ("symbols", "raw")) for row in rows]
+
+
+def tradingview_alerts(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT id, observed_at, name, symbol, alert_type, condition, value,
+               active, status, fired_at, source, raw
+        FROM tradingview_alerts
+        ORDER BY observed_at DESC, fired_at DESC NULLS LAST, symbol
+        LIMIT 300
+        """,
+    )
+    return [decode_fields(row, ("raw",)) for row in rows]
+
+
+def tradingview_chart_state(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT id, observed_at, layout_id, symbol, interval, url, source, raw
+        FROM tradingview_chart_state
+        ORDER BY observed_at DESC
+        LIMIT 50
+        """,
+    )
+    return [decode_fields(row, ("raw",)) for row in rows]
 
 
 def sepa(con: Any) -> list[dict[str, Any]]:
@@ -579,6 +891,21 @@ def earnings(con: Any) -> list[dict[str, Any]]:
         SELECT symbol, event_date, event_type, metrics, source
         FROM earnings_events
         ORDER BY event_date DESC, symbol
+        LIMIT 200
+        """,
+    )
+    return [decode_fields(row, ("metrics",)) for row in rows]
+
+
+def earnings_setups(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, as_of, event_date, setup_type, score, revision_score,
+               surprise_score, estimate_spread_score, sentiment_score, verdict,
+               metrics, source
+        FROM earnings_setups
+        ORDER BY as_of DESC, score DESC NULLS LAST, symbol
         LIMIT 200
         """,
     )
