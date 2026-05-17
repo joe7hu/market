@@ -269,6 +269,18 @@ type SignalMatrixRow = {
   signals: SignalCell[];
 };
 
+type FinanceAnalysis = {
+  symbol: string;
+  coverage: number;
+  tone: Tone;
+  headline: string;
+  valuation: SummaryItem;
+  earnings: SummaryItem;
+  options: SummaryItem;
+  tradingview: SummaryItem;
+  decisionText: string;
+};
+
 type SourceCoverage = {
   key: SignalKey;
   label: string;
@@ -290,7 +302,7 @@ type HealthRow = {
   freshness: string;
   lastRun: string;
   sourceUrl: string;
-  kind: "provider" | "freshness" | "documentation";
+  kind: "provider" | "freshness" | "documentation" | "run";
   contract: string;
   staleAfter: string;
 };
@@ -521,6 +533,7 @@ function DashboardPage({
       <SignalCommandCenter model={model} onOpenTicker={onOpenTicker} />
       <SignalCoverageStrip coverage={model.signalCoverage} />
       <SignalMatrix rows={model.signalMatrix.slice(0, 10)} onOpenTicker={onOpenTicker} />
+      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
       <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
       <DecisionQueueBoard queues={model.decisionQueues} onOpenTicker={onOpenTicker} />
       <div className="dashboard-layout">
@@ -557,6 +570,7 @@ function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: T
   const liquidity = model.liquidityRows.find((item) => item.symbol === symbol);
   const valuation = model.valuationRows.find((item) => item.symbol === symbol);
   const technical = model.technicalRows.find((item) => item.symbol === symbol);
+  const financeAnalysis = model.financeAnalyses.find((item) => item.symbol === symbol);
   const evidenceRows = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).length : 0;
   const foundTables = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).map(([name]) => name) : [];
   const signalRow = model.signalMatrix.find((row) => row.ticker === symbol);
@@ -617,6 +631,9 @@ function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: T
         <InfoPanel tone="good" title="Why Now" items={splitSignalText(opportunity?.whyNow)} />
         <InfoPanel tone="bad" title="Invalidation" items={splitSignalText(opportunity?.invalidation)} />
         <InfoPanel tone={opportunity?.blockingGates.length ? "warn" : "info"} title="Gates / Next Action" items={opportunity?.blockingGates.length ? opportunity.blockingGates : splitSignalText(opportunity?.nextAction)} />
+        <Panel className="span-12" title="Finance-Skill Analysis">
+          {financeAnalysis ? <FinanceAnalysisCard analysis={financeAnalysis} onOpenTicker={() => undefined} expanded /> : <EmptyState title="No finance-skill analysis" detail="Valuation, earnings, options, and TradingView rows have not loaded for this ticker." />}
+        </Panel>
         <Panel className="span-12" title="Evidence Snapshot">
           <div className="snapshot-grid">
             <MetricBadge label="Evidence Count" value={String(opportunity?.evidenceCount ?? 0)} caption={`${opportunity?.sourceCount ?? 0} sources`} tone={(opportunity?.evidenceCount ?? 0) > 0 ? "good" : "warn"} />
@@ -884,9 +901,12 @@ function CalendarPage({ model, onOpenTicker }: { model: AppModel; onOpenTicker: 
 }
 
 function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
-  const providerRows = model.healthRows.filter((row) => row.kind !== "documentation");
-  const degradedCount = providerRows.filter((row) => row.status === "Degraded").length;
-  const warningCount = providerRows.filter((row) => row.status === "Warning").length;
+  const providerRows = model.sourceHealthRows.length ? model.sourceHealthRows.filter((row) => row.kind !== "documentation") : model.providerRunRows;
+  const freshnessRows = model.freshnessHealthRows.filter((row) => row.kind !== "documentation");
+  const jobRows = model.providerRunRows;
+  const operationalRows = model.healthRows.filter((row) => row.kind !== "documentation");
+  const degradedCount = operationalRows.filter((row) => row.status === "Degraded").length;
+  const warningCount = operationalRows.filter((row) => row.status === "Warning").length;
   const ready = (data.dashboard.status?.ready ?? data.settings.status?.ready ?? true) && degradedCount === 0;
   const documentationRows = model.healthRows.filter((row) => row.kind === "documentation");
   return (
@@ -895,7 +915,7 @@ function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
       <MetricStrip
         metrics={[
           [ready ? "All Systems Operational" : "System Needs Attention", ready ? "Ready" : "Degraded", `Last check ${model.latestHealthCheck}`, ready ? "good" : "bad"],
-          ["Providers", String(providerRows.length), "provider/freshness rows", "info"],
+          ["Providers", String(providerRows.length), "source-health rows", "info"],
           ["Warnings", String(warningCount), "not documentation", "warn"],
           ["Critical", String(degradedCount), "not documentation", "bad"],
           ["Docs", String(documentationRows.length), "excluded from health", "muted"],
@@ -906,13 +926,13 @@ function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
           <HealthTable rows={providerRows} />
         </Panel>
         <Panel className="span-4" title="Active Alerts">
-          <AlertList rows={providerRows} />
+          <AlertList rows={operationalRows} />
         </Panel>
         <Panel className="span-6" title="Recent Job Runs">
-          <JobRuns rows={providerRows} />
+          <JobRuns rows={jobRows} />
         </Panel>
         <Panel className="span-6" title="Freshness Overview">
-          <FreshnessGrid rows={model.healthRows} />
+          <FreshnessGrid rows={freshnessRows} />
         </Panel>
         <Panel className="span-12" title="Documentation Rows">
           <HealthTable rows={documentationRows} />
@@ -1065,6 +1085,9 @@ type AppModel = {
   traderFilingCards: TraderFilingCard[];
   calendar: CalendarEvent[];
   healthRows: HealthRow[];
+  freshnessHealthRows: HealthRow[];
+  sourceHealthRows: HealthRow[];
+  providerRunRows: HealthRow[];
   portfolioValue: number;
   sectors: SummaryItem[];
   setupRows: SummaryItem[];
@@ -1075,6 +1098,7 @@ type AppModel = {
   signalSources: SignalSourcePanel[];
   signalCoverage: SourceCoverage[];
   signalMatrix: SignalMatrixRow[];
+  financeAnalyses: FinanceAnalysis[];
   memoRows: RowRecord[];
   decisionReadinessRows: RowRecord[];
   discoveredUniverseCount: number;
@@ -1108,10 +1132,14 @@ function buildModel(data: PanelData): AppModel {
   const filings = buildFilings(rows(data.disclosures));
   const traderPortfolios = buildTraderPortfolios(rows(data.disclosures));
   const calendar = buildCalendar(rows(data.catalysts), rows(data.earnings));
-  const healthRows = buildHealthRows(rows(data.sourceFreshness), rows(data.sourceHealth), rows(data.providerRuns));
+  const freshnessHealthRows = buildFreshnessHealthRows(rows(data.sourceFreshness));
+  const sourceHealthRows = buildSourceHealthRows(rows(data.sourceHealth));
+  const providerRunRows = buildProviderRunRows(rows(data.providerRuns));
+  const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows];
   const portfolioValue = holdings.reduce((total, holding) => total + holding.marketValue, 0);
   const latestHealthCheck = newestDateLabel(healthRows.map((row) => row.freshness));
   const signalDefinitions = buildSignalDefinitions(data);
+  const signalMatrix = buildSignalMatrix(opportunities, signalDefinitions);
   return {
     watchlist,
     opportunities,
@@ -1122,6 +1150,9 @@ function buildModel(data: PanelData): AppModel {
     traderFilingCards: buildTraderFilingCards(filings),
     calendar,
     healthRows,
+    freshnessHealthRows,
+    sourceHealthRows,
+    providerRunRows,
     portfolioValue,
     sectors: buildSectorRows(rows(data.screener)),
     setupRows: buildSetupRows(rows(data.sepa), rows(data.liquidity)),
@@ -1131,7 +1162,8 @@ function buildModel(data: PanelData): AppModel {
     technicalRows: buildTechnicalRows(rows(data.technicals)),
     signalSources: buildSignalSourcePanels(data),
     signalCoverage: buildSignalCoverage(signalDefinitions),
-    signalMatrix: buildSignalMatrix(opportunities, signalDefinitions),
+    signalMatrix,
+    financeAnalyses: buildFinanceAnalyses(opportunities, data, signalMatrix),
     memoRows: rows(data.memos),
     decisionReadinessRows: rows(data.decisionReadiness),
     discoveredUniverseCount: rows(data.discoveredUniverse).length,
@@ -1736,6 +1768,143 @@ function buildSignalMatrix(opportunities: Opportunity[], definitions: SignalDefi
     });
 }
 
+function buildFinanceAnalyses(opportunities: Opportunity[], data: PanelData, matrixRows: SignalMatrixRow[]): FinanceAnalysis[] {
+  const valuationBySymbol = groupRowsBySymbol(rows(data.valuations));
+  const earningsBySymbol = groupRowsBySymbol([...rows(data.earningsSetups), ...rows(data.analystEstimates), ...rows(data.earnings)]);
+  const optionsBySymbol = groupRowsBySymbol([...rows(data.optionsPayoffScenarios), ...rows(data.optionsExpiries)]);
+  const tradingviewBySymbol = groupTradingViewRowsBySymbol(data);
+  const matrixBySymbol = new Map(matrixRows.map((row) => [row.ticker, row]));
+
+  return opportunities.slice(0, 40).map((opportunity) => {
+    const symbol = opportunity.ticker;
+    const valuationRows = valuationBySymbol.get(symbol) ?? [];
+    const earningsRows = earningsBySymbol.get(symbol) ?? [];
+    const optionsRows = optionsBySymbol.get(symbol) ?? [];
+    const tradingviewRows = tradingviewBySymbol.get(symbol) ?? [];
+    const valuation = financeValuationSummary(valuationRows);
+    const earnings = financeEarningsSummary(earningsRows);
+    const options = financeOptionsSummary(optionsRows);
+    const tradingview = financeTradingViewSummary(tradingviewRows);
+    const summaries = [valuation, earnings, options, tradingview];
+    const coverage = summaries.filter((item) => item.value !== "Missing").length;
+    const signalRow = matrixBySymbol.get(symbol);
+    return {
+      symbol,
+      coverage,
+      tone: coverage >= 3 ? "good" : coverage >= 2 ? "info" : coverage === 1 ? "warn" : "muted",
+      headline: `${coverage}/4 finance analyses loaded`,
+      valuation,
+      earnings,
+      options,
+      tradingview,
+      decisionText: financeDecisionText(opportunity, signalRow, coverage),
+    };
+  });
+}
+
+function groupTradingViewRowsBySymbol(data: PanelData): Map<string, RowRecord[]> {
+  const grouped = new Map<string, RowRecord[]>();
+  const directRows = [
+    ...rows(data.screener),
+    ...rows(data.tradingviewSymbolSearch),
+    ...rows(data.tradingviewAlerts),
+    ...rows(data.tradingviewChartState),
+  ];
+  for (const row of directRows) {
+    for (const symbol of rowSymbols(row)) {
+      grouped.set(symbol, [...(grouped.get(symbol) ?? []), row]);
+    }
+  }
+  for (const row of rows(data.tradingviewWatchlists)) {
+    for (const symbol of rowSymbols(row)) {
+      grouped.set(symbol, [...(grouped.get(symbol) ?? []), row]);
+    }
+  }
+  return grouped;
+}
+
+function financeValuationSummary(sourceRows: RowRecord[]): SummaryItem {
+  if (!sourceRows.length) {
+    return missingFinanceItem("Valuation", "No DCF/relative valuation row");
+  }
+  const sorted = [...sourceRows].sort((a, b) => numberField(b, ["upside_pct"], -999) - numberField(a, ["upside_pct"], -999));
+  const row = sorted[0];
+  const upside = numberField(row, ["upside_pct"], Number.NaN);
+  return {
+    label: "Valuation",
+    value: Number.isFinite(upside) ? formatPct(upside) : titleLabel(stringField(row, ["method"]) || "Loaded"),
+    caption: [titleLabel(stringField(row, ["method"]) || "model"), row.fair_value !== undefined ? `fair ${formatMoney(numberField(row, ["fair_value"], 0))}` : ""].filter(Boolean).join(" · "),
+    tone: Number.isFinite(upside) ? upside >= 0 ? "good" : "bad" : "info",
+  };
+}
+
+function financeEarningsSummary(sourceRows: RowRecord[]): SummaryItem {
+  if (!sourceRows.length) {
+    return missingFinanceItem("Earnings", "No setup, estimate, or event row");
+  }
+  const setup = sourceRows.find((row) => row.score !== undefined || row.verdict !== undefined) ?? sourceRows[0];
+  const score = numberField(setup, ["score", "revision_score", "surprise_score"], Number.NaN);
+  const verdict = titleLabel(stringField(setup, ["verdict", "event_type", "status"]) || "Loaded");
+  return {
+    label: "Earnings",
+    value: Number.isFinite(score) ? `${Math.round(score)}` : verdict,
+    caption: [verdict, formatDateLabel(stringField(setup, ["event_date", "as_of"]))].filter((item) => item && item !== "-").join(" · "),
+    tone: verdict.toLowerCase().includes("risk") ? "bad" : Number.isFinite(score) && score >= 65 ? "good" : "info",
+  };
+}
+
+function financeOptionsSummary(sourceRows: RowRecord[]): SummaryItem {
+  if (!sourceRows.length) {
+    return missingFinanceItem("Options", "No payoff or expiry row");
+  }
+  const scenario = sourceRows.find(isOptionsPayoffScenario) ?? sourceRows[0];
+  const strategy = titleLabel(stringField(scenario, ["strategy_type", "option_type", "expiry"]) || "Loaded");
+  const maxLoss = numberField(scenario, ["max_loss"], Number.NaN);
+  const netPremium = numberField(scenario, ["net_premium"], Number.NaN);
+  return {
+    label: "Options",
+    value: strategy,
+    caption: [
+      Number.isFinite(maxLoss) ? `max loss ${formatMoney(Math.abs(maxLoss))}` : "",
+      Number.isFinite(netPremium) ? `premium ${formatNetPremium(netPremium)}` : "",
+      formatDateLabel(stringField(scenario, ["expiry", "as_of"])),
+    ].filter((item) => item && item !== "-").join(" · "),
+    tone: "info",
+  };
+}
+
+function financeTradingViewSummary(sourceRows: RowRecord[]): SummaryItem {
+  if (!sourceRows.length) {
+    return missingFinanceItem("TradingView", "No search, watchlist, alert, chart, or screener row");
+  }
+  const alertCount = sourceRows.filter((row) => stringField(row, ["alert_type", "condition", "fired_at"])).length;
+  const chart = sourceRows.find((row) => stringField(row, ["interval", "layout_id"]));
+  return {
+    label: "TradingView",
+    value: alertCount ? `${alertCount} alerts` : `${sourceRows.length} rows`,
+    caption: chart ? `chart ${stringField(chart, ["interval"]) || "loaded"}` : tradingViewCaption(sourceRows[0]),
+    tone: "info",
+  };
+}
+
+function missingFinanceItem(label: string, caption: string): SummaryItem {
+  return { label, value: "Missing", caption, tone: "muted" };
+}
+
+function tradingViewCaption(row: RowRecord): string {
+  const raw = stringField(row, ["exchange", "source", "name"]) || "session context";
+  return raw.toLowerCase() === "tradingview" ? "TradingView" : titleLabel(raw);
+}
+
+function financeDecisionText(opportunity: Opportunity, signalRow: SignalMatrixRow | undefined, coverage: number): string {
+  const blockers = opportunity.blockingGates.length ? opportunity.blockingGates.join(" · ") : "";
+  if (opportunity.isStale) return "Refresh stale sources before trusting the opportunity decision.";
+  if (blockers) return `Decision gated by ${blockers}.`;
+  if (coverage >= 3 && signalRow) return `${opportunity.actionGrade} decision is informed by ${coverage} finance-skill analysis families.`;
+  if (coverage > 0) return `Only ${coverage} finance-skill ${coverage === 1 ? "family is" : "families are"} loaded; open the dossier before acting.`;
+  return "No deterministic finance-skill analysis is loaded for this candidate yet.";
+}
+
 function signalCellFor(symbol: string, definition: SignalDefinition): SignalCell {
   const matches = definition.rows.filter((row) => rowMatchesSymbol(row, symbol));
   const value = signalCellValue(definition.key, matches[0]);
@@ -1853,27 +2022,27 @@ function buildCalendar(catalystRows: RowRecord[], earningsRows: RowRecord[]): Ca
   }).filter((event) => event.date > 0);
 }
 
-function buildHealthRows(freshnessRows: RowRecord[], sourceRows: RowRecord[], providerRows: RowRecord[]): HealthRow[] {
-  if (freshnessRows.length) {
-    return freshnessRows.slice(0, 30).map((row) => {
-      const status = normalizeHealthStatus(stringField(row, ["freshness_status", "status", "provider_status"]));
-      const kind = isDocumentationRow(row) ? "documentation" : "freshness";
-      return {
-        provider: stringField(row, ["source", "provider", "capability", "source_name"]) || "Source",
-        status: kind === "documentation" ? "Documentation" : status,
-        freshness: stringField(row, ["as_of", "latest_source_timestamp", "checked_at", "finished_at", "freshness"]) || "unknown",
-        lastRun: clearSourceState(row),
-        sourceUrl: stringField(row, ["source_url", "documentation_url", "source"]) || stringField(row, ["provider"]) || "local",
-        kind,
-        contract: stringField(row, ["freshness_contract", "contract", "cadence"]) || sourceFreshnessContract(row),
-        staleAfter: stringField(row, ["stale_after", "stale_after_label", "ttl"]) || "-",
-      };
-    });
-  }
-  const rowsToMap = sourceRows.length ? sourceRows : providerRows;
-  return rowsToMap.slice(0, 20).map((row) => {
-    const kind = isDocumentationRow(row) ? "documentation" : "provider";
+function buildFreshnessHealthRows(freshnessRows: RowRecord[]): HealthRow[] {
+  return freshnessRows.slice(0, 50).map((row) => {
+    const status = normalizeHealthStatus(stringField(row, ["freshness_status", "status", "provider_status"]));
+    const kind = status === "Documentation" || isDocumentationRow(row) ? "documentation" : "freshness";
+    return {
+      provider: stringField(row, ["source", "source_key", "provider", "capability", "source_name"]) || "Source",
+      status: kind === "documentation" ? "Documentation" : status,
+      freshness: stringField(row, ["last_observed_at", "as_of", "latest_source_timestamp", "checked_at", "finished_at", "freshness"]) || "unknown",
+      lastRun: clearSourceState(row),
+      sourceUrl: stringField(row, ["source_url", "documentation_url", "source", "source_key"]) || stringField(row, ["provider"]) || "local",
+      kind,
+      contract: stringField(row, ["freshness_contract", "contract", "cadence"]) || sourceFreshnessContract(row),
+      staleAfter: stringField(row, ["stale_after", "stale_after_label", "ttl"]) || "-",
+    };
+  });
+}
+
+function buildSourceHealthRows(sourceRows: RowRecord[]): HealthRow[] {
+  return sourceRows.slice(0, 50).map((row) => {
     const status = normalizeHealthStatus(stringField(row, ["status", "run_status", "provider_status"]));
+    const kind = status === "Documentation" || isDocumentationRow(row) ? "documentation" : "provider";
     return {
       provider: stringField(row, ["source", "provider", "capability"]) || "Provider",
       status: kind === "documentation" ? "Documentation" : status,
@@ -1881,6 +2050,22 @@ function buildHealthRows(freshnessRows: RowRecord[], sourceRows: RowRecord[], pr
       lastRun: stringField(row, ["detail", "message", "last_error"]) || (kind === "documentation" ? "Documentation row" : "OK"),
       sourceUrl: stringField(row, ["source_url", "documentation_url", "source"]) || stringField(row, ["provider"]) || "local",
       kind,
+      contract: sourceFreshnessContract(row),
+      staleAfter: stringField(row, ["stale_after", "ttl"]) || "-",
+    };
+  });
+}
+
+function buildProviderRunRows(providerRows: RowRecord[]): HealthRow[] {
+  return providerRows.slice(0, 50).map((row) => {
+    const status = normalizeHealthStatus(stringField(row, ["status", "run_status", "provider_status"]));
+    return {
+      provider: [stringField(row, ["provider"]), stringField(row, ["capability"])].filter(Boolean).join(" / ") || "Provider run",
+      status,
+      freshness: stringField(row, ["finished_at", "checked_at", "started_at", "freshness", "as_of"]) || "recent",
+      lastRun: stringField(row, ["detail", "message", "last_error"]) || "OK",
+      sourceUrl: stringField(row, ["source_url", "documentation_url", "source", "provider"]) || "local",
+      kind: "run",
       contract: sourceFreshnessContract(row),
       staleAfter: stringField(row, ["stale_after", "ttl"]) || "-",
     };
@@ -2246,6 +2431,50 @@ function TickerSignalRibbon({ row }: { row: SignalMatrixRow }) {
         ))}
       </div>
     </section>
+  );
+}
+
+function FinanceAnalysisPanel({ analyses, onOpenTicker }: { analyses: FinanceAnalysis[]; onOpenTicker: (symbol: string) => void }) {
+  if (!analyses.length) {
+    return <EmptyState title="No finance-skill analysis rows" detail="Valuation, earnings setup, options payoff, and TradingView rows have not loaded into this scope." />;
+  }
+  return (
+    <section className="finance-analysis-panel" aria-label="Finance-skill decision analysis">
+      <header>
+        <div>
+          <h2>Finance-Skill Decision Analysis</h2>
+          <p>Deterministic valuation, earnings, options, and TradingView outputs translated into opportunity context.</p>
+        </div>
+        <span>{analyses.filter((item) => item.coverage > 0).length} covered</span>
+      </header>
+      <div className="finance-analysis-grid">
+        {analyses.map((analysis) => (
+          <FinanceAnalysisCard key={analysis.symbol} analysis={analysis} onOpenTicker={onOpenTicker} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FinanceAnalysisCard({ analysis, onOpenTicker, expanded = false }: { analysis: FinanceAnalysis; onOpenTicker: (symbol: string) => void; expanded?: boolean }) {
+  const items = [analysis.valuation, analysis.earnings, analysis.options, analysis.tradingview];
+  return (
+    <article className={`finance-analysis-card ${analysis.tone} ${expanded ? "expanded" : ""}`}>
+      <button type="button" onClick={() => onOpenTicker(analysis.symbol)} disabled={expanded}>
+        <strong>{analysis.symbol}</strong>
+        <span>{analysis.headline}</span>
+      </button>
+      <div className="finance-analysis-items">
+        {items.map((item) => (
+          <div key={item.label} className={`finance-analysis-item ${item.tone}`}>
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <small>{item.caption}</small>
+          </div>
+        ))}
+      </div>
+      <p>{analysis.decisionText}</p>
+    </article>
   );
 }
 
@@ -2954,7 +3183,7 @@ function HealthTable({ rows }: { rows: HealthRow[] }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.provider}>
+            <tr key={healthRowKey(row)}>
               <td>{row.provider}</td>
               <td>{titleLabel(row.kind)}</td>
               <td><StatusDot status={row.status} /></td>
@@ -3503,10 +3732,10 @@ function AlertList({ rows }: { rows: HealthRow[] }) {
   }
   return (
     <div className="alert-list">
-      {alerts.map((row) => (
-        <div key={row.provider}><AlertTriangle size={15} /><strong>{row.provider}</strong><small>{row.status}: {row.lastRun}</small></div>
+      {alerts.slice(0, 8).map((row) => (
+        <div key={healthRowKey(row)}><AlertTriangle size={15} /><strong>{row.provider}</strong><small>{row.status}: {row.lastRun}</small></div>
       ))}
-      <TextLink>View all alerts</TextLink>
+      {alerts.length > 8 && <TextLink>{alerts.length - 8} more alerts</TextLink>}
     </div>
   );
 }
@@ -3518,7 +3747,7 @@ function JobRuns({ rows }: { rows: HealthRow[] }) {
   return (
     <div className="job-runs">
       {rows.slice(0, 6).map((row) => (
-        <div key={row.provider}>
+        <div key={healthRowKey(row)}>
           <span>{row.provider}</span>
           <DecisionBadge value={row.status === "Healthy" ? "Success" : row.status} />
           <small>{row.freshness}</small>
@@ -3536,13 +3765,17 @@ function FreshnessGrid({ rows }: { rows: HealthRow[] }) {
   return (
     <div className="freshness-grid">
       {rows.slice(0, 5).map((row) => (
-        <div key={row.provider}>
+        <div key={healthRowKey(row)}>
           <span>{row.provider}</span>
           {Array.from({ length: 6 }, (_, index) => <i key={index} className={row.status === "Healthy" || index < 4 ? "good" : "warn"} />)}
         </div>
       ))}
     </div>
   );
+}
+
+function healthRowKey(row: HealthRow): string {
+  return `${row.kind}:${row.provider}:${row.freshness}:${row.status}`;
 }
 
 function TextLink({ children }: { children: ReactNode }) {

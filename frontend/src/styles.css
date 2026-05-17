@@ -800,6 +800,149 @@ h3 {
   opacity: 0.62;
 }
 
+.finance-analysis-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #08131e;
+  padding: 12px;
+}
+
+.finance-analysis-panel > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.finance-analysis-panel h2 {
+  margin: 0;
+  color: #f0f6fb;
+  font-size: 0.86rem;
+}
+
+.finance-analysis-panel p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.finance-analysis-panel > header > span {
+  color: var(--green);
+  font-size: 0.7rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.finance-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.finance-analysis-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: #0a1420;
+  padding: 10px;
+}
+
+.finance-analysis-card.good {
+  border-color: rgba(67, 229, 143, 0.24);
+}
+
+.finance-analysis-card.warn {
+  border-color: rgba(243, 189, 69, 0.24);
+}
+
+.finance-analysis-card.expanded {
+  background: transparent;
+}
+
+.finance-analysis-card > button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  text-align: left;
+}
+
+.finance-analysis-card > button:disabled {
+  cursor: default;
+}
+
+.finance-analysis-card > button strong {
+  color: #f2f7fb;
+  font-size: 0.82rem;
+}
+
+.finance-analysis-card > button span,
+.finance-analysis-card > p {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+}
+
+.finance-analysis-items {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.finance-analysis-item {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 7px;
+}
+
+.finance-analysis-item.good {
+  background: rgba(31, 74, 51, 0.28);
+}
+
+.finance-analysis-item.bad {
+  background: rgba(78, 33, 34, 0.28);
+}
+
+.finance-analysis-item.info {
+  background: rgba(33, 66, 101, 0.22);
+}
+
+.finance-analysis-item.muted {
+  opacity: 0.62;
+}
+
+.finance-analysis-item span {
+  color: #b8c7d4;
+  font-size: 0.61rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.finance-analysis-item strong {
+  overflow: hidden;
+  color: #edf6fc;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-analysis-item small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .signal-coverage-strip {
   display: grid;
   grid-template-columns: repeat(11, minmax(0, 1fr));
@@ -2726,6 +2869,7 @@ h3 {
   .snapshot-grid,
   .decision-queue-board,
   .source-panel-grid,
+  .finance-analysis-grid,
   .signal-coverage-strip,
   .ticker-signal-ribbon > div:last-child {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2740,7 +2884,8 @@ h3 {
   }
 
   .signal-command-metrics,
-  .signal-lead-stack {
+  .signal-lead-stack,
+  .finance-analysis-items {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
@@ -2804,6 +2949,8 @@ h3 {
   .option-metrics,
   .signal-command-metrics,
   .signal-lead-stack,
+  .finance-analysis-grid,
+  .finance-analysis-items,
   .signal-coverage-strip,
   .ticker-signal-ribbon > div:last-child {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2822,6 +2969,7 @@ h3 {
   .trader-workbench,
   .source-panel-grid,
   .signal-command-center,
+  .finance-analysis-panel,
   .top-opportunity,
   .trader-hero {
     grid-template-columns: 1fr;
@@ -2880,6 +3028,8 @@ h3 {
   .option-scenario-head,
   .signal-command-metrics,
   .signal-lead-stack,
+  .finance-analysis-grid,
+  .finance-analysis-items,
   .signal-coverage-strip,
   .ticker-signal-ribbon > div:last-child,
   .signal-command-head {
