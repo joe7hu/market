@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import main as api_main
 from investment_panel.core.db import db, init_db
+from investment_panel.core.decision import classify_freshness, symbol_freshness_detail
 from investment_panel.core.panel import load_panel_data
 
 
@@ -59,6 +60,48 @@ def test_source_freshness_contracts_degrade_stale_and_docs_only_rows(tmp_path: P
 
     fresh_quote = row_for_source(freshness, "tradingview:NVDA")
     assert fresh_quote.get("freshness_status") in {"fresh", "healthy"}
+
+
+def test_intraday_freshness_uses_market_hours_not_wall_clock() -> None:
+    sunday_after_close = datetime(2026, 5, 17, 16, 0, tzinfo=UTC)
+    friday_close_snapshot = datetime(2026, 5, 15, 20, 0, tzinfo=UTC)
+    friday_morning_snapshot = datetime(2026, 5, 15, 14, 0, tzinfo=UTC)
+    old_snapshot = datetime(2026, 5, 7, 20, 0, tzinfo=UTC)
+
+    assert classify_freshness("intraday_quote", friday_close_snapshot, "ok", False, now=sunday_after_close) == "fresh"
+    assert classify_freshness("intraday_quote", friday_morning_snapshot, "ok", False, now=sunday_after_close) == "stale"
+    assert classify_freshness("intraday_quote", old_snapshot, "ok", False, now=sunday_after_close) == "stale"
+
+
+def test_daily_freshness_uses_trading_day_lag_when_market_is_closed() -> None:
+    sunday_after_close = datetime(2026, 5, 17, 16, 0, tzinfo=UTC)
+    friday_daily = datetime(2026, 5, 15, 0, 0, tzinfo=UTC)
+    stale_daily = datetime(2026, 5, 13, 0, 0, tzinfo=UTC)
+
+    assert classify_freshness("daily", friday_daily, "ok", False, now=sunday_after_close) == "fresh"
+    assert classify_freshness("daily", stale_daily, "ok", False, now=sunday_after_close) == "stale"
+
+
+def test_previous_close_satisfies_quote_freshness_only_when_market_is_closed() -> None:
+    sunday_after_close = datetime(2026, 5, 17, 16, 0, tzinfo=UTC)
+    monday_open = datetime(2026, 5, 18, 14, 0, tzinfo=UTC)
+    friday_daily = datetime(2026, 5, 15, 0, 0, tzinfo=UTC)
+
+    assert classify_freshness("closing_quote", friday_daily, "ok", False, now=sunday_after_close) == "fresh"
+    assert classify_freshness("closing_quote", friday_daily, "ok", False, now=monday_open) == "stale"
+
+
+def test_previous_close_can_clear_stale_intraday_quote_gate_after_close() -> None:
+    detail = symbol_freshness_detail(
+        [
+            {"source_key": "tradingview:NVDA", "source_type": "intraday_quote", "freshness_status": "stale"},
+            {"source_key": "previous_close:NVDA", "source_type": "closing_quote", "freshness_status": "fresh"},
+            {"source_key": "technicals:NVDA", "source_type": "daily", "freshness_status": "fresh"},
+        ]
+    )
+
+    assert detail["NVDA"]["quote_freshness"] == "fresh"
+    assert detail["NVDA"]["overall_decision_freshness"] == "fresh"
 
 
 def test_decision_queue_applies_stale_evidence_liquidity_and_portfolio_gates(tmp_path: Path) -> None:

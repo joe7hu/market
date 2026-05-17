@@ -685,9 +685,62 @@ def quotes(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH latest_intraday AS (
+            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw,
+                   concat(source, ':', symbol) AS freshness_key
+            FROM quotes_intraday
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+        ),
+        intraday_status AS (
+            SELECT i.*, f.freshness_status
+            FROM latest_intraday i
+            LEFT JOIN source_freshness f ON f.source_key = i.freshness_key
+        ),
+        latest_daily AS (
+            SELECT symbol, date AS observed_at, close AS price,
+                   CASE WHEN previous_close > 0 THEN ((close - previous_close) / previous_close) * 100 ELSE NULL END AS change_pct,
+                   CASE WHEN previous_close IS NOT NULL THEN close - previous_close ELSE NULL END AS change_abs,
+                   'USD' AS currency,
+                   concat('previous_close:', source) AS source,
+                   '{}' AS raw,
+                   concat('previous_close:', symbol) AS freshness_key
+            FROM (
+                SELECT symbol, date, close, source,
+                       lag(close) OVER (PARTITION BY symbol ORDER BY date) AS previous_close
+                FROM prices_daily
+            )
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+        ),
+        daily_status AS (
+            SELECT d.*, f.freshness_status
+            FROM latest_daily d
+            LEFT JOIN source_freshness f ON f.source_key = d.freshness_key
+        ),
+        fresh_intraday AS (
+            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
+            FROM intraday_status
+            WHERE freshness_status = 'fresh'
+        ),
+        previous_close AS (
+            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
+            FROM daily_status
+            WHERE freshness_status = 'fresh'
+              AND symbol NOT IN (SELECT symbol FROM fresh_intraday)
+        ),
+        stale_intraday_fallback AS (
+            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
+            FROM intraday_status
+            WHERE symbol NOT IN (SELECT symbol FROM fresh_intraday)
+              AND symbol NOT IN (SELECT symbol FROM previous_close)
+        )
         SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
-        FROM quotes_intraday
-        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+        FROM (
+            SELECT * FROM fresh_intraday
+            UNION ALL
+            SELECT * FROM previous_close
+            UNION ALL
+            SELECT * FROM stale_intraday_fallback
+        )
         ORDER BY observed_at DESC, symbol
         LIMIT 200
         """,

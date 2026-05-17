@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import disclosures
+from investment_panel.core.panel import disclosures, quotes
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -46,3 +46,20 @@ def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None
     assert round(latest["allocation_history"][0]["weight_after"], 1) == 60.0
     assert [point["date"] for point in latest["portfolio_history"]] == ["2025-03-31", "2025-06-30"]
     assert [point["value"] for point in latest["portfolio_history"]] == [1000.0, 2000.0]
+
+
+def test_quotes_prefer_previous_close_when_intraday_is_stale(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO quotes_intraday VALUES ('NVDA', '2026-05-10T14:30:00Z', 500, 1.0, 5.0, 'USD', 'tradingview', '{}')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-05-14', 90, 100, 80, 100, 1000, 'yahoo-chart')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-05-15', 110, 120, 100, 120, 1000, 'yahoo-chart')")
+        con.execute("INSERT INTO source_freshness VALUES ('tradingview:NVDA', 'intraday_quote', 'tradingview', '2026-05-10T14:30:00Z', 'stale', '4 market hours', 'ok', '', false, current_timestamp)")
+        con.execute("INSERT INTO source_freshness VALUES ('previous_close:NVDA', 'closing_quote', 'yahoo-chart', '2026-05-15', 'fresh', 'previous close while market is closed', 'ok', '', false, current_timestamp)")
+
+        rows = quotes(con)
+
+    assert rows[0]["symbol"] == "NVDA"
+    assert rows[0]["price"] == 120
+    assert rows[0]["source"] == "previous_close:yahoo-chart"

@@ -6,7 +6,9 @@ import json
 import re
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta
+from functools import lru_cache
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.instruments import infer_asset_class, normalize_symbol
@@ -17,6 +19,9 @@ INTRADAY_STALE_HOURS = 4
 ARCO_STALE_DAYS = 7
 DAILY_STALE_DAYS = 1
 FILING_STALE_DAYS = 120
+MARKET_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = time(9, 30)
+MARKET_CLOSE = time(16, 0)
 STATIC_SOURCES = {"config_watchlist", "config", "instrument", "instruments", "candidate"}
 PRIMARY_EVIDENCE_SOURCES = {
     "arco_thesis",
@@ -306,6 +311,8 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
 
     for row in query_rows(con, "SELECT symbol, observed_at, source FROM quotes_intraday QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1"):
         add(f"{row.get('source') or 'quote'}:{row.get('symbol')}", "intraday_quote", row.get("source") or "quote", row.get("observed_at"))
+    for row in query_rows(con, "SELECT symbol, date, source FROM prices_daily QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1"):
+        add(f"previous_close:{row.get('symbol')}", "closing_quote", row.get("source") or "daily_price", row.get("date"))
     for row in query_rows(con, "SELECT symbol, expiry, observed_at, source FROM options_expiries"):
         add(f"{row.get('source') or 'options'}:options:{row.get('expiry')}:{row.get('symbol')}", "options", row.get("source") or "options", row.get("observed_at"))
     for row in query_rows(con, "SELECT symbol, expiry, as_of, source FROM options_payoff_scenarios"):
@@ -379,7 +386,7 @@ def build_decision_queue(con: Any, universe: list[dict[str, Any]], freshness_row
         freshness = freshness_by_symbol.get(symbol, default_freshness_detail())
         freshness_status = freshness["overall_decision_freshness"]
         blocking_gates = gate_reasons(candidate, freshness, evidence_count, independent_source_count, primary_evidence_count, liq)
-        if not quote and uni.get("asset_class") in {"equity", "etf", "crypto"}:
+        if not quote and uni.get("asset_class") in {"equity", "etf", "crypto"} and freshness.get("quote_freshness") in {"missing", "unknown"}:
             blocking_gates.append("missing_intraday_quote")
         if not liq and uni.get("asset_class") in {"equity", "etf"}:
             blocking_gates.append("liquidity_unknown")
@@ -588,7 +595,7 @@ def persist_symbol_decision_snapshots(con: Any, rows: list[dict[str, Any]]) -> N
         )
 
 
-def classify_freshness(source_type: str, observed: datetime | None, status: str, docs_only: bool) -> str:
+def classify_freshness(source_type: str, observed: datetime | None, status: str, docs_only: bool, now: datetime | None = None) -> str:
     normalized_status = str(status or "").lower()
     if docs_only or source_type == "documentation":
         return "documentation"
@@ -596,11 +603,17 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
         return "failed"
     if observed is None:
         return "unknown"
-    age = datetime.now(UTC) - observed
+    checked_at = normalized_utc(now or datetime.now(UTC))
+    age = checked_at - observed
     if source_type in {"intraday_quote", "options", "news"}:
-        return "fresh" if age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
+        market_age = market_session_elapsed(observed, checked_at)
+        return "fresh" if market_age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
+    if source_type == "closing_quote":
+        if is_market_open(checked_at):
+            return "stale"
+        return "fresh" if trading_day_lag(observed.date(), checked_at) <= DAILY_STALE_DAYS else "stale"
     if source_type in {"daily"}:
-        return "fresh" if age <= timedelta(days=DAILY_STALE_DAYS + 1) else "stale"
+        return "fresh" if trading_day_lag(observed.date(), checked_at) <= DAILY_STALE_DAYS else "stale"
     if source_type == "arco_thesis":
         return "fresh" if age <= timedelta(days=ARCO_STALE_DAYS) else "stale"
     if source_type in {"filing", "fundamental"}:
@@ -608,6 +621,133 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
     if source_type in {"provider_run", "provider_health"}:
         return "fresh" if age <= timedelta(days=1) else "stale"
     return "fresh"
+
+
+def normalized_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def market_session_elapsed(start: datetime, end: datetime) -> timedelta:
+    """Elapsed regular US equity market time between two timestamps."""
+
+    start_utc = normalized_utc(start)
+    end_utc = normalized_utc(end)
+    if end_utc <= start_utc:
+        return timedelta()
+
+    start_local = start_utc.astimezone(MARKET_TZ)
+    end_local = end_utc.astimezone(MARKET_TZ)
+    current = start_local.date()
+    total = timedelta()
+    while current <= end_local.date():
+        if is_us_market_day(current):
+            open_at, close_at = market_session_bounds(current)
+            window_start = max(start_local, open_at)
+            window_end = min(end_local, close_at)
+            if window_end > window_start:
+                total += window_end - window_start
+        current += timedelta(days=1)
+    return total
+
+
+def trading_day_lag(observed_date: date, now: datetime) -> int:
+    latest_expected = latest_completed_market_day(now)
+    if observed_date >= latest_expected:
+        return 0
+    lag = 0
+    current = observed_date + timedelta(days=1)
+    while current <= latest_expected:
+        if is_us_market_day(current):
+            lag += 1
+        current += timedelta(days=1)
+    return lag
+
+
+def latest_completed_market_day(now: datetime) -> date:
+    local_now = normalized_utc(now).astimezone(MARKET_TZ)
+    current = local_now.date()
+    if is_us_market_day(current) and local_now.time() >= MARKET_CLOSE:
+        return current
+    current -= timedelta(days=1)
+    while not is_us_market_day(current):
+        current -= timedelta(days=1)
+    return current
+
+
+def is_market_open(now: datetime) -> bool:
+    local_now = normalized_utc(now).astimezone(MARKET_TZ)
+    return is_us_market_day(local_now.date()) and MARKET_OPEN <= local_now.time() < MARKET_CLOSE
+
+
+def market_session_bounds(day: date) -> tuple[datetime, datetime]:
+    return (
+        datetime.combine(day, MARKET_OPEN, tzinfo=MARKET_TZ),
+        datetime.combine(day, MARKET_CLOSE, tzinfo=MARKET_TZ),
+    )
+
+
+def is_us_market_day(day: date) -> bool:
+    return day.weekday() < 5 and day not in us_market_holidays(day.year)
+
+
+@lru_cache(maxsize=None)
+def us_market_holidays(year: int) -> frozenset[date]:
+    return frozenset(
+        day
+        for day in {
+            observed_fixed_holiday(year, 1, 1),
+            nth_weekday(year, 1, 0, 3),
+            nth_weekday(year, 2, 0, 3),
+            easter_date(year) - timedelta(days=2),
+            last_weekday(year, 5, 0),
+            observed_fixed_holiday(year, 6, 19),
+            observed_fixed_holiday(year, 7, 4),
+            nth_weekday(year, 9, 0, 1),
+            nth_weekday(year, 11, 3, 4),
+            observed_fixed_holiday(year, 12, 25),
+        }
+        if day.year == year
+    )
+
+
+def observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def nth_weekday(year: int, month: int, weekday: int, ordinal: int) -> date:
+    current = date(year, month, 1)
+    offset = (weekday - current.weekday()) % 7
+    return current + timedelta(days=offset + (ordinal - 1) * 7)
+
+
+def last_weekday(year: int, month: int, weekday: int) -> date:
+    current = date(year + int(month == 12), 1 if month == 12 else month + 1, 1) - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def easter_date(year: int) -> date:
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
 
 
 def watchlist_from_config(config: Any | None) -> list[dict[str, Any]]:
@@ -631,6 +771,7 @@ def eligibility_detail(status: str) -> str:
 def stale_after_label(source_type: str) -> str:
     return {
         "intraday_quote": "4 market hours",
+        "closing_quote": "previous close while market is closed",
         "options": "4 market hours",
         "news": "4 market hours",
         "daily": "1 trading day",
@@ -711,8 +852,8 @@ def symbol_freshness_detail(rows: list[dict[str, Any]]) -> dict[str, dict[str, s
         detail = result.setdefault(symbol, default_freshness_detail())
         status = str(row.get("freshness_status") or "unknown")
         source_type = str(row.get("source_type") or "")
-        if source_type == "intraday_quote":
-            detail["quote_freshness"] = worst_freshness(detail["quote_freshness"], status)
+        if source_type in {"intraday_quote", "closing_quote"}:
+            detail["quote_freshness"] = best_freshness(detail["quote_freshness"], status)
         elif source_type == "daily":
             detail["daily_analysis_freshness"] = worst_freshness(detail["daily_analysis_freshness"], status)
         elif source_type == "filing":
@@ -738,6 +879,12 @@ def worst_freshness(current: str, incoming: str) -> str:
     if current in {"missing", "not_applicable"}:
         return incoming
     return current if FRESHNESS_ORDER.get(current, 2) <= FRESHNESS_ORDER.get(incoming, 2) else incoming
+
+
+def best_freshness(current: str, incoming: str) -> str:
+    if current in {"missing", "not_applicable"}:
+        return incoming
+    return current if FRESHNESS_ORDER.get(current, 2) >= FRESHNESS_ORDER.get(incoming, 2) else incoming
 
 
 def overall_decision_freshness(detail: dict[str, str]) -> str:
