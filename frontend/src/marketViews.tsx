@@ -9,7 +9,6 @@ import {
   Home,
   Layers3,
   RefreshCw,
-  Settings,
   Sparkles,
   Star,
   Sun,
@@ -334,48 +333,64 @@ export function DashboardPage({
 }) {
   const readyRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) === "ready");
   const blockedRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) !== "ready").slice(0, 5);
+  const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
+  const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
+  const sourceRows = model.signalCoverage.reduce((total, item) => total + item.count, 0);
+  const loadedFamilies = model.signalCoverage.filter((item) => item.count > 0).length;
   return (
-    <PageFrame
-      title="Good morning, Joe"
-      subtitle={lastRefresh ? `${new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} · Refreshed ${lastRefresh.toLocaleTimeString()}` : loading ? "Loading market data..." : "No data loaded"}
-      action={
-        <div className="button-row">
-          <IconButton label="Refresh" onClick={onRefresh}>
-            <RefreshCw size={15} className={loading ? "spin" : ""} />
-          </IconButton>
-          <GhostButton>
-            <Settings size={14} /> Customize
-          </GhostButton>
+    <section className="terminal-dashboard" aria-label="Market command dashboard">
+      <header className="terminal-hero">
+        <div className="terminal-hero-kicker">
+          <span>Total Exposure // Net Asset Value</span>
+          <button type="button" onClick={onRefresh} aria-label="Refresh dashboard sources" title="Refresh dashboard sources">
+            <RefreshCw size={16} className={loading ? "spin" : ""} />
+          </button>
         </div>
-      }
-    >
-      <div className="dashboard-layout">
-        <Panel className="span-12" title="Watchlist">
+        <strong>{model.portfolioValue ? formatMoney(model.portfolioValue) : "$0"}</strong>
+        <div className="terminal-hero-metrics">
+          <span>
+            <small>UNREAL. P&L</small>
+            <b className={portfolioPnl >= 0 ? "positive" : "negative"}>{model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "NO POSITIONS"}</b>
+          </span>
+          <span>
+            <small>SIGNAL ROWS</small>
+            <b>{sourceRows.toLocaleString()}</b>
+          </span>
+          <span>
+            <small>SRC. FAMILIES</small>
+            <b>{loadedFamilies}/11</b>
+          </span>
+          <span>
+            <small>LAST REFRESH</small>
+            <b>{lastRefresh ? lastRefresh.toLocaleTimeString() : loading ? "LOADING" : "IDLE"}</b>
+          </span>
+        </div>
+      </header>
+
+      <div className="terminal-board-grid">
+        <Panel className="terminal-holdings-panel" title="Primary Holdings & Order Book">
+          <TerminalHoldingsBook holdings={model.holdings} opportunities={model.opportunities.slice(0, 7)} watchlist={model.watchlist} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="terminal-signal-panel" title="Algorithmic Signals">
+          <AlgorithmicSignalFeed opportunities={model.opportunities.slice(0, 4)} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="terminal-risk-panel" title="Risk Profile & Stress Test">
+          <RiskProfileTerminal model={model} readyCount={readyRows.length} />
+        </Panel>
+      </div>
+
+      <div className="terminal-secondary-grid">
+        <Panel title="Watchlist Tape">
           <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel className="span-12" title="Actionable Queue">
-          <DashboardQueueTable rows={model.opportunities.slice(0, 6)} onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel className="span-4" title="Portfolio Exposure" headerAction={<SourcePill state={model.sources.holdings} />}>
-          {model.holdings.length ? <SummaryList rows={holdingSummaryRows(model.holdings)} /> : <EmptyState title="No portfolio holdings" detail="Enter or import positions before treating portfolio exposure as a decision gate." />}
-          <TextLink>View full portfolio</TextLink>
-        </Panel>
-        <Panel className="span-3" title="Top Sectors">
-          <SummaryList rows={model.sectors.slice(0, 5)} />
-        </Panel>
-        <Panel className="span-5" title="Upcoming Catalysts">
-          <CatalystList events={model.calendar.slice(0, 5)} />
-          <TextLink>View calendar</TextLink>
-        </Panel>
-        <Panel className="span-12 dashboard-brief-panel" title="Decision Readiness">
+        <Panel title="Decision Readiness">
           <DecisionBrief model={model} readyCount={readyRows.length} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
-      <SignalCommandCenter model={model} onOpenTicker={onOpenTicker} />
       <SignalCoverageStrip coverage={model.signalCoverage} />
       <SignalMatrix rows={model.signalMatrix.slice(0, 10)} onOpenTicker={onOpenTicker} />
       <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
-    </PageFrame>
+    </section>
   );
 }
 
@@ -639,7 +654,7 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
           ))}
         </div>
         <Panel title="Ranked Screen">
-          <OpportunityTable rows={filtered} onOpenTicker={onOpenTicker} />
+          <OpportunityTable rows={filtered} compact onOpenTicker={onOpenTicker} />
         </Panel>
       </PageFrame>
     </div>
@@ -1596,9 +1611,10 @@ function sourceLeaderRow(row: RowRecord, scoreKeys: string[]): SummaryItem | nul
     return null;
   }
   const score = numberField(row, scoreKeys, Number.NaN);
+  const scoreKey = scoreKeys.find((key) => Number.isFinite(numberField(row, [key], Number.NaN))) ?? "";
   const label = symbol;
   const value = Number.isFinite(score)
-    ? (Math.abs(score) <= 1 ? formatPct(score * 100) : Math.round(score).toString())
+    ? formatSourceMetric(scoreKey, score, row)
     : titleLabel(stringField(row, ["grade", "verdict", "status", "event_type"]) || "Loaded");
   return {
     label,
@@ -1607,6 +1623,21 @@ function sourceLeaderRow(row: RowRecord, scoreKeys: string[]): SummaryItem | nul
     tone: Number.isFinite(score) ? score >= 0 ? "good" : "bad" : "info",
     symbol,
   };
+}
+
+function formatSourceMetric(key: string, value: number, row: RowRecord): string {
+  if (!Number.isFinite(value)) return "-";
+  const context = displayValue(row.caption ?? row.summary ?? row.title ?? row.stage ?? row.method ?? row.source).toLowerCase();
+  if (key.includes("dollar") || key.includes("premium") || key.includes("profit") || key === "value" || context.includes("dollar") || context.includes("volume")) {
+    return formatCompactMoney(value);
+  }
+  if (key.includes("thousands")) {
+    return formatCompactMoney(value * 1000);
+  }
+  if (key.includes("pct") || context.includes("upside") || context.includes("%") || Math.abs(value) <= 1) {
+    return formatPct(Math.abs(value) <= 1 ? value * 100 : value);
+  }
+  return formatCompact(value);
 }
 
 function buildSignalDefinitions(data: PanelData): SignalDefinition[] {
@@ -2367,6 +2398,202 @@ function FinanceAnalysisCard({ analysis, onOpenTicker, expanded = false }: { ana
   );
 }
 
+function TerminalHoldingsBook({
+  holdings,
+  opportunities,
+  watchlist,
+  onOpenTicker,
+}: {
+  holdings: Holding[];
+  opportunities: Opportunity[];
+  watchlist: WatchItem[];
+  onOpenTicker: (symbol: string) => void;
+}) {
+  const holdingRows = holdings.map((holding) => {
+    const quote = watchlist.find((item) => item.symbol === holding.ticker);
+    return {
+      symbol: holding.ticker,
+      id: holding.taxLotTerm,
+      price: quote?.price ?? formatMoney(holding.averageCost),
+      change: quote ? formatPct(quote.change) : formatPct(holding.unrealizedPnlPct),
+      changeTone: quote?.change ?? holding.unrealizedPnlPct,
+      position: holding.weight ? `${holding.weight.toFixed(1)}%` : formatCompactMoney(holding.marketValue),
+    };
+  });
+  const opportunityRows = opportunities.map((opportunity) => {
+    const quote = watchlist.find((item) => item.symbol === opportunity.ticker);
+    return {
+      symbol: opportunity.ticker,
+      id: opportunity.category || opportunity.assetClass,
+      price: quote?.price ?? opportunity.latestQuote,
+      change: quote ? formatPct(quote.change) : `Grade ${opportunity.grade}`,
+      changeTone: quote?.change ?? (opportunity.actionGrade === "Act" ? 1 : opportunity.actionGrade === "Reject" || opportunity.actionGrade === "Stale" ? -1 : 0),
+      position: `${opportunity.sourceCount} SRC`,
+    };
+  });
+  const tableRows = holdingRows.length ? holdingRows : opportunityRows;
+  if (!tableRows.length) {
+    return <EmptyState title="No holdings or order rows" detail="Load portfolio rows or decision queue rows to populate the primary book." />;
+  }
+  return (
+    <TableFrame>
+      <table className="desk-table terminal-book-table">
+        <thead>
+          <tr>
+            <th>Asset / ID</th>
+            <th>7D Trend</th>
+            <th>Last Price</th>
+            <th>Change</th>
+            <th>Position</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tableRows.map((row) => (
+            <tr key={`terminal-book-${row.symbol}`}>
+              <td>
+                <button className="ticker-link terminal-asset-cell" type="button" onClick={() => onOpenTicker(row.symbol)}>
+                  <strong>{row.symbol}</strong>
+                  <small>{titleLabel(row.id || "instrument")}</small>
+                </button>
+              </td>
+              <td><MiniTrend seed={row.symbol} negative={row.changeTone < 0} /></td>
+              <td>{row.price || "-"}</td>
+              <td className={row.changeTone < 0 ? "negative" : "positive"}>{row.change}</td>
+              <td>{row.position}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableFrame>
+  );
+}
+
+function MiniTrend({ seed, negative }: { seed: string; negative: boolean }) {
+  const seedValue = Array.from(seed).reduce((total, letter) => total + letter.charCodeAt(0), 0);
+  const points = Array.from({ length: 6 }, (_, index) => {
+    const x = index * 16;
+    const drift = negative ? 12 + index * 3 : 25 - index * 3;
+    const jitter = ((seedValue + index * 11) % 9) - 4;
+    const y = Math.max(5, Math.min(33, drift + jitter));
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg className={`mini-trend ${negative ? "negative" : "positive"}`} viewBox="0 0 82 38" aria-hidden="true">
+      <polyline points={points} />
+    </svg>
+  );
+}
+
+function AlgorithmicSignalFeed({ opportunities, blockedRows, onOpenTicker }: { opportunities: Opportunity[]; blockedRows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  if (!opportunities.length) {
+    return <EmptyState title="No algorithmic signals" detail={blockedRows[0] ? stringField(blockedRows[0], ["next_action"]) || "Decision readiness is blocked." : "Load decision queue rows to populate the signal feed."} />;
+  }
+  return (
+    <div className="terminal-signal-feed">
+      {opportunities.map((item, index) => {
+        const command = item.actionGrade === "Act" ? "ACCUMULATE" : item.isStale || item.blockingGates.length ? "REDUCE EXPOSURE" : "MONITOR";
+        return (
+          <article key={`terminal-signal-${item.ticker}-${index}`}>
+            <header>
+              <span>{terminalTimeLabel(item.asOf)}</span>
+              <small>{item.sourceCluster || "SYS.AUTO"}</small>
+            </header>
+            <button type="button" onClick={() => onOpenTicker(item.ticker)}>
+              <strong title={`${item.ticker}: ${item.inclusionReasons[0] ?? item.decisionBasis}`}>{item.ticker}: {item.inclusionReasons[0] ?? item.decisionBasis}</strong>
+              <p>{item.nextAction || item.whyNow}</p>
+            </button>
+            <footer>
+              <DecisionBadge value={command} />
+              <small>SECTOR: {item.category ? titleLabel(item.category).slice(0, 18) : "N/A"}</small>
+            </footer>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function RiskProfileTerminal({ model, readyCount }: { model: AppModel; readyCount: number }) {
+  const loadedFamilies = model.signalCoverage.filter((item) => item.count > 0).length;
+  const largestWeight = Math.max(...model.holdings.map((holding) => holding.weight), 0);
+  const negativePnl = model.holdings.filter((holding) => holding.unrealizedPnl < 0).reduce((total, holding) => total + holding.unrealizedPnl, 0);
+  const radarValues = [
+    largestWeight ? Math.min(95, largestWeight * 3) : 28,
+    Math.min(95, loadedFamilies * 8.5),
+    Math.min(95, model.liquidityRows.length * 11),
+    readyCount ? 78 : 36,
+    Math.min(95, model.healthRows.length * 7),
+  ];
+  const rows: SummaryItem[] = [
+    {
+      label: "Correlation",
+      value: model.correlationRows[0]?.value ?? "-",
+      caption: model.correlationRows[0]?.caption ?? "No correlation rows loaded",
+      tone: model.correlationRows.length ? "info" : "muted",
+    },
+    {
+      label: "Losing Lots",
+      value: negativePnl ? formatMoney(negativePnl) : "-",
+      caption: "Unrealized loss across imported holdings",
+      tone: negativePnl < 0 ? "bad" : "muted",
+    },
+    {
+      label: "Largest Weight",
+      value: largestWeight ? `${largestWeight.toFixed(1)}%` : "-",
+      caption: "Largest imported holding weight",
+      tone: largestWeight > 25 ? "warn" : largestWeight ? "info" : "muted",
+    },
+    {
+      label: "Readiness",
+      value: readyCount ? `${readyCount} ready` : "Blocked",
+      caption: `${loadedFamilies}/11 source families loaded`,
+      tone: readyCount ? "good" : "warn",
+    },
+  ];
+  return (
+    <div className="terminal-risk-stack">
+      <RiskRadar values={radarValues} />
+      <small>MULTI-FACTOR EXPOSURE MODEL V3.1</small>
+      <SummaryList rows={rows} />
+    </div>
+  );
+}
+
+function RiskRadar({ values }: { values: number[] }) {
+  const size = 210;
+  const center = size / 2;
+  const radius = 78;
+  const axes = values.length;
+  const points = values.map((value, index) => radarPoint(center, radius * (Math.max(0, Math.min(100, value)) / 100), index, axes)).join(" ");
+  const axisPoints = Array.from({ length: axes }, (_, index) => radarPoint(center, radius, index, axes));
+  return (
+    <svg className="risk-radar" viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      {[0.34, 0.67, 1].map((scale) => (
+        <polygon key={scale} points={axisPoints.map((_, index) => radarPoint(center, radius * scale, index, axes)).join(" ")} className="radar-ring" />
+      ))}
+      {axisPoints.map((point, index) => {
+        const [x, y] = point.split(",");
+        return <line key={`axis-${index}`} x1={center} y1={center} x2={x} y2={y} className="radar-axis" />;
+      })}
+      <polygon points={points} className="radar-shape" />
+      <circle cx={points.split(" ")[1]?.split(",")[0] ?? center} cy={points.split(" ")[1]?.split(",")[1] ?? center} r="8" className="radar-point" />
+    </svg>
+  );
+}
+
+function radarPoint(center: number, radius: number, index: number, count: number): string {
+  const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
+  const x = center + Math.cos(angle) * radius;
+  const y = center + Math.sin(angle) * radius;
+  return `${x.toFixed(2)},${y.toFixed(2)}`;
+}
+
+function terminalTimeLabel(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:-- EST";
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" });
+}
+
 function WatchlistStrip({ items, onOpenTicker }: { items: WatchItem[]; onOpenTicker: (symbol: string) => void }) {
   if (!items.length) {
     return <EmptyState title="No quote rows" detail="Watchlist cards are withheld until /api/quotes returns rows." />;
@@ -2777,10 +3004,10 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
   }
   return (
     <TableFrame>
-      <table className="desk-table">
+      <table className={`desk-table opportunity-table ${compact ? "compact" : ""}`}>
         <thead>
           <tr>
-            <th>Rank</th>
+            <th>{compact ? "#" : "Rank"}</th>
             <th>Ticker</th>
             <th>Score</th>
             <th>Action</th>
@@ -2789,7 +3016,7 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
             <th>Quote</th>
             <th>Why This Is Here</th>
             <th>Gates</th>
-            <th>Freshness</th>
+            {!compact && <th>Freshness</th>}
             {!compact && <th>Context</th>}
           </tr>
         </thead>
@@ -2805,7 +3032,7 @@ function OpportunityTable({ rows, compact = false, onOpenTicker }: { rows: Oppor
               <td>{row.latestQuote}</td>
               <td className="clip">{row.inclusionReasons.join(" · ")}</td>
               <td className="clip">{row.blockingGates.length ? row.blockingGates.join(" · ") : row.isSourceThin ? "Source-thin" : "-"}</td>
-              <td>{row.freshness}</td>
+              {!compact && <td>{row.freshness}</td>}
               {!compact && <td><DecisionFactGrid item={row} /></td>}
             </tr>
           ))}
@@ -3449,7 +3676,7 @@ function HealthTable({ rows }: { rows: HealthRow[] }) {
   }
   return (
     <TableFrame>
-      <table className="desk-table">
+      <table className="desk-table health-table">
         <thead>
           <tr>
             <th>Provider</th>

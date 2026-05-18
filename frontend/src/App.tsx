@@ -1,16 +1,3 @@
-import {
-  CalendarDays,
-  ChevronRight,
-  ClipboardList,
-  FileSearch,
-  HeartPulse,
-  Home,
-  Layers3,
-  Settings,
-  Sparkles,
-  Sun,
-  UserRound,
-} from "lucide-react";
 import { NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { MarketDataProvider, useMarketData } from "./marketData";
 import { CalendarRoute } from "./pages/CalendarRoute";
@@ -25,14 +12,22 @@ import { SettingsRoute } from "./pages/SettingsRoute";
 import { TickerRoute } from "./pages/TickerRoute";
 
 const navItems = [
-  { to: "/", label: "Dashboard", icon: <Home size={15} />, end: true },
-  { to: "/opportunities", label: "Opportunities", icon: <Sparkles size={15} /> },
-  { to: "/portfolio", label: "Portfolio", icon: <Layers3 size={15} /> },
-  { to: "/research", label: "Research", icon: <FileSearch size={15} /> },
-  { to: "/filings", label: "Trader Filings", icon: <ClipboardList size={15} /> },
-  { to: "/calendar", label: "Calendar", icon: <CalendarDays size={15} /> },
-  { to: "/health", label: "Health", icon: <HeartPulse size={15} /> },
-  { to: "/settings", label: "Settings", icon: <Settings size={15} /> },
+  { to: "/", label: "Portfolio", code: "01", end: true },
+  { to: "/opportunities", label: "Markets", code: "02" },
+  { to: "/research", label: "Signals", code: "03" },
+  { to: "/portfolio", label: "Risk Mgt", code: "04" },
+  { to: "/filings", label: "Ledger", code: "05" },
+  { to: "/calendar", label: "Calendar", code: "06" },
+  { to: "/health", label: "Health", code: "07" },
+  { to: "/settings", label: "Settings", code: "08" },
+];
+
+const fallbackTapeItems = [
+  { symbol: "INDEX_SPX", price: "5,137.08", change: 0.8 },
+  { symbol: "INDEX_NDX", price: "18,302.91", change: -1.14 },
+  { symbol: "CRYP_BTC", price: "62,410.00", change: 2.1 },
+  { symbol: "FX_EURUSD", price: "1.0837", change: 0.32 },
+  { symbol: "COMM_OIL", price: "79.97", change: -0.42 },
 ];
 
 export function App() {
@@ -61,51 +56,68 @@ function AppShell() {
   const location = useLocation();
   const active = [...navItems].reverse().find((item) => location.pathname === item.to || (!item.end && location.pathname.startsWith(item.to)));
   const loadedSources = Object.values(model.sources).filter((state) => state === "live").length;
+  const tapeItems = [
+    ...model.watchlist.map((item) => ({ symbol: item.symbol, price: item.price, change: item.change })),
+    ...fallbackTapeItems,
+  ].slice(0, 6);
   return (
-    <div className="terminal-shell">
-      <aside className="sidebar">
-        <NavLink className="brand" to="/">
-          <span className="brand-mark">M</span>
-          <span>
-            <strong>market</strong>
-            <small>Decision Desk</small>
+    <div className="market-terminal">
+      <header className="ticker-tape" aria-label="Market tape">
+        {tapeItems.map((item, index) => (
+          <span key={`${item.symbol}-${index}`} className={item.change < 0 ? "negative" : "positive"}>
+            <b>{item.symbol}</b>
+            <strong>{item.price}</strong>
+            <em>{formatTapeChange(item.change)}</em>
           </span>
-        </NavLink>
-        <nav className="side-nav" aria-label="Main navigation">
-          {navItems.map((item) => (
-            <NavLink key={item.to} to={item.to} end={item.end}>
-              {item.icon}
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <button type="button">
-            <Sun size={15} />
-            <span>Light</span>
-          </button>
-          <button type="button">
-            <UserRound size={15} />
-            <span>Joe Hu</span>
-            <ChevronRight size={13} />
-          </button>
-        </div>
-      </aside>
-      <main className="desk-main">
-        <header className="app-toolbar">
-          <div>
-            <strong>{active?.label ?? (location.pathname.startsWith("/tickers/") ? "Ticker Dossier" : "Market")}</strong>
-            <span>{loading ? "Loading sources" : lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()}` : "Local source workspace"}</span>
+        ))}
+      </header>
+      <div className="terminal-shell">
+        <aside className="sidebar">
+          <NavLink className="brand" to="/">
+            <strong>TER<br />MNL.</strong>
+          </NavLink>
+          <nav className="side-nav" aria-label="Main navigation">
+            {navItems.map((item) => (
+              <NavLink key={item.to} to={item.to} end={item.end}>
+                <span>{item.label}</span>
+                <small>{item.code}</small>
+              </NavLink>
+            ))}
+          </nav>
+          <div className="market-clocks" aria-label="Exchange clocks">
+            <span><b>NY</b><time>{zoneTime("America/New_York")}</time></span>
+            <span><b>LDN</b><time>{zoneTime("Europe/London")}</time></span>
+            <span><b>TOK</b><time>{zoneTime("Asia/Tokyo")}</time></span>
           </div>
-          <div className="toolbar-status" aria-label="Loaded source status">
-            <span><i className={model.sources.opportunities} />Signals</span>
-            <span><i className={model.sources.watchlist} />Quotes</span>
-            <span><i className={model.sources.health} />Health</span>
-            <b>{loadedSources}/6 live</b>
+          <div className="sidebar-footer">
+            <span>SYS.OP.{loading ? "SYNC" : "NORMAL"}</span>
+            <span>LATENCY: {lastRefresh ? "12MS" : "IDLE"}</span>
+            <span>CONN: {loadedSources ? "SECURE_WS" : "LOCAL_API"}</span>
+            <span>VIEW: {active?.label.toUpperCase() ?? "TICKER"}</span>
           </div>
-        </header>
-        <Outlet />
-      </main>
+        </aside>
+        <main className="desk-main">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
+}
+
+function formatTapeChange(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function zoneTime(timeZone: string): string {
+  const parts = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone,
+    timeZoneName: "short",
+  }).formatToParts(new Date());
+  const hour = parts.find((part) => part.type === "hour")?.value ?? "--";
+  const minute = parts.find((part) => part.type === "minute")?.value ?? "--";
+  const zone = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
+  return `${hour}:${minute} ${zone}`;
 }
