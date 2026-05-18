@@ -3635,7 +3635,7 @@ h3,
 
 .decision-brief-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
   gap: 8px;
 }
 
@@ -4762,7 +4762,7 @@ body {
 }
 
 .terminal-shell {
-  grid-template-columns: 318px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   min-height: calc(100vh - 38px);
   border-bottom: 2px solid var(--terminal-black);
 }
@@ -4773,19 +4773,19 @@ body {
   border-right: 2px solid var(--terminal-black);
   background: var(--bg);
   backdrop-filter: none;
-  padding: 30px 32px 28px;
+  padding: 24px 20px;
 }
 
 .brand {
   display: block;
-  padding: 0 0 40px;
+  padding: 0 0 30px;
 }
 
 .brand strong {
   display: block;
   color: var(--red);
   font-family: Impact, "Arial Black", ui-sans-serif, system-ui, sans-serif;
-  font-size: 2.75rem;
+  font-size: 2.35rem;
   line-height: 0.8;
   letter-spacing: 0;
 }
@@ -4839,9 +4839,9 @@ body {
 .market-clocks {
   display: grid;
   gap: 12px;
-  margin: 48px -32px 0;
+  margin: 38px -20px 0;
   border-top: 2px solid var(--line);
-  padding: 32px;
+  padding: 28px 20px;
 }
 
 .market-clocks span {
@@ -5010,7 +5010,7 @@ h3,
 
 .terminal-secondary-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(280px, 0.55fr) minmax(640px, 1.45fr);
   border-top: 2px solid var(--terminal-black);
 }
 
@@ -5572,7 +5572,11 @@ h3,
 }
 
 .finance-analysis-grid {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+}
+
+.finance-analysis-items {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .rank {
@@ -5620,16 +5624,16 @@ h3,
 
 @media (max-width: 1280px) {
   .terminal-shell {
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: 208px minmax(0, 1fr);
   }
 
   .sidebar {
-    padding-inline: 24px;
+    padding-inline: 18px;
   }
 
   .market-clocks {
-    margin-inline: -24px;
-    padding-inline: 24px;
+    margin-inline: -18px;
+    padding-inline: 18px;
   }
 
   .terminal-board-grid,
@@ -5724,6 +5728,10 @@ h3,
   .signal-matrix-panel,
   .finance-analysis-panel {
     margin: 20px;
+  }
+
+  .finance-analysis-grid {
+    grid-template-columns: 1fr;
   }
 }
 
