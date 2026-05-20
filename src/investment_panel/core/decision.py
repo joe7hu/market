@@ -209,6 +209,10 @@ def build_discovered_universe(con: Any, config_watchlist: list[dict[str, Any]]) 
 
     for row in query_rows(con, "SELECT symbol, as_of, event_date, verdict FROM earnings_setups"):
         touch(row.get("symbol"), "earnings_setup", f"earnings setup: {row.get('verdict') or 'scored'}", row.get("as_of"), None, None, 1.25, event_at=row.get("event_date"))
+    for row in query_rows(con, "SELECT symbol, as_of, premium_pct FROM etf_premiums"):
+        touch(row.get("symbol"), "etf_premium", "ETF premium/discount snapshot", row.get("as_of"), None, "etf", 0.75)
+    for row in query_rows(con, "SELECT symbol, date, source FROM crypto_fundamentals"):
+        touch(row.get("symbol"), "crypto_fundamental", "CoinGecko crypto market/fundamental snapshot", row.get("date"), None, "crypto", 0.75)
 
     for row in query_rows(con, "SELECT symbol, purchase_date FROM portfolio_positions"):
         touch(row.get("symbol"), "portfolio", "owned portfolio row", row.get("purchase_date"), None, None, 2.0)
@@ -312,7 +316,9 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
     for row in query_rows(con, "SELECT symbol, observed_at, source FROM quotes_intraday QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1"):
         add(f"{row.get('source') or 'quote'}:{row.get('symbol')}", "intraday_quote", row.get("source") or "quote", row.get("observed_at"))
     for row in query_rows(con, "SELECT symbol, date, source FROM prices_daily QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1"):
-        add(f"previous_close:{row.get('symbol')}", "closing_quote", row.get("source") or "daily_price", row.get("date"))
+        symbol = str(row.get("symbol") or "").upper()
+        source_type = "crypto_quote" if symbol.endswith("-USD") else "closing_quote"
+        add(f"previous_close:{symbol}", source_type, row.get("source") or "daily_price", row.get("date"))
     for row in query_rows(con, "SELECT symbol, expiry, observed_at, source FROM options_expiries"):
         add(f"{row.get('source') or 'options'}:options:{row.get('expiry')}:{row.get('symbol')}", "options", row.get("source") or "options", row.get("observed_at"))
     for row in query_rows(con, "SELECT symbol, expiry, as_of, source FROM options_payoff_scenarios"):
@@ -336,6 +342,10 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
             add(f"{provider}:{row.get('symbol')}", "daily" if provider in {"sepa", "liquidity", "correlation", "earnings_setup"} else "fundamental", provider, row.get("as_of"))
     for row in query_rows(con, "SELECT symbol, filing_date FROM equity_fundamentals"):
         add(f"fundamentals:{row.get('symbol')}", "fundamental", "sec_companyfacts", row.get("filing_date"))
+    for row in query_rows(con, "SELECT symbol, as_of FROM etf_premiums"):
+        add(f"etf_premium:{row.get('symbol')}", "fundamental", "yfinance_etf_premium", row.get("as_of"))
+    for row in query_rows(con, "SELECT symbol, date FROM crypto_fundamentals"):
+        add(f"crypto_fundamental:{row.get('symbol')}", "fundamental", "coingecko", row.get("date"))
     for row in query_rows(con, "SELECT symbol, filed_date, event_date, source_type FROM disclosures"):
         add(f"{row.get('source_type') or 'disclosure'}:{row.get('symbol')}", "filing", row.get("source_type") or "disclosure", row.get("filed_date") or row.get("event_date"))
     for row in query_rows(con, "SELECT symbol, created_at FROM birdclaw_theses"):
@@ -356,7 +366,7 @@ def build_decision_queue(con: Any, universe: list[dict[str, Any]], freshness_row
     universe_by_symbol = {row["symbol"]: row for row in universe}
     freshness_by_symbol = symbol_freshness_detail(freshness_rows)
     candidates = latest_by_symbol(query_rows(con, "SELECT * FROM candidates ORDER BY run_date DESC, score DESC"), "symbol")
-    quotes = latest_by_symbol(query_rows(con, "SELECT symbol, observed_at, price, change_pct FROM quotes_intraday ORDER BY observed_at DESC"), "symbol")
+    quotes = latest_by_symbol(canonical_quote_rows(con), "symbol")
     liquidity = latest_by_symbol(query_rows(con, "SELECT symbol, as_of, grade, avg_dollar_volume FROM liquidity_metrics ORDER BY as_of DESC"), "symbol")
     catalysts = latest_by_symbol(query_rows(con, "SELECT symbol, event_date, event FROM catalysts WHERE symbol IS NOT NULL ORDER BY event_date ASC NULLS LAST"), "symbol")
     earnings = latest_by_symbol(query_rows(con, "SELECT symbol, event_date, event_type AS event FROM earnings_events ORDER BY event_date ASC NULLS LAST"), "symbol")
@@ -608,6 +618,8 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
     if source_type in {"intraday_quote", "options", "news"}:
         market_age = market_session_elapsed(observed, checked_at)
         return "fresh" if market_age <= timedelta(hours=INTRADAY_STALE_HOURS) else "stale"
+    if source_type == "crypto_quote":
+        return "fresh" if age <= timedelta(hours=36) else "stale"
     if source_type == "closing_quote":
         if is_market_open(checked_at):
             return "stale"
@@ -772,6 +784,7 @@ def stale_after_label(source_type: str) -> str:
     return {
         "intraday_quote": "4 market hours",
         "closing_quote": "previous close while market is closed",
+        "crypto_quote": "36 hours",
         "options": "4 market hours",
         "news": "4 market hours",
         "daily": "1 trading day",
@@ -852,7 +865,7 @@ def symbol_freshness_detail(rows: list[dict[str, Any]]) -> dict[str, dict[str, s
         detail = result.setdefault(symbol, default_freshness_detail())
         status = str(row.get("freshness_status") or "unknown")
         source_type = str(row.get("source_type") or "")
-        if source_type in {"intraday_quote", "closing_quote"}:
+        if source_type in {"intraday_quote", "closing_quote", "crypto_quote"}:
             detail["quote_freshness"] = best_freshness(detail["quote_freshness"], status)
         elif source_type == "daily":
             detail["daily_analysis_freshness"] = worst_freshness(detail["daily_analysis_freshness"], status)
@@ -914,6 +927,8 @@ def top_source_cluster(counts: dict[str, Any]) -> str:
         "liquidity": 53,
         "correlation": 52,
         "valuation": 51,
+        "etf_premium": 51,
+        "crypto_fundamental": 51,
         "options_payoff": 50,
         "tradingview_alert": 48,
         "tradingview_watchlist": 47,
@@ -973,6 +988,7 @@ def decision_basis(
         "evidence_items_count": evidence_items_count,
         "primary_evidence_count": primary_evidence_count,
         "eligibility_status": universe.get("eligibility_status"),
+        "asset_class": universe.get("asset_class"),
         "freshness": freshness,
         "latest_quote": quote.get("price"),
         "liquidity_grade": liquidity.get("grade"),
@@ -1020,10 +1036,8 @@ def readiness_blockers(row: dict[str, Any], source_counts: dict[str, Any], portf
         blockers.append("liquidity below sizing threshold")
     if portfolio_count == 0:
         blockers.append("missing portfolio context")
-    if not int(source_counts.get("valuation") or 0):
+    if not has_required_valuation_context(row, source_counts):
         blockers.append("missing valuation")
-    if not int(source_counts.get("arco_thesis") or source_counts.get("thesis") or 0):
-        blockers.append("missing thesis")
     if "evidence_thin" in gates:
         blockers.append("thin primary evidence")
     return sorted(set(blockers))
@@ -1037,10 +1051,8 @@ def readiness_missing_inputs(row: dict[str, Any], source_counts: dict[str, Any],
         missing.append("daily_analysis")
     if "liquidity_unknown" in (row.get("blocking_gates") or []):
         missing.append("liquidity")
-    if not int(source_counts.get("valuation") or 0):
+    if not has_required_valuation_context(row, source_counts):
         missing.append("valuation")
-    if not int(source_counts.get("arco_thesis") or source_counts.get("thesis") or 0):
-        missing.append("thesis")
     if portfolio_count == 0:
         missing.append("portfolio")
     return sorted(set(missing))
@@ -1053,7 +1065,7 @@ def readiness_status(row: dict[str, Any], blockers: list[str], missing_inputs: l
     context_terms = {"portfolio", "liquidity", "valuation"}
     if context_terms.intersection(missing_inputs):
         return "blocked_missing_context"
-    if {"thesis"}.intersection(missing_inputs) or "thin primary evidence" in blockers:
+    if "thin primary evidence" in blockers:
         return "needs_research"
     if row.get("action_grade") in {"Act", "Research"} and not blockers:
         return "ready"
@@ -1070,7 +1082,7 @@ def readiness_next_action(status: str, blockers: list[str], missing_inputs: list
             return "Refresh liquidity metrics before sizing a trade."
         return "Add the missing valuation/context row before making a buy decision."
     if status == "needs_research":
-        return "Create or refresh the ticker thesis, valuation, catalyst, and primary-evidence packet."
+        return "Create or refresh the primary-evidence packet, catalyst check, and optional thesis."
     if status == "ready":
         return "Review ticker dossier and sizing constraints before placing any order."
     return "Monitor until a stronger catalyst, thesis, or source update appears."
@@ -1088,6 +1100,18 @@ def readiness_portfolio_fit(row: dict[str, Any], portfolio_count: int) -> dict[s
     }
 
 
+def has_required_valuation_context(row: dict[str, Any], source_counts: dict[str, Any]) -> bool:
+    if int(source_counts.get("valuation") or 0):
+        return True
+    basis = row.get("decision_basis") if isinstance(row.get("decision_basis"), dict) else {}
+    asset_class = str(row.get("asset_class") or basis.get("asset_class") or "").lower()
+    if asset_class == "etf":
+        return bool(int(source_counts.get("etf_premium") or 0))
+    if asset_class == "crypto":
+        return bool(int(source_counts.get("crypto_fundamental") or 0))
+    return False
+
+
 def latest_by_symbol(rows: list[dict[str, Any]], symbol_key: str) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -1095,6 +1119,64 @@ def latest_by_symbol(rows: list[dict[str, Any]], symbol_key: str) -> dict[str, d
         if symbol and symbol not in result:
             result[symbol] = row
     return result
+
+
+def canonical_quote_rows(con: Any) -> list[dict[str, Any]]:
+    """Return one decision quote per symbol using the same priority as the UI.
+
+    A fresh previous close can satisfy quote freshness after the equity market
+    closes, so the displayed decision price must come from that same source
+    instead of an older intraday row.
+    """
+
+    return query_rows(
+        con,
+        """
+        WITH latest_intraday AS (
+            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source,
+                   concat(source, ':', symbol) AS freshness_key
+            FROM quotes_intraday
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+        ),
+        intraday_status AS (
+            SELECT i.*, COALESCE(f.freshness_status, 'unknown') AS freshness_status
+            FROM latest_intraday i
+            LEFT JOIN source_freshness f ON f.source_key = i.freshness_key
+        ),
+        latest_daily AS (
+            SELECT symbol, date AS observed_at, close AS price,
+                   CASE WHEN previous_close > 0 THEN ((close - previous_close) / previous_close) * 100 ELSE NULL END AS change_pct,
+                   CASE WHEN previous_close IS NOT NULL THEN close - previous_close ELSE NULL END AS change_abs,
+                   'USD' AS currency,
+                   concat('previous_close:', source) AS source,
+                   concat('previous_close:', symbol) AS freshness_key
+            FROM (
+                SELECT symbol, date, close, source,
+                       lag(close) OVER (PARTITION BY symbol ORDER BY date) AS previous_close
+                FROM prices_daily
+            )
+            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
+        ),
+        daily_status AS (
+            SELECT d.*, COALESCE(f.freshness_status, 'unknown') AS freshness_status
+            FROM latest_daily d
+            LEFT JOIN source_freshness f ON f.source_key = d.freshness_key
+        ),
+        candidates AS (
+            SELECT 0 AS priority, * FROM intraday_status WHERE freshness_status = 'fresh'
+            UNION ALL
+            SELECT 1 AS priority, * FROM daily_status WHERE freshness_status = 'fresh'
+            UNION ALL
+            SELECT 2 AS priority, * FROM intraday_status WHERE freshness_status <> 'fresh'
+            UNION ALL
+            SELECT 2 AS priority, * FROM daily_status WHERE freshness_status <> 'fresh'
+        )
+        SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, freshness_status
+        FROM candidates
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY priority ASC, observed_at DESC) = 1
+        ORDER BY symbol
+        """,
+    )
 
 
 def dedupe_freshness(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

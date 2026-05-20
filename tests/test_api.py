@@ -121,7 +121,7 @@ def test_ticker_decision_brief_surfaces_missing_thesis_news_and_filings() -> Non
 
     assert any("Technical score" in item for item in brief["evidence_for"])
     assert any("valuation" in item.lower() for item in brief["evidence_against"])
-    assert any("Missing thesis" in item for item in brief["unknowns"])
+    assert any("Optional thesis" in item for item in brief["unknowns"])
     assert any("Missing news" in item for item in brief["unknowns"])
     assert any("Missing filings" in item for item in brief["unknowns"])
     assert brief["risk_plan"]["max_loss"] == "No bounded-loss option scenario selected."

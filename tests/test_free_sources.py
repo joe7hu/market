@@ -10,7 +10,8 @@ from investment_panel.analysis.options_payoff import OptionLeg, evaluate_strateg
 from investment_panel.analysis.valuation import metrics_pass_sanity_checks, store_valuation_models
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.free_sources import infer_event_date, store_expiries, store_news_rows, store_options_chain, store_screener_rows, upsert_quote
+from investment_panel.core.fundamentals import metrics_from_company_facts
+from investment_panel.core.free_sources import infer_event_date, store_expiries, store_news_rows, store_options_chain, store_screener_rows, store_yfinance_market_snapshot, upsert_quote
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import sample_prices, upsert_prices
 from investment_panel.core.scoring import score_and_store
@@ -42,6 +43,74 @@ class FakeRunner:
         if "status" in command:
             return [{"connected": True, "tabs": []}]
         return []
+
+
+def test_company_facts_uses_latest_revenue_across_fallback_tags() -> None:
+    payload = {
+        "facts": {
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {
+                        "USD": [
+                            {"fy": 2022, "fp": "FY", "form": "10-K", "end": "2022-01-30", "filed": "2022-03-18", "val": 100},
+                        ]
+                    }
+                },
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            {"fy": 2025, "fp": "FY", "form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 200},
+                            {"fy": 2024, "fp": "FY", "form": "10-K", "end": "2024-01-28", "filed": "2024-02-21", "val": 150},
+                        ]
+                    }
+                },
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            {"fy": 2025, "fp": "FY", "form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 50},
+                        ]
+                    }
+                },
+                "Assets": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 500}]}},
+                "Liabilities": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 100}]}},
+                "CashAndCashEquivalentsAtCarryingValue": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 80}]}},
+            }
+        }
+    }
+
+    metrics = metrics_from_company_facts(payload)
+
+    assert metrics["period_end"] == "2025-01-26"
+    assert metrics["revenue"] == 200
+    assert metrics["revenue_prior"] == 150
+    assert metrics["net_margin"] == 0.25
+
+
+def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        stored = store_yfinance_market_snapshot(
+            con,
+            "run1",
+            "COIN",
+            "2026-05-20T02:21:00Z",
+            {
+                "shortName": "Coinbase",
+                "marketCap": 50_000_000_000,
+                "sharesOutstanding": 250_000_000,
+                "regularMarketPrice": 200,
+                "previousClose": 195,
+                "quoteType": "EQUITY",
+            },
+        )
+        rows = query_rows(con, "SELECT symbol, name, metrics, source FROM market_screener_rows WHERE symbol = 'COIN'")
+
+    assert stored is True
+    assert rows[0]["source"] == "yfinance_info"
+    metrics = json.loads(rows[0]["metrics"])
+    assert metrics["market_cap_basic"] == 50_000_000_000
+    assert metrics["shares_outstanding"] == 250_000_000
 
 
 def test_tradingview_provider_interface_uses_json_runner() -> None:

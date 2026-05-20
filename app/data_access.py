@@ -404,12 +404,18 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "earnings",
             "earnings_setups",
             "analyst_estimates",
+            "fundamentals",
+            "etf_premiums",
             "liquidity",
+            "correlations",
             "technicals",
             "sepa",
             "valuations",
             "options_expiries",
             "options_payoff_scenarios",
+            "disclosures",
+            "theses",
+            "research_packets",
             "tradingview_symbol_search",
             "tradingview_watchlists",
             "tradingview_alerts",
@@ -786,14 +792,14 @@ def _blocker_tasks(blockers: list[str], missing: list[str], tables: dict[str, li
 
     for blocker in blockers:
         if blocker == "chart_extended_without_thesis":
-            add("thesis", "Current thesis required", "Create or refresh thesis", _readable_gate(blocker), "bad")
+            add("thesis", "Thesis support missing", "Add thesis or avoid chase", _readable_gate(blocker), "bad")
         elif blocker == "expired_options_context":
             add("options", "Refresh option chain", "Refresh options", _readable_gate(blocker), "bad")
         else:
             add(blocker, _readable_gate(blocker), "Review gate", _text(blocker), "warn")
 
     missing_actions = {
-        "thesis": ("Current thesis required", "Create or refresh thesis"),
+        "thesis": ("Optional thesis missing", "Add thesis if conviction work continues"),
         "news": ("Ticker news missing", "Load ticker news"),
         "filings": ("Filings/disclosures missing", "Load filing context"),
         "portfolio": ("Portfolio context missing", "Import or enter portfolio"),
@@ -936,8 +942,8 @@ def _brief_summary(symbol: str, decision: dict[str, Any], basis: dict[str, Any],
 
 def _next_action(decision: dict[str, Any], packet: dict[str, Any], missing: list[str], blockers: list[str]) -> str:
     if blockers:
-        if any("thesis" in blocker.lower() for blocker in blockers) or "thesis" in missing:
-            return "Create or refresh the ticker thesis before considering a trade."
+        if any("thesis" in blocker.lower() for blocker in blockers):
+            return "Avoid chasing the extended chart unless an explicit thesis supports the trade."
         return "Clear blocking gates before action."
     entry_plan = _object(packet.get("entry_plan"))
     if entry_plan.get("ideal_entry"):
@@ -948,8 +954,8 @@ def _next_action(decision: dict[str, Any], packet: dict[str, Any], missing: list
 
 
 def _max_sizing(liquidity: dict[str, Any], portfolio: dict[str, Any], blockers: list[str], missing: list[str]) -> str:
-    if blockers or "thesis" in missing:
-        return "Watchlist or starter only until thesis/evidence gap is cleared."
+    if blockers:
+        return "Watchlist or starter only until evidence gates clear."
     grade = _text(liquidity.get("grade")).lower()
     if portfolio:
         return "Add only if portfolio concentration remains within existing risk limits."
@@ -1050,7 +1056,12 @@ def _evidence_against(
 
 
 def _unknowns(tables: dict[str, list[dict[str, Any]]], missing: list[str]) -> list[str]:
-    unknowns = [f"Missing {family} input." for family in missing]
+    unknowns = [
+        "Optional thesis is not loaded; rely on source evidence and deterministic analysis until conviction work is added."
+        if family == "thesis"
+        else f"Missing {family} input."
+        for family in missing
+    ]
     if not tables.get("news"):
         unknowns.append("No ticker-specific news row is available to explain the current move.")
     if not tables.get("disclosures"):

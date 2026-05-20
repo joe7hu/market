@@ -1646,11 +1646,11 @@ function buildSignalDefinitions(data: PanelData): SignalDefinition[] {
     { key: "technical", label: "Technical", rows: rows(data.technicals) },
     { key: "sepa", label: "SEPA", rows: rows(data.sepa) },
     { key: "liquidity", label: "Liquidity", rows: rows(data.liquidity) },
-    { key: "valuation", label: "Valuation", rows: rows(data.valuations) },
+    { key: "valuation", label: "Valuation", rows: valuationContextRows(data) },
     { key: "earnings", label: "Earnings", rows: [...rows(data.earningsSetups), ...rows(data.earnings), ...rows(data.analystEstimates)] },
     { key: "options", label: "Options", rows: [...rows(data.optionsPayoffScenarios), ...rows(data.optionsExpiries), ...rows(data.optionsChain)] },
     { key: "filings", label: "Filings", rows: rows(data.disclosures) },
-    { key: "thesis", label: "Thesis", rows: [...rows(data.theses), ...rows(data.researchPackets), ...rows(data.memos)] },
+    { key: "thesis", label: "Thesis", rows: rows(data.theses) },
     { key: "news", label: "News", rows: [...rows(data.news), ...rows(data.catalysts)] },
     {
       key: "tradingview",
@@ -1711,7 +1711,7 @@ function buildSignalMatrix(opportunities: Opportunity[], definitions: SignalDefi
 }
 
 function buildFinanceAnalyses(opportunities: Opportunity[], data: PanelData, matrixRows: SignalMatrixRow[]): FinanceAnalysis[] {
-  const valuationBySymbol = groupRowsBySymbol(rows(data.valuations));
+  const valuationBySymbol = groupRowsBySymbol(valuationContextRows(data));
   const earningsBySymbol = groupRowsBySymbol([...rows(data.earningsSetups), ...rows(data.analystEstimates), ...rows(data.earnings)]);
   const optionsBySymbol = groupRowsBySymbol([...rows(data.optionsPayoffScenarios), ...rows(data.optionsExpiries)]);
   const tradingviewBySymbol = groupTradingViewRowsBySymbol(data);
@@ -1744,6 +1744,14 @@ function buildFinanceAnalyses(opportunities: Opportunity[], data: PanelData, mat
   });
 }
 
+function valuationContextRows(data: PanelData): RowRecord[] {
+  return [
+    ...rows(data.valuations),
+    ...rows(data.etfPremiums),
+    ...rows(data.fundamentals).filter((row) => stringField(row, ["asset_class"]) === "crypto"),
+  ];
+}
+
 function groupTradingViewRowsBySymbol(data: PanelData): Map<string, RowRecord[]> {
   const grouped = new Map<string, RowRecord[]>();
   const directRows = [
@@ -1768,6 +1776,28 @@ function groupTradingViewRowsBySymbol(data: PanelData): Map<string, RowRecord[]>
 function financeValuationSummary(sourceRows: RowRecord[]): SummaryItem {
   if (!sourceRows.length) {
     return missingFinanceItem("Valuation", "No DCF/relative valuation row");
+  }
+  const etf = sourceRows.find((row) => row.premium_pct !== undefined);
+  if (etf) {
+    const premium = numberField(etf, ["premium_pct"], Number.NaN);
+    return {
+      label: "Valuation",
+      value: Number.isFinite(premium) ? formatPct(premium) : "ETF context",
+      caption: "ETF premium/discount to NAV",
+      tone: Number.isFinite(premium) ? Math.abs(premium) <= 0.5 ? "good" : "warn" : "info",
+    };
+  }
+  const crypto = sourceRows.find((row) => stringField(row, ["asset_class"]) === "crypto");
+  if (crypto) {
+    const metrics = objectField(crypto.metrics);
+    const marketCap = numberField(metrics, ["market_cap"], Number.NaN);
+    const fdv = numberField(metrics, ["fdv"], Number.NaN);
+    return {
+      label: "Valuation",
+      value: Number.isFinite(marketCap) ? formatCompactMoney(marketCap) : "Crypto context",
+      caption: Number.isFinite(fdv) ? `FDV ${formatCompactMoney(fdv)}` : "CoinGecko market snapshot",
+      tone: "info",
+    };
   }
   const sorted = [...sourceRows].sort((a, b) => numberField(b, ["upside_pct"], -999) - numberField(a, ["upside_pct"], -999));
   const row = sorted[0];
@@ -1866,6 +1896,13 @@ function signalCellValue(key: SignalKey, row?: RowRecord): string {
   if (key === "sepa") return stringField(row, ["stage", "grade", "verdict"]) || `${Math.round(numberField(row, ["score", "setup_score"], 0))}`;
   if (key === "liquidity") return titleLabel(stringField(row, ["grade", "liquidity_grade"]) || "loaded");
   if (key === "valuation") {
+    const premium = numberField(row, ["premium_pct"], Number.NaN);
+    if (Number.isFinite(premium)) return formatPct(premium);
+    if (stringField(row, ["asset_class"]) === "crypto") {
+      const metrics = objectField(row.metrics);
+      const marketCap = numberField(metrics, ["market_cap"], Number.NaN);
+      return Number.isFinite(marketCap) ? formatCompactMoney(marketCap) : "Crypto";
+    }
     const upside = numberField(row, ["upside_pct"], Number.NaN);
     return Number.isFinite(upside) ? formatPct(upside) : titleLabel(stringField(row, ["method"]) || "loaded");
   }
@@ -1880,6 +1917,9 @@ function signalCellValue(key: SignalKey, row?: RowRecord): string {
 function signalTone(key: SignalKey, row: RowRecord | undefined, count: number): Tone {
   if (!count || !row) return "muted";
   if (key === "valuation") {
+    if (stringField(row, ["asset_class"]) === "crypto") return "info";
+    const premium = numberField(row, ["premium_pct"], Number.NaN);
+    if (Number.isFinite(premium)) return Math.abs(premium) <= 0.5 ? "good" : "warn";
     const upside = numberField(row, ["upside_pct"], Number.NaN);
     return Number.isFinite(upside) ? upside >= 0 ? "good" : "bad" : "info";
   }

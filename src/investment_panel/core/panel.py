@@ -9,7 +9,7 @@ from typing import Any
 
 from investment_panel.core.config import AppConfig, config_to_dict, load_config
 from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.decision import decision_readiness_rows, refresh_decision_read_models
+from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, refresh_decision_read_models
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
 
@@ -553,7 +553,7 @@ def top_source_label(counts: dict[str, int], components: dict[str, Any]) -> str:
 
 
 def portfolio(con: Any) -> list[dict[str, Any]]:
-    return query_rows(
+    rows = query_rows(
         con,
         """
         SELECT p.symbol, i.name, i.asset_class, i.category, p.quantity,
@@ -568,24 +568,30 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
                    WHEN date_diff('day', p.purchase_date, current_date) > 365 THEN 'long_term'
                    ELSE 'short_term'
                END AS tax_lot_term,
-               q.price,
-               CASE WHEN q.price IS NOT NULL THEN p.quantity * q.price ELSE NULL END AS market_value,
-               CASE WHEN q.price IS NOT NULL THEN p.quantity * (q.price - p.avg_cost) ELSE NULL END AS unrealized_pnl,
-               CASE
-                   WHEN q.price IS NOT NULL AND p.avg_cost > 0 THEN ((q.price - p.avg_cost) / p.avg_cost) * 100
-                   ELSE NULL
-               END AS unrealized_pnl_pct,
                p.notes
         FROM portfolio_positions p
         LEFT JOIN instruments i ON i.symbol = p.symbol
-        LEFT JOIN (
-            SELECT symbol, price
-            FROM quotes_intraday
-            QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
-        ) q ON q.symbol = p.symbol
         ORDER BY p.symbol
         """,
     )
+    quotes_by_symbol = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
+    for row in rows:
+        quote = quotes_by_symbol.get(str(row.get("symbol") or "").upper(), {})
+        price = quote.get("price")
+        row["price"] = price
+        row["quote_source"] = quote.get("source")
+        row["quote_freshness"] = quote.get("freshness_status")
+        if price is None:
+            row["market_value"] = None
+            row["unrealized_pnl"] = None
+            row["unrealized_pnl_pct"] = None
+            continue
+        quantity = float(row.get("quantity") or 0)
+        avg_cost = float(row.get("avg_cost") or 0)
+        row["market_value"] = quantity * float(price)
+        row["unrealized_pnl"] = quantity * (float(price) - avg_cost)
+        row["unrealized_pnl_pct"] = ((float(price) - avg_cost) / avg_cost) * 100 if avg_cost > 0 else None
+    return rows
 
 
 def theses(con: Any) -> list[dict[str, Any]]:
@@ -672,8 +678,13 @@ def fundamentals(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
-        SELECT symbol, period_end, filing_date, form_type, metrics, source_url
+        SELECT symbol, period_end, filing_date, form_type, metrics, source_url,
+               'equity' AS asset_class, 'sec_companyfacts' AS source
         FROM equity_fundamentals
+        UNION ALL
+        SELECT symbol, date AS period_end, date AS filing_date, 'coingecko_market' AS form_type,
+               metrics, source AS source_url, 'crypto' AS asset_class, source
+        FROM crypto_fundamentals
         ORDER BY filing_date DESC, symbol
         LIMIT 200
         """,
@@ -692,7 +703,7 @@ def quotes(con: Any) -> list[dict[str, Any]]:
             QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
         ),
         intraday_status AS (
-            SELECT i.*, f.freshness_status
+            SELECT i.*, COALESCE(f.freshness_status, 'unknown') AS freshness_status
             FROM latest_intraday i
             LEFT JOIN source_freshness f ON f.source_key = i.freshness_key
         ),
@@ -712,35 +723,26 @@ def quotes(con: Any) -> list[dict[str, Any]]:
             QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
         ),
         daily_status AS (
-            SELECT d.*, f.freshness_status
+            SELECT d.*, COALESCE(f.freshness_status, 'unknown') AS freshness_status
             FROM latest_daily d
             LEFT JOIN source_freshness f ON f.source_key = d.freshness_key
         ),
-        fresh_intraday AS (
-            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
-            FROM intraday_status
-            WHERE freshness_status = 'fresh'
-        ),
-        previous_close AS (
-            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
-            FROM daily_status
-            WHERE freshness_status = 'fresh'
-              AND symbol NOT IN (SELECT symbol FROM fresh_intraday)
-        ),
-        stale_intraday_fallback AS (
-            SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
-            FROM intraday_status
-            WHERE symbol NOT IN (SELECT symbol FROM fresh_intraday)
-              AND symbol NOT IN (SELECT symbol FROM previous_close)
-        )
-        SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw
-        FROM (
-            SELECT * FROM fresh_intraday
+        candidates AS (
+            SELECT 0 AS priority, symbol, observed_at, price, change_pct, change_abs, currency, source, raw, freshness_status
+            FROM intraday_status WHERE freshness_status = 'fresh'
             UNION ALL
-            SELECT * FROM previous_close
+            SELECT 1 AS priority, symbol, observed_at, price, change_pct, change_abs, currency, source, raw, freshness_status
+            FROM daily_status WHERE freshness_status = 'fresh'
             UNION ALL
-            SELECT * FROM stale_intraday_fallback
+            SELECT 2 AS priority, symbol, observed_at, price, change_pct, change_abs, currency, source, raw, freshness_status
+            FROM intraday_status WHERE freshness_status <> 'fresh'
+            UNION ALL
+            SELECT 2 AS priority, symbol, observed_at, price, change_pct, change_abs, currency, source, raw, freshness_status
+            FROM daily_status WHERE freshness_status <> 'fresh'
         )
+        SELECT symbol, observed_at, price, change_pct, change_abs, currency, source, raw, freshness_status
+        FROM candidates
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY priority ASC, observed_at DESC) = 1
         ORDER BY observed_at DESC, symbol
         LIMIT 200
         """,
@@ -877,7 +879,8 @@ def sepa(con: Any) -> list[dict[str, Any]]:
         """
         SELECT symbol, as_of, score, stage, verdict, checklist, metrics
         FROM sepa_analyses
-        ORDER BY score DESC
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC, score DESC NULLS LAST) = 1
+        ORDER BY as_of DESC, score DESC NULLS LAST, symbol
         LIMIT 200
         """,
     )
@@ -891,7 +894,8 @@ def liquidity(con: Any) -> list[dict[str, Any]]:
         SELECT symbol, as_of, grade, avg_daily_volume, avg_dollar_volume,
                turnover_ratio, amihud_illiquidity, impact_1pct_adv_bps, metrics
         FROM liquidity_metrics
-        ORDER BY avg_dollar_volume DESC NULLS LAST
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC, avg_dollar_volume DESC NULLS LAST) = 1
+        ORDER BY as_of DESC, avg_dollar_volume DESC NULLS LAST, symbol
         LIMIT 200
         """,
     )
@@ -904,7 +908,8 @@ def correlations(con: Any) -> list[dict[str, Any]]:
         """
         SELECT id, target_symbol AS symbol, as_of, lookback_days, peers, metrics
         FROM correlation_runs
-        ORDER BY as_of DESC, symbol
+        QUALIFY row_number() OVER (PARTITION BY target_symbol ORDER BY as_of DESC) = 1
+        ORDER BY as_of DESC, target_symbol
         LIMIT 200
         """,
     )
@@ -917,6 +922,7 @@ def etf_premiums(con: Any) -> list[dict[str, Any]]:
         """
         SELECT symbol, as_of, market_price, nav, premium_pct, metrics, source
         FROM etf_premiums
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, abs(premium_pct) DESC
         LIMIT 200
         """,
@@ -930,6 +936,7 @@ def analyst_estimates(con: Any) -> list[dict[str, Any]]:
         """
         SELECT symbol, as_of, estimates, source
         FROM analyst_estimates
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, symbol
         LIMIT 200
         """,
@@ -958,6 +965,7 @@ def earnings_setups(con: Any) -> list[dict[str, Any]]:
                surprise_score, estimate_spread_score, sentiment_score, verdict,
                metrics, source
         FROM earnings_setups
+        QUALIFY dense_rank() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, score DESC NULLS LAST, symbol
         LIMIT 200
         """,
@@ -971,6 +979,7 @@ def valuations(con: Any) -> list[dict[str, Any]]:
         """
         SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics
         FROM valuation_models
+        QUALIFY dense_rank() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, upside_pct DESC NULLS LAST
         LIMIT 200
         """,

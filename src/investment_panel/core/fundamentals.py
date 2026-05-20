@@ -103,12 +103,13 @@ def latest_instant_fact(facts: dict[str, Any], tags: list[str]) -> dict[str, Any
 
 
 def fact_rows(facts: dict[str, Any], tags: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for tag in tags:
         units = ((facts.get(tag) or {}).get("units") or {})
         for unit_name in ("USD", "shares", "pure"):
             if unit_name in units:
-                return list(units[unit_name])
-    return []
+                rows.extend(list(units[unit_name]))
+    return rows
 
 
 def growth(current: dict[str, Any], prior: dict[str, Any]) -> float | None:
@@ -121,4 +122,3 @@ def ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> float | Non
     if not numerator or not denominator or not denominator.get("val"):
         return None
     return float(numerator["val"]) / float(denominator["val"])
-

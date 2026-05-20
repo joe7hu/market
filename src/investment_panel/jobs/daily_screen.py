@@ -8,6 +8,7 @@ from typing import Any
 from investment_panel.analysis import run_all_analyses
 from investment_panel.core.arco import flatten_arco_items, ingest_arco_theses, load_arco_context
 from investment_panel.core.config import load_config
+from investment_panel.core.crypto import fetch_coingecko_markets, upsert_crypto_fundamentals
 from investment_panel.core.db import db, init_db, upsert_instrument
 from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.fundamentals import update_equity_fundamentals
@@ -47,6 +48,13 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
             price_rows += upsert_prices(con, frame)
             if compute_and_store(con, instrument["symbol"]):
                 feature_rows += 1
+        crypto_fundamental_rows = 0
+        crypto_symbols = [row["symbol"] for row in universe if row.get("asset_class") == "crypto"]
+        if config.market_data.mode == "online" and crypto_symbols:
+            try:
+                crypto_fundamental_rows = upsert_crypto_fundamentals(con, fetch_coingecko_markets(crypto_symbols))
+            except Exception:
+                crypto_fundamental_rows = 0
         candidates = score_and_store(con, [row["symbol"] for row in universe], config.scoring.weights)
         analysis_result = run_all_analyses(con, config)
         decision_result = refresh_decision_read_models(con, config.watchlist)
@@ -58,6 +66,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         "price_rows": price_rows,
         "feature_rows": feature_rows,
         "fundamental_rows": fundamental_rows,
+        "crypto_fundamental_rows": crypto_fundamental_rows,
         "candidates": len(candidates),
         "analysis": analysis_result,
         "decision_models": decision_result,

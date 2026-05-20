@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import disclosures, quotes
+from investment_panel.core.panel import disclosures, liquidity, quotes, sepa
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -63,3 +63,40 @@ def test_quotes_prefer_previous_close_when_intraday_is_stale(tmp_path) -> None:
     assert rows[0]["symbol"] == "NVDA"
     assert rows[0]["price"] == 120
     assert rows[0]["source"] == "previous_close:yahoo-chart"
+
+
+def test_quotes_use_newest_stale_quote_when_no_fresh_source_exists(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO quotes_intraday VALUES ('NVDA', '2026-05-10T14:30:00Z', 500, 1.0, 5.0, 'USD', 'tradingview', '{}')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-05-14', 90, 100, 80, 100, 1000, 'yahoo-chart')")
+        con.execute("INSERT INTO prices_daily VALUES ('NVDA', '2026-05-15', 110, 120, 100, 120, 1000, 'yahoo-chart')")
+        con.execute("INSERT INTO source_freshness VALUES ('tradingview:NVDA', 'intraday_quote', 'tradingview', '2026-05-10T14:30:00Z', 'stale', '4 market hours', 'ok', '', false, current_timestamp)")
+        con.execute("INSERT INTO source_freshness VALUES ('previous_close:NVDA', 'closing_quote', 'yahoo-chart', '2026-05-15', 'stale', 'previous close while market is closed', 'ok', '', false, current_timestamp)")
+
+        rows = quotes(con)
+
+    assert rows[0]["symbol"] == "NVDA"
+    assert rows[0]["price"] == 120
+    assert rows[0]["freshness_status"] == "stale"
+
+
+def test_analysis_read_models_return_current_row_per_symbol(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO sepa_analyses VALUES ('NVDA', '2026-05-10', 99, 'old-high', 'old', '{}', '{}')")
+        con.execute("INSERT INTO sepa_analyses VALUES ('NVDA', '2026-05-19', 50, 'current', 'current', '{}', '{}')")
+        con.execute("INSERT INTO liquidity_metrics VALUES ('NVDA', '2026-05-10', 'A', 1000, 999999999, 1, 1, 1, '{}')")
+        con.execute("INSERT INTO liquidity_metrics VALUES ('NVDA', '2026-05-19', 'B', 1000, 100, 1, 1, 1, '{}')")
+
+        sepa_rows = sepa(con)
+        liquidity_rows = liquidity(con)
+
+    assert len([row for row in sepa_rows if row["symbol"] == "NVDA"]) == 1
+    assert sepa_rows[0]["as_of"].isoformat() == "2026-05-19"
+    assert sepa_rows[0]["stage"] == "current"
+    assert len([row for row in liquidity_rows if row["symbol"] == "NVDA"]) == 1
+    assert liquidity_rows[0]["as_of"].isoformat() == "2026-05-19"
+    assert liquidity_rows[0]["grade"] == "B"

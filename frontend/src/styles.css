@@ -371,7 +371,8 @@ h3 {
 }
 
 .icon-button {
-  width: 33px;
+  min-width: 34px;
+  width: 34px;
   padding: 0;
 }
 
@@ -1595,6 +1596,7 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-height: 44px;
   width: fit-content;
   color: #cfe0ec;
   padding: 0;
@@ -4337,7 +4339,7 @@ h3,
 }
 
 .ticker-dossier-context {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .ticker-dossier-context .metric-badge {
@@ -4355,9 +4357,10 @@ h3,
 .ticker-dossier-context .metric-badge small {
   display: -webkit-box;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 2;
   white-space: normal;
 }
 
@@ -4762,7 +4765,7 @@ body {
 }
 
 .terminal-shell {
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: 192px minmax(0, 1fr);
   min-height: calc(100vh - 38px);
   border-bottom: 2px solid var(--terminal-black);
 }
@@ -4802,15 +4805,20 @@ body {
 .side-nav a,
 .sidebar-footer button {
   display: flex;
-  justify-content: space-between;
-  min-height: 25px;
+  justify-content: flex-start;
+  min-height: 44px;
   border-radius: 0;
   padding: 0;
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 900;
   letter-spacing: 0;
   text-transform: uppercase;
+}
+
+.side-nav a span {
+  overflow-wrap: anywhere;
+  line-height: 1.15;
 }
 
 .side-nav a svg {
@@ -5065,7 +5073,7 @@ h3,
 .signal-matrix-panel h2,
 .finance-analysis-panel h2 {
   color: var(--surface-strong);
-  font-size: 0.76rem;
+  font-size: 0.82rem;
   font-weight: 900;
   letter-spacing: 0.08em;
 }
@@ -5450,14 +5458,18 @@ h3,
 .summary-list small,
 .panel-copy,
 .detail-rows dd,
-.finance-analysis-card > button span,
-.finance-analysis-card > p,
-.finance-analysis-item small,
 .coverage-item small,
 .signal-command-head p,
-.signal-matrix-panel header p,
-.finance-analysis-panel p {
+.signal-matrix-panel header p {
   color: var(--muted-2);
+}
+
+.finance-analysis-panel > header p {
+  margin-top: 5px;
+  color: #d8d2cd;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .summary-list,
@@ -5472,7 +5484,7 @@ h3,
 .catalyst-list button,
 .generic-list button,
 .calendar-event-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(96px, 0.38fr) minmax(0, 0.62fr);
   border-bottom: 1px solid var(--line);
   border-radius: 0;
   padding: 12px 0;
@@ -5537,6 +5549,7 @@ h3,
 }
 
 .signal-chip b,
+.signal-chip small,
 .signal-command-head strong,
 .decision-card-head span,
 .detail-rows dt,
@@ -5544,6 +5557,15 @@ h3,
 .bar-list span,
 .score-total span {
   color: var(--text);
+}
+
+.signal-chip b,
+.signal-chip small,
+.summary-list strong {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
 }
 
 .signal-chip small {
@@ -5579,6 +5601,63 @@ h3,
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.finance-analysis-card {
+  gap: 12px;
+  padding: 14px;
+}
+
+.finance-analysis-card > button {
+  gap: 10px;
+  min-height: 44px;
+}
+
+.finance-analysis-card > button strong {
+  color: var(--terminal-black);
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.finance-analysis-card > button span {
+  color: #504a45;
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.finance-analysis-card > p {
+  color: #504a45;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.38;
+}
+
+.finance-analysis-item {
+  gap: 5px;
+  padding: 10px;
+}
+
+.finance-analysis-item span {
+  color: #625b55;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.finance-analysis-item strong {
+  color: var(--terminal-black);
+  font-size: 0.92rem;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.finance-analysis-item small {
+  color: #504a45;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.32;
+  white-space: normal;
+}
+
 .rank {
   color: var(--red) !important;
 }
@@ -5608,10 +5687,27 @@ h3,
 
 .tab-bar {
   border-bottom-color: var(--terminal-black);
+  gap: 0;
+  scrollbar-width: thin;
+}
+
+.tab-bar button {
+  min-height: 44px;
+  padding: 0 10px;
 }
 
 .tab-bar button.active {
   border-color: var(--red);
+}
+
+.ticker-actions .icon-button {
+  min-width: 44px;
+  min-height: 44px;
+  width: 44px;
+}
+
+.ticker-signal-ribbon > div:last-child {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
 }
 
 .tradingview-frame iframe,
@@ -5624,21 +5720,25 @@ h3,
 
 @media (max-width: 1280px) {
   .terminal-shell {
-    grid-template-columns: 208px minmax(0, 1fr);
+    grid-template-columns: 184px minmax(0, 1fr);
   }
 
   .sidebar {
-    padding-inline: 18px;
+    padding-inline: 16px;
   }
 
   .market-clocks {
-    margin-inline: -18px;
-    padding-inline: 18px;
+    margin-inline: -16px;
+    padding-inline: 16px;
   }
 
   .terminal-board-grid,
   .terminal-secondary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ticker-dossier-context {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .terminal-board-grid > .panel + .panel,
@@ -5687,11 +5787,71 @@ h3,
   }
 
   .side-nav a {
-    justify-content: space-between;
+    justify-content: flex-start;
   }
 
   .desk-main {
     padding: 0;
+  }
+
+  .ticker-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 44px;
+    align-items: stretch;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .ticker-actions .metric-badge {
+    min-width: 0;
+  }
+
+  .ticker-actions .icon-button {
+    height: 100%;
+  }
+
+  .ticker-dossier-context,
+  .ticker-signal-ribbon > div:last-child,
+  .snapshot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ticker-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ticker-grid > .panel,
+  .ticker-grid > .decision-brief-panel,
+  .ticker-grid > .trade-setup-panel {
+    grid-column: 1 / -1;
+  }
+
+  .tradingview-frame {
+    min-height: auto;
+  }
+
+  .tradingview-frame iframe {
+    min-height: 300px;
+  }
+
+  .summary-list button,
+  .pulse-list button,
+  .catalyst-list button,
+  .generic-list button {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    align-items: start;
+    text-align: left;
+  }
+
+  .summary-list strong,
+  .pulse-list strong,
+  .catalyst-list strong,
+  .generic-list strong {
+    justify-self: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: left;
   }
 
   .market-clocks,
@@ -5748,7 +5908,7 @@ h3,
   }
 
   .side-nav a {
-    min-height: 24px;
+    min-height: 44px;
     font-size: 0.74rem;
   }
 
@@ -5772,6 +5932,15 @@ h3,
 
   .terminal-hero-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .ticker-signal-ribbon > div:last-child,
+  .snapshot-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-bar button {
+    font-size: 0.7rem;
   }
 
   .desk-table th,

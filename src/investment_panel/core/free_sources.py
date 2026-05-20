@@ -220,16 +220,20 @@ def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         record_source_health(con, "yfinance_enrichment", "missing_dependency", detail, "https://pypi.org/project/yfinance/")
         return {"status": "missing_dependency", "provider": "yfinance", "error": detail}
     today = date.today().isoformat()
-    result = {"status": "ok", "provider": "yfinance", "estimates": 0, "earnings": 0, "etf_premiums": 0}
+    observed_at = datetime.utcnow().isoformat()
+    run_id = stable_id(f"yfinance:{observed_at}")
+    result = {"status": "ok", "provider": "yfinance", "estimates": 0, "earnings": 0, "etf_premiums": 0, "market_snapshots": 0}
     for instrument in query_rows(con, "SELECT symbol, asset_class FROM instruments ORDER BY symbol"):
         symbol = instrument["symbol"]
         if str(symbol).endswith("-USD"):
             continue
         try:
+            info = provider.info(symbol)
+            if store_yfinance_market_snapshot(con, run_id, symbol, observed_at, info):
+                result["market_snapshots"] += 1
             if instrument.get("asset_class") == "etf":
                 con.execute("DELETE FROM analyst_estimates WHERE symbol = ? AND source = 'yfinance'", [symbol])
                 con.execute("DELETE FROM earnings_events WHERE symbol = ? AND source = 'yfinance'", [symbol])
-                info = provider.info(symbol)
                 if store_etf_premium(con, symbol, today, info):
                     result["etf_premiums"] += 1
                 continue
@@ -260,6 +264,39 @@ def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
     return result
 
 
+def store_yfinance_market_snapshot(con: Any, run_id: str, symbol: str, observed_at: str, info: dict[str, Any]) -> bool:
+    market_cap = as_float(info.get("marketCap"))
+    if market_cap is None or market_cap <= 0:
+        return False
+    metrics = {
+        "market_cap_basic": market_cap,
+        "market_cap": market_cap,
+        "shares_outstanding": as_float(info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")),
+        "regular_market_price": as_float(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")),
+        "previous_close": as_float(info.get("previousClose")),
+        "quote_type": info.get("quoteType"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "source": "yfinance_info",
+    }
+    con.execute(
+        """
+        INSERT OR REPLACE INTO market_screener_rows
+        (run_id, symbol, observed_at, name, metrics, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            run_id,
+            str(symbol).upper(),
+            observed_at,
+            info.get("shortName") or info.get("longName") or str(symbol).upper(),
+            json_dumps(metrics),
+            "yfinance_info",
+        ],
+    )
+    return True
+
+
 def equity_symbols(con: Any) -> list[str]:
     rows = query_rows(con, "SELECT symbol FROM instruments WHERE asset_class IN ('equity', 'etf') ORDER BY symbol")
     return [row["symbol"] for row in rows]
@@ -282,6 +319,11 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
     configured = [symbol.upper() for symbol in config.data_sources.tradingview.options_symbols]
     if configured:
         return configured
+    watchlist = [
+        str(item.get("symbol") or "").upper()
+        for item in config.watchlist
+        if item.get("symbol") and str(item.get("asset_class") or "").lower() in {"equity", "etf"}
+    ]
     rows = query_rows(
         con,
         """
@@ -293,9 +335,8 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
         LIMIT 5
         """,
     )
-    if rows:
-        return [row["symbol"] for row in rows]
-    return equity_symbols(con)[:5]
+    ranked = [row["symbol"] for row in rows]
+    return unique_symbols([*watchlist, *ranked, *equity_symbols(con)])[:12]
 
 
 def tradingview_search_symbols(con: Any, config: AppConfig) -> list[str]:

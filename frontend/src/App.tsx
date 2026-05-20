@@ -12,14 +12,14 @@ import { SettingsRoute } from "./pages/SettingsRoute";
 import { TickerRoute } from "./pages/TickerRoute";
 
 const navItems = [
-  { to: "/", label: "Portfolio", code: "01", end: true },
-  { to: "/opportunities", label: "Markets", code: "02" },
-  { to: "/research", label: "Signals", code: "03" },
-  { to: "/portfolio", label: "Risk Mgt", code: "04" },
-  { to: "/filings", label: "Ledger", code: "05" },
-  { to: "/calendar", label: "Calendar", code: "06" },
-  { to: "/health", label: "Health", code: "07" },
-  { to: "/settings", label: "Settings", code: "08" },
+  { to: "/", label: "Dashboard", end: true },
+  { to: "/opportunities", label: "Opportunities" },
+  { to: "/research", label: "Research" },
+  { to: "/portfolio", label: "Portfolio Overview" },
+  { to: "/filings", label: "Trader Filings" },
+  { to: "/calendar", label: "Calendar" },
+  { to: "/health", label: "Operations Health" },
+  { to: "/settings", label: "Settings" },
 ];
 
 const fallbackTapeItems = [
@@ -80,7 +80,6 @@ function AppShell() {
             {navItems.map((item) => (
               <NavLink key={item.to} to={item.to} end={item.end}>
                 <span>{item.label}</span>
-                <small>{item.code}</small>
               </NavLink>
             ))}
           </nav>
