@@ -3711,6 +3711,217 @@ h3,
   line-height: 1.45;
 }
 
+.portfolio-risk-ribbon {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.15fr) minmax(170px, 0.95fr) minmax(150px, 0.75fr) minmax(320px, 1.35fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.portfolio-risk-hero,
+.portfolio-risk-grid {
+  min-width: 0;
+  border: 1px solid #dbe4ef;
+  background: #f8fafc;
+}
+
+.portfolio-risk-hero {
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  min-height: 88px;
+  padding: 12px;
+}
+
+.portfolio-risk-hero span,
+.portfolio-risk-hero small {
+  color: #475569;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.portfolio-risk-hero strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 1.55rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-risk-hero.good strong,
+.portfolio-risk-hero.good small {
+  color: var(--green);
+}
+
+.portfolio-risk-hero.bad strong,
+.portfolio-risk-hero.bad small {
+  color: var(--red);
+}
+
+.portfolio-risk-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.portfolio-allocation {
+  display: grid;
+  gap: 10px;
+}
+
+.portfolio-donut {
+  position: relative;
+  min-height: 190px;
+}
+
+.portfolio-donut-center {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.portfolio-donut-center strong {
+  color: #111827;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.portfolio-donut-center span {
+  color: #64748b;
+  font-size: 0.67rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.portfolio-allocation-list {
+  display: grid;
+  gap: 5px;
+}
+
+.portfolio-allocation-list button {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  border: 1px solid #dbe4ef;
+  background: #ffffff;
+  color: #1f2937;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.portfolio-allocation-list button.active,
+.portfolio-allocation-list button:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.portfolio-allocation-list i {
+  width: 10px;
+  height: 10px;
+}
+
+.portfolio-allocation-list span {
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-allocation-list strong {
+  font-size: 0.72rem;
+}
+
+.portfolio-heatmap {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  grid-auto-flow: dense;
+  gap: 6px;
+}
+
+.portfolio-heatmap-cell {
+  display: grid;
+  align-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dbe4ef;
+  background: #f1f5f9;
+  color: #111827;
+  padding: 9px;
+  text-align: left;
+}
+
+.portfolio-heatmap-cell:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.portfolio-heatmap-cell.positive {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.portfolio-heatmap-cell.negative {
+  background: #fee2e2;
+  border-color: #fecaca;
+}
+
+.portfolio-heatmap-cell.heavy {
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
+.portfolio-heatmap-cell span,
+.portfolio-heatmap-cell strong,
+.portfolio-heatmap-cell small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-heatmap-cell span {
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.portfolio-heatmap-cell strong {
+  font-size: 1.12rem;
+}
+
+.portfolio-heatmap-cell small {
+  color: #475569;
+  font-size: 0.67rem;
+}
+
+.portfolio-filter-clear {
+  justify-self: start;
+}
+
+.sort-header-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  text-transform: inherit;
+}
+
+.sort-header-button span {
+  min-width: 9px;
+  color: var(--blue);
+}
+
 .desk-table th,
 .desk-table td,
 .signal-matrix th,
@@ -3829,6 +4040,10 @@ h3,
     grid-template-columns: 1fr;
   }
 
+  .portfolio-risk-ribbon {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .decision-brief-grid,
   .ticker-dossier-context {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3940,6 +4155,11 @@ h3,
     grid-template-columns: 1fr;
   }
 
+  .portfolio-risk-ribbon,
+  .portfolio-risk-grid {
+    grid-template-columns: 1fr;
+  }
+
   .filter-rail {
     order: 2;
     position: static;
@@ -4017,6 +4237,10 @@ h3,
   .donut-card {
     grid-template-columns: 1fr;
     justify-items: center;
+  }
+
+  .portfolio-heatmap {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .legend {

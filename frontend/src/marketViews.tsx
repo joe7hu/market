@@ -104,6 +104,8 @@ type Opportunity = {
 type Holding = {
   ticker: string;
   quantity: number;
+  assetClass: string;
+  category: string;
   weight: number;
   price: number;
   marketValue: number;
@@ -122,6 +124,26 @@ type Holding = {
   nextStep: string;
   decisionScore: number;
   blockers: string[];
+};
+
+type PortfolioStats = {
+  totalCount: number;
+  pricedCount: number;
+  unpricedCount: number;
+  portfolioValue: number;
+  costBasis: number;
+  unrealizedPnl: number;
+  unrealizedPnlPct: number;
+  dayChange: number;
+  dayChangePct: number;
+  top3Weight: number;
+  largest?: Holding;
+  gainers: number;
+  losers: number;
+  shortTermWeight: number;
+  longTermWeight: number;
+  quoteGapCount: number;
+  riskScore: number;
 };
 
 type CalendarEvent = {
@@ -538,6 +560,8 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
 }
 
 export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppModel; onOpenTicker: (symbol: string) => void; onRefresh: () => Promise<void> }) {
+  const [heatmapMode, setHeatmapMode] = useState("P/L");
+  const [allocationFilter, setAllocationFilter] = useState("");
   const hasHoldings = model.holdings.length > 0;
   const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
   const unpricedHoldings = model.holdings.length - pricedHoldings.length;
@@ -545,10 +569,14 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const portfolioDayChange = model.holdings.reduce((total, holding) => total + (Number.isFinite(holding.dayChangeValue) ? holding.dayChangeValue : 0), 0);
   const portfolioCostBasis = model.holdings.reduce((total, holding) => total + holding.quantity * holding.averageCost, 0);
   const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
-  const portfolioReviewRows = portfolioPositionReviewRows(model.holdings, model.valuationRows, model.technicalRows);
-  const riskRows = portfolioRiskRows(model.holdings, model.liquidityRows, model.correlationRows);
-  const valuationRows = portfolioValuationRows(model.holdings, model.valuationRows, model.technicalRows);
-  const taxRows = portfolioTaxRows(model.holdings);
+  const visibleHoldings = allocationFilter
+    ? model.holdings.filter((holding) => portfolioAllocationBucket(holding) === allocationFilter)
+    : model.holdings;
+  const stats = summarizePortfolio(model.holdings);
+  const portfolioReviewRows = portfolioPositionReviewRows(visibleHoldings, model.valuationRows, model.technicalRows);
+  const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
+  const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
+  const taxRows = portfolioTaxRows(visibleHoldings);
   return (
     <PageFrame
       title="Portfolio Overview"
@@ -579,8 +607,18 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         </div>
       ) : (
         <div className="portfolio-grid">
+          <Panel className="span-12" title="Risk & Positioning">
+            <PortfolioRiskRibbon stats={stats} />
+          </Panel>
+          <Panel className="span-4" title="Allocation">
+            <PortfolioAllocationPanel holdings={model.holdings} activeBucket={allocationFilter} onBucketSelect={setAllocationFilter} />
+          </Panel>
+          <Panel className="span-8" title="Exposure Map" headerAction={<SegmentedControl options={["P/L", "Weight", "Day"]} value={heatmapMode} onChange={setHeatmapMode} />}>
+            <PortfolioHeatmap holdings={visibleHoldings} mode={heatmapMode} onOpenTicker={onOpenTicker} />
+          </Panel>
           <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
-            <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
+            {allocationFilter && <button className="text-link portfolio-filter-clear" type="button" onClick={() => setAllocationFilter("")}>Showing {allocationFilter}; clear filter</button>}
+            <HoldingsTable holdings={visibleHoldings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
           </Panel>
           <Panel className="span-4" title="Add / Update Position">
             <PortfolioEntryForm onSaved={onRefresh} />
@@ -600,6 +638,100 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         </div>
       )}
     </PageFrame>
+  );
+}
+
+function PortfolioRiskRibbon({ stats }: { stats: PortfolioStats }) {
+  const riskTone: Tone = stats.riskScore >= 70 ? "bad" : stats.riskScore >= 45 ? "warn" : "good";
+  return (
+    <div className="portfolio-risk-ribbon">
+      <div className="portfolio-risk-hero">
+        <span>Portfolio Value</span>
+        <strong>{formatMoney(stats.portfolioValue)}</strong>
+        <small>{stats.pricedCount}/{stats.totalCount} priced holdings</small>
+      </div>
+      <div className={`portfolio-risk-hero ${stats.unrealizedPnl >= 0 ? "good" : "bad"}`}>
+        <span>Unrealized P/L</span>
+        <strong>{formatMoney(stats.unrealizedPnl)}</strong>
+        <small>{formatPct(stats.unrealizedPnlPct)} · {stats.gainers} up / {stats.losers} down</small>
+      </div>
+      <div className={`portfolio-risk-hero ${stats.dayChange >= 0 ? "good" : "bad"}`}>
+        <span>Today</span>
+        <strong>{formatMoney(stats.dayChange)}</strong>
+        <small>{formatPct(stats.dayChangePct)}</small>
+      </div>
+      <div className="portfolio-risk-grid">
+        <MetricBadge label="Top 3 Weight" value={`${stats.top3Weight.toFixed(1)}%`} caption={stats.largest ? `${stats.largest.ticker} leads` : "No priced rows"} tone={stats.top3Weight > 65 ? "warn" : "info"} />
+        <MetricBadge label="Risk Score" value={String(Math.round(stats.riskScore))} caption="Concentration and data gaps" tone={riskTone} />
+        <MetricBadge label="Quote Gaps" value={String(stats.quoteGapCount)} caption="Missing or stale rows" tone={stats.quoteGapCount ? "warn" : "good"} />
+        <MetricBadge label="Short Term" value={`${stats.shortTermWeight.toFixed(1)}%`} caption={`${stats.longTermWeight.toFixed(1)}% long term`} tone={stats.shortTermWeight > 50 ? "warn" : "info"} />
+      </div>
+    </div>
+  );
+}
+
+function PortfolioAllocationPanel({ holdings, activeBucket, onBucketSelect }: { holdings: Holding[]; activeBucket: string; onBucketSelect: (bucket: string) => void }) {
+  const buckets = portfolioAllocationBuckets(holdings);
+  if (!buckets.length) {
+    return <EmptyState title="No allocation rows" detail="Priced holdings are required for allocation weights." />;
+  }
+  const total = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  return (
+    <div className="portfolio-allocation">
+      <div className="portfolio-donut">
+        <ResponsiveContainer width="100%" height={190}>
+          <PieChart>
+            <Pie data={buckets} dataKey="value" nameKey="name" innerRadius={48} outerRadius={78} paddingAngle={2}>
+              {buckets.map((bucket, index) => <Cell key={bucket.name} fill={PORTFOLIO_CHART_COLORS[index % PORTFOLIO_CHART_COLORS.length]} stroke="#ffffff" strokeWidth={2} />)}
+            </Pie>
+            <Tooltip formatter={(value) => [`${Number(value ?? 0).toFixed(1)}%`, "Weight"]} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="portfolio-donut-center">
+          <strong>{total.toFixed(0)}%</strong>
+          <span>priced</span>
+        </div>
+      </div>
+      <div className="portfolio-allocation-list">
+        {buckets.map((bucket, index) => (
+          <button key={bucket.name} className={activeBucket === bucket.name ? "active" : ""} type="button" onClick={() => onBucketSelect(activeBucket === bucket.name ? "" : bucket.name)}>
+            <i style={{ background: PORTFOLIO_CHART_COLORS[index % PORTFOLIO_CHART_COLORS.length] }} />
+            <span>{bucket.name}</span>
+            <strong>{bucket.value.toFixed(1)}%</strong>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PortfolioHeatmap({ holdings, mode, onOpenTicker }: { holdings: Holding[]; mode: string; onOpenTicker: (symbol: string) => void }) {
+  const rows = holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight);
+  if (!rows.length) {
+    return <EmptyState title="No priced exposure" detail="Refresh quotes before using the exposure map." />;
+  }
+  return (
+    <div className="portfolio-heatmap" role="list">
+      {rows.map((holding) => {
+        const metric = portfolioHeatmapMetric(holding, mode);
+        const tone = portfolioHeatmapTone(metric, mode);
+        const size = Math.max(72, Math.min(170, 78 + holding.weight * 2.2));
+        return (
+          <button
+            key={holding.ticker}
+            className={`portfolio-heatmap-cell ${tone}`}
+            style={{ minHeight: size }}
+            type="button"
+            role="listitem"
+            onClick={() => onOpenTicker(holding.ticker)}
+          >
+            <span>{holding.ticker}</span>
+            <strong>{mode === "Weight" ? `${holding.weight.toFixed(1)}%` : formatPct(metric)}</strong>
+            <small>{formatMoney(holding.marketValue)} · {portfolioAllocationBucket(holding)}</small>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1272,6 +1404,8 @@ function buildHoldings(portfolioRows: RowRecord[], quoteRows: RowRecord[], readi
     return {
       ticker,
       quantity,
+      assetClass: titleLabel(stringField(row, ["asset_class"]) || "unclassified"),
+      category: titleLabel(stringField(row, ["category"]) || "owned-portfolio"),
       weight: numberField(row, ["weight", "portfolio_weight"], 0),
       price: numberField(row, ["price"], Number.NaN),
       marketValue: marketValue ?? 0,
@@ -2326,6 +2460,86 @@ function portfolioPositionReviewRows(holdings: Holding[], valuationRows: Summary
       symbol: holding.ticker,
     };
   });
+}
+
+const PORTFOLIO_CHART_COLORS = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#dc2626", "#4f46e5", "#64748b"];
+
+function summarizePortfolio(holdings: Holding[]): PortfolioStats {
+  const priced = holdings.filter((holding) => holding.hasMarketValue);
+  const portfolioValue = priced.reduce((total, holding) => total + holding.marketValue, 0);
+  const costBasis = holdings.reduce((total, holding) => total + holding.quantity * holding.averageCost, 0);
+  const unrealizedPnl = holdings.reduce((total, holding) => total + (holding.hasPnl ? holding.unrealizedPnl : 0), 0);
+  const dayChange = holdings.reduce((total, holding) => total + (Number.isFinite(holding.dayChangeValue) ? holding.dayChangeValue : 0), 0);
+  const sortedWeights = priced.map((holding) => holding.weight).sort((a, b) => b - a);
+  const top3Weight = sortedWeights.slice(0, 3).reduce((sum, weight) => sum + weight, 0);
+  const largest = priced.slice().sort((a, b) => b.weight - a.weight)[0];
+  const gainers = holdings.filter((holding) => holding.hasPnl && holding.unrealizedPnl >= 0).length;
+  const losers = holdings.filter((holding) => holding.hasPnl && holding.unrealizedPnl < 0).length;
+  const quoteGapCount = holdings.filter((holding) => !holding.hasMarketValue || ["missing", "stale", "failed"].includes(holding.quoteFreshness)).length;
+  const shortTermWeight = priced.filter((holding) => holding.taxLotTerm.toLowerCase().includes("short")).reduce((sum, holding) => sum + holding.weight, 0);
+  const longTermWeight = priced.filter((holding) => holding.taxLotTerm.toLowerCase().includes("long")).reduce((sum, holding) => sum + holding.weight, 0);
+  const concentrationScore = Math.min(top3Weight / 80, 1) * 42;
+  const quoteGapScore = holdings.length ? Math.min(quoteGapCount / holdings.length, 1) * 24 : 0;
+  const loserScore = holdings.length ? Math.min(losers / holdings.length, 1) * 18 : 0;
+  const shortTermScore = Math.min(shortTermWeight / 80, 1) * 16;
+  return {
+    totalCount: holdings.length,
+    pricedCount: priced.length,
+    unpricedCount: holdings.length - priced.length,
+    portfolioValue,
+    costBasis,
+    unrealizedPnl,
+    unrealizedPnlPct: costBasis > 0 ? (unrealizedPnl / costBasis) * 100 : 0,
+    dayChange,
+    dayChangePct: portfolioValue - dayChange > 0 ? (dayChange / (portfolioValue - dayChange)) * 100 : 0,
+    top3Weight,
+    largest,
+    gainers,
+    losers,
+    shortTermWeight,
+    longTermWeight,
+    quoteGapCount,
+    riskScore: concentrationScore + quoteGapScore + loserScore + shortTermScore,
+  };
+}
+
+function portfolioAllocationBucket(holding: Holding): string {
+  return holding.assetClass && holding.assetClass !== "Unclassified" ? holding.assetClass : holding.category || "Unclassified";
+}
+
+function portfolioAllocationBuckets(holdings: Holding[]): Array<{ name: string; value: number; marketValue: number }> {
+  const grouped = new Map<string, { name: string; marketValue: number }>();
+  const pricedValue = holdings.filter((holding) => holding.hasMarketValue).reduce((sum, holding) => sum + holding.marketValue, 0);
+  if (!pricedValue) return [];
+  for (const holding of holdings) {
+    if (!holding.hasMarketValue) continue;
+    const name = portfolioAllocationBucket(holding);
+    const current = grouped.get(name) ?? { name, marketValue: 0 };
+    current.marketValue += holding.marketValue;
+    grouped.set(name, current);
+  }
+  const rows = [...grouped.values()]
+    .map((bucket) => ({ ...bucket, value: (bucket.marketValue / pricedValue) * 100 }))
+    .sort((a, b) => b.value - a.value);
+  const leading = rows.slice(0, 7);
+  const other = rows.slice(7).reduce((sum, bucket) => sum + bucket.marketValue, 0);
+  if (other > 0) {
+    leading.push({ name: "Other", marketValue: other, value: (other / pricedValue) * 100 });
+  }
+  return leading;
+}
+
+function portfolioHeatmapMetric(holding: Holding, mode: string): number {
+  if (mode === "Weight") return holding.weight;
+  if (mode === "Day") return Number.isFinite(holding.dayChangePct) ? holding.dayChangePct : 0;
+  return holding.hasPnl ? holding.unrealizedPnlPct : 0;
+}
+
+function portfolioHeatmapTone(value: number, mode: string): "positive" | "negative" | "neutral" | "heavy" {
+  if (mode === "Weight") return value >= 30 ? "heavy" : "neutral";
+  if (value > 0.05) return "positive";
+  if (value < -0.05) return "negative";
+  return "neutral";
 }
 
 function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], correlationRows: SummaryItem[]): SummaryItem[] {
@@ -4087,6 +4301,8 @@ function PortfolioEntryForm({ onSaved }: { onSaved: () => Promise<void> }) {
 }
 
 function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding[]; onOpenTicker: (symbol: string) => void; onDelete: () => Promise<void> }) {
+  const [sortKey, setSortKey] = useState<"ticker" | "weight" | "day" | "marketValue" | "pnl">("weight");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   if (!holdings.length) {
     return <EmptyState title="No holdings loaded" detail="Add your real positions with the form on this page." />;
   }
@@ -4094,28 +4310,57 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
     await deletePortfolioPosition(symbol);
     await onDelete();
   };
+  const setSort = (nextKey: typeof sortKey) => {
+    if (nextKey === sortKey) {
+      setSortDir(sortDir === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(nextKey);
+      setSortDir(nextKey === "ticker" ? "asc" : "desc");
+    }
+  };
+  const sortValue = (holding: Holding): string | number => {
+    if (sortKey === "ticker") return holding.ticker;
+    if (sortKey === "day") return Number.isFinite(holding.dayChangePct) ? holding.dayChangePct : Number.NEGATIVE_INFINITY;
+    if (sortKey === "marketValue") return holding.hasMarketValue ? holding.marketValue : Number.NEGATIVE_INFINITY;
+    if (sortKey === "pnl") return holding.hasPnl ? holding.unrealizedPnl : Number.NEGATIVE_INFINITY;
+    return holding.weight;
+  };
+  const visible = holdings.slice().sort((a, b) => {
+    const left = sortValue(a);
+    const right = sortValue(b);
+    if (typeof left === "string" || typeof right === "string") {
+      return sortDir === "asc" ? String(left).localeCompare(String(right)) : String(right).localeCompare(String(left));
+    }
+    return sortDir === "asc" ? Number(left) - Number(right) : Number(right) - Number(left);
+  });
+  const sortMark = (key: typeof sortKey) => sortKey === key ? (sortDir === "asc" ? "↑" : "↓") : "";
+  const SortHeader = ({ label, value }: { label: string; value: typeof sortKey }) => (
+    <button className="sort-header-button" type="button" onClick={() => setSort(value)}>
+      {label} <span>{sortMark(value)}</span>
+    </button>
+  );
   return (
     <TableFrame>
       <table className="desk-table">
         <thead>
           <tr>
-            <th>Symbol</th>
-            <th>Weight</th>
+            <th><SortHeader label="Symbol" value="ticker" /></th>
+            <th><SortHeader label="Weight" value="weight" /></th>
             <th>Qty</th>
             <th>Last</th>
-            <th>Day</th>
-            <th>Market Value</th>
+            <th><SortHeader label="Day" value="day" /></th>
+            <th><SortHeader label="Market Value" value="marketValue" /></th>
             <th>Avg Cost</th>
             <th>Purchase Date</th>
             <th>Term</th>
-            <th>Unreal P/L</th>
+            <th><SortHeader label="Unreal P/L" value="pnl" /></th>
             <th>Buy/Add Stance</th>
             <th>Next Step</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {holdings.map((holding) => (
+          {visible.map((holding) => (
             <tr key={holding.ticker}>
               <td><button className="ticker-link" type="button" onClick={() => onOpenTicker(holding.ticker)}>{holding.ticker}</button></td>
               <td>{holding.weight ? `${holding.weight.toFixed(1)}%` : "-"}</td>
