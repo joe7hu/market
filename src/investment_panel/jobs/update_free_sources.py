@@ -11,6 +11,7 @@ from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
 from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.free_sources import update_tradingview_sources, update_yfinance_sources
+from investment_panel.core.portfolio import ensure_portfolio_instruments
 from investment_panel.core.status import write_source_status
 
 
@@ -23,6 +24,7 @@ def run(
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
+        ensure_portfolio_instruments(con)
         tradingview_result = update_tradingview_sources(con, config) if tradingview else {"status": "skipped"}
         yfinance_result = update_yfinance_sources(con, config) if yfinance else {"status": "skipped"}
         analysis_result = run_all_analyses(con, config) if analyses else {"status": "skipped"}

@@ -229,6 +229,7 @@ def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             continue
         try:
             info = provider.info(symbol)
+            update_instrument_from_yfinance(con, symbol, info)
             if store_yfinance_market_snapshot(con, run_id, symbol, observed_at, info):
                 result["market_snapshots"] += 1
             if instrument.get("asset_class") == "etf":
@@ -274,6 +275,11 @@ def store_yfinance_market_snapshot(con: Any, run_id: str, symbol: str, observed_
         "shares_outstanding": as_float(info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")),
         "regular_market_price": as_float(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")),
         "previous_close": as_float(info.get("previousClose")),
+        "total_revenue": as_float(info.get("totalRevenue")),
+        "revenue_growth": as_float(info.get("revenueGrowth")),
+        "net_margin": as_float(info.get("profitMargins")),
+        "total_cash": as_float(info.get("totalCash")),
+        "total_debt": as_float(info.get("totalDebt")),
         "quote_type": info.get("quoteType"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
@@ -295,6 +301,25 @@ def store_yfinance_market_snapshot(con: Any, run_id: str, symbol: str, observed_
         ],
     )
     return True
+
+
+def update_instrument_from_yfinance(con: Any, symbol: str, info: dict[str, Any]) -> None:
+    name = info.get("shortName") or info.get("longName")
+    sector = info.get("sector")
+    industry = info.get("industry")
+    quote_type = str(info.get("quoteType") or "").upper()
+    asset_class = "etf" if quote_type == "ETF" else "equity"
+    con.execute(
+        """
+        UPDATE instruments
+        SET name = CASE WHEN ? IS NOT NULL AND ? != '' AND (name IS NULL OR name = '' OR name = symbol) THEN ? ELSE name END,
+            asset_class = COALESCE(NULLIF(asset_class, ''), ?),
+            sector = COALESCE(NULLIF(sector, ''), ?),
+            industry = COALESCE(NULLIF(industry, ''), ?)
+        WHERE symbol = ?
+        """,
+        [name, name, name, asset_class, sector, industry, str(symbol).upper()],
+    )
 
 
 def equity_symbols(con: Any) -> list[str]:

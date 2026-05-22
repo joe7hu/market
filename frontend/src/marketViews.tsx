@@ -103,16 +103,25 @@ type Opportunity = {
 
 type Holding = {
   ticker: string;
+  quantity: number;
   weight: number;
+  price: number;
   marketValue: number;
+  hasMarketValue: boolean;
   averageCost: number;
   purchaseDate: string;
   holdingDays: number;
   taxLotTerm: string;
   unrealizedPnl: number;
   unrealizedPnlPct: number;
-  signal: string;
-  action: string;
+  hasPnl: boolean;
+  quoteFreshness: string;
+  dayChangePct: number;
+  dayChangeValue: number;
+  addStance: string;
+  nextStep: string;
+  decisionScore: number;
+  blockers: string[];
 };
 
 type CalendarEvent = {
@@ -240,6 +249,10 @@ type SignalMatrixRow = {
 
 type FinanceAnalysis = {
   symbol: string;
+  actionGrade: DecisionBucket;
+  score: number;
+  sourceCount: number;
+  evidenceCount: number;
   coverage: number;
   tone: Tone;
   headline: string;
@@ -247,7 +260,28 @@ type FinanceAnalysis = {
   earnings: SummaryItem;
   options: SummaryItem;
   tradingview: SummaryItem;
+  missingFamilies: string[];
+  blockers: string[];
+  nextAction: string;
+  consumable: boolean;
   decisionText: string;
+};
+
+type StressScenario = {
+  label: string;
+  shock: string;
+  loss: number;
+  caption: string;
+  tone: Tone;
+};
+
+type AttentionItem = {
+  symbol?: string;
+  label: string;
+  value: string;
+  detail: string;
+  action: string;
+  tone: Tone;
 };
 
 type SourceCoverage = {
@@ -335,8 +369,10 @@ export function DashboardPage({
   const blockedRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) !== "ready").slice(0, 5);
   const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
   const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
-  const sourceRows = model.signalCoverage.reduce((total, item) => total + item.count, 0);
-  const loadedFamilies = model.signalCoverage.filter((item) => item.count > 0).length;
+  const attentionItems = buildAttentionItems(model);
+  const largestHolding = model.holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
+  const reviewReadyCount = model.financeAnalyses.filter((analysis) => analysis.consumable).length;
+  const largestStressLoss = largestHolding ? largestHolding.marketValue * -0.2 : model.portfolioValue * -0.08;
   return (
     <section className="terminal-dashboard" aria-label="Market command dashboard">
       <header className="terminal-hero">
@@ -353,16 +389,20 @@ export function DashboardPage({
             <b className={portfolioPnl >= 0 ? "positive" : "negative"}>{model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "NO POSITIONS"}</b>
           </span>
           <span>
-            <small>SIGNAL ROWS</small>
-            <b>{sourceRows.toLocaleString()}</b>
+            <small>NEEDS ATTENTION</small>
+            <b>{attentionItems.length ? `${attentionItems.length} items` : "CLEAR"}</b>
           </span>
           <span>
-            <small>SRC. FAMILIES</small>
-            <b>{loadedFamilies}/11</b>
+            <small>TOP EXPOSURE</small>
+            <b>{largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "NONE"}</b>
           </span>
           <span>
-            <small>LAST REFRESH</small>
-            <b>{lastRefresh ? lastRefresh.toLocaleTimeString() : loading ? "LOADING" : "IDLE"}</b>
+            <small>READY REVIEWS</small>
+            <b>{reviewReadyCount ? `${reviewReadyCount} names` : loading ? "LOADING" : "NONE"}</b>
+          </span>
+          <span>
+            <small>LARGEST SHOCK</small>
+            <b className={largestStressLoss < 0 ? "negative" : ""}>{formatMoney(largestStressLoss)}</b>
           </span>
         </div>
       </header>
@@ -374,22 +414,21 @@ export function DashboardPage({
         <Panel className="terminal-signal-panel" title="Algorithmic Signals">
           <AlgorithmicSignalFeed opportunities={model.opportunities.slice(0, 4)} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel className="terminal-risk-panel" title="Risk Profile & Stress Test">
-          <RiskProfileTerminal model={model} readyCount={readyRows.length} />
-        </Panel>
       </div>
+
+      <Panel className="terminal-risk-panel dashboard-risk-cockpit" title="Risk Profile & Stress Test">
+        <RiskProfileTerminal model={model} readyCount={readyRows.length} />
+      </Panel>
+      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
 
       <div className="terminal-secondary-grid">
         <Panel title="Watchlist Tape">
           <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel title="Decision Readiness">
-          <DecisionBrief model={model} readyCount={readyRows.length} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
+        <Panel title="Needs Attention">
+          <AttentionQueue items={attentionItems} onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
-      <SignalCoverageStrip coverage={model.signalCoverage} />
-      <SignalMatrix rows={model.signalMatrix.slice(0, 10)} onOpenTicker={onOpenTicker} />
-      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
     </section>
   );
 }
@@ -478,7 +517,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         </Panel>
         <InfoPanel tone="good" title="Why Now" items={splitSignalText(opportunity?.whyNow)} />
         <InfoPanel tone="bad" title="Invalidation" items={splitSignalText(opportunity?.invalidation)} />
-        <InfoPanel tone={opportunity?.blockingGates.length ? "warn" : "info"} title="Gates / Next Action" items={opportunity?.blockingGates.length ? opportunity.blockingGates : splitSignalText(opportunity?.nextAction)} />
+        <InfoPanel tone={opportunity?.blockingGates.length ? "warn" : "info"} title="Gates / Next Action" items={opportunity?.blockingGates.length ? opportunity.blockingGates.map(formatGateLabel) : splitSignalText(opportunity?.nextAction)} />
         <Panel className="span-12" title="Finance-Skill Analysis">
           {financeAnalysis ? <FinanceAnalysisCard analysis={financeAnalysis} onOpenTicker={() => undefined} expanded /> : <EmptyState title="No finance-skill analysis" detail="Valuation, earnings, options, and TradingView rows have not loaded for this ticker." />}
         </Panel>
@@ -500,19 +539,29 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
 
 export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppModel; onOpenTicker: (symbol: string) => void; onRefresh: () => Promise<void> }) {
   const hasHoldings = model.holdings.length > 0;
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const unpricedHoldings = model.holdings.length - pricedHoldings.length;
+  const portfolioPnl = model.holdings.reduce((total, holding) => total + (holding.hasPnl ? holding.unrealizedPnl : 0), 0);
+  const portfolioDayChange = model.holdings.reduce((total, holding) => total + (Number.isFinite(holding.dayChangeValue) ? holding.dayChangeValue : 0), 0);
+  const portfolioCostBasis = model.holdings.reduce((total, holding) => total + holding.quantity * holding.averageCost, 0);
+  const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
+  const portfolioReviewRows = portfolioPositionReviewRows(model.holdings, model.valuationRows, model.technicalRows);
+  const riskRows = portfolioRiskRows(model.holdings, model.liquidityRows, model.correlationRows);
+  const valuationRows = portfolioValuationRows(model.holdings, model.valuationRows, model.technicalRows);
+  const taxRows = portfolioTaxRows(model.holdings);
   return (
     <PageFrame
       title="Portfolio Overview"
       subtitle={hasHoldings ? `As of ${new Date().toLocaleDateString()}` : "Enter your real positions to enable portfolio analytics"}
     >
-      <SourceNotice items={[["Holdings", model.sources.holdings], ["Signals", model.sources.opportunities], ["Quotes", model.sources.watchlist]]} />
+      <SourceNotice items={[["Holdings", model.sources.holdings], ["Quotes", model.sources.watchlist], ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"]]} />
       <MetricStrip
         metrics={[
-          ["Net Liquidity", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", hasHoldings ? "Derived from imported holdings" : "Portfolio CSV absent", hasHoldings ? "good" : "warn"],
-          ["Total Value", hasHoldings ? formatMoney(model.portfolioValue) : "Awaiting positions", hasHoldings ? "Imported portfolio rows" : "Manual entry below", hasHoldings ? "info" : "muted"],
-          ["Unrealized P/L", hasHoldings ? formatMoney(model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0)) : "Requires import", hasHoldings ? "From position rows" : "Requires cost basis", hasHoldings ? "good" : "muted"],
-          ["Positions", hasHoldings ? String(model.holdings.length) : "0 imported", hasHoldings ? "Holdings" : "No owned exposure", "info"],
-          ["Concentration", hasHoldings ? "Available" : "Needs holdings", hasHoldings ? "Risk" : "Enter positions first", hasHoldings ? "warn" : "muted"],
+          ["Market Value", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", unpricedHoldings ? `${unpricedHoldings} holding${unpricedHoldings === 1 ? "" : "s"} missing price` : hasHoldings ? "Priced holdings only" : "Portfolio CSV absent", unpricedHoldings ? "warn" : hasHoldings ? "good" : "warn"],
+          ["Day Move", hasHoldings ? formatMoney(portfolioDayChange) : "Requires prices", hasHoldings ? "From latest quote change" : "Manual entry below", portfolioDayChange >= 0 ? "good" : "bad"],
+          ["Unrealized P/L", hasHoldings ? formatMoney(portfolioPnl) : "Requires import", unpricedHoldings ? "Excludes unpriced holdings" : hasHoldings ? "From priced position rows" : "Requires cost basis", unpricedHoldings ? "warn" : hasHoldings ? "good" : "muted"],
+          ["Cost Basis", hasHoldings ? formatMoney(portfolioCostBasis) : "Requires import", hasHoldings ? "Quantity times average cost" : "No owned exposure", "info"],
+          ["Largest Weight", largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "Needs prices", largestHolding ? "Priced portfolio concentration" : "Enter positions first", largestHolding && largestHolding.weight > 50 ? "warn" : "info"],
         ]}
       />
       {!hasHoldings ? (
@@ -536,18 +585,18 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
           <Panel className="span-4" title="Add / Update Position">
             <PortfolioEntryForm onSaved={onRefresh} />
           </Panel>
-        <Panel className="span-4" title="Exposure Breakdown">
-          {hasHoldings ? <SummaryList rows={holdingSummaryRows(model.holdings)} /> : <EmptyState title="No portfolio holdings" detail="Manual CSV import or DB-backed entries are required before exposure breakdown is meaningful." />}
-        </Panel>
-        <Panel className="span-4" title="Risk & Concentration">
-          {hasHoldings ? <SummaryList rows={model.liquidityRows.slice(0, 5)} onOpenTicker={onOpenTicker} /> : <EmptyState title="No portfolio risk yet" detail="Market liquidity rows are hidden until holdings exist." />}
-        </Panel>
-        <Panel className="span-4" title="Portfolio Fit Insights">
-          <BulletList tone={model.holdings.length ? "warn" : "info"} items={model.holdings.length ? ["Portfolio rows loaded", "Review concentration against signal strength", "Liquidity check available from source tables"] : ["Manual position entry writes to the local DuckDB database", "Use ticker, share count, and average cost", "No broker credentials or account data are required"]} />
-        </Panel>
-        <Panel className="span-4" title="Top Correlations">
-          <SummaryList rows={model.correlationRows.slice(0, 5)} onOpenTicker={onOpenTicker} />
-        </Panel>
+          <Panel className="span-8" title="Position Review">
+            <SummaryList rows={portfolioReviewRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+          <Panel className="span-4" title="Risk & Liquidity">
+            {riskRows.length ? <SummaryList rows={riskRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No owned-symbol risk rows" detail="Refresh analyses after portfolio prices are loaded." />}
+          </Panel>
+          <Panel className="span-8" title="Valuation & Momentum">
+            {valuationRows.length ? <SummaryList rows={valuationRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No owned-symbol valuation rows" detail="Refresh yfinance and deterministic analyses for current holdings." />}
+          </Panel>
+          <Panel className="span-4" title="Holding Periods">
+            <SummaryList rows={taxRows} onOpenTicker={onOpenTicker} />
+          </Panel>
         </div>
       )}
     </PageFrame>
@@ -988,7 +1037,7 @@ export type AppModel = {
 
 export function buildModel(data: PanelData): AppModel {
   const watchlist = buildWatchlist(rows(data.quotes));
-  const holdings = buildHoldings(rows(data.portfolio));
+  const holdings = buildHoldings(rows(data.portfolio), rows(data.quotes), rows(data.decisionReadiness));
   const opportunities = buildOpportunities(
     rows(data.decisionQueue),
     rows(data.opportunitiesRanked),
@@ -1009,7 +1058,8 @@ export function buildModel(data: PanelData): AppModel {
   const sourceHealthRows = buildSourceHealthRows(rows(data.sourceHealth));
   const providerRunRows = buildProviderRunRows(rows(data.providerRuns));
   const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows];
-  const portfolioValue = holdings.reduce((total, holding) => total + holding.marketValue, 0);
+  const ownedSymbols = new Set(holdings.map((holding) => holding.ticker));
+  const portfolioValue = holdings.reduce((total, holding) => total + (holding.hasMarketValue ? holding.marketValue : 0), 0);
   const latestHealthCheck = newestDateLabel(healthRows.map((row) => row.freshness));
   const signalDefinitions = buildSignalDefinitions(data);
   const signalMatrix = buildSignalMatrix(opportunities, signalDefinitions);
@@ -1029,8 +1079,8 @@ export function buildModel(data: PanelData): AppModel {
     portfolioValue,
     sectors: buildSectorRows(rows(data.screener)),
     setupRows: buildSetupRows(rows(data.sepa), rows(data.liquidity)),
-    liquidityRows: buildLiquidityRows(rows(data.liquidity)),
-    correlationRows: buildCorrelationRows(rows(data.correlations)),
+    liquidityRows: buildLiquidityRows(rows(data.liquidity), ownedSymbols),
+    correlationRows: buildCorrelationRows(rows(data.correlations), ownedSymbols),
     valuationRows: buildValuationRows(rows(data.valuations)),
     technicalRows: buildTechnicalRows(rows(data.technicals)),
     signalSources: buildSignalSourcePanels(data),
@@ -1159,13 +1209,20 @@ function buildOpportunities(
     ]).slice(0, 5);
     const isStale = freshnessStatus === "stale" || freshnessStatus === "degraded" || blockingGates.some((gate) => gate.toLowerCase().includes("stale"));
     const isSourceThin = sourceCount < 2 && evidenceCount < 2;
+    const score = Math.round(numberField(row, ["score", "final_score", "decision_score"], 60));
+    const decisionBasisObject = objectField(row.decision_basis);
+    const decisionSummary = stringField(row, ["decision_basis", "basis", "rationale", "why_now"])
+      || stringField(decisionBasisObject, ["summary"])
+      || `${ticker} score ${score}; ${sourceCount} source rows and ${evidenceCount} primary evidence items loaded.`;
+    const nextAction = stringField(row, ["next_action", "action_required", "next_step"])
+      || (actionGrade === "Reject" ? "No new exposure until score, setup, or source evidence improves." : "Review ticker-specific setup, sizing, and invalidation.");
     return {
       rank: Math.round(numberField(row, ["rank"], index + 1)),
       ticker,
       name: stringField(row, ["name"]) || stringField(universe ?? {}, ["name"]) || ticker,
-      assetClass: stringField(row, ["asset_class", "asset_type"]) || stringField(universe ?? {}, ["asset_class", "asset_type"]) || "unknown",
+      assetClass: stringField(row, ["asset_class", "asset_type"]) || stringField(universe ?? {}, ["asset_class", "asset_type"]) || "unclassified",
       category: stringField(row, ["category", "eligibility_status"]) || stringField(universe ?? {}, ["eligibility_status", "category"]) || "uncategorized",
-      score: Math.round(numberField(row, ["score", "final_score", "decision_score"], 60)),
+      score,
       grade: stringField(row, ["signal_grade", "grade"]) || gradeFromScore(numberField(row, ["score", "final_score", "decision_score"], 60)),
       actionGrade: isStale ? "Stale" : actionGrade,
       confidence: confidenceValue(row),
@@ -1174,8 +1231,8 @@ function buildOpportunities(
       sourceCluster: stringField(row, ["source_cluster", "primary_source_cluster"]) || stringField(universe ?? {}, ["source_cluster", "primary_source_cluster"]) || sourceClusterFromRows(sourceRowsForSymbol),
       inclusionReasons: inclusionReasons.length ? inclusionReasons : ["Loaded from current candidate/signal row."],
       blockingGates,
-      decisionBasis: stringField(row, ["decision_basis", "basis", "rationale", "why_now"]) || "No explicit decision basis in source row.",
-      asOf: stringField(row, ["as_of", "updated_at", "run_date", "created_at"]) || stringField(universe ?? {}, ["latest_source_timestamp", "as_of"]) || "unknown",
+      decisionBasis: decisionSummary,
+      asOf: stringField(row, ["as_of", "updated_at", "run_date", "created_at"]) || stringField(universe ?? {}, ["latest_source_timestamp", "as_of"]) || "not timestamped",
       latestQuote: stringField(row, ["latest_quote", "quote"]) || quoteLabel(quote),
       catalystWindow: stringField(row, ["catalyst_window", "event_window"]) || catalystLabel(catalyst),
       liquidity: stringField(row, ["liquidity", "liquidity_grade"]) || liquidityLabel(liquidity),
@@ -1184,10 +1241,10 @@ function buildOpportunities(
       sourceCount,
       isSourceThin,
       isStale,
-      whyNow: stringField(row, ["why_now", "rationale", "summary", "notes", "thesis"]) || "Evidence recently updated",
-      nextAction: stringField(row, ["next_action", "action_required", "next_step"]) || "Review setup",
-      invalidation: stringField(row, ["invalidation", "invalidates_if", "risk", "bear_case"]) || "No explicit invalidation in source row.",
-      freshness: stringField(row, ["freshness", "freshness_status", "source_freshness", "updated_at", "as_of", "run_date"]) || "unknown",
+      whyNow: stringField(row, ["why_now", "rationale", "summary", "notes", "thesis"]) || decisionSummary,
+      nextAction,
+      invalidation: stringField(row, ["invalidation", "invalidates_if", "risk", "bear_case"]) || "No ticker-specific invalidation row is loaded.",
+      freshness: stringField(row, ["freshness", "freshness_status", "source_freshness", "updated_at", "as_of", "run_date"]) || "not_loaded",
       tags: decisionTags(freshnessStatus, isSourceThin, sourceRowsForSymbol),
       components: componentRows(row),
       evidenceCount,
@@ -1195,20 +1252,46 @@ function buildOpportunities(
   });
 }
 
-function buildHoldings(portfolioRows: RowRecord[]): Holding[] {
-  return portfolioRows.slice(0, 20).map((row) => ({
-    ticker: stringField(row, ["ticker", "symbol", "name"]).toUpperCase() || "UNKNOWN",
-    weight: numberField(row, ["weight", "portfolio_weight"], 0),
-    marketValue: numberField(row, ["market_value", "value", "position"], 0),
-    averageCost: numberField(row, ["cost_basis", "average_cost", "avg_cost"], 0),
-    purchaseDate: stringField(row, ["purchase_date"]) || "",
-    holdingDays: numberField(row, ["holding_days"], 0),
-    taxLotTerm: normalizeTaxLotTerm(stringField(row, ["tax_lot_term"])),
-    unrealizedPnl: numberField(row, ["pnl", "unrealized_pnl", "gain_loss"], 0),
-    unrealizedPnlPct: numberField(row, ["unrealized_pnl_pct"], 0),
-    signal: normalizeDecision(stringField(row, ["signal", "thesis_status", "decision"]) || "Hold"),
-    action: stringField(row, ["action", "next_action"]) || "Hold",
-  })).filter((row) => row.ticker !== "UNKNOWN");
+function buildHoldings(portfolioRows: RowRecord[], quoteRows: RowRecord[], readinessRows: RowRecord[]): Holding[] {
+  const quotesBySymbol = mapRowsBySymbol(quoteRows);
+  const readinessBySymbol = mapRowsBySymbol(readinessRows);
+  return portfolioRows.slice(0, 20).map((row) => {
+    const ticker = stringField(row, ["ticker", "symbol", "name"]).toUpperCase() || "UNKNOWN";
+    const quote = quotesBySymbol.get(ticker) ?? {};
+    const readiness = readinessBySymbol.get(ticker) ?? {};
+    const marketValue = optionalNumberField(row, ["market_value", "value", "position"]);
+    const unrealizedPnl = optionalNumberField(row, ["pnl", "unrealized_pnl", "gain_loss"]);
+    const unrealizedPnlPct = optionalNumberField(row, ["unrealized_pnl_pct"]);
+    const quoteFreshness = stringField(row, ["quote_freshness"]) || "missing";
+    const quantity = numberField(row, ["quantity"], 0);
+    const changeAbs = optionalNumberField(row, ["change_abs"]) ?? optionalNumberField(quote, ["change_abs"]);
+    const changePct = optionalNumberField(row, ["change_pct"]) ?? optionalNumberField(quote, ["change_pct"]);
+    const rawSignal = stringField(row, ["signal", "thesis_status", "decision"]);
+    const decisionScore = numberField(readiness, ["decision_score", "action_score"], Number.NaN);
+    const addStance = holdingAddStance(rawSignal, quoteFreshness, decisionScore);
+    return {
+      ticker,
+      quantity,
+      weight: numberField(row, ["weight", "portfolio_weight"], 0),
+      price: numberField(row, ["price"], Number.NaN),
+      marketValue: marketValue ?? 0,
+      hasMarketValue: marketValue !== null,
+      averageCost: numberField(row, ["cost_basis", "average_cost", "avg_cost"], 0),
+      purchaseDate: stringField(row, ["purchase_date"]) || "",
+      holdingDays: numberField(row, ["holding_days"], 0),
+      taxLotTerm: normalizeTaxLotTerm(stringField(row, ["tax_lot_term"])),
+      unrealizedPnl: unrealizedPnl ?? 0,
+      unrealizedPnlPct: unrealizedPnlPct ?? 0,
+      hasPnl: unrealizedPnl !== null && unrealizedPnlPct !== null,
+      quoteFreshness,
+      dayChangePct: changePct ?? Number.NaN,
+      dayChangeValue: changeAbs !== null ? changeAbs * quantity : Number.NaN,
+      addStance,
+      nextStep: holdingNextStep(addStance, quoteFreshness, numberField(row, ["portfolio_weight", "weight"], 0), arrayField(readiness.blockers).map((item) => displayValue(item as JsonValue))),
+      decisionScore,
+      blockers: arrayField(readiness.blockers).map((item) => displayValue(item as JsonValue)).filter((item) => item && item !== "-"),
+    };
+  }).filter((row) => row.ticker !== "UNKNOWN");
 }
 
 function buildFilings(disclosureRows: RowRecord[]): Filing[] {
@@ -1723,23 +1806,35 @@ function buildFinanceAnalyses(opportunities: Opportunity[], data: PanelData, mat
     const earningsRows = earningsBySymbol.get(symbol) ?? [];
     const optionsRows = optionsBySymbol.get(symbol) ?? [];
     const tradingviewRows = tradingviewBySymbol.get(symbol) ?? [];
+    const rejectGate = opportunity.actionGrade === "Reject" ? ["decision_reject"] : [];
+    const blockers = [...opportunity.blockingGates, ...rejectGate, ...(opportunity.isStale ? ["stale sources"] : [])];
     const valuation = financeValuationSummary(valuationRows);
     const earnings = financeEarningsSummary(earningsRows);
-    const options = financeOptionsSummary(optionsRows);
+    const options = financeOptionsSummary(optionsRows, blockers.length > 0);
     const tradingview = financeTradingViewSummary(tradingviewRows);
     const summaries = [valuation, earnings, options, tradingview];
-    const coverage = summaries.filter((item) => item.value !== "Missing").length;
+    const coverage = summaries.filter((item) => item.value !== "Not loaded").length;
     const signalRow = matrixBySymbol.get(symbol);
+    const missingFamilies = summaries.filter((item) => item.value === "Not loaded").map((item) => item.label);
+    const consumable = coverage >= 3 && blockers.length === 0 && ["Act", "Research", "Watch"].includes(opportunity.actionGrade);
     return {
       symbol,
+      actionGrade: opportunity.actionGrade,
+      score: opportunity.score,
+      sourceCount: opportunity.sourceCount,
+      evidenceCount: opportunity.evidenceCount,
       coverage,
-      tone: coverage >= 3 ? "good" : coverage >= 2 ? "info" : coverage === 1 ? "warn" : "muted",
-      headline: `${coverage}/4 finance analyses loaded`,
+      tone: consumable ? "good" : blockers.length || coverage <= 1 ? "warn" : "info",
+      headline: `${opportunity.actionGrade} · score ${opportunity.score} · ${coverage}/4 loaded`,
       valuation,
       earnings,
       options,
       tradingview,
-      decisionText: financeDecisionText(opportunity, signalRow, coverage),
+      missingFamilies,
+      blockers,
+      nextAction: opportunity.actionGrade === "Reject" ? "No new exposure until score, setup, or source evidence improves." : opportunity.nextAction || opportunity.invalidation || "Open ticker dossier",
+      consumable,
+      decisionText: financeDecisionText(opportunity, signalRow, coverage, missingFamilies),
     };
   });
 }
@@ -1825,7 +1920,7 @@ function financeEarningsSummary(sourceRows: RowRecord[]): SummaryItem {
   };
 }
 
-function financeOptionsSummary(sourceRows: RowRecord[]): SummaryItem {
+function financeOptionsSummary(sourceRows: RowRecord[], evidenceOnly = false): SummaryItem {
   if (!sourceRows.length) {
     return missingFinanceItem("Options", "No payoff or expiry row");
   }
@@ -1836,12 +1931,12 @@ function financeOptionsSummary(sourceRows: RowRecord[]): SummaryItem {
   return {
     label: "Options",
     value: strategy,
-    caption: [
+    caption: evidenceOnly ? "evidence only while blocked" : [
       Number.isFinite(maxLoss) ? `max loss ${formatMoney(Math.abs(maxLoss))}` : "",
       Number.isFinite(netPremium) ? `premium ${formatNetPremium(netPremium)}` : "",
       formatDateLabel(stringField(scenario, ["expiry", "as_of"])),
     ].filter((item) => item && item !== "-").join(" · "),
-    tone: "info",
+    tone: evidenceOnly ? "warn" : "info",
   };
 }
 
@@ -1860,7 +1955,7 @@ function financeTradingViewSummary(sourceRows: RowRecord[]): SummaryItem {
 }
 
 function missingFinanceItem(label: string, caption: string): SummaryItem {
-  return { label, value: "Missing", caption, tone: "muted" };
+  return { label, value: "Not loaded", caption, tone: "muted" };
 }
 
 function tradingViewCaption(row: RowRecord): string {
@@ -1868,12 +1963,13 @@ function tradingViewCaption(row: RowRecord): string {
   return raw.toLowerCase() === "tradingview" ? "TradingView" : titleLabel(raw);
 }
 
-function financeDecisionText(opportunity: Opportunity, signalRow: SignalMatrixRow | undefined, coverage: number): string {
+function financeDecisionText(opportunity: Opportunity, signalRow: SignalMatrixRow | undefined, coverage: number, missingFamilies: string[]): string {
   const blockers = opportunity.blockingGates.length ? opportunity.blockingGates.join(" · ") : "";
-  if (opportunity.isStale) return "Refresh stale sources before trusting the opportunity decision.";
-  if (blockers) return `Decision gated by ${blockers}.`;
-  if (coverage >= 3 && signalRow) return `${opportunity.actionGrade} decision is informed by ${coverage} finance-skill analysis families.`;
-  if (coverage > 0) return `Only ${coverage} finance-skill ${coverage === 1 ? "family is" : "families are"} loaded; open the dossier before acting.`;
+  if (opportunity.isStale) return "Not ready: refresh stale sources before using this decision.";
+  if (opportunity.actionGrade === "Reject") return "Rejected by the current score/setup; use this as evidence review, not a trade setup.";
+  if (blockers) return `Decision gated by ${formatGateList(opportunity.blockingGates)}.`;
+  if (coverage >= 3 && signalRow) return `${opportunity.actionGrade} review is ready: valuation, event/setup, and market context are present.`;
+  if (coverage > 0) return `Needs ${missingFamilies.join(", ") || "more context"} before this deserves attention.`;
   return "No deterministic finance-skill analysis is loaded for this candidate yet.";
 }
 
@@ -2142,12 +2238,13 @@ function buildSetupRows(sepaRows: RowRecord[], liquidityRows: RowRecord[]): Summ
   });
 }
 
-function buildLiquidityRows(liquidityRows: RowRecord[]): SummaryItem[] {
-  return liquidityRows.slice(0, 9).map((row) => {
+function buildLiquidityRows(liquidityRows: RowRecord[], symbols?: Set<string>): SummaryItem[] {
+  const filtered = symbols?.size ? liquidityRows.filter((row) => symbols.has(stringField(row, ["symbol"]).toUpperCase())) : liquidityRows;
+  return filtered.slice(0, 9).map((row) => {
     const symbol = stringField(row, ["symbol"]).toUpperCase();
     return {
       label: symbol || "Liquidity",
-      value: titleLabel(stringField(row, ["grade"]) || "Unknown"),
+      value: titleLabel(stringField(row, ["grade"]) || "not loaded"),
       caption: `${formatMoney(numberField(row, ["avg_dollar_volume"], 0))} ADV`,
       tone: stringField(row, ["grade"]).includes("high") ? "good" : "info",
       symbol,
@@ -2155,8 +2252,9 @@ function buildLiquidityRows(liquidityRows: RowRecord[]): SummaryItem[] {
   });
 }
 
-function buildCorrelationRows(correlationRows: RowRecord[]): SummaryItem[] {
-  return correlationRows.slice(0, 9).map((row) => {
+function buildCorrelationRows(correlationRows: RowRecord[], symbols?: Set<string>): SummaryItem[] {
+  const filtered = symbols?.size ? correlationRows.filter((row) => symbols.has(stringField(row, ["symbol"]).toUpperCase())) : correlationRows;
+  return filtered.slice(0, 9).map((row) => {
     const symbol = stringField(row, ["symbol"]).toUpperCase();
     const peers = arrayField(row.peers);
     const topPeer = objectField(peers[0]);
@@ -2203,11 +2301,123 @@ function buildTechnicalRows(technicalRows: RowRecord[]): SummaryItem[] {
 function holdingSummaryRows(holdings: Holding[]): SummaryItem[] {
   return holdings.slice(0, 6).map((holding) => ({
     label: holding.ticker,
-    value: holding.weight ? `${holding.weight.toFixed(1)}%` : formatMoney(holding.marketValue),
-    caption: `${holding.taxLotTerm} · ${formatMoney(holding.unrealizedPnl)} P/L`,
-    tone: holding.unrealizedPnl >= 0 ? "good" : "bad",
+    value: holding.weight ? `${holding.weight.toFixed(1)}%` : holding.hasMarketValue ? formatMoney(holding.marketValue) : "Price not loaded",
+    caption: holding.hasPnl ? `${holding.taxLotTerm} · ${formatMoney(holding.unrealizedPnl)} P/L` : `${holding.taxLotTerm} · quote ${holding.quoteFreshness}`,
+    tone: !holding.hasMarketValue ? "warn" : holding.unrealizedPnl >= 0 ? "good" : "bad",
     symbol: holding.ticker,
   }));
+}
+
+function portfolioPositionReviewRows(holdings: Holding[], valuationRows: SummaryItem[], technicalRows: SummaryItem[]): SummaryItem[] {
+  return holdings.map((holding) => {
+    const valuation = findValuationForSymbol(valuationRows, holding.ticker);
+    const technical = findSummaryForSymbol(technicalRows, holding.ticker);
+    const facts = [
+      holding.nextStep,
+      valuation ? `valuation ${valuation.value}` : "",
+      technical ? `technical ${technical.value}` : "",
+      holding.blockers.length ? `blockers: ${holding.blockers.join(", ")}` : "",
+    ].filter(Boolean);
+    return {
+      label: holding.ticker,
+      value: holding.addStance,
+      caption: facts.join(" · "),
+      tone: holdingStanceTone(holding.addStance),
+      symbol: holding.ticker,
+    };
+  });
+}
+
+function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], correlationRows: SummaryItem[]): SummaryItem[] {
+  const rows: SummaryItem[] = [];
+  const largest = holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
+  if (largest) {
+    rows.push({
+      label: "Largest position",
+      value: `${largest.ticker} ${largest.weight.toFixed(1)}%`,
+      caption: largest.weight > 50 ? "Concentration needs active sizing discipline" : "No single holding above 50%",
+      tone: largest.weight > 50 ? "warn" : "info",
+      symbol: largest.ticker,
+    });
+  }
+  for (const row of liquidityRows.slice(0, 2)) {
+    rows.push({ ...row, label: `${row.label} liquidity` });
+  }
+  for (const row of correlationRows.slice(0, 2)) {
+    rows.push({ ...row, label: `${row.label} top corr` });
+  }
+  return rows;
+}
+
+function portfolioValuationRows(holdings: Holding[], valuationRows: SummaryItem[], technicalRows: SummaryItem[]): SummaryItem[] {
+  const output: SummaryItem[] = [];
+  for (const holding of holdings) {
+    const valuation = findValuationForSymbol(valuationRows, holding.ticker);
+    const technical = findSummaryForSymbol(technicalRows, holding.ticker);
+    if (!valuation && !technical) continue;
+    const value = valuation?.value ?? "No valuation";
+    const caption = [
+      valuation?.caption,
+      technical ? `technical ${technical.value}: ${technical.caption}` : "",
+    ].filter(Boolean).join(" · ");
+    const upside = Number((valuation?.value ?? "").replace(/[%+]/g, ""));
+    output.push({
+      label: holding.ticker,
+      value,
+      caption,
+      tone: Number.isFinite(upside) ? upside >= 0 ? "good" : "bad" : "info",
+      symbol: holding.ticker,
+    });
+  }
+  return output;
+}
+
+function portfolioTaxRows(holdings: Holding[]): SummaryItem[] {
+  return holdings.map((holding) => {
+    const daysToLongTerm = Math.max(0, 366 - holding.holdingDays);
+    const isLongTerm = holding.taxLotTerm.toLowerCase().includes("long");
+    return {
+      label: holding.ticker,
+      value: isLongTerm ? "Long term" : `${daysToLongTerm}d to LT`,
+      caption: `${holding.purchaseDate || "No purchase date"} · ${holding.holdingDays || 0} days held`,
+      tone: isLongTerm ? "good" : daysToLongTerm <= 90 ? "warn" : "info",
+      symbol: holding.ticker,
+    };
+  });
+}
+
+function findSummaryForSymbol(rows: SummaryItem[], symbol: string): SummaryItem | undefined {
+  return rows.find((row) => row.symbol === symbol || row.label === symbol);
+}
+
+function findValuationForSymbol(rows: SummaryItem[], symbol: string): SummaryItem | undefined {
+  const matches = rows.filter((row) => row.symbol === symbol || row.label === symbol);
+  return matches.find((row) => row.caption.toLowerCase().includes("blended")) ?? matches[0];
+}
+
+function holdingAddStance(rawSignal: string, quoteFreshness: string, decisionScore: number): string {
+  const normalized = rawSignal.toLowerCase();
+  if (quoteFreshness === "missing" || quoteFreshness === "stale") return "Refresh first";
+  if (normalized.includes("act") || normalized.includes("research") || decisionScore >= 75) return "Consider add";
+  if (normalized.includes("watch") || normalized.includes("monitor") || decisionScore >= 55) return "Hold / monitor";
+  if (normalized.includes("reject") || normalized.includes("avoid") || decisionScore < 55) return "No new buys";
+  return "Hold / monitor";
+}
+
+function holdingNextStep(addStance: string, quoteFreshness: string, weight: number, blockers: string[]): string {
+  if (quoteFreshness === "missing" || quoteFreshness === "stale") return "Refresh quote before using this row";
+  if (blockers.length) return `Clear ${blockers[0].replace(/_/g, " ")}`;
+  if (addStance === "Consider add") return weight > 35 ? "Confirm sizing before increasing" : "Review thesis and entry price";
+  if (addStance === "No new buys") return "Hold only; revisit thesis or valuation";
+  if (weight > 50) return "Hold; watch concentration";
+  return "Hold; monitor catalysts";
+}
+
+function holdingStanceTone(stance: string): Tone {
+  const normalized = stance.toLowerCase();
+  if (normalized.includes("consider")) return "good";
+  if (normalized.includes("no new") || normalized.includes("do not") || normalized.includes("refresh")) return "warn";
+  return "info";
 }
 
 function newestDateLabel(values: string[]): string {
@@ -2225,6 +2435,95 @@ function calendarType(value: string): CalendarEvent["type"] {
   if (normalized.includes("filing") || normalized.includes("13f")) return "filing";
   if (normalized.includes("cpi") || normalized.includes("fomc") || normalized.includes("economic")) return "economic";
   return "event";
+}
+
+function buildAttentionItems(model: AppModel): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const largest = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
+  if (largest && largest.weight >= 35) {
+    items.push({
+      symbol: largest.ticker,
+      label: "Concentration",
+      value: `${largest.ticker} ${largest.weight.toFixed(1)}%`,
+      detail: "Single-name exposure dominates portfolio risk.",
+      action: "Review sizing before adding anything.",
+      tone: "warn",
+    });
+  }
+
+  const largestLoss = model.holdings
+    .filter((holding) => holding.hasPnl && holding.unrealizedPnl < 0)
+    .slice()
+    .sort((a, b) => a.unrealizedPnl - b.unrealizedPnl)[0];
+  if (largestLoss) {
+    items.push({
+      symbol: largestLoss.ticker,
+      label: "Loss Review",
+      value: `${largestLoss.ticker} ${formatMoney(largestLoss.unrealizedPnl)}`,
+      detail: `${formatPct(largestLoss.unrealizedPnlPct)} unrealized P/L.`,
+      action: "Check invalidation and trim rules.",
+      tone: "bad",
+    });
+  }
+
+  for (const analysis of model.financeAnalyses.filter((item) => !item.consumable).slice(0, 3)) {
+    items.push({
+      symbol: analysis.symbol,
+      label: "Decision Work",
+      value: analysis.symbol,
+      detail: financeCaveat(analysis),
+      action: analysis.blockers.length ? "Fix the blocker before acting." : "Open dossier only if this name still matters.",
+      tone: "warn",
+    });
+  }
+
+  const ready = model.financeAnalyses.find((analysis) => analysis.consumable);
+  if (ready) {
+    items.push({
+      symbol: ready.symbol,
+      label: "Ready Review",
+      value: ready.symbol,
+      detail: `${ready.actionGrade} setup has enough analysis context.`,
+      action: "Open dossier and decide hold/add/pass.",
+      tone: "good",
+    });
+  }
+
+  return dedupeAttentionItems(items).slice(0, 5);
+}
+
+function dedupeAttentionItems(items: AttentionItem[]): AttentionItem[] {
+  const seen = new Set<string>();
+  const output: AttentionItem[] = [];
+  for (const item of items) {
+    const key = `${item.label}:${item.symbol ?? item.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
+function AttentionQueue({ items, onOpenTicker }: { items: AttentionItem[]; onOpenTicker: (symbol: string) => void }) {
+  if (!items.length) {
+    return <EmptyState title="Nothing urgent" detail="No position, risk, or decision item currently requires attention." />;
+  }
+  return (
+    <div className="attention-queue">
+      {items.map((item, index) => (
+        <button key={`${item.label}-${item.value}-${index}`} type="button" onClick={() => item.symbol && onOpenTicker(item.symbol)} disabled={!item.symbol}>
+          <span className={`attention-index ${item.tone}`}>{String(index + 1).padStart(2, "0")}</span>
+          <span>
+            <b>{item.label}</b>
+            <strong>{item.value}</strong>
+            <small>{item.detail}</small>
+          </span>
+          <em>{item.action}</em>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function DecisionBrief({ model, readyCount, blockedRows, onOpenTicker }: { model: AppModel; readyCount: number; blockedRows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
@@ -2398,15 +2697,25 @@ function FinanceAnalysisPanel({ analyses, onOpenTicker }: { analyses: FinanceAna
   if (!analyses.length) {
     return <EmptyState title="No finance-skill analysis rows" detail="Valuation, earnings setup, options payoff, and TradingView rows have not loaded into this scope." />;
   }
+  const readyCount = analyses.filter((item) => item.consumable).length;
+  const partialCount = analyses.filter((item) => item.coverage > 0 && !item.consumable).length;
+  const bestUpside = bestFinanceUpside(analyses);
+  const firstRisk = analyses.find((item) => item.blockers.length || item.missingFamilies.length);
   return (
     <section className="finance-analysis-panel" aria-label="Finance-skill decision analysis">
       <header>
         <div>
           <h2>Finance-Skill Decision Analysis</h2>
-          <p>Deterministic valuation, earnings, options, and TradingView outputs translated into opportunity context.</p>
+          <p>{readyCount} ready to review · {partialCount} need work</p>
         </div>
-        <span>{analyses.filter((item) => item.coverage > 0).length} covered</span>
+        <span>{readyCount ? "review list ready" : "no final call"}</span>
       </header>
+      <div className="finance-analysis-ledger" aria-label="Finance analysis readiness summary">
+        <MetricBadge label="Ready to Review" value={String(readyCount)} caption="Enough analysis to open the dossier" tone={readyCount ? "good" : "warn"} />
+        <MetricBadge label="Needs Work" value={String(partialCount)} caption="Open thesis, options, or setup context" tone={partialCount ? "warn" : "good"} />
+        <MetricBadge label="Best Upside" value={bestUpside.value} caption={bestUpside.caption} tone={bestUpside.tone} />
+        <MetricBadge label="Main Caveat" value={firstRisk?.symbol ?? "None"} caption={firstRisk ? financeCaveat(firstRisk) : "No visible caveat"} tone={firstRisk ? "warn" : "good"} />
+      </div>
       <div className="finance-analysis-grid">
         {analyses.map((analysis) => (
           <FinanceAnalysisCard key={analysis.symbol} analysis={analysis} onOpenTicker={onOpenTicker} />
@@ -2421,9 +2730,17 @@ function FinanceAnalysisCard({ analysis, onOpenTicker, expanded = false }: { ana
   return (
     <article className={`finance-analysis-card ${analysis.tone} ${expanded ? "expanded" : ""}`}>
       <button type="button" onClick={() => onOpenTicker(analysis.symbol)} disabled={expanded}>
-        <strong>{analysis.symbol}</strong>
-        <span>{analysis.headline}</span>
+        <span>
+          <strong>{analysis.symbol}</strong>
+          <small>{analysis.headline}</small>
+        </span>
+        <DecisionBadge value={analysis.consumable ? "Ready" : "Needs Work"} />
       </button>
+      <div className="finance-analysis-meta">
+        <span>{analysis.actionGrade} candidate</span>
+        <span>{analysis.coverage}/4 analysis checks</span>
+        <span>{financeCaveat(analysis)}</span>
+      </div>
       <div className="finance-analysis-items">
         {items.map((item) => (
           <div key={item.label} className={`finance-analysis-item ${item.tone}`}>
@@ -2433,9 +2750,50 @@ function FinanceAnalysisCard({ analysis, onOpenTicker, expanded = false }: { ana
           </div>
         ))}
       </div>
-      <p>{analysis.decisionText}</p>
+      <div className="finance-analysis-decision">
+        <p>{analysis.decisionText}</p>
+        <small>{analysis.blockers.length ? `Gate: ${formatGateLabel(analysis.blockers[0])}` : analysis.nextAction}</small>
+      </div>
     </article>
   );
+}
+
+function financeCaveat(analysis: FinanceAnalysis): string {
+  if (analysis.blockers.length) return formatGateLabel(analysis.blockers[0]);
+  if (analysis.missingFamilies.length) return `Needs ${analysis.missingFamilies.join(", ")}`;
+  return "No immediate caveat";
+}
+
+function bestFinanceUpside(analyses: FinanceAnalysis[]): SummaryItem {
+  const ranked = analyses
+    .map((analysis) => ({
+      symbol: analysis.symbol,
+      upside: parsePctLabel(analysis.valuation.value),
+    }))
+    .filter((item) => Number.isFinite(item.upside))
+    .sort((a, b) => b.upside - a.upside);
+  const best = ranked[0];
+  if (!best) {
+    return { label: "Best Upside", value: "-", caption: "No modeled upside", tone: "muted" };
+  }
+  return {
+    label: "Best Upside",
+    value: formatPct(best.upside),
+    caption: best.symbol,
+    tone: best.upside >= 0 ? "good" : "bad",
+    symbol: best.symbol,
+  };
+}
+
+function parsePctLabel(value: string): number {
+  const parsed = Number(value.replace(/[+,%]/g, ""));
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function medianCoverage(analyses: FinanceAnalysis[]): number {
+  if (!analyses.length) return 0;
+  const sorted = analyses.map((item) => item.coverage).sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 function TerminalHoldingsBook({
@@ -2536,7 +2894,7 @@ function AlgorithmicSignalFeed({ opportunities, blockedRows, onOpenTicker }: { o
           <article key={`terminal-signal-${item.ticker}-${index}`}>
             <header>
               <span>{terminalTimeLabel(item.asOf)}</span>
-              <small>{item.sourceCluster || "SYS.AUTO"}</small>
+              <small>Score {item.score}</small>
             </header>
             <button type="button" onClick={() => onOpenTicker(item.ticker)}>
               <strong title={`${item.ticker}: ${item.inclusionReasons[0] ?? item.decisionBasis}`}>{item.ticker}: {item.inclusionReasons[0] ?? item.decisionBasis}</strong>
@@ -2544,7 +2902,7 @@ function AlgorithmicSignalFeed({ opportunities, blockedRows, onOpenTicker }: { o
             </button>
             <footer>
               <DecisionBadge value={command} />
-              <small>SECTOR: {item.category ? titleLabel(item.category).slice(0, 18) : "N/A"}</small>
+              <small>{item.blockingGates[0] ? `NEEDS: ${formatGateLabel(item.blockingGates[0]).slice(0, 22)}` : item.invalidation ? `RISK: ${item.invalidation.slice(0, 22)}` : "NO EXTRA ACTION"}</small>
             </footer>
           </article>
         );
@@ -2555,20 +2913,21 @@ function AlgorithmicSignalFeed({ opportunities, blockedRows, onOpenTicker }: { o
 
 function RiskProfileTerminal({ model, readyCount }: { model: AppModel; readyCount: number }) {
   const loadedFamilies = model.signalCoverage.filter((item) => item.count > 0).length;
-  const largestWeight = Math.max(...model.holdings.map((holding) => holding.weight), 0);
-  const negativePnl = model.holdings.filter((holding) => holding.unrealizedPnl < 0).reduce((total, holding) => total + holding.unrealizedPnl, 0);
-  const radarValues = [
-    largestWeight ? Math.min(95, largestWeight * 3) : 28,
-    Math.min(95, loadedFamilies * 8.5),
-    Math.min(95, model.liquidityRows.length * 11),
-    readyCount ? 78 : 36,
-    Math.min(95, model.healthRows.length * 7),
-  ];
-  const rows: SummaryItem[] = [
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const sortedByWeight = [...pricedHoldings].sort((a, b) => b.weight - a.weight);
+  const largest = sortedByWeight[0];
+  const largestWeight = largest?.weight ?? 0;
+  const topThreeWeight = sortedByWeight.slice(0, 3).reduce((total, holding) => total + holding.weight, 0);
+  const staleQuoteCount = model.holdings.filter((holding) => holding.quoteFreshness === "missing" || holding.quoteFreshness === "stale" || !holding.hasMarketValue).length;
+  const negativePnl = model.holdings.filter((holding) => holding.hasPnl && holding.unrealizedPnl < 0).reduce((total, holding) => total + holding.unrealizedPnl, 0);
+  const consumableAnalyses = model.financeAnalyses.filter((analysis) => analysis.consumable).length;
+  const posture = riskPosture(largestWeight, topThreeWeight, staleQuoteCount, readyCount, loadedFamilies);
+  const stressRows = riskStressScenarios(model, largest, topThreeWeight);
+  const controlRows: SummaryItem[] = [
     {
-      label: "Correlation",
-      value: model.correlationRows[0]?.value ?? "-",
-      caption: model.correlationRows[0]?.caption ?? "No correlation rows loaded",
+      label: "Top correlation",
+      value: model.correlationRows[0]?.value ?? "No row",
+      caption: model.correlationRows[0]?.caption ?? "Correlation analysis missing",
       tone: model.correlationRows.length ? "info" : "muted",
     },
     {
@@ -2578,25 +2937,122 @@ function RiskProfileTerminal({ model, readyCount }: { model: AppModel; readyCoun
       tone: negativePnl < 0 ? "bad" : "muted",
     },
     {
-      label: "Largest Weight",
-      value: largestWeight ? `${largestWeight.toFixed(1)}%` : "-",
-      caption: "Largest imported holding weight",
+      label: "Largest position",
+      value: largest ? `${largest.ticker} ${largestWeight.toFixed(1)}%` : "-",
+      caption: largestWeight > 25 ? "Sizing review required before adding" : "Inside single-name guardrail",
       tone: largestWeight > 25 ? "warn" : largestWeight ? "info" : "muted",
+      symbol: largest?.ticker,
     },
     {
-      label: "Readiness",
-      value: readyCount ? `${readyCount} ready` : "Blocked",
-      caption: `${loadedFamilies}/11 source families loaded`,
-      tone: readyCount ? "good" : "warn",
+      label: "Ready reviews",
+      value: consumableAnalyses ? `${consumableAnalyses} names` : "None",
+      caption: consumableAnalyses ? "Open dossier and decide" : "No name is ready for action",
+      tone: consumableAnalyses ? "good" : "warn",
     },
   ];
   return (
-    <div className="terminal-risk-stack">
-      <RiskRadar values={radarValues} />
-      <small>MULTI-FACTOR EXPOSURE MODEL V3.1</small>
-      <SummaryList rows={rows} />
+    <div className="risk-profile-workbench">
+      <div className={`risk-posture ${posture.tone}`}>
+        <span>Risk Posture</span>
+        <strong>{posture.label}</strong>
+        <p>{posture.detail}</p>
+      </div>
+      <div className="risk-control-grid">
+        <MetricBadge label="Top 3 Weight" value={topThreeWeight ? `${topThreeWeight.toFixed(1)}%` : "-"} caption="priced holdings" tone={topThreeWeight > 65 ? "warn" : topThreeWeight ? "info" : "muted"} />
+        <MetricBadge label="Quote Gaps" value={String(staleQuoteCount)} caption="missing or stale positions" tone={staleQuoteCount ? "warn" : "good"} />
+        <MetricBadge label="Liquidity Check" value={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "Covered" : "Review"} caption={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "Owned names have liquidity context" : "Confirm exit capacity"} tone={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "good" : "warn"} />
+        <MetricBadge label="Buy Setup" value={readyCount ? `${readyCount} ready` : "Review only"} caption={readyCount ? "There are names ready for decision" : "Hold/trim decisions only"} tone={readyCount ? "good" : "warn"} />
+      </div>
+      <div className="stress-test-table" aria-label="Portfolio stress scenarios">
+        <div className="stress-test-head">
+          <span>Scenario</span>
+          <span>Shock</span>
+          <span>Loss</span>
+        </div>
+        {stressRows.map((row) => (
+          <div key={row.label} className={`stress-test-row ${row.tone}`}>
+            <span><strong>{row.label}</strong><small>{row.caption}</small></span>
+            <b>{row.shock}</b>
+            <strong>{formatMoney(row.loss)}</strong>
+          </div>
+        ))}
+      </div>
+      <SummaryList rows={controlRows} />
     </div>
   );
+}
+
+function riskPosture(largestWeight: number, topThreeWeight: number, staleQuoteCount: number, readyCount: number, loadedFamilies: number): { label: string; detail: string; tone: Tone } {
+  if (staleQuoteCount || loadedFamilies < 6) {
+    return {
+      label: "Data-gated",
+      detail: "Risk output is not ready until quote freshness and source coverage clear.",
+      tone: "warn",
+    };
+  }
+  if (largestWeight > 35 || topThreeWeight > 70) {
+    return {
+      label: "Concentrated",
+      detail: "Position sizing is the dominant risk driver; stress before adding exposure.",
+      tone: "warn",
+    };
+  }
+  if (!readyCount) {
+    return {
+      label: "Trade-gated",
+      detail: "Risk profile is usable; new buys remain blocked by decision readiness.",
+      tone: "warn",
+    };
+  }
+  return {
+    label: "Ready",
+    detail: "Portfolio rows, source coverage, and decision gates are sufficient for review.",
+    tone: "good",
+  };
+}
+
+function riskStressScenarios(model: AppModel, largest: Holding | undefined, topThreeWeight: number): StressScenario[] {
+  const portfolioValue = model.portfolioValue;
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const topThreeValue = pricedHoldings
+    .slice()
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 3)
+    .reduce((total, holding) => total + holding.marketValue, 0);
+  const uncoveredValue = pricedHoldings
+    .filter((holding) => !model.liquidityRows.some((row) => row.symbol === holding.ticker))
+    .reduce((total, holding) => total + holding.marketValue, 0);
+  const correlationValue = topThreeWeight > 50 ? topThreeValue : portfolioValue * 0.35;
+  return [
+    {
+      label: "Broad tape",
+      shock: "-8.0%",
+      loss: portfolioValue * -0.08,
+      caption: "Priced market value",
+      tone: portfolioValue ? "info" : "muted",
+    },
+    {
+      label: "Largest gap",
+      shock: largest ? `${largest.ticker} -20.0%` : "-20.0%",
+      loss: (largest?.marketValue ?? 0) * -0.2,
+      caption: largest ? `${largest.weight.toFixed(1)}% single name` : "No priced holding",
+      tone: largest && largest.weight > 25 ? "warn" : largest ? "info" : "muted",
+    },
+    {
+      label: "Corr cluster",
+      shock: "-12.0%",
+      loss: correlationValue * -0.12,
+      caption: topThreeWeight ? `Top cluster ${topThreeWeight.toFixed(1)}%` : "Uses portfolio proxy",
+      tone: topThreeWeight > 65 ? "warn" : "info",
+    },
+    {
+      label: "Liquidity",
+      shock: "-15.0%",
+      loss: uncoveredValue * -0.15,
+      caption: uncoveredValue ? "Holdings without liquidity rows" : "Liquidity rows cover priced holdings",
+      tone: uncoveredValue ? "warn" : "good",
+    },
+  ];
 }
 
 function RiskRadar({ values }: { values: number[] }) {
@@ -2769,12 +3225,12 @@ function TickerDossierHeader({
         <MetricBadge label="Verdict" value={action} tone={action === "Act" ? "good" : action === "Stale" || action === "Reject" ? "bad" : action === "Watch" ? "warn" : "info"} />
         <MetricBadge label="Freshness" value={titleLabel(freshness)} tone={freshnessTone(normalizeFreshnessStatus(freshness))} />
         <MetricBadge label="Confidence" value={Number.isFinite(confidence) ? `${Math.round(confidence)}` : "-"} caption="decision score" tone={Number.isFinite(confidence) && confidence >= 70 ? "good" : "warn"} />
-        <MetricBadge label="Blockers" value={String(blockers.length)} caption={(blockerLabels[0] || blockers[0] || "none").slice(0, 44)} tone={blockers.length ? "warn" : "good"} />
+        <MetricBadge label="Blockers" value={String(blockers.length)} caption={blockers.includes("decision_reject") ? "No new exposure" : (blockerLabels[0] || blockers[0] || "none").slice(0, 44)} tone={blockers.length ? "warn" : "good"} />
         <MetricBadge label="Evidence" value={String(opportunity?.evidenceCount ?? 0)} caption={`${opportunity?.sourceCount ?? 0} sources`} tone={(opportunity?.evidenceCount ?? 0) > 0 ? "good" : "warn"} />
         <MetricBadge label="API Tables" value={String(evidenceRows)} caption={foundTables.slice(0, 2).join(", ") || "No rows"} tone={evidenceRows ? "info" : "muted"} />
       </div>
       <p className="ticker-dossier-note">{stringField(verdict, ["summary"]) || opportunity?.decisionBasis || "Ticker context is derived from ticker-specific API tables for deep-link correctness."}</p>
-      <p className="ticker-dossier-note next-action"><b>Next action:</b> {stringField(verdict, ["next_action"]) || opportunity?.nextAction || "Review setup before action."}</p>
+      <p className="ticker-dossier-note next-action"><b>Next action:</b> {stringField(verdict, ["next_action"]) || opportunity?.nextAction || "Review ticker rows before action."}</p>
     </section>
   );
 }
@@ -2916,14 +3372,17 @@ function ChartContextSummary({ brief }: { brief: RowRecord }) {
 
 function OptionsContextSummary({ brief }: { brief: RowRecord }) {
   const options = objectField(brief.options_context);
+  const verdict = objectField(brief.verdict);
+  const noTrade = listField(verdict, ["blockers"]).length > 0;
+  const decisionReject = listField(verdict, ["blockers"]).includes("decision_reject");
   const status = stringField(options, ["status"]);
   const expired = status.toLowerCase() === "expired";
   return (
     <SummaryList rows={[
-      { label: "Status", value: status ? titleLabel(status) : "Missing", caption: `${numberField(options, ["live_scenario_count"], 0)} live / ${numberField(options, ["expired_scenario_count"], 0)} expired`, tone: expired ? "bad" : status === "live" ? "good" : "muted" },
-      { label: "Scenario", value: stringField(options, ["summary"]) || "No options context", caption: `${numberField(options, ["scenario_count"], 0)} scenarios`, tone: expired ? "bad" : numberField(options, ["scenario_count"], 0) ? "info" : "muted" },
-      { label: "IV / DTE", value: expired ? "-" : `${formatUnsignedPct(numberField(options, ["iv"], 0) * 100)} / ${Math.round(numberField(options, ["dte"], 0))}`, caption: expired ? "expired option data hidden from live setup" : "implied vol and days to expiry", tone: expired ? "bad" : "info" },
-      { label: "Breakeven", value: expired ? "-" : formatMoney(numberField(options, ["breakeven"], Number.NaN)), caption: expired ? "refresh options before using breakeven" : stringField(options, ["max_loss"]) ? `max loss ${stringField(options, ["max_loss"])}` : "no bounded loss row", tone: "warn" },
+      { label: "Status", value: noTrade ? "No Trade" : status ? titleLabel(status) : "Not loaded", caption: noTrade ? `${numberField(options, ["live_scenario_count"], 0)} live scenarios; ${decisionReject ? "decision is Reject" : "blocker active"}` : `${numberField(options, ["live_scenario_count"], 0)} live / ${numberField(options, ["expired_scenario_count"], 0)} expired`, tone: noTrade || expired ? "bad" : status === "live" ? "good" : "muted" },
+      { label: "Scenario", value: noTrade ? "Evidence only while blocked" : stringField(options, ["summary"]) || "No options context", caption: `${numberField(options, ["scenario_count"], 0)} scenarios`, tone: noTrade || expired ? "bad" : numberField(options, ["scenario_count"], 0) ? "info" : "muted" },
+      { label: "IV / DTE", value: expired || noTrade ? "-" : `${formatUnsignedPct(numberField(options, ["iv"], 0) * 100)} / ${Math.round(numberField(options, ["dte"], 0))}`, caption: expired ? "expired option data hidden from live setup" : noTrade ? "chain data is evidence only" : "implied vol and days to expiry", tone: expired || noTrade ? "bad" : "info" },
+      { label: "Breakeven", value: expired || noTrade ? "-" : formatMoney(numberField(options, ["breakeven"], Number.NaN)), caption: expired ? "refresh options before using breakeven" : noTrade ? "breakeven hidden for no-trade state" : stringField(options, ["max_loss"]) ? `max loss ${stringField(options, ["max_loss"])}` : "no bounded loss row", tone: noTrade || expired ? "bad" : "warn" },
     ]} />
   );
 }
@@ -2933,7 +3392,7 @@ function EvidenceTriad({ brief, compact = false }: { brief: RowRecord; compact?:
     <div className={`evidence-triad ${compact ? "compact" : ""}`}>
       <EvidenceColumn title="For" tone="good" items={listField(brief, ["evidence_for"])} />
       <EvidenceColumn title="Against" tone="bad" items={listField(brief, ["evidence_against"])} />
-      <EvidenceColumn title="Unknown" tone="warn" items={listField(brief, ["unknowns"])} />
+      <EvidenceColumn title="Open Inputs" tone="warn" items={listField(brief, ["unknowns"])} />
     </div>
   );
 }
@@ -3558,7 +4017,6 @@ function TradingViewChart({ symbol }: { symbol: string }) {
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
       />
-      <small>Daily TradingView chart. Personal TradingView watchlists, alerts, search, and chart state are ingested separately when the local TradingView session is connected.</small>
     </div>
   );
 }
@@ -3643,13 +4101,16 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
           <tr>
             <th>Symbol</th>
             <th>Weight</th>
+            <th>Qty</th>
+            <th>Last</th>
+            <th>Day</th>
             <th>Market Value</th>
             <th>Avg Cost</th>
             <th>Purchase Date</th>
             <th>Term</th>
             <th>Unreal P/L</th>
-            <th>Signal</th>
-            <th>Action</th>
+            <th>Buy/Add Stance</th>
+            <th>Next Step</th>
             <th></th>
           </tr>
         </thead>
@@ -3658,13 +4119,16 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
             <tr key={holding.ticker}>
               <td><button className="ticker-link" type="button" onClick={() => onOpenTicker(holding.ticker)}>{holding.ticker}</button></td>
               <td>{holding.weight ? `${holding.weight.toFixed(1)}%` : "-"}</td>
-              <td>{formatMoney(holding.marketValue)}</td>
+              <td>{formatNumber(holding.quantity)}</td>
+              <td>{Number.isFinite(holding.price) ? formatMoney(holding.price) : <span className="muted-cell">Quote not loaded</span>}</td>
+              <td className={holding.dayChangeValue >= 0 ? "positive" : "negative"}>{Number.isFinite(holding.dayChangeValue) ? `${formatMoney(holding.dayChangeValue)} · ${formatPct(holding.dayChangePct)}` : <span className="muted-cell">No change</span>}</td>
+              <td>{holding.hasMarketValue ? formatMoney(holding.marketValue) : <span className="muted-cell">Quote not loaded</span>}</td>
               <td>{formatMoney(holding.averageCost)}</td>
               <td>{holding.purchaseDate || "Not set"}</td>
               <td>{holding.taxLotTerm}{holding.holdingDays ? ` (${holding.holdingDays}d)` : ""}</td>
-              <td className={holding.unrealizedPnl >= 0 ? "positive" : "negative"}>{formatMoney(holding.unrealizedPnl)} · {formatPct(holding.unrealizedPnlPct)}</td>
-              <td><DecisionBadge value={holding.signal} /></td>
-              <td>{holding.action}</td>
+              <td className={holding.hasPnl && holding.unrealizedPnl < 0 ? "negative" : "positive"}>{holding.hasPnl ? `${formatMoney(holding.unrealizedPnl)} · ${formatPct(holding.unrealizedPnlPct)}` : <span className="muted-cell">Needs quote</span>}</td>
+              <td><DecisionBadge value={holding.addStance} /></td>
+              <td>{holding.nextStep}</td>
               <td><button className="text-link" type="button" onClick={() => void remove(holding.ticker)}>Remove</button></td>
             </tr>
           ))}
@@ -4101,7 +4565,7 @@ function freshnessForSourceRow(row: RowRecord): string {
   if (isExpiredOptionRow(row)) return "Expired";
   const explicit = stringField(row, ["freshness_status", "overall_decision_freshness", "source_freshness", "status"]);
   if (explicit) return titleLabel(explicit);
-  return asOfForRow(row) ? "Loaded" : "Unknown";
+  return asOfForRow(row) ? "Loaded" : "Not loaded";
 }
 
 function isExpiredOptionRow(row: RowRecord): boolean {
@@ -4298,7 +4762,7 @@ function uniqueText(values: string[]): string[] {
 function normalizeFreshnessStatus(value: string): FreshnessStatus {
   const normalized = value.toLowerCase();
   if (normalized.includes("stale") || normalized.includes("expired") || normalized.includes("old")) return "stale";
-  if (normalized.includes("degrad") || normalized.includes("fail") || normalized.includes("warn")) return "degraded";
+  if (!normalized || normalized.includes("not_loaded") || normalized.includes("not loaded") || normalized.includes("degrad") || normalized.includes("fail") || normalized.includes("warn")) return "degraded";
   if (normalized.includes("fresh") || normalized.includes("current") || normalized.includes("healthy") || normalized.includes("recent") || normalized.includes("live")) return "fresh";
   return "unknown";
 }
@@ -4333,7 +4797,7 @@ function catalystLabel(row: RowRecord | undefined): string {
 
 function liquidityLabel(row: RowRecord | undefined): string {
   if (!row) return "-";
-  const grade = titleLabel(stringField(row, ["grade", "liquidity_grade"]) || "unknown");
+  const grade = titleLabel(stringField(row, ["grade", "liquidity_grade"]) || "not loaded");
   const adv = numberField(row, ["avg_dollar_volume", "dollar_volume"], 0);
   return adv ? `${grade} · ${formatCompactMoney(adv)} ADV` : grade;
 }
@@ -4351,7 +4815,7 @@ function sourceClusterFromRows(sourceRows: RowRecord[]): string {
 }
 
 function decisionTags(freshness: FreshnessStatus, sourceThin: boolean, sourceRows: RowRecord[]): string[] {
-  const tags = [freshness === "fresh" ? "Fresh" : freshness === "unknown" ? "Unknown" : titleLabel(freshness)];
+  const tags = [freshness === "fresh" ? "Fresh" : freshness === "unknown" ? "Freshness not loaded" : titleLabel(freshness)];
   if (sourceThin) tags.push("Thin");
   for (const row of sourceRows.slice(0, 2)) {
     const source = stringField(row, ["source_key", "source", "provider"]);
@@ -4379,10 +4843,10 @@ function researchChecklist(readiness: RowRecord | undefined, opportunity: Opport
   const missing = new Set(listField(readiness ?? {}, ["missing_inputs"]));
   if (!opportunity || opportunity.evidenceCount < 2) missing.add("primary evidence");
   const items = [
-    missing.has("thesis") ? "Missing thesis" : "",
-    missing.has("valuation") ? "Missing valuation" : "",
-    opportunity?.catalystWindow && opportunity.catalystWindow !== "-" ? "" : "Missing catalyst",
-    missing.has("primary evidence") ? "Missing primary evidence" : "",
+    missing.has("thesis") ? "Thesis row not loaded" : "",
+    missing.has("valuation") ? "Valuation row not loaded" : "",
+    opportunity?.catalystWindow && opportunity.catalystWindow !== "-" ? "" : "Catalyst row not loaded",
+    missing.has("primary evidence") ? "Primary evidence row not loaded" : "",
     stringField(readiness ?? {}, ["next_action"]) || "Next research action: refresh ticker-specific packet",
   ].filter(Boolean);
   return items.length ? items : ["Ticker-specific research packet has the required source-backed sections."];
@@ -4489,6 +4953,22 @@ function numberField(row: RowRecord, keys: string[], fallback: number): number {
   return fallback;
 }
 
+function optionalNumberField(row: RowRecord, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value.replace(/[$,%]/g, ""));
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
 function confidenceValue(row: RowRecord): number {
   const numeric = numberField(row, ["confidence_score", "conviction"], Number.NaN);
   if (Number.isFinite(numeric)) {
@@ -4528,7 +5008,22 @@ function splitSignalText(value: string | undefined): string[] {
 }
 
 function titleLabel(value: string): string {
-  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .replace(/\bDcf\b/g, "DCF")
+    .replace(/\bEtf\b/g, "ETF")
+    .replace(/\bSec\b/g, "SEC")
+    .replace(/\bFcf\b/g, "FCF");
+}
+
+function formatGateLabel(value: string): string {
+  if (value === "decision_reject") return "Decision is Reject";
+  return titleLabel(value).replace(/\bTv\b/g, "TV").replace(/\bAi\b/g, "AI");
+}
+
+function formatGateList(values: string[]): string {
+  return values.map(formatGateLabel).join(" · ");
 }
 
 function normalizeDecision(value: string): string {
@@ -4562,7 +5057,7 @@ function gradeFromScore(score: number): string {
 function toneClass(value: string): string {
   const normalized = value.toLowerCase();
   if (normalized.includes("act") || normalized.includes("accumulate") || normalized.includes("buy") || normalized.includes("success")) return "good";
-  if (normalized.includes("reject") || normalized.includes("avoid") || normalized.includes("degraded") || normalized.includes("stale")) return "bad";
+  if (normalized.includes("reject") || normalized.includes("avoid") || normalized.includes("no new") || normalized.includes("do not") || normalized.includes("degraded") || normalized.includes("stale")) return "bad";
   if (normalized.includes("research") || normalized.includes("watch") || normalized.includes("warning")) return "warn";
   return "info";
 }

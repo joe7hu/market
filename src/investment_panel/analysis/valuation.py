@@ -22,6 +22,7 @@ class ValuationContext:
     liabilities: float
     category: str | None
     sector: str | None
+    source: str
 
 
 def store_valuation_models(con: Any, symbols: list[str]) -> int:
@@ -76,30 +77,17 @@ def store_valuation_models(con: Any, symbols: list[str]) -> int:
 def valuation_contexts(con: Any, symbols: list[str]) -> list[ValuationContext]:
     output = []
     for symbol in symbols:
-        fundamentals = query_rows(
-            con,
-            """
-            SELECT f.metrics, i.category, i.sector
-            FROM equity_fundamentals f
-            LEFT JOIN instruments i ON i.symbol = f.symbol
-            WHERE f.symbol = ?
-            ORDER BY f.period_end DESC
-            LIMIT 1
-            """,
-            [symbol],
-        )
-        if not fundamentals:
+        row = valuation_source_row(con, symbol)
+        if row is None:
             continue
-        metrics = parse_json(fundamentals[0]["metrics"])
-        if metrics.get("status") != "ok":
-            continue
+        metrics = parse_json(row["metrics"])
         price = latest_price(con, symbol)
         market_cap = latest_market_cap(con, symbol)
-        revenue = as_float(metrics.get("revenue"))
+        revenue = as_float(metrics.get("revenue") or metrics.get("total_revenue"))
         growth = as_float(metrics.get("revenue_growth")) or 0.03
-        margin = as_float(metrics.get("net_margin")) or 0.08
-        cash = as_float(metrics.get("cash")) or 0.0
-        liabilities = as_float(metrics.get("liabilities")) or 0.0
+        margin = as_float(metrics.get("net_margin") or metrics.get("profit_margins")) or 0.08
+        cash = as_float(metrics.get("cash") or metrics.get("total_cash")) or 0.0
+        liabilities = as_float(metrics.get("liabilities") or metrics.get("total_debt")) or 0.0
         if price is None or market_cap is None or revenue is None or price <= 0 or market_cap <= 0 or revenue <= 0:
             continue
         if not metrics_pass_sanity_checks(growth, margin):
@@ -115,11 +103,45 @@ def valuation_contexts(con: Any, symbols: list[str]) -> list[ValuationContext]:
                 net_margin=margin,
                 cash=cash,
                 liabilities=liabilities,
-                category=fundamentals[0].get("category"),
-                sector=fundamentals[0].get("sector"),
+                category=row.get("category"),
+                sector=row.get("sector"),
+                source=str(row.get("source") or "fundamentals"),
             )
         )
     return output
+
+
+def valuation_source_row(con: Any, symbol: str) -> dict[str, Any] | None:
+    fundamentals = query_rows(
+        con,
+        """
+        SELECT f.metrics, i.category, i.sector, 'sec_companyfacts' AS source
+        FROM equity_fundamentals f
+        LEFT JOIN instruments i ON i.symbol = f.symbol
+        WHERE f.symbol = ?
+        ORDER BY f.period_end DESC
+        LIMIT 1
+        """,
+        [symbol],
+    )
+    if fundamentals:
+        metrics = parse_json(fundamentals[0]["metrics"])
+        if metrics.get("status") == "ok":
+            return fundamentals[0]
+    fallback = query_rows(
+        con,
+        """
+        SELECT m.metrics, i.category, i.sector, m.source
+        FROM market_screener_rows m
+        LEFT JOIN instruments i ON i.symbol = m.symbol
+        WHERE m.symbol = ?
+          AND m.source = 'yfinance_info'
+        ORDER BY m.observed_at DESC
+        LIMIT 1
+        """,
+        [symbol],
+    )
+    return fallback[0] if fallback else None
 
 
 def dcf_valuation(context: ValuationContext) -> dict[str, Any] | None:
@@ -164,7 +186,7 @@ def dcf_valuation(context: ValuationContext) -> dict[str, Any] | None:
             "confidence": "medium_low",
             "method_family": "dcf",
             "terminal_value_pct": present_terminal / enterprise_value if enterprise_value else None,
-            "note": "Five-year FCFF-style DCF from stored SEC fundamentals and latest market cap. Segment/SBC detail requires richer source data.",
+            "note": f"Five-year FCFF-style DCF from {context.source} fundamentals and latest market cap. Segment/SBC detail requires richer source data.",
         },
     )
 

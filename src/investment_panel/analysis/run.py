@@ -13,11 +13,13 @@ from investment_panel.analysis.sepa import store_sepa_analyses
 from investment_panel.analysis.valuation import store_valuation_models
 from investment_panel.core.config import AppConfig
 from investment_panel.core.db import query_rows
+from investment_panel.core.portfolio import ensure_portfolio_instruments
 
 
 def run_all_analyses(con: Any, config: AppConfig) -> dict[str, int | str]:
     if not config.analysis.enabled:
         return {"status": "disabled", "as_of": date.today().isoformat()}
+    ensure_portfolio_instruments(con)
     symbols = [row["symbol"] for row in query_rows(con, "SELECT symbol FROM instruments ORDER BY symbol")]
     return {
         "status": "ok",

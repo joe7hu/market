@@ -7,6 +7,75 @@ from typing import Any
 
 import pandas as pd
 
+from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+
+
+def portfolio_instruments(con: Any) -> list[dict[str, Any]]:
+    """Return owned symbols as instrument rows without overwriting richer metadata."""
+
+    rows = con.execute(
+        """
+        SELECT p.symbol, i.name, i.asset_class, i.sector, i.industry, i.category, i.source
+        FROM portfolio_positions p
+        LEFT JOIN instruments i ON i.symbol = p.symbol
+        ORDER BY p.symbol
+        """
+    ).fetchall()
+    output: list[dict[str, Any]] = []
+    for symbol, name, asset_class, sector, industry, category, source in rows:
+        normalized = normalize_symbol(str(symbol or ""))
+        if not normalized:
+            continue
+        output.append(
+            {
+                "symbol": normalized,
+                "name": name or normalized,
+                "asset_class": asset_class or infer_asset_class(normalized),
+                "sector": sector,
+                "industry": industry,
+                "category": category or "owned-portfolio",
+                "source": source or "portfolio",
+                "cik": None,
+            }
+        )
+    return output
+
+
+def ensure_portfolio_instruments(con: Any) -> int:
+    """Make manual/CSV portfolio symbols first-class instruments for refresh jobs."""
+
+    rows = portfolio_instruments(con)
+    for row in rows:
+        con.execute(
+            """
+            INSERT INTO instruments (symbol, name, asset_class, sector, industry, category, source)
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM instruments WHERE symbol = ?)
+            """,
+            [
+                row["symbol"],
+                row.get("name"),
+                row.get("asset_class"),
+                row.get("sector"),
+                row.get("industry"),
+                row.get("category"),
+                row.get("source"),
+                row["symbol"],
+            ],
+        )
+        con.execute(
+            """
+            UPDATE instruments
+            SET name = COALESCE(NULLIF(name, ''), ?),
+                asset_class = COALESCE(NULLIF(asset_class, ''), ?),
+                category = COALESCE(NULLIF(category, ''), ?),
+                source = COALESCE(NULLIF(source, ''), ?)
+            WHERE symbol = ?
+            """,
+            [row.get("name"), row.get("asset_class"), row.get("category"), row.get("source"), row["symbol"]],
+        )
+    return len(rows)
+
 
 def import_portfolio_csv(con: Any, csv_path: Path | None) -> int:
     if csv_path is None or not csv_path.exists():
@@ -46,6 +115,7 @@ def import_portfolio_csv(con: Any, csv_path: Path | None) -> int:
         """
     )
     con.unregister("portfolio_frame")
+    ensure_portfolio_instruments(con)
     return len(normalized)
 
 

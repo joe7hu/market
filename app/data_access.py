@@ -154,6 +154,8 @@ def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) ->
 
     _resolve_core_helper()
     from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import refresh_decision_read_models
+    from investment_panel.core.portfolio import ensure_portfolio_instruments
 
     db_path = _database_path(config)
     init_db(db_path)
@@ -175,6 +177,8 @@ def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) ->
                 '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
             ],
         )
+        ensure_portfolio_instruments(con)
+        refresh_decision_read_models(con, config.get("watchlist", []))
     return {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes}
 
 
@@ -185,6 +189,7 @@ def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, 
 
     _resolve_core_helper()
     from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import refresh_decision_read_models
 
     db_path = _database_path(config)
     init_db(db_path)
@@ -201,6 +206,7 @@ def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, 
                 '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
             ],
         )
+        refresh_decision_read_models(con, config.get("watchlist", []))
     return {"symbol": normalized, "deleted": True}
 
 
@@ -450,7 +456,18 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "portfolio",
             "discovered_universe",
         ],
-        "portfolio": ["portfolio", "decision_readiness", "decision_queue", "quotes", "liquidity", "correlations"],
+        "portfolio": [
+            "portfolio",
+            "decision_readiness",
+            "decision_queue",
+            "quotes",
+            "liquidity",
+            "correlations",
+            "valuations",
+            "technicals",
+            "sepa",
+            "earnings_setups",
+        ],
         "research": [
             "decision_readiness",
             "decision_queue",
@@ -555,19 +572,22 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
     best_option = _best_option(live_option_rows)
     portfolio_row = _first_row(tables, "portfolio")
     research_packet = _latest_row(tables.get("research_packets") or [], ("created_at", "as_of"))
+    action = _text(decision_row.get("action_grade") or decision_row.get("decision") or "Watch")
     blockers = _text_list(decision_row.get("blocking_gates"))
+    if _is_no_trade_action(action) and "decision_reject" not in blockers:
+        blockers = [*blockers, "decision_reject"]
     if expired_option_rows and not live_option_rows:
         blockers = list(dict.fromkeys([*blockers, "expired_options_context"]))
     missing_families = _missing_families(tables)
 
-    stance = _stance(decision_row.get("action_grade") or decision_row.get("decision") or "Watch", blockers, best_valuation, research_packet)
+    stance = _stance(action, blockers, best_valuation, research_packet)
     setup = {
         "stance": stance,
         "timeframe": _timeframe(earnings_setup, best_option),
         "catalyst": _catalyst(decision_row, snapshot, earnings_setup, tables.get("catalysts") or []),
         "entry_zone": _entry_zone(latest_price, technical, sepa, best_valuation, blockers),
         "invalidation_level": _invalidation_level(technical, sepa),
-        "target_range": _target_range(best_valuation, latest_price),
+        "target_range": _target_range(best_valuation, latest_price, blockers),
         "risk_reward": _risk_reward(latest_price, technical, best_valuation),
         "review_date": _review_date(earnings_setup, research_packet),
     }
@@ -576,8 +596,8 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
         "symbol": symbol,
         "canonical_quote": canonical_quote,
         "verdict": {
-            "action": decision_row.get("action_grade") or "Watch",
-            "freshness": decision_row.get("freshness_status") or decision_row.get("overall_decision_freshness") or "unknown",
+            "action": action or "Watch",
+            "freshness": decision_row.get("freshness_status") or decision_row.get("overall_decision_freshness") or "not_loaded",
             "confidence": _confidence(decision_row, basis),
             "summary": _brief_summary(symbol, decision_row, basis, blockers),
             "blockers": blockers,
@@ -588,10 +608,10 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
         "setup": setup,
         "risk_plan": {
             "max_sizing": _max_sizing(liquidity, portfolio_row, blockers, missing_families),
-            "max_loss": _max_loss(best_option),
+            "max_loss": "Not applicable while decision grade is Reject." if "decision_reject" in blockers else "Not applicable while blockers are active." if blockers else _max_loss(best_option),
             "liquidity_ceiling": _liquidity_ceiling(liquidity),
             "portfolio_overlap": _portfolio_overlap(portfolio_row, tables.get("correlations") or []),
-            "invalidation": decision_row.get("invalidation") or snapshot.get("invalidation") or _text_join(research_packet.get("invalidation")) or "No explicit invalidation row is loaded.",
+            "invalidation": decision_row.get("invalidation") or snapshot.get("invalidation") or _text_join(research_packet.get("invalidation")) or "No ticker-specific invalidation row is loaded in the current decision tables.",
         },
         "portfolio_fit": {
             "owned": bool(portfolio_row) or bool(_object(snapshot.get("portfolio_impact")).get("owned")),
@@ -600,7 +620,7 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
             "duplicates_risk": bool(portfolio_row),
         },
         "evidence_for": _evidence_for(tables, technical, sepa, liquidity, best_valuation, earnings_setup, best_option, research_packet),
-        "evidence_against": _evidence_against(tables, technical, best_valuation, blockers, research_packet, expired_option_rows),
+        "evidence_against": _evidence_against(tables, technical, sepa, earnings_setup, best_valuation, blockers, research_packet, expired_option_rows),
         "unknowns": _unknowns(tables, missing_families),
         "changed_since_last_review": _changed_since_last_review(canonical_quote, decision_row, technical, earnings_setup, blockers, tables),
         "source_health_by_family": _source_health_by_family(tables),
@@ -732,6 +752,11 @@ def _canonical_quote(symbol: str, quote: dict[str, Any], decision: dict[str, Any
     }
 
 
+def _is_no_trade_action(action: Any) -> bool:
+    normalized = _text(action).lower()
+    return any(term in normalized for term in ("reject", "avoid", "pass", "no trade"))
+
+
 def _parse_date(value: Any) -> date | None:
     if isinstance(value, datetime):
         return value.date()
@@ -768,11 +793,18 @@ def _best_option(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 GATE_LABELS = {
     "chart_extended_without_thesis": "Price is extended and no current thesis supports chasing.",
+    "decision_reject": "Current decision grade is Reject; do not add exposure until the score and setup change.",
     "expired_options_context": "Options context is expired; refresh the chain before using options for risk.",
     "source_thin": "Evidence is source-thin.",
+    "evidence_thin": "Primary evidence count is below the decision threshold.",
     "stale_data": "Some source data is stale.",
+    "stale_intraday_quote": "Intraday quote is stale; refresh quotes before making a decision.",
+    "stale_quote": "Quote is stale; refresh quotes before making a decision.",
+    "missing_intraday_quote": "No current intraday quote row is loaded for this ticker.",
+    "missing_daily_analysis": "Daily analysis rows are not loaded for this ticker.",
+    "liquidity_unknown": "No current liquidity row is loaded for this ticker.",
     "missing_thesis": "No current ticker thesis is loaded.",
-    "missing_portfolio_context": "Portfolio context is missing.",
+    "missing_portfolio_context": "Portfolio context is not loaded for this ticker.",
 }
 
 
@@ -781,6 +813,11 @@ def _readable_gate(value: Any) -> str:
     if not raw:
         return ""
     return GATE_LABELS.get(raw, raw.replace("_", " ").replace("-", " ").capitalize())
+
+
+def _gate_sentence(blockers: list[str]) -> str:
+    labels = [_readable_gate(blocker).rstrip(".") for blocker in blockers if _readable_gate(blocker)]
+    return "; ".join(labels)
 
 
 def _blocker_tasks(blockers: list[str], missing: list[str], tables: dict[str, list[dict[str, Any]]]) -> list[dict[str, str]]:
@@ -793,6 +830,8 @@ def _blocker_tasks(blockers: list[str], missing: list[str], tables: dict[str, li
     for blocker in blockers:
         if blocker == "chart_extended_without_thesis":
             add("thesis", "Thesis support missing", "Add thesis or avoid chase", _readable_gate(blocker), "bad")
+        elif blocker == "decision_reject":
+            add("decision_reject", "Decision is Reject", "No new exposure", _readable_gate(blocker), "bad")
         elif blocker == "expired_options_context":
             add("options", "Refresh option chain", "Refresh options", _readable_gate(blocker), "bad")
         else:
@@ -800,10 +839,6 @@ def _blocker_tasks(blockers: list[str], missing: list[str], tables: dict[str, li
 
     missing_actions = {
         "thesis": ("Optional thesis missing", "Add thesis if conviction work continues"),
-        "news": ("Ticker news missing", "Load ticker news"),
-        "filings": ("Filings/disclosures missing", "Load filing context"),
-        "portfolio": ("Portfolio context missing", "Import or enter portfolio"),
-        "TradingView personal context": ("TradingView context missing", "Connect TradingView context"),
     }
     for family in missing:
         if family in missing_actions:
@@ -821,14 +856,14 @@ def _missing_families(tables: dict[str, list[dict[str, Any]]]) -> list[str]:
         "thesis": ["theses", "memos"],
         "news": ["news"],
         "filings": ["disclosures"],
-        "portfolio": ["portfolio"],
-        "TradingView personal context": ["tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state"],
     }
     return [label for label, keys in checks.items() if not any(tables.get(key) for key in keys)]
 
 
 def _stance(action: Any, blockers: list[str], valuation: dict[str, Any], packet: dict[str, Any]) -> str:
     normalized = _text(action).lower()
+    if _is_no_trade_action(action):
+        return "No new exposure; current decision grade is Reject."
     if blockers:
         return "Do not initiate; blocked pending research or setup confirmation."
     if "act" in normalized or "buy" in normalized:
@@ -864,13 +899,15 @@ def _catalyst(decision: dict[str, Any], snapshot: dict[str, Any], earnings_setup
     if catalysts:
         event = catalysts[0]
         return " · ".join(item for item in [_text(event.get("event_date") or event.get("start_at")), _text(event.get("event") or event.get("title"))] if item)
-    return "No explicit near-term catalyst row."
+    return "No near-term catalyst row is loaded for this ticker."
 
 
 def _entry_zone(price: float, technical: dict[str, Any], sepa: dict[str, Any], valuation: dict[str, Any], blockers: list[str]) -> str:
     ma20 = _number(technical.get("ma20") or _object(technical.get("features")).get("ma20"))
     ma50 = _number(technical.get("ma50") or _object(technical.get("features")).get("ma50"))
     fair = _number(valuation.get("fair_value"))
+    if "decision_reject" in blockers:
+        return "No entry while the backend decision grade is Reject."
     if blockers:
         return "No chase entry while blockers are active."
     if ma20 and price > ma20 * 1.1:
@@ -892,10 +929,12 @@ def _invalidation_level(technical: dict[str, Any], sepa: dict[str, Any]) -> str:
     return _text(sepa.get("stage")) or "No technical invalidation level loaded."
 
 
-def _target_range(valuation: dict[str, Any], price: float) -> str:
+def _target_range(valuation: dict[str, Any], price: float, blockers: list[str]) -> str:
     fair = _number(valuation.get("fair_value"))
     if fair:
         implied = ((fair / price) - 1) * 100 if price else _number(valuation.get("upside_pct"))
+        if "decision_reject" in blockers:
+            return f"Model fair value is {_fmt_money(fair)} ({_fmt_pct(implied)}), but the decision grade is Reject; no active target."
         if price and fair < price:
             return f"{_fmt_money(fair)} fair value ({_fmt_pct(implied)} vs canonical quote); no upside at current price."
         return f"{_fmt_money(fair)} fair value ({_fmt_pct(implied)} vs canonical quote)." if price else _fmt_money(fair)
@@ -935,27 +974,38 @@ def _confidence(decision: dict[str, Any], basis: dict[str, Any]) -> int:
 
 def _brief_summary(symbol: str, decision: dict[str, Any], basis: dict[str, Any], blockers: list[str]) -> str:
     if blockers:
-        return f"{symbol} is gated: {'; '.join(_readable_gate(blocker) for blocker in blockers)}"
+        return f"{symbol} is gated: {_gate_sentence(blockers)}."
     summary = _text(basis.get("summary") or decision.get("decision_basis"))
-    return summary or f"{symbol} has no explicit source-backed decision summary."
+    if summary:
+        return summary
+    source_count = _number(basis.get("source_count") or basis.get("independent_source_count"))
+    evidence_count = _number(basis.get("evidence_count") or basis.get("primary_evidence_count"))
+    if source_count or evidence_count:
+        return f"{symbol} has {source_count:.0f} source rows and {evidence_count:.0f} primary evidence items; no promoted memo summary is loaded."
+    return f"{symbol} has no current decision summary row in the loaded ticker tables."
 
 
 def _next_action(decision: dict[str, Any], packet: dict[str, Any], missing: list[str], blockers: list[str]) -> str:
+    if "decision_reject" in blockers:
+        entry_plan = _object(packet.get("entry_plan"))
+        return _text(entry_plan.get("ideal_entry")) or "Wait for the score, setup, or primary-source catalyst to improve before reconsidering."
     if blockers:
         if any("thesis" in blocker.lower() for blocker in blockers):
             return "Avoid chasing the extended chart unless an explicit thesis supports the trade."
-        return "Clear blocking gates before action."
+        return f"Load or refresh gated source rows before action: {_gate_sentence(blockers)}."
     entry_plan = _object(packet.get("entry_plan"))
     if entry_plan.get("ideal_entry"):
         return _text(entry_plan["ideal_entry"])
     if missing:
-        return f"Fill missing decision inputs: {', '.join(missing[:3])}."
-    return "Review setup, sizing, and portfolio overlap before placing any order."
+        return f"Load ticker rows before action: {', '.join(missing[:3])}."
+    return "Review entry, invalidation, sizing, and portfolio overlap against the rows shown in this ticker dossier."
 
 
 def _max_sizing(liquidity: dict[str, Any], portfolio: dict[str, Any], blockers: list[str], missing: list[str]) -> str:
+    if "decision_reject" in blockers:
+        return "No new exposure while decision grade remains Reject."
     if blockers:
-        return "Watchlist or starter only until evidence gates clear."
+        return "No new exposure until evidence gates clear."
     grade = _text(liquidity.get("grade")).lower()
     if portfolio:
         return "Add only if portfolio concentration remains within existing risk limits."
@@ -1014,31 +1064,50 @@ def _evidence_for(
 ) -> list[str]:
     items: list[str] = []
     score = _number(technical.get("technical_score") or _object(technical.get("features")).get("technical_score"))
-    if score:
+    if score >= 60:
         items.append(f"Technical score is {score:.0f}; 20d return {_fmt_pct(_number(technical.get('return_20d')) * 100)}.")
-    if sepa:
+    sepa_text = _text(sepa.get("verdict") or sepa.get("stage")).lower()
+    if sepa and any(term in sepa_text for term in ("strong", "constructive", "stage_2", "advance")):
         items.append(f"SEPA setup is {_text(sepa.get('verdict') or sepa.get('stage'))}.")
     if _text(liquidity.get("grade")):
         items.append(f"Liquidity is {_text(liquidity.get('grade')).replace('_', ' ')} with {_liquidity_ceiling(liquidity)}")
     if _number(valuation.get("upside_pct")) > 0:
         items.append(f"Best valuation row shows {_fmt_pct(_number(valuation.get('upside_pct')))} modeled upside.")
-    if earnings:
+    earnings_score = _number(earnings.get("score"))
+    earnings_verdict = _text(earnings.get("verdict")).lower()
+    if earnings and (earnings_score >= 60 or "positive" in earnings_verdict):
         items.append(f"Earnings setup is {_text(earnings.get('verdict')) or 'loaded'} with score {_number(earnings.get('score')):.0f}.")
     if option:
         items.append(f"Options scenario loaded: {_text(option.get('strategy_type')).replace('_', ' ')}.")
-    items.extend(_text_list(packet.get("why_now"))[:2])
+    for note in _text_list(packet.get("why_now"))[:2]:
+        lowered = note.lower()
+        if any(term in lowered for term in ("not yet strong", "not strong", "insufficient", "weak evidence")):
+            continue
+        items.append(note)
     return items or ["No positive source-backed evidence rows are loaded."]
 
 
 def _evidence_against(
     tables: dict[str, list[dict[str, Any]]],
     technical: dict[str, Any],
+    sepa: dict[str, Any],
+    earnings: dict[str, Any],
     valuation: dict[str, Any],
     blockers: list[str],
     packet: dict[str, Any],
     expired_options: list[dict[str, Any]],
 ) -> list[str]:
     items = [_readable_gate(blocker) for blocker in blockers]
+    score = _number(technical.get("technical_score") or _object(technical.get("features")).get("technical_score"))
+    if technical and score < 50:
+        items.append(f"Technical score is weak at {score:.0f}; 20d return {_fmt_pct(_number(technical.get('return_20d')) * 100)}.")
+    sepa_text = _text(sepa.get("verdict") or sepa.get("stage"))
+    if sepa and any(term in sepa_text.lower() for term in ("pass", "risk", "declin", "stage_4")):
+        items.append(f"SEPA setup is {sepa_text}; do not treat the chart as constructive.")
+    earnings_score = _number(earnings.get("score"))
+    earnings_verdict = _text(earnings.get("verdict"))
+    if earnings and (earnings_score < 50 or "risk" in earnings_verdict.lower()):
+        items.append(f"Earnings setup is {earnings_verdict or 'risk'} with score {earnings_score:.0f}.")
     upside = _number(valuation.get("upside_pct"))
     if valuation and upside < 0:
         items.append(f"Best valuation row is below price: {_fmt_pct(upside)} upside.")
@@ -1051,22 +1120,24 @@ def _evidence_against(
         items.append("Price is near recent highs; avoid chasing an extended move without a thesis.")
     items.extend(_text_list(packet.get("bear_case"))[:2])
     if not tables.get("theses") and not tables.get("memos"):
-        items.append("No ticker-specific thesis or memo row is loaded.")
-    return items or ["No explicit negative evidence rows are loaded."]
+        items.append("No ticker-specific thesis or memo row is loaded in the current local research tables.")
+    return items or ["Loaded rows do not contain a negative evidence item for this ticker."]
 
 
 def _unknowns(tables: dict[str, list[dict[str, Any]]], missing: list[str]) -> list[str]:
-    unknowns = [
-        "Optional thesis is not loaded; rely on source evidence and deterministic analysis until conviction work is added."
-        if family == "thesis"
-        else f"Missing {family} input."
-        for family in missing
-    ]
+    unknowns = []
+    for family in missing:
+        if family == "thesis":
+            unknowns.append("Optional thesis is not loaded; rely on source evidence and deterministic analysis until conviction work is added.")
+        elif family == "news":
+            unknowns.append("No ticker-specific news row is loaded in the current local news table.")
+        elif family == "filings":
+            unknowns.append("No tracked disclosure row is loaded for this ticker in the current local filing set.")
+        else:
+            unknowns.append(f"No current {family} row is loaded for this ticker.")
     if not tables.get("news"):
-        unknowns.append("No ticker-specific news row is available to explain the current move.")
-    if not tables.get("disclosures"):
-        unknowns.append("No tracked-filing or insider/public-disclosure row is available for this ticker.")
-    return list(dict.fromkeys(unknowns)) or ["No major missing input detected from loaded ticker tables."]
+        unknowns.append("No ticker-specific news row is loaded in the current local news table.")
+    return list(dict.fromkeys(unknowns)) or ["Loaded ticker tables cover the required quote, setup, risk, and evidence fields for this dossier."]
 
 
 def _changed_since_last_review(
@@ -1081,13 +1152,13 @@ def _changed_since_last_review(
     if quote.get("change_pct") is not None:
         changes.append(f"{quote.get('label')}: {_fmt_money(_number(quote.get('price')))} ({_fmt_pct(_number(quote.get('change_pct')))}).")
     if decision.get("as_of"):
-        changes.append(f"Decision row refreshed {decision['as_of']} with action {decision.get('action_grade') or 'unknown'}.")
+        changes.append(f"Decision row refreshed {decision['as_of']} with action {decision.get('action_grade') or 'not recorded'}.")
     if technical:
         changes.append(f"Technical row shows 20d return {_fmt_pct(_number(technical.get('return_20d')) * 100)}.")
     if earnings:
-        changes.append(f"Earnings setup score {_number(earnings.get('score')):.0f}; next event {earnings.get('event_date') or 'unknown'}.")
+        changes.append(f"Earnings setup score {_number(earnings.get('score')):.0f}; next event {earnings.get('event_date') or 'not loaded'}.")
     if blockers:
-        changes.append(f"Active blocker set: {'; '.join(_readable_gate(blocker) for blocker in blockers)}")
+        changes.append(f"Active blocker set: {_gate_sentence(blockers)}.")
     loaded = sum(1 for rows in tables.values() if rows)
     changes.append(f"{loaded} ticker-specific API table families currently loaded.")
     return changes
@@ -1186,30 +1257,30 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
         "Evidence Stack": [
             {"label": "For", "value": str(len(tables.get("opportunity_sources") or [])), "caption": "source rows supporting current setup"},
             {"label": "Against", "value": _text(setup.get("stance")), "caption": "stance from gates and valuation"},
-            {"label": "Unknown", "value": str(len(_missing_families(tables))), "caption": "missing decision inputs"},
+            {"label": "Open Inputs", "value": str(len(_missing_families(tables))), "caption": "source families not loaded for this ticker"},
         ],
         "Fundamentals": [
-            {"label": "Latest Filing", "value": _text(fundamentals.get("form_type")) or "Missing", "caption": _text(fundamentals.get("filing_date") or fundamentals.get("period_end"))},
+            {"label": "Latest Filing", "value": _text(fundamentals.get("form_type")) or "Not loaded", "caption": _text(fundamentals.get("filing_date") or fundamentals.get("period_end")) or "No SEC company-facts row"},
             {"label": "Revenue", "value": _fmt_money(_number(_object(fundamentals.get("metrics")).get("revenue"))), "caption": "SEC company facts"},
             {"label": "Net Margin", "value": _fmt_pct(_number(_object(fundamentals.get("metrics")).get("net_margin")) * 100), "caption": "latest annual period"},
         ],
         "Estimates": [
-            {"label": "Earnings Setup", "value": _text(earnings.get("verdict")) or "Missing", "caption": f"score {_number(earnings.get('score')):.0f}"},
-            {"label": "Event", "value": _text(earnings.get("event_date")) or "Missing", "caption": "next earnings/event row"},
-            {"label": "Estimate Snapshot", "value": "Loaded" if estimates else "Missing", "caption": _text(estimates.get("as_of"))},
+            {"label": "Earnings Setup", "value": _text(earnings.get("verdict")) or "Not loaded", "caption": f"score {_number(earnings.get('score')):.0f}" if earnings else "No earnings setup row"},
+            {"label": "Event", "value": _text(earnings.get("event_date")) or "Not loaded", "caption": "next earnings/event row"},
+            {"label": "Estimate Snapshot", "value": "Loaded" if estimates else "Not loaded", "caption": _text(estimates.get("as_of")) or "No analyst estimate row"},
         ],
         "Financials": [
             {"label": "Best Fair Value", "value": _fmt_money(_number(financial_valuation.get("fair_value"))), "caption": _text(financial_valuation.get("method"))},
             {"label": "Modeled Upside", "value": _fmt_pct(_number(financial_valuation.get("upside_pct"))), "caption": "relative to model quote"},
-            {"label": "Confidence", "value": _text(_object(financial_valuation.get("diagnostics")).get("confidence")) or "unknown", "caption": _text(_object(financial_valuation.get("diagnostics")).get("note"))},
+            {"label": "Confidence", "value": _text(_object(financial_valuation.get("diagnostics")).get("confidence")) or "Not scored", "caption": _text(_object(financial_valuation.get("diagnostics")).get("note")) or "No valuation diagnostics row"},
         ],
         "Options": [
             {"label": "Live Scenarios", "value": str(live_options), "caption": "usable current option setups"},
             {"label": "Expired Scenarios", "value": str(expired_options), "caption": "hidden from live risk plan"},
-            {"label": "Status", "value": "Expired" if option_rows and not live_options else "Loaded" if live_options else "Missing", "caption": "option chain usability"},
+            {"label": "Status", "value": "Expired" if option_rows and not live_options else "Loaded" if live_options else "Not loaded", "caption": "option chain usability"},
         ],
         "TradingView": [
-            {"label": "Personal Context", "value": "Loaded" if any(tables.get(key) for key in ("tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state")) else "Missing", "caption": "watchlists, alerts, search, chart state"},
+            {"label": "Personal Context", "value": "Loaded" if any(tables.get(key) for key in ("tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state")) else "Not loaded", "caption": "watchlists, alerts, search, chart state"},
             {"label": "Chart", "value": "Embedded", "caption": "daily technical chart available on overview"},
         ],
         "News": [
@@ -1221,7 +1292,7 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
             {"label": "Portfolio Rows", "value": str(len(tables.get("portfolio") or [])), "caption": "current position context"},
         ],
         "Memos": [
-            {"label": "Decision Memo", "value": _text(memo.get("decision") or memo.get("conviction")) or "Missing", "caption": _text_join(memo.get("why_now")) or "No ticker-specific memo row"},
+            {"label": "Decision Memo", "value": _text(memo.get("decision") or memo.get("conviction")) or "Not loaded", "caption": _text_join(memo.get("why_now")) or "No ticker-specific memo row"},
             {"label": "Entry Plan", "value": _text(_object(memo.get("entry_plan")).get("initial_weight")) or "Review required", "caption": _text(_object(memo.get("entry_plan")).get("ideal_entry"))},
         ],
     }

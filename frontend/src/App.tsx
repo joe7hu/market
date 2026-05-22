@@ -12,7 +12,7 @@ import { SettingsRoute } from "./pages/SettingsRoute";
 import { TickerRoute } from "./pages/TickerRoute";
 
 const navItems = [
-  { to: "/", label: "Dashboard", end: true },
+  { to: "/", label: "Dashboard", end: true, aliases: ["/dashboard"] },
   { to: "/opportunities", label: "Opportunities" },
   { to: "/research", label: "Research" },
   { to: "/portfolio", label: "Portfolio Overview" },
@@ -36,6 +36,7 @@ export function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<DashboardRoute />} />
+          <Route path="dashboard" element={<DashboardRoute />} />
           <Route path="opportunities" element={<OpportunitiesRoute />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
           <Route path="research" element={<ResearchRoute />} />
@@ -54,7 +55,7 @@ export function App() {
 function AppShell() {
   const { model, lastRefresh, loading } = useMarketData();
   const location = useLocation();
-  const active = [...navItems].reverse().find((item) => location.pathname === item.to || (!item.end && location.pathname.startsWith(item.to)));
+  const active = [...navItems].reverse().find((item) => location.pathname === item.to || item.aliases?.includes(location.pathname) || (!item.end && location.pathname.startsWith(item.to)));
   const loadedSources = Object.values(model.sources).filter((state) => state === "live").length;
   const tapeItems = [
     ...model.watchlist.map((item) => ({ symbol: item.symbol, price: item.price, change: item.change })),
@@ -78,7 +79,7 @@ function AppShell() {
           </NavLink>
           <nav className="side-nav" aria-label="Main navigation">
             {navItems.map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.end}>
+              <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => isActive || item.aliases?.includes(location.pathname) ? "active" : ""}>
                 <span>{item.label}</span>
               </NavLink>
             ))}

@@ -13,7 +13,7 @@ from investment_panel.core.db import db, init_db, upsert_instrument
 from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.fundamentals import update_equity_fundamentals
 from investment_panel.core.instruments import universe_from_config_and_arco
-from investment_panel.core.portfolio import import_portfolio_csv, seed_empty_theses_for_portfolio
+from investment_panel.core.portfolio import ensure_portfolio_instruments, import_portfolio_csv, portfolio_instruments, seed_empty_theses_for_portfolio
 from investment_panel.core.prices import fetch_prices, upsert_prices
 from investment_panel.core.scoring import score_and_store
 from investment_panel.core.sources import lightweight_online_check, record_verified_sources
@@ -33,9 +33,11 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
             lightweight_online_check(con, config.market_data.user_agent)
         for instrument in universe:
             upsert_instrument(con, instrument)
-        fundamental_rows = update_equity_fundamentals(con, universe, config.market_data.user_agent)
         portfolio_rows = import_portfolio_csv(con, config.portfolio_csv)
         seed_empty_theses_for_portfolio(con)
+        ensure_portfolio_instruments(con)
+        universe = merge_universe(universe, portfolio_instruments(con))
+        fundamental_rows = update_equity_fundamentals(con, universe, config.market_data.user_agent)
         thesis_rows = ingest_arco_theses(con, arco_context)
         price_rows = 0
         feature_rows = 0
@@ -85,6 +87,18 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         },
     )
     return {**result, "status_path": str(status_path), "duckdb_snapshot": str(snapshot_path) if snapshot_path else None}
+
+
+def merge_universe(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        for item in group:
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            existing = merged.get(symbol, {})
+            merged[symbol] = {**item, **{key: value for key, value in existing.items() if value not in (None, "")}}
+    return sorted(merged.values(), key=lambda row: row["symbol"])
 
 
 def main() -> None:

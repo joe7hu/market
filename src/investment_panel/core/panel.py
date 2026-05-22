@@ -575,10 +575,28 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
         """,
     )
     quotes_by_symbol = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
+    decision_by_symbol = {
+        str(row.get("symbol") or "").upper(): row
+        for row in query_rows(
+            con,
+            """
+            SELECT symbol, action_grade, freshness_status
+            FROM decision_queue
+            WHERE symbol IN (SELECT symbol FROM portfolio_positions)
+            """,
+        )
+    }
     for row in rows:
+        decision = decision_by_symbol.get(str(row.get("symbol") or "").upper(), {})
+        action_grade = decision.get("action_grade")
+        freshness = decision.get("freshness_status")
+        row["signal"] = action_grade
+        row["action"] = "Refresh data" if freshness in {"stale", "failed", "missing"} else "Review setup" if action_grade in {"Reject", "Watch", "Research", "Act"} else None
         quote = quotes_by_symbol.get(str(row.get("symbol") or "").upper(), {})
         price = quote.get("price")
         row["price"] = price
+        row["change_pct"] = quote.get("change_pct")
+        row["change_abs"] = quote.get("change_abs")
         row["quote_source"] = quote.get("source")
         row["quote_freshness"] = quote.get("freshness_status")
         if price is None:
@@ -591,6 +609,9 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
         row["market_value"] = quantity * float(price)
         row["unrealized_pnl"] = quantity * (float(price) - avg_cost)
         row["unrealized_pnl_pct"] = ((float(price) - avg_cost) / avg_cost) * 100 if avg_cost > 0 else None
+    total_market_value = sum(float(row.get("market_value") or 0) for row in rows if row.get("market_value") is not None)
+    for row in rows:
+        row["portfolio_weight"] = (float(row["market_value"]) / total_market_value) * 100 if total_market_value and row.get("market_value") is not None else None
     return rows
 
 

@@ -86,6 +86,13 @@ def test_save_and_delete_portfolio_position(tmp_path) -> None:
     assert panel_data.rows("portfolio")[0]["quantity"] == 3
     assert panel_data.rows("portfolio")[0]["purchase_date"] == "2024-01-15"
     assert panel_data.rows("portfolio")[0]["tax_lot_term"] == "long_term"
+    assert panel_data.rows("discovered_universe")[0]["symbol"] == "NVDA"
+
+    from investment_panel.core.db import db, query_rows
+
+    with db(config["database"]["duckdb_path"]) as con:
+        instruments = query_rows(con, "SELECT symbol, asset_class, category, source FROM instruments WHERE symbol = 'NVDA'")
+    assert instruments == [{"symbol": "NVDA", "asset_class": "equity", "category": "owned-portfolio", "source": "portfolio"}]
 
     deleted = data_access.delete_portfolio_position(config, "NVDA")
     panel_data = data_access.load_panel_data(config)

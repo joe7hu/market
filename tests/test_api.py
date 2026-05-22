@@ -93,7 +93,9 @@ def test_ticker_decision_brief_prefers_quote_row_over_decision_snapshot_price() 
     assert brief["canonical_quote"]["price"] == 424.10
     assert brief["canonical_quote"]["source"] == "previous_close:yahoo-chart"
     assert brief["canonical_quote"]["type"] == "prior_close"
-    assert brief["verdict"]["blockers"] == ["chart_extended_without_thesis"]
+    assert brief["verdict"]["blockers"] == ["chart_extended_without_thesis", "decision_reject"]
+    assert brief["setup"]["entry_zone"] == "No entry while the backend decision grade is Reject."
+    assert brief["risk_plan"]["max_sizing"] == "No new exposure while decision grade remains Reject."
 
 
 def test_ticker_decision_brief_surfaces_missing_thesis_news_and_filings() -> None:
@@ -122,13 +124,46 @@ def test_ticker_decision_brief_surfaces_missing_thesis_news_and_filings() -> Non
     assert any("Technical score" in item for item in brief["evidence_for"])
     assert any("valuation" in item.lower() for item in brief["evidence_against"])
     assert any("Optional thesis" in item for item in brief["unknowns"])
-    assert any("Missing news" in item for item in brief["unknowns"])
-    assert any("Missing filings" in item for item in brief["unknowns"])
-    assert brief["risk_plan"]["max_loss"] == "No bounded-loss option scenario selected."
+    assert any("No ticker-specific news row" in item for item in brief["unknowns"])
+    assert any("No tracked disclosure row" in item for item in brief["unknowns"])
+    assert brief["risk_plan"]["max_loss"] == "Not applicable while decision grade is Reject."
     assert brief["options_context"]["status"] == "expired"
     assert "expired_options_context" in brief["verdict"]["blockers"]
     assert any("Options context is expired" in item for item in brief["verdict"]["blocker_labels"])
-    assert {row["label"] for row in brief["tab_summaries"]["Evidence Stack"]} == {"For", "Against", "Unknown"}
+    assert {row["label"] for row in brief["tab_summaries"]["Evidence Stack"]} == {"For", "Against", "Open Inputs"}
+
+
+def test_ticker_decision_brief_uses_specific_source_gap_language() -> None:
+    brief = ticker_decision_brief(
+        "MU",
+        {
+            "symbol_decision_snapshot": [
+                {
+                    "symbol": "MU",
+                    "action_grade": "Watch",
+                    "blocking_gates": ["liquidity_unknown", "missing_daily_analysis", "stale_intraday_quote"],
+                    "decision_basis": {"source_count": 3, "evidence_count": 1},
+                }
+            ],
+        },
+    )
+
+    joined = " ".join(
+        [
+            brief["verdict"]["summary"],
+            " ".join(brief["verdict"]["blocker_labels"]),
+            " ".join(brief["evidence_against"]),
+            " ".join(brief["unknowns"]),
+        ]
+    )
+    assert "Liquidity unknown" not in joined
+    assert "Missing daily analysis" not in joined
+    assert "No explicit" not in joined
+    assert "No major missing" not in joined
+    assert "No current liquidity row is loaded for this ticker." in joined
+    assert "Daily analysis rows are not loaded for this ticker." in joined
+    assert brief["risk_plan"]["max_loss"] == "Not applicable while blockers are active."
+    assert brief["risk_plan"]["max_sizing"] == "No new exposure until evidence gates clear."
 
 
 def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:

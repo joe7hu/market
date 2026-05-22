@@ -101,6 +101,11 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
                 "sharesOutstanding": 250_000_000,
                 "regularMarketPrice": 200,
                 "previousClose": 195,
+                "totalRevenue": 7_000_000_000,
+                "revenueGrowth": 0.12,
+                "profitMargins": 0.18,
+                "totalCash": 1_000_000_000,
+                "totalDebt": 500_000_000,
                 "quoteType": "EQUITY",
             },
         )
@@ -111,6 +116,8 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
     metrics = json.loads(rows[0]["metrics"])
     assert metrics["market_cap_basic"] == 50_000_000_000
     assert metrics["shares_outstanding"] == 250_000_000
+    assert metrics["total_revenue"] == 7_000_000_000
+    assert metrics["net_margin"] == 0.18
 
 
 def test_tradingview_provider_interface_uses_json_runner() -> None:
@@ -223,6 +230,41 @@ def test_valuation_models_include_dcf_relative_and_blend(tmp_path: Path) -> None
     methods = {row["method"] for row in rows}
     assert {"dcf_base_case", "relative_revenue_multiple", "blended_dcf_relative"} == methods
     assert all(row["fair_value"] > 0 for row in rows)
+
+
+def test_valuation_models_use_yfinance_fundamental_fallback(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for symbol, price, market_cap, revenue in [
+            ("LLY", 1000, 900_000_000_000, 45_000_000_000),
+            ("MSFT", 420, 3_100_000_000_000, 280_000_000_000),
+        ]:
+            upsert_instrument(con, {"symbol": symbol, "name": symbol, "asset_class": "equity", "category": "owned-portfolio"})
+            upsert_quote(con, symbol, "2026-05-20T12:00:00Z", {"symbol": symbol, "close": price, "change": 0})
+            store_yfinance_market_snapshot(
+                con,
+                f"run-{symbol}",
+                symbol,
+                "2026-05-20T12:00:00Z",
+                {
+                    "shortName": symbol,
+                    "marketCap": market_cap,
+                    "regularMarketPrice": price,
+                    "totalRevenue": revenue,
+                    "revenueGrowth": 0.1,
+                    "profitMargins": 0.2,
+                    "totalCash": 10_000_000_000,
+                    "totalDebt": 5_000_000_000,
+                    "quoteType": "EQUITY",
+                },
+            )
+
+        assert store_valuation_models(con, ["LLY", "MSFT"]) == 6
+        rows = query_rows(con, "SELECT symbol, method, diagnostics FROM valuation_models ORDER BY symbol, method")
+
+    assert {row["symbol"] for row in rows} == {"LLY", "MSFT"}
+    assert any("yfinance_info" in json.loads(row["diagnostics"])["note"] for row in rows if row["method"] == "dcf_base_case")
 
 
 def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
