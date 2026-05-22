@@ -588,6 +588,12 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
       <Panel className="span-8" title="Exposure Map" headerAction={<SegmentedControl options={["P/L", "Weight", "Day"]} value={heatmapMode} onChange={setHeatmapMode} />}>
         <PortfolioHeatmap holdings={visibleHoldings} mode={heatmapMode} onOpenTicker={onOpenTicker} />
       </Panel>
+      <Panel className="span-8" title="Performance">
+        <PortfolioPerformanceChart holdings={visibleHoldings} stats={stats} />
+      </Panel>
+      <Panel className="span-4" title="Correlation Map">
+        <PortfolioCorrelationMap holdings={visibleHoldings} rows={model.correlationRows} onOpenTicker={onOpenTicker} />
+      </Panel>
     </>
   );
   return (
@@ -626,7 +632,7 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
       ) : (
         <div className="portfolio-grid">
           {workspacePanels}
-          <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
+          <Panel className="span-12" title={`Holdings (${model.holdings.length})`}>
             {allocationFilter && <button className="text-link portfolio-filter-clear" type="button" onClick={() => setAllocationFilter("")}>Showing {allocationFilter}; clear filter</button>}
             <HoldingsTable holdings={visibleHoldings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
           </Panel>
@@ -648,6 +654,56 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         </div>
       )}
     </PageFrame>
+  );
+}
+
+function PortfolioPerformanceChart({ holdings, stats }: { holdings: Holding[]; stats: PortfolioStats }) {
+  const points = portfolioPerformancePoints(holdings, stats);
+  if (!holdings.length || !points.length) {
+    return <EmptyState title="No performance series" detail="Add priced holdings to compare current value against cost basis and latest day move." />;
+  }
+  return (
+    <div className="portfolio-performance-chart">
+      <ResponsiveContainer width="100%" height={230}>
+        <LineChart data={points} margin={{ top: 10, right: 18, left: 0, bottom: 0 }}>
+          <CartesianGrid stroke="#e5e7eb" vertical={false} />
+          <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 11 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fill: "#475569", fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(value) => formatCompactMoney(Number(value))} width={58} />
+          <Tooltip formatter={(value, name) => [formatMoney(Number(value)), name === "value" ? "Portfolio Value" : "Cost Basis"]} />
+          <Legend />
+          <Line type="monotone" dataKey="costBasis" name="Cost Basis" stroke="#64748b" strokeWidth={2} dot={{ r: 3 }} />
+          <Line type="monotone" dataKey="value" name="Portfolio Value" stroke="#2563eb" strokeWidth={3} dot={{ r: 4 }} />
+        </LineChart>
+      </ResponsiveContainer>
+      <div className="portfolio-performance-metrics">
+        <MetricBadge label="Open Return" value={formatPct(stats.unrealizedPnlPct)} caption={formatMoney(stats.unrealizedPnl)} tone={stats.unrealizedPnl >= 0 ? "good" : "bad"} />
+        <MetricBadge label="Day Move" value={formatPct(stats.dayChangePct)} caption={formatMoney(stats.dayChange)} tone={stats.dayChange >= 0 ? "good" : "bad"} />
+        <MetricBadge label="Cost Basis" value={formatMoney(stats.costBasis)} caption={`${stats.pricedCount}/${stats.totalCount} priced`} tone="info" />
+      </div>
+    </div>
+  );
+}
+
+function PortfolioCorrelationMap({ holdings, rows, onOpenTicker }: { holdings: Holding[]; rows: SummaryItem[]; onOpenTicker: (symbol: string) => void }) {
+  const priced = holdings.filter((holding) => holding.hasMarketValue);
+  if (priced.length < 2 && !rows.length) {
+    return <EmptyState title="No correlation rows" detail="Load at least two priced holdings and refresh analyses to populate pair context." />;
+  }
+  const symbols = priced.map((holding) => holding.ticker);
+  const correlations = portfolioCorrelationPairs(symbols, rows);
+  if (!correlations.length) {
+    return <EmptyState title="Correlation not loaded" detail="Refresh deterministic analyses after owned holdings are priced." />;
+  }
+  return (
+    <div className="portfolio-correlation-map">
+      {correlations.map((pair) => (
+        <button key={`${pair.symbol}-${pair.peer}`} type="button" className={`portfolio-correlation-row ${pair.tone}`} onClick={() => onOpenTicker(pair.symbol)}>
+          <span>{pair.symbol}</span>
+          <strong>{pair.peer}</strong>
+          <i>{pair.label}</i>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -2552,6 +2608,44 @@ function portfolioHeatmapTone(value: number, mode: string): "positive" | "negati
   return "neutral";
 }
 
+function portfolioPerformancePoints(holdings: Holding[], stats: PortfolioStats): Array<{ label: string; value: number; costBasis: number }> {
+  if (!holdings.length || stats.costBasis <= 0) return [];
+  const previousValue = Math.max(0, stats.portfolioValue - stats.dayChange);
+  const points = [
+    { label: "Cost", value: stats.costBasis, costBasis: stats.costBasis },
+    { label: "Prev Close", value: previousValue || stats.portfolioValue, costBasis: stats.costBasis },
+    { label: "Current", value: stats.portfolioValue, costBasis: stats.costBasis },
+  ];
+  return points.filter((point) => Number.isFinite(point.value) && point.value > 0);
+}
+
+function portfolioCorrelationPairs(symbols: string[], rows: SummaryItem[]): Array<{ symbol: string; peer: string; label: string; tone: Tone }> {
+  const symbolSet = new Set(symbols);
+  const pairs = rows
+    .filter((row) => row.symbol && symbolSet.has(row.symbol))
+    .map((row) => {
+      const correlation = parseCorrelationValue(row.caption);
+      const peer = row.value && row.value !== "-" ? row.value : "Peer";
+      const tone: Tone = Number.isFinite(correlation)
+        ? Math.abs(correlation) >= 0.75 ? "warn" : Math.abs(correlation) >= 0.45 ? "info" : "good"
+        : "muted";
+      return {
+        symbol: row.symbol || row.label,
+        peer,
+        label: Number.isFinite(correlation) ? correlation.toFixed(2) : row.caption,
+        tone,
+      };
+    })
+    .filter((row) => row.symbol && row.peer);
+  if (pairs.length) return pairs.slice(0, 8);
+  return symbols.slice(0, 8).map((symbol) => ({ symbol, peer: "Not loaded", label: "Refresh", tone: "muted" }));
+}
+
+function parseCorrelationValue(value: string): number {
+  const match = value.match(/corr\s+(-?\d+(?:\.\d+)?)/i) || value.match(/(-?0?\.\d+|-?1(?:\.0+)?)/);
+  return match ? Number(match[1]) : Number.NaN;
+}
+
 function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], correlationRows: SummaryItem[]): SummaryItem[] {
   const rows: SummaryItem[] = [];
   const largest = holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
@@ -4382,7 +4476,7 @@ function HoldingsTable({ holdings, onOpenTicker, onDelete }: { holdings: Holding
               <td>{holding.purchaseDate || "Not set"}</td>
               <td>{holding.taxLotTerm}{holding.holdingDays ? ` (${holding.holdingDays}d)` : ""}</td>
               <td className={holding.hasPnl && holding.unrealizedPnl < 0 ? "negative" : "positive"}>{holding.hasPnl ? `${formatMoney(holding.unrealizedPnl)} · ${formatPct(holding.unrealizedPnlPct)}` : <span className="muted-cell">Needs quote</span>}</td>
-              <td><DecisionBadge value={holding.addStance} /></td>
+              <td className="portfolio-stance-cell"><DecisionBadge value={holding.addStance} /></td>
               <td>{holding.nextStep}</td>
               <td><button className="text-link" type="button" onClick={() => void remove(holding.ticker)}>Remove</button></td>
             </tr>

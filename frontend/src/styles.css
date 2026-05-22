@@ -3905,6 +3905,114 @@ h3,
   justify-self: start;
 }
 
+.portfolio-performance-chart {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.portfolio-performance-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.portfolio-correlation-map {
+  display: grid;
+  gap: 6px;
+}
+
+.portfolio-correlation-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid #dbe4ef;
+  background: #ffffff;
+  color: #111827;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.portfolio-correlation-row:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.portfolio-correlation-row span,
+.portfolio-correlation-row strong,
+.portfolio-correlation-row i {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-correlation-row span {
+  color: #475569;
+  font-size: 0.67rem;
+  font-weight: 900;
+}
+
+.portfolio-correlation-row strong {
+  font-size: 0.76rem;
+}
+
+.portfolio-correlation-row i {
+  justify-self: end;
+  border: 1px solid #dbe4ef;
+  background: #f8fafc;
+  color: #334155;
+  padding: 2px 5px;
+  font-size: 0.64rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.portfolio-correlation-row.good i {
+  background: #dcfce7;
+  color: var(--green);
+}
+
+.portfolio-correlation-row.warn i {
+  background: #fef3c7;
+  color: var(--yellow);
+}
+
+.portfolio-correlation-row.muted i {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.portfolio-stance-cell .decision-badge,
+.portfolio-stance-cell .decision-badge.good,
+.portfolio-stance-cell .decision-badge.warn,
+.portfolio-stance-cell .decision-badge.bad,
+.portfolio-stance-cell .decision-badge.info {
+  border: 1px solid #cbd5e1;
+  background: #ffffff !important;
+  color: #111827 !important;
+  letter-spacing: 0;
+}
+
+.portfolio-stance-cell .decision-badge.good {
+  border-color: #86efac;
+  background: #dcfce7 !important;
+  color: #14532d !important;
+}
+
+.portfolio-stance-cell .decision-badge.warn {
+  border-color: #fcd34d;
+  background: #fef3c7 !important;
+  color: #78350f !important;
+}
+
+.portfolio-stance-cell .decision-badge.bad {
+  border-color: #fecaca;
+  background: #fee2e2 !important;
+  color: #7f1d1d !important;
+}
+
 .sort-header-button {
   display: inline-flex;
   align-items: center;
@@ -4156,7 +4264,8 @@ h3,
   }
 
   .portfolio-risk-ribbon,
-  .portfolio-risk-grid {
+  .portfolio-risk-grid,
+  .portfolio-performance-metrics {
     grid-template-columns: 1fr;
   }
 
