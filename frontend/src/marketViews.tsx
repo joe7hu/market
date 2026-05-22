@@ -577,6 +577,19 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
   const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const taxRows = portfolioTaxRows(visibleHoldings);
+  const workspacePanels = (
+    <>
+      <Panel className="span-12" title="Risk & Positioning">
+        <PortfolioRiskRibbon stats={stats} />
+      </Panel>
+      <Panel className="span-4" title="Allocation">
+        <PortfolioAllocationPanel holdings={model.holdings} activeBucket={allocationFilter} onBucketSelect={setAllocationFilter} />
+      </Panel>
+      <Panel className="span-8" title="Exposure Map" headerAction={<SegmentedControl options={["P/L", "Weight", "Day"]} value={heatmapMode} onChange={setHeatmapMode} />}>
+        <PortfolioHeatmap holdings={visibleHoldings} mode={heatmapMode} onOpenTicker={onOpenTicker} />
+      </Panel>
+    </>
+  );
   return (
     <PageFrame
       title="Portfolio Overview"
@@ -593,29 +606,26 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         ]}
       />
       {!hasHoldings ? (
-        <div className="portfolio-onboarding">
-          <Panel title="Add First Position">
-            <div className="portfolio-onboarding-copy">
-              <strong>Build the local portfolio model from explicit positions.</strong>
-              <p>Manual entries write to DuckDB and unlock exposure, liquidity, tax-lot, and signal-fit checks without broker credentials.</p>
-            </div>
-            <PortfolioEntryForm onSaved={onRefresh} />
-          </Panel>
-          <Panel title="Workspace Readiness">
-            <BulletList tone="info" items={["Add ticker, shares, average cost, and purchase date.", "Portfolio risk panels remain quiet until owned exposure exists.", "Signal decisions continue to show unowned candidates separately."]} />
-          </Panel>
-        </div>
+        <>
+          <div className="portfolio-grid">
+            {workspacePanels}
+          </div>
+          <div className="portfolio-onboarding">
+            <Panel title="Add First Position">
+              <div className="portfolio-onboarding-copy">
+                <strong>Build the local portfolio model from explicit positions.</strong>
+                <p>Manual entries write to DuckDB and unlock exposure, liquidity, tax-lot, and signal-fit checks without broker credentials.</p>
+              </div>
+              <PortfolioEntryForm onSaved={onRefresh} />
+            </Panel>
+            <Panel title="Workspace Readiness">
+              <BulletList tone="info" items={["Add ticker, shares, average cost, and purchase date.", "The risk ribbon, allocation view, exposure map, and sortable blotter populate from owned rows.", "Signal decisions continue to show unowned candidates separately."]} />
+            </Panel>
+          </div>
+        </>
       ) : (
         <div className="portfolio-grid">
-          <Panel className="span-12" title="Risk & Positioning">
-            <PortfolioRiskRibbon stats={stats} />
-          </Panel>
-          <Panel className="span-4" title="Allocation">
-            <PortfolioAllocationPanel holdings={model.holdings} activeBucket={allocationFilter} onBucketSelect={setAllocationFilter} />
-          </Panel>
-          <Panel className="span-8" title="Exposure Map" headerAction={<SegmentedControl options={["P/L", "Weight", "Day"]} value={heatmapMode} onChange={setHeatmapMode} />}>
-            <PortfolioHeatmap holdings={visibleHoldings} mode={heatmapMode} onOpenTicker={onOpenTicker} />
-          </Panel>
+          {workspacePanels}
           <Panel className="span-8" title={`Holdings (${model.holdings.length})`}>
             {allocationFilter && <button className="text-link portfolio-filter-clear" type="button" onClick={() => setAllocationFilter("")}>Showing {allocationFilter}; clear filter</button>}
             <HoldingsTable holdings={visibleHoldings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
