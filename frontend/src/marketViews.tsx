@@ -473,6 +473,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   const foundTables = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).map(([name]) => name) : [];
   const signalRow = dossierModel.signalMatrix.find((row) => row.ticker === symbol);
   const decisionBrief = objectField(ticker?.decision_brief);
+  const recommendation = dossierModel.agentRecommendationRows.find((row) => stringField(row, ["symbol"]) === symbol);
 
   return (
     <PageFrame
@@ -499,9 +500,17 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         foundTables={foundTables}
         tickerFound={Boolean(ticker?.found)}
       />
+      <BrokerAgentDossier
+        symbol={symbol}
+        recommendation={recommendation}
+        statusRows={dossierModel.brokerStatusRows}
+        accountRows={dossierModel.brokerAccountRows}
+        positionRows={dossierModel.brokerPositionRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
+        signalRows={dossierModel.brokerSignalRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
+      />
       <DecisionTicket brief={decisionBrief} opportunity={opportunity} />
       {signalRow && <TickerSignalRibbon row={signalRow} brief={decisionBrief} />}
-      <TabBar tabs={["Overview", "Evidence Stack", "Fundamentals", "Estimates", "Financials", "Options", "TradingView", "News", "Filings", "Memos"]} active={activeTab} onSelect={setActiveTab} />
+      <TabBar tabs={["Overview", "Evidence Stack", "Broker", "Fundamentals", "Estimates", "Financials", "Options", "TradingView", "News", "Filings", "Memos"]} active={activeTab} onSelect={setActiveTab} />
       {activeTab === "Overview" ? <div className="ticker-grid">
         <DecisionBriefOverview brief={decisionBrief} opportunity={opportunity} />
         <TradeSetupPanel brief={decisionBrief} />
@@ -601,16 +610,27 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
       title="Portfolio Overview"
       subtitle={hasHoldings ? `As of ${new Date().toLocaleDateString()}` : "Enter your real positions to enable portfolio analytics"}
     >
-      <SourceNotice items={[["Holdings", model.sources.holdings], ["Quotes", model.sources.watchlist], ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"]]} />
+      <SourceNotice items={[["Holdings", model.sources.holdings], ["Broker", model.brokerStatusRows.length ? "live" : "empty"], ["Quotes", model.sources.watchlist], ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"]]} />
       <MetricStrip
         metrics={[
           ["Market Value", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", unpricedHoldings ? `${unpricedHoldings} holding${unpricedHoldings === 1 ? "" : "s"} missing price` : hasHoldings ? "Priced holdings only" : "Portfolio CSV absent", unpricedHoldings ? "warn" : hasHoldings ? "good" : "warn"],
+          ["Broker Accounts", String(model.brokerAccountRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["status", "detail"]) : "IBKR not synced", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"],
           ["Day Move", hasHoldings ? formatMoney(portfolioDayChange) : "Requires prices", hasHoldings ? "From latest quote change" : "Manual entry below", portfolioDayChange >= 0 ? "good" : "bad"],
           ["Unrealized P/L", hasHoldings ? formatMoney(portfolioPnl) : "Requires import", unpricedHoldings ? "Excludes unpriced holdings" : hasHoldings ? "From priced position rows" : "Requires cost basis", unpricedHoldings ? "warn" : hasHoldings ? "good" : "muted"],
           ["Cost Basis", hasHoldings ? formatMoney(portfolioCostBasis) : "Requires import", hasHoldings ? "Quantity times average cost" : "No owned exposure", "info"],
-          ["Largest Weight", largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "Needs prices", largestHolding ? "Priced portfolio concentration" : "Enter positions first", largestHolding && largestHolding.weight > 50 ? "warn" : "info"],
         ]}
       />
+      <div className="portfolio-grid broker-grid">
+        <Panel className="span-4" title="Broker Health">
+          <SummaryList rows={brokerStatusSummaryRows(model.brokerStatusRows)} />
+        </Panel>
+        <Panel className="span-4" title="Account Source">
+          <SummaryList rows={brokerAccountSummaryRows(model.brokerAccountRows)} />
+        </Panel>
+        <Panel className="span-4" title="Paper Orders">
+          <SummaryList rows={paperOrderSummaryRows(model.paperOrderRows)} onOpenTicker={onOpenTicker} />
+        </Panel>
+      </div>
       {!hasHoldings ? (
         <>
           <div className="portfolio-grid">
@@ -655,6 +675,125 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
       )}
     </PageFrame>
   );
+}
+
+function BrokerAgentDossier({
+  symbol,
+  recommendation,
+  statusRows,
+  accountRows,
+  positionRows,
+  signalRows,
+}: {
+  symbol: string;
+  recommendation?: RowRecord;
+  statusRows: RowRecord[];
+  accountRows: RowRecord[];
+  positionRows: RowRecord[];
+  signalRows: RowRecord[];
+}) {
+  const blockers = recommendation ? arrayField(recommendation.blockers).map((item) => displayValue(item as JsonValue)).filter(Boolean) : [];
+  const preview = objectField(recommendation?.paper_order_preview);
+  const status = stringField(recommendation ?? {}, ["status", "action"]) || "not_loaded";
+  return (
+    <div className="ticker-grid broker-dossier-grid">
+      <Panel className="span-4" title="Broker Health">
+        <SummaryList rows={brokerStatusSummaryRows(statusRows)} />
+      </Panel>
+      <Panel className="span-4" title="Portfolio Exposure">
+        <SummaryList rows={[
+          positionRows[0]
+            ? {
+              label: symbol,
+              value: formatMoney(numberField(positionRows[0], ["market_value"], 0)),
+              caption: `${formatNumber(numberField(positionRows[0], ["quantity"], 0))} shares via ${stringField(positionRows[0], ["provider"]) || "broker"}`,
+              tone: "info",
+              symbol,
+            }
+            : { label: symbol, value: "No broker position", caption: accountRows.length ? "IBKR account loaded; no current exposure row" : "Account sync not loaded", tone: "muted" },
+        ]} />
+      </Panel>
+      <Panel className="span-4" title="Paper Trade Plan">
+        {recommendation ? (
+          <SummaryList rows={[
+            { label: "Agent Status", value: titleLabel(status), caption: stringField(recommendation, ["action"]) || "advisory only", tone: blockers.length ? "warn" : status === "paper_ready" ? "good" : "info" },
+            { label: "Max Notional", value: formatMoney(numberField(recommendation, ["max_notional"], 0)), caption: `Preview ${displayValue(preview.quantity)} @ ${displayValue(preview.limit_price)}`, tone: "info" },
+            { label: "Blockers", value: String(blockers.length), caption: blockers.slice(0, 2).join(", ") || "No active safety blocker", tone: blockers.length ? "bad" : "good" },
+          ]} />
+        ) : (
+          <EmptyState title="No agent recommendation" detail="Run the broker source refresh or agent review to materialize a paper-only trade plan." />
+        )}
+      </Panel>
+      {signalRows.length > 0 && (
+        <Panel className="span-12" title="moomoo Supplemental Signals">
+          <SummaryList rows={signalRows.slice(0, 8).map((row) => ({
+            label: stringField(row, ["signal_type", "provider"]) || "scanner",
+            value: displayValue(row.score ?? row.rank),
+            caption: displayValue(row.metrics ?? row.observed_at),
+            tone: "info",
+            symbol,
+          }))} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function brokerStatusSummaryRows(statusRows: RowRecord[]): SummaryItem[] {
+  if (!statusRows.length) {
+    return [{ label: "IBKR", value: "Not synced", caption: "Broker source has not produced a health row.", tone: "warn" }];
+  }
+  return statusRows.map((row) => {
+    const status = stringField(row, ["status", "health"]) || "unknown";
+    return {
+      label: stringField(row, ["provider"]) || "broker",
+      value: titleLabel(status),
+      caption: stringField(row, ["detail"]) || stringField(row, ["checked_at"]) || "No detail",
+      tone: status === "ok" ? "good" : status === "disabled" ? "warn" : "bad",
+    };
+  });
+}
+
+function brokerAccountSummaryRows(accountRows: RowRecord[]): SummaryItem[] {
+  if (!accountRows.length) {
+    return [{ label: "IBKR Account", value: "Optional", caption: "Manual portfolio and market-data advisory mode remain available.", tone: "info" }];
+  }
+  return accountRows.slice(0, 4).map((row) => ({
+    label: stringField(row, ["account_id", "provider"]) || "Account",
+    value: formatMoney(numberField(row, ["net_liquidation", "cash"], 0)),
+    caption: `Buying power ${formatMoney(numberField(row, ["buying_power"], 0))} · ${stringField(row, ["account_mode"]) || "mode unknown"}`,
+    tone: "info",
+  }));
+}
+
+function agentRecommendationSummaryRows(recommendationRows: RowRecord[]): SummaryItem[] {
+  if (!recommendationRows.length) {
+    return [{ label: "Agent Review", value: "No rows", caption: "Run update_broker_sources or /api/agent/review.", tone: "warn" }];
+  }
+  return recommendationRows.slice(0, 10).map((row) => {
+    const blockers = arrayField(row.blockers);
+    const status = stringField(row, ["status", "action"]) || "unknown";
+    return {
+      label: stringField(row, ["symbol"]) || "Ticker",
+      value: `${Math.round(numberField(row, ["actionability_score"], 0))} · ${titleLabel(status)}`,
+      caption: blockers.length ? `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}: ${blockers.slice(0, 2).map((item) => displayValue(item as JsonValue)).join(", ")}` : stringField(row, ["setup_type", "entry_trigger"]),
+      tone: blockers.length ? "bad" : status === "paper_ready" ? "good" : "info",
+      symbol: stringField(row, ["symbol"]),
+    };
+  });
+}
+
+function paperOrderSummaryRows(orderRows: RowRecord[]): SummaryItem[] {
+  if (!orderRows.length) {
+    return [{ label: "Paper Orders", value: "None staged", caption: "V1 does not expose live trading.", tone: "muted" }];
+  }
+  return orderRows.slice(0, 5).map((row) => ({
+    label: stringField(row, ["symbol"]) || "Paper",
+    value: titleLabel(stringField(row, ["status"]) || "staged"),
+    caption: `${stringField(row, ["side"]) || "BUY"} ${displayValue(row.quantity)} @ ${displayValue(row.limit_price)} · ${stringField(row, ["created_at"])}`,
+    tone: stringField(row, ["status"]) === "blocked" ? "bad" : "info",
+    symbol: stringField(row, ["symbol"]),
+  }));
 }
 
 function PortfolioPerformanceChart({ holdings, stats }: { holdings: Holding[]; stats: PortfolioStats }) {
@@ -886,12 +1025,15 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
           </GhostButton>
         }
       >
-        <SourceNotice items={[["Decision Queue", model.sources.opportunities], ["Quotes", model.sources.watchlist], ["Health", model.sources.health]]} />
+        <SourceNotice items={[["Decision Queue", model.sources.opportunities], ["Broker", model.brokerStatusRows.length ? "live" : "empty"], ["Quotes", model.sources.watchlist], ["Health", model.sources.health]]} />
         {leader ? (
           <TopOpportunityTicker opportunity={leader} onOpenTicker={onOpenTicker} />
         ) : (
           <EmptyState title="No top ticker for this filter set" detail="The ranked ticker card appears when at least one opportunity matches the active filters." />
         )}
+        <Panel title="Advisory Agent Queue">
+          <SummaryList rows={agentRecommendationSummaryRows(model.agentRecommendationRows)} onOpenTicker={onOpenTicker} />
+        </Panel>
         <div className="source-panel-grid">
           {model.signalSources.map((panel) => (
             <Panel key={panel.key} title={panel.title} headerAction={<SourcePill state={panel.state} />}>
@@ -1022,17 +1164,20 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
   const documentationRows = model.healthRows.filter((row) => row.kind === "documentation");
   return (
     <PageFrame title="Operations Health" subtitle="All times in ET">
-      <SourceNotice items={[["Source Health", model.sources.health]]} />
+      <SourceNotice items={[["Source Health", model.sources.health], ["Broker", model.brokerStatusRows.length ? "live" : "empty"]]} />
       <MetricStrip
         metrics={[
           [ready ? "All Systems Operational" : "System Needs Attention", ready ? "Ready" : "Degraded", `Last check ${model.latestHealthCheck}`, ready ? "good" : "bad"],
           ["Providers", String(providerRows.length), "source-health rows", "info"],
+          ["Broker Rows", String(model.brokerStatusRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["detail"]) : "No IBKR/moomoo status row", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"],
           ["Warnings", String(warningCount), "not documentation", "warn"],
           ["Critical", String(degradedCount), "not documentation", "bad"],
-          ["Docs", String(documentationRows.length), "excluded from health", "muted"],
         ]}
       />
       <div className="health-grid">
+        <Panel className="span-12" title="Broker / Advisory Safety">
+          <SummaryList rows={[...brokerStatusSummaryRows(model.brokerStatusRows), ...agentRecommendationSummaryRows(model.agentRecommendationRows).slice(0, 4)]} />
+        </Panel>
         <Panel className="span-8" title="Provider Health">
           <HealthTable rows={providerRows} />
         </Panel>
@@ -1056,6 +1201,7 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
 function TickerTabContent({ activeTab, ticker, data, decisionBrief }: { activeTab: string; ticker: TickerPayload | null; data: PanelData; decisionBrief: RowRecord }) {
   const keyByTab: Record<string, string[]> = {
     "Evidence Stack": ["symbol_decision_snapshot", "decision_snapshot", "decision_queue", "opportunities_ranked", "opportunity_sources", "signals", "technicals", "sepa", "liquidity", "correlations", "valuations"],
+    Broker: ["broker_status", "broker_accounts", "broker_positions", "broker_market_snapshots", "broker_scanner_signals", "agent_recommendations", "paper_orders"],
     Fundamentals: ["fundamentals"],
     Estimates: ["analyst_estimates", "earnings", "earnings_setups"],
     Financials: ["fundamentals", "valuations"],
@@ -1208,6 +1354,12 @@ export type AppModel = {
   freshnessHealthRows: HealthRow[];
   sourceHealthRows: HealthRow[];
   providerRunRows: HealthRow[];
+  brokerStatusRows: RowRecord[];
+  brokerAccountRows: RowRecord[];
+  brokerPositionRows: RowRecord[];
+  brokerSignalRows: RowRecord[];
+  agentRecommendationRows: RowRecord[];
+  paperOrderRows: RowRecord[];
   portfolioValue: number;
   sectors: SummaryItem[];
   setupRows: SummaryItem[];
@@ -1255,7 +1407,14 @@ export function buildModel(data: PanelData): AppModel {
   const freshnessHealthRows = buildFreshnessHealthRows(rows(data.sourceFreshness));
   const sourceHealthRows = buildSourceHealthRows(rows(data.sourceHealth));
   const providerRunRows = buildProviderRunRows(rows(data.providerRuns));
-  const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows];
+  const brokerStatusRows = rows(data.brokerStatus);
+  const brokerAccountRows = rows(data.brokerAccounts);
+  const brokerPositionRows = rows(data.brokerPositions);
+  const brokerSignalRows = rows(data.brokerScannerSignals);
+  const agentRecommendationRows = rows(data.agentRecommendations);
+  const paperOrderRows = rows(data.paperOrders);
+  const brokerHealthRows = buildBrokerHealthRows(brokerStatusRows);
+  const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows, ...brokerHealthRows];
   const ownedSymbols = new Set(holdings.map((holding) => holding.ticker));
   const portfolioValue = holdings.reduce((total, holding) => total + (holding.hasMarketValue ? holding.marketValue : 0), 0);
   const latestHealthCheck = newestDateLabel(healthRows.map((row) => row.freshness));
@@ -1274,6 +1433,12 @@ export function buildModel(data: PanelData): AppModel {
     freshnessHealthRows,
     sourceHealthRows,
     providerRunRows,
+    brokerStatusRows,
+    brokerAccountRows,
+    brokerPositionRows,
+    brokerSignalRows,
+    agentRecommendationRows,
+    paperOrderRows,
     portfolioValue,
     sectors: buildSectorRows(rows(data.screener)),
     setupRows: buildSetupRows(rows(data.sepa), rows(data.liquidity)),
@@ -1336,6 +1501,13 @@ function panelDataWithTickerTables(base: PanelData, ticker: TickerPayload): Pane
     valuations: "valuations",
     technicals: "technicals",
     research_packets: "researchPackets",
+    broker_status: "brokerStatus",
+    broker_accounts: "brokerAccounts",
+    broker_positions: "brokerPositions",
+    broker_market_snapshots: "brokerMarketSnapshots",
+    broker_scanner_signals: "brokerScannerSignals",
+    agent_recommendations: "agentRecommendations",
+    paper_orders: "paperOrders",
     memos: "memos",
   };
 
@@ -2346,6 +2518,22 @@ function buildProviderRunRows(providerRows: RowRecord[]): HealthRow[] {
       kind: "run",
       contract: sourceFreshnessContract(row),
       staleAfter: stringField(row, ["stale_after", "ttl"]) || "-",
+    };
+  });
+}
+
+function buildBrokerHealthRows(statusRows: RowRecord[]): HealthRow[] {
+  return statusRows.slice(0, 20).map((row) => {
+    const status = normalizeHealthStatus(stringField(row, ["status", "health"]));
+    return {
+      provider: `Broker / ${stringField(row, ["provider"]) || "provider"}`,
+      status,
+      freshness: stringField(row, ["last_data_at", "checked_at"]) || "unknown",
+      lastRun: stringField(row, ["detail"]) || "Broker gateway state",
+      sourceUrl: stringField(row, ["provider"]) || "broker",
+      kind: "provider",
+      contract: "Broker/account sync must be healthy before recommendations can stage paper orders.",
+      staleAfter: "15 minutes",
     };
   });
 }
@@ -5204,8 +5392,8 @@ function researchChecklist(readiness: RowRecord | undefined, opportunity: Opport
 function normalizeHealthStatus(value: string): HealthRow["status"] {
   const normalized = value.toLowerCase();
   if (normalized.includes("doc")) return "Documentation";
-  if (normalized.includes("degrad") || normalized.includes("fail") || normalized.includes("error") || normalized.includes("stale")) return "Degraded";
-  if (normalized.includes("warn") || normalized.includes("partial")) return "Warning";
+  if (normalized.includes("degrad") || normalized.includes("fail") || normalized.includes("error") || normalized.includes("stale") || normalized.includes("offline") || normalized.includes("missing")) return "Degraded";
+  if (normalized.includes("warn") || normalized.includes("partial") || normalized.includes("disabled")) return "Warning";
   return "Healthy";
 }
 

@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any
 
 from investment_panel.core.config import AppConfig, config_to_dict, load_config
+from investment_panel.core import brokers
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, refresh_decision_read_models
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
@@ -71,6 +72,13 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "technicals": technicals(con),
             "research_packets": research_packets(con),
             "provider_runs": provider_runs(con),
+            "broker_status": brokers.broker_status_rows(con),
+            "broker_accounts": brokers.broker_accounts(con),
+            "broker_positions": brokers.broker_positions(con),
+            "broker_market_snapshots": brokers.broker_market_snapshots(con),
+            "broker_scanner_signals": brokers.broker_scanner_signals(con),
+            "agent_recommendations": brokers.agent_recommendations(con),
+            "paper_orders": brokers.paper_orders(con),
             "ticker_memos": reports(con),
             "trader_twins": trader_profiles(app_config.trader_profile_dir),
             "source_health": source_health(con),
@@ -553,27 +561,34 @@ def top_source_label(counts: dict[str, int], components: dict[str, Any]) -> str:
 
 
 def portfolio(con: Any) -> list[dict[str, Any]]:
-    rows = query_rows(
-        con,
-        """
-        SELECT p.symbol, i.name, i.asset_class, i.category, p.quantity,
-               p.avg_cost, p.avg_cost AS average_cost,
-               p.purchase_date,
-               CASE
-                   WHEN p.purchase_date IS NULL THEN NULL
-                   ELSE date_diff('day', p.purchase_date, current_date)
-               END AS holding_days,
-               CASE
-                   WHEN p.purchase_date IS NULL THEN 'unknown'
-                   WHEN date_diff('day', p.purchase_date, current_date) > 365 THEN 'long_term'
-                   ELSE 'short_term'
-               END AS tax_lot_term,
-               p.notes
-        FROM portfolio_positions p
-        LEFT JOIN instruments i ON i.symbol = p.symbol
-        ORDER BY p.symbol
-        """,
-    )
+    effective_rows = brokers.effective_portfolio_rows(con)
+    rows: list[dict[str, Any]] = []
+    for item in effective_rows:
+        symbol = str(item.get("symbol") or "").upper()
+        instrument = query_rows(con, "SELECT name, asset_class, category FROM instruments WHERE symbol = ? LIMIT 1", [symbol])
+        meta = instrument[0] if instrument else {}
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": meta.get("name") or symbol,
+                "asset_class": item.get("asset_class") or meta.get("asset_class"),
+                "category": meta.get("category"),
+                "quantity": item.get("quantity"),
+                "avg_cost": item.get("avg_cost") or item.get("average_cost"),
+                "average_cost": item.get("average_cost") or item.get("avg_cost"),
+                "purchase_date": item.get("purchase_date"),
+                "holding_days": item.get("holding_days"),
+                "tax_lot_term": item.get("tax_lot_term") or ("broker" if item.get("source") == "ibkr" else "unknown"),
+                "notes": item.get("notes") or "",
+                "position_source": item.get("source"),
+                "provider": item.get("provider"),
+                "account_id": item.get("account_id"),
+                "updated_at": item.get("updated_at"),
+                "market_price": item.get("market_price"),
+                "broker_market_value": item.get("market_value"),
+                "broker_unrealized_pnl": item.get("unrealized_pnl"),
+            }
+        )
     quotes_by_symbol = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
     decision_by_symbol = {
         str(row.get("symbol") or "").upper(): row
@@ -593,21 +608,21 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
         row["signal"] = action_grade
         row["action"] = "Refresh data" if freshness in {"stale", "failed", "missing"} else "Review setup" if action_grade in {"Reject", "Watch", "Research", "Act"} else None
         quote = quotes_by_symbol.get(str(row.get("symbol") or "").upper(), {})
-        price = quote.get("price")
+        price = row.get("market_price") or quote.get("price")
         row["price"] = price
         row["change_pct"] = quote.get("change_pct")
         row["change_abs"] = quote.get("change_abs")
-        row["quote_source"] = quote.get("source")
+        row["quote_source"] = "ibkr" if row.get("position_source") == "ibkr" and row.get("broker_market_value") is not None else quote.get("source")
         row["quote_freshness"] = quote.get("freshness_status")
         if price is None:
-            row["market_value"] = None
-            row["unrealized_pnl"] = None
+            row["market_value"] = row.get("broker_market_value")
+            row["unrealized_pnl"] = row.get("broker_unrealized_pnl")
             row["unrealized_pnl_pct"] = None
             continue
         quantity = float(row.get("quantity") or 0)
         avg_cost = float(row.get("avg_cost") or 0)
-        row["market_value"] = quantity * float(price)
-        row["unrealized_pnl"] = quantity * (float(price) - avg_cost)
+        row["market_value"] = row.get("broker_market_value") if row.get("broker_market_value") is not None else quantity * float(price)
+        row["unrealized_pnl"] = row.get("broker_unrealized_pnl") if row.get("broker_unrealized_pnl") is not None else quantity * (float(price) - avg_cost)
         row["unrealized_pnl_pct"] = ((float(price) - avg_cost) / avg_cost) * 100 if avg_cost > 0 else None
     total_market_value = sum(float(row.get("market_value") or 0) for row in rows if row.get("market_value") is not None)
     for row in rows:

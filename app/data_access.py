@@ -311,6 +311,13 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "earnings_setups",
             "valuations",
             "provider_runs",
+            "broker_status",
+            "broker_accounts",
+            "broker_positions",
+            "broker_market_snapshots",
+            "broker_scanner_signals",
+            "agent_recommendations",
+            "paper_orders",
             "source_health",
             "settings",
         )
@@ -362,6 +369,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     valuations = panel_data.rows("valuations")
     option_payoffs = panel_data.rows("options_payoff_scenarios")
     source_health = panel_data.rows("source_health")
+    broker_status = panel_data.rows("broker_status")
+    agent_recommendations = panel_data.rows("agent_recommendations")
     priority_rows = decision_queue or candidates
     return {
         "status": status_payload(panel_data),
@@ -383,6 +392,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "valuations": len(valuations),
             "options_payoff_scenarios": len(option_payoffs),
             "sources": len(source_freshness) or len(source_health),
+            "broker_providers": len(broker_status),
+            "agent_recommendations": len(agent_recommendations),
         },
         "decision_queue": decision_queue[:12],
         "decision_readiness": decision_readiness[:12],
@@ -391,6 +402,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "portfolio": portfolio[:8],
         "source_freshness": source_freshness[:12],
         "source_health": source_health[:8],
+        "broker_status": broker_status[:8],
+        "agent_recommendations": agent_recommendations[:8],
         "disclosures": disclosures[:8],
         "news": news[:8],
     }
@@ -429,6 +442,13 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "opportunity_sources",
             "source_health",
             "provider_runs",
+            "broker_status",
+            "broker_accounts",
+            "broker_positions",
+            "broker_market_snapshots",
+            "broker_scanner_signals",
+            "agent_recommendations",
+            "paper_orders",
         ],
         "opportunities": [
             "decision_readiness",
@@ -454,10 +474,19 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_alerts",
             "tradingview_chart_state",
             "portfolio",
+            "broker_status",
+            "broker_accounts",
+            "broker_positions",
+            "agent_recommendations",
+            "paper_orders",
             "discovered_universe",
         ],
         "portfolio": [
             "portfolio",
+            "broker_status",
+            "broker_accounts",
+            "broker_positions",
+            "paper_orders",
             "decision_readiness",
             "decision_queue",
             "quotes",
@@ -488,7 +517,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "filings": ["disclosures"],
         "calendar": ["catalysts", "earnings"],
-        "health": ["source_freshness", "source_health", "provider_runs"],
+        "health": ["source_freshness", "source_health", "provider_runs", "broker_status", "broker_accounts", "broker_positions", "agent_recommendations", "paper_orders"],
         "settings": [],
     }
     selected = scopes.get(scope, scopes["dashboard"])
@@ -536,6 +565,13 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "valuations": _matching_ticker_rows(panel_data.rows("valuations"), normalized_ticker),
         "technicals": _matching_ticker_rows(panel_data.rows("technicals"), normalized_ticker),
         "research_packets": _matching_ticker_rows(panel_data.rows("research_packets"), normalized_ticker),
+        "broker_status": panel_data.rows("broker_status"),
+        "broker_accounts": panel_data.rows("broker_accounts"),
+        "broker_positions": _matching_ticker_rows(panel_data.rows("broker_positions"), normalized_ticker),
+        "broker_market_snapshots": _matching_ticker_rows(panel_data.rows("broker_market_snapshots"), normalized_ticker),
+        "broker_scanner_signals": _matching_ticker_rows(panel_data.rows("broker_scanner_signals"), normalized_ticker),
+        "agent_recommendations": _matching_ticker_rows(panel_data.rows("agent_recommendations"), normalized_ticker),
+        "paper_orders": _matching_ticker_rows(panel_data.rows("paper_orders"), normalized_ticker),
         "memos": _matching_ticker_rows(
             panel_data.rows("ticker_memos") or panel_data.rows("memos"),
             normalized_ticker,

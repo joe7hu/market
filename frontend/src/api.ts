@@ -2,6 +2,7 @@ import type {
   DashboardPayload,
   PanelData,
   PanelEndpoint,
+  RowRecord,
   SettingsPayload,
   TablePayload,
   TickerPayload,
@@ -54,6 +55,13 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   research_packets: "researchPackets",
   ticker_memos: "memos",
   provider_runs: "providerRuns",
+  broker_status: "brokerStatus",
+  broker_accounts: "brokerAccounts",
+  broker_positions: "brokerPositions",
+  broker_market_snapshots: "brokerMarketSnapshots",
+  broker_scanner_signals: "brokerScannerSignals",
+  agent_recommendations: "agentRecommendations",
+  paper_orders: "paperOrders",
   source_health: "sourceHealth",
   refresh_jobs: "refreshJobs",
 };
@@ -155,6 +163,13 @@ export function emptyPanelData(): PanelData {
     researchPackets: EMPTY_TABLE,
     memos: EMPTY_TABLE,
     providerRuns: EMPTY_TABLE,
+    brokerStatus: EMPTY_TABLE,
+    brokerAccounts: EMPTY_TABLE,
+    brokerPositions: EMPTY_TABLE,
+    brokerMarketSnapshots: EMPTY_TABLE,
+    brokerScannerSignals: EMPTY_TABLE,
+    agentRecommendations: EMPTY_TABLE,
+    paperOrders: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
@@ -215,6 +230,11 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("researchPackets", getJson<TablePayload>("/api/research-packets")),
     settle("memos", getJson<TablePayload>("/api/memos")),
     settle("providerRuns", getJson<TablePayload>("/api/provider-runs")),
+    settle("brokerStatus", getJson<TablePayload>("/api/broker/status")),
+    settle("brokerAccounts", getJson<TablePayload>("/api/broker/accounts")),
+    settle("brokerPositions", getJson<TablePayload>("/api/broker/positions")),
+    settle("agentRecommendations", getJson<TablePayload>("/api/agent/recommendations")),
+    settle("paperOrders", getJson<TablePayload>("/api/paper-orders")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
     settle("settings", getJson<SettingsPayload>("/api/settings")),
   ]);
@@ -259,6 +279,13 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     researchPackets: EMPTY_TABLE,
     memos: EMPTY_TABLE,
     providerRuns: EMPTY_TABLE,
+    brokerStatus: EMPTY_TABLE,
+    brokerAccounts: EMPTY_TABLE,
+    brokerPositions: EMPTY_TABLE,
+    brokerMarketSnapshots: EMPTY_TABLE,
+    brokerScannerSignals: EMPTY_TABLE,
+    agentRecommendations: EMPTY_TABLE,
+    paperOrders: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
@@ -382,6 +409,21 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
       case "providerRuns":
         data.providerRuns = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
+      case "brokerStatus":
+        data.brokerStatus = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "brokerAccounts":
+        data.brokerAccounts = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "brokerPositions":
+        data.brokerPositions = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "agentRecommendations":
+        data.agentRecommendations = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "paperOrders":
+        data.paperOrders = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
       case "sourceHealth":
         data.sourceHealth = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
@@ -414,4 +456,13 @@ export async function savePortfolioPosition(position: PortfolioPositionInput): P
 export async function deletePortfolioPosition(symbol: string): Promise<TablePayload> {
   const payload = await sendJson<{ portfolio: TablePayload }>(`/api/portfolio/positions/${encodeURIComponent(symbol)}`, "DELETE");
   return payload.portfolio;
+}
+
+export async function runAgentReview(): Promise<TablePayload> {
+  const payload = await sendJson<TablePayload>("/api/agent/review", "POST");
+  return payload;
+}
+
+export async function stagePaperOrder(recommendationId: string): Promise<RowRecord> {
+  return sendJson<RowRecord>("/api/paper-orders", "POST", { recommendation_id: recommendationId });
 }

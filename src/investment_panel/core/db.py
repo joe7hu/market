@@ -473,6 +473,166 @@ CREATE TABLE IF NOT EXISTS refresh_jobs (
     error TEXT,
     summary JSON
 );
+
+CREATE TABLE IF NOT EXISTS broker_provider_status (
+    provider TEXT PRIMARY KEY,
+    checked_at TIMESTAMP,
+    status TEXT,
+    health TEXT,
+    detail TEXT,
+    account_id TEXT,
+    account_mode TEXT,
+    session_started_at TIMESTAMP,
+    last_data_at TIMESTAMP,
+    latency_ms DOUBLE,
+    capabilities JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS broker_accounts (
+    provider TEXT,
+    account_id TEXT,
+    account_mode TEXT,
+    currency TEXT,
+    cash DOUBLE,
+    buying_power DOUBLE,
+    net_liquidation DOUBLE,
+    margin_requirement DOUBLE,
+    excess_liquidity DOUBLE,
+    day_pnl DOUBLE,
+    total_pnl DOUBLE,
+    updated_at TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(provider, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS broker_positions (
+    provider TEXT,
+    account_id TEXT,
+    symbol TEXT,
+    asset_class TEXT,
+    quantity DOUBLE,
+    average_cost DOUBLE,
+    market_price DOUBLE,
+    market_value DOUBLE,
+    unrealized_pnl DOUBLE,
+    realized_pnl DOUBLE,
+    updated_at TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(provider, account_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS broker_orders (
+    provider TEXT,
+    account_id TEXT,
+    order_id TEXT,
+    symbol TEXT,
+    side TEXT,
+    order_type TEXT,
+    quantity DOUBLE,
+    limit_price DOUBLE,
+    status TEXT,
+    submitted_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(provider, account_id, order_id)
+);
+
+CREATE TABLE IF NOT EXISTS broker_fills (
+    provider TEXT,
+    account_id TEXT,
+    fill_id TEXT,
+    order_id TEXT,
+    symbol TEXT,
+    side TEXT,
+    quantity DOUBLE,
+    price DOUBLE,
+    filled_at TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(provider, account_id, fill_id)
+);
+
+CREATE TABLE IF NOT EXISTS broker_market_snapshots (
+    provider TEXT,
+    symbol TEXT,
+    observed_at TIMESTAMP,
+    bid DOUBLE,
+    ask DOUBLE,
+    last DOUBLE,
+    close DOUBLE,
+    volume DOUBLE,
+    entitlement_status TEXT,
+    data_status TEXT,
+    raw JSON,
+    PRIMARY KEY(provider, symbol, observed_at)
+);
+
+CREATE TABLE IF NOT EXISTS broker_scanner_signals (
+    provider TEXT,
+    run_id TEXT,
+    symbol TEXT,
+    observed_at TIMESTAMP,
+    signal_type TEXT,
+    rank INTEGER,
+    score DOUBLE,
+    metrics JSON,
+    raw JSON,
+    PRIMARY KEY(provider, run_id, symbol, signal_type)
+);
+
+CREATE TABLE IF NOT EXISTS broker_agent_recommendations (
+    id TEXT PRIMARY KEY,
+    symbol TEXT,
+    as_of TIMESTAMP,
+    action TEXT,
+    status TEXT,
+    actionability_score DOUBLE,
+    thesis TEXT,
+    setup_type TEXT,
+    entry_trigger TEXT,
+    invalidation_stop TEXT,
+    target TEXT,
+    risk_reward TEXT,
+    sizing JSON,
+    max_notional DOUBLE,
+    portfolio_impact JSON,
+    evidence JSON,
+    blockers JSON,
+    data_freshness JSON,
+    paper_order_preview JSON,
+    policy_checks JSON,
+    authority TEXT
+);
+
+CREATE TABLE IF NOT EXISTS broker_policy_checks (
+    id TEXT PRIMARY KEY,
+    recommendation_id TEXT,
+    symbol TEXT,
+    checked_at TIMESTAMP,
+    check_name TEXT,
+    status TEXT,
+    detail TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS broker_paper_orders (
+    id TEXT PRIMARY KEY,
+    recommendation_id TEXT,
+    provider TEXT,
+    account_id TEXT,
+    symbol TEXT,
+    side TEXT,
+    order_type TEXT,
+    quantity DOUBLE,
+    limit_price DOUBLE,
+    notional DOUBLE,
+    status TEXT,
+    authority TEXT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    preview JSON,
+    audit_trail JSON
+);
 """
 
 
