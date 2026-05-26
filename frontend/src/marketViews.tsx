@@ -14,7 +14,7 @@ import {
   Sun,
   UserRound,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   Cell,
   CartesianGrid,
@@ -626,7 +626,6 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
   const backendRiskRows = portfolioRiskCardSummaryRows(model.portfolioRiskCardRows);
   const exposureRows = exposureClusterSummaryRows(model.exposureClusterRows);
-  const correlationEdgeRows = correlationEdgeSummaryRows(model.correlationEdgeRows);
   const reviewActionRows = reviewActionSummaryRows(model.reviewActionRows);
   const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const taxRows = portfolioTaxRows(visibleHoldings);
@@ -660,11 +659,11 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
       <Panel className="span-8" title="Exposure Map" headerAction={<SegmentedControl options={["P/L", "Weight", "Day"]} value={heatmapMode} onChange={setHeatmapMode} />}>
         <PortfolioHeatmap holdings={visibleHoldings} mode={heatmapMode} onOpenTicker={onOpenTicker} />
       </Panel>
-      <Panel className="span-8" title="Performance">
+      <Panel className="span-12" title="Performance">
         <PortfolioPerformanceChart holdings={visibleHoldings} stats={stats} />
       </Panel>
-      <Panel className="span-4" title="Correlation Map">
-        <PortfolioCorrelationMap holdings={visibleHoldings} rows={model.correlationRows} onOpenTicker={onOpenTicker} />
+      <Panel className="span-12" title="Correlation Matrix">
+        <PortfolioCorrelationMatrix holdings={visibleHoldings} rows={model.correlationEdgeRows} onOpenTicker={onOpenTicker} />
       </Panel>
     </>
   );
@@ -719,9 +718,6 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
           </Panel>
           <Panel className="span-4" title="Review Actions">
             {reviewActionRows.length ? <SummaryList rows={reviewActionRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No review actions" detail="No portfolio risk action is currently open." />}
-          </Panel>
-          <Panel className="span-12" title="Major Correlation Edges">
-            {correlationEdgeRows.length ? <SummaryList rows={correlationEdgeRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No correlation edges" detail="Run deterministic correlation analysis after owned holdings are priced." />}
           </Panel>
           <Panel className="span-4" title="Add / Update Position">
             <PortfolioEntryForm onSaved={onRefresh} />
@@ -905,25 +901,51 @@ function PortfolioPerformanceChart({ holdings, stats }: { holdings: Holding[]; s
   );
 }
 
-function PortfolioCorrelationMap({ holdings, rows, onOpenTicker }: { holdings: Holding[]; rows: SummaryItem[]; onOpenTicker: (symbol: string) => void }) {
-  const priced = holdings.filter((holding) => holding.hasMarketValue);
-  if (priced.length < 2 && !rows.length) {
-    return <EmptyState title="No correlation rows" detail="Load at least two priced holdings and refresh analyses to populate pair context." />;
+function PortfolioCorrelationMatrix({ holdings, rows, onOpenTicker }: { holdings: Holding[]; rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  const symbols = portfolioCorrelationMatrixSymbols(holdings, rows);
+  if (symbols.length < 2) {
+    return <EmptyState title="No correlation matrix" detail="Load correlation edges for at least one owned holding and a peer." />;
   }
-  const symbols = priced.map((holding) => holding.ticker);
-  const correlations = portfolioCorrelationPairs(symbols, rows);
-  if (!correlations.length) {
-    return <EmptyState title="Correlation not loaded" detail="Refresh deterministic analyses after owned holdings are priced." />;
-  }
+  const correlations = portfolioCorrelationLookup(rows);
   return (
-    <div className="portfolio-correlation-map">
-      {correlations.map((pair) => (
-        <button key={`${pair.symbol}-${pair.peer}`} type="button" className={`portfolio-correlation-row ${pair.tone}`} onClick={() => onOpenTicker(pair.symbol)}>
-          <span>{pair.symbol}</span>
-          <strong>{pair.peer}</strong>
-          <i>{pair.label}</i>
-        </button>
-      ))}
+    <div className="portfolio-correlation-matrix-wrap">
+      <div className="portfolio-correlation-matrix" style={{ gridTemplateColumns: `minmax(76px, 0.7fr) repeat(${symbols.length}, minmax(56px, 1fr))` }}>
+        <div className="portfolio-correlation-corner">Corr</div>
+        {symbols.map((symbol) => (
+          <button key={`head-${symbol}`} type="button" className="portfolio-correlation-axis top" onClick={() => onOpenTicker(symbol)}>
+            {symbol}
+          </button>
+        ))}
+        {symbols.map((rowSymbol) => (
+          <Fragment key={`matrix-row-${rowSymbol}`}>
+            <button key={`row-${rowSymbol}`} type="button" className="portfolio-correlation-axis side" onClick={() => onOpenTicker(rowSymbol)}>
+              {rowSymbol}
+            </button>
+            {symbols.map((columnSymbol) => {
+              const correlation = rowSymbol === columnSymbol ? 1 : correlations.get(`${rowSymbol}:${columnSymbol}`);
+              const label = correlation === undefined ? "-" : correlation.toFixed(2);
+              return (
+                <button
+                  key={`${rowSymbol}-${columnSymbol}`}
+                  type="button"
+                  className={`portfolio-correlation-cell ${portfolioCorrelationTone(correlation)}`}
+                  disabled={correlation === undefined}
+                  onClick={() => onOpenTicker(rowSymbol)}
+                  title={correlation === undefined ? `${rowSymbol}/${columnSymbol} not loaded` : `${rowSymbol}/${columnSymbol} correlation ${label}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </Fragment>
+        ))}
+      </div>
+      <div className="portfolio-correlation-legend" aria-label="Correlation scale">
+        <span><i className="negative" /> inverse</span>
+        <span><i className="neutral" /> low</span>
+        <span><i className="positive" /> medium</span>
+        <span><i className="strong" /> high</span>
+      </div>
     </div>
   );
 }
@@ -2965,31 +2987,49 @@ function portfolioPerformancePoints(holdings: Holding[], stats: PortfolioStats):
   return points.filter((point) => Number.isFinite(point.value) && point.value > 0);
 }
 
-function portfolioCorrelationPairs(symbols: string[], rows: SummaryItem[]): Array<{ symbol: string; peer: string; label: string; tone: Tone }> {
-  const symbolSet = new Set(symbols);
-  const pairs = rows
-    .filter((row) => row.symbol && symbolSet.has(row.symbol))
-    .map((row) => {
-      const correlation = parseCorrelationValue(row.caption);
-      const peer = row.value && row.value !== "-" ? row.value : "Peer";
-      const tone: Tone = Number.isFinite(correlation)
-        ? Math.abs(correlation) >= 0.75 ? "warn" : Math.abs(correlation) >= 0.45 ? "info" : "good"
-        : "muted";
-      return {
-        symbol: row.symbol || row.label,
-        peer,
-        label: Number.isFinite(correlation) ? correlation.toFixed(2) : row.caption,
-        tone,
-      };
-    })
-    .filter((row) => row.symbol && row.peer);
-  if (pairs.length) return pairs.slice(0, 8);
-  return symbols.slice(0, 8).map((symbol) => ({ symbol, peer: "Not loaded", label: "Refresh", tone: "muted" }));
+function portfolioCorrelationMatrixSymbols(holdings: Holding[], rows: RowRecord[]): string[] {
+  const owned = holdings
+    .filter((holding) => holding.hasMarketValue)
+    .slice()
+    .sort((a, b) => b.weight - a.weight)
+    .map((holding) => holding.ticker);
+  const ownedSet = new Set(owned);
+  const peers = rows
+    .filter((row) => ownedSet.has(stringField(row, ["symbol"]).toUpperCase()))
+    .slice()
+    .sort((a, b) => numberField(b, ["abs_correlation"], Math.abs(numberField(b, ["correlation"], 0))) - numberField(a, ["abs_correlation"], Math.abs(numberField(a, ["correlation"], 0))))
+    .map((row) => stringField(row, ["peer_symbol"]).toUpperCase())
+    .filter(Boolean);
+  const symbols: string[] = [];
+  for (const symbol of [...owned, ...peers]) {
+    if (symbol && !symbols.includes(symbol)) {
+      symbols.push(symbol);
+    }
+    if (symbols.length >= 8) break;
+  }
+  return symbols;
 }
 
-function parseCorrelationValue(value: string): number {
-  const match = value.match(/corr\s+(-?\d+(?:\.\d+)?)/i) || value.match(/(-?0?\.\d+|-?1(?:\.0+)?)/);
-  return match ? Number(match[1]) : Number.NaN;
+function portfolioCorrelationLookup(rows: RowRecord[]): Map<string, number> {
+  const lookup = new Map<string, number>();
+  for (const row of rows) {
+    const symbol = stringField(row, ["symbol"]).toUpperCase();
+    const peer = stringField(row, ["peer_symbol"]).toUpperCase();
+    const correlation = optionalNumberField(row, ["correlation"]);
+    if (!symbol || !peer || correlation === null) continue;
+    lookup.set(`${symbol}:${peer}`, correlation);
+    lookup.set(`${peer}:${symbol}`, correlation);
+  }
+  return lookup;
+}
+
+function portfolioCorrelationTone(value: number | undefined): "self" | "empty" | "negative" | "neutral" | "positive" | "strong" {
+  if (value === undefined) return "empty";
+  if (value === 1) return "self";
+  if (value <= -0.35) return "negative";
+  if (Math.abs(value) >= 0.7) return "strong";
+  if (Math.abs(value) >= 0.35) return "positive";
+  return "neutral";
 }
 
 function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], correlationRows: SummaryItem[]): SummaryItem[] {
@@ -3038,22 +3078,6 @@ function exposureClusterSummaryRows(rows: RowRecord[]): SummaryItem[] {
       caption: stringField(row, ["risk_note"]) || symbols.join(", "),
       tone: level === "critical" ? "bad" : level === "watch" ? "warn" : "info",
       symbol: stringField(row, ["largest_symbol"]) || symbols[0],
-    };
-  });
-}
-
-function correlationEdgeSummaryRows(rows: RowRecord[]): SummaryItem[] {
-  return rows.slice(0, 10).map((row) => {
-    const corr = numberField(row, ["correlation"], 0);
-    const level = stringField(row, ["risk_level"]);
-    const symbol = stringField(row, ["symbol"]);
-    const peer = stringField(row, ["peer_symbol"]);
-    return {
-      label: `${symbol || "Owned"} / ${peer || "Peer"}`,
-      value: corr.toFixed(2),
-      caption: stringField(row, ["risk_note"]) || `${formatPct(numberField(row, ["combined_weight"], 0))} combined exposure`,
-      tone: level === "critical" ? "bad" : level === "watch" || level === "market_beta" ? "warn" : "info",
-      symbol,
     };
   });
 }
