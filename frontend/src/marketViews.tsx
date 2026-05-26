@@ -624,6 +624,10 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const stats = summarizePortfolio(model.holdings);
   const portfolioReviewRows = portfolioPositionReviewRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
+  const backendRiskRows = portfolioRiskCardSummaryRows(model.portfolioRiskCardRows);
+  const exposureRows = exposureClusterSummaryRows(model.exposureClusterRows);
+  const correlationEdgeRows = correlationEdgeSummaryRows(model.correlationEdgeRows);
+  const reviewActionRows = reviewActionSummaryRows(model.reviewActionRows);
   const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const taxRows = portfolioTaxRows(visibleHoldings);
   const showBrokerSurface = brokerProviderSurfaceEnabled(model);
@@ -631,6 +635,7 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
     ["Holdings", model.sources.holdings],
     ["Quotes", model.sources.watchlist],
     ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"],
+    ["Risk Models", model.portfolioRiskCardRows.length || model.exposureClusterRows.length ? "live" : "empty"],
   ];
   if (showBrokerSurface) {
     sourceItems.splice(1, 0, ["Broker", "live"]);
@@ -705,6 +710,18 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
           <Panel className="span-12" title={`Holdings (${model.holdings.length})`}>
             {allocationFilter && <button className="text-link portfolio-filter-clear" type="button" onClick={() => setAllocationFilter("")}>Showing {allocationFilter}; clear filter</button>}
             <HoldingsTable holdings={visibleHoldings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
+          </Panel>
+          <Panel className="span-4" title="Risk Cards">
+            {backendRiskRows.length ? <SummaryList rows={backendRiskRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No backend risk cards" detail="Portfolio risk models did not flag a current review item." />}
+          </Panel>
+          <Panel className="span-4" title="Exposure Clusters">
+            {exposureRows.length ? <SummaryList rows={exposureRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No exposure clusters" detail="Priced holdings and instrument metadata are required." />}
+          </Panel>
+          <Panel className="span-4" title="Review Actions">
+            {reviewActionRows.length ? <SummaryList rows={reviewActionRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No review actions" detail="No portfolio risk action is currently open." />}
+          </Panel>
+          <Panel className="span-12" title="Major Correlation Edges">
+            {correlationEdgeRows.length ? <SummaryList rows={correlationEdgeRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No correlation edges" detail="Run deterministic correlation analysis after owned holdings are priced." />}
           </Panel>
           <Panel className="span-4" title="Add / Update Position">
             <PortfolioEntryForm onSaved={onRefresh} />
@@ -1489,6 +1506,10 @@ export type AppModel = {
   brokerSignalRows: RowRecord[];
   agentRecommendationRows: RowRecord[];
   paperOrderRows: RowRecord[];
+  exposureClusterRows: RowRecord[];
+  correlationEdgeRows: RowRecord[];
+  portfolioRiskCardRows: RowRecord[];
+  reviewActionRows: RowRecord[];
   portfolioValue: number;
   sectors: SummaryItem[];
   setupRows: SummaryItem[];
@@ -1542,6 +1563,10 @@ export function buildModel(data: PanelData): AppModel {
   const brokerSignalRows = rows(data.brokerScannerSignals);
   const agentRecommendationRows = rows(data.agentRecommendations);
   const paperOrderRows = rows(data.paperOrders);
+  const exposureClusterRows = rows(data.exposureClusters);
+  const correlationEdgeRows = rows(data.correlationEdges);
+  const portfolioRiskCardRows = rows(data.portfolioRiskCards);
+  const reviewActionRows = rows(data.reviewActions);
   const brokerHealthRows = buildBrokerHealthRows(brokerStatusRows);
   const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows, ...brokerHealthRows];
   const ownedSymbols = new Set(holdings.map((holding) => holding.ticker));
@@ -1568,6 +1593,10 @@ export function buildModel(data: PanelData): AppModel {
     brokerSignalRows,
     agentRecommendationRows,
     paperOrderRows,
+    exposureClusterRows,
+    correlationEdgeRows,
+    portfolioRiskCardRows,
+    reviewActionRows,
     portfolioValue,
     sectors: buildSectorRows(rows(data.screener)),
     setupRows: buildSetupRows(rows(data.sepa), rows(data.liquidity)),
@@ -2982,6 +3011,65 @@ function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], co
     rows.push({ ...row, label: `${row.label} top corr` });
   }
   return rows;
+}
+
+function portfolioRiskCardSummaryRows(rows: RowRecord[]): SummaryItem[] {
+  return rows.slice(0, 8).map((row) => {
+    const severity = stringField(row, ["severity"]);
+    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+    return {
+      label: stringField(row, ["title"]) || titleLabel(stringField(row, ["risk_type"]) || "Risk"),
+      value: `${Math.round(numberField(row, ["score"], 0))}`,
+      caption: stringField(row, ["summary"]) || symbols.join(", ") || stringField(row, ["review_action"]),
+      tone: severity === "critical" ? "bad" : severity === "watch" ? "warn" : "info",
+      symbol: stringField(row, ["symbol"]) || symbols[0],
+    };
+  });
+}
+
+function exposureClusterSummaryRows(rows: RowRecord[]): SummaryItem[] {
+  return rows.slice(0, 8).map((row) => {
+    const weight = numberField(row, ["portfolio_weight"], 0);
+    const level = stringField(row, ["concentration_level"]);
+    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+    return {
+      label: `${titleLabel(stringField(row, ["cluster_type"]) || "Cluster")}: ${stringField(row, ["cluster_name"]) || "Unclassified"}`,
+      value: `${weight.toFixed(1)}%`,
+      caption: stringField(row, ["risk_note"]) || symbols.join(", "),
+      tone: level === "critical" ? "bad" : level === "watch" ? "warn" : "info",
+      symbol: stringField(row, ["largest_symbol"]) || symbols[0],
+    };
+  });
+}
+
+function correlationEdgeSummaryRows(rows: RowRecord[]): SummaryItem[] {
+  return rows.slice(0, 10).map((row) => {
+    const corr = numberField(row, ["correlation"], 0);
+    const level = stringField(row, ["risk_level"]);
+    const symbol = stringField(row, ["symbol"]);
+    const peer = stringField(row, ["peer_symbol"]);
+    return {
+      label: `${symbol || "Owned"} / ${peer || "Peer"}`,
+      value: corr.toFixed(2),
+      caption: stringField(row, ["risk_note"]) || `${formatPct(numberField(row, ["combined_weight"], 0))} combined exposure`,
+      tone: level === "critical" ? "bad" : level === "watch" || level === "market_beta" ? "warn" : "info",
+      symbol,
+    };
+  });
+}
+
+function reviewActionSummaryRows(rows: RowRecord[]): SummaryItem[] {
+  return rows.slice(0, 10).map((row) => {
+    const priority = stringField(row, ["priority"]);
+    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+    return {
+      label: stringField(row, ["title"]) || titleLabel(stringField(row, ["action_type"]) || "Review"),
+      value: titleLabel(priority || "open"),
+      caption: stringField(row, ["suggested_next_step", "rationale"]) || symbols.join(", "),
+      tone: priority === "high" ? "bad" : "warn",
+      symbol: stringField(row, ["symbol"]) || symbols[0],
+    };
+  });
 }
 
 function portfolioValuationRows(holdings: Holding[], valuationRows: SummaryItem[], technicalRows: SummaryItem[]): SummaryItem[] {

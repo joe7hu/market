@@ -86,6 +86,10 @@ export type PanelData = {
   brokerScannerSignals: TablePayload;
   agentRecommendations: TablePayload;
   paperOrders: TablePayload;
+  exposureClusters: TablePayload;
+  correlationEdges: TablePayload;
+  portfolioRiskCards: TablePayload;
+  reviewActions: TablePayload;
   sourceHealth: TablePayload;
   refreshJobs: TablePayload;
   settings: SettingsPayload;
@@ -138,6 +142,10 @@ export type PanelEndpoint =
   | "brokerScannerSignals"
   | "agentRecommendations"
   | "paperOrders"
+  | "exposureClusters"
+  | "correlationEdges"
+  | "portfolioRiskCards"
+  | "reviewActions"
   | "sourceHealth"
   | "refreshJobs"
   | "settings";

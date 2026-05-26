@@ -318,6 +318,10 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "broker_scanner_signals",
             "agent_recommendations",
             "paper_orders",
+            "exposure_clusters",
+            "correlation_edges",
+            "portfolio_risk_cards",
+            "review_actions",
             "source_health",
             "settings",
         )
@@ -371,6 +375,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     source_health = panel_data.rows("source_health")
     broker_status = panel_data.rows("broker_status")
     agent_recommendations = panel_data.rows("agent_recommendations")
+    portfolio_risk_cards = panel_data.rows("portfolio_risk_cards")
+    review_actions = panel_data.rows("review_actions")
     priority_rows = decision_queue or candidates
     return {
         "status": status_payload(panel_data),
@@ -394,6 +400,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "sources": len(source_freshness) or len(source_health),
             "broker_providers": len(broker_status),
             "agent_recommendations": len(agent_recommendations),
+            "portfolio_risk_cards": len(portfolio_risk_cards),
+            "review_actions": len(review_actions),
         },
         "decision_queue": decision_queue[:12],
         "decision_readiness": decision_readiness[:12],
@@ -404,6 +412,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "source_health": source_health[:8],
         "broker_status": broker_status[:8],
         "agent_recommendations": agent_recommendations[:8],
+        "portfolio_risk_cards": portfolio_risk_cards[:8],
+        "review_actions": review_actions[:8],
         "disclosures": disclosures[:8],
         "news": news[:8],
     }
@@ -436,6 +446,10 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "opportunity_sources",
             "source_health",
             "provider_runs",
+            "exposure_clusters",
+            "correlation_edges",
+            "portfolio_risk_cards",
+            "review_actions",
         ],
         "dashboard": [
             "decision_readiness",
@@ -475,6 +489,10 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "broker_scanner_signals",
             "agent_recommendations",
             "paper_orders",
+            "exposure_clusters",
+            "correlation_edges",
+            "portfolio_risk_cards",
+            "review_actions",
         ],
         "opportunities": [
             "decision_readiness",
@@ -506,6 +524,10 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "agent_recommendations",
             "paper_orders",
             "discovered_universe",
+            "exposure_clusters",
+            "correlation_edges",
+            "portfolio_risk_cards",
+            "review_actions",
         ],
         "portfolio": [
             "portfolio",
@@ -522,6 +544,13 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "technicals",
             "sepa",
             "earnings_setups",
+            "theses",
+            "catalysts",
+            "disclosures",
+            "exposure_clusters",
+            "correlation_edges",
+            "portfolio_risk_cards",
+            "review_actions",
         ],
         "research": [
             "decision_readiness",
@@ -598,6 +627,26 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "broker_scanner_signals": _matching_ticker_rows(panel_data.rows("broker_scanner_signals"), normalized_ticker),
         "agent_recommendations": _matching_ticker_rows(panel_data.rows("agent_recommendations"), normalized_ticker),
         "paper_orders": _matching_ticker_rows(panel_data.rows("paper_orders"), normalized_ticker),
+        "exposure_clusters": [
+            row
+            for row in panel_data.rows("exposure_clusters")
+            if normalized_ticker in _row_symbols(row)
+        ],
+        "correlation_edges": [
+            row
+            for row in panel_data.rows("correlation_edges")
+            if normalized_ticker in {str(row.get("symbol") or "").upper(), str(row.get("peer_symbol") or "").upper()}
+        ],
+        "portfolio_risk_cards": [
+            row
+            for row in panel_data.rows("portfolio_risk_cards")
+            if normalized_ticker in _row_symbols(row)
+        ],
+        "review_actions": [
+            row
+            for row in panel_data.rows("review_actions")
+            if normalized_ticker in _row_symbols(row)
+        ],
         "memos": _matching_ticker_rows(
             panel_data.rows("ticker_memos") or panel_data.rows("memos"),
             normalized_ticker,
@@ -1429,6 +1478,21 @@ def _row_dict(row: Any) -> dict[str, Any]:
     if hasattr(row, "__dict__"):
         return jsonable(vars(row))
     return {"value": jsonable(row)}
+
+
+def _row_symbols(row: dict[str, Any]) -> set[str]:
+    symbols: set[str] = set()
+    for field in ("ticker", "symbol", "peer_symbol", "security", "name"):
+        value = row.get(field)
+        if isinstance(value, str) and value:
+            symbols.add(value.split(":")[-1].upper())
+    for field in ("symbols", "related_symbols"):
+        value = row.get(field)
+        if isinstance(value, list):
+            symbols.update(str(item).split(":")[-1].upper() for item in value if item)
+        elif isinstance(value, str):
+            symbols.update(item.strip().split(":")[-1].upper() for item in value.replace(";", ",").split(",") if item.strip())
+    return symbols
 
 
 def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[str, Any]]:

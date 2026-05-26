@@ -338,6 +338,26 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "paper_orders")
 
+    @app.get("/api/portfolio-risk/exposure-clusters")
+    def portfolio_risk_exposure_clusters() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "exposure_clusters")
+
+    @app.get("/api/portfolio-risk/correlation-edges")
+    def portfolio_risk_correlation_edges() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "correlation_edges")
+
+    @app.get("/api/portfolio-risk/cards")
+    def portfolio_risk_cards() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "portfolio_risk_cards")
+
+    @app.get("/api/portfolio-risk/review-actions")
+    def portfolio_risk_review_actions() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "review_actions")
+
     @app.post("/api/paper-orders")
     def stage_paper_order_endpoint(payload: PaperOrderInput, request: Request) -> dict[str, Any]:
         _require_local_request(request)

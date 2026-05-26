@@ -62,6 +62,10 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   broker_scanner_signals: "brokerScannerSignals",
   agent_recommendations: "agentRecommendations",
   paper_orders: "paperOrders",
+  exposure_clusters: "exposureClusters",
+  correlation_edges: "correlationEdges",
+  portfolio_risk_cards: "portfolioRiskCards",
+  review_actions: "reviewActions",
   source_health: "sourceHealth",
   refresh_jobs: "refreshJobs",
 };
@@ -170,6 +174,10 @@ export function emptyPanelData(): PanelData {
     brokerScannerSignals: EMPTY_TABLE,
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
+    exposureClusters: EMPTY_TABLE,
+    correlationEdges: EMPTY_TABLE,
+    portfolioRiskCards: EMPTY_TABLE,
+    reviewActions: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
@@ -235,6 +243,10 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("brokerPositions", getJson<TablePayload>("/api/broker/positions")),
     settle("agentRecommendations", getJson<TablePayload>("/api/agent/recommendations")),
     settle("paperOrders", getJson<TablePayload>("/api/paper-orders")),
+    settle("exposureClusters", getJson<TablePayload>("/api/portfolio-risk/exposure-clusters")),
+    settle("correlationEdges", getJson<TablePayload>("/api/portfolio-risk/correlation-edges")),
+    settle("portfolioRiskCards", getJson<TablePayload>("/api/portfolio-risk/cards")),
+    settle("reviewActions", getJson<TablePayload>("/api/portfolio-risk/review-actions")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
     settle("settings", getJson<SettingsPayload>("/api/settings")),
   ]);
@@ -286,6 +298,10 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     brokerScannerSignals: EMPTY_TABLE,
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
+    exposureClusters: EMPTY_TABLE,
+    correlationEdges: EMPTY_TABLE,
+    portfolioRiskCards: EMPTY_TABLE,
+    reviewActions: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
@@ -423,6 +439,18 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "paperOrders":
         data.paperOrders = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "exposureClusters":
+        data.exposureClusters = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "correlationEdges":
+        data.correlationEdges = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "portfolioRiskCards":
+        data.portfolioRiskCards = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "reviewActions":
+        data.reviewActions = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "sourceHealth":
         data.sourceHealth = (result.value as TablePayload) ?? EMPTY_TABLE;
