@@ -318,6 +318,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "broker_scanner_signals",
             "agent_recommendations",
             "paper_orders",
+            "daily_brief",
             "exposure_clusters",
             "correlation_edges",
             "portfolio_risk_cards",
@@ -375,6 +376,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     source_health = panel_data.rows("source_health")
     broker_status = panel_data.rows("broker_status")
     agent_recommendations = panel_data.rows("agent_recommendations")
+    daily_brief = panel_data.rows("daily_brief")
     portfolio_risk_cards = panel_data.rows("portfolio_risk_cards")
     review_actions = panel_data.rows("review_actions")
     priority_rows = decision_queue or candidates
@@ -400,6 +402,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "sources": len(source_freshness) or len(source_health),
             "broker_providers": len(broker_status),
             "agent_recommendations": len(agent_recommendations),
+            "daily_brief": len(daily_brief),
             "portfolio_risk_cards": len(portfolio_risk_cards),
             "review_actions": len(review_actions),
         },
@@ -412,6 +415,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "source_health": source_health[:8],
         "broker_status": broker_status[:8],
         "agent_recommendations": agent_recommendations[:8],
+        "daily_brief": daily_brief[:12],
         "portfolio_risk_cards": portfolio_risk_cards[:8],
         "review_actions": review_actions[:8],
         "disclosures": disclosures[:8],
@@ -446,6 +450,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "opportunity_sources",
             "source_health",
             "provider_runs",
+            "daily_brief",
             "exposure_clusters",
             "correlation_edges",
             "portfolio_risk_cards",

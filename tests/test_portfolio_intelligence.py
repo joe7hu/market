@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
+from investment_panel.core.daily_brief import daily_brief
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 
@@ -87,12 +88,35 @@ def test_portfolio_intelligence_tables_load_through_panel_contract(tmp_path) -> 
     panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
     tables = panel["tables"]
 
+    assert tables["daily_brief"]
     assert tables["exposure_clusters"]
     assert tables["correlation_edges"]
     assert tables["portfolio_risk_cards"]
     assert tables["review_actions"]
     with db(db_path) as con:
         assert query_rows(con, "SELECT count(*) AS count FROM portfolio_positions")[0]["count"] == 3
+
+
+def test_daily_brief_ranks_backend_attention_items(tmp_path) -> None:
+    db_path = tmp_path / "daily-brief.duckdb"
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        seed_portfolio_risk_inputs(con)
+        seed_daily_brief_inputs(con)
+
+        rows = daily_brief(con)
+
+    categories = {row["category"] for row in rows}
+    assert "top_portfolio_changes" in categories
+    assert "top_risks" in categories
+    assert "top_opportunities" in categories
+    assert "blocked_stale_items" in categories
+    assert all(row["reason"] for row in rows)
+    assert all(row["evidence"] for row in rows)
+    assert all(row["blocker"] for row in rows)
+    assert all(row["next_action"] for row in rows)
+    assert any(row["category"] == "top_opportunities" and row["symbol"] == "NVDA" for row in rows)
+    assert any(row["category"] == "blocked_stale_items" and "Daily analysis rows" in row["blocker"] for row in rows)
 
 
 def seed_portfolio_risk_inputs(con) -> None:
@@ -137,3 +161,53 @@ def seed_portfolio_risk_inputs(con) -> None:
     )
     con.execute("INSERT INTO catalysts VALUES ('cat-nvda', 'NVDA', '2026-06-01', 'earnings', 'high', 'test', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '{}')")
     con.execute("INSERT INTO disclosures VALUES ('disc-amd', 'public_disclosure_transaction', 'Tracker', 'Filer', 'AMD', '2026-04-01', '2026-04-15', 'BUY', '$1M', '{}', 'https://example.com')")
+
+
+def seed_daily_brief_inputs(con) -> None:
+    con.execute(
+        """
+        INSERT INTO decision_queue (
+            symbol, as_of, rank, action_grade, decision_bucket, score,
+            discovery_score, decision_score, action_score,
+            freshness_status, quote_freshness, daily_analysis_freshness,
+            filing_freshness, thesis_freshness, overall_decision_freshness,
+            source_cluster, evidence_count, raw_source_rows,
+            independent_source_count, evidence_items_count, primary_evidence_count,
+            inclusion_reasons, blocking_gates, decision_basis,
+            latest_quote, latest_quote_at, latest_observed_at, next_event_at,
+            catalyst_window, liquidity_grade, portfolio_impact, invalidation
+        )
+        VALUES
+            ('NVDA', current_timestamp, 1, 'Research', 'research', 82, 75, 78, 80,
+             'fresh', 'fresh', 'fresh', 'fresh', 'fresh', 'fresh',
+             'multi-source', 6, 10, 4, 6, 3,
+             '["owned AI accelerator thesis has fresh technical and catalyst support"]', '[]',
+             '{"source_counts":{"technical":1,"thesis":1,"catalyst":1}}',
+             500, current_timestamp, current_timestamp, current_date + INTERVAL 3 DAYS,
+             'earnings in 3 days', 'very_high', '{"owned":true}', 'margin break'),
+            ('AMD', current_timestamp, 2, 'Stale', 'stale', 50, 60, 55, 20,
+             'stale', 'fresh', 'missing', 'fresh', 'fresh', 'stale',
+             'analysis gap', 2, 3, 1, 2, 1,
+             '["semiconductor peer context"]', '["missing_daily_analysis"]',
+             '{"source_counts":{"technical":0,"thesis":1}}',
+             300, current_timestamp, current_timestamp, NULL,
+             NULL, 'high', '{"owned":true}', 'analysis missing')
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO source_freshness VALUES
+            ('technical:AMD', 'daily_analysis', 'test', current_timestamp - INTERVAL 3 DAYS,
+             'stale', '1 trading day', 'degraded', 'Daily analysis rows are stale for AMD.', false, current_timestamp)
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO catalysts VALUES (
+            'cat-brief-nvda', 'NVDA', current_date + INTERVAL 3 DAYS,
+            'earnings', 'Position sizing catalyst', 'test',
+            NULL, NULL, NULL, 'watchlist', 'earnings', 'high', 'confirmed',
+            'https://example.com/nvda', 'test', '{}'
+        )
+        """
+    )

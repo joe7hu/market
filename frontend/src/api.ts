@@ -62,6 +62,7 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   broker_scanner_signals: "brokerScannerSignals",
   agent_recommendations: "agentRecommendations",
   paper_orders: "paperOrders",
+  daily_brief: "dailyBrief",
   exposure_clusters: "exposureClusters",
   correlation_edges: "correlationEdges",
   portfolio_risk_cards: "portfolioRiskCards",
@@ -174,6 +175,7 @@ export function emptyPanelData(): PanelData {
     brokerScannerSignals: EMPTY_TABLE,
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
+    dailyBrief: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
     correlationEdges: EMPTY_TABLE,
     portfolioRiskCards: EMPTY_TABLE,
@@ -243,6 +245,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("brokerPositions", getJson<TablePayload>("/api/broker/positions")),
     settle("agentRecommendations", getJson<TablePayload>("/api/agent/recommendations")),
     settle("paperOrders", getJson<TablePayload>("/api/paper-orders")),
+    settle("dailyBrief", getJson<TablePayload>("/api/daily-brief")),
     settle("exposureClusters", getJson<TablePayload>("/api/portfolio-risk/exposure-clusters")),
     settle("correlationEdges", getJson<TablePayload>("/api/portfolio-risk/correlation-edges")),
     settle("portfolioRiskCards", getJson<TablePayload>("/api/portfolio-risk/cards")),
@@ -298,6 +301,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     brokerScannerSignals: EMPTY_TABLE,
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
+    dailyBrief: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
     correlationEdges: EMPTY_TABLE,
     portfolioRiskCards: EMPTY_TABLE,
@@ -439,6 +443,9 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "paperOrders":
         data.paperOrders = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "dailyBrief":
+        data.dailyBrief = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "exposureClusters":
         data.exposureClusters = (result.value as TablePayload) ?? EMPTY_TABLE;

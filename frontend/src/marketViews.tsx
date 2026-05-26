@@ -340,6 +340,23 @@ type SummaryItem = {
   symbol?: string;
 };
 
+type DailyBriefItem = {
+  itemId: string;
+  category: "top_portfolio_changes" | "top_risks" | "top_opportunities" | "blocked_stale_items" | string;
+  rank: number;
+  title: string;
+  symbol: string;
+  symbols: string[];
+  reason: string;
+  evidence: string[];
+  blocker: string;
+  nextAction: string;
+  score: number;
+  severity: string;
+  sourceModels: string[];
+  asOf: string;
+};
+
 type DataSourceState = "live" | "empty";
 type FreshnessStatus = "fresh" | "stale" | "degraded" | "unknown";
 type DecisionBucket = "Act" | "Research" | "Watch" | "Reject" | "Stale";
@@ -396,6 +413,10 @@ export function TodayPage({
   const attentionItems = buildAttentionItems(model);
   const largestHolding = model.holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
   const reviewReadyCount = model.financeAnalyses.filter((analysis) => analysis.consumable).length;
+  const dailyBrief = model.dailyBriefRows;
+  const topRiskItem = dailyBrief.find((item) => item.category === "top_risks");
+  const riskBriefCount = dailyBrief.filter((item) => item.category === "top_risks").length;
+  const blockedBriefCount = dailyBrief.filter((item) => item.category === "blocked_stale_items").length;
   const changedRows = todayChangedRows(model, lastRefresh);
   const mattersRows = todayMattersRows(model, readyRows.length);
   const reviewRows = todayReviewRows(model, attentionItems);
@@ -418,45 +439,49 @@ export function TodayPage({
           </span>
           <span>
             <small>REVIEW QUEUE</small>
-            <b>{attentionItems.length ? `${attentionItems.length} items` : "CLEAR"}</b>
+            <b>{dailyBrief.length ? `${dailyBrief.length} items` : attentionItems.length ? `${attentionItems.length} items` : "CLEAR"}</b>
           </span>
           <span>
             <small>TOP EXPOSURE</small>
             <b>{largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "NONE"}</b>
           </span>
           <span>
-            <small>READY REVIEWS</small>
-            <b>{reviewReadyCount ? `${reviewReadyCount} names` : loading ? "LOADING" : "NONE"}</b>
+            <small>TOP RISK</small>
+            <b>{topRiskItem ? topRiskItem.title.slice(0, 28) : loading ? "LOADING" : "NONE"}</b>
           </span>
           <span>
             <small>BLOCKED EVIDENCE</small>
-            <b>{blockedEvidenceRows.length ? `${blockedEvidenceRows.length} gaps` : "NONE"}</b>
+            <b>{blockedBriefCount ? `${blockedBriefCount} gaps` : blockedEvidenceRows.length ? `${blockedEvidenceRows.length} gaps` : "NONE"}</b>
           </span>
         </div>
       </header>
 
-      <SourceNotice items={[["Decision Queue", model.sources.opportunities], ["Portfolio", model.sources.holdings], ["Evidence", model.memoRows.length || model.sources.health === "live" ? "live" : "empty"], ["Health", model.sources.health]]} />
+      <SourceNotice items={[["Daily Brief", dailyBrief.length ? "live" : "empty"], ["Decision Queue", model.sources.opportunities], ["Portfolio", model.sources.holdings], ["Health", model.sources.health]]} />
 
-      <div className="today-answer-grid">
-        <Panel title="What Changed">
-          <SummaryList rows={changedRows} onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel title="What Matters">
-          <SummaryList rows={mattersRows} onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel title="Review / Ignore">
-          <div className="today-review-grid">
-            <SummaryList rows={reviewRows} onOpenTicker={onOpenTicker} />
-            <div className="ignore-list">
-              <strong>Ignore for now</strong>
-              <SummaryList rows={ignoreRows} onOpenTicker={onOpenTicker} />
+      {dailyBrief.length ? (
+        <DailyBriefBoard items={dailyBrief} onOpenTicker={onOpenTicker} />
+      ) : (
+        <div className="today-answer-grid">
+          <Panel title="Top Portfolio Changes">
+            <SummaryList rows={changedRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+          <Panel title="Top Risks">
+            <SummaryList rows={mattersRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+          <Panel title="Top Opportunities / Research">
+            <div className="today-review-grid">
+              <SummaryList rows={reviewRows} onOpenTicker={onOpenTicker} />
+              <div className="ignore-list">
+                <strong>Ignore for now</strong>
+                <SummaryList rows={ignoreRows} onOpenTicker={onOpenTicker} />
+              </div>
             </div>
-          </div>
-        </Panel>
-        <Panel title="Blocked by Stale or Missing Evidence">
-          <SummaryList rows={blockedEvidenceRows} onOpenTicker={onOpenTicker} />
-        </Panel>
-      </div>
+          </Panel>
+          <Panel title="Blocked / Stale Items">
+            <SummaryList rows={blockedEvidenceRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+        </div>
+      )}
 
       <div className="terminal-board-grid">
         <Panel className="terminal-holdings-panel" title="Portfolio Attention">
@@ -470,18 +495,91 @@ export function TodayPage({
       <Panel className="terminal-risk-panel dashboard-risk-cockpit" title="Portfolio Risk & Cluster Exposure">
         <RiskProfileTerminal model={model} readyCount={readyRows.length} />
       </Panel>
-      <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
+      {!dailyBrief.length && <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />}
 
       <div className="terminal-secondary-grid">
         <Panel title="Needs Attention">
           <AttentionQueue items={attentionItems} onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel title="Watchlist Context">
-          <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
+          <SummaryList rows={[
+            { label: "Daily brief", value: dailyBrief.length ? `${dailyBrief.length} backend items` : "Fallback", caption: dailyBrief.length ? `${riskBriefCount} risk items · ${blockedBriefCount} blocked items` : "Legacy client-side lists are active.", tone: dailyBrief.length ? "good" : "warn" },
+            { label: "Ready reviews", value: reviewReadyCount ? `${reviewReadyCount} names` : "None", caption: reviewReadyCount ? "Enough source context for dossier review." : "No consumable finance analysis rows.", tone: reviewReadyCount ? "good" : "warn" },
+          ]} />
         </Panel>
       </div>
     </section>
   );
+}
+
+function DailyBriefBoard({ items, onOpenTicker }: { items: DailyBriefItem[]; onOpenTicker: (symbol: string) => void }) {
+  const groups: Array<[DailyBriefItem["category"], string]> = [
+    ["top_portfolio_changes", "Top Portfolio Changes"],
+    ["top_risks", "Top Risks"],
+    ["top_opportunities", "Top Opportunities / Research"],
+    ["blocked_stale_items", "Blocked / Stale Items"],
+  ];
+  return (
+    <section className="daily-brief-board" aria-label="Backend daily brief">
+      {groups.map(([category, title]) => {
+        const groupItems = items.filter((item) => item.category === category).slice(0, 5);
+        return (
+          <Panel key={category} title={title}>
+            {groupItems.length ? (
+              <div className="daily-brief-stack">
+                {groupItems.map((item) => (
+                  <DailyBriefCard key={item.itemId} item={item} onOpenTicker={onOpenTicker} />
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No ranked items" detail="The backend daily_brief model has no rows for this category." />
+            )}
+          </Panel>
+        );
+      })}
+    </section>
+  );
+}
+
+function DailyBriefCard({ item, onOpenTicker }: { item: DailyBriefItem; onOpenTicker: (symbol: string) => void }) {
+  const symbol = item.symbol || item.symbols[0] || "";
+  const blockerActive = item.blocker && item.blocker.toLowerCase() !== "none";
+  return (
+    <article className={`daily-brief-card ${briefTone(item)}`}>
+      <button type="button" disabled={!symbol} onClick={() => symbol && onOpenTicker(symbol)}>
+        <span>{String(item.rank).padStart(2, "0")}</span>
+        <strong>{item.title}</strong>
+        {symbol && <ChevronRight size={14} />}
+      </button>
+      <p>{item.reason}</p>
+      <div className="daily-brief-detail-grid">
+        <div>
+          <span>Evidence</span>
+          <small>{item.evidence.slice(0, 3).join(" · ") || "No evidence rows"}</small>
+        </div>
+        <div>
+          <span>Blocker</span>
+          <small className={blockerActive ? "negative" : "positive"}>{item.blocker || "None"}</small>
+        </div>
+        <div>
+          <span>Next Action</span>
+          <small>{item.nextAction}</small>
+        </div>
+      </div>
+      <footer>
+        <span>{item.sourceModels.slice(0, 3).join(" + ") || "daily_brief"}</span>
+        <b>{Math.round(item.score)}</b>
+      </footer>
+    </article>
+  );
+}
+
+function briefTone(item: DailyBriefItem): Tone {
+  const severity = item.severity.toLowerCase();
+  if (severity === "bad" || severity === "critical") return "bad";
+  if (severity === "good") return "good";
+  if (severity === "watch" || severity === "warn") return "warn";
+  return "info";
 }
 
 export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: (symbol: string) => void }) {
@@ -1616,6 +1714,7 @@ export type AppModel = {
   brokerSignalRows: RowRecord[];
   agentRecommendationRows: RowRecord[];
   paperOrderRows: RowRecord[];
+  dailyBriefRows: DailyBriefItem[];
   exposureClusterRows: RowRecord[];
   correlationEdgeRows: RowRecord[];
   portfolioRiskCardRows: RowRecord[];
@@ -1673,6 +1772,7 @@ export function buildModel(data: PanelData): AppModel {
   const brokerSignalRows = rows(data.brokerScannerSignals);
   const agentRecommendationRows = rows(data.agentRecommendations);
   const paperOrderRows = rows(data.paperOrders);
+  const dailyBriefRows = buildDailyBriefRows(rows(data.dailyBrief));
   const exposureClusterRows = rows(data.exposureClusters);
   const correlationEdgeRows = rows(data.correlationEdges);
   const portfolioRiskCardRows = rows(data.portfolioRiskCards);
@@ -1703,6 +1803,7 @@ export function buildModel(data: PanelData): AppModel {
     brokerSignalRows,
     agentRecommendationRows,
     paperOrderRows,
+    dailyBriefRows,
     exposureClusterRows,
     correlationEdgeRows,
     portfolioRiskCardRows,
@@ -1791,6 +1892,29 @@ function panelDataWithTickerTables(base: PanelData, ticker: TickerPayload): Pane
   }
 
   return next;
+}
+
+function buildDailyBriefRows(sourceRows: RowRecord[]): DailyBriefItem[] {
+  return sourceRows.map((row, index) => {
+    const category = stringField(row, ["category"]) || "top_opportunities";
+    const symbol = stringField(row, ["symbol"]);
+    return {
+      itemId: stringField(row, ["item_id"]) || `${category}-${index}`,
+      category,
+      rank: numberField(row, ["rank"], index + 1),
+      title: stringField(row, ["title"]) || "Daily brief item",
+      symbol,
+      symbols: listField(row, ["symbols"]).filter(Boolean),
+      reason: stringField(row, ["reason"]) || "Backend read model selected this item.",
+      evidence: listField(row, ["evidence"]),
+      blocker: stringField(row, ["blocker"]) || "None",
+      nextAction: stringField(row, ["next_action"]) || "Review the source rows before acting.",
+      score: numberField(row, ["score"], 0),
+      severity: stringField(row, ["severity"]) || "info",
+      sourceModels: listField(row, ["source_models"]),
+      asOf: stringField(row, ["as_of"]),
+    };
+  });
 }
 
 function buildWatchlist(quoteRows: RowRecord[]): WatchItem[] {

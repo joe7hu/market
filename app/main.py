@@ -338,6 +338,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "paper_orders")
 
+    @app.get("/api/daily-brief")
+    def daily_brief() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "daily_brief")
+
     @app.get("/api/portfolio-risk/exposure-clusters")
     def portfolio_risk_exposure_clusters() -> dict[str, Any]:
         _, panel_data = _context()

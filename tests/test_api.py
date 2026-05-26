@@ -53,6 +53,7 @@ def test_api_routes_return_json() -> None:
         "/api/broker/positions",
         "/api/agent/recommendations",
         "/api/paper-orders",
+        "/api/daily-brief",
         "/api/portfolio-risk/exposure-clusters",
         "/api/portfolio-risk/correlation-edges",
         "/api/portfolio-risk/cards",

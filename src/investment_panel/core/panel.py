@@ -10,6 +10,7 @@ from typing import Any
 from investment_panel.core.config import AppConfig, config_to_dict, load_config
 from investment_panel.core import brokers
 from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.daily_brief import daily_brief
 from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, refresh_decision_read_models
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
@@ -80,6 +81,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "broker_scanner_signals": brokers.broker_scanner_signals(con),
             "agent_recommendations": brokers.agent_recommendations(con),
             "paper_orders": brokers.paper_orders(con),
+            "daily_brief": daily_brief(con),
             "exposure_clusters": exposure_clusters(con),
             "correlation_edges": correlation_edges(con),
             "portfolio_risk_cards": portfolio_risk_cards(con),
