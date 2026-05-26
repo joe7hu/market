@@ -79,6 +79,13 @@ export type PanelData = {
   researchPackets: TablePayload;
   memos: TablePayload;
   providerRuns: TablePayload;
+  brokerStatus: TablePayload;
+  brokerAccounts: TablePayload;
+  brokerPositions: TablePayload;
+  brokerMarketSnapshots: TablePayload;
+  brokerScannerSignals: TablePayload;
+  agentRecommendations: TablePayload;
+  paperOrders: TablePayload;
   sourceHealth: TablePayload;
   refreshJobs: TablePayload;
   settings: SettingsPayload;
@@ -124,6 +131,13 @@ export type PanelEndpoint =
   | "researchPackets"
   | "memos"
   | "providerRuns"
+  | "brokerStatus"
+  | "brokerAccounts"
+  | "brokerPositions"
+  | "brokerMarketSnapshots"
+  | "brokerScannerSignals"
+  | "agentRecommendations"
+  | "paperOrders"
   | "sourceHealth"
   | "refreshJobs"
   | "settings";

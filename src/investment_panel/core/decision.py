@@ -217,6 +217,17 @@ def build_discovered_universe(con: Any, config_watchlist: list[dict[str, Any]]) 
     for row in query_rows(con, "SELECT symbol, purchase_date FROM portfolio_positions"):
         touch(row.get("symbol"), "portfolio", "owned portfolio row", row.get("purchase_date"), None, None, 2.0)
 
+    for row in query_rows(con, "SELECT symbol, updated_at, asset_class, provider FROM broker_positions"):
+        touch(
+            row.get("symbol"),
+            f"broker_position:{row.get('provider') or 'broker'}",
+            "broker-sourced portfolio row",
+            row.get("updated_at"),
+            None,
+            row.get("asset_class"),
+            2.5,
+        )
+
     for row in query_rows(con, "SELECT symbol, run_date, evidence FROM candidates"):
         evidence = parse_json(row.get("evidence"))
         touch(row.get("symbol"), "candidate", "prior candidate screen", None, None, None, 0.25 + min(len(evidence) if isinstance(evidence, list) else 0, 2))
@@ -359,6 +370,8 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
         add(source_key, source_type, source.split(":")[0] or source, row.get("checked_at"), row.get("status") or "ok", row.get("detail") or "", docs_only)
     for row in query_rows(con, "SELECT provider, capability, finished_at, status, detail FROM provider_runs"):
         add(f"{row.get('provider')}:{row.get('capability')}:provider-run", "provider_run", row.get("provider") or "provider", row.get("finished_at"), row.get("status") or "ok", row.get("detail") or "")
+    for row in query_rows(con, "SELECT provider, checked_at, status, detail, last_data_at FROM broker_provider_status"):
+        add(f"broker:{row.get('provider')}", "provider_health", row.get("provider") or "broker", row.get("last_data_at") or row.get("checked_at"), row.get("status") or "missing", row.get("detail") or "")
     return dedupe_freshness(rows)
 
 
@@ -370,7 +383,7 @@ def build_decision_queue(con: Any, universe: list[dict[str, Any]], freshness_row
     liquidity = latest_by_symbol(query_rows(con, "SELECT symbol, as_of, grade, avg_dollar_volume FROM liquidity_metrics ORDER BY as_of DESC"), "symbol")
     catalysts = latest_by_symbol(query_rows(con, "SELECT symbol, event_date, event FROM catalysts WHERE symbol IS NOT NULL ORDER BY event_date ASC NULLS LAST"), "symbol")
     earnings = latest_by_symbol(query_rows(con, "SELECT symbol, event_date, event_type AS event FROM earnings_events ORDER BY event_date ASC NULLS LAST"), "symbol")
-    portfolio = {row["symbol"]: row for row in query_rows(con, "SELECT symbol, quantity, avg_cost FROM portfolio_positions")}
+    portfolio = effective_portfolio_by_symbol(con)
     now = datetime.now(UTC)
 
     rows = []
@@ -835,6 +848,7 @@ def action_grade_for(score: float, freshness: str, evidence_count: int, source_c
         "missing_intraday_quote",
         "stale_daily_analysis",
         "missing_daily_analysis",
+        "broker_account_sync_unhealthy",
     }
     if freshness in {"stale", "failed", "degraded", "missing"} or hard_freshness_gates.intersection(gates):
         return "Stale"
@@ -937,6 +951,8 @@ def top_source_cluster(counts: dict[str, Any]) -> str:
         "tradingview_search": 44,
         "yfinance": 40,
         "portfolio": 35,
+        "broker_position:ibkr": 38,
+        "broker_position:moomoo": 30,
     }
     eligible = [(key, int(value or 0)) for key, value in counts.items() if key not in STATIC_SOURCES and int(value or 0) > 0]
     if not eligible:
@@ -954,6 +970,7 @@ def apply_blocking_penalties(score: float, gates: list[str]) -> float:
         "liquidity_unknown": 12,
         "liquidity_bad": 30,
         "evidence_thin": 10,
+        "broker_account_sync_unhealthy": 30,
     }
     return max(0.0, score - sum(penalties.get(gate, 0) for gate in gates))
 
@@ -1016,7 +1033,74 @@ def catalyst_window(row: dict[str, Any]) -> str:
 def portfolio_impact(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {"owned": False}
-    return {"owned": True, "quantity": row.get("quantity"), "avg_cost": row.get("avg_cost")}
+    return {
+        "owned": True,
+        "quantity": row.get("quantity"),
+        "avg_cost": row.get("avg_cost") or row.get("average_cost"),
+        "source": row.get("source"),
+        "market_value": row.get("market_value"),
+    }
+
+
+def effective_portfolio_by_symbol(con: Any) -> dict[str, dict[str, Any]]:
+    """Use healthy IBKR positions as source of truth; otherwise preserve manual rows."""
+
+    health = broker_account_health(con)
+    if health.get("usable"):
+        return {
+            str(row.get("symbol") or "").upper(): {
+                "symbol": row.get("symbol"),
+                "quantity": row.get("quantity"),
+                "avg_cost": row.get("average_cost"),
+                "average_cost": row.get("average_cost"),
+                "market_value": row.get("market_value"),
+                "source": row.get("provider") or "ibkr",
+            }
+            for row in query_rows(
+                con,
+                """
+                SELECT provider, symbol, quantity, average_cost, market_value
+                FROM broker_positions
+                WHERE provider = 'ibkr'
+                """,
+            )
+        }
+    stale_rows = query_rows(
+        con,
+        """
+        SELECT provider, symbol, quantity, average_cost, market_value
+        FROM broker_positions
+        WHERE provider = 'ibkr'
+        """,
+    )
+    if stale_rows:
+        return {
+            str(row.get("symbol") or "").upper(): {
+                "symbol": row.get("symbol"),
+                "quantity": row.get("quantity"),
+                "avg_cost": row.get("average_cost"),
+                "average_cost": row.get("average_cost"),
+                "market_value": row.get("market_value"),
+                "source": "ibkr_stale",
+            }
+            for row in stale_rows
+        }
+    return {
+        str(row.get("symbol") or "").upper(): {**row, "source": "manual"}
+        for row in query_rows(con, "SELECT symbol, quantity, avg_cost FROM portfolio_positions")
+    }
+
+
+def broker_account_health(con: Any) -> dict[str, Any]:
+    rows = query_rows(con, "SELECT provider, checked_at, status, detail, last_data_at FROM broker_provider_status WHERE provider = 'ibkr' LIMIT 1")
+    if not rows:
+        return {"status": "missing", "usable": True, "detail": "IBKR broker source has not synced."}
+    row = rows[0]
+    status = str(row.get("status") or "missing")
+    observed = parse_dt(row.get("last_data_at") or row.get("checked_at"))
+    if observed and datetime.now(UTC) - observed > timedelta(minutes=15) and status == "ok":
+        status = "stale_data"
+    return {"status": status, "usable": status == "ok", "detail": row.get("detail")}
 
 
 def readiness_blockers(row: dict[str, Any], source_counts: dict[str, Any], portfolio_count: int) -> list[str]:
@@ -1213,13 +1297,13 @@ def parse_dt(value: Any) -> datetime | None:
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        return value.astimezone(UTC) if value.tzinfo else value.astimezone(UTC)
     if isinstance(value, date):
         return datetime.combine(value, time.min, tzinfo=UTC)
     text = str(value)
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.astimezone(UTC)
     except ValueError:
         return None
 

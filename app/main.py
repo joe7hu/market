@@ -26,6 +26,9 @@ from app.data_access import (
     ticker_payload,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST, refresh_job_rows, run_refresh_job
+from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
+from investment_panel.core.config import load_config as load_core_config
+from investment_panel.core.db import db, init_db
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -37,6 +40,10 @@ class PortfolioPositionInput(BaseModel):
     avg_cost: float
     purchase_date: str | None = None
     notes: str = ""
+
+
+class PaperOrderInput(BaseModel):
+    recommendation_id: str
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
@@ -295,6 +302,54 @@ def create_app() -> FastAPI:
     def provider_runs() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "provider_runs")
+
+    @app.get("/api/broker/status")
+    def broker_status() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "broker_status")
+
+    @app.get("/api/broker/accounts")
+    def broker_accounts() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "broker_accounts")
+
+    @app.get("/api/broker/positions")
+    def broker_positions() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "broker_positions")
+
+    @app.get("/api/agent/recommendations")
+    def agent_recommendations() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "agent_recommendations")
+
+    @app.post("/api/agent/review")
+    def run_agent_review(request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_core_config("config.yaml")
+        init_db(config.database.duckdb_path)
+        with db(config.database.duckdb_path, read_only=False) as con:
+            rows = build_and_persist_agent_recommendations(con, config.data_sources.brokers.policy)
+        _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+        return {"status": "ok", "count": len(rows), "rows": rows[:25]}
+
+    @app.get("/api/paper-orders")
+    def paper_orders() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "paper_orders")
+
+    @app.post("/api/paper-orders")
+    def stage_paper_order_endpoint(payload: PaperOrderInput, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_core_config("config.yaml")
+        init_db(config.database.duckdb_path)
+        try:
+            with db(config.database.duckdb_path, read_only=False) as con:
+                result = stage_paper_order(con, payload.recommendation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+        return result
 
     @app.get("/api/refresh-jobs")
     def refresh_jobs() -> dict[str, Any]:

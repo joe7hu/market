@@ -79,10 +79,52 @@ class YFinanceConfig:
 
 
 @dataclass(frozen=True)
+class IBKRConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 7497
+    client_id: int = 77
+    account_id: str | None = None
+    readonly: bool = True
+    paper_only: bool = True
+    stale_after_minutes: int = 15
+
+
+@dataclass(frozen=True)
+class MoomooConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 11111
+    paper_only: bool = True
+    stale_after_minutes: int = 15
+    scanner_limit: int = 50
+
+
+@dataclass(frozen=True)
+class BrokerPolicyConfig:
+    require_account_for_recommendations: bool = False
+    max_trade_notional: float = 10_000.0
+    max_position_weight_pct: float = 20.0
+    min_primary_evidence_count: int = 1
+    min_total_evidence_count: int = 2
+    earnings_blackout_days: int = 2
+
+
+@dataclass(frozen=True)
+class BrokerSourcesConfig:
+    enabled: bool = True
+    advisory_only: bool = True
+    ibkr: IBKRConfig = IBKRConfig()
+    moomoo: MoomooConfig = MoomooConfig()
+    policy: BrokerPolicyConfig = BrokerPolicyConfig()
+
+
+@dataclass(frozen=True)
 class DataSourcesConfig:
     opencli: OpenCliConfig = OpenCliConfig()
     tradingview: TradingViewConfig = TradingViewConfig()
     yfinance: YFinanceConfig = YFinanceConfig()
+    brokers: BrokerSourcesConfig = BrokerSourcesConfig()
 
 
 @dataclass(frozen=True)
@@ -177,6 +219,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     opencli_raw = data_sources_raw.get("opencli", {})
     tradingview_raw = data_sources_raw.get("tradingview", {})
     yfinance_raw = data_sources_raw.get("yfinance", {})
+    brokers_raw = data_sources_raw.get("brokers", {})
+    ibkr_raw = brokers_raw.get("ibkr", {})
+    moomoo_raw = brokers_raw.get("moomoo", {})
+    policy_raw = brokers_raw.get("policy", {})
     data_sources = DataSourcesConfig(
         opencli=OpenCliConfig(
             enabled=bool(opencli_raw.get("enabled", True)),
@@ -198,6 +244,36 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
         ),
         yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
+        brokers=BrokerSourcesConfig(
+            enabled=bool(brokers_raw.get("enabled", True)),
+            advisory_only=bool(brokers_raw.get("advisory_only", True)),
+            ibkr=IBKRConfig(
+                enabled=bool(ibkr_raw.get("enabled", False)),
+                host=str(ibkr_raw.get("host", "127.0.0.1")),
+                port=int(ibkr_raw.get("port", 7497)),
+                client_id=int(ibkr_raw.get("client_id", 77)),
+                account_id=ibkr_raw.get("account_id"),
+                readonly=bool(ibkr_raw.get("readonly", True)),
+                paper_only=bool(ibkr_raw.get("paper_only", True)),
+                stale_after_minutes=int(ibkr_raw.get("stale_after_minutes", 15)),
+            ),
+            moomoo=MoomooConfig(
+                enabled=bool(moomoo_raw.get("enabled", False)),
+                host=str(moomoo_raw.get("host", "127.0.0.1")),
+                port=int(moomoo_raw.get("port", 11111)),
+                paper_only=bool(moomoo_raw.get("paper_only", True)),
+                stale_after_minutes=int(moomoo_raw.get("stale_after_minutes", 15)),
+                scanner_limit=int(moomoo_raw.get("scanner_limit", 50)),
+            ),
+            policy=BrokerPolicyConfig(
+                require_account_for_recommendations=bool(policy_raw.get("require_account_for_recommendations", False)),
+                max_trade_notional=float(policy_raw.get("max_trade_notional", 10_000.0)),
+                max_position_weight_pct=float(policy_raw.get("max_position_weight_pct", 20.0)),
+                min_primary_evidence_count=int(policy_raw.get("min_primary_evidence_count", 1)),
+                min_total_evidence_count=int(policy_raw.get("min_total_evidence_count", 2)),
+                earnings_blackout_days=int(policy_raw.get("earnings_blackout_days", 2)),
+            ),
+        ),
     )
     event_sources_raw = raw.get("event_sources", {})
     event_sources = EventSourcesConfig(
@@ -278,6 +354,36 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,
             },
             "yfinance": {"enabled": config.data_sources.yfinance.enabled},
+            "brokers": {
+                "enabled": config.data_sources.brokers.enabled,
+                "advisory_only": config.data_sources.brokers.advisory_only,
+                "ibkr": {
+                    "enabled": config.data_sources.brokers.ibkr.enabled,
+                    "host": config.data_sources.brokers.ibkr.host,
+                    "port": config.data_sources.brokers.ibkr.port,
+                    "client_id": config.data_sources.brokers.ibkr.client_id,
+                    "account_id": config.data_sources.brokers.ibkr.account_id,
+                    "readonly": config.data_sources.brokers.ibkr.readonly,
+                    "paper_only": config.data_sources.brokers.ibkr.paper_only,
+                    "stale_after_minutes": config.data_sources.brokers.ibkr.stale_after_minutes,
+                },
+                "moomoo": {
+                    "enabled": config.data_sources.brokers.moomoo.enabled,
+                    "host": config.data_sources.brokers.moomoo.host,
+                    "port": config.data_sources.brokers.moomoo.port,
+                    "paper_only": config.data_sources.brokers.moomoo.paper_only,
+                    "stale_after_minutes": config.data_sources.brokers.moomoo.stale_after_minutes,
+                    "scanner_limit": config.data_sources.brokers.moomoo.scanner_limit,
+                },
+                "policy": {
+                    "max_trade_notional": config.data_sources.brokers.policy.max_trade_notional,
+                    "require_account_for_recommendations": config.data_sources.brokers.policy.require_account_for_recommendations,
+                    "max_position_weight_pct": config.data_sources.brokers.policy.max_position_weight_pct,
+                    "min_primary_evidence_count": config.data_sources.brokers.policy.min_primary_evidence_count,
+                    "min_total_evidence_count": config.data_sources.brokers.policy.min_total_evidence_count,
+                    "earnings_blackout_days": config.data_sources.brokers.policy.earnings_blackout_days,
+                },
+            },
         },
         "event_sources": {
             "enabled": config.event_sources.enabled,

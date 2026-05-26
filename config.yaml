@@ -56,6 +56,31 @@ data_sources:
     strikes_around_spot: 6
   yfinance:
     enabled: true
+  brokers:
+    enabled: true
+    advisory_only: true
+    ibkr:
+      enabled: false
+      host: 127.0.0.1
+      port: 7497
+      client_id: 77
+      readonly: true
+      paper_only: true
+      stale_after_minutes: 15
+    moomoo:
+      enabled: false
+      host: 127.0.0.1
+      port: 11111
+      paper_only: true
+      stale_after_minutes: 15
+      scanner_limit: 50
+    policy:
+      require_account_for_recommendations: false
+      max_trade_notional: 10000
+      max_position_weight_pct: 20
+      min_primary_evidence_count: 1
+      min_total_evidence_count: 2
+      earnings_blackout_days: 2
 
 event_sources:
   enabled: true
