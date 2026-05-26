@@ -35,7 +35,7 @@ def exposure_clusters(con: Any) -> list[dict[str, Any]]:
         thesis_count = sum(1 for symbol in symbols if evidence.get(symbol, {}).get("thesis_count"))
         catalyst_count = sum(1 for symbol in symbols if evidence.get(symbol, {}).get("catalyst_count"))
         disclosure_count = sum(1 for symbol in symbols if evidence.get(symbol, {}).get("disclosure_count"))
-        duplicate_exposure = len(symbols) > 1 and weight >= 25
+        duplicate_exposure = _can_be_duplicate_cluster(cluster_type) and len(symbols) > 1 and weight >= 25
         concentration = weight >= 35
         rows.append(
             {
@@ -113,7 +113,7 @@ def correlation_edges(con: Any) -> list[dict[str, Any]]:
             existing = edges.get(key)
             if not existing or abs(corr) > abs(float(existing.get("correlation") or 0.0)):
                 edges[key] = edge
-    return sorted(edges.values(), key=lambda row: (row["edge_type"] == "owned_owned", float(row["abs_correlation"]), float(row["combined_weight"])), reverse=True)[:25]
+    return sorted(edges.values(), key=_correlation_sort_key, reverse=True)[:25]
 
 
 def portfolio_risk_cards(con: Any) -> list[dict[str, Any]]:
@@ -431,6 +431,8 @@ def _priority(card: dict[str, Any]) -> str:
 
 
 def _cluster_note(cluster_type: str, cluster_name: str, symbols: list[str], weight: float, duplicate_exposure: bool, concentration: bool) -> str:
+    if cluster_type == "asset_class":
+        return f"{cluster_name} is the portfolio asset-class allocation bucket, not hidden duplicate exposure."
     if duplicate_exposure:
         return f"{len(symbols)} owned symbols share {cluster_type} {cluster_name}; treat as overlapping exposure until differentiated."
     if concentration:
@@ -451,6 +453,10 @@ def _concentration_level(weight: float, symbol_count: int) -> str:
     return "normal"
 
 
+def _can_be_duplicate_cluster(cluster_type: str) -> bool:
+    return cluster_type in {"sector", "industry", "category"}
+
+
 def _correlation_level(corr: float, combined_weight: float, owned_peer: bool) -> str:
     if owned_peer and abs(corr) >= 0.75 and combined_weight >= 35:
         return "critical"
@@ -459,6 +465,15 @@ def _correlation_level(corr: float, combined_weight: float, owned_peer: bool) ->
     if abs(corr) >= 0.7:
         return "market_beta"
     return "context"
+
+
+def _correlation_sort_key(row: dict[str, Any]) -> tuple[int, float, float]:
+    risk_rank = {"critical": 3, "watch": 2, "market_beta": 1, "context": 0}.get(str(row.get("risk_level") or ""), 0)
+    return (
+        risk_rank,
+        float(row.get("abs_correlation") or 0.0),
+        float(row.get("combined_weight") or 0.0),
+    )
 
 
 def _total_value(holdings: list[dict[str, Any]]) -> float:
