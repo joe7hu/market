@@ -484,10 +484,6 @@ export function TodayPage({
   );
 }
 
-export function DashboardPage(props: TodayPageProps) {
-  return <TodayPage {...props} />;
-}
-
 export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: (symbol: string) => void }) {
   const [activeTab, setActiveTab] = useState("Overview");
   useEffect(() => {

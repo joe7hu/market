@@ -1,7 +1,7 @@
 # Market: Personal Investment Panel
 
 Local research command center for public equities, crypto, Arco/Birdclaw thesis
-flow, thesis tracking, and evidence-backed trading signals.
+flow, thesis tracking, portfolio-aware risk, and evidence-backed decision memory.
 
 ## Stack
 
@@ -18,13 +18,14 @@ uv sync --extra test
 npm install
 uv run python -m investment_panel.jobs.daily_screen --config config.yaml
 npm run build
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+npx vite --host 0.0.0.0
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:5173/today
 ```
 
 For frontend-only development:
@@ -74,6 +75,7 @@ analyses, and the DB snapshot before the decision desk reads the data.
 
 - `GET /api/status`
 - `GET /api/dashboard`
+- `GET /api/panel-snapshot?scope=today`
 - `GET /api/candidates`
 - `GET /api/tickers/{symbol}`
 - `GET /api/portfolio`
@@ -133,11 +135,15 @@ and DCF/relative/blended valuation rows. LLMs should only be used for
 unstructured interpretation, memo prose, or parsing a user-submitted options
 screenshot/free-form strategy into structured legs.
 
-The web app renders the derived data as an operational workbench: score bars,
-positive/negative percentage pills, status badges, and summary cards highlight
-quote breadth, SEPA strength, liquidity coverage, valuation signal, and source
-health. The valuation endpoint is a low-confidence proxy only; it drops rows
-with implausible fundamentals and reports upside in percentage points.
+The web app defaults to `/today`, a dense operational brief that answers what
+changed, what matters, what should be reviewed or ignored, and what is blocked
+by stale or missing evidence. Navigation is organized around Today, Portfolio
+Risk, Research Queue, Thesis Monitor, Filings, Calendar, Health, and Settings.
+Broker, paper-order, and TradingView-style charting surfaces are hidden unless
+their providers are explicitly enabled; Market should not duplicate charting,
+screening, or execution platforms. The valuation endpoint is a low-confidence
+proxy only; it drops rows with implausible fundamentals and reports upside in
+percentage points.
 
 ## Current Limitation
 

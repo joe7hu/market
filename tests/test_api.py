@@ -14,6 +14,7 @@ def test_api_routes_return_json() -> None:
     for path in [
         "/api/status",
         "/api/dashboard",
+        "/api/panel-snapshot?scope=today",
         "/api/panel-snapshot?scope=dashboard",
         "/api/decision-readiness",
         "/api/signals",
@@ -179,9 +180,13 @@ def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
     client = TestClient(app)
     for path in [
         "/",
+        "/today",
+        "/dashboard",
         "/opportunities",
         "/portfolio",
         "/research",
+        "/research-queue",
+        "/thesis-monitor",
         "/filings",
         "/calendar",
         "/health",

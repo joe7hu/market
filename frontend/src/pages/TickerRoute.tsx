@@ -8,7 +8,7 @@ export function TickerRoute() {
   const symbol = (params.symbol ?? "").toUpperCase();
   const ticker = useTicker(symbol);
   const { data, model, openTicker } = useMarketData();
-  usePanelScope("dashboard");
+  usePanelScope("today");
 
   return <TickerPage symbol={symbol} ticker={ticker} model={model} data={data} onOpenTicker={openTicker} />;
 }
