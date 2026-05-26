@@ -55,6 +55,10 @@ def exposure_clusters(con: Any) -> list[dict[str, Any]]:
                 "duplicate_exposure": duplicate_exposure,
                 "concentration_level": _concentration_level(weight, len(symbols)),
                 "risk_note": _cluster_note(cluster_type, cluster_name, symbols, weight, duplicate_exposure, concentration),
+                "risk_readout": _cluster_readout(cluster_type, cluster_name, symbols, weight, stale_count, evidence),
+                "next_step": _cluster_next_step(cluster_type, cluster_name, symbols, weight, duplicate_exposure, concentration),
+                "evidence": _cluster_evidence(symbols, weight, stale_count, thesis_count, catalyst_count, disclosure_count),
+                "is_actionable": cluster_type != "asset_class" and (duplicate_exposure or concentration),
             }
         )
     return sorted(rows, key=lambda row: (float(row.get("portfolio_weight") or 0.0), int(row.get("symbol_count") or 0)), reverse=True)
@@ -126,17 +130,21 @@ def portfolio_risk_cards(con: Any) -> list[dict[str, Any]]:
     largest = max(holdings, key=lambda row: float(row.get("portfolio_weight") or 0.0))
     largest_weight = float(largest.get("portfolio_weight") or 0.0)
     if largest_weight >= 35:
+        quote_status = str(largest.get("quote_freshness") or "unknown")
         cards.append(
             _card(
                 "largest-position",
                 "concentration",
                 "critical" if largest_weight >= 60 else "watch",
                 f"{largest['symbol']} is {largest_weight:.1f}% of priced portfolio",
-                "Single-name exposure dominates portfolio outcome.",
+                f"Portfolio outcome is dominated by {largest['symbol']}; the next sizing decision should be a cap, trim, or hedge rule, not another adjacent add.",
                 [largest["symbol"]],
                 largest_weight,
-                [f"market_value={largest.get('market_value'):.2f}", f"quote={largest.get('quote_freshness') or 'unknown'}"],
-                "Review target weight, hedge, or trim plan before adding adjacent exposure.",
+                [f"{largest['symbol']} weight {largest_weight:.1f}%", f"market value {_money(float(largest.get('market_value') or 0.0))}", f"quote {quote_status}"],
+                "Set a max target weight for the position and write the add/hold/trim rule into the thesis before increasing related exposure.",
+                impact=f"{largest_weight:.1f}% of priced value",
+                trigger="single position >= 60%" if largest_weight >= 60 else "single position >= 35%",
+                next_step=f"Decide whether {largest['symbol']} should stay above {largest_weight:.1f}% or define the first trim/hedge threshold.",
             )
         )
 
@@ -145,18 +153,22 @@ def portfolio_risk_cards(con: Any) -> list[dict[str, Any]]:
         if cluster.get("cluster_type") == "asset_class":
             continue
         weight = float(cluster.get("portfolio_weight") or 0.0)
-        if weight >= 50:
+        symbol_count = int(cluster.get("symbol_count") or 0)
+        if bool(cluster.get("duplicate_exposure")) or (symbol_count > 1 and weight >= 35):
             cards.append(
                 _card(
                     f"cluster-{cluster['cluster_id']}",
                     "cluster_concentration",
-                    "watch" if int(cluster.get("symbol_count") or 0) == 1 else "critical",
+                    "watch" if symbol_count == 1 else "critical",
                     f"{cluster['cluster_name']} cluster is {weight:.1f}%",
                     str(cluster.get("risk_note") or "Cluster concentration needs review."),
                     list(cluster.get("symbols") or []),
                     weight,
-                    [f"{cluster.get('symbol_count')} symbols", f"{cluster.get('cluster_type')} cluster"],
-                    "Compare the cluster against intended portfolio themes and max exposure.",
+                    list(cluster.get("evidence") or [f"{symbol_count} symbols", f"{cluster.get('cluster_type')} cluster"]),
+                    str(cluster.get("next_step") or "Compare the cluster against intended portfolio themes and max exposure."),
+                    impact=f"{weight:.1f}% across {symbol_count} symbols",
+                    trigger="same sector/industry/category and multi-name weight >= 25%",
+                    next_step=str(cluster.get("next_step") or "Set the intended max weight for this cluster."),
                 )
             )
             break
@@ -175,39 +187,74 @@ def portfolio_risk_cards(con: Any) -> list[dict[str, Any]]:
                 float(edge.get("combined_weight") or 0.0),
                 [f"corr={float(edge.get('correlation') or 0.0):.2f}", f"lookback={edge.get('lookback_days')}d"],
                 "Treat the pair as one exposure until the thesis proves otherwise.",
+                impact=f"{float(edge.get('combined_weight') or 0.0):.1f}% combined weight",
+                trigger="owned-owned correlation >= 0.55",
+                next_step=f"Decide whether {edge['symbol']} and {edge['peer_symbol']} deserve separate risk budgets.",
             )
         )
 
     stale = [row for row in holdings if str(row.get("quote_freshness") or "").lower() not in {"fresh", "ok"}]
     if stale:
         symbols = [str(row.get("symbol")) for row in stale]
+        stale_weight = sum(float(row.get("portfolio_weight") or 0.0) for row in stale)
         cards.append(
             _card(
                 "stale-owned-quotes",
                 "data_freshness",
                 "watch",
-                f"{len(stale)} owned quote rows are not fresh",
-                "Sizing, P/L, and cluster weights are only as good as the latest usable price.",
+                f"{len(stale)} owned quotes are stale",
+                f"Risk weights and P/L are being computed on stale quote rows covering {stale_weight:.1f}% of priced exposure.",
                 symbols,
-                sum(float(row.get("portfolio_weight") or 0.0) for row in stale),
-                [", ".join(symbols[:4]), "quote_freshness != fresh"],
+                stale_weight,
+                [", ".join(symbols[:4]), f"{stale_weight:.1f}% affected", "quote freshness not fresh/ok"],
                 "Refresh market data before making sizing decisions.",
+                impact=f"{stale_weight:.1f}% affected",
+                trigger="owned quote freshness not fresh/ok",
+                next_step="Run the free-source market data refresh, then revisit concentration and P/L.",
             )
         )
 
     missing_thesis = _symbols_with_missing_thesis(con, [str(row.get("symbol")) for row in holdings])
     if missing_thesis:
+        missing_thesis_weight = sum(float(row.get("portfolio_weight") or 0.0) for row in holdings if row.get("symbol") in missing_thesis)
         cards.append(
             _card(
                 "missing-owned-theses",
                 "thesis_gap",
                 "watch",
-                f"{len(missing_thesis)} owned positions have placeholder theses",
-                "Owned exposure should have a falsifiable thesis, risks, invalidation, and catalyst path.",
+                f"{len(missing_thesis)} owned theses are not investable",
+                f"{', '.join(missing_thesis[:4])} lack a falsifiable thesis, risk list, invalidation, and catalyst path.",
                 missing_thesis,
-                sum(float(row.get("portfolio_weight") or 0.0) for row in holdings if row.get("symbol") in missing_thesis),
-                ["theses.thesis_json is empty or placeholder"],
+                missing_thesis_weight,
+                [f"{missing_thesis_weight:.1f}% affected", "placeholder or empty thesis_json"],
                 "Write or refresh thesis records for owned symbols.",
+                impact=f"{missing_thesis_weight:.1f}% without thesis",
+                trigger="owned thesis missing core thesis/risks/invalidation/catalysts",
+                next_step=f"Write decision theses for {', '.join(missing_thesis[:3])}.",
+            )
+        )
+    evidence = _symbol_evidence(con)
+    missing_catalysts = [
+        str(row.get("symbol"))
+        for row in holdings
+        if not evidence.get(str(row.get("symbol") or "").upper(), {}).get("catalyst_count")
+    ]
+    if missing_catalysts:
+        catalyst_weight = sum(float(row.get("portfolio_weight") or 0.0) for row in holdings if row.get("symbol") in missing_catalysts)
+        cards.append(
+            _card(
+                "missing-owned-catalysts",
+                "catalyst_gap",
+                "info" if catalyst_weight < 50 else "watch",
+                f"{len(missing_catalysts)} owned positions have no catalyst path",
+                f"No stored catalyst rows explain what should force a fresh decision for {', '.join(missing_catalysts[:4])}.",
+                missing_catalysts,
+                catalyst_weight,
+                [f"{catalyst_weight:.1f}% affected", "0 catalyst rows for owned symbols"],
+                "Add upcoming earnings, product, macro, or thesis-invalidation review dates.",
+                impact=f"{catalyst_weight:.1f}% without catalyst",
+                trigger="owned symbol has no catalyst rows",
+                next_step=f"Add next review catalyst for {', '.join(missing_catalysts[:3])}.",
             )
         )
     return sorted(cards, key=lambda row: (int(row.get("score") or 0), float(row.get("portfolio_weight") or 0.0)), reverse=True)
@@ -238,8 +285,12 @@ def review_actions(con: Any) -> list[dict[str, Any]]:
             next_step = "Run the market data refresh before acting on portfolio weights."
         elif risk_type == "thesis_gap":
             action_type = "thesis_review"
-            title = "Write owned-position theses"
-            next_step = "Add thesis, risks, invalidation, and catalyst checklist for each owned symbol."
+            title = f"Write thesis for {', '.join(symbols[:3])}"
+            next_step = "Add core thesis, risks, invalidation, and catalyst checklist for each owned symbol."
+        elif risk_type == "catalyst_gap":
+            action_type = "catalyst_review"
+            title = f"Add catalyst path for {', '.join(symbols[:3])}"
+            next_step = "Record the next event or review date that would change the hold/add/trim decision."
         else:
             action_type = "portfolio_review"
             title = str(card.get("title") or "Review portfolio risk")
@@ -256,8 +307,10 @@ def review_actions(con: Any) -> list[dict[str, Any]]:
                 "risk_type": risk_type,
                 "rationale": card.get("summary"),
                 "evidence": card.get("evidence"),
+                "impact": card.get("impact"),
+                "trigger": card.get("trigger"),
                 "portfolio_weight": card.get("portfolio_weight"),
-                "suggested_next_step": next_step,
+                "suggested_next_step": card.get("next_step") or next_step,
                 "source_card_id": card.get("card_id"),
             }
         )
@@ -404,6 +457,10 @@ def _card(
     portfolio_weight: float,
     evidence: list[str],
     review_action: str,
+    *,
+    impact: str = "",
+    trigger: str = "",
+    next_step: str = "",
 ) -> dict[str, Any]:
     score = {"critical": 90, "watch": 65, "info": 40}.get(severity, 50)
     return {
@@ -417,6 +474,9 @@ def _card(
         "portfolio_weight": portfolio_weight,
         "score": score,
         "evidence": evidence,
+        "impact": impact or f"{portfolio_weight:.1f}% portfolio weight",
+        "trigger": trigger,
+        "next_step": next_step or review_action,
         "review_action": review_action,
         "source_models": ["portfolio", "quotes", "instruments", "theses", "catalysts", "disclosures"],
     }
@@ -438,6 +498,45 @@ def _cluster_note(cluster_type: str, cluster_name: str, symbols: list[str], weig
     if concentration:
         return f"{cluster_name} is concentrated through {symbols[0] if symbols else 'one symbol'}."
     return f"{cluster_name} cluster is below concentration thresholds."
+
+
+def _cluster_readout(cluster_type: str, cluster_name: str, symbols: list[str], weight: float, stale_count: int, evidence: dict[str, dict[str, int]]) -> str:
+    if cluster_type == "asset_class":
+        return f"{weight:.1f}% sits in {cluster_name}; useful for allocation, not duplicate-risk evidence."
+    leader = symbols[0] if symbols else cluster_name
+    if len(symbols) == 1:
+        stale = " stale quote" if stale_count else ""
+        return f"{cluster_name} exposure is really {leader} concentration at {weight:.1f}%{stale}."
+    unsupported = [
+        symbol
+        for symbol in symbols
+        if not evidence.get(symbol, {}).get("thesis_count") or not evidence.get(symbol, {}).get("catalyst_count")
+    ]
+    suffix = f"; {len(unsupported)} symbols need thesis/catalyst support" if unsupported else ""
+    return f"{len(symbols)} names share {cluster_type} {cluster_name} for {weight:.1f}% of priced value{suffix}."
+
+
+def _cluster_next_step(cluster_type: str, cluster_name: str, symbols: list[str], weight: float, duplicate_exposure: bool, concentration: bool) -> str:
+    if cluster_type == "asset_class":
+        return "Use this only as allocation context; inspect sector/industry rows for actionable risk."
+    if duplicate_exposure:
+        return f"Decide the max combined weight for {cluster_name} and name which symbol owns the core thesis."
+    if concentration and symbols:
+        return f"Set a target-weight ceiling for {symbols[0]} before adding adjacent {cluster_name} exposure."
+    return "No action unless this bucket is part of an intended portfolio theme."
+
+
+def _cluster_evidence(symbols: list[str], weight: float, stale_count: int, thesis_count: int, catalyst_count: int, disclosure_count: int) -> list[str]:
+    evidence = [f"{weight:.1f}% weight", f"{len(symbols)} symbol{'s' if len(symbols) != 1 else ''}"]
+    if stale_count:
+        evidence.append(f"{stale_count} stale quote{'s' if stale_count != 1 else ''}")
+    if thesis_count:
+        evidence.append(f"{thesis_count} thesis row{'s' if thesis_count != 1 else ''}")
+    if catalyst_count:
+        evidence.append(f"{catalyst_count} catalyst row{'s' if catalyst_count != 1 else ''}")
+    if disclosure_count:
+        evidence.append(f"{disclosure_count} disclosure row{'s' if disclosure_count != 1 else ''}")
+    return evidence
 
 
 def _correlation_note(source: str, peer: str, corr: float, combined_weight: float, owned_peer: bool) -> str:
@@ -482,6 +581,10 @@ def _total_value(holdings: list[dict[str, Any]]) -> float:
 
 def _weight(value: float, total: float) -> float:
     return (value / total) * 100 if total else 0.0
+
+
+def _money(value: float) -> str:
+    return f"${value:,.0f}"
 
 
 def _float(value: Any) -> float | None:

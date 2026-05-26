@@ -624,9 +624,6 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const stats = summarizePortfolio(model.holdings);
   const portfolioReviewRows = portfolioPositionReviewRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
-  const backendRiskRows = portfolioRiskCardSummaryRows(model.portfolioRiskCardRows);
-  const exposureRows = exposureClusterSummaryRows(model.exposureClusterRows);
-  const reviewActionRows = reviewActionSummaryRows(model.reviewActionRows);
   const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const taxRows = portfolioTaxRows(visibleHoldings);
   const showBrokerSurface = brokerProviderSurfaceEnabled(model);
@@ -710,14 +707,14 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
             {allocationFilter && <button className="text-link portfolio-filter-clear" type="button" onClick={() => setAllocationFilter("")}>Showing {allocationFilter}; clear filter</button>}
             <HoldingsTable holdings={visibleHoldings} onOpenTicker={onOpenTicker} onDelete={onRefresh} />
           </Panel>
-          <Panel className="span-4" title="Risk Cards">
-            {backendRiskRows.length ? <SummaryList rows={backendRiskRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No backend risk cards" detail="Portfolio risk models did not flag a current review item." />}
-          </Panel>
-          <Panel className="span-4" title="Exposure Clusters">
-            {exposureRows.length ? <SummaryList rows={exposureRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No exposure clusters" detail="Priced holdings and instrument metadata are required." />}
+          <Panel className="span-8" title="Risk Cards">
+            <PortfolioRiskCards rows={model.portfolioRiskCardRows} onOpenTicker={onOpenTicker} />
           </Panel>
           <Panel className="span-4" title="Review Actions">
-            {reviewActionRows.length ? <SummaryList rows={reviewActionRows} onOpenTicker={onOpenTicker} /> : <EmptyState title="No review actions" detail="No portfolio risk action is currently open." />}
+            <PortfolioReviewActions rows={model.reviewActionRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+          <Panel className="span-12" title="Exposure Clusters">
+            <PortfolioExposureClusters rows={model.exposureClusterRows} onOpenTicker={onOpenTicker} />
           </Panel>
           <Panel className="span-4" title="Add / Update Position">
             <PortfolioEntryForm onSaved={onRefresh} />
@@ -946,6 +943,97 @@ function PortfolioCorrelationMatrix({ holdings, rows, onOpenTicker }: { holdings
         <span><i className="positive" /> medium</span>
         <span><i className="strong" /> high</span>
       </div>
+    </div>
+  );
+}
+
+function PortfolioRiskCards({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  if (!rows.length) {
+    return <EmptyState title="No risk cards" detail="Portfolio risk models did not flag a current review item." />;
+  }
+  return (
+    <div className="portfolio-risk-card-list">
+      {rows.slice(0, 5).map((row, index) => {
+        const severity = stringField(row, ["severity"]) || "info";
+        const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+        const evidence = arrayField(row.evidence).map((item) => displayValue(item as JsonValue)).filter(Boolean).slice(0, 4);
+        const symbol = stringField(row, ["symbol"]) || symbols[0];
+        return (
+          <button key={stringField(row, ["card_id"]) || `${symbol}-${index}`} type="button" className={`portfolio-risk-card-row ${severity}`} disabled={!symbol} onClick={() => symbol && onOpenTicker(symbol)}>
+            <div className="portfolio-risk-card-heading">
+              <span>{titleLabel(stringField(row, ["risk_type"]) || "Risk")}</span>
+              <strong>{stringField(row, ["title"]) || "Portfolio risk"}</strong>
+            </div>
+            <div className="portfolio-risk-card-metric">
+              <span>{stringField(row, ["impact"]) || `${numberField(row, ["portfolio_weight"], 0).toFixed(1)}% weight`}</span>
+              <b>{Math.round(numberField(row, ["score"], 0))}</b>
+            </div>
+            <p>{stringField(row, ["summary"])}</p>
+            <div className="portfolio-risk-card-evidence">
+              {evidence.map((item) => <i key={item}>{item}</i>)}
+            </div>
+            <small><b>Trigger:</b> {stringField(row, ["trigger"]) || "risk model threshold"} · <b>Next:</b> {stringField(row, ["next_step", "review_action"])}</small>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PortfolioExposureClusters({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  const visibleRows = portfolioDisplayExposureClusters(rows);
+  if (!visibleRows.length) {
+    return <EmptyState title="No actionable clusters" detail="Priced holdings and sector or industry metadata are required." />;
+  }
+  return (
+    <div className="portfolio-cluster-ledger">
+      {visibleRows.map((row, index) => {
+        const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+        const evidence = arrayField(row.evidence).map((item) => displayValue(item as JsonValue)).filter(Boolean).slice(0, 4);
+        const symbol = stringField(row, ["largest_symbol"]) || symbols[0];
+        const weight = numberField(row, ["portfolio_weight"], 0);
+        const level = stringField(row, ["concentration_level"]) || "normal";
+        return (
+          <button key={stringField(row, ["cluster_id"]) || `${symbol}-${index}`} type="button" className={`portfolio-cluster-row ${level}`} disabled={!symbol} onClick={() => symbol && onOpenTicker(symbol)}>
+            <div>
+              <span>{titleLabel(stringField(row, ["cluster_type"]) || "Cluster")}</span>
+              <strong>{stringField(row, ["cluster_name"]) || "Unclassified"}</strong>
+              <small>{stringField(row, ["risk_readout", "risk_note"])}</small>
+            </div>
+            <div className="portfolio-cluster-weight">
+              <b>{weight.toFixed(1)}%</b>
+              <span>{symbols.join(" / ")}</span>
+            </div>
+            <div className="portfolio-cluster-tags">
+              {evidence.map((item) => <i key={item}>{item}</i>)}
+            </div>
+            <p>{stringField(row, ["next_step"])}</p>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PortfolioReviewActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  if (!rows.length) {
+    return <EmptyState title="No review actions" detail="No portfolio risk action is currently open." />;
+  }
+  return (
+    <div className="portfolio-action-list">
+      {rows.slice(0, 6).map((row, index) => {
+        const priority = stringField(row, ["priority"]) || "medium";
+        const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
+        const symbol = stringField(row, ["symbol"]) || symbols[0];
+        return (
+          <button key={stringField(row, ["action_id"]) || `${symbol}-${index}`} type="button" className={`portfolio-action-row ${priority}`} disabled={!symbol} onClick={() => symbol && onOpenTicker(symbol)}>
+            <span>{titleLabel(priority)}</span>
+            <strong>{stringField(row, ["title"]) || titleLabel(stringField(row, ["action_type"]) || "Review")}</strong>
+            <small>{stringField(row, ["suggested_next_step"])}</small>
+            <i>{stringField(row, ["impact"]) || symbols.join(" / ") || titleLabel(stringField(row, ["risk_type"]) || "risk")}</i>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -3032,6 +3120,22 @@ function portfolioCorrelationTone(value: number | undefined): "self" | "empty" |
   return "neutral";
 }
 
+function portfolioDisplayExposureClusters(rows: RowRecord[]): RowRecord[] {
+  const actionable = rows.filter((row) => booleanField(row, ["is_actionable"]) || (stringField(row, ["cluster_type"]) !== "asset_class" && stringField(row, ["concentration_level"]) !== "normal"));
+  const candidates = actionable.length ? actionable : rows.filter((row) => stringField(row, ["cluster_type"]) !== "asset_class");
+  const output: RowRecord[] = [];
+  const seen = new Set<string>();
+  for (const row of candidates) {
+    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean).sort();
+    const key = `${symbols.join("/")}:${numberField(row, ["portfolio_weight"], 0).toFixed(1)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(row);
+    if (output.length >= 6) break;
+  }
+  return output;
+}
+
 function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], correlationRows: SummaryItem[]): SummaryItem[] {
   const rows: SummaryItem[] = [];
   const largest = holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
@@ -3051,49 +3155,6 @@ function portfolioRiskRows(holdings: Holding[], liquidityRows: SummaryItem[], co
     rows.push({ ...row, label: `${row.label} top corr` });
   }
   return rows;
-}
-
-function portfolioRiskCardSummaryRows(rows: RowRecord[]): SummaryItem[] {
-  return rows.slice(0, 8).map((row) => {
-    const severity = stringField(row, ["severity"]);
-    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
-    return {
-      label: stringField(row, ["title"]) || titleLabel(stringField(row, ["risk_type"]) || "Risk"),
-      value: `${Math.round(numberField(row, ["score"], 0))}`,
-      caption: stringField(row, ["summary"]) || symbols.join(", ") || stringField(row, ["review_action"]),
-      tone: severity === "critical" ? "bad" : severity === "watch" ? "warn" : "info",
-      symbol: stringField(row, ["symbol"]) || symbols[0],
-    };
-  });
-}
-
-function exposureClusterSummaryRows(rows: RowRecord[]): SummaryItem[] {
-  return rows.slice(0, 8).map((row) => {
-    const weight = numberField(row, ["portfolio_weight"], 0);
-    const level = stringField(row, ["concentration_level"]);
-    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
-    return {
-      label: `${titleLabel(stringField(row, ["cluster_type"]) || "Cluster")}: ${stringField(row, ["cluster_name"]) || "Unclassified"}`,
-      value: `${weight.toFixed(1)}%`,
-      caption: stringField(row, ["risk_note"]) || symbols.join(", "),
-      tone: level === "critical" ? "bad" : level === "watch" ? "warn" : "info",
-      symbol: stringField(row, ["largest_symbol"]) || symbols[0],
-    };
-  });
-}
-
-function reviewActionSummaryRows(rows: RowRecord[]): SummaryItem[] {
-  return rows.slice(0, 10).map((row) => {
-    const priority = stringField(row, ["priority"]);
-    const symbols = arrayField(row.symbols).map((item) => displayValue(item as JsonValue)).filter(Boolean);
-    return {
-      label: stringField(row, ["title"]) || titleLabel(stringField(row, ["action_type"]) || "Review"),
-      value: titleLabel(priority || "open"),
-      caption: stringField(row, ["suggested_next_step", "rationale"]) || symbols.join(", "),
-      tone: priority === "high" ? "bad" : "warn",
-      symbol: stringField(row, ["symbol"]) || symbols[0],
-    };
-  });
 }
 
 function portfolioValuationRows(holdings: Holding[], valuationRows: SummaryItem[], technicalRows: SummaryItem[]): SummaryItem[] {
@@ -5874,6 +5935,20 @@ function numberField(row: RowRecord, keys: string[], fallback: number): number {
     }
   }
   return fallback;
+}
+
+function booleanField(row: RowRecord, keys: string[]): boolean {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes"].includes(normalized)) return true;
+      if (["false", "0", "no", ""].includes(normalized)) return false;
+    }
+  }
+  return false;
 }
 
 function optionalNumberField(row: RowRecord, keys: string[]): number | null {

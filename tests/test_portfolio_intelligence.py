@@ -22,8 +22,11 @@ def test_portfolio_intelligence_flags_cluster_concentration_and_review_actions(t
     assert round(tech["portfolio_weight"], 1) == 80.0
     assert tech["duplicate_exposure"] is True
     assert set(tech["symbols"]) == {"AMD", "NVDA"}
+    assert tech["is_actionable"] is True
+    assert "max combined weight" in tech["next_step"]
     asset_class = next(row for row in clusters if row["cluster_type"] == "asset_class")
     assert asset_class["duplicate_exposure"] is False
+    assert asset_class["is_actionable"] is False
     assert "not hidden duplicate exposure" in asset_class["risk_note"]
 
     owned_edge = next(row for row in edges if row["edge_type"] == "owned_owned")
@@ -34,7 +37,9 @@ def test_portfolio_intelligence_flags_cluster_concentration_and_review_actions(t
     assert "cluster_concentration" in risk_types
     assert "hidden_duplicate_exposure" in risk_types
     assert "thesis_gap" in risk_types
+    assert all(row["impact"] and row["next_step"] for row in cards)
     assert any(action["action_type"] == "duplicate_exposure_review" for action in actions)
+    assert all(action["impact"] and action["suggested_next_step"] for action in actions)
 
 
 def test_correlation_edges_prioritize_material_edges_over_weak_owned_pair(tmp_path) -> None:

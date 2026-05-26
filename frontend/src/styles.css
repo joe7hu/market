@@ -4058,6 +4058,189 @@ h3,
   border-color: #1d4ed8;
 }
 
+.portfolio-risk-card-list,
+.portfolio-cluster-ledger,
+.portfolio-action-list {
+  display: grid;
+  gap: 8px;
+}
+
+.portfolio-risk-card-row,
+.portfolio-cluster-row,
+.portfolio-action-row {
+  display: grid;
+  min-width: 0;
+  border: 1px solid #dbe4ef;
+  background: #ffffff;
+  color: #111827;
+  text-align: left;
+}
+
+.portfolio-risk-card-row {
+  grid-template-columns: minmax(0, 1.3fr) minmax(120px, 0.45fr);
+  gap: 8px 14px;
+  padding: 10px;
+}
+
+.portfolio-risk-card-row.critical,
+.portfolio-risk-card-row.high,
+.portfolio-action-row.high {
+  border-left: 4px solid var(--red);
+}
+
+.portfolio-risk-card-row.watch,
+.portfolio-risk-card-row.medium,
+.portfolio-action-row.medium {
+  border-left: 4px solid var(--yellow);
+}
+
+.portfolio-risk-card-row.info {
+  border-left: 4px solid var(--blue);
+}
+
+.portfolio-risk-card-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.portfolio-risk-card-heading span,
+.portfolio-cluster-row span,
+.portfolio-action-row span {
+  color: #64748b;
+  font-size: 0.63rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.portfolio-risk-card-heading strong,
+.portfolio-cluster-row strong,
+.portfolio-action-row strong {
+  overflow: hidden;
+  font-size: 0.84rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portfolio-risk-card-metric {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+
+.portfolio-risk-card-metric span,
+.portfolio-cluster-weight span,
+.portfolio-action-row i {
+  color: #475569;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.portfolio-risk-card-metric b,
+.portfolio-cluster-weight b {
+  color: #111827;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.portfolio-risk-card-row p,
+.portfolio-cluster-row p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #334155;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.portfolio-risk-card-evidence,
+.portfolio-cluster-tags {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.portfolio-risk-card-evidence i,
+.portfolio-cluster-tags i {
+  border: 1px solid #dbe4ef;
+  background: #f8fafc;
+  color: #334155;
+  padding: 2px 5px;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.portfolio-risk-card-row small {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.portfolio-risk-card-row:hover,
+.portfolio-cluster-row:hover,
+.portfolio-action-row:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.portfolio-cluster-row {
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.28fr);
+  gap: 8px 12px;
+  padding: 10px;
+}
+
+.portfolio-cluster-row.critical {
+  border-left: 4px solid var(--red);
+}
+
+.portfolio-cluster-row.watch {
+  border-left: 4px solid var(--yellow);
+}
+
+.portfolio-cluster-row.normal {
+  border-left: 4px solid #94a3b8;
+}
+
+.portfolio-cluster-row > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.portfolio-cluster-row small {
+  color: #475569;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.portfolio-cluster-weight {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.portfolio-action-row {
+  gap: 4px;
+  padding: 9px;
+}
+
+.portfolio-action-row small {
+  color: #475569;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.portfolio-action-row i {
+  justify-self: start;
+  border: 1px solid #dbe4ef;
+  background: #f8fafc;
+  padding: 2px 5px;
+}
+
 .portfolio-stance-cell .decision-badge,
 .portfolio-stance-cell .decision-badge.good,
 .portfolio-stance-cell .decision-badge.warn,
@@ -6675,6 +6858,16 @@ h3,
 
   .risk-profile-workbench > .summary-list button:first-child {
     border-top: 0;
+  }
+
+  .portfolio-risk-card-row,
+  .portfolio-cluster-row {
+    grid-template-columns: 1fr;
+  }
+
+  .portfolio-risk-card-metric,
+  .portfolio-cluster-weight {
+    justify-items: start;
   }
 }
 
