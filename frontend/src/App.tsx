@@ -1,24 +1,31 @@
-import { NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { MarketDataProvider, useMarketData } from "./marketData";
 import { CalendarRoute } from "./pages/CalendarRoute";
-import { DashboardRoute } from "./pages/DashboardRoute";
 import { FilingsRoute } from "./pages/FilingsRoute";
 import { HealthRoute } from "./pages/HealthRoute";
 import { NotFoundRoute } from "./pages/NotFoundRoute";
-import { OpportunitiesRoute } from "./pages/OpportunitiesRoute";
 import { PortfolioRoute } from "./pages/PortfolioRoute";
 import { ResearchRoute } from "./pages/ResearchRoute";
 import { SettingsRoute } from "./pages/SettingsRoute";
+import { ThesisMonitorRoute } from "./pages/ThesisMonitorRoute";
 import { TickerRoute } from "./pages/TickerRoute";
+import { TodayRoute } from "./pages/TodayRoute";
 
-const navItems = [
-  { to: "/", label: "Dashboard", end: true, aliases: ["/dashboard"] },
-  { to: "/opportunities", label: "Opportunities" },
-  { to: "/research", label: "Research" },
-  { to: "/portfolio", label: "Portfolio Overview" },
-  { to: "/filings", label: "Trader Filings" },
+type NavItem = {
+  to: string;
+  label: string;
+  end?: boolean;
+  aliases?: string[];
+};
+
+const navItems: NavItem[] = [
+  { to: "/today", label: "Today", aliases: ["/", "/dashboard"] },
+  { to: "/portfolio", label: "Portfolio Risk" },
+  { to: "/research-queue", label: "Research Queue", aliases: ["/research", "/opportunities"] },
+  { to: "/thesis-monitor", label: "Thesis Monitor" },
+  { to: "/filings", label: "Filings" },
   { to: "/calendar", label: "Calendar" },
-  { to: "/health", label: "Operations Health" },
+  { to: "/health", label: "Health" },
   { to: "/settings", label: "Settings" },
 ];
 
@@ -35,11 +42,14 @@ export function App() {
     <MarketDataProvider>
       <Routes>
         <Route element={<AppShell />}>
-          <Route index element={<DashboardRoute />} />
-          <Route path="dashboard" element={<DashboardRoute />} />
-          <Route path="opportunities" element={<OpportunitiesRoute />} />
+          <Route index element={<Navigate to="/today" replace />} />
+          <Route path="today" element={<TodayRoute />} />
+          <Route path="dashboard" element={<Navigate to="/today" replace />} />
+          <Route path="opportunities" element={<Navigate to="/research-queue" replace />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
-          <Route path="research" element={<ResearchRoute />} />
+          <Route path="research" element={<Navigate to="/research-queue" replace />} />
+          <Route path="research-queue" element={<ResearchRoute />} />
+          <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<FilingsRoute />} />
           <Route path="calendar" element={<CalendarRoute />} />
           <Route path="health" element={<HealthRoute />} />

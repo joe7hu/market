@@ -374,19 +374,21 @@ const TRADINGVIEW_EXCHANGES: Record<string, string> = {
   ETH: "COINBASE",
 };
 
-export function DashboardPage({
-  model,
-  lastRefresh,
-  loading,
-  onRefresh,
-  onOpenTicker,
-}: {
+type TodayPageProps = {
   model: AppModel;
   lastRefresh: Date | null;
   loading: boolean;
   onRefresh: () => void;
   onOpenTicker: (symbol: string) => void;
-}) {
+};
+
+export function TodayPage({
+  model,
+  lastRefresh,
+  loading,
+  onRefresh,
+  onOpenTicker,
+}: TodayPageProps) {
   const readyRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) === "ready");
   const blockedRows = model.decisionReadinessRows.filter((row) => stringField(row, ["status"]) !== "ready").slice(0, 5);
   const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
@@ -394,24 +396,28 @@ export function DashboardPage({
   const attentionItems = buildAttentionItems(model);
   const largestHolding = model.holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight)[0];
   const reviewReadyCount = model.financeAnalyses.filter((analysis) => analysis.consumable).length;
-  const largestStressLoss = largestHolding ? largestHolding.marketValue * -0.2 : model.portfolioValue * -0.08;
+  const changedRows = todayChangedRows(model, lastRefresh);
+  const mattersRows = todayMattersRows(model, readyRows.length);
+  const reviewRows = todayReviewRows(model, attentionItems);
+  const ignoreRows = todayIgnoreRows(model);
+  const blockedEvidenceRows = todayBlockedEvidenceRows(model, blockedRows);
   return (
-    <section className="terminal-dashboard" aria-label="Market command dashboard">
+    <section className="terminal-dashboard today-page" aria-label="Today decision brief">
       <header className="terminal-hero">
         <div className="terminal-hero-kicker">
-          <span>Total Exposure // Net Asset Value</span>
-          <button type="button" onClick={onRefresh} aria-label="Refresh dashboard sources" title="Refresh dashboard sources">
+          <span>Personal Attention Brief // {lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()}` : "Waiting for local data"}</span>
+          <button type="button" onClick={onRefresh} aria-label="Refresh today brief" title="Refresh today brief">
             <RefreshCw size={16} className={loading ? "spin" : ""} />
           </button>
         </div>
-        <strong>{model.portfolioValue ? formatMoney(model.portfolioValue) : "$0"}</strong>
+        <strong>Today</strong>
         <div className="terminal-hero-metrics">
           <span>
-            <small>UNREAL. P&L</small>
+            <small>PORTFOLIO P&L</small>
             <b className={portfolioPnl >= 0 ? "positive" : "negative"}>{model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "NO POSITIONS"}</b>
           </span>
           <span>
-            <small>NEEDS ATTENTION</small>
+            <small>REVIEW QUEUE</small>
             <b>{attentionItems.length ? `${attentionItems.length} items` : "CLEAR"}</b>
           </span>
           <span>
@@ -423,36 +429,63 @@ export function DashboardPage({
             <b>{reviewReadyCount ? `${reviewReadyCount} names` : loading ? "LOADING" : "NONE"}</b>
           </span>
           <span>
-            <small>LARGEST SHOCK</small>
-            <b className={largestStressLoss < 0 ? "negative" : ""}>{formatMoney(largestStressLoss)}</b>
+            <small>BLOCKED EVIDENCE</small>
+            <b>{blockedEvidenceRows.length ? `${blockedEvidenceRows.length} gaps` : "NONE"}</b>
           </span>
         </div>
       </header>
 
+      <SourceNotice items={[["Decision Queue", model.sources.opportunities], ["Portfolio", model.sources.holdings], ["Evidence", model.memoRows.length || model.sources.health === "live" ? "live" : "empty"], ["Health", model.sources.health]]} />
+
+      <div className="today-answer-grid">
+        <Panel title="What Changed">
+          <SummaryList rows={changedRows} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel title="What Matters">
+          <SummaryList rows={mattersRows} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel title="Review / Ignore">
+          <div className="today-review-grid">
+            <SummaryList rows={reviewRows} onOpenTicker={onOpenTicker} />
+            <div className="ignore-list">
+              <strong>Ignore for now</strong>
+              <SummaryList rows={ignoreRows} onOpenTicker={onOpenTicker} />
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Blocked by Stale or Missing Evidence">
+          <SummaryList rows={blockedEvidenceRows} onOpenTicker={onOpenTicker} />
+        </Panel>
+      </div>
+
       <div className="terminal-board-grid">
-        <Panel className="terminal-holdings-panel" title="Primary Holdings & Order Book">
+        <Panel className="terminal-holdings-panel" title="Portfolio Attention">
           <TerminalHoldingsBook holdings={model.holdings} opportunities={model.opportunities.slice(0, 7)} watchlist={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel className="terminal-signal-panel" title="Algorithmic Signals">
+        <Panel className="terminal-signal-panel" title="Proactive Review Actions">
           <AlgorithmicSignalFeed opportunities={model.opportunities.slice(0, 4)} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
 
-      <Panel className="terminal-risk-panel dashboard-risk-cockpit" title="Risk Profile & Stress Test">
+      <Panel className="terminal-risk-panel dashboard-risk-cockpit" title="Portfolio Risk & Cluster Exposure">
         <RiskProfileTerminal model={model} readyCount={readyRows.length} />
       </Panel>
       <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />
 
       <div className="terminal-secondary-grid">
-        <Panel title="Watchlist Tape">
-          <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
-        </Panel>
         <Panel title="Needs Attention">
           <AttentionQueue items={attentionItems} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel title="Watchlist Context">
+          <WatchlistStrip items={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
     </section>
   );
+}
+
+export function DashboardPage(props: TodayPageProps) {
+  return <TodayPage {...props} />;
 }
 
 export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: (symbol: string) => void }) {
@@ -474,6 +507,20 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   const signalRow = dossierModel.signalMatrix.find((row) => row.ticker === symbol);
   const decisionBrief = objectField(ticker?.decision_brief);
   const recommendation = dossierModel.agentRecommendationRows.find((row) => stringField(row, ["symbol"]) === symbol);
+  const showBrokerSurface = brokerProviderSurfaceEnabled(dossierModel);
+  const dossierTabs = [
+    "Overview",
+    "Evidence Stack",
+    ...(showBrokerSurface ? ["Broker"] : []),
+    "Fundamentals",
+    "Estimates",
+    "Financials",
+    "Options",
+    "News",
+    "Filings",
+    "Memos",
+  ];
+  const activeDossierTab = dossierTabs.includes(activeTab) ? activeTab : "Overview";
 
   return (
     <PageFrame
@@ -500,24 +547,21 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         foundTables={foundTables}
         tickerFound={Boolean(ticker?.found)}
       />
-      <BrokerAgentDossier
+      {showBrokerSurface && <BrokerAgentDossier
         symbol={symbol}
         recommendation={recommendation}
         statusRows={dossierModel.brokerStatusRows}
         accountRows={dossierModel.brokerAccountRows}
         positionRows={dossierModel.brokerPositionRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
         signalRows={dossierModel.brokerSignalRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
-      />
+      />}
       <DecisionTicket brief={decisionBrief} opportunity={opportunity} />
       {signalRow && <TickerSignalRibbon row={signalRow} brief={decisionBrief} />}
-      <TabBar tabs={["Overview", "Evidence Stack", "Broker", "Fundamentals", "Estimates", "Financials", "Options", "TradingView", "News", "Filings", "Memos"]} active={activeTab} onSelect={setActiveTab} />
-      {activeTab === "Overview" ? <div className="ticker-grid">
+      <TabBar tabs={dossierTabs} active={activeDossierTab} onSelect={setActiveTab} />
+      {activeDossierTab === "Overview" ? <div className="ticker-grid">
         <DecisionBriefOverview brief={decisionBrief} opportunity={opportunity} />
         <TradeSetupPanel brief={decisionBrief} />
-        <Panel className="span-7" title="TradingView Technical Chart">
-          <TradingViewChart symbol={symbol} />
-        </Panel>
-        <Panel className="span-5" title="Chart Context">
+        <Panel className="span-5" title="Evidence Context">
           <ChartContextSummary brief={decisionBrief} />
         </Panel>
         <Panel className="span-5" title="Price & Setup Source Rows">
@@ -550,7 +594,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         <InfoPanel tone="bad" title="Invalidation" items={splitSignalText(opportunity?.invalidation)} />
         <InfoPanel tone={opportunity?.blockingGates.length ? "warn" : "info"} title="Gates / Next Action" items={opportunity?.blockingGates.length ? opportunity.blockingGates.map(formatGateLabel) : splitSignalText(opportunity?.nextAction)} />
         <Panel className="span-12" title="Finance-Skill Analysis">
-          {financeAnalysis ? <FinanceAnalysisCard analysis={financeAnalysis} onOpenTicker={() => undefined} expanded /> : <EmptyState title="No finance-skill analysis" detail="Valuation, earnings, options, and TradingView rows have not loaded for this ticker." />}
+          {financeAnalysis ? <FinanceAnalysisCard analysis={financeAnalysis} onOpenTicker={() => undefined} expanded /> : <EmptyState title="No finance-skill analysis" detail="Valuation, earnings, options, and source-context rows have not loaded for this ticker." />}
         </Panel>
         <Panel className="span-12" title="Evidence Snapshot">
           <div className="snapshot-grid">
@@ -563,7 +607,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
           </div>
           {opportunity && <BulletList tone={opportunity.isStale || opportunity.isSourceThin ? "warn" : "info"} items={opportunity.inclusionReasons} />}
         </Panel>
-      </div> : <TickerTabContent activeTab={activeTab} ticker={ticker} data={data} decisionBrief={decisionBrief} />}
+      </div> : <TickerTabContent activeTab={activeDossierTab} ticker={ticker} data={data} decisionBrief={decisionBrief} />}
     </PageFrame>
   );
 }
@@ -586,6 +630,24 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   const riskRows = portfolioRiskRows(visibleHoldings, model.liquidityRows, model.correlationRows);
   const valuationRows = portfolioValuationRows(visibleHoldings, model.valuationRows, model.technicalRows);
   const taxRows = portfolioTaxRows(visibleHoldings);
+  const showBrokerSurface = brokerProviderSurfaceEnabled(model);
+  const sourceItems: Array<[string, DataSourceState]> = [
+    ["Holdings", model.sources.holdings],
+    ["Quotes", model.sources.watchlist],
+    ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"],
+  ];
+  if (showBrokerSurface) {
+    sourceItems.splice(1, 0, ["Broker", "live"]);
+  }
+  const metrics: Array<[string, string, string, Tone | string]> = [
+    ["Market Value", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", unpricedHoldings ? `${unpricedHoldings} holding${unpricedHoldings === 1 ? "" : "s"} missing price` : hasHoldings ? "Priced holdings only" : "Portfolio CSV absent", unpricedHoldings ? "warn" : hasHoldings ? "good" : "warn"],
+    ["Day Move", hasHoldings ? formatMoney(portfolioDayChange) : "Requires prices", hasHoldings ? "From latest quote change" : "Manual entry below", portfolioDayChange >= 0 ? "good" : "bad"],
+    ["Unrealized P/L", hasHoldings ? formatMoney(portfolioPnl) : "Requires import", unpricedHoldings ? "Excludes unpriced holdings" : hasHoldings ? "From priced position rows" : "Requires cost basis", unpricedHoldings ? "warn" : hasHoldings ? "good" : "muted"],
+    ["Cost Basis", hasHoldings ? formatMoney(portfolioCostBasis) : "Requires import", hasHoldings ? "Quantity times average cost" : "No owned exposure", "info"],
+  ];
+  if (showBrokerSurface) {
+    metrics.splice(1, 0, ["Broker Accounts", String(model.brokerAccountRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["status", "detail"]) : "Broker sync not loaded", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"]);
+  }
   const workspacePanels = (
     <>
       <Panel className="span-12" title="Risk & Positioning">
@@ -607,20 +669,12 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
   );
   return (
     <PageFrame
-      title="Portfolio Overview"
+      title="Portfolio Risk"
       subtitle={hasHoldings ? `As of ${new Date().toLocaleDateString()}` : "Enter your real positions to enable portfolio analytics"}
     >
-      <SourceNotice items={[["Holdings", model.sources.holdings], ["Broker", model.brokerStatusRows.length ? "live" : "empty"], ["Quotes", model.sources.watchlist], ["Analysis", model.valuationRows.length || model.liquidityRows.length ? "live" : "empty"]]} />
-      <MetricStrip
-        metrics={[
-          ["Market Value", hasHoldings ? formatMoney(model.portfolioValue) : "Not imported", unpricedHoldings ? `${unpricedHoldings} holding${unpricedHoldings === 1 ? "" : "s"} missing price` : hasHoldings ? "Priced holdings only" : "Portfolio CSV absent", unpricedHoldings ? "warn" : hasHoldings ? "good" : "warn"],
-          ["Broker Accounts", String(model.brokerAccountRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["status", "detail"]) : "IBKR not synced", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"],
-          ["Day Move", hasHoldings ? formatMoney(portfolioDayChange) : "Requires prices", hasHoldings ? "From latest quote change" : "Manual entry below", portfolioDayChange >= 0 ? "good" : "bad"],
-          ["Unrealized P/L", hasHoldings ? formatMoney(portfolioPnl) : "Requires import", unpricedHoldings ? "Excludes unpriced holdings" : hasHoldings ? "From priced position rows" : "Requires cost basis", unpricedHoldings ? "warn" : hasHoldings ? "good" : "muted"],
-          ["Cost Basis", hasHoldings ? formatMoney(portfolioCostBasis) : "Requires import", hasHoldings ? "Quantity times average cost" : "No owned exposure", "info"],
-        ]}
-      />
-      <div className="portfolio-grid broker-grid">
+      <SourceNotice items={sourceItems} />
+      <MetricStrip metrics={metrics} />
+      {showBrokerSurface && <div className="portfolio-grid broker-grid">
         <Panel className="span-4" title="Broker Health">
           <SummaryList rows={brokerStatusSummaryRows(model.brokerStatusRows)} />
         </Panel>
@@ -630,7 +684,7 @@ export function PortfolioPage({ model, onOpenTicker, onRefresh }: { model: AppMo
         <Panel className="span-4" title="Paper Orders">
           <SummaryList rows={paperOrderSummaryRows(model.paperOrderRows)} onOpenTicker={onOpenTicker} />
         </Panel>
-      </div>
+      </div>}
       {!hasHoldings ? (
         <>
           <div className="portfolio-grid">
@@ -737,6 +791,21 @@ function BrokerAgentDossier({
       )}
     </div>
   );
+}
+
+function brokerProviderSurfaceEnabled(model: AppModel): boolean {
+  return model.brokerStatusRows.some((row) => {
+    const provider = stringField(row, ["provider"]).toLowerCase();
+    const status = stringField(row, ["status"]).toLowerCase();
+    const detail = stringField(row, ["detail"]).toLowerCase();
+    if (!["ibkr", "moomoo"].includes(provider)) return false;
+    if (status === "disabled" || status === "not_configured") return false;
+    return !detail.includes("disabled");
+  });
+}
+
+function isBrokerHealthRow(row: HealthRow): boolean {
+  return row.provider.toLowerCase().startsWith("broker:") || row.contract.toLowerCase().includes("broker/account");
 }
 
 function brokerStatusSummaryRows(statusRows: RowRecord[]): SummaryItem[] {
@@ -971,6 +1040,15 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
   const freshnessOptions = Array.from(new Set(model.opportunities.map((item) => item.freshnessStatus).filter(Boolean))).sort();
   const sourceClusters = Array.from(new Set(model.opportunities.map((item) => item.sourceCluster).filter((item) => item && item !== "-"))).sort();
   const leader = filtered[0];
+  const showBrokerSurface = brokerProviderSurfaceEnabled(model);
+  const sourceItems: Array<[string, DataSourceState]> = [
+    ["Decision Queue", model.sources.opportunities],
+    ["Quotes", model.sources.watchlist],
+    ["Health", model.sources.health],
+  ];
+  if (showBrokerSurface) {
+    sourceItems.splice(1, 0, ["Broker", "live"]);
+  }
   return (
     <div className="split-page">
       <FilterRail
@@ -1017,7 +1095,7 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
         }}
       />
       <PageFrame
-        title="Opportunities"
+        title="Research Queue"
         subtitle={`${filtered.length} of ${model.opportunities.length} results`}
         action={
           <GhostButton title="Filters apply immediately to the loaded source rows">
@@ -1025,15 +1103,15 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
           </GhostButton>
         }
       >
-        <SourceNotice items={[["Decision Queue", model.sources.opportunities], ["Broker", model.brokerStatusRows.length ? "live" : "empty"], ["Quotes", model.sources.watchlist], ["Health", model.sources.health]]} />
+        <SourceNotice items={sourceItems} />
         {leader ? (
           <TopOpportunityTicker opportunity={leader} onOpenTicker={onOpenTicker} />
         ) : (
           <EmptyState title="No top ticker for this filter set" detail="The ranked ticker card appears when at least one opportunity matches the active filters." />
         )}
-        <Panel title="Advisory Agent Queue">
+        {showBrokerSurface && <Panel title="Advisory Agent Queue">
           <SummaryList rows={agentRecommendationSummaryRows(model.agentRecommendationRows)} onOpenTicker={onOpenTicker} />
-        </Panel>
+        </Panel>}
         <div className="source-panel-grid">
           {model.signalSources.map((panel) => (
             <Panel key={panel.key} title={panel.title} headerAction={<SourcePill state={panel.state} />}>
@@ -1042,7 +1120,7 @@ export function OpportunitiesPage({ model, onOpenTicker }: { model: AppModel; on
             </Panel>
           ))}
         </div>
-        <Panel title="Ranked Screen">
+        <Panel title="Ranked Research Queue">
           <OpportunityTable rows={filtered} compact onOpenTicker={onOpenTicker} />
         </Panel>
       </PageFrame>
@@ -1153,31 +1231,39 @@ export function CalendarPage({ model, onOpenTicker }: { model: AppModel; onOpenT
 }
 
 export function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
-  const liveProviderRows = model.sourceHealthRows.filter((row) => row.kind !== "documentation");
+  const showBrokerSurface = brokerProviderSurfaceEnabled(model);
+  const visibleHealthRows = showBrokerSurface ? model.healthRows : model.healthRows.filter((row) => !isBrokerHealthRow(row));
+  const visibleSourceHealthRows = showBrokerSurface ? model.sourceHealthRows : model.sourceHealthRows.filter((row) => !isBrokerHealthRow(row));
+  const liveProviderRows = visibleSourceHealthRows.filter((row) => row.kind !== "documentation");
   const providerRows = liveProviderRows.length ? liveProviderRows : model.providerRunRows;
-  const freshnessRows = model.freshnessHealthRows.filter((row) => row.kind !== "documentation");
+  const freshnessRows = (showBrokerSurface ? model.freshnessHealthRows : model.freshnessHealthRows.filter((row) => !isBrokerHealthRow(row))).filter((row) => row.kind !== "documentation");
   const jobRows = model.providerRunRows;
-  const operationalRows = model.healthRows.filter((row) => row.kind !== "documentation");
+  const operationalRows = visibleHealthRows.filter((row) => row.kind !== "documentation");
   const degradedCount = operationalRows.filter((row) => row.status === "Degraded").length;
   const warningCount = operationalRows.filter((row) => row.status === "Warning").length;
   const ready = (data.dashboard.status?.ready ?? data.settings.status?.ready ?? true) && degradedCount === 0;
-  const documentationRows = model.healthRows.filter((row) => row.kind === "documentation");
+  const documentationRows = visibleHealthRows.filter((row) => row.kind === "documentation");
+  const sourceItems: Array<[string, DataSourceState]> = [["Source Health", model.sources.health]];
+  if (showBrokerSurface) {
+    sourceItems.push(["Broker", "live"]);
+  }
+  const metrics: Array<[string, string, string, Tone | string]> = [
+    [ready ? "All Systems Operational" : "System Needs Attention", ready ? "Ready" : "Degraded", `Last check ${model.latestHealthCheck}`, ready ? "good" : "bad"],
+    ["Providers", String(providerRows.length), "source-health rows", "info"],
+    ["Warnings", String(warningCount), "not documentation", "warn"],
+    ["Critical", String(degradedCount), "not documentation", "bad"],
+  ];
+  if (showBrokerSurface) {
+    metrics.splice(2, 0, ["Broker Rows", String(model.brokerStatusRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["detail"]) : "No configured broker status row", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"]);
+  }
   return (
-    <PageFrame title="Operations Health" subtitle="All times in ET">
-      <SourceNotice items={[["Source Health", model.sources.health], ["Broker", model.brokerStatusRows.length ? "live" : "empty"]]} />
-      <MetricStrip
-        metrics={[
-          [ready ? "All Systems Operational" : "System Needs Attention", ready ? "Ready" : "Degraded", `Last check ${model.latestHealthCheck}`, ready ? "good" : "bad"],
-          ["Providers", String(providerRows.length), "source-health rows", "info"],
-          ["Broker Rows", String(model.brokerStatusRows.length), model.brokerStatusRows[0] ? stringField(model.brokerStatusRows[0], ["detail"]) : "No IBKR/moomoo status row", model.brokerStatusRows.some((row) => stringField(row, ["status"]) === "ok") ? "good" : "warn"],
-          ["Warnings", String(warningCount), "not documentation", "warn"],
-          ["Critical", String(degradedCount), "not documentation", "bad"],
-        ]}
-      />
+    <PageFrame title="Health" subtitle="All times in ET">
+      <SourceNotice items={sourceItems} />
+      <MetricStrip metrics={metrics} />
       <div className="health-grid">
-        <Panel className="span-12" title="Broker / Advisory Safety">
+        {showBrokerSurface && <Panel className="span-12" title="Broker / Advisory Safety">
           <SummaryList rows={[...brokerStatusSummaryRows(model.brokerStatusRows), ...agentRecommendationSummaryRows(model.agentRecommendationRows).slice(0, 4)]} />
-        </Panel>
+        </Panel>}
         <Panel className="span-8" title="Provider Health">
           <HealthTable rows={providerRows} />
         </Panel>
@@ -1206,7 +1292,6 @@ function TickerTabContent({ activeTab, ticker, data, decisionBrief }: { activeTa
     Estimates: ["analyst_estimates", "earnings", "earnings_setups"],
     Financials: ["fundamentals", "valuations"],
     Options: ["options_expiries", "options_chain", "options_payoff_scenarios"],
-    TradingView: ["tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state"],
     News: ["news"],
     Filings: ["disclosures"],
     Memos: ["research_packets", "memos", "theses"],
@@ -1259,7 +1344,7 @@ export function ResearchPage({ data, model, onOpenTicker }: { data: PanelData; m
   const relatedSignals = signalRows.filter((row) => symbolFromRow(row) === selected);
   const researchUniverse = model.opportunities.slice(0, 12);
   return (
-    <PageFrame title="Research" subtitle="Evidence, theses, memos, and source-backed notes">
+    <PageFrame title="Research Queue" subtitle="Evidence, theses, memos, and source-backed notes">
       <SourceNotice items={[["Theses", thesisRows.length ? "live" : "empty"], ["News", newsRows.length ? "live" : "empty"], ["Fundamentals", fundamentalsRows.length ? "live" : "empty"]]} />
       <div className="research-workbench">
         <Panel title="Research Universe">
@@ -1313,6 +1398,54 @@ export function ResearchPage({ data, model, onOpenTicker }: { data: PanelData; m
         </Panel>
         <Panel className="span-4" title="Memo Queue">
           <GenericRows rows={relatedMemos} emptyTitle="No selected ticker memo rows" emptyDetail="Run research_candidate or weekly_portfolio_review to create selected ticker memos." onOpenTicker={onOpenTicker} />
+        </Panel>
+      </div>
+    </PageFrame>
+  );
+}
+
+export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: (symbol: string) => void }) {
+  const thesisRows = rows(data.theses);
+  const memoRows = rows(data.memos);
+  const signalRows = rows(data.signals);
+  const thesisSymbols = Array.from(new Set([
+    ...thesisRows.map(symbolFromRow),
+    ...memoRows.map(symbolFromRow),
+    ...signalRows.map(symbolFromRow),
+  ].filter(Boolean))).slice(0, 16);
+  const monitorRows: SummaryItem[] = thesisSymbols.map((symbol) => {
+    const opportunity = model.opportunities.find((item) => item.ticker === symbol);
+    const signal = signalRows.find((row) => symbolFromRow(row) === symbol);
+    return {
+      label: symbol,
+      value: opportunity?.actionGrade ?? displayValue(signal?.decision ?? signal?.action_grade ?? "Monitor"),
+      caption: opportunity?.invalidation || stringField(signal ?? {}, ["invalidation", "next_action", "why_now"]) || "No invalidation row loaded.",
+      tone: opportunity?.blockingGates.length ? "warn" : opportunity?.actionGrade === "Reject" || opportunity?.actionGrade === "Stale" ? "bad" : "info",
+      symbol,
+    };
+  });
+  const invalidationRows = model.opportunities
+    .filter((item) => item.invalidation || item.blockingGates.length)
+    .slice(0, 8)
+    .map((item) => ({
+      label: item.ticker,
+      value: item.blockingGates[0] ? "blocked" : "watch",
+      caption: item.blockingGates[0] ? formatGateLabel(item.blockingGates[0]) : item.invalidation,
+      tone: item.blockingGates.length ? "warn" as Tone : "info" as Tone,
+      symbol: item.ticker,
+    }));
+  return (
+    <PageFrame title="Thesis Monitor" subtitle={`${thesisRows.length} thesis rows, ${memoRows.length} decision-memory rows`}>
+      <SourceNotice items={[["Theses", thesisRows.length ? "live" : "empty"], ["Decision Memory", memoRows.length ? "live" : "empty"], ["Signals", signalRows.length ? "live" : "empty"]]} />
+      <div className="research-grid">
+        <Panel className="span-6" title="Thesis State">
+          <SummaryList rows={monitorRows.length ? monitorRows : [{ label: "Thesis state", value: "No rows", caption: "Run Arco/Market thesis refresh before treating this page as complete.", tone: "warn" }]} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="span-6" title="Invalidation Watch">
+          <SummaryList rows={invalidationRows.length ? invalidationRows : [{ label: "Invalidation", value: "No rows", caption: "No source-backed invalidation rows are loaded.", tone: "muted" }]} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="span-12" title="Decision Memory">
+          <GenericRows rows={memoRows} emptyTitle="No decision memory rows" emptyDetail="Run research_candidate or weekly_portfolio_review to persist decision memory." onOpenTicker={onOpenTicker} />
         </Panel>
       </div>
     </PageFrame>
@@ -2941,6 +3074,151 @@ function calendarType(value: string): CalendarEvent["type"] {
   if (normalized.includes("filing") || normalized.includes("13f")) return "filing";
   if (normalized.includes("cpi") || normalized.includes("fomc") || normalized.includes("economic")) return "economic";
   return "event";
+}
+
+function todayChangedRows(model: AppModel, lastRefresh: Date | null): SummaryItem[] {
+  const movers = model.watchlist
+    .filter((item) => Math.abs(item.change) >= 0.1)
+    .slice()
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
+    .slice(0, 4)
+    .map((item) => ({
+      label: item.symbol,
+      value: formatPct(item.change),
+      caption: `Latest quote ${item.price}`,
+      tone: item.change >= 0 ? "good" as Tone : "bad" as Tone,
+      symbol: item.symbol,
+    }));
+  const upcoming = nextDaysEvents(model.calendar, 7).slice(0, 2).map((event) => ({
+    label: event.symbol || event.type,
+    value: event.dateText,
+    caption: event.label,
+    tone: event.importance === "high" ? "warn" as Tone : "info" as Tone,
+    symbol: event.symbol || undefined,
+  }));
+  const filing = model.filings[0] ? [{
+    label: "Latest filing",
+    value: model.filings[0].ticker || model.filings[0].investor,
+    caption: `${model.filings[0].investor} ${model.filings[0].action} filed ${model.filings[0].filed}`,
+    tone: "info" as Tone,
+    symbol: model.filings[0].ticker,
+  }] : [];
+  const fallback: SummaryItem = {
+    label: "Refresh state",
+    value: lastRefresh ? lastRefresh.toLocaleTimeString() : "Not loaded",
+    caption: "No material quote, filing, or calendar deltas are visible in the loaded rows.",
+    tone: lastRefresh ? "muted" : "warn",
+  };
+  const rows = [...movers, ...upcoming, ...filing];
+  return rows.length ? rows.slice(0, 6) : [fallback];
+}
+
+function todayMattersRows(model: AppModel, readyCount: number): SummaryItem[] {
+  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
+  const largest = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
+  const topOpportunity = model.opportunities.find((item) => item.actionGrade === "Act" || item.actionGrade === "Research") ?? model.opportunities[0];
+  const rows: SummaryItem[] = [];
+  if (largest) {
+    rows.push({
+      label: "Largest exposure",
+      value: `${largest.ticker} ${largest.weight.toFixed(1)}%`,
+      caption: largest.nextStep,
+      tone: largest.weight > 30 ? "warn" : "info",
+      symbol: largest.ticker,
+    });
+  }
+  if (model.correlationRows[0]) {
+    rows.push({
+      ...model.correlationRows[0],
+      label: "Cluster risk",
+    });
+  }
+  if (topOpportunity) {
+    rows.push({
+      label: "Decision candidate",
+      value: `${topOpportunity.ticker} ${topOpportunity.score}`,
+      caption: topOpportunity.nextAction || topOpportunity.whyNow || topOpportunity.decisionBasis,
+      tone: topOpportunity.actionGrade === "Act" ? "good" : topOpportunity.blockingGates.length ? "warn" : "info",
+      symbol: topOpportunity.ticker,
+    });
+  }
+  rows.push({
+    label: "Ready evidence",
+    value: `${readyCount} ready`,
+    caption: readyCount ? "Names have enough backend evidence to review." : "Decision rows are blocked or not loaded.",
+    tone: readyCount ? "good" : "warn",
+  });
+  return rows.slice(0, 6);
+}
+
+function todayReviewRows(model: AppModel, attentionItems: AttentionItem[]): SummaryItem[] {
+  const attentionRows = attentionItems.map((item) => ({
+    label: item.label,
+    value: item.value,
+    caption: item.action,
+    tone: item.tone,
+    symbol: item.symbol,
+  }));
+  const readyRows = model.financeAnalyses
+    .filter((analysis) => analysis.consumable)
+    .slice(0, 3)
+    .map((analysis) => ({
+      label: "Review",
+      value: analysis.symbol,
+      caption: analysis.nextAction || analysis.decisionText,
+      tone: analysis.actionGrade === "Act" ? "good" as Tone : "info" as Tone,
+      symbol: analysis.symbol,
+    }));
+  return [...attentionRows, ...readyRows].slice(0, 6);
+}
+
+function todayIgnoreRows(model: AppModel): SummaryItem[] {
+  const rows = model.opportunities
+    .filter((item) => item.actionGrade === "Watch" || item.actionGrade === "Reject" || item.actionGrade === "Stale")
+    .slice(0, 4)
+    .map((item) => ({
+      label: item.actionGrade === "Reject" ? "Pass" : "Monitor only",
+      value: item.ticker,
+      caption: item.blockingGates[0] ? formatGateLabel(item.blockingGates[0]) : item.invalidation || item.decisionBasis,
+      tone: item.actionGrade === "Reject" || item.actionGrade === "Stale" ? "bad" as Tone : "muted" as Tone,
+      symbol: item.ticker,
+    }));
+  return rows.length ? rows : [{ label: "Ignore list", value: "None", caption: "No watch/reject/stale opportunities are loaded.", tone: "muted" }];
+}
+
+function todayBlockedEvidenceRows(model: AppModel, blockedRows: RowRecord[]): SummaryItem[] {
+  const decisionBlocks = blockedRows.slice(0, 4).map((row) => {
+    const symbol = stringField(row, ["symbol"]);
+    const blockers = listField(row, ["blockers", "blocking_gates"]);
+    return {
+      label: symbol || "Decision row",
+      value: stringField(row, ["status"]) || "blocked",
+      caption: stringField(row, ["next_action"]) || blockers.map(formatGateLabel).join(" · ") || "Missing readiness evidence",
+      tone: "warn" as Tone,
+      symbol,
+    };
+  });
+  const staleSources = model.freshnessHealthRows
+    .filter((row) => row.status === "Warning" || row.status === "Degraded")
+    .slice(0, 3)
+    .map((row) => ({
+      label: row.provider,
+      value: row.status,
+      caption: row.contract || row.freshness,
+      tone: row.status === "Degraded" ? "bad" as Tone : "warn" as Tone,
+    }));
+  const thinRows = model.opportunities
+    .filter((item) => item.isSourceThin || item.isStale || item.blockingGates.length)
+    .slice(0, 3)
+    .map((item) => ({
+      label: item.ticker,
+      value: item.isStale ? "stale" : item.isSourceThin ? "source-thin" : "blocked",
+      caption: item.blockingGates[0] ? formatGateLabel(item.blockingGates[0]) : item.nextAction,
+      tone: "warn" as Tone,
+      symbol: item.ticker,
+    }));
+  const rows = [...decisionBlocks, ...staleSources, ...thinRows];
+  return rows.length ? rows.slice(0, 6) : [{ label: "Evidence gates", value: "Clear", caption: "No stale or missing evidence gates are visible in loaded rows.", tone: "good" }];
 }
 
 function buildAttentionItems(model: AppModel): AttentionItem[] {

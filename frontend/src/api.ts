@@ -111,7 +111,7 @@ async function settle<T>(
 }
 
 export async function loadPanelData(): Promise<PanelData> {
-  return loadPanelScope("dashboard");
+  return loadPanelScope("today");
 }
 
 export async function loadPanelScope(scope: string, existing?: PanelData): Promise<PanelData> {

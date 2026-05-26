@@ -5349,6 +5349,39 @@ h3,
   align-items: stretch;
 }
 
+.today-answer-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 2px solid var(--terminal-black);
+}
+
+.today-answer-grid > .panel {
+  border-top: 0;
+  border-bottom: 2px solid var(--terminal-black);
+  border-left: 0;
+}
+
+.today-answer-grid > .panel + .panel {
+  border-left: 2px solid var(--terminal-black);
+}
+
+.today-review-grid,
+.ignore-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ignore-list {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.ignore-list > strong {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
 .terminal-secondary-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.55fr) minmax(640px, 1.45fr);
@@ -6349,6 +6382,7 @@ h3,
 
   .terminal-board-grid,
   .terminal-secondary-grid,
+  .today-answer-grid,
   .risk-profile-workbench {
     grid-template-columns: 1fr;
   }
@@ -6358,7 +6392,8 @@ h3,
   }
 
   .terminal-board-grid > .panel + .panel,
-  .terminal-secondary-grid > .panel + .panel {
+  .terminal-secondary-grid > .panel + .panel,
+  .today-answer-grid > .panel + .panel {
     border-left: 0;
   }
 

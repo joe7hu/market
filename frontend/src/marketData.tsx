@@ -4,7 +4,7 @@ import { emptyPanelData, loadPanelScope } from "./api";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData } from "./types";
 
-export type PanelScope = "dashboard" | "opportunities" | "portfolio" | "research" | "filings" | "calendar" | "health" | "settings";
+export type PanelScope = "today" | "dashboard" | "opportunities" | "portfolio" | "research" | "filings" | "calendar" | "health" | "settings";
 
 type MarketDataContextValue = {
   data: PanelData;

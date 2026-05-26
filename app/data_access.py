@@ -411,6 +411,32 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
 
 def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     scopes: dict[str, list[str]] = {
+        "today": [
+            "decision_readiness",
+            "decision_queue",
+            "discovered_universe",
+            "source_freshness",
+            "quotes",
+            "portfolio",
+            "catalysts",
+            "earnings",
+            "earnings_setups",
+            "analyst_estimates",
+            "fundamentals",
+            "liquidity",
+            "correlations",
+            "technicals",
+            "sepa",
+            "valuations",
+            "options_payoff_scenarios",
+            "disclosures",
+            "theses",
+            "research_packets",
+            "ticker_memos",
+            "opportunity_sources",
+            "source_health",
+            "provider_runs",
+        ],
         "dashboard": [
             "decision_readiness",
             "decision_queue",
@@ -524,7 +550,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     return {
         "scope": scope,
         "status": status_payload(panel_data),
-        "dashboard": dashboard_payload(panel_data) if scope == "dashboard" else None,
+        "dashboard": dashboard_payload(panel_data) if scope in {"today", "dashboard"} else None,
         "tables": {name: {"rows": panel_data.rows(name), "count": len(panel_data.rows(name))} for name in selected},
     }
 
