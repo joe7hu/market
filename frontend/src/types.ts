@@ -53,6 +53,7 @@ export type PanelData = {
   candidates: TablePayload;
   portfolio: TablePayload;
   theses: TablePayload;
+  thesisMonitor: TablePayload;
   traderTwins: TablePayload;
   catalysts: TablePayload;
   fundamentals: TablePayload;
@@ -110,6 +111,7 @@ export type PanelEndpoint =
   | "candidates"
   | "portfolio"
   | "theses"
+  | "thesisMonitor"
   | "traderTwins"
   | "catalysts"
   | "fundamentals"

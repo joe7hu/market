@@ -288,6 +288,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "ticker_memos",
             "portfolio",
             "theses",
+            "thesis_monitor",
             "trader_twins",
             "catalysts",
             "fundamentals",
@@ -362,6 +363,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     candidates = panel_data.rows("candidates")
     portfolio = panel_data.rows("portfolio")
     theses = panel_data.rows("theses")
+    thesis_monitor = panel_data.rows("thesis_monitor")
     catalysts = panel_data.rows("catalysts")
     fundamentals = panel_data.rows("fundamentals")
     disclosures = panel_data.rows("disclosures")
@@ -388,6 +390,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "candidates": len(candidates),
             "holdings": len(portfolio),
             "theses": len(theses),
+            "thesis_monitor": len(thesis_monitor),
             "catalysts": len(catalysts),
             "fundamentals": len(fundamentals),
             "disclosures": len(disclosures),
@@ -411,6 +414,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "priority_candidates": priority_rows[:8],
         "near_term_catalysts": catalysts[:8],
         "portfolio": portfolio[:8],
+        "thesis_monitor": thesis_monitor[:8],
         "source_freshness": source_freshness[:12],
         "source_health": source_health[:8],
         "broker_status": broker_status[:8],
@@ -445,6 +449,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "options_payoff_scenarios",
             "disclosures",
             "theses",
+            "thesis_monitor",
             "research_packets",
             "ticker_memos",
             "opportunity_sources",
@@ -479,6 +484,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "options_payoff_scenarios",
             "disclosures",
             "theses",
+            "thesis_monitor",
             "research_packets",
             "tradingview_symbol_search",
             "tradingview_watchlists",
@@ -550,6 +556,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "sepa",
             "earnings_setups",
             "theses",
+            "thesis_monitor",
             "catalysts",
             "disclosures",
             "exposure_clusters",
@@ -563,6 +570,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "research_packets",
             "ticker_memos",
             "theses",
+            "thesis_monitor",
             "news",
             "fundamentals",
             "signals",
@@ -602,6 +610,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "opportunity_sources": _matching_ticker_rows(panel_data.rows("opportunity_sources"), normalized_ticker),
         "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
         "theses": _matching_ticker_rows(panel_data.rows("theses"), normalized_ticker),
+        "thesis_monitor": _matching_ticker_rows(panel_data.rows("thesis_monitor"), normalized_ticker),
         "catalysts": _matching_ticker_rows(panel_data.rows("catalysts"), normalized_ticker),
         "signals": _matching_ticker_rows(panel_data.rows("signals"), normalized_ticker),
         "fundamentals": _matching_ticker_rows(panel_data.rows("fundamentals"), normalized_ticker),

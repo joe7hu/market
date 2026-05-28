@@ -15,6 +15,7 @@ from investment_panel.core.decision import canonical_quote_rows, decision_readin
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
+from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
 DECISION_REFRESH_LOCK = Lock()
@@ -50,6 +51,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "candidates": candidates(con),
             "portfolio": portfolio(con),
             "theses": theses(con),
+            "thesis_monitor": thesis_monitor_rows(con, config_watchlist),
             "catalysts": catalysts(con),
             "fundamentals": fundamentals(con),
             "disclosures": disclosures(con),

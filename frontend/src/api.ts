@@ -29,6 +29,7 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   candidates: "candidates",
   portfolio: "portfolio",
   theses: "theses",
+  thesis_monitor: "thesisMonitor",
   trader_twins: "traderTwins",
   catalysts: "catalysts",
   fundamentals: "fundamentals",
@@ -142,6 +143,7 @@ export function emptyPanelData(): PanelData {
     candidates: EMPTY_TABLE,
     portfolio: EMPTY_TABLE,
     theses: EMPTY_TABLE,
+    thesisMonitor: EMPTY_TABLE,
     traderTwins: EMPTY_TABLE,
     catalysts: EMPTY_TABLE,
     fundamentals: EMPTY_TABLE,
@@ -214,6 +216,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("candidates", getJson<TablePayload>("/api/candidates")),
     settle("portfolio", getJson<TablePayload>("/api/portfolio")),
     settle("theses", getJson<TablePayload>("/api/theses")),
+    settle("thesisMonitor", getJson<TablePayload>("/api/thesis-monitor")),
     settle("traderTwins", getJson<TablePayload>("/api/trader-twins")),
     settle("catalysts", getJson<TablePayload>("/api/catalysts")),
     settle("fundamentals", getJson<TablePayload>("/api/fundamentals")),
@@ -268,6 +271,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     candidates: EMPTY_TABLE,
     portfolio: EMPTY_TABLE,
     theses: EMPTY_TABLE,
+    thesisMonitor: EMPTY_TABLE,
     traderTwins: EMPTY_TABLE,
     catalysts: EMPTY_TABLE,
     fundamentals: EMPTY_TABLE,
@@ -350,6 +354,9 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "theses":
         data.theses = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "thesisMonitor":
+        data.thesisMonitor = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "traderTwins":
         data.traderTwins = (result.value as TablePayload) ?? EMPTY_TABLE;

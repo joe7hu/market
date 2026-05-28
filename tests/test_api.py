@@ -23,6 +23,7 @@ def test_api_routes_return_json() -> None:
         "/api/candidates",
         "/api/portfolio",
         "/api/theses",
+        "/api/thesis-monitor",
         "/api/trader-twins",
         "/api/catalysts",
         "/api/fundamentals",

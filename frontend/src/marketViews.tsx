@@ -600,6 +600,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   const foundTables = ticker?.tables ? Object.entries(ticker.tables).filter(([, tableRows]) => tableRows?.length).map(([name]) => name) : [];
   const signalRow = dossierModel.signalMatrix.find((row) => row.ticker === symbol);
   const decisionBrief = objectField(ticker?.decision_brief);
+  const thesisMonitor = dossierModel.thesisMonitorRows.find((row) => stringField(row, ["symbol"]) === symbol);
   const recommendation = dossierModel.agentRecommendationRows.find((row) => stringField(row, ["symbol"]) === symbol);
   const showBrokerSurface = brokerProviderSurfaceEnabled(dossierModel);
   const dossierTabs = [
@@ -654,6 +655,7 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
       <TabBar tabs={dossierTabs} active={activeDossierTab} onSelect={setActiveTab} />
       {activeDossierTab === "Overview" ? <div className="ticker-grid">
         <DecisionBriefOverview brief={decisionBrief} opportunity={opportunity} />
+        <ThesisStatePanel row={thesisMonitor} />
         <TradeSetupPanel brief={decisionBrief} />
         <Panel className="span-5" title="Evidence Context">
           <ChartContextSummary brief={decisionBrief} />
@@ -1626,25 +1628,21 @@ export function ResearchPage({ data, model, onOpenTicker }: { data: PanelData; m
 }
 
 export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: (symbol: string) => void }) {
+  const monitorRows = rows(data.thesisMonitor);
   const thesisRows = rows(data.theses);
   const memoRows = rows(data.memos);
   const signalRows = rows(data.signals);
-  const thesisSymbols = Array.from(new Set([
-    ...thesisRows.map(symbolFromRow),
-    ...memoRows.map(symbolFromRow),
-    ...signalRows.map(symbolFromRow),
-  ].filter(Boolean))).slice(0, 16);
-  const monitorRows: SummaryItem[] = thesisSymbols.map((symbol) => {
-    const opportunity = model.opportunities.find((item) => item.ticker === symbol);
-    const signal = signalRows.find((row) => symbolFromRow(row) === symbol);
-    return {
-      label: symbol,
-      value: opportunity?.actionGrade ?? displayValue(signal?.decision ?? signal?.action_grade ?? "Monitor"),
-      caption: opportunity?.invalidation || stringField(signal ?? {}, ["invalidation", "next_action", "why_now"]) || "No invalidation row loaded.",
-      tone: opportunity?.blockingGates.length ? "warn" : opportunity?.actionGrade === "Reject" || opportunity?.actionGrade === "Stale" ? "bad" : "info",
-      symbol,
-    };
-  });
+  const needsReviewRows = monitorRows.filter((row) => booleanField(row, ["needs_review"]));
+  const staleRows = monitorRows.filter((row) => booleanField(row, ["stale_thesis"]));
+  const contradictionRows = monitorRows.filter((row) => listField(row, ["contradiction_flags"]).length);
+  const stateRows: SummaryItem[] = monitorRows.slice(0, 16).map((row) => thesisSummaryItem(row));
+  const reviewRows: SummaryItem[] = needsReviewRows.slice(0, 12).map((row) => ({
+    label: stringField(row, ["symbol"]) || "Ticker",
+    value: listField(row, ["contradiction_flags"])[0] ? titleLabel(listField(row, ["contradiction_flags"])[0]) : "Stale",
+    caption: stringField(row, ["review_reason"]) || stringField(row, ["stale_reason"]) || "Needs review",
+    tone: listField(row, ["contradiction_flags"]).some((flag) => flag.includes("breached")) ? "bad" : "warn",
+    symbol: stringField(row, ["symbol"]),
+  }));
   const invalidationRows = model.opportunities
     .filter((item) => item.invalidation || item.blockingGates.length)
     .slice(0, 8)
@@ -1655,15 +1653,28 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       tone: item.blockingGates.length ? "warn" as Tone : "info" as Tone,
       symbol: item.ticker,
     }));
+  const sourceRows = monitorRows.length ? monitorRows : thesisRows;
   return (
-    <PageFrame title="Thesis Monitor" subtitle={`${thesisRows.length} thesis rows, ${memoRows.length} decision-memory rows`}>
-      <SourceNotice items={[["Theses", thesisRows.length ? "live" : "empty"], ["Decision Memory", memoRows.length ? "live" : "empty"], ["Signals", signalRows.length ? "live" : "empty"]]} />
+    <PageFrame title="Thesis Monitor" subtitle={`${monitorRows.length} auditable thesis states, ${needsReviewRows.length} need review`}>
+      <SourceNotice items={[["Thesis Monitor", monitorRows.length ? "live" : "empty"], ["Raw Theses", thesisRows.length ? "live" : "empty"], ["Decision Memory", memoRows.length ? "live" : "empty"], ["Signals", signalRows.length ? "live" : "empty"]]} />
+      <MetricStrip metrics={[
+        ["Needs Review", String(needsReviewRows.length), "stale or contradicted", needsReviewRows.length ? "warn" : "good"],
+        ["Stale Thesis", String(staleRows.length), "missing or old review", staleRows.length ? "warn" : "good"],
+        ["Contradictions", String(contradictionRows.length), "decision or invalidation conflict", contradictionRows.length ? "bad" : "good"],
+        ["Owned/Watched", String(monitorRows.filter((row) => booleanField(row, ["owned"]) || booleanField(row, ["watched"])).length), "auditable symbols", monitorRows.length ? "info" : "muted"],
+      ]} />
       <div className="research-grid">
         <Panel className="span-6" title="Thesis State">
-          <SummaryList rows={monitorRows.length ? monitorRows : [{ label: "Thesis state", value: "No rows", caption: "Run Arco/Market thesis refresh before treating this page as complete.", tone: "warn" }]} onOpenTicker={onOpenTicker} />
+          <SummaryList rows={stateRows.length ? stateRows : [{ label: "Thesis state", value: "No rows", caption: "Run Arco/Market thesis refresh before treating this page as complete.", tone: "warn" }]} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="span-6" title="Review Queue">
+          <SummaryList rows={reviewRows.length ? reviewRows : [{ label: "Review queue", value: "Clear", caption: "No stale thesis or contradiction flags are active.", tone: "good" }]} onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-6" title="Invalidation Watch">
           <SummaryList rows={invalidationRows.length ? invalidationRows : [{ label: "Invalidation", value: "No rows", caption: "No source-backed invalidation rows are loaded.", tone: "muted" }]} onOpenTicker={onOpenTicker} />
+        </Panel>
+        <Panel className="span-6" title="Structured Fields">
+          <GenericRows rows={sourceRows} emptyTitle="No structured thesis fields" emptyDetail="Owned and watched symbols will appear here after the thesis monitor read model loads." onOpenTicker={onOpenTicker} />
         </Panel>
         <Panel className="span-12" title="Decision Memory">
           <GenericRows rows={memoRows} emptyTitle="No decision memory rows" emptyDetail="Run research_candidate or weekly_portfolio_review to persist decision memory." onOpenTicker={onOpenTicker} />
@@ -1671,6 +1682,23 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       </div>
     </PageFrame>
   );
+}
+
+function thesisSummaryItem(row: RowRecord): SummaryItem {
+  const flags = listField(row, ["contradiction_flags"]);
+  const stale = booleanField(row, ["stale_thesis"]);
+  const needsReview = booleanField(row, ["needs_review"]);
+  const age = numberField(row, ["last_reviewed_age_days"], Number.NaN);
+  const status = titleLabel(stringField(row, ["status"]) || "monitor");
+  return {
+    label: stringField(row, ["symbol"]) || "Ticker",
+    value: needsReview ? "Review" : status,
+    caption: needsReview
+      ? stringField(row, ["review_reason"]) || flags.map(titleLabel).join(", ") || stringField(row, ["stale_reason"]) || "Needs review"
+      : `${status}${Number.isFinite(age) ? ` · reviewed ${Math.round(age)}d ago` : ""}`,
+    tone: flags.some((flag) => flag.includes("breached")) ? "bad" : needsReview || stale ? "warn" : "good",
+    symbol: stringField(row, ["symbol"]),
+  };
 }
 
 export function SettingsPage({ data }: { data: PanelData }) {
@@ -1719,6 +1747,7 @@ export type AppModel = {
   correlationEdgeRows: RowRecord[];
   portfolioRiskCardRows: RowRecord[];
   reviewActionRows: RowRecord[];
+  thesisMonitorRows: RowRecord[];
   portfolioValue: number;
   sectors: SummaryItem[];
   setupRows: SummaryItem[];
@@ -1777,6 +1806,7 @@ export function buildModel(data: PanelData): AppModel {
   const correlationEdgeRows = rows(data.correlationEdges);
   const portfolioRiskCardRows = rows(data.portfolioRiskCards);
   const reviewActionRows = rows(data.reviewActions);
+  const thesisMonitorRows = rows(data.thesisMonitor);
   const brokerHealthRows = buildBrokerHealthRows(brokerStatusRows);
   const healthRows = [...freshnessHealthRows, ...sourceHealthRows, ...providerRunRows, ...brokerHealthRows];
   const ownedSymbols = new Set(holdings.map((holding) => holding.ticker));
@@ -1808,6 +1838,7 @@ export function buildModel(data: PanelData): AppModel {
     correlationEdgeRows,
     portfolioRiskCardRows,
     reviewActionRows,
+    thesisMonitorRows,
     portfolioValue,
     sectors: buildSectorRows(rows(data.screener)),
     setupRows: buildSetupRows(rows(data.sepa), rows(data.liquidity)),
@@ -1847,6 +1878,7 @@ function panelDataWithTickerTables(base: PanelData, ticker: TickerPayload): Pane
     opportunity_sources: "opportunitySources",
     portfolio: "portfolio",
     theses: "theses",
+    thesis_monitor: "thesisMonitor",
     catalysts: "catalysts",
     signals: "signals",
     fundamentals: "fundamentals",
@@ -2432,7 +2464,7 @@ function buildSignalSourcePanels(data: PanelData): SignalSourcePanel[] {
     ["valuation", "Valuation", rows(data.valuations), ["upside_pct", "score"]],
     ["earnings_setup", "Earnings Setups", rows(data.earningsSetups), ["score", "revision_score"]],
     ["options_payoff", "Options Payoff", rows(data.optionsPayoffScenarios), ["max_profit", "net_premium"]],
-    ["thesis", "Thesis / Memos", [...rows(data.theses), ...rows(data.memos)], ["conviction", "score"]],
+    ["thesis", "Thesis / Memos", [...rows(data.thesisMonitor), ...rows(data.theses), ...rows(data.memos)], ["conviction", "score"]],
     ["filings", "Trader Filings", rows(data.disclosures), ["holdings_value_thousands", "value"]],
     ["news", "News / Catalysts", [...rows(data.news), ...rows(data.earnings), ...rows(data.catalysts)], ["score", "importance"]],
   ];
@@ -2497,7 +2529,7 @@ function buildSignalDefinitions(data: PanelData): SignalDefinition[] {
     { key: "earnings", label: "Earnings", rows: [...rows(data.earningsSetups), ...rows(data.earnings), ...rows(data.analystEstimates)] },
     { key: "options", label: "Options", rows: [...rows(data.optionsPayoffScenarios), ...rows(data.optionsExpiries), ...rows(data.optionsChain)] },
     { key: "filings", label: "Filings", rows: rows(data.disclosures) },
-    { key: "thesis", label: "Thesis", rows: rows(data.theses) },
+    { key: "thesis", label: "Thesis", rows: [...rows(data.thesisMonitor), ...rows(data.theses)] },
     { key: "news", label: "News", rows: [...rows(data.news), ...rows(data.catalysts)] },
     {
       key: "tradingview",
@@ -4392,6 +4424,39 @@ function DecisionBriefOverview({ brief, opportunity }: { brief: RowRecord; oppor
   );
 }
 
+function ThesisStatePanel({ row }: { row?: RowRecord }) {
+  if (!row) {
+    return (
+      <Panel className="span-12" title="Thesis State">
+        <EmptyState title="No structured thesis state" detail="This ticker has no thesis monitor row yet." />
+      </Panel>
+    );
+  }
+  const flags = listField(row, ["contradiction_flags"]);
+  const stale = booleanField(row, ["stale_thesis"]);
+  const needsReview = booleanField(row, ["needs_review"]);
+  const links = listField(row, ["evidence_links"]);
+  const latestPrice = numberField(row, ["latest_price"], Number.NaN);
+  const invalidationPrice = numberField(row, ["invalidation_price"], Number.NaN);
+  const distance = numberField(row, ["invalidation_distance_pct"], Number.NaN);
+  return (
+    <Panel className="span-12" title="Thesis State">
+      <SummaryList rows={[
+        { label: "Status", value: titleLabel(stringField(row, ["status"]) || "monitor"), caption: needsReview ? stringField(row, ["review_reason"]) : "Auditable decision record", tone: needsReview ? "warn" : "good" },
+        { label: "Last Reviewed", value: stringField(row, ["last_reviewed"]) ? formatDateLabel(stringField(row, ["last_reviewed"])) : "-", caption: stale ? stringField(row, ["stale_reason"]) || "stale" : "current", tone: stale ? "warn" : "good" },
+        { label: "Invalidation", value: Number.isFinite(invalidationPrice) ? formatMoney(invalidationPrice) : "Text", caption: stringField(row, ["invalidation"]) || "No invalidation text", tone: flags.includes("invalidation_breached") ? "bad" : flags.includes("invalidation_near") ? "warn" : "info" },
+        { label: "Distance", value: Number.isFinite(distance) ? formatPct(distance) : "-", caption: Number.isFinite(latestPrice) ? `latest ${formatMoney(latestPrice)}` : "no latest price", tone: flags.includes("invalidation_breached") ? "bad" : flags.includes("invalidation_near") ? "warn" : "muted" },
+        { label: "Evidence", value: String(links.length), caption: links.slice(0, 1).join("") || "No linked evidence", tone: links.length ? "info" : "warn" },
+      ]} />
+      <DetailRows rows={[
+        ["Thesis", stringField(row, ["thesis"]) || "-"],
+        ["Why Owned/Watched", stringField(row, ["why_owned_watched"]) || "-"],
+        ["Review Flags", flags.length ? flags.map(titleLabel).join(", ") : "None"],
+      ]} />
+    </Panel>
+  );
+}
+
 function TradeSetupPanel({ brief }: { brief: RowRecord }) {
   const setup = objectField(brief.setup);
   return (
@@ -5608,6 +5673,8 @@ function SourceRowsTable({ rows: sourceRows, onOpenTicker }: { rows: RowRecord[]
 function readableRowText(row: RowRecord): string {
   const explicit = displayValue(
     row.title ??
+    row.review_reason ??
+    row.thesis ??
     row.thesis_summary ??
     row.report_markdown ??
     row.event ??
@@ -5653,12 +5720,13 @@ function sourceNameForRow(row: RowRecord): string {
 }
 
 function asOfForRow(row: RowRecord): string {
-  const value = stringField(row, ["as_of", "observed_at", "date", "event_date", "filing_date", "created_at", "published_at", "expiry"]);
+  const value = stringField(row, ["as_of", "observed_at", "last_reviewed", "updated_at", "date", "event_date", "filing_date", "created_at", "published_at", "expiry"]);
   return value ? formatDateLabel(value) : "";
 }
 
 function sourceFieldForRow(row: RowRecord): string {
   if (stringField(row, ["action_grade"])) return "Decision";
+  if (stringField(row, ["review_reason", "why_owned_watched"])) return "Thesis";
   if (stringField(row, ["strategy_type", "option_type"])) return "Options";
   if (stringField(row, ["verdict", "stage"])) return "Setup";
   if (stringField(row, ["method"])) return "Valuation";
