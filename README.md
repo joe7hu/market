@@ -80,6 +80,7 @@ analyses, and the DB snapshot before the decision desk reads the data.
 - `GET /api/tickers/{symbol}`
 - `GET /api/portfolio`
 - `GET /api/theses`
+- `GET /api/thesis-monitor`
 - `GET /api/trader-twins`
 - `GET /api/catalysts`
 - `GET /api/fundamentals`

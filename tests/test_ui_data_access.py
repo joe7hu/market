@@ -25,13 +25,18 @@ def test_table_payload_normalizes_rows() -> None:
 def test_ticker_payload_matches_symbol() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
-        tables={"candidates": [{"symbol": "ABC"}], "portfolio": []},
+        tables={
+            "candidates": [{"symbol": "ABC"}],
+            "portfolio": [],
+            "thesis_monitor": [{"symbol": "ABC", "needs_review": True}],
+        },
     )
 
     payload = data_access.ticker_payload(panel_data, "abc")
 
     assert payload["found"] is True
     assert payload["tables"]["candidates"][0]["symbol"] == "ABC"
+    assert payload["tables"]["thesis_monitor"][0]["needs_review"] is True
 
 
 def test_ticker_payload_includes_quote_and_signal_context_for_deep_links() -> None:
