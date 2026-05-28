@@ -14,6 +14,12 @@ from investment_panel.core.portfolio_intelligence import portfolio_risk_cards, r
 
 STALE_STATUSES = {"failed", "missing", "stale", "degraded"}
 ACTIONABLE_GRADES = {"act", "research"}
+CATEGORY_LIMITS = {
+    "top_portfolio_changes": 5,
+    "top_risks": 6,
+    "top_opportunities": 6,
+    "blocked_stale_items": 6,
+}
 
 
 def daily_brief(con: Any) -> list[dict[str, Any]]:
@@ -26,7 +32,7 @@ def daily_brief(con: Any) -> list[dict[str, Any]]:
     items.extend(_calendar_items(con))
     items.extend(_blocked_items(con))
     items.extend(_thesis_gap_items(con))
-    return _rank_items(_dedupe(items))[:24]
+    return _category_limited_items(_rank_items(_dedupe(items)))
 
 
 def _portfolio_change_items(con: Any) -> list[dict[str, Any]]:
@@ -344,6 +350,16 @@ def _rank_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         counters[category] = counters.get(category, 0) + 1
         item["rank"] = counters[category]
     return ranked
+
+
+def _category_limited_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output = []
+    for item in items:
+        category = str(item.get("category") or "")
+        limit = CATEGORY_LIMITS.get(category, 6)
+        if int(item.get("rank") or 0) <= limit:
+            output.append(item)
+    return output[: sum(CATEGORY_LIMITS.values())]
 
 
 def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

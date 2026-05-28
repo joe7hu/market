@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.daily_brief import daily_brief
+from investment_panel.core.daily_brief import _category_limited_items, _rank_items, daily_brief
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 
@@ -117,6 +117,31 @@ def test_daily_brief_ranks_backend_attention_items(tmp_path) -> None:
     assert all(row["next_action"] for row in rows)
     assert any(row["category"] == "top_opportunities" and row["symbol"] == "NVDA" for row in rows)
     assert any(row["category"] == "blocked_stale_items" and "Daily analysis rows" in row["blocker"] for row in rows)
+
+
+def test_daily_brief_limits_each_category_instead_of_global_starvation() -> None:
+    items = []
+    for category in ["top_portfolio_changes", "top_risks", "top_opportunities", "blocked_stale_items"]:
+        for index in range(10):
+            items.append(
+                {
+                    "item_id": f"{category}:{index}",
+                    "category": category,
+                    "title": f"{category} {index}",
+                    "score": 100 - index,
+                }
+            )
+
+    rows = _category_limited_items(_rank_items(items))
+    counts = {category: sum(1 for row in rows if row["category"] == category) for category in {row["category"] for row in rows}}
+
+    assert counts == {
+        "top_portfolio_changes": 5,
+        "top_risks": 6,
+        "top_opportunities": 6,
+        "blocked_stale_items": 6,
+    }
+    assert rows[-1]["category"] == "blocked_stale_items"
 
 
 def seed_portfolio_risk_inputs(con) -> None:
