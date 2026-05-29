@@ -415,13 +415,12 @@ export function TodayPage({
   const reviewReadyCount = model.financeAnalyses.filter((analysis) => analysis.consumable).length;
   const dailyBrief = model.dailyBriefRows;
   const topRiskItem = dailyBrief.find((item) => item.category === "top_risks");
-  const riskBriefCount = dailyBrief.filter((item) => item.category === "top_risks").length;
-  const blockedBriefCount = dailyBrief.filter((item) => item.category === "blocked_stale_items").length;
   const changedRows = todayChangedRows(model, lastRefresh);
   const mattersRows = todayMattersRows(model, readyRows.length);
   const reviewRows = todayReviewRows(model, attentionItems);
   const ignoreRows = todayIgnoreRows(model);
   const blockedEvidenceRows = todayBlockedEvidenceRows(model, blockedRows);
+  const primaryAction = topRiskItem?.nextAction || attentionItems[0]?.action || "Review only what changes sizing, thesis, or timing.";
   return (
     <section className="terminal-dashboard today-page" aria-label="Today decision brief">
       <header className="terminal-hero">
@@ -431,32 +430,22 @@ export function TodayPage({
             <RefreshCw size={16} className={loading ? "spin" : ""} />
           </button>
         </div>
-        <strong>Today</strong>
+        <strong>{todayHeadline(largestHolding, topRiskItem)}</strong>
         <div className="terminal-hero-metrics">
           <span>
             <small>PORTFOLIO P&L</small>
             <b className={portfolioPnl >= 0 ? "positive" : "negative"}>{model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "NO POSITIONS"}</b>
           </span>
           <span>
-            <small>REVIEW QUEUE</small>
-            <b>{dailyBrief.length ? `${dailyBrief.length} items` : attentionItems.length ? `${attentionItems.length} items` : "CLEAR"}</b>
-          </span>
-          <span>
             <small>TOP EXPOSURE</small>
             <b>{largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "NONE"}</b>
           </span>
           <span>
-            <small>TOP RISK</small>
-            <b>{topRiskItem ? topRiskItem.title.slice(0, 28) : loading ? "LOADING" : "NONE"}</b>
-          </span>
-          <span>
-            <small>BLOCKED EVIDENCE</small>
-            <b>{blockedBriefCount ? `${blockedBriefCount} gaps` : blockedEvidenceRows.length ? `${blockedEvidenceRows.length} gaps` : "NONE"}</b>
+            <small>NEXT DECISION</small>
+            <b>{primaryAction}</b>
           </span>
         </div>
       </header>
-
-      <SourceNotice items={[["Daily Brief", dailyBrief.length ? "live" : "empty"], ["Decision Queue", model.sources.opportunities], ["Portfolio", model.sources.holdings], ["Health", model.sources.health]]} />
 
       {dailyBrief.length ? (
         <DailyBriefBoard items={dailyBrief} onOpenTicker={onOpenTicker} />
@@ -487,38 +476,49 @@ export function TodayPage({
         <Panel className="terminal-holdings-panel" title="Portfolio Attention">
           <TerminalHoldingsBook holdings={model.holdings} opportunities={model.opportunities.slice(0, 7)} watchlist={model.watchlist} onOpenTicker={onOpenTicker} />
         </Panel>
-        <Panel className="terminal-signal-panel" title="Proactive Review Actions">
-          <AlgorithmicSignalFeed opportunities={model.opportunities.slice(0, 4)} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
-        </Panel>
+        {!dailyBrief.length && (
+          <Panel className="terminal-signal-panel" title="Proactive Review Actions">
+            <AlgorithmicSignalFeed opportunities={model.opportunities.slice(0, 4)} blockedRows={blockedRows} onOpenTicker={onOpenTicker} />
+          </Panel>
+        )}
       </div>
 
       <Panel className="terminal-risk-panel dashboard-risk-cockpit" title="Portfolio Risk & Cluster Exposure">
         <RiskProfileTerminal model={model} readyCount={readyRows.length} />
       </Panel>
       {!dailyBrief.length && <FinanceAnalysisPanel analyses={model.financeAnalyses.slice(0, 6)} onOpenTicker={onOpenTicker} />}
-
-      <div className="terminal-secondary-grid">
-        <Panel title="Needs Attention">
-          <AttentionQueue items={attentionItems} onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel title="Watchlist Context">
-          <SummaryList rows={[
-            { label: "Daily brief", value: dailyBrief.length ? `${dailyBrief.length} backend items` : "Fallback", caption: dailyBrief.length ? `${riskBriefCount} risk items · ${blockedBriefCount} blocked items` : "Legacy client-side lists are active.", tone: dailyBrief.length ? "good" : "warn" },
-            { label: "Ready reviews", value: reviewReadyCount ? `${reviewReadyCount} names` : "None", caption: reviewReadyCount ? "Enough source context for dossier review." : "No consumable finance analysis rows.", tone: reviewReadyCount ? "good" : "warn" },
-          ]} />
-        </Panel>
-      </div>
+      {!dailyBrief.length && (
+        <div className="terminal-secondary-grid">
+          <Panel title="Needs Attention">
+            <AttentionQueue items={attentionItems} onOpenTicker={onOpenTicker} />
+          </Panel>
+          <Panel title="Ready Reviews">
+            <SummaryList rows={[
+              { label: "Ready reviews", value: reviewReadyCount ? `${reviewReadyCount} names` : "None", caption: reviewReadyCount ? "Enough source context for dossier review." : "No consumable finance analysis rows.", tone: reviewReadyCount ? "good" : "warn" },
+            ]} />
+          </Panel>
+        </div>
+      )}
     </section>
   );
 }
 
+function todayHeadline(largestHolding: Holding | undefined, topRiskItem: DailyBriefItem | undefined): string {
+  if (topRiskItem?.title) return topRiskItem.title;
+  if (largestHolding) return `${largestHolding.ticker} is ${largestHolding.weight.toFixed(1)}% of priced portfolio`;
+  return "Portfolio attention brief";
+}
+
 function DailyBriefBoard({ items, onOpenTicker }: { items: DailyBriefItem[]; onOpenTicker: (symbol: string) => void }) {
-  const groups: Array<[DailyBriefItem["category"], string]> = [
-    ["top_portfolio_changes", "Top Portfolio Changes"],
-    ["top_risks", "Top Risks"],
-    ["top_opportunities", "Top Opportunities / Research"],
-    ["blocked_stale_items", "Blocked / Stale Items"],
-  ];
+  const groups = ([
+    ["top_portfolio_changes", "Portfolio Moves"],
+    ["top_risks", "Risk Decisions"],
+    ["top_opportunities", "Research Candidates"],
+    ["blocked_stale_items", "Before Adding"],
+  ] satisfies Array<[DailyBriefItem["category"], string]>).filter(([category]) => items.some((item) => item.category === category));
+  if (!groups.length) {
+    return <EmptyState title="No decision brief" detail="No portfolio, risk, or research item currently changes today's action list." />;
+  }
   return (
     <section className="daily-brief-board" aria-label="Backend daily brief">
       {groups.map(([category, title]) => {
@@ -557,19 +557,17 @@ function DailyBriefCard({ item, onOpenTicker }: { item: DailyBriefItem; onOpenTi
           <span>Evidence</span>
           <small>{item.evidence.slice(0, 3).join(" · ") || "No evidence rows"}</small>
         </div>
+        {blockerActive && (
+          <div>
+            <span>Before Acting</span>
+            <small className="negative">{item.blocker}</small>
+          </div>
+        )}
         <div>
-          <span>Blocker</span>
-          <small className={blockerActive ? "negative" : "positive"}>{item.blocker || "None"}</small>
-        </div>
-        <div>
-          <span>Next Action</span>
+          <span>Do Next</span>
           <small>{item.nextAction}</small>
         </div>
       </div>
-      <footer>
-        <span>{item.sourceModels.slice(0, 3).join(" + ") || "daily_brief"}</span>
-        <b>{Math.round(item.score)}</b>
-      </footer>
     </article>
   );
 }
@@ -4068,7 +4066,7 @@ function RiskProfileTerminal({ model, readyCount }: { model: AppModel; readyCoun
       </div>
       <div className="risk-control-grid">
         <MetricBadge label="Top 3 Weight" value={topThreeWeight ? `${topThreeWeight.toFixed(1)}%` : "-"} caption="priced holdings" tone={topThreeWeight > 65 ? "warn" : topThreeWeight ? "info" : "muted"} />
-        <MetricBadge label="Quote Gaps" value={String(staleQuoteCount)} caption="missing or stale positions" tone={staleQuoteCount ? "warn" : "good"} />
+        <MetricBadge label="Quote Coverage" value={String(staleQuoteCount)} caption="positions without current quote coverage" tone={staleQuoteCount ? "warn" : "good"} />
         <MetricBadge label="Liquidity Check" value={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "Covered" : "Review"} caption={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "Owned names have liquidity context" : "Confirm exit capacity"} tone={model.liquidityRows.length >= pricedHoldings.length && pricedHoldings.length ? "good" : "warn"} />
         <MetricBadge label="Buy Setup" value={readyCount ? `${readyCount} ready` : "Review only"} caption={readyCount ? "There are names ready for decision" : "Hold/trim decisions only"} tone={readyCount ? "good" : "warn"} />
       </div>
@@ -4094,8 +4092,8 @@ function RiskProfileTerminal({ model, readyCount }: { model: AppModel; readyCoun
 function riskPosture(largestWeight: number, topThreeWeight: number, staleQuoteCount: number, readyCount: number, loadedFamilies: number): { label: string; detail: string; tone: Tone } {
   if (staleQuoteCount || loadedFamilies < 6) {
     return {
-      label: "Data-gated",
-      detail: "Risk output is not ready until quote freshness and source coverage clear.",
+      label: "Review-only",
+      detail: "Use this for sizing or trim work; do not add until quote coverage is current.",
       tone: "warn",
     };
   }

@@ -14,11 +14,22 @@ from investment_panel.core.portfolio_intelligence import portfolio_risk_cards, r
 
 STALE_STATUSES = {"failed", "missing", "stale", "degraded"}
 ACTIONABLE_GRADES = {"act", "research"}
+OPERATIONAL_NOISE_GATES = {
+    "liquidity_unknown",
+    "missing_daily_analysis",
+    "missing_intraday_quote",
+    "missing_quote",
+    "stale_daily_analysis",
+    "stale_data",
+    "stale_intraday_quote",
+    "stale_quote",
+}
+OPERATIONAL_RISK_CARD_IDS = {"stale-owned-quotes"}
 CATEGORY_LIMITS = {
     "top_portfolio_changes": 5,
     "top_risks": 6,
     "top_opportunities": 6,
-    "blocked_stale_items": 6,
+    "blocked_stale_items": 4,
 }
 
 
@@ -30,8 +41,6 @@ def daily_brief(con: Any) -> list[dict[str, Any]]:
     items.extend(_risk_items(con))
     items.extend(_opportunity_items(con))
     items.extend(_calendar_items(con))
-    items.extend(_blocked_items(con))
-    items.extend(_thesis_gap_items(con))
     return _category_limited_items(_rank_items(_dedupe(items)))
 
 
@@ -84,13 +93,12 @@ def _portfolio_change_items(con: Any) -> list[dict[str, Any]]:
                     f"{weight:.1f}% portfolio weight",
                     _pct_evidence("quote change", change_pct),
                     _money_evidence("estimated day P/L", day_change_value),
-                    f"quote {quote_freshness}",
                 ],
-                blocker="Fresh quote row is missing" if quote_freshness.lower() in STALE_STATUSES else "None",
+                blocker="None",
                 next_action=f"Open {symbol} only if the move changes the hold/add/trim rule; otherwise leave it alone.",
                 symbols=[symbol],
                 score=80 + min(20, abs(change_pct or 0) * 2 + min(10, weight / 5)),
-                severity="watch" if quote_freshness.lower() in STALE_STATUSES else "info",
+                severity="info",
                 source_models=["portfolio", "quotes"],
             )
         )
@@ -103,16 +111,18 @@ def _risk_items(con: Any) -> list[dict[str, Any]]:
     for card in portfolio_risk_cards(con)[:8]:
         symbols = _symbols(card)
         card_id = str(card.get("card_id") or card.get("risk_type") or "risk")
+        if card_id in OPERATIONAL_RISK_CARD_IDS:
+            continue
         action = actions_by_card.get(card_id, {})
         output.append(
             _item(
                 category="top_risks",
                 item_id=f"risk:{card_id}",
                 title=str(card.get("title") or "Portfolio risk"),
-                reason=str(card.get("summary") or "Portfolio risk card requires review."),
-                evidence=_list(card.get("evidence")) or [str(card.get("impact") or "portfolio risk")],
+                reason=_decision_copy(str(card.get("summary") or "Portfolio risk card requires review.")),
+                evidence=_decision_evidence(_list(card.get("evidence"))) or [str(card.get("impact") or "portfolio risk")],
                 blocker=_risk_blocker(card),
-                next_action=str(action.get("suggested_next_step") or card.get("next_step") or card.get("review_action") or "Review the risk card."),
+                next_action=_decision_copy(str(action.get("suggested_next_step") or card.get("next_step") or card.get("review_action") or "Review the risk card.")),
                 symbols=symbols,
                 score=_float(card.get("score")) or 60,
                 severity=str(card.get("severity") or "watch"),
@@ -124,10 +134,10 @@ def _risk_items(con: Any) -> list[dict[str, Any]]:
 
 def _opportunity_items(con: Any) -> list[dict[str, Any]]:
     primary = []
-    fallback = []
     for row in _decision_queue(con):
         action = str(row.get("action_grade") or "").lower()
         blockers = _list(row.get("blocking_gates"))
+        decision_blockers = _decision_blockers(blockers)
         symbol = str(row.get("symbol") or "").upper()
         reasons = _list(row.get("inclusion_reasons"))
         evidence_count = int(row.get("evidence_count") or 0)
@@ -141,28 +151,18 @@ def _opportunity_items(con: Any) -> list[dict[str, Any]]:
                 f"rank {row.get('rank') or '-'}",
                 f"score {_number_label(row.get('score'))}",
                 f"{evidence_count} evidence rows",
-                f"freshness {freshness}",
             ],
-            blocker=", ".join(_format_gate(gate) for gate in blockers) if blockers else "None",
-            next_action=_opportunity_next_action(row, blockers),
+            blocker=", ".join(_format_gate(gate) for gate in decision_blockers) if decision_blockers else "None",
+            next_action=_opportunity_next_action(row, decision_blockers),
             symbols=[symbol],
             score=70 + min(25, _float(row.get("action_score")) or _float(row.get("score")) or 0),
-            severity="good" if action == "act" and not blockers else "watch",
+            severity="good" if action == "act" and not decision_blockers else "watch",
             source_models=["decision_queue"],
             as_of=row.get("as_of"),
         )
-        if action in ACTIONABLE_GRADES or not blockers:
+        if action in ACTIONABLE_GRADES and not blockers:
             primary.append(item)
-        elif int(row.get("rank") or 999) <= 8:
-            fallback.append(
-                {
-                    **item,
-                    "title": f"{symbol} is a gated research item",
-                    "severity": "watch",
-                    "score": max(55, float(item["score"]) - 10),
-                }
-            )
-    return (primary or fallback)[:8]
+    return primary[:8]
 
 
 def _calendar_items(con: Any) -> list[dict[str, Any]]:
@@ -218,51 +218,26 @@ def _blocked_items(con: Any) -> list[dict[str, Any]]:
     output = []
     for row in _decision_queue(con):
         blockers = _list(row.get("blocking_gates"))
-        freshness = str(row.get("freshness_status") or "").lower()
-        if not blockers and freshness not in STALE_STATUSES:
+        decision_blockers = _decision_blockers(blockers)
+        if not decision_blockers:
             continue
         symbol = str(row.get("symbol") or "").upper()
         output.append(
             _item(
                 category="blocked_stale_items",
                 item_id=f"blocked-decision:{symbol}",
-                title=f"{symbol} is blocked by evidence gates",
-                reason=str(row.get("source_cluster") or "Decision row is not actionable."),
+                title=f"{symbol} needs a decision input",
+                reason=_blocker_reason(symbol, decision_blockers, row),
                 evidence=[
-                    f"action {row.get('action_grade') or '-'}",
-                    f"freshness {row.get('freshness_status') or 'unknown'}",
-                    f"quote {row.get('quote_freshness') or 'unknown'}",
-                    f"daily analysis {row.get('daily_analysis_freshness') or 'unknown'}",
+                    f"{row.get('evidence_count') or 0} evidence rows",
                 ],
-                blocker=", ".join(_format_gate(gate) for gate in blockers) if blockers else f"Freshness is {freshness}",
-                next_action=_opportunity_next_action(row, blockers),
+                blocker=", ".join(_format_gate(gate) for gate in decision_blockers),
+                next_action=_opportunity_next_action(row, decision_blockers),
                 symbols=[symbol],
-                score=75 + len(blockers) * 4,
-                severity="bad" if freshness in {"failed", "missing", "stale"} else "watch",
+                score=70 + len(decision_blockers) * 4,
+                severity="watch",
                 source_models=["decision_queue", "source_freshness"],
                 as_of=row.get("as_of"),
-            )
-        )
-    for row in _stale_sources(con):
-        key = str(row.get("source_key") or "source")
-        output.append(
-            _item(
-                category="blocked_stale_items",
-                item_id=f"stale-source:{key}",
-                title=f"{row.get('provider') or row.get('source_type') or key} source is {row.get('freshness_status')}",
-                reason=str(row.get("detail") or "A required source freshness row is stale, failed, or missing."),
-                evidence=[
-                    f"source {key}",
-                    f"type {row.get('source_type') or 'unknown'}",
-                    f"last observed {row.get('last_observed_at') or 'never'}",
-                    f"status {row.get('status') or row.get('freshness_status') or 'unknown'}",
-                ],
-                blocker=str(row.get("detail") or f"Source freshness is {row.get('freshness_status') or row.get('status') or 'unknown'}"),
-                next_action=f"Refresh {row.get('provider') or row.get('source_type') or key} before acting on dependent symbols.",
-                score=68,
-                severity="bad",
-                source_models=["source_freshness"],
-                as_of=row.get("checked_at") or row.get("last_observed_at"),
             )
         )
     return output[:10]
@@ -411,7 +386,7 @@ def _item(
 def _portfolio_change_reason(symbol: str, weight: float, change_pct: float | None, day_change_value: float | None, missing_change: bool) -> str:
     if missing_change:
         return f"{symbol} is owned at {weight:.1f}% but has no current move row, so the daily P/L scan is incomplete."
-    return f"{symbol} is owned at {weight:.1f}% and is one of the largest visible contributors to today's portfolio change."
+    return f"{symbol} drives the portfolio scan because it is {weight:.1f}% of priced exposure."
 
 
 def _risk_blocker(card: dict[str, Any]) -> str:
@@ -440,6 +415,38 @@ def _opportunity_next_action(row: dict[str, Any], blockers: list[str]) -> str:
 def _format_gate(value: Any) -> str:
     text = str(value or "").replace("_", " ").strip()
     return text[:1].upper() + text[1:] if text else "Unknown gate"
+
+
+def _decision_blockers(blockers: list[str]) -> list[str]:
+    return [gate for gate in blockers if str(gate or "").lower() not in OPERATIONAL_NOISE_GATES]
+
+
+def _decision_evidence(evidence: list[str]) -> list[str]:
+    noisy_terms = ("quote stale", "stale quote", "quote fresh", "freshness not fresh", "freshness stale")
+    clean = []
+    for item in evidence:
+        lowered = item.lower()
+        if any(term in lowered for term in noisy_terms):
+            continue
+        if "thesis_json" in lowered:
+            clean.append("thesis record is empty")
+        else:
+            clean.append(_decision_copy(item))
+    return clean
+
+
+def _decision_copy(value: str) -> str:
+    return value.replace("invalidation", "exit rule").replace("Invalidation", "Exit rule")
+
+
+def _blocker_reason(symbol: str, blockers: list[str], row: dict[str, Any]) -> str:
+    normalized = {str(gate).lower() for gate in blockers}
+    if "chart_extended_without_thesis" in normalized:
+        return f"{symbol} has an extended setup without a written thesis explaining why it is still worth attention."
+    if "thesis_missing" in normalized or "missing_thesis" in normalized:
+        return f"{symbol} needs a written thesis before it can become a sizing decision."
+    reasons = _list(row.get("inclusion_reasons"))
+    return reasons[0] if reasons else "A decision input is missing before this can become an action."
 
 
 def _symbols(row: dict[str, Any]) -> list[str]:

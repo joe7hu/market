@@ -110,13 +110,13 @@ def test_daily_brief_ranks_backend_attention_items(tmp_path) -> None:
     assert "top_portfolio_changes" in categories
     assert "top_risks" in categories
     assert "top_opportunities" in categories
-    assert "blocked_stale_items" in categories
+    assert "blocked_stale_items" not in categories
     assert all(row["reason"] for row in rows)
     assert all(row["evidence"] for row in rows)
     assert all(row["blocker"] for row in rows)
     assert all(row["next_action"] for row in rows)
     assert any(row["category"] == "top_opportunities" and row["symbol"] == "NVDA" for row in rows)
-    assert any(row["category"] == "blocked_stale_items" and "Daily analysis rows" in row["blocker"] for row in rows)
+    assert all("Daily analysis rows are stale" not in row["blocker"] for row in rows)
 
 
 def test_daily_brief_limits_each_category_instead_of_global_starvation() -> None:
@@ -139,7 +139,7 @@ def test_daily_brief_limits_each_category_instead_of_global_starvation() -> None
         "top_portfolio_changes": 5,
         "top_risks": 6,
         "top_opportunities": 6,
-        "blocked_stale_items": 6,
+        "blocked_stale_items": 4,
     }
     assert rows[-1]["category"] == "blocked_stale_items"
 
@@ -213,7 +213,7 @@ def seed_daily_brief_inputs(con) -> None:
             ('AMD', current_timestamp, 2, 'Stale', 'stale', 50, 60, 55, 20,
              'stale', 'fresh', 'missing', 'fresh', 'fresh', 'stale',
              'analysis gap', 2, 3, 1, 2, 1,
-             '["semiconductor peer context"]', '["missing_daily_analysis"]',
+             '["semiconductor peer context"]', '["chart_extended_without_thesis","missing_daily_analysis"]',
              '{"source_counts":{"technical":0,"thesis":1}}',
              300, current_timestamp, current_timestamp, NULL,
              NULL, 'high', '{"owned":true}', 'analysis missing')

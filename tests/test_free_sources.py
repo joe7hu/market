@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from investment_panel.analysis import run_all_analyses
@@ -16,6 +17,7 @@ from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import sample_prices, upsert_prices
 from investment_panel.core.scoring import score_and_store
 from investment_panel.core.technicals import compute_and_store
+from investment_panel.jobs import update_free_sources
 from investment_panel.providers.tradingview import TradingViewProvider
 
 
@@ -329,3 +331,24 @@ def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
     assert tables["research_packets"][0]["symbol"] == "NVDA"
     assert tables["options_payoff_scenarios"]
     assert tables["earnings_setups"]
+
+
+def test_update_free_sources_refreshes_equity_data_before_decision_models(tmp_path: Path, monkeypatch) -> None:
+    cfg = SimpleNamespace(
+        database=SimpleNamespace(duckdb_path=tmp_path / "investment.duckdb"),
+        nas=SimpleNamespace(status_dir=tmp_path / "status"),
+        watchlist=[],
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(update_free_sources, "load_config", lambda _path=None: cfg)
+    monkeypatch.setattr(update_free_sources.update_equity_data, "run", lambda _path=None: calls.append("equity") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "update_tradingview_sources", lambda _con, _config: calls.append("tradingview") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "update_yfinance_sources", lambda _con, _config: calls.append("yfinance") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "run_all_analyses", lambda _con, _config: calls.append("analysis") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "refresh_decision_read_models", lambda _con, _watchlist: calls.append("decision") or {"status": "ok"})
+
+    result = update_free_sources.run("config.yaml")
+
+    assert calls == ["equity", "tradingview", "yfinance", "analysis", "decision"]
+    assert result["equity_data"] == {"status": "ok"}

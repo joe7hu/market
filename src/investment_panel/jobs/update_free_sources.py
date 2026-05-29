@@ -13,15 +13,18 @@ from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.free_sources import update_tradingview_sources, update_yfinance_sources
 from investment_panel.core.portfolio import ensure_portfolio_instruments
 from investment_panel.core.status import write_source_status
+from investment_panel.jobs import update_equity_data
 
 
 def run(
     config_path: str | None = None,
+    equity_data: bool = True,
     tradingview: bool = True,
     yfinance: bool = True,
     analyses: bool = True,
 ) -> dict[str, Any]:
     config = load_config(config_path)
+    equity_result = update_equity_data.run(config_path) if equity_data else {"status": "skipped"}
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
         ensure_portfolio_instruments(con)
@@ -31,6 +34,7 @@ def run(
         decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {
         "database": str(config.database.duckdb_path),
+        "equity_data": equity_result,
         "tradingview": tradingview_result,
         "yfinance": yfinance_result,
         "analysis": analysis_result,
@@ -52,6 +56,7 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--skip-equity-data", action="store_true")
     parser.add_argument("--skip-tradingview", action="store_true")
     parser.add_argument("--skip-yfinance", action="store_true")
     parser.add_argument("--skip-analyses", action="store_true")
@@ -60,6 +65,7 @@ def main() -> None:
         json.dumps(
             run(
                 args.config,
+                equity_data=not args.skip_equity_data,
                 tradingview=not args.skip_tradingview,
                 yfinance=not args.skip_yfinance,
                 analyses=not args.skip_analyses,

@@ -5574,6 +5574,21 @@ h3,
   white-space: nowrap;
 }
 
+.today-page .terminal-hero {
+  min-height: auto;
+  gap: 18px;
+  padding: 28px 42px 30px;
+}
+
+.today-page .terminal-hero > strong {
+  max-width: 1120px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: clamp(2.1rem, 4.6vw, 5.2rem);
+  line-height: 0.95;
+  white-space: normal;
+}
+
 .terminal-hero-metrics {
   display: grid;
   grid-template-columns: repeat(5, max-content);
@@ -5582,9 +5597,17 @@ h3,
   margin-top: 12px;
 }
 
+.today-page .terminal-hero-metrics {
+  grid-template-columns: minmax(180px, max-content) minmax(170px, max-content) minmax(280px, 1fr);
+  gap: clamp(22px, 5vw, 72px);
+  max-width: 1180px;
+  margin-top: 0;
+}
+
 .terminal-hero-metrics span {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
 .terminal-hero-metrics small {
@@ -5598,12 +5621,17 @@ h3,
   color: var(--text);
   font-size: 1rem;
   font-weight: 900;
+  overflow-wrap: anywhere;
 }
 
 .terminal-board-grid {
   display: grid;
   grid-template-columns: minmax(520px, 1.35fr) minmax(360px, 0.65fr);
   align-items: stretch;
+}
+
+.terminal-board-grid > .terminal-holdings-panel:only-child {
+  grid-column: 1 / -1;
 }
 
 .today-answer-grid {
@@ -5624,7 +5652,7 @@ h3,
 
 .daily-brief-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   border-top: 2px solid var(--terminal-black);
 }
 
@@ -6792,7 +6820,11 @@ h3,
 @media (max-width: 860px) {
   .ticker-tape {
     gap: 28px;
-    overflow-x: auto;
+    overflow: hidden;
+  }
+
+  .ticker-tape span:nth-child(n + 4) {
+    display: none;
   }
 
   .terminal-shell {
@@ -6834,6 +6866,30 @@ h3,
 
   .desk-main {
     padding: 0;
+  }
+
+  .today-page .terminal-hero {
+    padding: 24px 20px;
+  }
+
+  .today-page .terminal-hero-kicker,
+  .today-page .terminal-hero > strong,
+  .today-page .terminal-hero-metrics {
+    max-width: 100%;
+  }
+
+  .today-page .terminal-hero-kicker {
+    gap: 12px;
+  }
+
+  .today-page .terminal-hero-kicker span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .today-page .terminal-hero-metrics {
+    grid-template-columns: 1fr;
+    gap: 14px;
   }
 
   .ticker-actions {
