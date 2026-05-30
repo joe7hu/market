@@ -321,6 +321,30 @@ def test_mungermode_benchmark_sources_are_registry_covered(tmp_path: Path) -> No
     assert audit["mungermode_benchmark"]["missing_sources"] == []
 
 
+def test_canonical_sources_resync_new_sec_rows_after_cache_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO equity_fundamentals VALUES ('NVDA', current_date - 1, current_date - 1, '10-K', ?, 'https://example.com/nvda-10k')",
+            [json.dumps({"revenue": 100})],
+        )
+
+    first_panel = load_panel_data(config_for(db_path))
+    first_signals = require_rows(first_panel, "ticker_source_signals")
+    assert row_for_symbol(first_signals, "NVDA")["source_id"] == "sec_annual_reports_10k"
+
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO equity_fundamentals VALUES ('MSFT', current_date, current_date, '10-K', ?, 'https://example.com/msft-10k')",
+            [json.dumps({"revenue": 200})],
+        )
+
+    second_panel = load_panel_data(config_for(db_path))
+    second_signals = require_rows(second_panel, "ticker_source_signals")
+    assert row_for_symbol(second_signals, "MSFT")["source_id"] == "sec_annual_reports_10k"
+
+
 def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_empty_source(tmp_path: Path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)

@@ -402,21 +402,23 @@ def missing_registry_definitions(con: Any) -> list[str]:
 
 
 def sec_filing_rows_missing_canonical_sources(con: Any) -> list[str]:
-    missing: list[str] = []
-    for form_type, source in SEC_FILING_SOURCE_BY_FORM.items():
-        source_id = source["source_id"]
-        row = query_rows(
-            con,
-            """
-            SELECT
-                (SELECT count(*) FROM equity_fundamentals WHERE upper(form_type) = ?) AS raw_rows,
-                (SELECT count(*) FROM source_items WHERE source_id = ?) AS canonical_rows
-            """,
-            [form_type, source_id],
-        )[0]
-        if int(row.get("raw_rows") or 0) > 0 and int(row.get("canonical_rows") or 0) == 0:
-            missing.append(source_id)
-    return missing
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, period_end, form_type
+        FROM equity_fundamentals
+        WHERE upper(form_type) IN ('8-K', '10-Q', '10-K', 'DEF 14A', '6-K')
+        """,
+    )
+    missing: set[str] = set()
+    for row in rows:
+        form_type = normalize_sec_form_type(row.get("form_type"))
+        source = sec_filing_source_for_form(form_type)
+        expected_item_id = stable_id("sec_filing", source["source_id"], normalize_signal_symbol(row.get("symbol")), row.get("period_end"), form_type)
+        existing = query_rows(con, "SELECT 1 FROM source_items WHERE id = ? LIMIT 1", [expected_item_id])
+        if not existing:
+            missing.add(source["source_id"])
+    return sorted(missing)
 
 
 def normalize_sec_form_type(value: Any) -> str:
