@@ -188,9 +188,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             raw = yaml.safe_load(handle) or {}
 
     base = project_root()
-    database = DatabaseConfig(
-        duckdb_path=resolve_path(raw.get("database", {}).get("duckdb_path", "data/investment.duckdb"), base)
-    )
+    database_path = os.environ.get("MARKET_DUCKDB_PATH") or raw.get("database", {}).get("duckdb_path", "data/investment.duckdb")
+    database = DatabaseConfig(duckdb_path=resolve_path(database_path, base))
     nas_raw = raw.get("nas", {})
     nas = NasConfig(
         source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),

@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from importlib import import_module
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Iterable
@@ -85,16 +86,25 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         "prompt_dir": "prompts",
     }
     if not config_path.exists():
-        return defaults
+        return _apply_runtime_overrides(defaults)
 
     try:
         import yaml
     except ModuleNotFoundError:
-        return defaults | {"config_warning": "Install PyYAML to read config.yaml."}
+        return _apply_runtime_overrides(defaults | {"config_warning": "Install PyYAML to read config.yaml."})
 
     with config_path.open("r", encoding="utf-8") as handle:
         parsed = yaml.safe_load(handle) or {}
-    return _deep_merge(defaults, parsed)
+    return _apply_runtime_overrides(_deep_merge(defaults, parsed))
+
+
+def _apply_runtime_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    duckdb_path = os.environ.get("MARKET_DUCKDB_PATH")
+    if not duckdb_path:
+        return config
+    updated = _deep_merge(config, {"database": {"duckdb_path": duckdb_path}})
+    updated.setdefault("runtime_overrides", {})["MARKET_DUCKDB_PATH"] = duckdb_path
+    return updated
 
 
 def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:

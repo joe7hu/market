@@ -155,6 +155,17 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     assert payload["integration"]["birdclaw_command"] == "birdclaw export"
 
 
+def test_fastapi_config_allows_runtime_duckdb_override(tmp_path, monkeypatch) -> None:
+    runtime_path = tmp_path / "runtime.duckdb"
+
+    monkeypatch.setenv("MARKET_DUCKDB_PATH", str(runtime_path))
+
+    config = data_access.load_config(tmp_path / "missing.yaml")
+
+    assert config["database"]["duckdb_path"] == str(runtime_path)
+    assert config["runtime_overrides"]["MARKET_DUCKDB_PATH"] == str(runtime_path)
+
+
 def test_save_and_delete_portfolio_position(tmp_path) -> None:
     config = {"database": {"duckdb_path": str(tmp_path / "portfolio.duckdb")}}
 
