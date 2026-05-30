@@ -15,35 +15,11 @@ from investment_panel.core.decision import canonical_quote_rows, decision_readin
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
+from investment_panel.core.sources import source_item_rows, source_registry_rows, source_run_rows, sync_canonical_sources, ticker_source_signal_rows
 from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
 DECISION_REFRESH_LOCK = Lock()
-
-MUNGERMODE_SOURCE_CANDIDATES = [
-    ("Odd Lots", "podcast"),
-    ("Stratechery", "blog"),
-    ("a16z", "podcast"),
-    ("ARK Invest", "podcast"),
-    ("Peter Diamandis", "podcast"),
-    ("Sequoia Capital", "podcast"),
-    ("All-In", "podcast"),
-    ("Not Boring", "blog"),
-    ("In Good Company", "podcast"),
-    ("Invest Like the Best", "podcast"),
-    ("SemiAnalysis", "blog"),
-    ("No Priors", "podcast"),
-    ("Dwarkesh Patel", "podcast"),
-    ("Uncapped", "podcast"),
-    ("Citrini Research", "blog"),
-    ("Capital Wars", "blog"),
-    ("Naval", "podcast"),
-    ("AVC", "blog"),
-    ("Lex Fridman", "podcast"),
-    ("Acquired", "podcast"),
-    ("Benedict Evans", "blog"),
-    ("Howard Marks", "blog"),
-]
 
 
 def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
@@ -61,6 +37,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
     # Keep the API read connection in the same mode as init/write jobs. DuckDB
     # rejects simultaneous connections to one file when read_only differs.
     with db(db_path, read_only=False) as con:
+        sync_canonical_sources(con)
         decision_refresh = ensure_decision_read_models(con, config_watchlist)
         decision_snapshots = symbol_decision_snapshots(con)
         tables = {
@@ -121,6 +98,10 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "ticker_memos": reports(con),
             "trader_twins": trader_profiles(app_config.trader_profile_dir),
             "source_health": source_health(con),
+            "sources": source_registry_rows(con),
+            "source_runs": source_run_rows(con),
+            "source_items": source_item_rows(con),
+            "ticker_source_signals": ticker_source_signal_rows(con),
         }
     ready = any(tables[name] for name in ("signals", "candidates", "portfolio", "ticker_memos"))
     return {
@@ -352,22 +333,25 @@ def source_consensus(con: Any) -> list[dict[str, Any]]:
         )
 
     loaded_names = {str(row["source_name"]).lower() for row in output}
-    for source_name, content_type in MUNGERMODE_SOURCE_CANDIDATES:
-        if source_name.lower() in loaded_names:
+    for registry_row in source_registry_rows(con):
+        source_name = str(registry_row.get("source_name") or registry_row.get("source_id") or "")
+        if not source_name or source_name.lower() in loaded_names:
             continue
         output.append(
             {
                 "source_name": source_name,
-                "content_type": content_type,
-                "items_count": 0,
-                "tickers_count": 0,
-                "latest_at": None,
-                "is_followed": False,
-                "origin": "mungermode_benchmark",
+                "content_type": registry_row.get("source_family") or registry_row.get("source_kind"),
+                "items_count": registry_row.get("items_count") or 0,
+                "tickers_count": registry_row.get("tickers_count") or 0,
+                "latest_at": registry_row.get("latest_run_at"),
+                "is_followed": bool(registry_row.get("enabled")),
+                "origin": registry_row.get("origin") or "source_registry",
                 "bullish_symbols": [],
                 "bearish_symbols": [],
                 "net_consensus": 0,
-                "recommendation": "candidate_source",
+                "recommendation": "loaded" if registry_row.get("items_count") else "candidate_source",
+                "freshness": registry_row.get("freshness"),
+                "source_id": registry_row.get("source_id"),
             }
         )
 
@@ -648,6 +632,35 @@ def _source_feed_events(
                 "freshness": str(decision.get("freshness_status") or "current"),
                 "severity": "info",
                 "score": 58,
+            }
+        )
+
+    for row in ticker_source_signal_rows(con, limit=120):
+        if str(row.get("source_item_id") or "").startswith(("news:", "arco_thesis:", "disclosure:")):
+            continue
+        symbol = _normalize_symbol_token(row.get("symbol"))
+        if not symbol:
+            continue
+        decision = decision_by_symbol.get(symbol, {})
+        title = str(row.get("title") or row.get("thesis") or "Source signal")
+        evidence = _string_list(row.get("evidence_refs"))
+        events.append(
+            {
+                "id": f"source_signal:{row.get('id')}",
+                "date": _date_text(row.get("observed_at")),
+                "source": str(row.get("source_name") or row.get("source_id") or "Source signal"),
+                "source_type": str(row.get("signal_type") or "source_signal"),
+                "title": title,
+                "symbols": [symbol],
+                "primary_symbol": symbol,
+                "thesis": str(row.get("thesis") or _source_event_thesis(symbol, str(row.get("sentiment") or "neutral"), decision, title)),
+                "antithesis": str(row.get("antithesis") or _source_event_countercase(symbol, str(row.get("sentiment") or "neutral"), decision)),
+                "evidence": evidence or [title],
+                "portfolio_relevance": _portfolio_relevance([symbol], portfolio_rows, watchlist, decision),
+                "next_action": "Refresh market context before action." if row.get("needs_market_context") else _source_event_next_action([symbol], portfolio_rows, watchlist),
+                "freshness": "needs_market_context" if row.get("needs_market_context") else str(decision.get("freshness_status") or "current"),
+                "severity": "good" if row.get("sentiment") == "bullish" else "bad" if row.get("sentiment") == "bearish" else "info",
+                "score": 58 if not row.get("needs_market_context") else 42,
             }
         )
     return events

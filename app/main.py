@@ -29,6 +29,7 @@ from investment_panel.core.refresh_jobs import ALLOWLIST, refresh_job_rows, run_
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import load_config as load_core_config
 from investment_panel.core.db import db, init_db
+from investment_panel.core.sources import source_detail_payload
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -197,6 +198,33 @@ def create_app() -> FastAPI:
     def source_health() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "source_health")
+
+    @app.get("/api/sources")
+    def sources() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "sources")
+
+    @app.get("/api/sources/{source_id}")
+    def source_detail(source_id: str) -> dict[str, Any]:
+        config = load_config()
+        init_db(database_path(config))
+        with db(database_path(config), read_only=False) as con:
+            return source_detail_payload(con, source_id)
+
+    @app.get("/api/source-items")
+    def source_items() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_items")
+
+    @app.get("/api/source-runs")
+    def source_runs() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_runs")
+
+    @app.get("/api/ticker-source-signals")
+    def ticker_source_signals() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "ticker_source_signals")
 
     @app.get("/api/quotes")
     def quotes() -> dict[str, Any]:

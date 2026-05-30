@@ -105,6 +105,11 @@ analyses, and the DB snapshot before the decision desk reads the data.
 - `GET /api/valuations`
 - `GET /api/provider-runs`
 - `GET /api/source-health`
+- `GET /api/sources`
+- `GET /api/sources/{source_id}`
+- `GET /api/source-runs`
+- `GET /api/source-items`
+- `GET /api/ticker-source-signals`
 - `GET /api/discovered-universe`
 - `GET /api/decision-queue`
 - `GET /api/source-freshness`

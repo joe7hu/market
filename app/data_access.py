@@ -325,6 +325,10 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "portfolio_risk_cards",
             "review_actions",
             "source_health",
+            "sources",
+            "source_runs",
+            "source_items",
+            "ticker_source_signals",
             "settings",
         )
         if hasattr(raw_data, name)
@@ -376,6 +380,10 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     valuations = panel_data.rows("valuations")
     option_payoffs = panel_data.rows("options_payoff_scenarios")
     source_health = panel_data.rows("source_health")
+    sources = panel_data.rows("sources")
+    source_runs = panel_data.rows("source_runs")
+    source_items = panel_data.rows("source_items")
+    ticker_source_signals = panel_data.rows("ticker_source_signals")
     broker_status = panel_data.rows("broker_status")
     agent_recommendations = panel_data.rows("agent_recommendations")
     daily_brief = panel_data.rows("daily_brief")
@@ -407,7 +415,10 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "earnings_setups": len(earnings_setups),
             "valuations": len(valuations),
             "options_payoff_scenarios": len(option_payoffs),
-            "sources": len(source_freshness) or len(source_health),
+            "sources": len(sources) or len(source_freshness) or len(source_health),
+            "source_runs": len(source_runs),
+            "source_items": len(source_items),
+            "ticker_source_signals": len(ticker_source_signals),
             "broker_providers": len(broker_status),
             "agent_recommendations": len(agent_recommendations),
             "daily_brief": len(daily_brief),
@@ -427,6 +438,10 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "thesis_monitor": thesis_monitor[:8],
         "source_freshness": source_freshness[:12],
         "source_health": source_health[:8],
+        "sources": sources[:12],
+        "source_runs": source_runs[:12],
+        "source_items": source_items[:12],
+        "ticker_source_signals": ticker_source_signals[:12],
         "broker_status": broker_status[:8],
         "agent_recommendations": agent_recommendations[:8],
         "daily_brief": daily_brief[:12],
@@ -498,6 +513,10 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "valuations",
         ],
         "sources": [
+            "sources",
+            "source_runs",
+            "source_items",
+            "ticker_source_signals",
             "source_consensus",
             "feed_signals",
             "source_health",
@@ -548,6 +567,10 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_chart_state",
             "opportunity_sources",
             "source_health",
+            "sources",
+            "source_runs",
+            "source_items",
+            "ticker_source_signals",
             "provider_runs",
             "broker_status",
             "broker_accounts",
@@ -667,6 +690,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "opportunity_sources": _matching_ticker_rows(panel_data.rows("opportunity_sources"), normalized_ticker),
         "feed_signals": _matching_ticker_rows(panel_data.rows("feed_signals"), normalized_ticker),
         "source_consensus": _matching_ticker_rows(panel_data.rows("source_consensus"), normalized_ticker),
+        "ticker_source_signals": _matching_ticker_rows(panel_data.rows("ticker_source_signals"), normalized_ticker),
         "ownership_consensus": _matching_ticker_rows(panel_data.rows("ownership_consensus"), normalized_ticker),
         "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
         "theses": _matching_ticker_rows(panel_data.rows("theses"), normalized_ticker),

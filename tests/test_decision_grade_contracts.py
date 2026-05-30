@@ -205,6 +205,45 @@ def test_decision_readiness_contract_preserves_scores_and_unblock_actions(tmp_pa
     assert nvda["portfolio_fit"]["has_portfolio_context"] is True
 
 
+def test_canonical_source_signals_promote_universe_with_market_context_blockers(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    observed_at = datetime.now(UTC).isoformat()
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO news_items VALUES ('news-newt', ?, 'Test Research', 'NEWT source catalyst', ?, 'https://example.com/newt', 'test_research', '{}')",
+            [observed_at, json.dumps(["NEWT"])],
+        )
+
+    panel = load_panel_data(config_for(db_path))
+    sources = require_rows(panel, "sources")
+    source_runs = require_rows(panel, "source_runs")
+    source_items = require_rows(panel, "source_items")
+    source_signals = require_rows(panel, "ticker_source_signals")
+    discovered = require_rows(panel, "discovered_universe")
+    queue = require_rows(panel, "decision_queue")
+
+    assert any(row.get("source_id") == "test_research" for row in sources)
+    assert any(row.get("source_id") == "test_research" for row in source_runs)
+    assert any(row.get("id") == "news:news-newt" for row in source_items)
+
+    signal = row_for_symbol(source_signals, "NEWT")
+    assert signal["source_id"] == "test_research"
+    assert signal["needs_market_context"] is True
+
+    universe_row = row_for_symbol(discovered, "NEWT")
+    assert universe_row["source_counts"]["test_research"] >= 1
+
+    decision_row = row_for_symbol(queue, "NEWT")
+    assert decision_row["action_grade"] == "Stale"
+    assert contains_gate(decision_row, "intraday")
+    assert contains_gate(decision_row, "daily")
+
+    with db(db_path) as con:
+        instruments = query_all(con, "SELECT symbol, category, source FROM instruments WHERE symbol = 'NEWT'")
+    assert instruments == [{"symbol": "NEWT", "category": "source-discovered", "source": "source_signal:test_research"}]
+
+
 @pytest.mark.parametrize(
     ("path", "expected_key"),
     [
@@ -413,6 +452,12 @@ def row_for_source(rows: list[dict[str, Any]], source: str) -> dict[str, Any]:
         if row.get("source") == source or row.get("source_key") == source:
             return row
     raise AssertionError(f"missing source freshness row for {source}")
+
+
+def query_all(con: Any, sql: str) -> list[dict[str, Any]]:
+    result = con.execute(sql)
+    columns = [column[0] for column in result.description]
+    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
 def normalize_symbol(value: Any) -> str:

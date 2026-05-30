@@ -34,6 +34,10 @@ http://192.168.50.197:8000/api/status
    metadata, estimates, earnings, ETF premiums, SEPA, liquidity, correlations,
    options payoff scenarios, earnings setup scores, and deterministic
    DCF/relative/blended valuations.
+   Decision-model rebuilds now sync existing rows into canonical
+   `source_registry`, `source_runs`, `source_items`, and
+   `ticker_source_signals`, then promote source-discovered tickers to
+   refreshable instruments with explicit market-context blockers.
 4. `update_disclosures`: refresh public disclosures, official House filings,
    configured 13F trackers, disclosure symbol prices, and trader replicas.
    Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
@@ -61,6 +65,10 @@ Each underlying job still writes its own status file.
 After a successful refresh:
 
 - `/api/source-freshness` shows no stale source as healthy.
+- `/api/sources` lists enabled source families with latest run, item counts,
+  ticker counts, and any failure/detail state.
+- `/api/ticker-source-signals` shows source-discovered ticker evidence; rows
+  missing quote/daily analysis are marked `needs_market_context`.
 - `/api/decision-queue` has nonempty `Act`, `Research`, `Watch`, `Reject`, and
   `Stale` buckets when seeded data supports them.
 - Top `Act` rows have current `as_of` values, nonzero source/evidence counts,

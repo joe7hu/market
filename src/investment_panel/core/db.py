@@ -146,6 +146,74 @@ CREATE TABLE IF NOT EXISTS source_health (
     source_url TEXT
 );
 
+CREATE TABLE IF NOT EXISTS source_registry (
+    source_id TEXT PRIMARY KEY,
+    source_name TEXT,
+    source_family TEXT,
+    source_kind TEXT,
+    origin TEXT,
+    enabled BOOLEAN,
+    ingestion_mode TEXT,
+    raw_access TEXT,
+    source_url TEXT,
+    notes TEXT,
+    config JSON,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS source_runs (
+    source_id TEXT,
+    run_id TEXT,
+    capability TEXT,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    status TEXT,
+    item_count INTEGER,
+    ticker_count INTEGER,
+    failure_detail TEXT,
+    raw JSON,
+    PRIMARY KEY(source_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS source_items (
+    id TEXT PRIMARY KEY,
+    source_id TEXT,
+    source_run_id TEXT,
+    source_kind TEXT,
+    title TEXT,
+    url TEXT,
+    author TEXT,
+    published_at TIMESTAMP,
+    observed_at TIMESTAMP,
+    summary TEXT,
+    tickers JSON,
+    evidence_refs JSON,
+    raw JSON,
+    content_hash TEXT,
+    license_status TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ticker_source_signals (
+    id TEXT PRIMARY KEY,
+    source_item_id TEXT,
+    source_id TEXT,
+    symbol TEXT,
+    observed_at TIMESTAMP,
+    signal_type TEXT,
+    sentiment TEXT,
+    direction TEXT,
+    confidence DOUBLE,
+    thesis TEXT,
+    antithesis TEXT,
+    catalysts JSON,
+    risks JSON,
+    invalidation TEXT,
+    evidence_refs JSON,
+    needs_market_context BOOLEAN,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS provider_runs (
     id TEXT PRIMARY KEY,
     provider TEXT,
@@ -702,6 +770,23 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             "daily_analysis_freshness": "TEXT",
             "filing_freshness": "TEXT",
             "thesis_freshness": "TEXT",
+        },
+        "source_registry": {
+            "source_family": "TEXT",
+            "raw_access": "TEXT",
+        },
+        "source_runs": {
+            "item_count": "INTEGER",
+            "ticker_count": "INTEGER",
+            "failure_detail": "TEXT",
+        },
+        "source_items": {
+            "source_run_id": "TEXT",
+            "content_hash": "TEXT",
+            "license_status": "TEXT",
+        },
+        "ticker_source_signals": {
+            "needs_market_context": "BOOLEAN",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

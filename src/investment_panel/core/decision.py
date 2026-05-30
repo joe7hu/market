@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+from investment_panel.core.sources import promote_source_signal_instruments, sync_canonical_sources
 
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,14}$")
@@ -42,6 +43,8 @@ def refresh_decision_read_models(con: Any, config: Any | None = None) -> dict[st
     """Build and persist the decision read models from current source tables."""
 
     watchlist = watchlist_from_config(config)
+    source_sync = sync_canonical_sources(con)
+    promoted_instruments = promote_source_signal_instruments(con)
     source_freshness = build_source_freshness(con)
     universe = build_discovered_universe(con, watchlist)
     queue = build_decision_queue(con, universe, source_freshness)
@@ -59,6 +62,9 @@ def refresh_decision_read_models(con: Any, config: Any | None = None) -> dict[st
         "symbol_decision_snapshots": len(snapshots),
         "decision_universe_members": sum(1 for row in universe if row.get("decision_universe_member")),
         "stale_queue_rows": sum(1 for row in queue if row.get("action_grade") == "Stale"),
+        "source_items": source_sync.get("items", 0),
+        "source_signals": source_sync.get("signals", 0),
+        "promoted_source_instruments": promoted_instruments,
     }
 
 
@@ -187,6 +193,16 @@ def build_discovered_universe(con: Any, config_watchlist: list[dict[str, Any]]) 
     for row in query_rows(con, "SELECT published_at, provider, related_symbols, title FROM news_items"):
         for symbol in related_symbols(row.get("related_symbols")):
             touch(symbol, row.get("provider") or "news", "TradingView/news catalyst mention", row.get("published_at"), None, None, 1.5)
+    for row in query_rows(con, "SELECT symbol, observed_at, signal_type, source_id, thesis FROM ticker_source_signals WHERE symbol IS NOT NULL"):
+        touch(
+            row.get("symbol"),
+            row.get("source_id") or "source_signal",
+            f"canonical source signal: {row.get('signal_type') or 'evidence'}",
+            row.get("observed_at"),
+            None,
+            None,
+            1.75,
+        )
 
     for row in query_rows(con, "SELECT query, symbol, observed_at, description, exchange FROM tradingview_symbol_search"):
         touch(row.get("symbol"), "tradingview_search", f"TradingView search result for {row.get('query')}", row.get("observed_at"), row.get("description"), None, 0.5)
@@ -372,6 +388,25 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
         add(f"{row.get('provider')}:{row.get('capability')}:provider-run", "provider_run", row.get("provider") or "provider", row.get("finished_at"), row.get("status") or "ok", row.get("detail") or "")
     for row in query_rows(con, "SELECT provider, checked_at, status, detail, last_data_at FROM broker_provider_status"):
         add(f"broker:{row.get('provider')}", "provider_health", row.get("provider") or "broker", row.get("last_data_at") or row.get("checked_at"), row.get("status") or "missing", row.get("detail") or "")
+    for row in query_rows(con, "SELECT source_id, run_id, capability, finished_at, status, failure_detail FROM source_runs"):
+        status = str(row.get("status") or "unknown").lower()
+        source_type = "documentation" if status in {"verified_docs", "documentation", "docs_only"} else "provider_run"
+        add(
+            f"{row.get('source_id')}:{row.get('capability') or 'source'}:source-run",
+            source_type,
+            row.get("source_id") or "source",
+            row.get("finished_at"),
+            row.get("status") or "unknown",
+            row.get("failure_detail") or "",
+            docs_only=source_type == "documentation",
+        )
+    for row in query_rows(con, "SELECT id, source_id, source_kind, observed_at FROM source_items"):
+        add(
+            f"{row.get('source_id')}:{row.get('source_kind') or 'item'}:{row.get('id')}",
+            "news" if row.get("source_kind") in {"news", "arco_thesis"} else "filing" if str(row.get("source_kind") or "").startswith("13f") else "provider_run",
+            row.get("source_id") or "source_item",
+            row.get("observed_at"),
+        )
     return dedupe_freshness(rows)
 
 
@@ -622,6 +657,10 @@ def classify_freshness(source_type: str, observed: datetime | None, status: str,
     normalized_status = str(status or "").lower()
     if docs_only or source_type == "documentation":
         return "documentation"
+    if normalized_status in {"disabled", "not_configured", "docs_only", "verified_docs", "documentation"}:
+        return "not_applicable"
+    if normalized_status in {"not_loaded", "configured"}:
+        return "unknown"
     if normalized_status in {"error", "failed", "missing_dependency"}:
         return "failed"
     if observed is None:

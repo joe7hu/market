@@ -94,6 +94,17 @@ Sources:
 Decision-grade read models must evaluate source freshness from source-specific
 contracts, not from row existence alone.
 
+- Canonical source entities live in `source_registry`, `source_runs`,
+  `source_items`, and `ticker_source_signals`.
+- Existing adapters may keep source-specific detail tables, but backend refresh
+  syncs those rows into canonical source items and ticker signals before
+  rebuilding the decision universe.
+- Tickers discovered from source items/signals are promoted to refreshable
+  instruments as `source-discovered`; if market context is missing they must be
+  blocked with explicit quote/daily-analysis gates instead of becoming
+  actionable.
+- X/Twitter-derived sources are imported only through Arco/Birdclaw summaries
+  and source refs. Market should not own X login or scraping.
 - Intraday quotes, options, and news: stale after `4` market hours.
 - Daily prices, technicals, SEPA, liquidity, and correlations: stale after `1`
   trading day.
