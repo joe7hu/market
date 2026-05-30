@@ -273,6 +273,8 @@ def source_consensus(con: Any) -> list[dict[str, Any]]:
         source_name = str(registry_row.get("source_name") or registry_row.get("source_id") or "")
         if not source_name or source_name.lower() in loaded_names:
             continue
+        if not (int(registry_row.get("items_count") or 0) or int(registry_row.get("tickers_count") or 0)):
+            continue
         output.append(
             {
                 "source_name": source_name,
@@ -285,7 +287,7 @@ def source_consensus(con: Any) -> list[dict[str, Any]]:
                 "bullish_symbols": [],
                 "bearish_symbols": [],
                 "net_consensus": 0,
-                "recommendation": "loaded" if registry_row.get("items_count") else "candidate_source",
+                "recommendation": "loaded",
                 "freshness": registry_row.get("freshness"),
                 "source_id": registry_row.get("source_id"),
             }

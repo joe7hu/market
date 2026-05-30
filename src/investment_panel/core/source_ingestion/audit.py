@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from investment_panel.core.db import query_rows
-from investment_panel.core.source_ingestion.canonical import sync_canonical_sources
+from investment_panel.core.source_ingestion.canonical import SEC_FILING_SOURCE_BY_FORM, sync_canonical_sources
+from investment_panel.core.source_ingestion.definitions import MUNGERMODE_BENCHMARK_SOURCES
 from investment_panel.core.source_ingestion.read_models import source_registry_rows
 
 
@@ -33,7 +34,7 @@ def source_ingestion_audit(con: Any) -> dict[str, Any]:
     source_rows = source_registry_rows(con)
     source_failures = []
     for row in source_rows:
-        failure = source_failure(row)
+        failure = source_failure(con, row)
         if failure is not None:
             source_failures.append(failure)
     broker_rows = broker_audit_rows(con)
@@ -46,13 +47,16 @@ def source_ingestion_audit(con: Any) -> dict[str, Any]:
         "source_failures": source_failures,
         "broker_rows": broker_rows,
         "failures": failures,
+        "mungermode_benchmark": mungermode_benchmark_audit(source_rows),
     }
 
 
-def source_failure(row: dict[str, Any]) -> dict[str, Any] | None:
+def source_failure(con: Any, row: dict[str, Any]) -> dict[str, Any] | None:
     if row.get("enabled") is not True:
         return None
     source_id = str(row.get("source_id") or "")
+    if _is_aggregate_source(row):
+        return None
     latest_status = str(row.get("latest_run_status") or "").lower()
     item_count = int(row.get("items_count") or 0)
     signal_count = int(row.get("signals_count") or 0)
@@ -65,12 +69,46 @@ def source_failure(row: dict[str, Any]) -> dict[str, Any] | None:
             "detail": row.get("latest_failure_detail") or "Latest source run failed.",
         }
     if item_count == 0 and signal_count == 0:
+        if not source_has_expected_rows(con, source_id):
+            return None
         return {
             "source_id": source_id,
             "status": "not_ingested",
             "detail": "Enabled source has no canonical items or ticker signals.",
         }
     return None
+
+
+def source_has_expected_rows(con: Any, source_id: str) -> bool:
+    sec_forms = {
+        source["source_id"]: form_type
+        for form_type, source in SEC_FILING_SOURCE_BY_FORM.items()
+    }
+    form_type = sec_forms.get(source_id)
+    if form_type:
+        row = query_rows(con, "SELECT count(*) AS count FROM equity_fundamentals WHERE upper(form_type) = ?", [form_type])[0]
+        return int(row.get("count") or 0) > 0
+    return True
+
+
+def mungermode_benchmark_audit(source_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    configured_names = {str(row.get("source_name") or "").casefold() for row in source_rows}
+    missing = [
+        row["source_name"]
+        for row in MUNGERMODE_BENCHMARK_SOURCES
+        if str(row["source_name"]).casefold() not in configured_names
+    ]
+    return {
+        "source_url": "https://mungermode.com/sources",
+        "benchmark_sources": len(MUNGERMODE_BENCHMARK_SOURCES),
+        "configured_sources": len(MUNGERMODE_BENCHMARK_SOURCES) - len(missing),
+        "missing_sources": missing,
+    }
+
+
+def _is_aggregate_source(row: dict[str, Any]) -> bool:
+    config = row.get("config")
+    return isinstance(config, dict) and config.get("aggregate_source") is True
 
 
 def broker_audit_rows(con: Any) -> list[dict[str, Any]]:

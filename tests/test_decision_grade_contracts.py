@@ -12,7 +12,7 @@ from app import main as api_main
 from investment_panel.core.db import db, init_db
 from investment_panel.core.decision import classify_freshness, symbol_freshness_detail
 from investment_panel.core.panel import load_panel_data
-from investment_panel.core.sources import source_ingestion_audit
+from investment_panel.core.sources import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, source_ingestion_audit
 
 
 DECISION_TABLES = {
@@ -275,13 +275,15 @@ def test_detail_source_tables_materialize_canonical_signals(tmp_path: Path) -> N
     source_signals = require_rows(panel, "ticker_source_signals")
 
     source_ids = {row["source_id"] for row in sources}
-    assert {"sec_edgar", "coingecko", "yfinance"}.issubset(source_ids)
+    assert {"sec_edgar", "sec_annual_reports_10k", "coingecko", "yfinance"}.issubset(source_ids)
     assert {"equity_fundamental", "crypto_fundamental", "earnings_event", "analyst_estimate"}.issubset(
         {row["source_kind"] for row in source_items}
     )
+    sec_item = next(row for row in source_items if row.get("source_id") == "sec_annual_reports_10k")
+    assert sec_item["title"].startswith("NVDA 10-K")
 
     expected = {
-        "NVDA": ("sec_edgar", "fundamental"),
+        "NVDA": ("sec_annual_reports_10k", "fundamental"),
         "BTC-USD": ("coingecko", "fundamental"),
         "COIN": ("yfinance", "earnings_event"),
         "AMD": ("yfinance", "analyst_estimate"),
@@ -295,6 +297,28 @@ def test_detail_source_tables_materialize_canonical_signals(tmp_path: Path) -> N
         assert signal["catalysts"]
         assert signal["risks"]
         assert signal["invalidation"]
+
+    source_consensus = require_rows(panel, "source_consensus")
+    assert any(row.get("source_id") == "sec_annual_reports_10k" for row in source_consensus)
+    assert not any(row.get("recommendation") == "candidate_source" for row in source_consensus)
+
+
+def test_mungermode_benchmark_sources_are_registry_covered(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    panel = load_panel_data(config_for(db_path))
+    registry_names = {str(row.get("source_name") or "").casefold() for row in panel["tables"]["sources"]}
+    benchmark_names = {row["source_name"].casefold() for row in MUNGERMODE_BENCHMARK_SOURCES}
+    definition_names = {row["source_name"].casefold() for row in SOURCE_DEFINITIONS}
+
+    assert len(MUNGERMODE_BENCHMARK_SOURCES) == 37
+    assert benchmark_names.issubset(definition_names)
+    assert benchmark_names.issubset(registry_names)
+
+    with db(db_path) as con:
+        audit = source_ingestion_audit(con)
+    assert audit["mungermode_benchmark"]["benchmark_sources"] == 37
+    assert audit["mungermode_benchmark"]["missing_sources"] == []
 
 
 def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_empty_source(tmp_path: Path) -> None:

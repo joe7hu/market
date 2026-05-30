@@ -26,6 +26,29 @@ SEC_DISCLOSURE_TYPES = {
     "trader_portfolio_model",
 }
 
+SEC_FILING_SOURCE_BY_FORM = {
+    "8-K": {
+        "source_id": "sec_material_events_8k",
+        "source_name": "Material Events (8-K)",
+    },
+    "10-Q": {
+        "source_id": "sec_quarterly_reports_10q",
+        "source_name": "Quarterly Reports (10-Q)",
+    },
+    "10-K": {
+        "source_id": "sec_annual_reports_10k",
+        "source_name": "Annual Reports (10-K)",
+    },
+    "DEF 14A": {
+        "source_id": "sec_proxy_statements_def14a",
+        "source_name": "Proxy Statements (DEF 14A)",
+    },
+    "6-K": {
+        "source_id": "sec_foreign_reports_6k",
+        "source_name": "Foreign Reports (6-K)",
+    },
+}
+
 
 def sync_canonical_sources(con: Any) -> dict[str, Any]:
     ensure_source_registry(con)
@@ -197,21 +220,26 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
             continue
-        form_type = str(row.get("form_type") or "filing")
+        form_type = normalize_sec_form_type(row.get("form_type"))
+        filing_source = sec_filing_source_for_form(form_type)
         period_end = row.get("period_end")
         title = f"{symbol} {form_type} fundamentals"
         if period_end:
             title = f"{title} for {period_end}"
         refs = [row.get("source_url")] if row.get("source_url") else []
+        if filing_source["source_id"] != "sec_edgar":
+            legacy_item_id = stable_id("equity_fundamental", symbol, period_end, form_type)
+            con.execute("DELETE FROM ticker_source_signals WHERE source_item_id = ?", [legacy_item_id])
+            con.execute("DELETE FROM source_items WHERE id = ?", [legacy_item_id])
         stored_items, stored_signals = store_item_with_signals(
             con,
             {
-                "id": stable_id("equity_fundamental", symbol, period_end, form_type),
-                "source_id": "sec_edgar",
+                "id": stable_id("sec_filing", filing_source["source_id"], symbol, period_end, form_type),
+                "source_id": filing_source["source_id"],
                 "source_kind": "equity_fundamental",
                 "title": title,
                 "url": row.get("source_url"),
-                "author": "SEC EDGAR",
+                "author": filing_source["source_name"],
                 "published_at": row.get("filing_date") or period_end,
                 "observed_at": row.get("filing_date") or period_end,
                 "summary": title,
@@ -330,6 +358,7 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
 
 
 def ensure_canonical_sources(con: Any) -> dict[str, Any]:
+    ensure_source_registry(con)
     counts = query_rows(
         con,
         """
@@ -340,9 +369,62 @@ def ensure_canonical_sources(con: Any) -> dict[str, Any]:
             (SELECT count(*) FROM ticker_source_signals) AS ticker_source_signals
         """,
     )[0]
-    if any(int(counts.get(key) or 0) > 0 for key in counts):
+    if any(int(counts.get(key) or 0) > 0 for key in counts) and not canonical_sources_need_sync(con):
         return {**counts, "status": "cached"}
     return sync_canonical_sources(con)
+
+
+def canonical_sources_need_sync(con: Any) -> bool:
+    """Detect source registry/canonical drift from newly mapped source families."""
+
+    if missing_registry_definitions(con):
+        return True
+    return bool(sec_filing_rows_missing_canonical_sources(con))
+
+
+def missing_registry_definitions(con: Any) -> list[str]:
+    rows = query_rows(
+        con,
+        """
+        SELECT source_id
+        FROM source_registry
+        WHERE source_id IN (
+            'sec_material_events_8k',
+            'sec_quarterly_reports_10q',
+            'sec_annual_reports_10k',
+            'sec_proxy_statements_def14a',
+            'sec_foreign_reports_6k'
+        )
+        """,
+    )
+    present = {str(row.get("source_id")) for row in rows}
+    return sorted({source["source_id"] for source in SEC_FILING_SOURCE_BY_FORM.values()} - present)
+
+
+def sec_filing_rows_missing_canonical_sources(con: Any) -> list[str]:
+    missing: list[str] = []
+    for form_type, source in SEC_FILING_SOURCE_BY_FORM.items():
+        source_id = source["source_id"]
+        row = query_rows(
+            con,
+            """
+            SELECT
+                (SELECT count(*) FROM equity_fundamentals WHERE upper(form_type) = ?) AS raw_rows,
+                (SELECT count(*) FROM source_items WHERE source_id = ?) AS canonical_rows
+            """,
+            [form_type, source_id],
+        )[0]
+        if int(row.get("raw_rows") or 0) > 0 and int(row.get("canonical_rows") or 0) == 0:
+            missing.append(source_id)
+    return missing
+
+
+def normalize_sec_form_type(value: Any) -> str:
+    return str(value or "filing").strip().upper()
+
+
+def sec_filing_source_for_form(form_type: str) -> dict[str, str]:
+    return SEC_FILING_SOURCE_BY_FORM.get(normalize_sec_form_type(form_type), {"source_id": "sec_edgar", "source_name": "SEC EDGAR"})
 
 
 def store_item_with_signals(

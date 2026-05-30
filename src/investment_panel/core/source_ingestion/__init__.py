@@ -1,6 +1,6 @@
 """Canonical source ingestion package."""
 
-from investment_panel.core.source_ingestion.definitions import SOURCE_DEFINITIONS, VERIFIED_SOURCES
+from investment_panel.core.source_ingestion.definitions import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, VERIFIED_SOURCES
 from investment_panel.core.source_ingestion.health import lightweight_online_check, record_verified_sources
 from investment_panel.core.source_ingestion.registry import ensure_source_registry
 from investment_panel.core.source_ingestion.canonical import (
@@ -34,6 +34,7 @@ from investment_panel.core.source_ingestion.utils import (
 
 __all__ = [
     "SOURCE_DEFINITIONS",
+    "MUNGERMODE_BENCHMARK_SOURCES",
     "VERIFIED_SOURCES",
     "decode_row",
     "ensure_canonical_sources",
