@@ -73,6 +73,11 @@ body {
   color: var(--foreground);
 }
 
+table,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
 button,
 input,
 select,

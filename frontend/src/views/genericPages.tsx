@@ -11,6 +11,7 @@ import { displayValue, rows, tickerSymbolFromRow } from "@/utils";
 import { displayField, formatMoney, formatPct, fullField, listField, numberField, symbolList, textField, titleLabel, toneFromText } from "./rowFormat";
 
 type OpenTicker = (symbol: string) => void;
+type MetricSpec = [string, ReactNode, string, "good" | "warn" | "bad" | "info" | "muted"];
 
 export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }: { data: PanelData; model: AppModel; lastRefresh: Date | null; loading: boolean; onRefresh: () => void; onOpenTicker: OpenTicker }) {
   const feed = rows(data.feedSignals);
@@ -67,6 +68,7 @@ export function PortfolioPage({ data, model, onOpenTicker, onRefresh }: { data: 
         ["Review Actions", reviewRows.length, "open portfolio decisions", reviewRows.length ? "warn" : "good"],
       ]}
     >
+      <PortfolioExposureMap holdings={model.holdings} onOpenTicker={onOpenTicker} />
       <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} />
       <RowsSection title="Risk Cards" rows={riskRows} onOpenTicker={onOpenTicker} />
       <RowsSection title="Review Actions" rows={reviewRows} onOpenTicker={onOpenTicker} />
@@ -75,8 +77,43 @@ export function PortfolioPage({ data, model, onOpenTicker, onRefresh }: { data: 
   );
 }
 
+function PortfolioExposureMap({ holdings, onOpenTicker }: { holdings: AppModel["holdings"]; onOpenTicker: OpenTicker }) {
+  const priced = holdings.filter((holding) => holding.hasMarketValue).slice().sort((a, b) => b.weight - a.weight);
+  if (!priced.length) return null;
+  return (
+    <DataTableFrame title="Exposure Map">
+      <div className="grid gap-3 p-4 lg:grid-cols-2 xl:grid-cols-3">
+        {priced.slice(0, 6).map((holding) => {
+          const tone = holding.weight > 50 ? "bad" : holding.weight > 30 ? "warn" : "info";
+          return (
+            <button
+              key={holding.ticker}
+              type="button"
+              className="min-h-24 rounded-md border border-border bg-background p-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => onOpenTicker(holding.ticker)}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-base font-semibold">{holding.ticker}</div>
+                  <div className="mt-1 text-sm text-muted-foreground">{formatMoney(holding.marketValue)}</div>
+                </div>
+                <StatusBadge tone={tone}>{holding.weight.toFixed(1)}%</StatusBadge>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                <div className={cn("h-full rounded-full", tone === "bad" ? "bg-red-600" : tone === "warn" ? "bg-amber-500" : "bg-blue-600")} style={{ width: `${Math.min(100, Math.max(2, holding.weight))}%` }} />
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{holding.nextStep}</p>
+            </button>
+          );
+        })}
+      </div>
+    </DataTableFrame>
+  );
+}
+
 export function ResearchPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Names to accept, reject, watch, or research next." sections={[["Decision Queue", rows(data.decisionQueue)], ["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Opportunity Sources", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} />;
+  const decisionRows = rows(data.decisionQueue);
+  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Names to accept, reject, watch, or research next." sections={[["Decision Queue", decisionRows], ["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Opportunity Sources", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} beforeTables={<ResearchDecisionBoard rows={decisionRows} onOpenTicker={onOpenTicker} />} />;
 }
 
 export function FilingsPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
@@ -165,7 +202,7 @@ function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPa
   );
 }
 
-function WorkspacePage({ eyebrow, title, subtitle, actions, metrics = [], children }: { eyebrow: string; title: string; subtitle: string; actions?: ReactNode; metrics?: Array<[string, ReactNode, string, "good" | "warn" | "bad" | "info" | "muted"]>; children: ReactNode }) {
+function WorkspacePage({ eyebrow, title, subtitle, actions, metrics = [], children }: { eyebrow: string; title: string; subtitle: string; actions?: ReactNode; metrics?: MetricSpec[]; children: ReactNode }) {
   return (
     <section>
       <PageHeader eyebrow={eyebrow} title={title} subtitle={subtitle} actions={actions} />
@@ -179,20 +216,133 @@ function WorkspacePage({ eyebrow, title, subtitle, actions, metrics = [], childr
   );
 }
 
-function DatasetPage({ title, eyebrow, subtitle, sections, onOpenTicker }: { title: string; eyebrow: string; subtitle: string; sections: Array<[string, RowRecord[]]>; onOpenTicker?: OpenTicker }) {
+function DatasetPage({ title, eyebrow, subtitle, sections, onOpenTicker, beforeTables }: { title: string; eyebrow: string; subtitle: string; sections: Array<[string, RowRecord[]]>; onOpenTicker?: OpenTicker; beforeTables?: ReactNode }) {
   const totalRows = sections.reduce((total, [, sectionRows]) => total + sectionRows.length, 0);
   return (
     <WorkspacePage
       eyebrow={eyebrow}
       title={title}
       subtitle={subtitle}
-      metrics={[
-        ["Loaded Rows", totalRows, "across this workspace", totalRows ? "info" : "muted"],
-        ["Sections", sections.length, "backend tables", "info"],
-      ]}
+      metrics={workspaceMetrics(title, sections, totalRows)}
     >
+      <WorkspaceCoverage sections={sections} />
+      {beforeTables}
       {sections.map(([sectionTitle, sectionRows]) => <RowsSection key={sectionTitle} title={sectionTitle} rows={sectionRows} onOpenTicker={onOpenTicker} />)}
     </WorkspacePage>
+  );
+}
+
+function ResearchDecisionBoard({ rows: decisionRows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  const topRows = decisionRows.slice(0, 4);
+  if (!topRows.length) return null;
+  return (
+    <DataTableFrame title="Decision Board">
+      <div className="grid gap-3 p-4 lg:grid-cols-2">
+        {topRows.map((row, index) => {
+          const primarySymbol = tickerSymbolFromRow(row) || symbolList(row)[0];
+          const label = primarySymbol || `Row ${index + 1}`;
+          const decision = displayField(row, ["decision_bucket", "decision", "action_grade"], "Review");
+          const score = numberField(row, ["decision_score", "score"], Number.NaN);
+          const tone = toneFromText(`${decision} ${Number.isFinite(score) && score >= 70 ? "ready" : ""}`);
+          return (
+            <button
+              key={`${label}-${index}`}
+              type="button"
+              className="rounded-md border border-border bg-background p-4 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => primarySymbol && onOpenTicker(primarySymbol)}
+              disabled={!primarySymbol}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold">{label}</div>
+                  <p className="mt-1 text-sm text-muted-foreground">{displayField(row, ["reason", "summary", "source"], "Decision row loaded")}</p>
+                </div>
+                <StatusBadge tone={tone}>{decision}</StatusBadge>
+              </div>
+              {Number.isFinite(score) ? (
+                <div className="mt-3">
+                  <div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>Decision score</span><span>{score.toFixed(score % 1 ? 2 : 0)}</span></div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div className={cn("h-full rounded-full", score >= 70 ? "bg-green-600" : score >= 40 ? "bg-amber-500" : "bg-muted-foreground")} style={{ width: `${Math.min(100, Math.max(2, score))}%` }} />
+                  </div>
+                </div>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function workspaceMetrics(title: string, sections: Array<[string, RowRecord[]]>, totalRows: number): MetricSpec[] {
+  const count = (sectionTitle: string) => sections.find(([candidate]) => candidate === sectionTitle)?.[1].length ?? 0;
+  const populated = sections.filter(([, sectionRows]) => sectionRows.length).length;
+  const topSection = sections.slice().sort((a, b) => b[1].length - a[1].length)[0];
+  const fallback: MetricSpec[] = [
+    ["Coverage", `${populated}/${sections.length}`, "populated backend surfaces", populated === sections.length ? "good" : populated ? "info" : "muted"],
+    ["Rows In Scope", totalRows.toLocaleString(), "available for filtering and review", totalRows ? "info" : "muted"],
+    ["Largest Surface", topSection ? topSection[0] : "None", topSection ? `${topSection[1].length.toLocaleString()} rows` : "no rows loaded", topSection?.[1].length ? "info" : "muted"],
+  ];
+
+  const profiles: Record<string, MetricSpec[]> = {
+    Watchlist: [
+      ["Quote Coverage", count("Quotes").toLocaleString(), "priced names available", count("Quotes") ? "good" : "warn"],
+      ["Watchlists", count("TradingView Watchlists").toLocaleString(), "TradingView lists loaded", count("TradingView Watchlists") ? "info" : "muted"],
+      ["Screen Rows", count("Universe Screen").toLocaleString(), "rankable universe rows", count("Universe Screen") ? "info" : "muted"],
+    ],
+    Sources: [
+      ["Freshness Checks", count("Freshness").toLocaleString(), "source-level timestamps", count("Freshness") ? "good" : "warn"],
+      ["Provider Runs", count("Provider Runs").toLocaleString(), "ingestion attempts recorded", count("Provider Runs") ? "info" : "muted"],
+      ["Health Rows", count("Source Health").toLocaleString(), "provider health evidence", count("Source Health") ? "info" : "warn"],
+    ],
+    Superinvestors: [
+      ["Disclosures", count("Disclosures").toLocaleString(), "filing rows available", count("Disclosures") ? "info" : "muted"],
+      ["Investor Models", count("Trader Twins").toLocaleString(), "tracked investor profiles", count("Trader Twins") ? "info" : "muted"],
+      ["Consensus", count("Ownership Consensus").toLocaleString(), "shared ownership signals", count("Ownership Consensus") ? "good" : "muted"],
+    ],
+    "Market Valuation": [
+      ["Context Rows", count("Market Context").toLocaleString(), "macro and valuation backdrop", count("Market Context") ? "info" : "muted"],
+      ["Technicals", count("Technicals").toLocaleString(), "trend features loaded", count("Technicals") ? "good" : "warn"],
+      ["Earnings Setups", count("Earnings Setups").toLocaleString(), "event timing rows", count("Earnings Setups") ? "info" : "muted"],
+    ],
+    "Research Queue": [
+      ["Decision Queue", count("Decision Queue").toLocaleString(), "accept, reject, watch rows", count("Decision Queue") ? "good" : "warn"],
+      ["Research Packets", count("Research Packets").toLocaleString(), "evidence packets ready", count("Research Packets") ? "info" : "muted"],
+      ["Memos", count("Memos").toLocaleString(), "stored decision writeups", count("Memos") ? "info" : "muted"],
+    ],
+    Filings: [
+      ["Disclosures", count("Disclosures").toLocaleString(), "filing rows available", count("Disclosures") ? "info" : "muted"],
+      ["Trader Twins", count("Trader Twins").toLocaleString(), "investor profiles", count("Trader Twins") ? "info" : "muted"],
+      ["Coverage", `${populated}/${sections.length}`, "populated filing surfaces", populated === sections.length ? "good" : "muted"],
+    ],
+    Calendar: [
+      ["Catalysts", count("Catalysts").toLocaleString(), "review-driving events", count("Catalysts") ? "good" : "warn"],
+      ["Earnings", count("Earnings").toLocaleString(), "earnings timing rows", count("Earnings") ? "info" : "muted"],
+      ["Coverage", `${populated}/${sections.length}`, "populated calendar surfaces", populated === sections.length ? "good" : "muted"],
+    ],
+  };
+
+  return profiles[title] ?? fallback;
+}
+
+function WorkspaceCoverage({ sections }: { sections: Array<[string, RowRecord[]]> }) {
+  const populated = sections.filter(([, sectionRows]) => sectionRows.length);
+  return (
+    <div className="mb-4 rounded-md border border-border bg-card px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-semibold">Surface coverage</span>
+        {sections.map(([sectionTitle, sectionRows]) => (
+          <StatusBadge key={sectionTitle} tone={sectionRows.length ? "info" : "muted"}>
+            <span className="sr-only">{sectionTitle}: </span>
+            {sectionTitle} {sectionRows.length.toLocaleString()}
+          </StatusBadge>
+        ))}
+      </div>
+      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+        {populated.length ? `${populated.length} of ${sections.length} source surfaces are populated for this workspace.` : "No backend source surfaces are populated for this workspace."}
+      </p>
+    </div>
   );
 }
 
@@ -204,24 +354,24 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
 
   if (!sectionRows.length) {
     return (
-      <DataTableFrame title={title}>
-        <div className="px-4 py-3 text-sm text-muted-foreground">No rows for the current scope.</div>
+      <DataTableFrame title={<SectionTitle title={title} count={0} />}>
+        <div className="px-4 py-6 text-sm text-muted-foreground">No rows for the current scope.</div>
       </DataTableFrame>
     );
   }
 
   return (
     <DataTableFrame
-      title={title}
+      title={<SectionTitle title={title} count={sectionRows.length} />}
       action={
         <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-          <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
+          <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline" aria-live="polite">
             {filteredRows.length.toLocaleString()} / {sectionRows.length.toLocaleString()}
           </span>
-          <div className="relative w-full max-w-56">
+          <div className="relative w-full max-w-64">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              className="h-8 pl-8 text-xs"
+              className="pl-8 text-sm"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Filter rows"
@@ -234,8 +384,8 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
       <table className="w-full min-w-[840px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
-            {columns.map((column) => <th key={column} className="px-3 py-2">{titleLabel(column)}</th>)}
-            {onOpenTicker && <th className="px-3 py-2">Open</th>}
+            {columns.map((column) => <th key={column} className="px-3 py-3">{titleLabel(column)}</th>)}
+            {onOpenTicker && <th className="px-3 py-3">Open</th>}
           </tr>
         </thead>
         <tbody>
@@ -244,7 +394,7 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
             return (
               <tr key={index} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 {columns.map((column) => (
-                  <td key={column} className={cn("max-w-[360px] px-3 py-2 leading-6", isPriorityColumn(column) && "font-medium")}>
+                  <td key={column} className={cn("max-w-[360px] px-3 py-3 leading-6", isPriorityColumn(column) && "font-medium")}>
                     {formatCellContent(column, row[column])}
                   </td>
                 ))}
@@ -266,6 +416,17 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
         </tbody>
       </table>
     </DataTableFrame>
+  );
+}
+
+function SectionTitle({ title, count }: { title: string; count: number }) {
+  return (
+    <span className="flex items-center gap-2">
+      <span>{title}</span>
+      <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground" aria-label={`${count} rows`}>
+        {count.toLocaleString()}
+      </span>
+    </span>
   );
 }
 
@@ -399,7 +560,7 @@ function HoldingsTable({ holdings, onOpenTicker }: { holdings: AppModel["holding
         <tbody>
           {holdings.map((holding) => (
             <tr key={holding.ticker} className="border-b border-border">
-              <td className="px-3 py-2"><Button type="button" variant="link" className="h-auto p-0" onClick={() => onOpenTicker(holding.ticker)}>{holding.ticker}</Button></td>
+              <td className="px-3 py-2"><Button type="button" variant="link" className="h-auto min-w-11 justify-start p-0" onClick={() => onOpenTicker(holding.ticker)}>{holding.ticker}</Button></td>
               <td className="px-3 py-2">{holding.quantity.toLocaleString()}</td>
               <td className="px-3 py-2">{formatMoney(holding.price)}</td>
               <td className="px-3 py-2">{formatMoney(holding.marketValue)}</td>
@@ -557,7 +718,6 @@ function tradingViewEmbedUrl(tradingViewSymbol: string): string {
     symboledit: "1",
     saveimage: "0",
     toolbarbg: "F1F3F6",
-    studies: "MASimple@tv-basicstudies,RSI@tv-basicstudies,MACD@tv-basicstudies",
     theme: "light",
     style: "1",
     timezone: "Etc/UTC",
