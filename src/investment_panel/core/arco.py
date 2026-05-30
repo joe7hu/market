@@ -28,8 +28,10 @@ def latest_file(directory: Path, pattern: str) -> Path | None:
 
 def load_arco_context(config: ArcoConfig) -> dict[str, Any]:
     raw_dir = config.raw_dir
-    signals = read_json(raw_dir / config.signals_path, {"topics": [], "subtopics": []})
-    beliefs = read_json(raw_dir / config.beliefs_path, {"beliefs": []})
+    signals_path = raw_dir / config.signals_path
+    beliefs_path = raw_dir / config.beliefs_path
+    signals = read_json(signals_path, {"topics": [], "subtopics": []})
+    beliefs = read_json(beliefs_path, {"beliefs": []})
     brief_beliefs_path = latest_file(raw_dir, config.brief_beliefs_glob)
     bookmarks_path = latest_file(raw_dir, config.birdclaw_bookmarks_glob)
     web_captures_path = latest_file(raw_dir, config.web_captures_glob)
@@ -38,6 +40,7 @@ def load_arco_context(config: ArcoConfig) -> dict[str, Any]:
     bookmarks = read_json(bookmarks_path, {"canonicalItems": [], "items": []}) if bookmarks_path else {}
     manifest = read_json(manifest_path, {}) if manifest_path else {}
     source_snapshots = load_source_snapshots(raw_dir, manifest)
+    manifest_snapshot_count = len([entry for entry in manifest.get("sourceSnapshots", []) or [] if isinstance(entry, dict)])
     if not source_snapshots:
         source_snapshots = [
             snapshot_record("birdclaw_bookmarks", bookmarks_path, bookmarks),
@@ -55,6 +58,17 @@ def load_arco_context(config: ArcoConfig) -> dict[str, Any]:
         "bookmarks_path": str(bookmarks_path) if bookmarks_path else None,
         "web_captures_path": str(web_captures_path) if web_captures_path else None,
         "manifest_path": str(manifest_path) if manifest_path else None,
+        "source_status": {
+            "raw_dir_exists": raw_dir.exists(),
+            "signals_path": str(signals_path) if signals_path.exists() else None,
+            "beliefs_path": str(beliefs_path) if beliefs_path.exists() else None,
+            "brief_beliefs_path": str(brief_beliefs_path) if brief_beliefs_path else None,
+            "bookmarks_path": str(bookmarks_path) if bookmarks_path else None,
+            "web_captures_path": str(web_captures_path) if web_captures_path else None,
+            "manifest_path": str(manifest_path) if manifest_path else None,
+            "manifest_snapshot_count": manifest_snapshot_count,
+            "source_snapshot_count": len(source_snapshots),
+        },
     }
 
 
@@ -319,16 +333,16 @@ def ingest_arco_theses(con: Any, context: dict[str, Any]) -> int:
                 [
                     row_id,
                     symbol,
-                    author_from_item(item),
+                    author_from_item(item, symbol),
                     timestamp_from_item(item),
                     item.get("title") or item.get("text", "")[:240],
-                    json_dumps(
-                        {"source_type": item["source_type"], "text": item.get("text"), "evidence": item.get("evidence", [])}
-                    ),
+                    json_dumps(claims_from_item(item, symbol)),
                     json_dumps({"score": item.get("score")}),
-                    source_url_from_item(item),
+                    source_url_from_item(item, symbol),
                 ]
             )
+    if not should_replace_theses(context, rows):
+        return 0
     con.execute("DELETE FROM birdclaw_theses")
     for row in rows:
         con.execute(
@@ -342,6 +356,29 @@ def ingest_arco_theses(con: Any, context: dict[str, Any]) -> int:
     return len(rows)
 
 
+def should_replace_theses(context: dict[str, Any], rows: list[list[Any]]) -> bool:
+    if rows:
+        return True
+    status = context.get("source_status")
+    if not isinstance(status, dict) or not status.get("raw_dir_exists"):
+        return False
+    manifest_snapshot_count = int(status.get("manifest_snapshot_count") or 0)
+    source_snapshot_count = int(status.get("source_snapshot_count") or 0)
+    if manifest_snapshot_count and source_snapshot_count < manifest_snapshot_count:
+        return False
+    return any(
+        status.get(key)
+        for key in (
+            "signals_path",
+            "beliefs_path",
+            "brief_beliefs_path",
+            "bookmarks_path",
+            "web_captures_path",
+            "manifest_path",
+        )
+    )
+
+
 def stable_id(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
@@ -350,7 +387,34 @@ def confidence_score(confidence: str) -> float:
     return {"high": 0.9, "medium": 0.65, "low": 0.35}.get(confidence.lower(), 0.5)
 
 
-def author_from_item(item: dict[str, Any]) -> str | None:
+def claims_from_item(item: dict[str, Any], symbol: str | None = None) -> dict[str, Any]:
+    evidence = item.get("evidence", [])
+    if isinstance(evidence, dict) and symbol:
+        symbol_sources = evidence_sources_for_symbol(item, symbol)
+        symbol_refs = evidence_refs_for_symbol(item, symbol)
+        if symbol_sources:
+            evidence = {**evidence, "matched_source_items": symbol_sources}
+        elif symbol_refs:
+            evidence = {**evidence, "brief_evidence": symbol_refs, "primary_sources": symbol_refs}
+        elif has_aggregate_brief_evidence(item):
+            evidence = {
+                "source_brief": evidence.get("source_brief"),
+                "validation_warnings": evidence.get("validation_warnings", []),
+                "unattributed_symbol": symbol,
+            }
+    return {"source_type": item["source_type"], "text": item.get("text"), "evidence": evidence}
+
+
+def author_from_item(item: dict[str, Any], symbol: str | None = None) -> str | None:
+    symbol_sources = evidence_sources_for_symbol(item, symbol)
+    if symbol_sources:
+        for source in symbol_sources:
+            author = author_label(source)
+            if author:
+                return author
+        return None
+    if symbol and has_aggregate_brief_evidence(item):
+        return None
     raw = item.get("raw") or {}
     author = raw.get("author")
     if isinstance(author, dict):
@@ -387,8 +451,87 @@ def normalize_timestamp(value: str) -> str:
         return datetime.utcnow().isoformat()
 
 
-def source_url_from_item(item: dict[str, Any]) -> str | None:
+def source_url_from_item(item: dict[str, Any], symbol: str | None = None) -> str | None:
+    for source in evidence_sources_for_symbol(item, symbol):
+        url = first_url_from_item(source)
+        if url:
+            return url
+    for ref in evidence_refs_for_symbol(item, symbol):
+        url = first_url_from_item(ref)
+        if url:
+            return url
+    if symbol and has_aggregate_brief_evidence(item):
+        evidence = item.get("evidence") or {}
+        if isinstance(evidence, dict) and evidence.get("source_brief"):
+            return str(evidence["source_brief"])
+        return None
     raw = item.get("raw") or {}
+    raw_url = first_url_from_item(raw)
+    if raw_url:
+        return raw_url
+    evidence = item.get("evidence") or []
+    if isinstance(evidence, dict):
+        for key in ("brief_evidence", "primary_sources"):
+            values = evidence.get(key) or []
+            if values and isinstance(values[0], dict):
+                url = first_url_from_item(values[0])
+                if url:
+                    return url
+        if evidence.get("source_brief"):
+            return str(evidence["source_brief"])
+    if evidence and isinstance(evidence[0], dict):
+        return first_url_from_item(evidence[0])
+    return None
+
+
+def evidence_refs_for_symbol(item: dict[str, Any], symbol: str | None) -> list[dict[str, Any]]:
+    if not symbol:
+        return []
+    evidence = item.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        return []
+    refs: list[dict[str, Any]] = []
+    symbol_upper = symbol.upper()
+    for key in ("brief_evidence", "primary_sources"):
+        values = evidence.get(key) or []
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, dict) and symbol_upper in {candidate.upper() for candidate in symbols_from_text(json_dumps(value))}:
+                refs.append(value)
+    return refs
+
+
+def has_aggregate_brief_evidence(item: dict[str, Any]) -> bool:
+    evidence = item.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        return False
+    evidence_count = 0
+    for key in ("matched_source_items", "brief_evidence", "primary_sources"):
+        values = evidence.get(key) or []
+        if isinstance(values, list):
+            evidence_count += len([value for value in values if isinstance(value, dict)])
+    return item.get("source_type") == "arco_brief_belief" and evidence_count > 1
+
+
+def evidence_sources_for_symbol(item: dict[str, Any], symbol: str | None) -> list[dict[str, Any]]:
+    if not symbol:
+        return []
+    evidence = item.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        return []
+    matched_sources = evidence.get("matched_source_items") or []
+    if not isinstance(matched_sources, list):
+        return []
+    symbol_upper = symbol.upper()
+    return [
+        source
+        for source in matched_sources
+        if isinstance(source, dict) and symbol_upper in {candidate.upper() for candidate in symbols_from_text(item_text(source))}
+    ]
+
+
+def first_url_from_item(raw: dict[str, Any]) -> str | None:
     for key in ("url", "sourceUrl", "canonicalUrl"):
         if raw.get(key):
             return str(raw[key])
@@ -400,16 +543,4 @@ def source_url_from_item(item: dict[str, Any]) -> str | None:
     links = raw.get("links")
     if isinstance(links, list) and links and isinstance(links[0], dict):
         return links[0].get("expandedUrl") or links[0].get("originalUrl")
-    evidence = item.get("evidence") or []
-    if isinstance(evidence, dict):
-        for key in ("brief_evidence", "primary_sources"):
-            values = evidence.get(key) or []
-            if values and isinstance(values[0], dict):
-                url = values[0].get("url") or values[0].get("sourceUrl")
-                if url:
-                    return url
-        if evidence.get("source_brief"):
-            return str(evidence["source_brief"])
-    if evidence and isinstance(evidence[0], dict):
-        return evidence[0].get("url") or evidence[0].get("sourceUrl")
     return None

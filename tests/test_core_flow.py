@@ -8,7 +8,14 @@ from typing import Any
 import pandas as pd
 
 from investment_panel.core.config import load_config
-from investment_panel.core.arco import flatten_arco_items, ingest_arco_theses, load_arco_context
+from investment_panel.core.arco import (
+    author_from_item,
+    claims_from_item,
+    flatten_arco_items,
+    ingest_arco_theses,
+    load_arco_context,
+    source_url_from_item,
+)
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.jobs.daily_screen import run as run_daily
@@ -199,11 +206,118 @@ arco:
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
         rows = ingest_arco_theses(con, context)
-        symbols = query_rows(con, "SELECT symbol, source_url FROM birdclaw_theses ORDER BY symbol")
+        symbols = query_rows(con, "SELECT symbol, author, source_url FROM birdclaw_theses ORDER BY symbol")
 
     assert rows == 3
     assert [row["symbol"] for row in symbols] == ["COIN", "NVDA", "TSLA"]
-    assert {row["source_url"] for row in symbols} == {"https://x.com/analyst/status/bookmark-coin"}
+    assert {row["symbol"]: row["source_url"] for row in symbols} == {
+        "COIN": "https://x.com/analyst/status/bookmark-coin",
+        "NVDA": "https://example.com/nvda",
+        "TSLA": "https://x.com/observer/status/observed-tsla",
+    }
+    assert {row["symbol"]: row["author"] for row in symbols} == {
+        "COIN": "analyst",
+        "NVDA": None,
+        "TSLA": "observer",
+    }
+
+
+def test_arco_empty_replacement_does_not_delete_existing_theses(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO birdclaw_theses
+            (id, symbol, author, created_at, thesis_summary, claims, engagement, source_url)
+            VALUES ('existing', 'NVDA', 'arco', '2026-05-10T12:00:00Z', 'Existing thesis', '[]', '{}', 'https://example.com/existing')
+            """
+        )
+        inserted = ingest_arco_theses(
+            con,
+            {
+                "signals": {"subtopics": []},
+                "beliefs": {"beliefs": []},
+                "brief_beliefs": {"beliefs": []},
+                "bookmarks": {"canonicalItems": []},
+                "source_snapshots": [],
+            },
+        )
+        rows = query_rows(con, "SELECT symbol, source_url FROM birdclaw_theses")
+
+    assert inserted == 0
+    assert rows == [{"symbol": "NVDA", "source_url": "https://example.com/existing"}]
+
+
+def test_arco_brief_unmatched_symbol_does_not_use_first_evidence_url() -> None:
+    item = {
+        "id": "brief",
+        "source_type": "arco_brief_belief",
+        "title": "Aggregate thesis",
+        "text": "$COIN and $NVDA both appear in the brief text.",
+        "score": 0.65,
+        "raw": {},
+        "evidence": {
+            "brief_evidence": [
+                {"author": "coin", "url": "https://example.com/coin", "text": "$COIN source"},
+                {"author": "nvda", "url": "https://example.com/nvda", "text": "NVIDIA source without cashtag"},
+            ],
+            "matched_source_items": [
+                {"author": {"handle": "coin"}, "url": "https://example.com/coin", "text": "$COIN source"},
+                {"author": {"handle": "nvda"}, "url": "https://example.com/nvda", "title": "NVIDIA source without cashtag"},
+            ],
+            "source_brief": "wiki/pages/arco/briefs/brief.md",
+        },
+    }
+
+    assert source_url_from_item(item, "COIN") == "https://example.com/coin"
+    assert author_from_item(item, "COIN") == "coin"
+    assert source_url_from_item(item, "NVDA") == "wiki/pages/arco/briefs/brief.md"
+    assert author_from_item(item, "NVDA") is None
+    nvda_claims = claims_from_item(item, "NVDA")
+    assert nvda_claims["evidence"] == {
+        "source_brief": "wiki/pages/arco/briefs/brief.md",
+        "validation_warnings": [],
+        "unattributed_symbol": "NVDA",
+    }
+
+
+def test_arco_verified_empty_replacement_clears_existing_theses(tmp_path: Path) -> None:
+    arco_dir = tmp_path / "arco"
+    arco_dir.mkdir()
+    (arco_dir / "signals.json").write_text(json.dumps({"subtopics": []}), encoding="utf-8")
+    (arco_dir / "beliefs.json").write_text(json.dumps({"beliefs": []}), encoding="utf-8")
+    (arco_dir / "brief-beliefs").mkdir()
+    (arco_dir / "brief-beliefs" / "brief-beliefs-2026-05-10.json").write_text(
+        json.dumps({"beliefs": []}),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+database:
+  duckdb_path: {tmp_path / "investment.duckdb"}
+arco:
+  raw_dir: {arco_dir}
+""",
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    context = load_arco_context(config.arco)
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path) as con:
+        con.execute(
+            """
+            INSERT INTO birdclaw_theses
+            (id, symbol, author, created_at, thesis_summary, claims, engagement, source_url)
+            VALUES ('existing', 'NVDA', 'arco', '2026-05-10T12:00:00Z', 'Existing thesis', '[]', '{}', 'https://example.com/existing')
+            """
+        )
+        inserted = ingest_arco_theses(con, context)
+        rows = query_rows(con, "SELECT symbol, source_url FROM birdclaw_theses")
+
+    assert inserted == 0
+    assert rows == []
 
 
 def test_research_packet_and_memo(tmp_path: Path) -> None:
