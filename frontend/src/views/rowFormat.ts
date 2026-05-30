@@ -83,8 +83,8 @@ export function titleLabel(value: string): string {
 export function toneFromText(value: string): Tone {
   const normalized = value.toLowerCase();
   if (normalized.includes("breach") || normalized.includes("critical") || normalized.includes("bad") || normalized.includes("sell") || normalized.includes("avoid")) return "bad";
-  if (normalized.includes("warn") || normalized.includes("stale") || normalized.includes("blocked") || normalized.includes("review") || normalized.includes("risk")) return "warn";
-  if (normalized.includes("good") || normalized.includes("ready") || normalized.includes("clear") || normalized.includes("ok")) return "good";
+  if (normalized.includes("warn") || normalized.includes("stale") || normalized.includes("blocked") || normalized.includes("review") || normalized.includes("risk") || /\blow\b/.test(normalized)) return "warn";
+  if (normalized.includes("good") || normalized.includes("ready") || normalized.includes("clear") || normalized.includes("ok") || /\bhigh\b/.test(normalized) || normalized.includes("strong")) return "good";
   if (normalized.includes("none") || normalized.includes("missing")) return "muted";
   return "info";
 }
