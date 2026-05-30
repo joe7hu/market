@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -158,77 +159,11 @@ def feed_signals(con: Any, config_watchlist: list[dict[str, Any]] | None = None)
     seen: set[str] = set()
     output: list[dict[str, Any]] = []
 
-    for row in daily_brief(con):
-        symbols = _symbols_from_value(row.get("symbols")) or [str(row.get("symbol") or "").upper()]
-        symbols = [symbol for symbol in symbols if symbol]
-        primary = symbols[0] if symbols else ""
-        decision = decision_by_symbol.get(primary, {})
-        thesis = thesis_rows.get(primary, {})
-        category = str(row.get("category") or "signal")
-        signal = {
-            "id": str(row.get("item_id") or f"{category}:{primary}:{row.get('rank')}"),
-            "date": _date_text(row.get("as_of")) or _date_text(decision.get("as_of")),
-            "source": _source_label(row.get("source_models"), category),
-            "source_type": category,
-            "title": str(row.get("title") or _fallback_signal_title(primary, category)),
-            "symbols": symbols,
-            "primary_symbol": primary,
-            "thesis": str(row.get("reason") or decision.get("invalidation") or "Backend model selected this as a portfolio-relevant signal."),
-            "antithesis": _countercase(primary, decision, thesis, row),
-            "evidence": _string_list(row.get("evidence"))[:4],
-            "portfolio_relevance": _portfolio_relevance(symbols, portfolio_rows, watchlist, decision),
-            "next_action": _signal_next_action(
-                row.get("next_action"),
-                decision.get("catalyst_window"),
-                fallback="Review the ticker dossier before changing exposure.",
-            ),
-            "freshness": str(decision.get("freshness_status") or "current"),
-            "severity": str(row.get("severity") or "info"),
-            "score": float(row.get("score") or decision.get("score") or 0),
-        }
-        key = signal["id"]
-        if key not in seen:
-            seen.add(key)
-            output.append(signal)
-
     for signal in _source_feed_events(con, portfolio_rows, watchlist, decision_by_symbol, thesis_rows):
         key = signal["id"]
         if key not in seen:
             seen.add(key)
             output.append(signal)
-
-    for decision in decision_rows:
-        symbol = str(decision.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        key = f"decision:{symbol}"
-        if key in seen:
-            continue
-        seen.add(key)
-        thesis = thesis_rows.get(symbol, {})
-        basis = _dict_from_value(decision.get("decision_basis"))
-        output.append(
-            {
-                "id": key,
-                "date": _date_text(decision.get("as_of")),
-                "source": str(decision.get("source_cluster") or "decision_queue"),
-                "source_type": "decision_queue",
-                "title": _fallback_signal_title(symbol, str(decision.get("action_grade") or "review")),
-                "symbols": [symbol],
-                "primary_symbol": symbol,
-                "thesis": _decision_thesis(decision, basis),
-                "antithesis": _countercase(symbol, decision, thesis, {}),
-                "evidence": _decision_evidence(decision, basis),
-                "portfolio_relevance": _portfolio_relevance([symbol], portfolio_rows, watchlist, decision),
-                "next_action": _signal_next_action(
-                    decision.get("catalyst_window"),
-                    fallback="Open the dossier and decide whether this belongs in Joe's portfolio/watchlist.",
-                ),
-                "freshness": str(decision.get("freshness_status") or decision.get("overall_decision_freshness") or "unknown"),
-                "severity": _severity_from_decision(decision),
-                "score": float(decision.get("score") or 0),
-            }
-        )
 
     return sorted(output, key=lambda item: (item.get("date") or "", item.get("score") or 0), reverse=True)[:48]
 
@@ -500,21 +435,21 @@ def _source_feed_events(
     thesis_rows: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
+    known_symbols = set(decision_by_symbol) | set(portfolio_rows) | watchlist
     for row in query_rows(
         con,
         """
         SELECT id, published_at, provider, title, related_symbols, link, source
         FROM news_items
-        WHERE related_symbols IS NOT NULL
         ORDER BY published_at DESC
         LIMIT 80
         """,
     ):
-        symbols = _symbols_from_value(row.get("related_symbols"))
+        title = str(row.get("title") or "Source update")
+        symbols = _symbols_from_value(row.get("related_symbols")) or _symbols_from_text(title, known_symbols)
         if not symbols:
             continue
         primary = _primary_symbol(symbols, portfolio_rows, watchlist)
-        title = str(row.get("title") or "Source update")
         sentiment = _source_sentiment(title, "")
         decision = decision_by_symbol.get(primary, {})
         events.append(
@@ -641,6 +576,8 @@ def _source_feed_events(
     for row in ticker_source_signal_rows(con, limit=120):
         if str(row.get("source_item_id") or "").startswith(("news:", "arco_thesis:", "disclosure:")):
             continue
+        if _is_generic_source_signal(row):
+            continue
         symbol = _normalize_symbol_token(row.get("symbol"))
         if not symbol:
             continue
@@ -722,6 +659,27 @@ def _symbols_from_value(value: Any) -> list[str]:
         if symbol and symbol not in symbols:
             symbols.append(symbol)
     return symbols
+
+
+def _symbols_from_text(value: Any, known_symbols: set[str]) -> list[str]:
+    text = str(value or "").upper()
+    symbols = []
+    for symbol in sorted(known_symbols, key=len, reverse=True):
+        if not symbol or len(symbol) < 2:
+            continue
+        if re.search(rf"(?<![A-Z0-9]){re.escape(symbol)}(?![A-Z0-9])", text):
+            symbols.append(symbol)
+    return symbols
+
+
+def _is_generic_source_signal(row: dict[str, Any]) -> bool:
+    signal_type = str(row.get("signal_type") or "")
+    if signal_type in {"earnings_event", "analyst_estimate"}:
+        return True
+    title = str(row.get("title") or "").strip()
+    thesis = str(row.get("thesis") or "").strip()
+    antithesis = str(row.get("antithesis") or "").strip()
+    return bool(thesis and title == thesis and antithesis.startswith("No structured"))
 
 
 def _normalize_symbol_token(value: Any) -> str:

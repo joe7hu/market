@@ -93,7 +93,10 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         },
     )
 
-    assert data_access.panel_snapshot_payload(panel_data, "feed")["tables"]["feed_signals"]["count"] == 1
+    feed_payload = data_access.panel_snapshot_payload(panel_data, "feed")
+    assert feed_payload["tables"]["feed_signals"]["count"] == 1
+    assert list(feed_payload["tables"]) == ["feed_signals"]
+    assert feed_payload["dashboard"] is None
     assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
