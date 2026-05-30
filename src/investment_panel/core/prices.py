@@ -1,8 +1,7 @@
-"""Daily price ingestion with online providers and explicit fallback labels."""
+"""Daily price ingestion with online providers."""
 
 from __future__ import annotations
 
-import math
 import time
 from datetime import date, timedelta
 from typing import Any
@@ -15,16 +14,11 @@ COINGECKO_IDS = {"BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana
 
 
 def fetch_prices(symbol: str, lookback_days: int = 260, mode: str = "online") -> pd.DataFrame:
-    if mode != "sample":
-        try:
-            if symbol in COINGECKO_IDS:
-                return fetch_coingecko_ohlc(symbol, lookback_days)
-            return fetch_yahoo_chart(symbol, lookback_days)
-        except Exception as exc:
-            frame = sample_prices(symbol, lookback_days)
-            frame["source"] = f"sample_fallback:{type(exc).__name__}"
-            return frame
-    return sample_prices(symbol, lookback_days)
+    if mode != "online":
+        raise ValueError(f"Unsupported market_data.mode {mode!r}; use online data or inject test fixtures.")
+    if symbol in COINGECKO_IDS:
+        return fetch_coingecko_ohlc(symbol, lookback_days)
+    return fetch_yahoo_chart(symbol, lookback_days)
 
 
 def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
@@ -120,37 +114,6 @@ def fetch_coingecko_ohlc(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
     if not rows:
         raise ValueError(f"No CoinGecko chart rows for {symbol}")
     return pd.DataFrame(rows).tail(lookback_days)
-
-
-def sample_prices(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
-    today = date.today()
-    seed = sum(ord(char) for char in symbol)
-    base = 40 + seed % 180
-    rows = []
-    for index in range(lookback_days):
-        day = today - timedelta(days=lookback_days - index)
-        if day.weekday() >= 5 and not symbol.endswith("-USD"):
-            continue
-        drift = index * (0.03 + (seed % 7) / 500)
-        cycle = math.sin(index / 13 + seed) * (2 + (seed % 5))
-        close = max(1.0, base + drift + cycle)
-        open_ = close * (1 + math.sin(index / 5) * 0.005)
-        high = max(open_, close) * 1.012
-        low = min(open_, close) * 0.988
-        volume = 500_000 + (seed % 1000) * 1000 + index * 750
-        rows.append(
-            {
-                "symbol": symbol,
-                "date": day,
-                "open": round(open_, 4),
-                "high": round(high, 4),
-                "low": round(low, 4),
-                "close": round(close, 4),
-                "volume": float(volume),
-                "source": "sample",
-            }
-        )
-    return pd.DataFrame(rows)
 
 
 def normalize_price_frame(symbol: str, frame: pd.DataFrame, source: str) -> pd.DataFrame:

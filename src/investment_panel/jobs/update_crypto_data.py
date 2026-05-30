@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 from investment_panel.core.config import load_config
 from investment_panel.core.crypto import fetch_coingecko_markets, upsert_crypto_fundamentals
@@ -13,16 +14,21 @@ from investment_panel.core.status import write_source_status
 from investment_panel.core.technicals import compute_and_store
 
 
-def run(config_path: str | None = None, online: bool = False) -> dict[str, int | str]:
+def run(config_path: str | None = None, online: bool = False) -> dict[str, Any]:
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
         symbols = [row["symbol"] for row in query_rows(con, "SELECT symbol FROM instruments WHERE asset_class = 'crypto' ORDER BY symbol")]
         price_rows = 0
+        price_errors: dict[str, str] = {}
         feature_rows = 0
         for symbol in symbols:
-            frame = fetch_prices(symbol, config.market_data.lookback_days, config.market_data.mode)
-            price_rows += upsert_prices(con, frame)
+            try:
+                frame = fetch_prices(symbol, config.market_data.lookback_days, config.market_data.mode)
+            except Exception as exc:
+                price_errors[symbol] = f"{type(exc).__name__}: {exc}"
+            else:
+                price_rows += upsert_prices(con, frame)
             if compute_and_store(con, symbol):
                 feature_rows += 1
         fundamentals = 0
@@ -32,6 +38,7 @@ def run(config_path: str | None = None, online: bool = False) -> dict[str, int |
         "database": str(config.database.duckdb_path),
         "symbols": len(symbols),
         "price_rows": price_rows,
+        "price_errors": price_errors,
         "feature_rows": feature_rows,
         "fundamental_rows": fundamentals,
     }

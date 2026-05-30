@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
 
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows
@@ -9,7 +13,30 @@ from investment_panel.core.research import build_research_packet, generate_deter
 from investment_panel.jobs.daily_screen import run as run_daily
 
 
-def test_daily_screen_builds_candidates_from_local_arco(tmp_path: Path) -> None:
+def fixture_prices(symbol: str, lookback_days: int = 80, mode: str = "online") -> pd.DataFrame:
+    rows = []
+    for index in range(lookback_days):
+        day = date(2026, 5, 20) - timedelta(days=lookback_days - index)
+        if day.weekday() >= 5:
+            continue
+        close = 50.0 + index
+        rows.append(
+            {
+                "symbol": symbol,
+                "date": day,
+                "open": close - 1,
+                "high": close + 1,
+                "low": close - 2,
+                "close": close,
+                "volume": 1_000_000.0 + index,
+                "source": "test_fixture",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_daily_screen_builds_candidates_from_local_arco(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.setattr("investment_panel.jobs.daily_screen.fetch_prices", fixture_prices)
     arco_dir = tmp_path / "arco"
     arco_dir.mkdir()
     (arco_dir / "signals.json").write_text(
@@ -43,7 +70,7 @@ nas:
 arco:
   raw_dir: {arco_dir}
 market_data:
-  mode: sample
+  mode: online
   lookback_days: 80
 watchlist:
   - symbol: COIN

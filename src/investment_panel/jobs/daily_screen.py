@@ -40,14 +40,20 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         fundamental_rows = update_equity_fundamentals(con, universe, config.market_data.user_agent)
         thesis_rows = ingest_arco_theses(con, arco_context)
         price_rows = 0
+        price_errors: dict[str, str] = {}
         feature_rows = 0
         for instrument in universe:
-            frame = fetch_prices(
-                instrument["symbol"],
-                lookback_days=config.market_data.lookback_days,
-                mode=config.market_data.mode,
-            )
-            price_rows += upsert_prices(con, frame)
+            symbol = instrument["symbol"]
+            try:
+                frame = fetch_prices(
+                    symbol,
+                    lookback_days=config.market_data.lookback_days,
+                    mode=config.market_data.mode,
+                )
+            except Exception as exc:
+                price_errors[symbol] = f"{type(exc).__name__}: {exc}"
+            else:
+                price_rows += upsert_prices(con, frame)
             if compute_and_store(con, instrument["symbol"]):
                 feature_rows += 1
         crypto_fundamental_rows = 0
@@ -66,6 +72,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         "portfolio_rows": portfolio_rows,
         "arco_thesis_rows": thesis_rows,
         "price_rows": price_rows,
+        "price_errors": price_errors,
         "feature_rows": feature_rows,
         "fundamental_rows": fundamental_rows,
         "crypto_fundamental_rows": crypto_fundamental_rows,

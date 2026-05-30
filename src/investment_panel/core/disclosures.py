@@ -272,7 +272,7 @@ def ensure_disclosure_symbol_prices(
     trader_names: list[str] | None = None,
     lookback_days: int = 900,
     mode: str = "online",
-) -> dict[str, int]:
+) -> dict[str, Any]:
     params: list[Any] = []
     filter_sql = ""
     if trader_names:
@@ -293,6 +293,7 @@ def ensure_disclosure_symbol_prices(
     ).fetchall()
     fetched = 0
     price_rows = 0
+    price_errors: dict[str, str] = {}
     for symbol, earliest_event_date in rows:
         earliest_needed = str(earliest_event_date)[:10]
         existing = con.execute(
@@ -302,10 +303,14 @@ def ensure_disclosure_symbol_prices(
         if existing and existing[1] and str(existing[0]) <= earliest_needed:
             continue
         symbol_lookback_days = max(lookback_days, days_since(earliest_needed) + 14)
-        frame = fetch_prices(symbol, symbol_lookback_days, mode)
+        try:
+            frame = fetch_prices(symbol, symbol_lookback_days, mode)
+        except Exception as exc:
+            price_errors[symbol] = f"{type(exc).__name__}: {exc}"
+            continue
         price_rows += upsert_prices(con, frame)
         fetched += 1
-    return {"price_symbols_fetched": fetched, "price_rows_ingested": price_rows}
+    return {"price_symbols_fetched": fetched, "price_rows_ingested": price_rows, "price_errors": price_errors}
 
 
 def days_since(value: str) -> int:

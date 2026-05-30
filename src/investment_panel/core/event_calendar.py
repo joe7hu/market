@@ -32,128 +32,34 @@ class MarketEvent:
     raw: dict[str, Any] | None = None
 
 
-REQUESTED_WEEK_EVENTS = [
-    MarketEvent(
-        id="macro-2026-05-11-warsh-cloture-vote",
-        event_date="2026-05-11",
-        event="Senate cloture vote on Kevin Warsh Fed nomination",
-        expected_impact="Procedural vote on Warsh's Fed Governor nomination; not final confirmation or chair swearing-in.",
-        source="senate_schedule",
-        start_at="2026-05-11T17:30:00",
-        timezone="America/New_York",
-        event_kind="central_bank",
-        verification_status="confirmed",
-        source_url="https://www.radiotv.senate.gov/",
-        source_name="U.S. Senate Radio-TV Gallery",
-        raw={
-            "note": "Senate schedule lists a 5:30 p.m. vote on the motion to invoke cloture on the Warsh nomination.",
-            "related_executive_calendar": "Executive Calendar #728",
-        },
-    ),
-    MarketEvent(
-        id="macro-2026-05-15-warsh-chair-transition-deadline",
-        event_date="2026-05-15",
-        event="Warsh Fed Chair confirmation target / Powell chair term ends",
-        expected_impact="Leadership transition deadline; final confirmation timing remains dependent on Senate floor action.",
-        source="event_calendar_watch",
-        start_at="2026-05-15T09:30:00",
-        timezone="America/New_York",
-        event_kind="central_bank",
-        verification_status="tentative",
-        source_url="https://www.federalreserve.gov/mediacenter/files/FOMCpresconf20260429.pdf",
-        source_name="Federal Reserve April 29, 2026 press conference transcript",
-        raw={
-            "note": "Powell said his term as Chair ends on May 15; reporting says Warsh is expected to be confirmed before then.",
-            "secondary_source": "https://www.kiplinger.com/investing/economy/3-ways-kevin-warsh-will-change-the-fed",
-        },
-    ),
-    MarketEvent(
-        id="macro-2026-05-12-bls-cpi-april",
-        event_date="2026-05-12",
-        event="April 2026 CPI report",
-        expected_impact="Inflation print can reprice rates, equity duration, USD, and crypto risk.",
-        source="bls",
-        start_at="2026-05-12T08:30:00",
-        timezone="America/New_York",
-        event_kind="inflation",
-        verification_status="confirmed",
-        source_url="https://www.bls.gov/schedule/news_release/cpi.htm?lv=true",
-        source_name="U.S. Bureau of Labor Statistics",
-        raw={"reference_month": "April 2026", "release_time": "08:30 AM"},
-    ),
-    MarketEvent(
-        id="macro-2026-05-14-fed-barr-balance-sheet-speech",
-        event_date="2026-05-14",
-        event="Fed Governor Barr balance sheet speech",
-        expected_impact="Confirmed Fed balance-sheet speech at a Money Marketeers FOMC event; relevant to reserves, liquidity, and QT interpretation.",
-        source="federal_reserve",
-        start_at="2026-05-14T19:00:00",
-        timezone="America/New_York",
-        event_kind="central_bank",
-        verification_status="confirmed",
-        source_url="https://www.federalreserve.gov/newsevents/2026-may.htm",
-        source_name="Federal Reserve Calendar",
-        raw={
-            "speaker": "Governor Michael S. Barr",
-            "venue": "Money Marketeers FOMC Event, New York, N.Y.",
-            "correction": "Replaces unverified May 13 Fed/FOMC chair speech watch item.",
-        },
-    ),
-    MarketEvent(
-        id="macro-2026-05-14-fed-h41",
-        event_date="2026-05-14",
-        event="Federal Reserve H.4.1 balance sheet release",
-        expected_impact="Weekly Fed balance sheet update; relevant to reserves, liquidity, and QT/QE interpretation.",
-        source="federal_reserve",
-        start_at="2026-05-14T16:30:00",
-        timezone="America/New_York",
-        event_kind="central_bank",
-        verification_status="confirmed",
-        source_url="https://www.federalreserve.gov/Releases/H41/default.htm",
-        source_name="Federal Reserve H.4.1",
-        raw={"release": "H.4.1 Factors Affecting Reserve Balances", "release_time": "4:30 p.m."},
-    ),
-    MarketEvent(
-        id="macro-2026-05-14-trump-xi-summit",
-        event_date="2026-05-14",
-        event="Trump-Xi Beijing summit",
-        expected_impact="Two-day geopolitical/trade risk event with broad market, FX, rates, and China-exposed equity implications.",
-        source="geopolitical_watch",
-        start_at="2026-05-14T00:00:00",
-        end_at="2026-05-15T23:59:00",
-        timezone="Asia/Shanghai",
-        event_kind="geopolitical",
-        verification_status="confirmed",
-        source_url="https://koreajoongangdaily.joins.com/news/2026-03-26/national/diplomacy/Delayed-TrumpXi-summit-to-take-place-in-Beijing-on-May-14-and-15-White-House/2554084",
-        source_name="Korea JoongAng Daily / Yonhap",
-        raw={"location": "Beijing", "reported_dates": "May 14-15, 2026"},
-    ),
-]
+LEGACY_REQUESTED_WEEK_EVENT_IDS = (
+    "macro-2026-05-11-warsh-cloture-vote",
+    "macro-2026-05-12-bls-cpi-april",
+    "macro-2026-05-14-fed-barr-balance-sheet-speech",
+    "macro-2026-05-14-fed-h41",
+    "macro-2026-05-14-trump-xi-summit",
+    "macro-2026-05-15-warsh-chair-transition-deadline",
+    "macro-2026-05-11-warsh-confirmation-watch",
+    "macro-2026-05-13-fed-chair-speech-watch",
+)
 
 
-def seed_requested_week_events(con: Any, enabled: bool = True) -> int:
-    if not enabled:
-        return 0
-    con.execute(
-        """
-        DELETE FROM catalysts
-        WHERE id IN (
-            'macro-2026-05-11-warsh-confirmation-watch',
-            'macro-2026-05-13-fed-chair-speech-watch'
-        )
-        """
-    )
-    return upsert_events(con, REQUESTED_WEEK_EVENTS)
+def delete_legacy_requested_week_events(con: Any) -> int:
+    placeholders = ", ".join(["?"] * len(LEGACY_REQUESTED_WEEK_EVENT_IDS))
+    deleted = con.execute(f"DELETE FROM catalysts WHERE id IN ({placeholders})", list(LEGACY_REQUESTED_WEEK_EVENT_IDS)).rowcount
+    return max(0, int(deleted or 0))
 
 
 def update_event_calendar(con: Any, config: AppConfig) -> dict[str, Any]:
+    deleted = delete_legacy_requested_week_events(con)
     if not config.event_sources.enabled:
-        return {"status": "disabled", "events": 0}
-    inserted = seed_requested_week_events(con, config.event_sources.seed_requested_week)
-    record_calendar_health(con, "ok", f"Upserted {inserted} deterministic market calendar rows")
+        record_calendar_health(con, "disabled", f"Event calendar ingestion disabled; removed {deleted} legacy seeded rows")
+        return {"status": "disabled", "events": 0, "legacy_seed_rows_deleted": deleted}
+    record_calendar_health(con, "missing", f"No live event calendar fetcher configured; removed {deleted} legacy seeded rows")
     return {
-        "status": "ok",
-        "events": inserted,
+        "status": "missing",
+        "events": 0,
+        "legacy_seed_rows_deleted": deleted,
         "sources": {
             "bls": config.event_sources.bls_enabled,
             "federal_reserve": config.event_sources.federal_reserve_enabled,

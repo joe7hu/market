@@ -16,7 +16,8 @@ arco:
 
 market_data:
   # Online uses Yahoo chart for equities/ETFs and CoinGecko for configured
-  # crypto majors, with explicit sample_fallback labels if a provider fails.
+  # crypto majors. Provider failures are reported instead of replaced with
+  # synthetic prices.
   mode: online
   lookback_days: 260
   equity_provider: yahoo-chart
@@ -83,10 +84,10 @@ data_sources:
       earnings_blackout_days: 2
 
 event_sources:
-  enabled: true
-  # Seeds the May 11-15, 2026 macro watch week that Joe requested. Future
-  # refreshes should upsert source-derived rows over these deterministic IDs.
-  seed_requested_week: true
+  # Disabled until backed by live source fetchers. Legacy hardcoded seed rows
+  # are removed by the event-calendar job.
+  enabled: false
+  seed_requested_week: false
   bls_enabled: true
   federal_reserve_enabled: true
   treasury_enabled: true

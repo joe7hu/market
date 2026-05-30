@@ -5,10 +5,12 @@ from pathlib import Path
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.event_calendar import (
+    MarketEvent,
+    delete_legacy_requested_week_events,
     geopolitical_event_from_report,
     parse_bls_schedule_rows,
     parse_fed_calendar_text,
-    seed_requested_week_events,
+    upsert_events,
 )
 from investment_panel.core.panel import load_panel_data
 from investment_panel.jobs.update_event_calendar import run as run_event_calendar
@@ -50,7 +52,38 @@ def test_requested_week_events_round_trip_through_calendar_read_model(tmp_path: 
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
     with db(db_path) as con:
-        count = seed_requested_week_events(con)
+        count = upsert_events(
+            con,
+            [
+                MarketEvent(
+                    id="test-cpi",
+                    event_date="2026-05-12",
+                    event="April 2026 CPI report",
+                    expected_impact="Inflation print can reprice risk.",
+                    source="bls",
+                    verification_status="confirmed",
+                    source_url="https://www.bls.gov/schedule/news_release/cpi.htm?lv=true",
+                ),
+                MarketEvent(
+                    id="test-senate",
+                    event_date="2026-05-11",
+                    event="Senate cloture vote on Kevin Warsh Fed nomination",
+                    expected_impact="Fed nomination process event.",
+                    source="senate_schedule",
+                    verification_status="tentative",
+                    source_url="https://www.senate.gov/",
+                ),
+                MarketEvent(
+                    id="test-fed",
+                    event_date="2026-05-14",
+                    event="Fed Governor Barr balance sheet speech",
+                    expected_impact="Balance sheet remarks.",
+                    source="federal_reserve",
+                    verification_status="confirmed",
+                    source_url="https://www.federalreserve.gov/newsevents/calendar.htm",
+                ),
+            ],
+        )
         con.execute(
             """
             INSERT OR REPLACE INTO earnings_events (symbol, event_date, event_type, metrics, source)
@@ -59,7 +92,7 @@ def test_requested_week_events_round_trip_through_calendar_read_model(tmp_path: 
         )
         rows = query_rows(con, "SELECT event, verification_status, source_url FROM catalysts ORDER BY event_date")
 
-    assert count == 6
+    assert count == 3
     assert any(row["verification_status"] == "tentative" for row in rows)
     assert all("source_url" in row for row in rows)
 
@@ -83,18 +116,41 @@ database:
 nas:
   status_dir: {tmp_path / "status"}
 event_sources:
-  enabled: true
-  seed_requested_week: true
+  enabled: false
+  seed_requested_week: false
 """,
         encoding="utf-8",
     )
 
     result = run_event_calendar(str(config_path))
 
-    assert result["status"] == "ok"
-    assert result["events"] == 6
+    assert result["status"] == "disabled"
+    assert result["events"] == 0
     assert Path(result["status_path"]).exists()
     config = load_config(config_path)
     with db(config.database.duckdb_path, read_only=True) as con:
         health = query_rows(con, "SELECT * FROM source_health WHERE source = 'event_calendar'")
-    assert health[0]["status"] == "ok"
+    assert health[0]["status"] == "disabled"
+
+
+def test_event_calendar_cleanup_removes_legacy_hardcoded_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        upsert_events(
+            con,
+            [
+                MarketEvent(
+                    id="macro-2026-05-12-bls-cpi-april",
+                    event_date="2026-05-12",
+                    event="Legacy hardcoded CPI",
+                    expected_impact="legacy",
+                    source="bls",
+                )
+            ],
+        )
+        deleted = delete_legacy_requested_week_events(con)
+        rows = query_rows(con, "SELECT * FROM catalysts")
+
+    assert deleted >= 0
+    assert rows == []

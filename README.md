@@ -125,9 +125,8 @@ Trader portfolios are modeled from primary public disclosure records. Market
 does not ingest third-party tracker pages as source data; comparable tracker
 products are useful only as UI/product references.
 
-The app defaults to deterministic sample market data for local development.
-Set `market_data.mode: online` in `config.yaml` to attempt online price fetches
-through optional adapters while preserving fallback behavior.
+The app uses online market data by default. Price provider failures are reported
+in job output and source health rather than filled with synthetic rows.
 
 Free-source enrichment is handled by `market-update-free-sources`. It uses the
 local OpenCLI TradingView adapter for quotes, screeners, options, news, symbol

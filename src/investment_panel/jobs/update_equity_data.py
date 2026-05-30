@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows
@@ -15,7 +16,7 @@ from investment_panel.core.status import write_source_status
 from investment_panel.core.technicals import compute_and_store
 
 
-def run(config_path: str | None = None) -> dict[str, int | str]:
+def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
@@ -27,10 +28,15 @@ def run(config_path: str | None = None) -> dict[str, int | str]:
         symbols = [row["symbol"] for row in instruments]
         fundamental_rows = update_equity_fundamentals(con, instruments, config.market_data.user_agent)
         price_rows = 0
+        price_errors: dict[str, str] = {}
         feature_rows = 0
         for symbol in symbols:
-            frame = fetch_prices(symbol, config.market_data.lookback_days, config.market_data.mode)
-            price_rows += upsert_prices(con, frame)
+            try:
+                frame = fetch_prices(symbol, config.market_data.lookback_days, config.market_data.mode)
+            except Exception as exc:
+                price_errors[symbol] = f"{type(exc).__name__}: {exc}"
+            else:
+                price_rows += upsert_prices(con, frame)
             if compute_and_store(con, symbol):
                 feature_rows += 1
         decision_result = refresh_decision_read_models(con, config.watchlist)
@@ -38,6 +44,7 @@ def run(config_path: str | None = None) -> dict[str, int | str]:
         "database": str(config.database.duckdb_path),
         "symbols": len(symbols),
         "price_rows": price_rows,
+        "price_errors": price_errors,
         "feature_rows": feature_rows,
         "fundamental_rows": fundamental_rows,
         "decision_models": decision_result,

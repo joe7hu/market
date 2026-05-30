@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pandas as pd
 
 from investment_panel.analysis import run_all_analyses
 from investment_panel.analysis.earnings_setup import analyze_earnings_setup
@@ -14,7 +17,7 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.fundamentals import metrics_from_company_facts
 from investment_panel.core.free_sources import infer_event_date, store_expiries, store_news_rows, store_options_chain, store_screener_rows, store_yfinance_market_snapshot, upsert_quote
 from investment_panel.core.panel import load_panel_data
-from investment_panel.core.prices import sample_prices, upsert_prices
+from investment_panel.core.prices import upsert_prices
 from investment_panel.core.scoring import score_and_store
 from investment_panel.core.technicals import compute_and_store
 from investment_panel.jobs import update_free_sources
@@ -45,6 +48,28 @@ class FakeRunner:
         if "status" in command:
             return [{"connected": True, "tabs": []}]
         return []
+
+
+def fixture_prices(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
+    rows = []
+    for index in range(lookback_days):
+        day = date(2026, 5, 20) - timedelta(days=lookback_days - index)
+        if day.weekday() >= 5:
+            continue
+        close = 100.0 + index
+        rows.append(
+            {
+                "symbol": symbol,
+                "date": day,
+                "open": close - 1,
+                "high": close + 1,
+                "low": close - 2,
+                "close": close,
+                "volume": 1_000_000.0 + index,
+                "source": "test_fixture",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def test_company_facts_uses_latest_revenue_across_fallback_tags() -> None:
@@ -275,8 +300,8 @@ def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
     with db(db_path) as con:
         upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity", "category": "ai"})
         upsert_instrument(con, {"symbol": "SPY", "name": "SPY", "asset_class": "etf", "category": "market"})
-        upsert_prices(con, sample_prices("NVDA", 260))
-        upsert_prices(con, sample_prices("SPY", 260))
+        upsert_prices(con, fixture_prices("NVDA", 260))
+        upsert_prices(con, fixture_prices("SPY", 260))
         compute_and_store(con, "NVDA")
         compute_and_store(con, "SPY")
         upsert_quote(con, "NVDA", "2026-05-10T12:00:00Z", FakeRunner().read_json(["tradingview", "quote"])[0])

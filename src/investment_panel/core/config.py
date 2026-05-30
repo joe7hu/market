@@ -129,8 +129,8 @@ class DataSourcesConfig:
 
 @dataclass(frozen=True)
 class EventSourcesConfig:
-    enabled: bool = True
-    seed_requested_week: bool = True
+    enabled: bool = False
+    seed_requested_week: bool = False
     bls_enabled: bool = True
     federal_reserve_enabled: bool = True
     treasury_enabled: bool = True
@@ -209,7 +209,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
     market_data_raw = raw.get("market_data", {})
     market_data = MarketDataConfig(
-        mode=str(market_data_raw.get("mode", "sample")),
+        mode=str(market_data_raw.get("mode", "online")),
         lookback_days=int(market_data_raw.get("lookback_days", 260)),
         equity_provider=str(market_data_raw.get("equity_provider", "yfinance")),
         crypto_provider=str(market_data_raw.get("crypto_provider", "coingecko")),
@@ -277,8 +277,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
     event_sources_raw = raw.get("event_sources", {})
     event_sources = EventSourcesConfig(
-        enabled=bool(event_sources_raw.get("enabled", True)),
-        seed_requested_week=bool(event_sources_raw.get("seed_requested_week", True)),
+        enabled=bool(event_sources_raw.get("enabled", False)),
+        seed_requested_week=bool(event_sources_raw.get("seed_requested_week", False)),
         bls_enabled=bool(event_sources_raw.get("bls_enabled", True)),
         federal_reserve_enabled=bool(event_sources_raw.get("federal_reserve_enabled", True)),
         treasury_enabled=bool(event_sources_raw.get("treasury_enabled", True)),
