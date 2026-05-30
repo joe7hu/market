@@ -8257,6 +8257,234 @@ body {
   color: #f6f9ff;
 }
 
+.ticker-dossier-page {
+  --ticker-paper: #f6f8fb;
+  --ticker-paper-2: #ffffff;
+  --ticker-ink: #182033;
+  --ticker-muted: #526071;
+  --ticker-line: #d8e0ea;
+  --ticker-blue: #175cd3;
+  --ticker-warn: #8a4b00;
+  display: grid;
+  gap: 18px;
+  color: var(--ticker-ink);
+}
+
+.ticker-dossier-hero,
+.ticker-dossier-page .mm-research-report,
+.ticker-dossier-page .panel {
+  border: 1px solid var(--ticker-line);
+  border-radius: 10px;
+  background: var(--ticker-paper);
+  color: var(--ticker-ink);
+  box-shadow: none;
+}
+
+.ticker-dossier-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 18px;
+  padding: 22px;
+}
+
+.ticker-kicker {
+  color: var(--ticker-blue);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ticker-hero-main h1 {
+  color: var(--ticker-ink);
+  font-size: 1.75rem;
+  line-height: 1.1;
+  margin: 8px 0 10px;
+}
+
+.ticker-hero-main h1 span {
+  color: var(--ticker-muted);
+  font-size: 1.05rem;
+}
+
+.ticker-hero-main p,
+.ticker-dossier-page .mm-research-report p,
+.ticker-dossier-page .summary-row small,
+.ticker-dossier-page .panel-copy,
+.ticker-dossier-page .source-row-table td,
+.ticker-dossier-page .source-row-table .clip,
+.ticker-dossier-page .empty-state p {
+  color: var(--ticker-muted);
+  font-size: 0.92rem;
+  line-height: 1.48;
+}
+
+.ticker-hero-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ticker-dossier-page .metric-badge,
+.ticker-dossier-page .metric-box {
+  border: 1px solid var(--ticker-line);
+  background: var(--ticker-paper-2);
+  color: var(--ticker-ink);
+}
+
+.ticker-dossier-page .metric-badge strong,
+.ticker-dossier-page .metric-box strong,
+.ticker-dossier-page .summary-row strong,
+.ticker-dossier-page .panel h2,
+.ticker-dossier-page .panel-header h2,
+.ticker-dossier-page .mm-research-report h2,
+.ticker-dossier-page .mm-research-report b,
+.ticker-dossier-page .ticker-source-drilldown > strong,
+.ticker-dossier-page .decision-brief-panel h2,
+.ticker-dossier-page .trade-setup-panel h2,
+.ticker-dossier-page .info-panel h2,
+.ticker-dossier-page .evidence-column h3,
+.ticker-dossier-page .score-total strong,
+.ticker-dossier-page .source-notice strong,
+.ticker-dossier-page .empty-state h2,
+.ticker-dossier-page .empty-state strong,
+.ticker-dossier-page .bullet-list strong,
+.ticker-dossier-page .source-row-table strong {
+  color: var(--ticker-ink);
+}
+
+.ticker-dossier-page .metric-badge span,
+.ticker-dossier-page .metric-box span,
+.ticker-dossier-page .mm-research-report .report-meta,
+.ticker-dossier-page .mm-research-report small,
+.ticker-dossier-page .decision-brief-panel span,
+.ticker-dossier-page .trade-setup-panel span,
+.ticker-dossier-page .score-total span,
+.ticker-dossier-page .evidence-column span,
+.ticker-dossier-page .source-notice span,
+.ticker-dossier-page .summary-row span,
+.ticker-dossier-page .row-freshness {
+  color: var(--ticker-muted);
+}
+
+.ticker-dossier-page .decision-brief-panel,
+.ticker-dossier-page .trade-setup-panel,
+.ticker-dossier-page .source-notice {
+  border: 1px solid var(--ticker-line);
+  border-radius: 10px;
+  background: var(--ticker-paper);
+  color: var(--ticker-ink);
+}
+
+.ticker-dossier-page .decision-brief-panel p,
+.ticker-dossier-page .trade-setup-panel p,
+.ticker-dossier-page .info-panel li,
+.ticker-dossier-page .bullet-list li,
+.ticker-dossier-page .source-notice p,
+.ticker-dossier-page .source-notice small,
+.ticker-dossier-page .score-total small,
+.ticker-dossier-page .row-detail,
+.ticker-dossier-page .panel-footnote {
+  color: var(--ticker-muted);
+}
+
+.ticker-dossier-page .evidence-column {
+  background: var(--ticker-paper-2);
+  color: var(--ticker-ink);
+}
+
+.ticker-dossier-page .evidence-column li {
+  color: #2c3748;
+}
+
+.ticker-dossier-page .setup-row,
+.ticker-dossier-page .summary-row,
+.ticker-dossier-page .risk-row,
+.ticker-dossier-page .option-row,
+.ticker-dossier-page .portfolio-fit-row {
+  border-bottom-color: #cbd5e1;
+}
+
+.ticker-dossier-page .mm-research-report {
+  margin: 0;
+  padding: 20px 22px;
+}
+
+.ticker-dossier-page .tab-bar {
+  border: 1px solid var(--ticker-line);
+  border-radius: 10px;
+  background: var(--ticker-paper);
+  padding: 0 8px;
+}
+
+.ticker-dossier-page .tab-bar button {
+  color: #425066;
+}
+
+.ticker-dossier-page .tab-bar button.active {
+  border-bottom-color: var(--ticker-blue);
+  color: var(--ticker-blue);
+}
+
+.ticker-dossier-page .ticker-grid {
+  gap: 14px;
+}
+
+.ticker-dossier-page .panel {
+  padding: 16px;
+}
+
+.ticker-dossier-page .table-wrap {
+  border: 1px solid var(--ticker-line);
+  border-radius: 8px;
+  background: var(--ticker-paper-2);
+}
+
+.ticker-dossier-page .desk-table th,
+.ticker-dossier-page .source-row-table th {
+  background: #eef3f8;
+  color: #3b4658;
+  font-size: 0.72rem;
+}
+
+.ticker-dossier-page .desk-table td,
+.ticker-dossier-page .source-row-table td {
+  border-bottom-color: #e2e8f0;
+}
+
+.ticker-dossier-page .ticker-link,
+.ticker-dossier-page .text-link {
+  color: var(--ticker-blue);
+}
+
+.ticker-dossier-page .row-freshness,
+.ticker-dossier-page .state-pill {
+  background: #edf2f8;
+  color: #344256;
+}
+
+.ticker-dossier-page .info-panel,
+.ticker-dossier-page .evidence-column {
+  border-color: var(--ticker-line);
+  background: var(--ticker-paper-2);
+}
+
+.ticker-dossier-page .empty-state {
+  border: 1px dashed #c9d4e2;
+  background: #f9fbfd;
+}
+
+@media (max-width: 760px) {
+  .ticker-dossier-hero {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .ticker-hero-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 920px) {
   .market-terminal .terminal-shell {
     grid-template-columns: 1fr;

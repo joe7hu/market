@@ -59,6 +59,28 @@ def test_ticker_payload_includes_quote_and_signal_context_for_deep_links() -> No
     assert payload["tables"]["opportunity_sources"][0]["source_key"] == "technicals"
 
 
+def test_ticker_payload_guarantees_dossier_tab_coverage_from_read_models() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "discovered_universe": [{"symbol": "CRWV", "name": "CoreWeave", "source_counts": {"filing": 1}}],
+            "universe_screen": [{"symbol": "CRWV", "watch_state": "candidate", "market_cap": 10_000_000_000, "forward_pe": 55, "roic": 9, "quality_score": 42, "value_signal": "expensive"}],
+            "symbol_decision_snapshot": [{"symbol": "CRWV", "action_grade": "Watch", "freshness_status": "fresh", "decision_basis": {"summary": "AI infrastructure candidate", "source_counts": {"filing": 1}}, "invalidation": "Capacity demand slows"}],
+        },
+    )
+
+    payload = data_access.ticker_payload(panel_data, "crwv")
+    tables = payload["tables"]
+
+    assert payload["found"] is True
+    assert tables["quotes"][0]["source"] == "ticker_dossier_coverage"
+    assert tables["fundamentals"][0]["source"] == "universe_screen"
+    assert tables["source_consensus"][0]["source_name"] == "Ticker source coverage"
+    assert tables["ownership_consensus"][0]["source_type"] == "coverage_gap"
+    assert tables["feed_signals"][0]["source"] == "ticker_dossier_coverage"
+    assert tables["thesis_monitor"][0]["needs_review"] is True
+
+
 def test_new_ia_panel_scopes_are_backend_owned() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),

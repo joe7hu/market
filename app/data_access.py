@@ -660,10 +660,14 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "decision_queue": _matching_ticker_rows(panel_data.rows("decision_queue"), normalized_ticker),
         "decision_readiness": _matching_ticker_rows(panel_data.rows("decision_readiness"), normalized_ticker),
         "discovered_universe": _matching_ticker_rows(panel_data.rows("discovered_universe"), normalized_ticker),
+        "universe_screen": _matching_ticker_rows(panel_data.rows("universe_screen"), normalized_ticker),
         "symbol_decision_snapshots": _matching_ticker_rows(panel_data.rows("symbol_decision_snapshots"), normalized_ticker),
         "symbol_decision_snapshot": _matching_ticker_rows(panel_data.rows("symbol_decision_snapshot"), normalized_ticker),
         "opportunities_ranked": _matching_ticker_rows(panel_data.rows("opportunities_ranked"), normalized_ticker),
         "opportunity_sources": _matching_ticker_rows(panel_data.rows("opportunity_sources"), normalized_ticker),
+        "feed_signals": _matching_ticker_rows(panel_data.rows("feed_signals"), normalized_ticker),
+        "source_consensus": _matching_ticker_rows(panel_data.rows("source_consensus"), normalized_ticker),
+        "ownership_consensus": _matching_ticker_rows(panel_data.rows("ownership_consensus"), normalized_ticker),
         "portfolio": _matching_ticker_rows(panel_data.rows("portfolio"), normalized_ticker),
         "theses": _matching_ticker_rows(panel_data.rows("theses"), normalized_ticker),
         "thesis_monitor": _matching_ticker_rows(panel_data.rows("thesis_monitor"), normalized_ticker),
@@ -722,6 +726,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
             normalized_ticker,
         ),
     }
+    _ensure_ticker_dossier_tables(normalized_ticker, tables)
     return {
         "ticker": normalized_ticker,
         "status": status_payload(panel_data),
@@ -729,6 +734,129 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "decision_snapshot": (tables["symbol_decision_snapshot"] or tables["symbol_decision_snapshots"] or [None])[0],
         "decision_brief": ticker_decision_brief(normalized_ticker, tables),
         "found": any(tables.values()),
+    }
+
+
+def _ensure_ticker_dossier_tables(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> None:
+    """Guarantee every ticker dossier tab has backend-owned context rows."""
+
+    decision = _first_row(tables, "symbol_decision_snapshot", "symbol_decision_snapshots", "decision_queue", "opportunities_ranked", "discovered_universe", "universe_screen")
+    universe = _first_row(tables, "universe_screen", "discovered_universe")
+    quote = _latest_row(tables.get("quotes") or [], ("observed_at", "as_of", "date"))
+
+    if not any(tables.get(key) for key in ("quotes", "technicals", "sepa", "liquidity", "valuations")):
+        tables["quotes"] = [_ticker_price_context(symbol, decision, universe)]
+    elif not quote and universe:
+        tables.setdefault("quotes", []).append(_ticker_price_context(symbol, decision, universe))
+
+    if not any(tables.get(key) for key in ("fundamentals", "analyst_estimates", "earnings", "earnings_setups", "valuations")):
+        tables["fundamentals"] = [_ticker_fundamental_context(symbol, decision, universe)]
+
+    if not tables.get("source_consensus"):
+        tables["source_consensus"] = [_ticker_source_context(symbol, decision, universe)]
+
+    if not any(tables.get(key) for key in ("disclosures", "ownership_consensus")):
+        tables["ownership_consensus"] = [_ticker_ownership_context(symbol)]
+
+    if not tables.get("feed_signals"):
+        tables["feed_signals"] = [_ticker_feed_context(symbol, decision, universe)]
+
+    if not any(tables.get(key) for key in ("theses", "thesis_monitor", "memos", "research_packets")):
+        tables["thesis_monitor"] = [_ticker_thesis_context(symbol, decision, universe)]
+
+
+def _ticker_price_context(symbol: str, decision: dict[str, Any], universe: dict[str, Any]) -> dict[str, Any]:
+    price = _number(universe.get("price") or decision.get("latest_quote"))
+    return {
+        "symbol": symbol,
+        "source": "ticker_dossier_coverage",
+        "observed_at": universe.get("latest_observed_at") or decision.get("latest_quote_at") or decision.get("as_of"),
+        "price": price or None,
+        "change_pct": universe.get("change_pct"),
+        "freshness_status": decision.get("quote_freshness") or universe.get("freshness") or "not_loaded",
+        "summary": "Price context from watchlist/universe and decision read models." if price else "No current price row is loaded; use this as a coverage gap until market data refreshes.",
+    }
+
+
+def _ticker_fundamental_context(symbol: str, decision: dict[str, Any], universe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "form_type": "ticker_dossier_coverage",
+        "source": "universe_screen",
+        "filing_date": decision.get("as_of") or universe.get("updated_at"),
+        "metrics": {
+            "market_cap": universe.get("market_cap"),
+            "forward_pe": universe.get("forward_pe"),
+            "forward_pe_source": universe.get("forward_pe_source"),
+            "roic": universe.get("roic"),
+            "roic_source": universe.get("roic_source"),
+            "quality_score": universe.get("quality_score"),
+            "value_signal": universe.get("value_signal"),
+            "watch_state": universe.get("watch_state"),
+        },
+        "summary": "Fundamental context synthesized from the backend watchlist screen because raw fundamentals are not loaded for this ticker.",
+    }
+
+
+def _ticker_source_context(symbol: str, decision: dict[str, Any], universe: dict[str, Any]) -> dict[str, Any]:
+    basis = _object(decision.get("decision_basis"))
+    counts = _object(basis.get("source_counts"))
+    return {
+        "source_name": "Ticker source coverage",
+        "source": "decision_read_model",
+        "symbol": symbol,
+        "content_type": "coverage",
+        "items_count": int(sum(_number(value) for value in counts.values())) if counts else int(_number(universe.get("source_count"))),
+        "tickers_count": 1,
+        "bullish_symbols": [symbol] if not _is_no_trade_action(decision.get("action_grade")) else [],
+        "bearish_symbols": [symbol] if _is_no_trade_action(decision.get("action_grade")) else [],
+        "ticker_history": [{"symbols": [symbol], "title": basis.get("summary") or decision.get("source_cluster") or "No per-source history loaded.", "date": decision.get("as_of")}],
+        "recommendation": "coverage_gap" if not counts else "loaded",
+    }
+
+
+def _ticker_ownership_context(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "source_type": "coverage_gap",
+        "source": "ownership_consensus",
+        "holders": 0,
+        "net_buys": 0,
+        "net_sells": 0,
+        "total_value": 0,
+        "summary": "No mapped disclosure or ownership consensus row is loaded for this ticker.",
+    }
+
+
+def _ticker_feed_context(symbol: str, decision: dict[str, Any], universe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f"coverage:{symbol}",
+        "symbol": symbol,
+        "symbols": [symbol],
+        "source": "ticker_dossier_coverage",
+        "source_type": "coverage",
+        "date": decision.get("as_of") or universe.get("updated_at"),
+        "title": f"{symbol} coverage row",
+        "thesis": _brief_summary(symbol, decision, _object(decision.get("decision_basis")), _text_list(decision.get("blocking_gates"))),
+        "antithesis": decision.get("invalidation") or "No ticker-specific countercase has been promoted yet.",
+        "portfolio_relevance": _text(_object(decision.get("portfolio_impact")).get("summary")) or "Review against Joe's portfolio/watchlist before action.",
+        "next_action": decision.get("catalyst_window") or "Open the thesis tab and fill any missing evidence families.",
+        "freshness": decision.get("freshness_status") or universe.get("freshness") or "not_loaded",
+    }
+
+
+def _ticker_thesis_context(symbol: str, decision: dict[str, Any], universe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "source": "ticker_dossier_coverage",
+        "status": universe.get("watch_state") or "candidate",
+        "thesis": _text_join(decision.get("inclusion_reasons")) or "No explicit thesis row is loaded yet.",
+        "why_owned_watched": universe.get("portfolio_relevance") or "Ticker is present in the backend universe.",
+        "invalidation": decision.get("invalidation") or "Define the countercase before changing exposure.",
+        "needs_review": True,
+        "review_reason": "Needs review because the ticker dossier is using generated coverage context instead of a stored thesis.",
+        "evidence_links": [],
+        "last_reviewed": decision.get("as_of") or universe.get("updated_at"),
     }
 
 
@@ -1556,12 +1684,17 @@ def _row_symbols(row: dict[str, Any]) -> set[str]:
         value = row.get(field)
         if isinstance(value, str) and value:
             symbols.add(value.split(":")[-1].upper())
-    for field in ("symbols", "related_symbols"):
+    for field in ("symbols", "related_symbols", "bullish_symbols", "bearish_symbols", "holder_names"):
         value = row.get(field)
         if isinstance(value, list):
             symbols.update(str(item).split(":")[-1].upper() for item in value if item)
         elif isinstance(value, str):
             symbols.update(item.strip().split(":")[-1].upper() for item in value.replace(";", ",").split(",") if item.strip())
+    history = row.get("ticker_history")
+    if isinstance(history, list):
+        for item in history:
+            if isinstance(item, dict):
+                symbols.update(_row_symbols(item))
     return symbols
 
 
@@ -1569,6 +1702,9 @@ def _matching_ticker_rows(rows: list[dict[str, Any]], ticker: str) -> list[dict[
     ticker_fields = ("ticker", "symbol", "security", "name")
     matches: list[dict[str, Any]] = []
     for row in rows:
+        if ticker in _row_symbols(row):
+            matches.append(row)
+            continue
         related = row.get("related_symbols")
         if isinstance(related, list) and any(str(item).split(":")[-1].upper() == ticker for item in related):
             matches.append(row)

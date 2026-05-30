@@ -995,9 +995,9 @@ function briefTone(item: DailyBriefItem): Tone {
 }
 
 export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: (symbol: string) => void }) {
-  const [activeTab, setActiveTab] = useState("Overview");
+  const [activeTab, setActiveTab] = useState("Price Chart");
   useEffect(() => {
-    setActiveTab("Overview");
+    setActiveTab("Price Chart");
   }, [symbol]);
   const tickerScopedData = useMemo(() => ticker ? panelDataWithTickerTables(data, ticker) : data, [data, ticker]);
   const dossierModel = useMemo(() => ticker ? buildModel(tickerScopedData) : model, [model, ticker, tickerScopedData]);
@@ -1024,18 +1024,9 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   const activeDossierTab = dossierTabs.includes(activeTab) ? activeTab : "Price Chart";
 
   return (
-    <PageFrame
-      title={symbol}
-      subtitle={[opportunity?.name || companyName(symbol), titleLabel(opportunity?.assetClass ?? "instrument"), titleLabel(opportunity?.category ?? "watchlist")].filter(Boolean).join(" · ")}
-      action={
-        <div className="ticker-actions">
-          <span className="ticker-rating">{opportunity?.grade ?? "Unrated"}</span>
-          <IconButton label="Watch">
-            <Star size={15} />
-          </IconButton>
-        </div>
-      }
-    >
+    <PageFrame>
+      <section className="ticker-dossier-page">
+      <TickerDossierHero symbol={symbol} opportunity={opportunity} decisionBrief={decisionBrief} quote={quote} evidenceRows={evidenceRows} foundTables={foundTables} />
       <MungerTickerResearchSummary symbol={symbol} opportunity={opportunity} decisionBrief={decisionBrief} quote={quote} evidenceRows={evidenceRows} foundTables={foundTables} thesisMonitor={thesisMonitor} />
       <TabBar tabs={dossierTabs} active={activeDossierTab} onSelect={setActiveTab} />
       {activeDossierTab === "Price Chart" ? <div className="ticker-grid">
@@ -1089,7 +1080,28 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
           {opportunity && <BulletList tone={opportunity.isStale || opportunity.isSourceThin ? "warn" : "info"} items={opportunity.inclusionReasons} />}
         </Panel>
       </div> : <TickerTabContent activeTab={activeDossierTab} ticker={ticker} data={data} decisionBrief={decisionBrief} />}
+      </section>
     </PageFrame>
+  );
+}
+
+function TickerDossierHero({ symbol, opportunity, decisionBrief, quote, evidenceRows, foundTables }: { symbol: string; opportunity?: Opportunity; decisionBrief: RowRecord; quote?: WatchItem; evidenceRows: number; foundTables: string[] }) {
+  const verdict = objectField(decisionBrief.verdict);
+  const setup = objectField(decisionBrief.setup);
+  return (
+    <header className="ticker-dossier-hero">
+      <div className="ticker-hero-main">
+        <span className="ticker-kicker">Research Dossier</span>
+        <h1>{companyName(symbol)} <span>{symbol}</span></h1>
+        <p>{stringField(verdict, ["summary"]) || opportunity?.whyNow || `${symbol} is loaded from Market's backend decision universe.`}</p>
+      </div>
+      <div className="ticker-hero-facts">
+        <MetricBadge label="Decision" value={stringField(verdict, ["action"]) || opportunity?.actionGrade || "Watch"} caption={stringField(verdict, ["freshness"]) || "backend read model"} tone={opportunity?.isStale ? "warn" : "info"} />
+        <MetricBadge label="Price" value={canonicalQuoteLabel(decisionBrief) || quote?.price || "-"} caption={canonicalQuoteCaption(decisionBrief) || "quote context"} tone="info" />
+        <MetricBadge label="Evidence" value={String(evidenceRows)} caption={foundTables.slice(0, 3).join(", ") || "coverage rows"} tone={evidenceRows ? "good" : "warn"} />
+        <MetricBadge label="Next" value={stringField(setup, ["review_date"]) || "Review"} caption={stringField(verdict, ["next_action"]) || opportunity?.nextAction || "open evidence tabs"} tone="warn" />
+      </div>
+    </header>
   );
 }
 
@@ -1920,12 +1932,12 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
 
 function TickerTabContent({ activeTab, ticker, data, decisionBrief }: { activeTab: string; ticker: TickerPayload | null; data: PanelData; decisionBrief: RowRecord }) {
   const keyByTab: Record<string, string[]> = {
-    "Price Chart": ["quotes", "prices", "technicals", "sepa", "liquidity", "valuations"],
-    "Fundamental Metrics": ["fundamentals", "analyst_estimates", "earnings", "earnings_setups", "valuations"],
-    Superinvestors: ["disclosures"],
-    Sources: ["opportunity_sources", "signals", "news", "research_packets", "memos", "theses"],
-    Feed: ["decision_queue", "symbol_decision_snapshot", "decision_snapshot", "opportunity_sources", "news"],
-    Thesis: ["theses", "thesis_monitor", "memos", "research_packets"],
+    "Price Chart": ["quotes", "prices", "technicals", "sepa", "liquidity", "valuations", "universe_screen"],
+    "Fundamental Metrics": ["fundamentals", "analyst_estimates", "earnings", "earnings_setups", "valuations", "universe_screen"],
+    Superinvestors: ["ownership_consensus", "disclosures"],
+    Sources: ["source_consensus", "opportunity_sources", "feed_signals", "signals", "news", "research_packets", "memos", "theses"],
+    Feed: ["feed_signals", "decision_queue", "symbol_decision_snapshot", "decision_snapshot", "opportunity_sources", "news"],
+    Thesis: ["theses", "thesis_monitor", "memos", "research_packets", "feed_signals"],
     "Evidence Stack": ["symbol_decision_snapshot", "decision_snapshot", "decision_queue", "opportunities_ranked", "opportunity_sources", "signals", "technicals", "sepa", "liquidity", "correlations", "valuations"],
     Broker: ["broker_status", "broker_accounts", "broker_positions", "broker_market_snapshots", "broker_scanner_signals", "agent_recommendations", "paper_orders"],
     Fundamentals: ["fundamentals"],
