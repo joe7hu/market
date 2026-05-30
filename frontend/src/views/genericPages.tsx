@@ -118,11 +118,12 @@ export function SettingsPage({ data }: { data: PanelData }) {
 }
 
 export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; model: AppModel; data: PanelData; onOpenTicker: OpenTicker }) {
-  const tickerRows = flattenTickerRows(ticker);
+  const tickerSections = tickerTableSections(ticker);
   const thesisRows = rows(data.thesisMonitor).filter((row) => symbolList(row).includes(symbol));
   const title = ticker?.found === false ? `${symbol} not found` : symbol;
   return (
     <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Ticker evidence, thesis state, decision snapshot, and source rows.">
+      <TradingViewChart symbol={symbol} ticker={ticker} />
       {ticker?.decision_brief || ticker?.decision_snapshot ? (
         <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-2 [&>*]:min-w-0">
           {ticker.decision_brief && <DossierCard title="Decision Brief" row={ticker.decision_brief} />}
@@ -130,8 +131,35 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
         </div>
       ) : null}
       <RowsSection title="Thesis State" rows={thesisRows} onOpenTicker={onOpenTicker} />
-      <RowsSection title="Ticker Payload Rows" rows={tickerRows} onOpenTicker={onOpenTicker} />
+      {tickerSections.map(([sectionTitle, sectionRows]) => <RowsSection key={sectionTitle} title={sectionTitle} rows={sectionRows} onOpenTicker={onOpenTicker} />)}
     </WorkspacePage>
+  );
+}
+
+function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPayload | null }) {
+  const tradingViewSymbol = resolveTradingViewSymbol(symbol, ticker);
+  const chartUrl = tradingViewEmbedUrl(tradingViewSymbol);
+  const externalUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`;
+  return (
+    <DataTableFrame
+      title="Chart"
+      action={
+        <Button asChild type="button" variant="outline" size="sm">
+          <a href={externalUrl} target="_blank" rel="noreferrer"><ExternalLink /> Open TradingView</a>
+        </Button>
+      }
+    >
+      <div className="h-[360px] w-full bg-muted/30 sm:h-[440px]">
+        <iframe
+          title={`${symbol} TradingView chart`}
+          src={chartUrl}
+          className="h-full w-full border-0"
+          loading="lazy"
+          referrerPolicy="no-referrer-when-downgrade"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+        />
+      </div>
+    </DataTableFrame>
   );
 }
 
@@ -321,7 +349,96 @@ function objectRows(object: Record<string, unknown>): RowRecord[] {
   return Object.entries(object).map(([key, value]) => ({ key, value: typeof value === "object" && value !== null ? JSON.stringify(value) : String(value) }));
 }
 
-function flattenTickerRows(ticker: TickerPayload | null): RowRecord[] {
-  if (!ticker?.tables) return [];
-  return Object.entries(ticker.tables).flatMap(([table, tableRows]) => (tableRows ?? []).map((row) => ({ table, ...row })));
+const tickerSectionOrder: Array<[string, keyof NonNullable<TickerPayload["tables"]>]> = [
+  ["Decision Queue", "decision_queue"],
+  ["Decision Readiness", "decision_readiness"],
+  ["Candidate Screen", "candidates"],
+  ["Universe Context", "universe_screen"],
+  ["Quote", "quotes"],
+  ["Technicals", "technicals"],
+  ["SEPA", "sepa"],
+  ["Liquidity", "liquidity"],
+  ["Valuations", "valuations"],
+  ["Earnings Setup", "earnings_setups"],
+  ["Earnings", "earnings"],
+  ["Analyst Estimates", "analyst_estimates"],
+  ["Source Signals", "ticker_source_signals"],
+  ["News", "news"],
+  ["Disclosures", "disclosures"],
+  ["Ownership Consensus", "ownership_consensus"],
+  ["Options Payoff", "options_payoff_scenarios"],
+  ["Options Chain", "options_chain"],
+  ["TradingView Watchlists", "tradingview_watchlists"],
+  ["TradingView Alerts", "tradingview_alerts"],
+  ["TradingView Chart State", "tradingview_chart_state"],
+  ["Broker Positions", "broker_positions"],
+  ["Agent Recommendations", "agent_recommendations"],
+];
+
+function tickerTableSections(ticker: TickerPayload | null): Array<[string, RowRecord[]]> {
+  const tables = ticker?.tables;
+  if (!tables) return [];
+  return tickerSectionOrder
+    .map(([title, key]) => [title, compactRows(tables[key])] as [string, RowRecord[]])
+    .filter(([, sectionRows]) => sectionRows.length > 0);
+}
+
+function compactRows(sectionRows: RowRecord[] | undefined): RowRecord[] {
+  return (sectionRows ?? [])
+    .map((row) => Object.fromEntries(Object.entries(row).filter(([, value]) => !isEmptyCell(value))) as RowRecord)
+    .filter((row) => Object.keys(row).length > 0);
+}
+
+function isEmptyCell(value: RowRecord[string]): boolean {
+  if (value === undefined || value === null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return typeof value === "object" && Object.keys(value).length === 0;
+}
+
+function resolveTradingViewSymbol(symbol: string, ticker: TickerPayload | null): string {
+  const normalized = symbol.toUpperCase();
+  const tables = ticker?.tables ?? {};
+  const candidates = [
+    ...compactRows(tables.quotes).map((row) => nestedString(row, ["raw", "symbol"])),
+    ...compactRows(tables.tradingview_chart_state).map((row) => textField(row, ["symbol"])),
+    ...compactRows(tables.tradingview_symbol_search).map((row) => {
+      const exchange = textField(row, ["exchange"]);
+      const rowSymbol = textField(row, ["symbol", "ticker"]);
+      return exchange && rowSymbol && !rowSymbol.includes(":") ? `${exchange}:${rowSymbol}` : rowSymbol;
+    }),
+  ];
+  const explicit = candidates.find((candidate) => candidate.includes(":"));
+  if (explicit) return explicit.toUpperCase();
+  if (normalized.endsWith("-USD")) return `COINBASE:${normalized.replace("-USD", "USD")}`;
+  if (["SPY", "QQQ"].includes(normalized)) return `AMEX:${normalized}`;
+  return `NASDAQ:${normalized}`;
+}
+
+function nestedString(row: RowRecord, path: string[]): string {
+  let current: unknown = row;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || !(key in current)) return "";
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current.trim() : "";
+}
+
+function tradingViewEmbedUrl(tradingViewSymbol: string): string {
+  const params = new URLSearchParams({
+    frameElementId: `market-chart-${tradingViewSymbol.replace(/[^A-Za-z0-9]/g, "-")}`,
+    symbol: tradingViewSymbol,
+    interval: "D",
+    range: "12M",
+    hidesidetoolbar: "1",
+    symboledit: "1",
+    saveimage: "0",
+    toolbarbg: "F1F3F6",
+    studies: "MASimple@tv-basicstudies,RSI@tv-basicstudies,MACD@tv-basicstudies",
+    theme: "light",
+    style: "1",
+    timezone: "Etc/UTC",
+    withdateranges: "1",
+    hideideas: "1",
+  });
+  return `https://www.tradingview.com/widgetembed/?${params.toString()}`;
 }
