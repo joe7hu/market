@@ -8,6 +8,9 @@ from investment_panel.core.db import query_rows
 from investment_panel.core.source_ingestion.canonical import ensure_canonical_sources
 from investment_panel.core.source_ingestion.utils import decode_row, source_row_freshness
 
+EMPTY_VALUES = (None, "", [], {})
+
+
 def source_registry_rows(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
@@ -39,7 +42,7 @@ def source_registry_rows(con: Any) -> list[dict[str, Any]]:
         ORDER BY r.enabled DESC, items_count DESC, r.source_name
         """,
     )
-    return [decode_row(row) | {"freshness": source_row_freshness(row)} for row in rows]
+    return [_compact_row(decode_row(row) | {"freshness": source_row_freshness(row)}) for row in rows]
 
 
 def source_item_rows(con: Any, source_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
@@ -54,7 +57,7 @@ def source_item_rows(con: Any, source_id: str | None = None, limit: int = 200) -
         params.append(source_id)
     sql += " ORDER BY i.observed_at DESC NULLS LAST, i.published_at DESC NULLS LAST LIMIT ?"
     params.append(limit)
-    return [decode_row(row) for row in query_rows(con, sql, params)]
+    return [_compact_row(decode_row(row)) for row in query_rows(con, sql, params)]
 
 
 def source_run_rows(con: Any, source_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
@@ -69,7 +72,13 @@ def source_run_rows(con: Any, source_id: str | None = None, limit: int = 200) ->
         params.append(source_id)
     sql += " ORDER BY runs.finished_at DESC NULLS LAST, runs.started_at DESC NULLS LAST LIMIT ?"
     params.append(limit)
-    return [decode_row(row) for row in query_rows(con, sql, params)]
+    rows = []
+    for row in query_rows(con, sql, params):
+        decoded = decode_row(row)
+        decoded["source_name"] = decoded.get("source_name") or decoded.get("source_id")
+        decoded["source_family"] = decoded.get("source_family") or decoded.get("capability") or "source_run"
+        rows.append(_compact_row(decoded))
+    return rows
 
 
 def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 300) -> list[dict[str, Any]]:
@@ -85,7 +94,13 @@ def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 
         params.append(symbol.upper())
     sql += " ORDER BY s.observed_at DESC NULLS LAST LIMIT ?"
     params.append(limit)
-    return [decode_row(row) for row in query_rows(con, sql, params)]
+    rows = []
+    for row in query_rows(con, sql, params):
+        decoded = decode_row(row)
+        if not decoded.get("url"):
+            decoded["url"] = _first_url(decoded.get("evidence_refs"))
+        rows.append(_compact_row(decoded))
+    return rows
 
 
 def source_detail_payload(con: Any, source_id: str) -> dict[str, Any]:
@@ -99,3 +114,16 @@ def source_detail_payload(con: Any, source_id: str) -> dict[str, Any]:
         "items": source_item_rows(con, source_id, limit=100),
         "signals": [row for row in ticker_source_signal_rows(con, limit=500) if row.get("source_id") == source_id],
     }
+
+
+def _first_url(value: Any) -> str:
+    refs = value if isinstance(value, list) else []
+    for ref in refs:
+        text = str(ref or "").strip()
+        if text.startswith(("http://", "https://", "file://", "/")):
+            return text
+    return ""
+
+
+def _compact_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in EMPTY_VALUES}

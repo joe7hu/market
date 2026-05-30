@@ -95,3 +95,9 @@ def test_thesis_monitor_creates_watchlist_audit_row_without_thesis(tmp_path: Pat
     assert mu["stale_thesis"] is True
     assert "missing thesis" in mu["stale_reason"]
     assert mu["needs_review"] is True
+    assert mu["thesis"].startswith("No structured thesis loaded")
+    assert mu["why_owned_watched"].startswith("Watchlist symbol MU")
+    assert mu["why"] == mu["why_owned_watched"]
+    assert mu["invalidation"].startswith("No invalidation rule loaded")
+    assert mu["evidence_links"] == ["local:watchlist:MU"]
+    assert {"thesis", "why_owned_watched", "invalidation", "last_reviewed"}.issubset(set(mu["structured_fields_missing"]))

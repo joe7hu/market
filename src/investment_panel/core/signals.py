@@ -23,7 +23,7 @@ def signal_rows(con: Any) -> list[dict[str, Any]]:
         LIMIT 100
         """,
     )
-    return [to_signal(row) for row in rows]
+    return [_compact_empty_fields(to_signal(row)) for row in rows]
 
 
 def to_signal(row: dict[str, Any]) -> dict[str, Any]:
@@ -57,6 +57,10 @@ def to_signal(row: dict[str, Any]) -> dict[str, Any]:
         "gates": gates,
         "price_source": features.get("price_source") or features.get("source"),
     }
+
+
+def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in (None, "", [], {})}
 
 
 def grade_for(score: float) -> str:
@@ -130,4 +134,3 @@ def parse_json(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return {}
-

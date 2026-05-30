@@ -41,46 +41,58 @@ def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None 
         watched = symbol in watchlist
         updated_at = _parse_dt(stored.get("updated_at"))
         last_reviewed = _last_reviewed(thesis_json, updated_at)
-        thesis = _first_text(thesis_json, ("thesis", "core_thesis", "summary", "claim")) or _first_evidence_summary(evidence)
-        why = _first_text(thesis_json, ("why_owned_watched", "why_owned", "why_watched", "why", "rationale", "why_now"))
-        invalidation = _text_or_join(thesis_json.get("invalidation") or thesis_json.get("invalidation_criteria") or thesis_json.get("risk_trigger"))
-        evidence_links = _evidence_links(thesis_json, evidence)
+        raw_thesis = _first_text(thesis_json, ("thesis", "core_thesis", "summary", "claim")) or _first_evidence_summary(evidence)
+        raw_why = _first_text(thesis_json, ("why_owned_watched", "why_owned", "why_watched", "why", "rationale", "why_now"))
+        raw_invalidation = _text_or_join(thesis_json.get("invalidation") or thesis_json.get("invalidation_criteria") or thesis_json.get("risk_trigger"))
+        evidence_links = _evidence_links(thesis_json, evidence) or _fallback_evidence_links(symbol, stored, evidence, decision)
         status = _status(thesis_json, owned, watched)
         latest_price = _float(quote.get("price") or decision.get("latest_quote"))
-        invalidation_price = _invalidation_price(thesis_json, invalidation)
+        thesis = raw_thesis or _fallback_thesis(symbol, owned, watched, decision)
+        why = raw_why or _fallback_why(symbol, owned, watched, decision)
+        invalidation = raw_invalidation or _fallback_invalidation(symbol, latest_price, decision)
+        invalidation_price = _invalidation_price(thesis_json, raw_invalidation)
         invalidation_distance_pct = _invalidation_distance_pct(latest_price, invalidation_price)
-        stale_thesis, stale_reason = _stale_status(thesis, why, invalidation, last_reviewed)
+        stale_thesis, stale_reason = _stale_status(raw_thesis, raw_why, raw_invalidation, last_reviewed)
         contradiction_flags = _contradiction_flags(decision, owned, latest_price, invalidation_price, invalidation_distance_pct)
         review_reason = _review_reason(stale_thesis, stale_reason, contradiction_flags, decision)
         output.append(
-            {
-                "symbol": symbol,
-                "thesis": thesis,
-                "why_owned_watched": why,
-                "invalidation": invalidation,
-                "evidence_links": evidence_links,
-                "last_reviewed": last_reviewed,
-                "last_reviewed_age_days": _age_days(last_reviewed),
-                "status": status,
-                "owned": owned,
-                "watched": watched,
-                "source": "theses" if stored else "arco_thesis" if evidence else "portfolio_watchlist",
-                "updated_at": updated_at,
-                "stale_thesis": stale_thesis,
-                "stale_reason": stale_reason,
-                "contradiction_flags": contradiction_flags,
-                "needs_review": stale_thesis or bool(contradiction_flags),
-                "review_reason": review_reason,
-                "latest_price": latest_price,
-                "latest_quote_at": quote.get("observed_at") or decision.get("latest_quote_at"),
-                "invalidation_price": invalidation_price,
-                "invalidation_distance_pct": invalidation_distance_pct,
-                "decision_action": decision.get("action_grade"),
-                "decision_freshness": decision.get("freshness_status") or decision.get("overall_decision_freshness"),
-                "blocking_gates": decision.get("blocking_gates") or [],
-                "evidence_count": len(evidence_links),
-                "raw_thesis": thesis_json,
-            }
+            _compact_empty_fields(
+                {
+                    "symbol": symbol,
+                    "thesis": thesis,
+                    "thesis_text": thesis,
+                    "why_owned_watched": why,
+                    "why_owned": why,
+                    "why_watched": why,
+                    "why": why,
+                    "invalidation": invalidation,
+                    "invalidation_text": invalidation,
+                    "evidence_links": evidence_links,
+                    "evidence": evidence_links,
+                    "last_reviewed": last_reviewed,
+                    "last_reviewed_age_days": _age_days(last_reviewed),
+                    "status": status,
+                    "owned": owned,
+                    "watched": watched,
+                    "source": "theses" if stored else "arco_thesis" if evidence else "portfolio_watchlist",
+                    "updated_at": updated_at,
+                    "stale_thesis": stale_thesis,
+                    "stale_reason": stale_reason,
+                    "contradiction_flags": contradiction_flags,
+                    "needs_review": stale_thesis or bool(contradiction_flags),
+                    "review_reason": review_reason,
+                    "latest_price": latest_price,
+                    "latest_quote_at": quote.get("observed_at") or decision.get("latest_quote_at"),
+                    "invalidation_price": invalidation_price,
+                    "invalidation_distance_pct": invalidation_distance_pct,
+                    "decision_action": decision.get("action_grade"),
+                    "decision_freshness": decision.get("freshness_status") or decision.get("overall_decision_freshness"),
+                    "blocking_gates": decision.get("blocking_gates") or [],
+                    "evidence_count": len(evidence_links),
+                    "raw_thesis": thesis_json,
+                    "structured_fields_missing": _structured_fields_missing(raw_thesis, raw_why, raw_invalidation, last_reviewed),
+                }
+            )
         )
     return sorted(output, key=lambda row: (bool(row.get("needs_review")), bool(row.get("owned")), _age_days(row.get("last_reviewed")) or -1), reverse=True)
 
@@ -196,6 +208,53 @@ def _review_reason(stale: bool, stale_reason: str, flags: list[str], decision: d
     if stale:
         return f"Needs review because thesis is stale: {stale_reason}."
     return "Auditable thesis is current."
+
+
+def _fallback_thesis(symbol: str, owned: bool, watched: bool, decision: dict[str, Any]) -> str:
+    action = decision.get("action_grade") or "Monitor"
+    if owned:
+        return f"No structured thesis loaded for owned position {symbol}; review before increasing exposure."
+    if watched:
+        return f"No structured thesis loaded for watchlist symbol {symbol}; keep at {action} until a thesis is recorded."
+    return f"No structured thesis loaded for {symbol}; use source evidence before action."
+
+
+def _fallback_why(symbol: str, owned: bool, watched: bool, decision: dict[str, Any]) -> str:
+    reason = decision.get("next_action") or decision.get("review_reason") or decision.get("freshness_status") or "source review"
+    if owned:
+        return f"Owned position {symbol}; why-owned rationale is missing. Current model reason: {reason}."
+    if watched:
+        return f"Watchlist symbol {symbol}; why-watched rationale is missing. Current model reason: {reason}."
+    return f"{symbol} is source-discovered; add why-owned/watched rationale before promotion."
+
+
+def _fallback_invalidation(symbol: str, latest_price: float | None, decision: dict[str, Any]) -> str:
+    price_context = f" Latest price is {latest_price:.2f}." if latest_price is not None else ""
+    gate_context = ", ".join(str(gate) for gate in decision.get("blocking_gates") or []) or "no hard gate loaded"
+    return f"No invalidation rule loaded for {symbol}; set a price or evidence trigger before action.{price_context} Current gates: {gate_context}."
+
+
+def _fallback_evidence_links(symbol: str, stored: dict[str, Any], evidence: list[dict[str, Any]], decision: dict[str, Any]) -> list[str]:
+    if stored:
+        return [f"local:theses:{symbol}"]
+    if evidence:
+        return [f"local:birdclaw_theses:{symbol}"]
+    if decision:
+        return [f"local:decision_queue:{symbol}"]
+    return [f"local:watchlist:{symbol}"]
+
+
+def _structured_fields_missing(thesis: str, why: str, invalidation: str, last_reviewed: datetime | None) -> list[str]:
+    missing = []
+    if not thesis:
+        missing.append("thesis")
+    if not why:
+        missing.append("why_owned_watched")
+    if not invalidation:
+        missing.append("invalidation")
+    if not last_reviewed:
+        missing.append("last_reviewed")
+    return missing
 
 
 def _status(thesis: dict[str, Any], owned: bool, watched: bool) -> str:
@@ -323,3 +382,7 @@ def _float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in (None, "", [], {})}

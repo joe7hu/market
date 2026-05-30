@@ -396,6 +396,7 @@ def record_source_run(
 
 
 def upsert_source_item(con: Any, item: dict[str, Any]) -> None:
+    evidence_refs = _source_item_evidence_refs(item)
     content_hash = item.get("content_hash") or stable_id(
         item.get("source_id"),
         item.get("title"),
@@ -422,7 +423,7 @@ def upsert_source_item(con: Any, item: dict[str, Any]) -> None:
             item.get("observed_at"),
             item.get("summary"),
             json_dumps(item.get("tickers") or []),
-            json_dumps(item.get("evidence_refs") or []),
+            json_dumps(evidence_refs),
             json_dumps(item.get("raw") or {}),
             content_hash,
             item.get("license_status") or "unknown",
@@ -442,6 +443,10 @@ def upsert_signals_for_item(
     evidence_refs: list[Any],
 ) -> int:
     count = 0
+    refs = _signal_evidence_refs(item_id, evidence_refs)
+    catalysts = _signal_catalysts(signal_type, thesis)
+    risks = _signal_risks(signal_type, source_id)
+    invalidation = _signal_invalidation(signal_type)
     for symbol in sorted({normalize_signal_symbol(symbol) for symbol in symbols}):
         if not symbol:
             continue
@@ -464,16 +469,46 @@ def upsert_signals_for_item(
                 0.5,
                 str(thesis or f"{symbol} appeared in {signal_type} source evidence."),
                 str(antithesis or "No structured antithesis is loaded for this source item yet."),
-                json_dumps([]),
-                json_dumps([]),
-                "",
-                json_dumps([ref for ref in evidence_refs if ref]),
+                json_dumps(catalysts),
+                json_dumps(risks),
+                invalidation,
+                json_dumps(refs),
                 True,
                 json_dumps({"source_item_id": item_id}),
             ],
         )
         count += 1
     return count
+
+
+def _source_item_evidence_refs(item: dict[str, Any]) -> list[str]:
+    refs = [str(ref).strip() for ref in item.get("evidence_refs") or [] if str(ref).strip()]
+    url = str(item.get("url") or "").strip()
+    if url:
+        refs.append(url)
+    if not refs:
+        refs.append(f"source_item:{item['id']}")
+    return list(dict.fromkeys(refs))
+
+
+def _signal_evidence_refs(item_id: str, evidence_refs: list[Any]) -> list[str]:
+    refs = [str(ref).strip() for ref in evidence_refs if str(ref).strip()]
+    return refs or [f"source_item:{item_id}"]
+
+
+def _signal_catalysts(signal_type: str, thesis: Any) -> list[str]:
+    text = str(thesis or "").strip()
+    if text:
+        return [text]
+    return [f"Review {signal_type.replace('_', ' ')} evidence for catalyst context."]
+
+
+def _signal_risks(signal_type: str, source_id: str) -> list[str]:
+    return [f"Validate {signal_type.replace('_', ' ')} signal from {source_id} against current market context before acting."]
+
+
+def _signal_invalidation(signal_type: str) -> str:
+    return f"No structured invalidation loaded for this {signal_type.replace('_', ' ')} signal; require ticker thesis review before action."
 
 
 def promote_source_signal_instruments(con: Any) -> int:

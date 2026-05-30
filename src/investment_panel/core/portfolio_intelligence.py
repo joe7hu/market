@@ -117,7 +117,11 @@ def correlation_edges(con: Any) -> list[dict[str, Any]]:
             existing = edges.get(key)
             if not existing or abs(corr) > abs(float(existing.get("correlation") or 0.0)):
                 edges[key] = edge
-    return sorted(edges.values(), key=_correlation_sort_key, reverse=True)[:25]
+    return [_compact_empty_fields(row) for row in sorted(edges.values(), key=_correlation_sort_key, reverse=True)[:25]]
+
+
+def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in (None, "", [], {})}
 
 
 def portfolio_risk_cards(con: Any) -> list[dict[str, Any]]:

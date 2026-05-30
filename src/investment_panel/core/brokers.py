@@ -770,7 +770,11 @@ def manual_account_proxy(con: Any, policy: BrokerPolicyConfig) -> dict[str, Any]
 
 
 def broker_status_rows(con: Any) -> list[dict[str, Any]]:
-    return [decode_broker_row(row) for row in query_rows(con, "SELECT * FROM broker_provider_status ORDER BY provider")]
+    return [_compact_empty_fields(decode_broker_row(row)) for row in query_rows(con, "SELECT * FROM broker_provider_status ORDER BY provider")]
+
+
+def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in (None, "", [], {})}
 
 
 def broker_accounts(con: Any) -> list[dict[str, Any]]:

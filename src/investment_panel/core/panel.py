@@ -294,7 +294,8 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
             }
         )
 
-    return sorted(rows, key=lambda row: (_watch_sort(row), -(float(row.get("quality_score") or 0)), int(row.get("rank") or 9999)))[:500]
+    sorted_rows = sorted(rows, key=lambda row: (_watch_sort(row), -(float(row.get("quality_score") or 0)), int(row.get("rank") or 9999)))[:500]
+    return [_compact_empty_fields(row) for row in sorted_rows]
 
 
 def source_consensus(con: Any) -> list[dict[str, Any]]:
@@ -355,7 +356,8 @@ def source_consensus(con: Any) -> list[dict[str, Any]]:
             }
         )
 
-    return sorted(output, key=lambda row: (row.get("is_followed") is not True, -int(row.get("items_count") or 0), str(row.get("source_name"))))
+    sorted_output = sorted(output, key=lambda row: (row.get("is_followed") is not True, -int(row.get("items_count") or 0), str(row.get("source_name"))))
+    return [_compact_empty_fields(row) for row in sorted_output]
 
 
 def ownership_consensus(con: Any) -> list[dict[str, Any]]:
@@ -424,7 +426,8 @@ def ownership_consensus(con: Any) -> list[dict[str, Any]]:
         for investor, row in investors.items()
     ]
     consensus_rows = sorted(output, key=lambda row: (int(row["holders"]), float(row["total_value"] or 0)), reverse=True)[:250]
-    return consensus_rows + sorted(investor_rows, key=lambda row: int(row["holdings"]), reverse=True)[:100]
+    combined = consensus_rows + sorted(investor_rows, key=lambda row: int(row["holdings"]), reverse=True)[:100]
+    return [_compact_empty_fields(row) for row in combined]
 
 
 def _disclosure_value(row: dict[str, Any]) -> float:
@@ -709,7 +712,7 @@ def market_context(con: Any) -> list[dict[str, Any]]:
                 "history": [],
             }
         )
-    return rows[:12]
+    return [_compact_empty_fields(row) for row in rows[:12]]
 
 
 def _symbols_from_value(value: Any) -> list[str]:
@@ -1261,9 +1264,37 @@ def candidates(con: Any) -> list[dict[str, Any]]:
     for row in decoded:
         row["components"] = row.get("score_breakdown") or {}
         evidence = row.get("evidence")
+        if not evidence:
+            evidence = candidate_source_evidence(con, str(row.get("symbol") or ""))
+            row["evidence"] = evidence
         row["evidence_count"] = len(evidence) if isinstance(evidence, list) else 0
         row["freshness"] = row.get("run_date")
-    return decoded
+    return [_compact_empty_fields(row) for row in decoded]
+
+
+def candidate_source_evidence(con: Any, symbol: str) -> list[dict[str, Any]]:
+    if not symbol:
+        return []
+    return [
+        {
+            "type": row.get("signal_type") or "source_signal",
+            "source_id": row.get("source_id"),
+            "summary": row.get("thesis"),
+            "observed_at": row.get("observed_at"),
+            "evidence_refs": decode_json_value(row.get("evidence_refs")) or [f"source_item:{row.get('source_item_id')}"],
+        }
+        for row in query_rows(
+            con,
+            """
+            SELECT source_item_id, source_id, observed_at, signal_type, thesis, evidence_refs
+            FROM ticker_source_signals
+            WHERE upper(symbol) = upper(?)
+            ORDER BY observed_at DESC NULLS LAST
+            LIMIT 6
+            """,
+            [symbol],
+        )
+    ]
 
 
 def opportunities_ranked(con: Any) -> list[dict[str, Any]]:
@@ -1286,7 +1317,7 @@ def opportunities_ranked(con: Any) -> list[dict[str, Any]]:
             row["top_source"] = row.get("source_cluster")
             row["decision"] = row.get("action_grade")
             row["gates"] = row.get("blocking_gates") or []
-        return decision_rows
+        return [_compact_empty_fields(row) for row in decision_rows]
 
     source_counts = opportunity_source_counts(con)
     latest_quotes = {
@@ -1325,7 +1356,8 @@ def opportunities_ranked(con: Any) -> list[dict[str, Any]]:
                 "top_source": top_source_label(counts, components),
             }
         )
-    return sorted(ranked, key=lambda item: (item.get("score") or 0, item.get("source_count") or 0), reverse=True)
+    sorted_ranked = sorted(ranked, key=lambda item: (item.get("score") or 0, item.get("source_count") or 0), reverse=True)
+    return [_compact_empty_fields(row) for row in sorted_ranked]
 
 
 def opportunity_source_counts(con: Any) -> dict[str, dict[str, int]]:
@@ -1370,7 +1402,8 @@ def discovered_universe(con: Any) -> list[dict[str, Any]]:
         counts = row.get("source_counts") if isinstance(row.get("source_counts"), dict) else {}
         row["source_count"] = sum(int(value or 0) for key, value in counts.items() if key not in {"config_watchlist", "config", "instrument", "instruments", "candidate"})
         row["total_source_count"] = sum(int(value or 0) for value in counts.values())
-    return decoded
+        row["next_event_at"] = row.get("next_event_at") or "No upcoming event loaded"
+    return [_compact_empty_fields(row) for row in decoded]
 
 
 def decision_queue(con: Any) -> list[dict[str, Any]]:
@@ -1392,11 +1425,14 @@ def decision_queue(con: Any) -> list[dict[str, Any]]:
         LIMIT 250
         """,
     )
-    return [decode_fields(row, ("inclusion_reasons", "blocking_gates", "decision_basis", "portfolio_impact")) for row in rows]
+    decoded = [decode_fields(row, ("inclusion_reasons", "blocking_gates", "decision_basis", "portfolio_impact")) for row in rows]
+    for row in decoded:
+        row["next_event_at"] = row.get("next_event_at") or "No upcoming event loaded"
+    return [_compact_empty_fields(row) for row in decoded]
 
 
 def decision_readiness(con: Any) -> list[dict[str, Any]]:
-    return decision_readiness_rows(con)
+    return [_compact_empty_fields(row) for row in decision_readiness_rows(con)]
 
 
 def source_freshness(con: Any) -> list[dict[str, Any]]:
@@ -1413,7 +1449,7 @@ def source_freshness(con: Any) -> list[dict[str, Any]]:
         row["source"] = row.get("source_key")
         row["source_kind"] = "documentation" if row.get("docs_only") else row.get("source_type")
         row["provider_status"] = row.get("status")
-    return rows
+    return [_compact_empty_fields(row) for row in rows]
 
 
 def symbol_decision_snapshots(con: Any) -> list[dict[str, Any]]:
@@ -1432,7 +1468,7 @@ def symbol_decision_snapshots(con: Any) -> list[dict[str, Any]]:
     for row in decoded:
         snapshot = row.get("snapshot") if isinstance(row.get("snapshot"), dict) else {}
         row["invalidation"] = snapshot.get("invalidation")
-    return decoded
+    return [_compact_empty_fields(row) for row in decoded]
 
 
 def opportunity_sources(con: Any) -> list[dict[str, Any]]:
@@ -1568,20 +1604,22 @@ def opportunity_sources(con: Any) -> list[dict[str, Any]]:
             ),
         )
     )
-    return panels
+    return [_compact_empty_fields(row) for row in panels]
 
 
 def source_rows(source_key: str, title: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {
-            "source_key": source_key,
-            "title": title,
-            "symbol": str(row.get("symbol") or "").upper(),
-            "score": row.get("score"),
-            "label": row.get("label"),
-            "caption": row.get("caption"),
-            "source_date": row.get("source_date"),
-        }
+        _compact_empty_fields(
+            {
+                "source_key": source_key,
+                "title": title,
+                "symbol": str(row.get("symbol") or "").upper(),
+                "score": row.get("score"),
+                "label": row.get("label"),
+                "caption": row.get("caption"),
+                "source_date": row.get("source_date"),
+            }
+        )
         for row in rows
         if row.get("symbol")
     ]
@@ -1611,7 +1649,7 @@ def technicals(con: Any) -> list[dict[str, Any]]:
         row["drawdown_from_high"] = features.get("drawdown_from_high")
         row["volume_ratio_20_60"] = features.get("volume_ratio_20_60")
         row["source"] = features.get("source") or features.get("price_source")
-    return decoded
+    return [_compact_empty_fields(row) for row in decoded]
 
 
 def research_packets(con: Any) -> list[dict[str, Any]]:
@@ -1744,7 +1782,7 @@ def portfolio(con: Any) -> list[dict[str, Any]]:
     total_market_value = sum(float(row.get("market_value") or 0) for row in rows if row.get("market_value") is not None)
     for row in rows:
         row["portfolio_weight"] = (float(row["market_value"]) / total_market_value) * 100 if total_market_value and row.get("market_value") is not None else None
-    return rows
+    return [_compact_empty_fields(row) for row in rows]
 
 
 def theses(con: Any) -> list[dict[str, Any]]:
@@ -1824,7 +1862,7 @@ def catalysts(con: Any) -> list[dict[str, Any]]:
         """,
     )
     decoded = [decode_fields(row, ("raw",)) for row in rows]
-    return decoded
+    return [_compact_empty_fields(row) for row in decoded]
 
 
 def fundamentals(con: Any) -> list[dict[str, Any]]:
@@ -1842,7 +1880,7 @@ def fundamentals(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("metrics",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("metrics",))) for row in rows]
 
 
 def quotes(con: Any) -> list[dict[str, Any]]:
@@ -1900,7 +1938,7 @@ def quotes(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("raw",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def screener(con: Any) -> list[dict[str, Any]]:
@@ -1914,7 +1952,7 @@ def screener(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("metrics",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("metrics",))) for row in rows]
 
 
 def options_expiries(con: Any) -> list[dict[str, Any]]:
@@ -1927,7 +1965,7 @@ def options_expiries(con: Any) -> list[dict[str, Any]]:
         LIMIT 300
         """,
     )
-    return [decode_fields(row, ("raw",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def options_chain(con: Any) -> list[dict[str, Any]]:
@@ -1941,7 +1979,7 @@ def options_chain(con: Any) -> list[dict[str, Any]]:
         LIMIT 400
         """,
     )
-    return [decode_fields(row, ("raw",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:
@@ -1956,7 +1994,7 @@ def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:
         LIMIT 300
         """,
     )
-    return [decode_fields(row, ("breakevens", "legs", "curve", "diagnostics")) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("breakevens", "legs", "curve", "diagnostics"))) for row in rows]
 
 
 def news(con: Any) -> list[dict[str, Any]]:
@@ -1969,7 +2007,7 @@ def news(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("related_symbols", "raw")) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("related_symbols", "raw"))) for row in rows]
 
 
 def tradingview_symbol_search(con: Any) -> list[dict[str, Any]]:
@@ -2052,7 +2090,7 @@ def liquidity(con: Any) -> list[dict[str, Any]]:
         LIMIT 200
         """,
     )
-    return [decode_fields(row, ("metrics",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("metrics",))) for row in rows]
 
 
 def correlations(con: Any) -> list[dict[str, Any]]:
@@ -2150,7 +2188,7 @@ def provider_runs(con: Any) -> list[dict[str, Any]]:
         LIMIT 100
         """,
     )
-    return [decode_fields(row, ("raw",)) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def disclosures(con: Any) -> list[dict[str, Any]]:
@@ -2186,27 +2224,46 @@ def disclosures(con: Any) -> list[dict[str, Any]]:
     for row in decoded:
         raw = row.get("raw") or {}
         if isinstance(raw, dict):
-            row["holdings_count"] = raw.get("holdings_count")
-            row["holdings_value_thousands"] = raw.get("holdings_value_thousands")
-            row["total_value"] = raw.get("total_value")
-            row["estimated_invested_usd"] = raw.get("estimated_invested_usd")
-            row["performance_percent"] = raw.get("performance_percent")
-            row["platform_stats"] = raw.get("platform_stats")
-            row["metadata"] = raw.get("metadata")
-            row["transactions_count"] = raw.get("transactions_count")
-            row["transactions"] = raw.get("transactions")
-            row["portfolio_history"] = row.get("portfolio_history") or raw.get("portfolio_history")
-            row["sp500_history"] = raw.get("sp500_history")
-            row["source_caveat"] = raw.get("source_caveat")
-            row["lag_caveat"] = raw.get("lag_caveat")
-            row["next_filing_due_date"] = raw.get("next_filing_due_date")
+            _copy_nonempty_raw_fields(
+                row,
+                raw,
+                (
+                    "holdings_count",
+                    "holdings_value_thousands",
+                    "total_value",
+                    "estimated_invested_usd",
+                    "performance_percent",
+                    "platform_stats",
+                    "metadata",
+                    "transactions_count",
+                    "transactions",
+                    "sp500_history",
+                    "source_caveat",
+                    "lag_caveat",
+                    "next_filing_due_date",
+                ),
+            )
+            portfolio_history = row.get("portfolio_history") or raw.get("portfolio_history")
+            if portfolio_history not in (None, "", [], {}):
+                row["portfolio_history"] = portfolio_history
             holdings = raw.get("holdings")
             if isinstance(holdings, list):
                 row["holding_sample"] = sorted_13f_holdings(holdings)[:25] if row.get("source_type") == "13f" else holdings[:25]
                 trimmed_raw = dict(raw)
                 trimmed_raw.pop("holdings", None)
                 row["raw"] = trimmed_raw
-    return decoded
+    return [_compact_empty_fields(row) for row in decoded]
+
+
+def _copy_nonempty_raw_fields(row: dict[str, Any], raw: dict[str, Any], fields: tuple[str, ...]) -> None:
+    for field in fields:
+        value = raw.get(field)
+        if value not in (None, "", [], {}):
+            row[field] = value
+
+
+def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value not in (None, "", [], {})}
 
 
 def enrich_13f_disclosure_rows(rows: list[dict[str, Any]]) -> None:
@@ -2334,7 +2391,15 @@ def decode_fields(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any
     for field in fields:
         if field in decoded:
             try:
-                decoded[field] = json.loads(decoded[field]) if decoded[field] else None
+                decoded[field] = decode_json_value(decoded[field])
             except Exception:
                 pass
     return decoded
+
+
+def decode_json_value(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)

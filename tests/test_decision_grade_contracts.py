@@ -192,8 +192,6 @@ def test_decision_readiness_contract_preserves_scores_and_unblock_actions(tmp_pa
         "decision_score",
         "action_score",
         "freshness_status",
-        "blockers",
-        "missing_inputs",
         "next_action",
         "source_counts",
         "portfolio_fit",
@@ -201,6 +199,8 @@ def test_decision_readiness_contract_preserves_scores_and_unblock_actions(tmp_pa
     }.issubset(nvda)
     assert old["status"] == "blocked_refresh"
     assert old["decision_score"] >= old["action_score"]
+    assert old["blockers"]
+    assert old["missing_inputs"]
     assert any("stale" in blocker for blocker in old["blockers"])
     assert "full_market_refresh" in old["next_action"]
     assert nvda["portfolio_fit"]["has_portfolio_context"] is True
@@ -291,6 +291,10 @@ def test_detail_source_tables_materialize_canonical_signals(tmp_path: Path) -> N
         signal = row_for_symbol(source_signals, symbol)
         assert signal["source_id"] == source_id
         assert signal["signal_type"] == signal_type
+        assert signal["evidence_refs"]
+        assert signal["catalysts"]
+        assert signal["risks"]
+        assert signal["invalidation"]
 
 
 def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_empty_source(tmp_path: Path) -> None:
