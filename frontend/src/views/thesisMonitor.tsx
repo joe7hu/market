@@ -19,7 +19,7 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       <PageHeader
         eyebrow="Thesis and invalidation"
         title="Thesis Monitor"
-        subtitle="Backend-owned thesis state for owned and watched symbols, including stale-thesis flags, contradiction flags, invalidation distance, evidence, and review reason."
+        subtitle="Owned and watched names that need a thesis refresh, contradiction check, or invalidation review."
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

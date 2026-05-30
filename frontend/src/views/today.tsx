@@ -39,7 +39,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       <PageHeader
         eyebrow="Daily decision brief"
         title={briefRows[0] ? textField(briefRows[0], ["title"], "Today") : "Today"}
-        subtitle="/today is backend-owned: the frontend renders reason, evidence, blocker, and next action without recomputing the decision read model."
+        subtitle="What changed, what matters, what is blocked, and the next review action."
         actions={
           <Button type="button" variant="outline" onClick={onRefresh}>
             <RefreshCw className={loading ? "animate-spin" : ""} />

@@ -18,7 +18,7 @@ export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }
     <WorkspacePage
       eyebrow="Signal feed"
       title="Feed"
-      subtitle="Source-backed signal flow and decision queue rows from the backend panel snapshot."
+      subtitle="Signal flow, ranked decisions, and readiness state for the current review session."
       actions={<Button type="button" variant="outline" onClick={onRefresh}><RefreshCw className={loading ? "animate-spin" : ""} /> Refresh</Button>}
       metrics={[
         ["Feed Signals", feed.length, lastRefresh ? `refreshed ${lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "not loaded", feed.length ? "info" : "muted"],
@@ -37,7 +37,7 @@ export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenT
 }
 
 export function SourcesPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Sources" eyebrow="Source health" subtitle="Freshness, provider run, source-health, and consensus rows." sections={[["Freshness", rows(data.sourceFreshness)], ["Provider Runs", rows(data.providerRuns)], ["Source Health", rows(data.sourceHealth)], ["Source Consensus", rows(data.sourceConsensus)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Sources" eyebrow="Source health" subtitle="Freshness, provider runs, source health, and consensus state." sections={[["Freshness", rows(data.sourceFreshness)], ["Provider Runs", rows(data.providerRuns)], ["Source Health", rows(data.sourceHealth)], ["Source Consensus", rows(data.sourceConsensus)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function SuperinvestorsPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
@@ -45,7 +45,7 @@ export function SuperinvestorsPage({ data, onOpenTicker }: { data: PanelData; mo
 }
 
 export function MarketContextPage({ data }: { data: PanelData }) {
-  return <DatasetPage title="Market Valuation" eyebrow="Macro context" subtitle="Market context, valuation, technical, liquidity, and earnings setup rows." sections={[["Market Context", rows(data.marketContext)], ["Valuations", rows(data.valuations)], ["Technicals", rows(data.technicals)], ["Earnings Setups", rows(data.earningsSetups)]]} />;
+  return <DatasetPage title="Market Valuation" eyebrow="Macro context" subtitle="Market context, valuation, technicals, liquidity, and earnings setup." sections={[["Market Context", rows(data.marketContext)], ["Valuations", rows(data.valuations)], ["Technicals", rows(data.technicals)], ["Earnings Setups", rows(data.earningsSetups)]]} />;
 }
 
 export function PortfolioPage({ data, model, onOpenTicker, onRefresh }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker; onRefresh: () => Promise<void> }) {
@@ -56,13 +56,13 @@ export function PortfolioPage({ data, model, onOpenTicker, onRefresh }: { data: 
     <WorkspacePage
       eyebrow="Portfolio"
       title="Portfolio"
-      subtitle="Holdings, exposure clusters, risk cards, and review actions from the backend read models."
+      subtitle="Position sizing, concentration risk, and review actions that can change portfolio decisions."
       actions={<Button type="button" variant="outline" onClick={() => void onRefresh()}><RefreshCw /> Refresh</Button>}
       metrics={[
         ["Portfolio Value", formatMoney(model.portfolioValue), `${model.holdings.length} holdings`, model.portfolioValue ? "info" : "muted"],
         ["Top Exposure", topHolding ? `${topHolding.ticker} ${topHolding.weight.toFixed(1)}%` : "None", topHolding?.nextStep ?? "no priced holding", topHolding && topHolding.weight > 30 ? "warn" : "info"],
-        ["Risk Cards", riskRows.length, "backend portfolio_risk_cards", riskRows.length ? "warn" : "muted"],
-        ["Review Actions", reviewRows.length, "backend review_actions", reviewRows.length ? "warn" : "good"],
+        ["Risk Cards", riskRows.length, "concentration and thesis gaps", riskRows.length ? "warn" : "muted"],
+        ["Review Actions", reviewRows.length, "open portfolio decisions", reviewRows.length ? "warn" : "good"],
       ]}
     >
       <HoldingsTable holdings={model.holdings} onOpenTicker={onOpenTicker} />
@@ -74,7 +74,7 @@ export function PortfolioPage({ data, model, onOpenTicker, onRefresh }: { data: 
 }
 
 export function ResearchPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Ranked opportunities, source panels, research packets, and memo rows." sections={[["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Decision Queue", rows(data.decisionQueue)], ["Opportunity Sources", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Names to accept, reject, watch, or research next." sections={[["Decision Queue", rows(data.decisionQueue)], ["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Opportunity Sources", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function FilingsPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
@@ -90,12 +90,12 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
     <WorkspacePage
       eyebrow="System health"
       title="Health"
-      subtitle="Backend provider health, source freshness, broker status, and refresh job state."
+      subtitle="Provider health, source freshness, broker status, and refresh job state."
       metrics={[
         ["Latest Check", model.latestHealthCheck, "freshest health timestamp", model.sources.health === "live" ? "info" : "muted"],
-        ["Freshness Rows", rows(data.sourceFreshness).length, "source_freshness", rows(data.sourceFreshness).length ? "info" : "muted"],
-        ["Provider Runs", rows(data.providerRuns).length, "provider_runs", rows(data.providerRuns).length ? "info" : "muted"],
-        ["Broker Status", rows(data.brokerStatus).length, "broker_status", rows(data.brokerStatus).length ? "info" : "muted"],
+        ["Freshness Rows", rows(data.sourceFreshness).length, "source checks", rows(data.sourceFreshness).length ? "info" : "muted"],
+        ["Provider Runs", rows(data.providerRuns).length, "ingestion runs", rows(data.providerRuns).length ? "info" : "muted"],
+        ["Broker Status", rows(data.brokerStatus).length, "account source checks", rows(data.brokerStatus).length ? "info" : "muted"],
       ]}
     >
       <RowsSection title="Source Freshness" rows={rows(data.sourceFreshness)} />
@@ -110,7 +110,7 @@ export function SettingsPage({ data }: { data: PanelData }) {
   const config = data.settings.config ?? {};
   const integration = data.settings.integration ?? {};
   return (
-    <WorkspacePage eyebrow="Configuration" title="Settings" subtitle="Local config metadata. Secrets and credentials are not displayed in the frontend.">
+    <WorkspacePage eyebrow="Configuration" title="Settings" subtitle="Local configuration and integration state.">
       <RowsSection title="Config" rows={objectRows(config)} />
       <RowsSection title="Integration" rows={objectRows(integration)} />
     </WorkspacePage>
@@ -122,7 +122,7 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
   const thesisRows = rows(data.thesisMonitor).filter((row) => symbolList(row).includes(symbol));
   const title = ticker?.found === false ? `${symbol} not found` : symbol;
   return (
-    <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Ticker-specific backend payloads, source rows, thesis state, and decision evidence.">
+    <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Ticker evidence, thesis state, decision snapshot, and source rows.">
       {ticker?.decision_brief || ticker?.decision_snapshot ? (
         <div className="mb-4 grid gap-3 lg:grid-cols-2">
           {ticker.decision_brief && <DossierCard title="Decision Brief" row={ticker.decision_brief} />}
@@ -168,7 +168,11 @@ function DatasetPage({ title, eyebrow, subtitle, sections, onOpenTicker }: { tit
 
 function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string; rows: RowRecord[]; onOpenTicker?: OpenTicker }) {
   if (!sectionRows.length) {
-    return <EmptyState title={`${title}: no rows`} detail="This backend table returned an empty result for the loaded scope." />;
+    return (
+      <DataTableFrame title={title}>
+        <div className="px-4 py-3 text-sm text-muted-foreground">No rows for the current scope.</div>
+      </DataTableFrame>
+    );
   }
   const columns = columnKeys(sectionRows);
   return (
@@ -185,7 +189,7 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
             const symbol = tickerSymbolFromRow(row) || symbolList(row)[0];
             return (
               <tr key={index} className="border-b border-border align-top">
-                {columns.map((column) => <td key={column} className="max-w-[360px] px-3 py-2 leading-6">{displayValue(row[column])}</td>)}
+                {columns.map((column) => <td key={column} className="max-w-[360px] px-3 py-2 leading-6">{formatCellValue(column, row[column])}</td>)}
                 {onOpenTicker && (
                   <td className="px-3 py-2">
                     {symbol ? <Button type="button" variant="ghost" size="sm" onClick={() => onOpenTicker(symbol)}><ExternalLink /> {symbol}</Button> : <span className="text-muted-foreground">-</span>}
@@ -198,6 +202,30 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
       </table>
     </DataTableFrame>
   );
+}
+
+function formatCellValue(column: string, value: RowRecord[string]): string {
+  if (value === undefined || value === null || value === "") return "-";
+  if (typeof value === "string") {
+    if (isDateColumn(column)) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+    }
+    if (isLabelColumn(column)) {
+      return titleLabel(value);
+    }
+  }
+  return displayValue(value);
+}
+
+function isDateColumn(column: string): boolean {
+  return ["as_of", "updated_at", "created_at", "checked_at", "last_run_at", "timestamp", "filed_at"].includes(column) || column.endsWith("_at");
+}
+
+function isLabelColumn(column: string): boolean {
+  return ["status", "decision", "decision_bucket", "action_grade", "action_type", "risk_type", "severity", "source", "provider"].includes(column);
 }
 
 function HoldingsTable({ holdings, onOpenTicker }: { holdings: AppModel["holdings"]; onOpenTicker: OpenTicker }) {
