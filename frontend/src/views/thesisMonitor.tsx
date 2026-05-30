@@ -1,4 +1,5 @@
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { type KeyboardEvent } from "react";
 
 import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import type { AppModel } from "@/model";
@@ -82,9 +83,27 @@ function ThesisCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symb
   const tone: Tone = flags.some((flag) => flag.toLowerCase().includes("breach")) ? "bad" : needsReview || stale ? "warn" : toneFromText(status);
   const evidence = listField(row, ["evidence_links", "evidence", "sources"]);
   const age = numberField(row, ["last_reviewed_age_days"], Number.NaN);
+  const primarySymbol = symbols[0];
+  const openTicker = () => {
+    if (primarySymbol) onOpenTicker(primarySymbol);
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!primarySymbol) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpenTicker(primarySymbol);
+    }
+  };
 
   return (
-    <button type="button" className="block w-full text-left" onClick={() => symbols[0] && onOpenTicker(symbols[0])} disabled={!symbols[0]}>
+    <div
+      role={primarySymbol ? "button" : undefined}
+      tabIndex={primarySymbol ? 0 : -1}
+      aria-disabled={primarySymbol ? undefined : true}
+      className={primarySymbol ? "block w-full cursor-pointer text-left transition-transform hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" : "block w-full cursor-default text-left"}
+      onClick={openTicker}
+      onKeyDown={onKeyDown}
+    >
       <DecisionCard
         title={`${symbols[0] || "Symbol"}: ${displayField(row, ["thesis", "thesis_text"], "No thesis")}`}
         status={<StatusBadge tone={tone}>{needsReview ? "Review" : titleLabel(status)}</StatusBadge>}
@@ -105,7 +124,7 @@ function ThesisCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symb
         symbols={symbols}
         tone={tone}
       />
-    </button>
+    </div>
   );
 }
 
@@ -117,7 +136,7 @@ function QueuePanel({ title, rows: queueRows, empty, onOpenTicker }: { title: st
           {queueRows.slice(0, 10).map((row, index) => {
             const symbols = symbolList(row);
             return (
-              <button key={index} type="button" className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/50" onClick={() => symbols[0] && onOpenTicker(symbols[0])} disabled={!symbols[0]}>
+              <button key={index} type="button" className="flex min-h-14 w-full items-start gap-3 px-4 py-3 text-left hover:bg-muted/50" onClick={() => symbols[0] && onOpenTicker(symbols[0])} disabled={!symbols[0]}>
                 <CheckCircle2 className="mt-1 size-4 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
                   <strong className="block truncate">{symbols[0] || "Symbol"}</strong>

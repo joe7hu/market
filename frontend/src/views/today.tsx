@@ -1,8 +1,8 @@
-import { RefreshCw } from "lucide-react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { useMemo, useState, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
@@ -58,8 +58,10 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
         <MetricTile label="Portfolio P&L" value={model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "No positions"} tone={portfolioPnl >= 0 ? "good" : "bad"} />
         <MetricTile label="Top Exposure" value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"} caption={largestHolding?.nextStep} tone={largestHolding && largestHolding.weight > 30 ? "warn" : "info"} />
         <MetricTile label="Needs Review" value={needsReview} caption="stale thesis or contradiction flag" tone={needsReview ? "warn" : "good"} />
-        <MetricTile label="Next Action" value={topAction} caption={lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Waiting for local data"} tone={blocked ? "warn" : "info"} />
+        <MetricTile label="Blocked Readiness" value={blocked} caption="not-ready decision rows" tone={blocked ? "warn" : "good"} />
       </div>
+
+      <NextActionPanel action={topAction} lastRefresh={lastRefresh} blocked={blocked} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-border pb-3">
         <CategoryButton active={activeCategory === "all"} label="All" count={briefRows.length} onClick={() => setActiveCategory("all")} />
@@ -82,13 +84,16 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
             return (
               <Card key={category.key} className={cn("min-w-0 overflow-hidden", category.tone === "warn" && "border-amber-200", category.tone === "bad" && "border-red-200", category.tone === "good" && "border-green-200")}>
                 <CardHeader className="border-b border-border p-4">
-                  <CardTitle className="flex items-center justify-between gap-3 text-base">
+                  <h2 className="flex items-center justify-between gap-3 text-lg font-semibold">
                     <span className="flex min-w-0 items-center gap-2">
                       <span className={cn("size-2 shrink-0 rounded-full", category.dot)} />
                       <span className="truncate">{category.title}</span>
                     </span>
-                    <StatusBadge tone={category.tone}>{categoryRows.length}</StatusBadge>
-                  </CardTitle>
+                    <StatusBadge tone={category.tone}>
+                      <span aria-hidden="true">{categoryRows.length}</span>
+                      <span className="sr-only"> {categoryRows.length} items</span>
+                    </StatusBadge>
+                  </h2>
                 </CardHeader>
                 <CardContent className="space-y-3 p-4">
                   {categoryRows.length ? categoryRows.map((row, index) => <TodayBriefCard key={textField(row, ["item_id", "id"], `${category.key}-${index}`)} row={row} onOpenTicker={onOpenTicker} />) : <EmptyState title="No ranked items" detail="The backend daily_brief read model returned no rows for this category." />}
@@ -102,7 +107,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       )}
 
       <div className="mt-4">
-        <DataTableFrame title="Loaded Decision Rows">
+        <DataTableFrame title="Daily Brief Audit Trail">
           <table className="w-full min-w-[720px] text-sm">
             <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
               <tr>
@@ -129,18 +134,37 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
   );
 }
 
+function NextActionPanel({ action, lastRefresh, blocked }: { action: string; lastRefresh: Date | null; blocked: number }) {
+  return (
+    <div className="mb-4 rounded-md border border-border bg-card px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase text-muted-foreground">Primary next action</p>
+          <p className="mt-1 text-base font-semibold leading-7 text-foreground">{action}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Waiting for local data"}
+            {blocked ? ` · ${blocked} readiness blockers` : " · decision readiness clear"}
+          </p>
+        </div>
+        <ArrowRight className="hidden size-5 text-muted-foreground sm:block" aria-hidden="true" />
+      </div>
+    </div>
+  );
+}
+
 function CategoryButton({ active, label, count, dotClassName, onClick }: { active: boolean; label: string; count: number; dotClassName?: string; onClick: () => void }) {
   return (
     <Button
       type="button"
       variant={active ? "default" : "outline"}
       size="sm"
-      className={cn("h-8 gap-2", !active && "bg-card")}
+      className={cn("gap-2", !active && "bg-card")}
       onClick={onClick}
     >
       {dotClassName ? <span className={cn("size-2 rounded-full", dotClassName)} /> : null}
       <span>{label}</span>
-      <span className={cn("rounded-sm px-1.5 py-0.5 text-[11px] leading-none", active ? "bg-primary-foreground/20" : "bg-muted text-muted-foreground")}>{count}</span>
+      <span className={cn("rounded-sm px-1.5 py-0.5 text-[11px] leading-none", active ? "bg-primary-foreground/20" : "bg-muted text-muted-foreground")} aria-hidden="true">{count}</span>
+      <span className="sr-only"> {count} items</span>
     </Button>
   );
 }
@@ -170,7 +194,7 @@ function TodayBriefCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (
       role={primarySymbol ? "button" : undefined}
       tabIndex={primarySymbol ? 0 : -1}
       aria-disabled={primarySymbol ? undefined : true}
-      className={cn("block w-full text-left transition-transform hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", primarySymbol ? "cursor-pointer" : "cursor-default")}
+      className={cn("block w-full text-left transition-transform hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2", primarySymbol ? "cursor-pointer" : "cursor-default")}
       onClick={openTicker}
       onKeyDown={onKeyDown}
     >

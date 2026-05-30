@@ -82,7 +82,7 @@ export function AppShell() {
       </aside>
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur">
-          <div className="flex min-h-14 items-center gap-3 px-3 sm:px-4 lg:px-6">
+          <div className="flex min-h-16 items-center gap-3 px-3 sm:px-4 lg:px-6">
             <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
               <SheetTrigger asChild>
                 <Button type="button" variant="outline" size="icon" className="lg:hidden" aria-label="Open navigation">
@@ -100,7 +100,7 @@ export function AppShell() {
 
             <form onSubmit={onSearch} className="relative min-w-0 flex-1 sm:max-w-md" role="search">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-9 pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker or symbol" aria-label="Search tickers" />
+              <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker or symbol" aria-label="Search tickers" />
             </form>
 
             <div className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground md:flex">
@@ -142,7 +142,7 @@ function MainNav({ pathname, onNavigate }: { pathname: string; onNavigate: () =>
             end={item.end}
             onClick={onNavigate}
             className={cn(
-              "flex h-9 items-center gap-3 rounded-md px-3 text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-accent-foreground",
+              "flex h-11 items-center gap-3 rounded-md px-3 text-sm font-medium text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               active && "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground",
             )}
           >
@@ -160,7 +160,7 @@ export function PageHeader({ eyebrow, title, subtitle, actions }: { eyebrow?: st
     <header className="mb-4 flex flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-end md:justify-between">
       <div className="min-w-0">
         {eyebrow && <p className="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">{eyebrow}</p>}
-        <h1 className="text-2xl font-semibold tracking-normal text-foreground md:text-3xl">{title}</h1>
+        <h1 className="text-2xl font-semibold tracking-normal text-foreground text-balance md:text-3xl">{title}</h1>
         {subtitle && <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">{subtitle}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -172,13 +172,13 @@ export function MetricTile({ label, value, caption, tone = "info" }: { label: st
   const longValue = typeof value === "string" && value.length > 26;
   return (
     <Card className={cn("min-w-0", toneSurface(tone))}>
-      <CardHeader className="p-3 pb-1">
-        <CardTitle className="flex items-center gap-2 truncate text-xs font-medium uppercase text-muted-foreground">
+      <div className="p-4 pb-1">
+        <div className="flex items-center gap-2 truncate text-xs font-medium uppercase text-muted-foreground">
           <span className={cn("size-1.5 shrink-0 rounded-full", toneDot(tone))} />
           {label}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="p-3 pt-0">
+        </div>
+      </div>
+      <CardContent className="p-4 pt-0">
         <div className={cn("line-clamp-2 min-h-[1.75rem] break-words font-semibold leading-tight", longValue ? "text-lg xl:text-xl" : "text-xl xl:text-2xl")}>{value}</div>
         {caption && <p className="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground">{caption}</p>}
       </CardContent>
@@ -232,12 +232,12 @@ export function EvidenceList({ items }: { items: ReactNode[] }) {
   );
 }
 
-export function DataTableFrame({ title, children, action }: { title?: string; children: ReactNode; action?: ReactNode }) {
+export function DataTableFrame({ title, children, action }: { title?: ReactNode; children: ReactNode; action?: ReactNode }) {
   return (
     <Card className="overflow-hidden">
       {(title || action) && (
         <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          {title && <h2 className="shrink-0 text-sm font-semibold">{title}</h2>}
+          {title && <h2 className="shrink-0 text-lg font-semibold">{title}</h2>}
           {action}
         </div>
       )}
