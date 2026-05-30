@@ -169,14 +169,18 @@ export function PageHeader({ eyebrow, title, subtitle, actions }: { eyebrow?: st
 }
 
 export function MetricTile({ label, value, caption, tone = "info" }: { label: string; value: ReactNode; caption?: string; tone?: Tone }) {
+  const longValue = typeof value === "string" && value.length > 26;
   return (
-    <Card className={cn("min-w-0", toneBorder(tone))}>
+    <Card className={cn("min-w-0", toneSurface(tone))}>
       <CardHeader className="p-3 pb-1">
-        <CardTitle className="truncate text-xs font-medium uppercase text-muted-foreground">{label}</CardTitle>
+        <CardTitle className="flex items-center gap-2 truncate text-xs font-medium uppercase text-muted-foreground">
+          <span className={cn("size-1.5 shrink-0 rounded-full", toneDot(tone))} />
+          {label}
+        </CardTitle>
       </CardHeader>
       <CardContent className="p-3 pt-0">
-        <div className="truncate text-2xl font-semibold">{value}</div>
-        {caption && <p className="mt-1 truncate text-xs text-muted-foreground">{caption}</p>}
+        <div className={cn("line-clamp-2 min-h-[1.75rem] break-words font-semibold leading-tight", longValue ? "text-lg xl:text-xl" : "text-xl xl:text-2xl")}>{value}</div>
+        {caption && <p className="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground">{caption}</p>}
       </CardContent>
     </Card>
   );
@@ -189,7 +193,7 @@ export function StatusBadge({ tone = "muted", children }: { tone?: Tone; childre
 
 export function DecisionCard({ title, status, reason, evidence, nextAction, symbols, tone = "info" }: { title: string; status?: ReactNode; reason?: ReactNode; evidence?: ReactNode; nextAction?: ReactNode; symbols?: string[]; tone?: Tone }) {
   return (
-    <Card className={cn("overflow-hidden", toneBorder(tone))}>
+    <Card className={cn("overflow-hidden", toneSurface(tone))}>
       <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
         <CardTitle className="text-base leading-6">{title}</CardTitle>
         {status && <div className="shrink-0">{status}</div>}
@@ -259,17 +263,28 @@ export function EmptyState({ title, detail, icon: Icon = Database }: { title: st
 }
 
 export function SourceHealthBadge() {
-  const { model } = useMarketData();
-  const tone: Tone = model.sources.health === "live" ? "good" : "warn";
-  return <StatusBadge tone={tone}>{model.sources.health === "live" ? "Sources loaded" : "Sources pending"}</StatusBadge>;
+  const { model, loading, lastRefresh } = useMarketData();
+  const anyDataLoaded = Object.values(model.sources).some((state) => state === "live");
+  const tone: Tone = loading ? "info" : anyDataLoaded || lastRefresh ? "good" : "warn";
+  return <StatusBadge tone={tone}>{loading ? "Loading" : anyDataLoaded || lastRefresh ? "Data loaded" : "Data pending"}</StatusBadge>;
 }
 
-function toneBorder(tone: Tone) {
+function toneSurface(tone: Tone) {
   return {
-    good: "border-l-4 border-l-green-600",
-    warn: "border-l-4 border-l-amber-500",
-    bad: "border-l-4 border-l-red-600",
-    info: "border-l-4 border-l-blue-600",
-    muted: "border-l-4 border-l-border",
+    good: "border-border bg-card",
+    warn: "border-border bg-amber-50/20",
+    bad: "border-border bg-red-50/20",
+    info: "border-border bg-card",
+    muted: "border-border bg-card",
+  }[tone];
+}
+
+function toneDot(tone: Tone) {
+  return {
+    good: "bg-green-600",
+    warn: "bg-amber-500",
+    bad: "bg-red-600",
+    info: "bg-blue-600",
+    muted: "bg-muted-foreground",
   }[tone];
 }
