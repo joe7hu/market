@@ -503,7 +503,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_watchlists",
         ],
         "sources": [
+            "sources",
             "source_consensus",
+            "ticker_source_signals",
             "feed_signals",
             "opportunity_sources",
             "theses",

@@ -98,6 +98,10 @@ export type PanelData = {
   portfolioRiskCards: TablePayload;
   reviewActions: TablePayload;
   sourceHealth: TablePayload;
+  sources: TablePayload;
+  sourceItems: TablePayload;
+  sourceRuns: TablePayload;
+  tickerSourceSignals: TablePayload;
   refreshJobs: TablePayload;
   settings: SettingsPayload;
   errors: Partial<Record<PanelEndpoint, string>>;
@@ -161,5 +165,9 @@ export type PanelEndpoint =
   | "portfolioRiskCards"
   | "reviewActions"
   | "sourceHealth"
+  | "sources"
+  | "sourceItems"
+  | "sourceRuns"
+  | "tickerSourceSignals"
   | "refreshJobs"
   | "settings";

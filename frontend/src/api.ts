@@ -74,6 +74,10 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   portfolio_risk_cards: "portfolioRiskCards",
   review_actions: "reviewActions",
   source_health: "sourceHealth",
+  sources: "sources",
+  source_items: "sourceItems",
+  source_runs: "sourceRuns",
+  ticker_source_signals: "tickerSourceSignals",
   refresh_jobs: "refreshJobs",
 };
 
@@ -193,6 +197,10 @@ export function emptyPanelData(): PanelData {
     portfolioRiskCards: EMPTY_TABLE,
     reviewActions: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
+    sources: EMPTY_TABLE,
+    sourceItems: EMPTY_TABLE,
+    sourceRuns: EMPTY_TABLE,
+    tickerSourceSignals: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
     errors: {},
@@ -269,6 +277,10 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("portfolioRiskCards", getJson<TablePayload>("/api/portfolio-risk/cards")),
     settle("reviewActions", getJson<TablePayload>("/api/portfolio-risk/review-actions")),
     settle("sourceHealth", getJson<TablePayload>("/api/source-health")),
+    settle("sources", getJson<TablePayload>("/api/sources")),
+    settle("sourceItems", getJson<TablePayload>("/api/source-items")),
+    settle("sourceRuns", getJson<TablePayload>("/api/source-runs")),
+    settle("tickerSourceSignals", getJson<TablePayload>("/api/ticker-source-signals")),
     settle("settings", getJson<SettingsPayload>("/api/settings")),
   ]);
 
@@ -331,6 +343,10 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     portfolioRiskCards: EMPTY_TABLE,
     reviewActions: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
+    sources: EMPTY_TABLE,
+    sourceItems: EMPTY_TABLE,
+    sourceRuns: EMPTY_TABLE,
+    tickerSourceSignals: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
     errors,
@@ -503,6 +519,18 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "sourceHealth":
         data.sourceHealth = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sources":
+        data.sources = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceItems":
+        data.sourceItems = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceRuns":
+        data.sourceRuns = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tickerSourceSignals":
+        data.tickerSourceSignals = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "settings":
         data.settings = (result.value as SettingsPayload) ?? {};
