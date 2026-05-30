@@ -30,7 +30,7 @@ from investment_panel.core.refresh_jobs import ALLOWLIST, refresh_job_rows, run_
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import load_config as load_core_config
 from investment_panel.core.db import db, init_db
-from investment_panel.core.sources import source_detail_payload
+from investment_panel.core.sources import source_detail_payload, source_ingestion_audit
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -228,6 +228,14 @@ def create_app() -> FastAPI:
     def ticker_source_signals() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "ticker_source_signals")
+
+    @app.get("/api/source-ingestion-audit")
+    def source_audit() -> dict[str, Any]:
+        config = load_config()
+        init_db(database_path(config))
+        with _CONTEXT_LOCK:
+            with db(database_path(config), read_only=False) as con:
+                return source_ingestion_audit(con)
 
     @app.get("/api/quotes")
     def quotes() -> dict[str, Any]:

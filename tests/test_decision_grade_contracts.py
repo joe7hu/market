@@ -12,6 +12,7 @@ from app import main as api_main
 from investment_panel.core.db import db, init_db
 from investment_panel.core.decision import classify_freshness, symbol_freshness_detail
 from investment_panel.core.panel import load_panel_data
+from investment_panel.core.sources import source_ingestion_audit
 
 
 DECISION_TABLES = {
@@ -242,6 +243,80 @@ def test_canonical_source_signals_promote_universe_with_market_context_blockers(
     with db(db_path) as con:
         instruments = query_all(con, "SELECT symbol, category, source FROM instruments WHERE symbol = 'NEWT'")
     assert instruments == [{"symbol": "NEWT", "category": "source-discovered", "source": "source_signal:test_research"}]
+
+
+def test_detail_source_tables_materialize_canonical_signals(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO equity_fundamentals VALUES ('NVDA', current_date, current_date, '10-K', ?, 'https://example.com/nvda-10k')",
+            [json.dumps({"revenue": 100, "status": "ok"})],
+        )
+        con.execute(
+            "INSERT INTO crypto_fundamentals VALUES ('BTC-USD', current_date, ?, 'coingecko')",
+            [json.dumps({"market_cap": 1_000_000})],
+        )
+        con.execute(
+            "INSERT INTO earnings_events VALUES ('COIN', current_date, 'earnings', ?, 'yfinance')",
+            [json.dumps({"source": "calendar"})],
+        )
+        con.execute(
+            "INSERT INTO analyst_estimates VALUES ('AMD', current_date, ?, 'yfinance')",
+            [json.dumps({"recommendation": "buy"})],
+        )
+        con.execute(
+            "INSERT INTO disclosures VALUES ('disc-rsch', 'public_disclosure_transaction', 'Test Trader', 'Test Filer', 'RSCH', current_date, current_date, 'BUY', '$1M', '{}', 'https://example.com/rsch')"
+        )
+
+    panel = load_panel_data(config_for(db_path))
+    sources = require_rows(panel, "sources")
+    source_items = require_rows(panel, "source_items")
+    source_signals = require_rows(panel, "ticker_source_signals")
+
+    source_ids = {row["source_id"] for row in sources}
+    assert {"sec_edgar", "coingecko", "yfinance"}.issubset(source_ids)
+    assert {"equity_fundamental", "crypto_fundamental", "earnings_event", "analyst_estimate"}.issubset(
+        {row["source_kind"] for row in source_items}
+    )
+
+    expected = {
+        "NVDA": ("sec_edgar", "fundamental"),
+        "BTC-USD": ("coingecko", "fundamental"),
+        "COIN": ("yfinance", "earnings_event"),
+        "AMD": ("yfinance", "analyst_estimate"),
+        "RSCH": ("sec_disclosures", "filing"),
+    }
+    for symbol, (source_id, signal_type) in expected.items():
+        signal = row_for_symbol(source_signals, symbol)
+        assert signal["source_id"] == source_id
+        assert signal["signal_type"] == signal_type
+
+
+def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_empty_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO source_registry
+            (source_id, source_name, source_family, source_kind, origin, enabled, ingestion_mode,
+             raw_access, source_url, notes, config, created_at, updated_at)
+            VALUES ('empty_active', 'Empty Active', 'news', 'rss', 'test', true, 'rss_or_feed',
+                    'public_feed', '', '', '{}', now(), now())
+            """
+        )
+        con.execute(
+            "INSERT INTO broker_provider_status VALUES ('ibkr', now(), 'disabled', 'disabled', 'IBKR login required locally.', NULL, NULL, NULL, NULL, NULL, '{}', '{}')"
+        )
+        audit = source_ingestion_audit(con)
+
+    assert audit["status"] == "failed"
+    assert any(row["source_id"] == "empty_active" and row["status"] == "not_ingested" for row in audit["source_failures"])
+    ibkr = next(row for row in audit["broker_rows"] if row["provider"] == "ibkr")
+    moomoo = next(row for row in audit["broker_rows"] if row["provider"] == "moomoo")
+    assert ibkr["status"] == "expected_login_required"
+    assert moomoo["status"] == "expected_login_required"
 
 
 @pytest.mark.parametrize(

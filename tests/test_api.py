@@ -75,6 +75,7 @@ def test_api_routes_return_json() -> None:
         "/api/source-runs",
         "/api/ticker-source-signals",
         "/api/sources/sec_edgar",
+        "/api/source-ingestion-audit",
         "/api/refresh-jobs",
         "/api/settings",
         "/api/tickers/TSLA",
