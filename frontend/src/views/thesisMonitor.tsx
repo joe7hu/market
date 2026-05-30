@@ -24,10 +24,10 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricTile label="Needs Review" value={needsReview.length} caption="backend review_reason present" tone={needsReview.length ? "warn" : "good"} />
-        <MetricTile label="Stale Thesis" value={stale.length} caption="stale_thesis flag" tone={stale.length ? "warn" : "good"} />
-        <MetricTile label="Contradictions" value={contradictions.length} caption="contradiction_flags rows" tone={contradictions.length ? "bad" : "good"} />
-        <MetricTile label="Invalidation Watch" value={invalidationWatch.length} caption="price or distance loaded" tone={invalidationWatch.length ? "info" : "muted"} />
+        <MetricTile label="Needs Review" value={needsReview.length} caption="thesis review reasons" tone={needsReview.length ? "warn" : "good"} />
+        <MetricTile label="Aging Thesis" value={stale.length} caption="theses to revisit" tone={stale.length ? "warn" : "good"} />
+        <MetricTile label="Contradictions" value={contradictions.length} caption="evidence conflicts" tone={contradictions.length ? "bad" : "good"} />
+        <MetricTile label="Invalidation Watch" value={invalidationWatch.length} caption="price or thesis trigger" tone={invalidationWatch.length ? "info" : "muted"} />
       </div>
 
       {monitorRows.length ? (
@@ -36,12 +36,12 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
             {monitorRows.slice(0, 16).map((row, index) => <ThesisCard key={textField(row, ["symbol"], `row-${index}`)} row={row} onOpenTicker={onOpenTicker} />)}
           </div>
           <div className="space-y-4">
-            <QueuePanel title="Review Queue" rows={needsReview} empty="No stale thesis or contradiction review reasons are active." onOpenTicker={onOpenTicker} />
-            <QueuePanel title="Invalidation Watch" rows={invalidationWatch} empty="No invalidation distance rows are currently loaded." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Review Queue" rows={needsReview} empty="No thesis or contradiction reviews are active." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Invalidation Watch" rows={invalidationWatch} empty="No invalidation triggers are active." onOpenTicker={onOpenTicker} />
           </div>
         </div>
       ) : (
-        <EmptyState icon={AlertTriangle} title="No thesis monitor rows" detail="Run the thesis monitor read model before using this page for portfolio review." />
+        <EmptyState icon={AlertTriangle} title="No thesis monitor loaded" detail="Refresh this page before using it for portfolio review." />
       )}
 
       <div className="mt-4">

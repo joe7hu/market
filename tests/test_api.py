@@ -122,7 +122,7 @@ def test_ticker_decision_brief_prefers_quote_row_over_decision_snapshot_price() 
     assert brief["canonical_quote"]["source"] == "previous_close:yahoo-chart"
     assert brief["canonical_quote"]["type"] == "prior_close"
     assert brief["verdict"]["blockers"] == ["chart_extended_without_thesis", "decision_reject"]
-    assert brief["setup"]["entry_zone"] == "No entry while the backend decision grade is Reject."
+    assert brief["setup"]["entry_zone"] == "No entry while the decision grade is Reject."
     assert brief["risk_plan"]["max_sizing"] == "No new exposure while decision grade remains Reject."
 
 

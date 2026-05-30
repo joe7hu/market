@@ -103,14 +103,16 @@ export function AppShell() {
               <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker or symbol" aria-label="Search tickers" />
             </form>
 
-            <div className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground md:flex">
-              <SourceHealthBadge />
-              <Separator orientation="vertical" className="h-5" />
-              <span className="flex items-center gap-1">
-                <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-                {lastRefresh ? lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : model.latestHealthCheck || "Not loaded"}
-              </span>
-            </div>
+            {location.pathname.startsWith("/health") ? (
+              <div className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground md:flex">
+                <SourceHealthBadge />
+                <Separator orientation="vertical" className="h-5" />
+                <span className="flex items-center gap-1">
+                  <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+                  {lastRefresh ? lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : model.latestHealthCheck || "Not loaded"}
+                </span>
+              </div>
+            ) : null}
           </div>
         </header>
         <main className="mx-auto w-full max-w-[1720px] px-3 py-4 sm:px-4 lg:px-6 lg:py-6">

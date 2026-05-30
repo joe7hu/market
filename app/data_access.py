@@ -464,10 +464,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "today": [
             "feed_signals",
-            "decision_readiness",
             "decision_queue",
             "discovered_universe",
-            "source_freshness",
             "quotes",
             "portfolio",
             "catalysts",
@@ -487,8 +485,6 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "research_packets",
             "ticker_memos",
             "opportunity_sources",
-            "source_health",
-            "provider_runs",
             "daily_brief",
             "exposure_clusters",
             "correlation_edges",
@@ -505,14 +501,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "valuations",
         ],
         "sources": [
-            "sources",
-            "source_runs",
-            "source_items",
-            "ticker_source_signals",
             "source_consensus",
             "feed_signals",
-            "source_health",
-            "source_freshness",
             "opportunity_sources",
             "theses",
             "news",
@@ -529,10 +519,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "valuations",
         ],
         "dashboard": [
-            "decision_readiness",
             "decision_queue",
             "discovered_universe",
-            "source_freshness",
             "quotes",
             "screener",
             "portfolio",
@@ -558,26 +546,13 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_alerts",
             "tradingview_chart_state",
             "opportunity_sources",
-            "source_health",
-            "sources",
-            "source_runs",
-            "source_items",
             "ticker_source_signals",
-            "provider_runs",
-            "broker_status",
-            "broker_accounts",
-            "broker_positions",
-            "broker_market_snapshots",
-            "broker_scanner_signals",
-            "agent_recommendations",
-            "paper_orders",
             "exposure_clusters",
             "correlation_edges",
             "portfolio_risk_cards",
             "review_actions",
         ],
         "opportunities": [
-            "decision_readiness",
             "decision_queue",
             "opportunities_ranked",
             "opportunity_sources",
@@ -600,11 +575,6 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_alerts",
             "tradingview_chart_state",
             "portfolio",
-            "broker_status",
-            "broker_accounts",
-            "broker_positions",
-            "agent_recommendations",
-            "paper_orders",
             "discovered_universe",
             "exposure_clusters",
             "correlation_edges",
@@ -613,11 +583,6 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "portfolio": [
             "portfolio",
-            "broker_status",
-            "broker_accounts",
-            "broker_positions",
-            "paper_orders",
-            "decision_readiness",
             "decision_queue",
             "quotes",
             "liquidity",
@@ -636,7 +601,6 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "review_actions",
         ],
         "research": [
-            "decision_readiness",
             "decision_queue",
             "research_packets",
             "ticker_memos",
@@ -663,7 +627,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     return {
         "scope": scope,
         "status": status_payload(panel_data),
-        "dashboard": dashboard_payload(panel_data) if scope in {"today", "dashboard"} else None,
+        "dashboard": dashboard_payload(panel_data) if scope == "dashboard" else None,
         "tables": {name: {"rows": panel_data.rows(name), "count": len(panel_data.rows(name))} for name in selected},
     }
 
@@ -673,7 +637,6 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     tables = {
         "candidates": _matching_ticker_rows(panel_data.rows("candidates"), normalized_ticker),
         "decision_queue": _matching_ticker_rows(panel_data.rows("decision_queue"), normalized_ticker),
-        "decision_readiness": _matching_ticker_rows(panel_data.rows("decision_readiness"), normalized_ticker),
         "discovered_universe": _matching_ticker_rows(panel_data.rows("discovered_universe"), normalized_ticker),
         "universe_screen": _matching_ticker_rows(panel_data.rows("universe_screen"), normalized_ticker),
         "symbol_decision_snapshots": _matching_ticker_rows(panel_data.rows("symbol_decision_snapshots"), normalized_ticker),
@@ -710,13 +673,6 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "valuations": _matching_ticker_rows(panel_data.rows("valuations"), normalized_ticker),
         "technicals": _matching_ticker_rows(panel_data.rows("technicals"), normalized_ticker),
         "research_packets": _matching_ticker_rows(panel_data.rows("research_packets"), normalized_ticker),
-        "broker_status": panel_data.rows("broker_status"),
-        "broker_accounts": panel_data.rows("broker_accounts"),
-        "broker_positions": _matching_ticker_rows(panel_data.rows("broker_positions"), normalized_ticker),
-        "broker_market_snapshots": _matching_ticker_rows(panel_data.rows("broker_market_snapshots"), normalized_ticker),
-        "broker_scanner_signals": _matching_ticker_rows(panel_data.rows("broker_scanner_signals"), normalized_ticker),
-        "agent_recommendations": _matching_ticker_rows(panel_data.rows("agent_recommendations"), normalized_ticker),
-        "paper_orders": _matching_ticker_rows(panel_data.rows("paper_orders"), normalized_ticker),
         "exposure_clusters": [
             row
             for row in panel_data.rows("exposure_clusters")
@@ -790,7 +746,7 @@ def _ticker_price_context(symbol: str, decision: dict[str, Any], universe: dict[
         "price": price or None,
         "change_pct": universe.get("change_pct"),
         "freshness_status": decision.get("quote_freshness") or universe.get("freshness") or "not_loaded",
-        "summary": "Price context from watchlist/universe and decision read models." if price else "No current price row is loaded; use this as a coverage gap until market data refreshes.",
+        "summary": "Price context from watchlist, universe, and decision evidence." if price else "No current price is available; treat this as a coverage gap before acting.",
     }
 
 
@@ -810,7 +766,7 @@ def _ticker_fundamental_context(symbol: str, decision: dict[str, Any], universe:
             "value_signal": universe.get("value_signal"),
             "watch_state": universe.get("watch_state"),
         },
-        "summary": "Fundamental context synthesized from the backend watchlist screen because raw fundamentals are not loaded for this ticker.",
+        "summary": "Fundamental context synthesized from watchlist evidence because direct fundamentals are not available for this ticker.",
     }
 
 
@@ -867,10 +823,10 @@ def _ticker_thesis_context(symbol: str, decision: dict[str, Any], universe: dict
         "source": "ticker_dossier_coverage",
         "status": universe.get("watch_state") or "candidate",
         "thesis": _text_join(decision.get("inclusion_reasons")) or "No explicit thesis row is loaded yet.",
-        "why_owned_watched": universe.get("portfolio_relevance") or "Ticker is present in the backend universe.",
+        "why_owned_watched": universe.get("portfolio_relevance") or "Ticker is present in the investment universe.",
         "invalidation": decision.get("invalidation") or "Define the countercase before changing exposure.",
         "needs_review": True,
-        "review_reason": "Needs review because the ticker dossier is using generated coverage context instead of a stored thesis.",
+        "review_reason": "Needs review because this dossier has coverage context but no stored thesis.",
         "evidence_links": [],
         "last_reviewed": decision.get("as_of") or universe.get("updated_at"),
     }
@@ -1232,7 +1188,7 @@ def _entry_zone(price: float, technical: dict[str, Any], sepa: dict[str, Any], v
     ma50 = _number(technical.get("ma50") or _object(technical.get("features")).get("ma50"))
     fair = _number(valuation.get("fair_value"))
     if "decision_reject" in blockers:
-        return "No entry while the backend decision grade is Reject."
+        return "No entry while the decision grade is Reject."
     if blockers:
         return "No chase entry while blockers are active."
     if ma20 and price > ma20 * 1.1:

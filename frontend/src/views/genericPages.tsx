@@ -131,15 +131,15 @@ function evidenceNode(value: string): ReactNode {
 }
 
 export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Watchlist" eyebrow="Market data" subtitle="Quote, screener, and TradingView watchlist rows." sections={[["Quotes", rows(data.quotes)], ["TradingView Watchlists", rows(data.tradingviewWatchlists)], ["Universe Screen", rows(data.universeScreen)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Watchlist" eyebrow="Market data" subtitle="Prices, watchlists, and ranked universe context." sections={[["Quotes", rows(data.quotes)], ["TradingView Watchlists", rows(data.tradingviewWatchlists)], ["Universe Screen", rows(data.universeScreen)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function SourcesPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Sources" eyebrow="Source health" subtitle="Freshness, provider runs, source health, and consensus state." sections={[["Freshness", rows(data.sourceFreshness)], ["Provider Runs", rows(data.providerRuns)], ["Source Health", rows(data.sourceHealth)], ["Source Consensus", rows(data.sourceConsensus)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Sources" eyebrow="Evidence" subtitle="Source-backed consensus, thesis evidence, news, and opportunity inputs." sections={[["Source Consensus", rows(data.sourceConsensus)], ["Source Signals", rows(data.feedSignals)], ["Opportunity Evidence", rows(data.opportunitySources)], ["Thesis Evidence", rows(data.theses)], ["News", rows(data.news)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function SuperinvestorsPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Superinvestors" eyebrow="Disclosure tracking" subtitle="Investor disclosure rows and ownership consensus from the backend." sections={[["Disclosures", rows(data.disclosures)], ["Trader Twins", rows(data.traderTwins)], ["Ownership Consensus", rows(data.ownershipConsensus)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Superinvestors" eyebrow="Disclosure tracking" subtitle="Investor disclosures, ownership consensus, and tracked investor context." sections={[["Disclosures", rows(data.disclosures)], ["Trader Twins", rows(data.traderTwins)], ["Ownership Consensus", rows(data.ownershipConsensus)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function MarketContextPage({ data }: { data: PanelData }) {
@@ -208,15 +208,15 @@ function PortfolioExposureMap({ holdings, onOpenTicker }: { holdings: AppModel["
 
 export function ResearchPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
   const decisionRows = rows(data.decisionQueue);
-  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Names to accept, reject, watch, or research next." sections={[["Decision Queue", decisionRows], ["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Opportunity Sources", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} beforeTables={<ResearchDecisionBoard rows={decisionRows} onOpenTicker={onOpenTicker} />} />;
+  return <DatasetPage title="Research Queue" eyebrow="Opportunities" subtitle="Names to accept, reject, watch, or research next." sections={[["Idea Queue", decisionRows], ["Ranked Opportunities", rows(data.opportunitiesRanked)], ["Opportunity Evidence", rows(data.opportunitySources)], ["Research Packets", rows(data.researchPackets)], ["Memos", rows(data.memos)]]} onOpenTicker={onOpenTicker} beforeTables={<ResearchDecisionBoard rows={decisionRows} onOpenTicker={onOpenTicker} />} />;
 }
 
 export function FilingsPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Filings" eyebrow="Disclosure rows" subtitle="Disclosure and trader filing data." sections={[["Disclosures", rows(data.disclosures)], ["Trader Twins", rows(data.traderTwins)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Filings" eyebrow="Disclosure tracking" subtitle="Disclosure and tracked-investor context." sections={[["Disclosures", rows(data.disclosures)], ["Trader Twins", rows(data.traderTwins)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function CalendarPage({ data, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: OpenTicker }) {
-  return <DatasetPage title="Calendar" eyebrow="Catalysts" subtitle="Catalyst and earnings rows that can affect timing." sections={[["Catalysts", rows(data.catalysts)], ["Earnings", rows(data.earnings)]]} onOpenTicker={onOpenTicker} />;
+  return <DatasetPage title="Calendar" eyebrow="Catalysts" subtitle="Catalysts and earnings dates that can affect timing." sections={[["Catalysts", rows(data.catalysts)], ["Earnings", rows(data.earnings)]]} onOpenTicker={onOpenTicker} />;
 }
 
 export function HealthPage({ model, data }: { model: AppModel; data: PanelData }) {
@@ -240,13 +240,10 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
   );
 }
 
-export function SettingsPage({ data }: { data: PanelData }) {
-  const config = data.settings.config ?? {};
-  const integration = data.settings.integration ?? {};
+export function SettingsPage({ data: _data }: { data: PanelData }) {
   return (
-    <WorkspacePage eyebrow="Configuration" title="Settings" subtitle="Local configuration and integration state.">
-      <RowsSection title="Config" rows={objectRows(config)} />
-      <RowsSection title="Integration" rows={objectRows(integration)} />
+    <WorkspacePage eyebrow="Configuration" title="Settings" subtitle="Local application preferences and integration references.">
+      <EmptyState title="No editable preferences" detail="Editable user preferences are not configured yet." />
     </WorkspacePage>
   );
 }
@@ -256,7 +253,7 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
   const thesisRows = rows(data.thesisMonitor).filter((row) => symbolList(row).includes(symbol));
   const title = ticker?.found === false ? `${symbol} not found` : symbol;
   return (
-    <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Ticker evidence, thesis state, decision snapshot, and source rows.">
+    <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Ticker evidence, thesis state, decision context, and source-backed facts.">
       <TradingViewChart symbol={symbol} ticker={ticker} />
       {ticker?.decision_brief || ticker?.decision_snapshot ? (
         <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-2 [&>*]:min-w-0">
@@ -320,7 +317,6 @@ function DatasetPage({ title, eyebrow, subtitle, sections, onOpenTicker, beforeT
       subtitle={subtitle}
       metrics={workspaceMetrics(title, sections, totalRows)}
     >
-      <WorkspaceCoverage sections={sections} />
       {beforeTables}
       {sections.map(([sectionTitle, sectionRows]) => <RowsSection key={sectionTitle} title={sectionTitle} rows={sectionRows} onOpenTicker={onOpenTicker} />)}
     </WorkspacePage>
@@ -350,7 +346,7 @@ function ResearchDecisionBoard({ rows: decisionRows, onOpenTicker }: { rows: Row
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold">{label}</div>
-                  <p className="mt-1 text-sm text-muted-foreground">{displayField(row, ["reason", "summary", "source"], "Decision row loaded")}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{displayField(row, ["reason", "summary", "source"], "Review this idea against the evidence.")}</p>
                 </div>
                 <StatusBadge tone={tone}>{decision}</StatusBadge>
               </div>
@@ -373,72 +369,47 @@ function ResearchDecisionBoard({ rows: decisionRows, onOpenTicker }: { rows: Row
 function workspaceMetrics(title: string, sections: Array<[string, RowRecord[]]>, totalRows: number): MetricSpec[] {
   const count = (sectionTitle: string) => sections.find(([candidate]) => candidate === sectionTitle)?.[1].length ?? 0;
   const populated = sections.filter(([, sectionRows]) => sectionRows.length).length;
-  const topSection = sections.slice().sort((a, b) => b[1].length - a[1].length)[0];
-  const fallback: MetricSpec[] = [
-    ["Coverage", `${populated}/${sections.length}`, "populated backend surfaces", populated === sections.length ? "good" : populated ? "info" : "muted"],
-    ["Rows In Scope", totalRows.toLocaleString(), "available for filtering and review", totalRows ? "info" : "muted"],
-    ["Largest Surface", topSection ? topSection[0] : "None", topSection ? `${topSection[1].length.toLocaleString()} rows` : "no rows loaded", topSection?.[1].length ? "info" : "muted"],
-  ];
+  const fallback: MetricSpec[] = totalRows ? [["Evidence Sets", populated, "populated sections", "info"]] : [];
 
   const profiles: Record<string, MetricSpec[]> = {
     Watchlist: [
       ["Quote Coverage", count("Quotes").toLocaleString(), "priced names available", count("Quotes") ? "good" : "warn"],
       ["Watchlists", count("TradingView Watchlists").toLocaleString(), "TradingView lists loaded", count("TradingView Watchlists") ? "info" : "muted"],
-      ["Screen Rows", count("Universe Screen").toLocaleString(), "rankable universe rows", count("Universe Screen") ? "info" : "muted"],
+      ["Universe", count("Universe Screen").toLocaleString(), "rankable names", count("Universe Screen") ? "info" : "muted"],
     ],
     Sources: [
-      ["Freshness Checks", count("Freshness").toLocaleString(), "source-level timestamps", count("Freshness") ? "good" : "warn"],
-      ["Provider Runs", count("Provider Runs").toLocaleString(), "ingestion attempts recorded", count("Provider Runs") ? "info" : "muted"],
-      ["Health Rows", count("Source Health").toLocaleString(), "provider health evidence", count("Source Health") ? "info" : "warn"],
+      ["Consensus", count("Source Consensus").toLocaleString(), "cross-source agreement", count("Source Consensus") ? "good" : "muted"],
+      ["Signals", count("Source Signals").toLocaleString(), "source-backed ideas", count("Source Signals") ? "info" : "muted"],
+      ["News", count("News").toLocaleString(), "recent source items", count("News") ? "info" : "muted"],
     ],
     Superinvestors: [
-      ["Disclosures", count("Disclosures").toLocaleString(), "filing rows available", count("Disclosures") ? "info" : "muted"],
+      ["Disclosures", count("Disclosures").toLocaleString(), "filings available", count("Disclosures") ? "info" : "muted"],
       ["Investor Models", count("Trader Twins").toLocaleString(), "tracked investor profiles", count("Trader Twins") ? "info" : "muted"],
       ["Consensus", count("Ownership Consensus").toLocaleString(), "shared ownership signals", count("Ownership Consensus") ? "good" : "muted"],
     ],
     "Market Valuation": [
-      ["Context Rows", count("Market Context").toLocaleString(), "macro and valuation backdrop", count("Market Context") ? "info" : "muted"],
+      ["Context", count("Market Context").toLocaleString(), "macro and valuation backdrop", count("Market Context") ? "info" : "muted"],
       ["Technicals", count("Technicals").toLocaleString(), "trend features loaded", count("Technicals") ? "good" : "warn"],
-      ["Earnings Setups", count("Earnings Setups").toLocaleString(), "event timing rows", count("Earnings Setups") ? "info" : "muted"],
+      ["Earnings Setups", count("Earnings Setups").toLocaleString(), "event timing", count("Earnings Setups") ? "info" : "muted"],
     ],
     "Research Queue": [
-      ["Decision Queue", count("Decision Queue").toLocaleString(), "accept, reject, watch rows", count("Decision Queue") ? "good" : "warn"],
+      ["Ideas", count("Idea Queue").toLocaleString(), "accept, reject, watch", count("Idea Queue") ? "good" : "warn"],
       ["Research Packets", count("Research Packets").toLocaleString(), "evidence packets ready", count("Research Packets") ? "info" : "muted"],
       ["Memos", count("Memos").toLocaleString(), "stored decision writeups", count("Memos") ? "info" : "muted"],
     ],
     Filings: [
-      ["Disclosures", count("Disclosures").toLocaleString(), "filing rows available", count("Disclosures") ? "info" : "muted"],
+      ["Disclosures", count("Disclosures").toLocaleString(), "filings available", count("Disclosures") ? "info" : "muted"],
       ["Trader Twins", count("Trader Twins").toLocaleString(), "investor profiles", count("Trader Twins") ? "info" : "muted"],
-      ["Coverage", `${populated}/${sections.length}`, "populated filing surfaces", populated === sections.length ? "good" : "muted"],
+      ["Evidence Sets", `${populated}/${sections.length}`, "populated sections", populated === sections.length ? "good" : "muted"],
     ],
     Calendar: [
       ["Catalysts", count("Catalysts").toLocaleString(), "review-driving events", count("Catalysts") ? "good" : "warn"],
-      ["Earnings", count("Earnings").toLocaleString(), "earnings timing rows", count("Earnings") ? "info" : "muted"],
-      ["Coverage", `${populated}/${sections.length}`, "populated calendar surfaces", populated === sections.length ? "good" : "muted"],
+      ["Earnings", count("Earnings").toLocaleString(), "earnings dates", count("Earnings") ? "info" : "muted"],
+      ["Evidence Sets", `${populated}/${sections.length}`, "populated sections", populated === sections.length ? "good" : "muted"],
     ],
   };
 
   return profiles[title] ?? fallback;
-}
-
-function WorkspaceCoverage({ sections }: { sections: Array<[string, RowRecord[]]> }) {
-  const populated = sections.filter(([, sectionRows]) => sectionRows.length);
-  return (
-    <div className="mb-4 rounded-md border border-border bg-card px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="font-semibold">Surface coverage</span>
-        {sections.map(([sectionTitle, sectionRows]) => (
-          <StatusBadge key={sectionTitle} tone={sectionRows.length ? "info" : "muted"}>
-            <span className="sr-only">{sectionTitle}: </span>
-            {sectionTitle} {sectionRows.length.toLocaleString()}
-          </StatusBadge>
-        ))}
-      </div>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">
-        {populated.length ? `${populated.length} of ${sections.length} source surfaces are populated for this workspace.` : "No backend source surfaces are populated for this workspace."}
-      </p>
-    </div>
-  );
 }
 
 function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string; rows: RowRecord[]; onOpenTicker?: OpenTicker }) {
@@ -450,7 +421,7 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
   if (!sectionRows.length) {
     return (
       <DataTableFrame title={<SectionTitle title={title} count={0} />}>
-        <div className="px-4 py-6 text-sm text-muted-foreground">No rows for the current scope.</div>
+        <div className="px-4 py-6 text-sm text-muted-foreground">No items available.</div>
       </DataTableFrame>
     );
   }
@@ -469,7 +440,7 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
               className="pl-8 text-sm"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter rows"
+              placeholder="Filter"
               aria-label={`Filter ${title}`}
             />
           </div>
@@ -504,7 +475,7 @@ function RowsSection({ title, rows: sectionRows, onOpenTicker }: { title: string
           {!visibleRows.length && (
             <tr>
               <td colSpan={columns.length + (onOpenTicker ? 1 : 0)} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                No rows match "{query.trim()}".
+                No items match "{query.trim()}".
               </td>
             </tr>
           )}
@@ -518,7 +489,7 @@ function SectionTitle({ title, count }: { title: string; count: number }) {
   return (
     <span className="flex items-center gap-2">
       <span>{title}</span>
-      <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground" aria-label={`${count} rows`}>
+      <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground" aria-label={`${count} items`}>
         {count.toLocaleString()}
       </span>
     </span>
@@ -637,7 +608,7 @@ function toneForCell(column: string, value: string) {
 }
 
 function HoldingsTable({ holdings, onOpenTicker }: { holdings: AppModel["holdings"]; onOpenTicker: OpenTicker }) {
-  if (!holdings.length) return <EmptyState title="No holdings loaded" detail="Portfolio rows are empty for this scope." />;
+  if (!holdings.length) return <EmptyState title="No holdings loaded" detail="No portfolio holdings are available." />;
   return (
     <DataTableFrame title="Holdings">
       <table className="w-full min-w-[760px] text-sm">
@@ -725,13 +696,8 @@ function columnKeys(sectionRows: RowRecord[]): string[] {
   return [...ordered, ...extras].slice(0, 8);
 }
 
-function objectRows(object: Record<string, unknown>): RowRecord[] {
-  return Object.entries(object).map(([key, value]) => ({ key, value: typeof value === "object" && value !== null ? JSON.stringify(value) : String(value) }));
-}
-
 const tickerSectionOrder: Array<[string, keyof NonNullable<TickerPayload["tables"]>]> = [
-  ["Decision Queue", "decision_queue"],
-  ["Decision Readiness", "decision_readiness"],
+  ["Decision Context", "decision_queue"],
   ["Candidate Screen", "candidates"],
   ["Universe Context", "universe_screen"],
   ["Quote", "quotes"],
@@ -750,9 +716,6 @@ const tickerSectionOrder: Array<[string, keyof NonNullable<TickerPayload["tables
   ["Options Chain", "options_chain"],
   ["TradingView Watchlists", "tradingview_watchlists"],
   ["TradingView Alerts", "tradingview_alerts"],
-  ["TradingView Chart State", "tradingview_chart_state"],
-  ["Broker Positions", "broker_positions"],
-  ["Agent Recommendations", "agent_recommendations"],
 ];
 
 function tickerTableSections(ticker: TickerPayload | null): Array<[string, RowRecord[]]> {

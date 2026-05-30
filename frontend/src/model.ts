@@ -16,7 +16,6 @@ export type Holding = {
 export type AppModel = {
   holdings: Holding[];
   thesisMonitorRows: RowRecord[];
-  decisionReadinessRows: RowRecord[];
   portfolioValue: number;
   latestHealthCheck: string;
   sources: {
@@ -47,7 +46,6 @@ export function buildModel(data: PanelData): AppModel {
   return {
     holdings: weightedHoldings,
     thesisMonitorRows: rows(data.thesisMonitor),
-    decisionReadinessRows: rows(data.decisionReadiness),
     portfolioValue,
     latestHealthCheck: newestDateLabel(healthRows.map((row) => textField(row, ["checked_at", "last_run_at", "as_of", "updated_at", "timestamp"]))),
     sources: {
@@ -78,7 +76,7 @@ function buildHoldings(portfolioRows: RowRecord[], quoteRows: RowRecord[]): Hold
     const marketValue = Number.isFinite(explicitValue) && explicitValue > 0 ? explicitValue : quantity * price;
     const costBasis = numberField(row, ["cost_basis", "average_cost", "avg_cost"], Number.NaN);
     const unrealizedPnl = Number.isFinite(costBasis) && quantity ? (price - costBasis) * quantity : numberField(row, ["unrealized_pnl", "pnl"], 0);
-    const nextStep = textField(row, ["next_step", "review_reason", "status"], "Review sizing, thesis, and source freshness.");
+    const nextStep = textField(row, ["next_step", "review_reason", "status"], "Review sizing, thesis, and latest evidence.");
     return {
       ticker,
       quantity,

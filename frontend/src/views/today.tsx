@@ -23,7 +23,7 @@ const categories: Array<{ key: string; title: string; shortTitle: string; tone: 
   { key: "top_portfolio_changes", title: "Portfolio Changes", shortTitle: "Portfolio", tone: "info", dot: "bg-blue-600" },
   { key: "top_risks", title: "Risks", shortTitle: "Risk", tone: "warn", dot: "bg-amber-500" },
   { key: "top_opportunities", title: "Opportunities / Research", shortTitle: "Research", tone: "good", dot: "bg-green-600" },
-  { key: "blocked_stale_items", title: "Blocked / Stale", shortTitle: "Blocked", tone: "bad", dot: "bg-red-600" },
+  { key: "blocked_stale_items", title: "Action Checks", shortTitle: "Checks", tone: "bad", dot: "bg-red-600" },
 ];
 
 export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpenTicker }: TodayPageProps) {
@@ -37,7 +37,6 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
   const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
   const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
   const needsReview = model.thesisMonitorRows.filter((row) => textField(row, ["needs_review"]).toLowerCase() === "yes" || textField(row, ["needs_review"]).toLowerCase() === "true").length;
-  const blocked = model.decisionReadinessRows.filter((row) => textField(row, ["status"]) !== "ready").length;
   const topAction = briefRows[0] ? textField(briefRows[0], ["next_action", "nextAction"], "Review the top decision brief item.") : "Load the daily brief before changing sizing.";
 
   return (
@@ -45,7 +44,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       <PageHeader
         eyebrow="Daily decision brief"
         title={briefRows[0] ? textField(briefRows[0], ["title"], "Today") : "Today"}
-        subtitle="What changed, what matters, what is blocked, and the next review action."
+        subtitle="What changed, what matters, and the next portfolio review action."
         actions={
           <Button type="button" variant="outline" onClick={onRefresh}>
             <RefreshCw className={loading ? "animate-spin" : ""} />
@@ -57,11 +56,11 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricTile label="Portfolio P&L" value={model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "No positions"} tone={portfolioPnl >= 0 ? "good" : "bad"} />
         <MetricTile label="Top Exposure" value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"} caption={largestHolding?.nextStep} tone={largestHolding && largestHolding.weight > 30 ? "warn" : "info"} />
-        <MetricTile label="Needs Review" value={needsReview} caption="stale thesis or contradiction flag" tone={needsReview ? "warn" : "good"} />
-        <MetricTile label="Blocked Readiness" value={blocked} caption="not-ready decision rows" tone={blocked ? "warn" : "good"} />
+        <MetricTile label="Needs Review" value={needsReview} caption="thesis or contradiction review" tone={needsReview ? "warn" : "good"} />
+        <MetricTile label="Brief Items" value={briefRows.length} caption="portfolio, risk, and research signals" tone={briefRows.length ? "info" : "muted"} />
       </div>
 
-      <NextActionPanel action={topAction} lastRefresh={lastRefresh} blocked={blocked} />
+      <NextActionPanel action={topAction} lastRefresh={lastRefresh} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-border pb-3">
         <CategoryButton active={activeCategory === "all"} label="All" count={briefRows.length} onClick={() => setActiveCategory("all")} />
@@ -96,18 +95,18 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
                   </h2>
                 </CardHeader>
                 <CardContent className="space-y-3 p-4">
-                  {categoryRows.length ? categoryRows.map((row, index) => <TodayBriefCard key={textField(row, ["item_id", "id"], `${category.key}-${index}`)} row={row} onOpenTicker={onOpenTicker} />) : <EmptyState title="No ranked items" detail="The backend daily_brief read model returned no rows for this category." />}
+                  {categoryRows.length ? categoryRows.map((row, index) => <TodayBriefCard key={textField(row, ["item_id", "id"], `${category.key}-${index}`)} row={row} onOpenTicker={onOpenTicker} />) : <EmptyState title="No items" detail="No portfolio review items are currently in this section." />}
                 </CardContent>
               </Card>
             );
           })}
         </div>
       ) : (
-        <EmptyState title="No daily brief loaded" detail="Refresh /today or run the Market refresh job to populate top portfolio changes, risks, opportunities, and blocked/stale items." />
+        <EmptyState title="No daily brief loaded" detail="Refresh /today to load portfolio changes, risks, opportunities, and review checks." />
       )}
 
       <div className="mt-4">
-        <DataTableFrame title="Daily Brief Audit Trail">
+        <DataTableFrame title="Brief Evidence">
           <table className="w-full min-w-[720px] text-sm">
             <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
               <tr>
@@ -134,7 +133,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
   );
 }
 
-function NextActionPanel({ action, lastRefresh, blocked }: { action: string; lastRefresh: Date | null; blocked: number }) {
+function NextActionPanel({ action, lastRefresh }: { action: string; lastRefresh: Date | null }) {
   return (
     <div className="mb-4 rounded-md border border-border bg-card px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -142,8 +141,7 @@ function NextActionPanel({ action, lastRefresh, blocked }: { action: string; las
           <p className="text-xs font-semibold uppercase text-muted-foreground">Primary next action</p>
           <p className="mt-1 text-base font-semibold leading-7 text-foreground">{action}</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            {lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Waiting for local data"}
-            {blocked ? ` · ${blocked} readiness blockers` : " · decision readiness clear"}
+            {lastRefresh ? "Brief loaded from current local evidence." : "Load the brief before changing sizing."}
           </p>
         </div>
         <ArrowRight className="hidden size-5 text-muted-foreground sm:block" aria-hidden="true" />
@@ -206,7 +204,7 @@ function TodayBriefCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (
         nextAction={
           <div className="space-y-1">
             <div>{displayField(row, ["next_action", "nextAction"], "No explicit next action")}</div>
-            {blocker && blocker.toLowerCase() !== "none" ? <div className="text-red-700">Blocked: {blocker}</div> : null}
+            {blocker && blocker.toLowerCase() !== "none" ? <div className="text-red-700">Check: {blocker}</div> : null}
           </div>
         }
         symbols={symbols}

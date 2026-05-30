@@ -97,10 +97,45 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert feed_payload["tables"]["feed_signals"]["count"] == 1
     assert list(feed_payload["tables"]) == ["feed_signals"]
     assert feed_payload["dashboard"] is None
+    operational_tables = {
+        "source_freshness",
+        "source_health",
+        "provider_runs",
+        "source_runs",
+        "source_items",
+        "broker_status",
+        "broker_accounts",
+        "paper_orders",
+        "decision_readiness",
+    }
+    for scope in ["feed", "today", "watchlist", "sources", "superinvestors", "market", "portfolio", "research", "filings", "calendar"]:
+        payload = data_access.panel_snapshot_payload(panel_data, scope)
+        assert operational_tables.isdisjoint(payload["tables"])
+        assert payload["dashboard"] is None
     assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_context"]["count"] == 1
+
+
+def test_ticker_payload_excludes_health_only_operational_tables() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "decision_queue": [{"symbol": "NVDA", "score": 91}],
+            "decision_readiness": [{"symbol": "NVDA", "status": "blocked"}],
+            "broker_status": [{"provider": "ibkr", "status": "expected_login_required"}],
+            "broker_accounts": [{"provider": "ibkr", "account_id": "demo"}],
+            "paper_orders": [{"symbol": "NVDA", "status": "staged"}],
+        },
+    )
+
+    payload = data_access.ticker_payload(panel_data, "nvda")
+
+    assert "decision_readiness" not in payload["tables"]
+    assert "broker_status" not in payload["tables"]
+    assert "broker_accounts" not in payload["tables"]
+    assert "paper_orders" not in payload["tables"]
 
 
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:
