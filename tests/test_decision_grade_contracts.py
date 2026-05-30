@@ -309,10 +309,23 @@ def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_e
         con.execute(
             "INSERT INTO broker_provider_status VALUES ('ibkr', now(), 'disabled', 'disabled', 'IBKR login required locally.', NULL, NULL, NULL, NULL, NULL, '{}', '{}')"
         )
+        con.execute(
+            """
+            INSERT INTO source_registry
+            (source_id, source_name, source_family, source_kind, origin, enabled, ingestion_mode,
+             raw_access, source_url, notes, config, created_at, updated_at)
+            VALUES ('ibkr', 'IBKR', 'broker', 'broker_session', 'test', true, 'login_required',
+                    'local_session', '', '', '{}', now(), now())
+            """
+        )
+        con.execute(
+            "INSERT INTO source_runs VALUES ('ibkr', 'disabled', 'broker_status', now(), now(), 'disabled', 0, 0, 'IBKR login required locally.', '{}')"
+        )
         audit = source_ingestion_audit(con)
 
     assert audit["status"] == "failed"
     assert any(row["source_id"] == "empty_active" and row["status"] == "not_ingested" for row in audit["source_failures"])
+    assert not any(row["source_id"] == "ibkr" for row in audit["source_failures"])
     ibkr = next(row for row in audit["broker_rows"] if row["provider"] == "ibkr")
     moomoo = next(row for row in audit["broker_rows"] if row["provider"] == "moomoo")
     assert ibkr["status"] == "expected_login_required"

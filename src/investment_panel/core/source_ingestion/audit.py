@@ -56,6 +56,8 @@ def source_failure(row: dict[str, Any]) -> dict[str, Any] | None:
     latest_status = str(row.get("latest_run_status") or "").lower()
     item_count = int(row.get("items_count") or 0)
     signal_count = int(row.get("signals_count") or 0)
+    if source_id in LOGIN_GATED_BROKERS and latest_status in EXPECTED_LOGIN_STATUSES:
+        return None
     if latest_status in {"failed", "error"}:
         return {
             "source_id": source_id,
