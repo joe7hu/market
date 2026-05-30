@@ -660,6 +660,22 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
     return {"status": "canonical_sources_synced", "runs": runs, "items": items, "signals": signals}
 
 
+def ensure_canonical_sources(con: Any) -> dict[str, Any]:
+    counts = query_rows(
+        con,
+        """
+        SELECT
+            (SELECT count(*) FROM source_registry) AS source_registry,
+            (SELECT count(*) FROM source_runs) AS source_runs,
+            (SELECT count(*) FROM source_items) AS source_items,
+            (SELECT count(*) FROM ticker_source_signals) AS ticker_source_signals
+        """,
+    )[0]
+    if any(int(counts.get(key) or 0) > 0 for key in counts):
+        return {**counts, "status": "cached"}
+    return sync_canonical_sources(con)
+
+
 def record_source_run(
     con: Any,
     *,
@@ -853,7 +869,6 @@ def update_signal_market_context(con: Any) -> None:
 
 
 def source_registry_rows(con: Any) -> list[dict[str, Any]]:
-    sync_canonical_sources(con)
     rows = query_rows(
         con,
         """
@@ -888,7 +903,6 @@ def source_registry_rows(con: Any) -> list[dict[str, Any]]:
 
 
 def source_item_rows(con: Any, source_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    sync_canonical_sources(con)
     sql = """
         SELECT i.*, r.source_name
         FROM source_items i
@@ -904,7 +918,6 @@ def source_item_rows(con: Any, source_id: str | None = None, limit: int = 200) -
 
 
 def source_run_rows(con: Any, source_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-    sync_canonical_sources(con)
     sql = """
         SELECT runs.*, registry.source_name, registry.source_family
         FROM source_runs runs
@@ -920,7 +933,6 @@ def source_run_rows(con: Any, source_id: str | None = None, limit: int = 200) ->
 
 
 def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 300) -> list[dict[str, Any]]:
-    sync_canonical_sources(con)
     sql = """
         SELECT s.*, r.source_name, r.source_family, i.title, i.url
         FROM ticker_source_signals s
@@ -937,6 +949,7 @@ def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 
 
 
 def source_detail_payload(con: Any, source_id: str) -> dict[str, Any]:
+    ensure_canonical_sources(con)
     source = next((row for row in source_registry_rows(con) if row.get("source_id") == source_id), None)
     if not source:
         return {"source_id": source_id, "found": False, "items": [], "signals": []}

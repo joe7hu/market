@@ -15,7 +15,7 @@ from investment_panel.core.decision import canonical_quote_rows, decision_readin
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
-from investment_panel.core.sources import source_item_rows, source_registry_rows, source_run_rows, sync_canonical_sources, ticker_source_signal_rows
+from investment_panel.core.sources import ensure_canonical_sources, source_item_rows, source_registry_rows, source_run_rows, ticker_source_signal_rows
 from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
@@ -37,7 +37,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
     # Keep the API read connection in the same mode as init/write jobs. DuckDB
     # rejects simultaneous connections to one file when read_only differs.
     with db(db_path, read_only=False) as con:
-        sync_canonical_sources(con)
+        ensure_canonical_sources(con)
         decision_refresh = ensure_decision_read_models(con, config_watchlist)
         decision_snapshots = symbol_decision_snapshots(con)
         tables = {

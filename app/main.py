@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import RLock
 import time
 from typing import Any
 
@@ -49,6 +50,7 @@ class PaperOrderInput(BaseModel):
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
 _CONTEXT_CACHE: dict[str, Any] = {"expires_at": 0.0, "config_key": None, "value": None}
+_CONTEXT_LOCK = RLock()
 
 
 def create_app() -> FastAPI:
@@ -208,8 +210,9 @@ def create_app() -> FastAPI:
     def source_detail(source_id: str) -> dict[str, Any]:
         config = load_config()
         init_db(database_path(config))
-        with db(database_path(config), read_only=False) as con:
-            return source_detail_payload(con, source_id)
+        with _CONTEXT_LOCK:
+            with db(database_path(config), read_only=False) as con:
+                return source_detail_payload(con, source_id)
 
     @app.get("/api/source-items")
     def source_items() -> dict[str, Any]:
@@ -460,15 +463,16 @@ def create_app() -> FastAPI:
 
 
 def _context() -> tuple[dict[str, Any], Any]:
-    config = load_config()
-    config_key = str(database_path(config))
-    now = time.monotonic()
-    cached = _CONTEXT_CACHE.get("value")
-    if cached is not None and _CONTEXT_CACHE.get("config_key") == config_key and now < float(_CONTEXT_CACHE.get("expires_at") or 0):
-        return cached
-    value = (config, load_panel_data(config))
-    _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
-    return value
+    with _CONTEXT_LOCK:
+        config = load_config()
+        config_key = str(database_path(config))
+        now = time.monotonic()
+        cached = _CONTEXT_CACHE.get("value")
+        if cached is not None and _CONTEXT_CACHE.get("config_key") == config_key and now < float(_CONTEXT_CACHE.get("expires_at") or 0):
+            return cached
+        value = (config, load_panel_data(config))
+        _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
+        return value
 
 
 def _require_local_request(request: Request) -> None:
