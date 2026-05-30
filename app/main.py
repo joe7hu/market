@@ -348,6 +348,31 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "daily_brief")
 
+    @app.get("/api/feed")
+    def feed() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "feed_signals")
+
+    @app.get("/api/watchlist-screen")
+    def watchlist_screen() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "universe_screen")
+
+    @app.get("/api/source-consensus")
+    def source_consensus() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_consensus")
+
+    @app.get("/api/ownership-consensus")
+    def ownership_consensus() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "ownership_consensus")
+
+    @app.get("/api/market-context")
+    def market_context() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "market_context")
+
     @app.get("/api/portfolio-risk/exposure-clusters")
     def portfolio_risk_exposure_clusters() -> dict[str, Any]:
         _, panel_data = _context()

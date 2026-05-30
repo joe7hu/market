@@ -20,6 +20,31 @@ from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 DECISION_REFRESH_LOCK = Lock()
 
+MUNGERMODE_SOURCE_CANDIDATES = [
+    ("Odd Lots", "podcast"),
+    ("Stratechery", "blog"),
+    ("a16z", "podcast"),
+    ("ARK Invest", "podcast"),
+    ("Peter Diamandis", "podcast"),
+    ("Sequoia Capital", "podcast"),
+    ("All-In", "podcast"),
+    ("Not Boring", "blog"),
+    ("In Good Company", "podcast"),
+    ("Invest Like the Best", "podcast"),
+    ("SemiAnalysis", "blog"),
+    ("No Priors", "podcast"),
+    ("Dwarkesh Patel", "podcast"),
+    ("Uncapped", "podcast"),
+    ("Citrini Research", "blog"),
+    ("Capital Wars", "blog"),
+    ("Naval", "podcast"),
+    ("AVC", "blog"),
+    ("Lex Fridman", "podcast"),
+    ("Acquired", "podcast"),
+    ("Benedict Evans", "blog"),
+    ("Howard Marks", "blog"),
+]
+
 
 def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
     app_config = config if isinstance(config, AppConfig) else load_config()
@@ -84,6 +109,11 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "agent_recommendations": brokers.agent_recommendations(con),
             "paper_orders": brokers.paper_orders(con),
             "daily_brief": daily_brief(con),
+            "feed_signals": feed_signals(con, config_watchlist),
+            "universe_screen": universe_screen(con, config_watchlist),
+            "source_consensus": source_consensus(con),
+            "ownership_consensus": ownership_consensus(con),
+            "market_context": market_context(con),
             "exposure_clusters": exposure_clusters(con),
             "correlation_edges": correlation_edges(con),
             "portfolio_risk_cards": portfolio_risk_cards(con),
@@ -134,6 +164,600 @@ def ensure_decision_read_models(con: Any, config_watchlist: list[dict[str, Any]]
 
 def get_panel_snapshot(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
     return load_panel_data(config)
+
+
+def feed_signals(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """MungerMode-style decision feed, enriched with Joe's portfolio context."""
+
+    watchlist = {str(item.get("symbol") or "").upper() for item in (config_watchlist or []) if item.get("symbol")}
+    portfolio_rows = {str(row.get("symbol") or "").upper(): row for row in portfolio(con)}
+    decision_rows = decision_queue(con)
+    thesis_rows = {str(row.get("symbol") or "").upper(): row for row in thesis_monitor_rows(con, config_watchlist or [])}
+    decision_by_symbol = {str(row.get("symbol") or "").upper(): row for row in decision_rows}
+    seen: set[str] = set()
+    output: list[dict[str, Any]] = []
+
+    for row in daily_brief(con):
+        symbols = _symbols_from_value(row.get("symbols")) or [str(row.get("symbol") or "").upper()]
+        symbols = [symbol for symbol in symbols if symbol]
+        primary = symbols[0] if symbols else ""
+        decision = decision_by_symbol.get(primary, {})
+        thesis = thesis_rows.get(primary, {})
+        category = str(row.get("category") or "signal")
+        signal = {
+            "id": str(row.get("item_id") or f"{category}:{primary}:{row.get('rank')}"),
+            "date": _date_text(row.get("as_of")) or _date_text(decision.get("as_of")),
+            "source": _source_label(row.get("source_models"), category),
+            "source_type": category,
+            "title": str(row.get("title") or _fallback_signal_title(primary, category)),
+            "symbols": symbols,
+            "primary_symbol": primary,
+            "thesis": str(row.get("reason") or decision.get("invalidation") or "Backend model selected this as a portfolio-relevant signal."),
+            "antithesis": _countercase(primary, decision, thesis, row),
+            "evidence": _string_list(row.get("evidence"))[:4],
+            "portfolio_relevance": _portfolio_relevance(symbols, portfolio_rows, watchlist, decision),
+            "next_action": _signal_next_action(
+                row.get("next_action"),
+                decision.get("catalyst_window"),
+                fallback="Review the ticker dossier before changing exposure.",
+            ),
+            "freshness": str(decision.get("freshness_status") or "current"),
+            "severity": str(row.get("severity") or "info"),
+            "score": float(row.get("score") or decision.get("score") or 0),
+        }
+        key = signal["id"]
+        if key not in seen:
+            seen.add(key)
+            output.append(signal)
+
+    for decision in decision_rows:
+        symbol = str(decision.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        key = f"decision:{symbol}"
+        if key in seen:
+            continue
+        seen.add(key)
+        thesis = thesis_rows.get(symbol, {})
+        basis = _dict_from_value(decision.get("decision_basis"))
+        output.append(
+            {
+                "id": key,
+                "date": _date_text(decision.get("as_of")),
+                "source": str(decision.get("source_cluster") or "decision_queue"),
+                "source_type": "decision_queue",
+                "title": _fallback_signal_title(symbol, str(decision.get("action_grade") or "review")),
+                "symbols": [symbol],
+                "primary_symbol": symbol,
+                "thesis": _decision_thesis(decision, basis),
+                "antithesis": _countercase(symbol, decision, thesis, {}),
+                "evidence": _decision_evidence(decision, basis),
+                "portfolio_relevance": _portfolio_relevance([symbol], portfolio_rows, watchlist, decision),
+                "next_action": _signal_next_action(
+                    decision.get("catalyst_window"),
+                    fallback="Open the dossier and decide whether this belongs in Joe's portfolio/watchlist.",
+                ),
+                "freshness": str(decision.get("freshness_status") or decision.get("overall_decision_freshness") or "unknown"),
+                "severity": _severity_from_decision(decision),
+                "score": float(decision.get("score") or 0),
+            }
+        )
+        if len(output) >= 36:
+            break
+
+    return sorted(output, key=lambda item: (item.get("date") or "", item.get("score") or 0), reverse=True)[:48]
+
+
+def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Compact watched/candidate ticker screen with quality, value, and action columns."""
+
+    configured_watch = {str(item.get("symbol") or "").upper() for item in (config_watchlist or []) if item.get("symbol")}
+    portfolio_symbols = {str(row.get("symbol") or "").upper() for row in portfolio(con)}
+    quote_by_symbol = {str(row.get("symbol") or "").upper(): row for row in quotes(con)}
+    decision_by_symbol = {str(row.get("symbol") or "").upper(): row for row in decision_queue(con)}
+    screener_by_symbol = {str(row.get("symbol") or "").upper(): row for row in screener(con)}
+    valuation_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in valuations(con):
+        symbol = str(row.get("symbol") or "").upper()
+        if symbol and symbol not in valuation_by_symbol:
+            valuation_by_symbol[symbol] = row
+
+    rows = []
+    for universe in discovered_universe(con):
+        symbol = str(universe.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        decision = decision_by_symbol.get(symbol, {})
+        screener_row = screener_by_symbol.get(symbol, {})
+        metrics = _dict_from_value(screener_row.get("metrics"))
+        valuation = valuation_by_symbol.get(symbol, {})
+        watch_state = "owned" if symbol in portfolio_symbols else "watched" if symbol in configured_watch or _is_watch_universe(universe) else "candidate"
+        quality = _quality_score(decision, metrics, valuation)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": universe.get("name") or screener_row.get("name") or symbol,
+                "watch_state": watch_state,
+                "market_cap": _metric_number(metrics, "market_cap", "marketCap", "market_capitalization"),
+                "forward_pe": _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward"),
+                "roic": _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital"),
+                "rating": _star_rating(quality),
+                "quality_score": quality,
+                "value_signal": _value_signal(valuation, metrics),
+                "action": decision.get("action_grade") or "Watch",
+                "next_action": _universe_next_action(decision, watch_state),
+                "portfolio_relevance": _portfolio_relevance([symbol], {s: {} for s in portfolio_symbols}, configured_watch, decision),
+                "freshness": decision.get("freshness_status") or quote_by_symbol.get(symbol, {}).get("freshness_status") or "unknown",
+                "price": quote_by_symbol.get(symbol, {}).get("price"),
+                "change_pct": quote_by_symbol.get(symbol, {}).get("change_pct"),
+                "source_count": universe.get("source_count") or universe.get("total_source_count") or 0,
+                "rank": universe.get("universe_rank"),
+            }
+        )
+
+    return sorted(rows, key=lambda row: (_watch_sort(row), -(float(row.get("quality_score") or 0)), int(row.get("rank") or 9999)))[:500]
+
+
+def source_consensus(con: Any) -> list[dict[str, Any]]:
+    """Ninety-day-style source consensus across local/private and public source families."""
+
+    decision_rows = decision_queue(con)
+    family_counts = _source_family_counts(decision_rows)
+    local_rows: list[dict[str, Any]] = []
+    local_rows.extend(_source_count_rows(con, "Arco / Birdclaw", "private_graph", "birdclaw_theses", "symbol", "created_at"))
+    local_rows.extend(_source_count_rows(con, "SEC disclosures", "filing", "disclosures", "symbol", "filed_date"))
+    local_rows.extend(_source_count_rows(con, "Market research packets", "research", "research_reports", "symbol", "created_at"))
+    local_rows.extend(_source_count_rows(con, "News providers", "news", "news_items", "related_symbols", "published_at"))
+    local_rows.extend(_provider_source_rows(con))
+
+    output: list[dict[str, Any]] = []
+    for row in local_rows:
+        key = str(row["source_name"]).lower()
+        family = _source_family_for_name(key)
+        bullish, bearish = family_counts.get(family, ([], []))
+        output.append(
+            {
+                **row,
+                "is_followed": True,
+                "origin": "market",
+                "bullish_symbols": bullish[:8],
+                "bearish_symbols": bearish[:8],
+                "net_consensus": len(bullish) - len(bearish),
+                "recommendation": "loaded",
+            }
+        )
+
+    loaded_names = {str(row["source_name"]).lower() for row in output}
+    for source_name, content_type in MUNGERMODE_SOURCE_CANDIDATES:
+        if source_name.lower() in loaded_names:
+            continue
+        output.append(
+            {
+                "source_name": source_name,
+                "content_type": content_type,
+                "items_count": 0,
+                "tickers_count": 0,
+                "latest_at": None,
+                "is_followed": False,
+                "origin": "mungermode_benchmark",
+                "bullish_symbols": [],
+                "bearish_symbols": [],
+                "net_consensus": 0,
+                "recommendation": "candidate_source",
+            }
+        )
+
+    return sorted(output, key=lambda row: (row.get("is_followed") is not True, -int(row.get("items_count") or 0), str(row.get("source_name"))))
+
+
+def ownership_consensus(con: Any) -> list[dict[str, Any]]:
+    """Disclosure consensus by ticker and investor for the superinvestor surface."""
+
+    rows = disclosures(con)
+    by_symbol: dict[str, dict[str, Any]] = {}
+    investors: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        investor = str(row.get("trader_name") or row.get("filer_name") or "Tracked investor")
+        if investor:
+            investor_row = investors.setdefault(investor, {"investor": investor, "holdings": 0, "latest_filed": "", "symbols": set(), "net_buys": 0, "net_sells": 0})
+            investor_row["latest_filed"] = max(str(investor_row["latest_filed"] or ""), str(row.get("filed_date") or ""))
+        if not symbol:
+            continue
+        action = str(row.get("action") or "").lower()
+        value = _number_from_any(row.get("total_value") or row.get("holdings_value_thousands") or row.get("estimated_invested_usd") or 0)
+        item = by_symbol.setdefault(symbol, {"symbol": symbol, "name": symbol, "holders": set(), "net_buys": 0, "net_sells": 0, "total_value": 0.0, "latest_filed": "", "investors": []})
+        item["holders"].add(investor)
+        item["total_value"] = float(item["total_value"]) + value
+        item["latest_filed"] = max(str(item["latest_filed"] or ""), str(row.get("filed_date") or ""))
+        if "sell" in action or "sale" in action or "reduc" in action:
+            item["net_sells"] += 1
+        elif "buy" in action or "purchase" in action or "add" in action:
+            item["net_buys"] += 1
+        if investor not in item["investors"]:
+            item["investors"].append(investor)
+        investors[investor]["symbols"].add(symbol)
+        investors[investor]["holdings"] += 1
+        if "sell" in action or "sale" in action or "reduc" in action:
+            investors[investor]["net_sells"] += 1
+        elif "buy" in action or "purchase" in action or "add" in action:
+            investors[investor]["net_buys"] += 1
+
+    output = []
+    for item in by_symbol.values():
+        holders = sorted(item.pop("holders"))
+        output.append(
+            {
+                **item,
+                "holders": len(holders),
+                "holder_names": holders[:8],
+                "investors": item.get("investors", [])[:8],
+                "net_activity": int(item.get("net_buys") or 0) - int(item.get("net_sells") or 0),
+            }
+        )
+
+    investor_rows = [
+        {
+            "source_type": "investor",
+            "investor": investor,
+            "symbol": "",
+            "holders": 0,
+            "holder_names": [],
+            "investors": [],
+            "net_buys": row["net_buys"],
+            "net_sells": row["net_sells"],
+            "net_activity": int(row["net_buys"]) - int(row["net_sells"]),
+            "total_value": 0.0,
+            "latest_filed": row["latest_filed"],
+            "holdings": row["holdings"],
+            "symbols": sorted(row["symbols"])[:10],
+        }
+        for investor, row in investors.items()
+    ]
+    consensus_rows = sorted(output, key=lambda row: (int(row["holders"]), float(row["total_value"] or 0)), reverse=True)[:250]
+    return consensus_rows + sorted(investor_rows, key=lambda row: int(row["holdings"]), reverse=True)[:100]
+
+
+def market_context(con: Any) -> list[dict[str, Any]]:
+    """Macro/market posture only when it affects sizing or portfolio risk."""
+
+    rows: list[dict[str, Any]] = []
+    for cluster in exposure_clusters(con)[:8]:
+        rows.append(
+            {
+                "metric": f"{cluster.get('cluster_name') or 'Exposure'} concentration",
+                "latest_value": cluster.get("portfolio_weight"),
+                "unit": "%",
+                "date": cluster.get("as_of"),
+                "percentile": None,
+                "posture": cluster.get("concentration_level") or "watch",
+                "portfolio_effect": cluster.get("risk_readout") or cluster.get("next_step") or "Review sizing only if concentration changed.",
+                "history": [],
+            }
+        )
+    for card in portfolio_risk_cards(con)[:8]:
+        rows.append(
+            {
+                "metric": card.get("title") or card.get("risk_type") or "Portfolio risk",
+                "latest_value": card.get("score"),
+                "unit": "score",
+                "date": card.get("as_of"),
+                "percentile": None,
+                "posture": card.get("severity") or "watch",
+                "portfolio_effect": card.get("impact") or card.get("next_step") or card.get("summary"),
+                "history": [],
+            }
+        )
+    if not rows:
+        rows.append(
+            {
+                "metric": "Position sizing posture",
+                "latest_value": None,
+                "unit": "",
+                "date": None,
+                "percentile": None,
+                "posture": "neutral",
+                "portfolio_effect": "No macro or portfolio-risk row currently changes sizing.",
+                "history": [],
+            }
+        )
+    return rows[:12]
+
+
+def _symbols_from_value(value: Any) -> list[str]:
+    return [item.upper() for item in _string_list(value) if item.upper()]
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        return [str(item).strip() for item in value.values() if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("[") or stripped.startswith("{"):
+            try:
+                return _string_list(json.loads(stripped))
+            except Exception:
+                pass
+        return [item.strip() for item in stripped.replace("|", ";").split(";") if item.strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _dict_from_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _date_text(value: Any) -> str:
+    if not value:
+        return ""
+    return str(value)[:10]
+
+
+def _source_label(value: Any, fallback: str) -> str:
+    items = _string_list(value)
+    if items:
+        return " + ".join(items[:2])
+    return fallback.replace("_", " ")
+
+
+def _fallback_signal_title(symbol: str, category: str) -> str:
+    label = category.replace("_", " ").title()
+    return f"{symbol} {label}".strip()
+
+
+def _countercase(symbol: str, decision: dict[str, Any], thesis: dict[str, Any], row: dict[str, Any]) -> str:
+    for value in (
+        thesis.get("invalidation"),
+        decision.get("invalidation"),
+        row.get("blocker"),
+    ):
+        text = _plain_text(value)
+        if text and text.lower() != "none":
+            return text
+    freshness = str(decision.get("freshness_status") or "")
+    if freshness and freshness.lower() not in {"fresh", "current"}:
+        return f"The {symbol} signal weakens if source freshness remains {freshness} or primary evidence is not refreshed."
+    return "The countercase is that this signal is already reflected in price or lacks enough independent source confirmation."
+
+
+def _plain_text(value: Any) -> str:
+    if isinstance(value, list):
+        return "; ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return "; ".join(str(item).strip() for item in value.values() if str(item).strip())
+    return str(value or "").strip()
+
+
+def _portfolio_relevance(symbols: list[str], portfolio_rows: dict[str, Any], watchlist: set[str], decision: dict[str, Any]) -> str:
+    owned = [symbol for symbol in symbols if symbol in portfolio_rows]
+    watched = [symbol for symbol in symbols if symbol in watchlist and symbol not in owned]
+    impact = _dict_from_value(decision.get("portfolio_impact"))
+    if owned:
+        if impact:
+            return str(impact.get("summary") or impact.get("impact") or f"Owned exposure: {', '.join(owned[:4])}")
+        return f"Owned exposure: {', '.join(owned[:4])}"
+    if watched:
+        return f"Watchlist impact: {', '.join(watched[:4])}"
+    if symbols:
+        return f"Candidate impact: compare {', '.join(symbols[:4])} against Joe's owned and watched names."
+    return "Portfolio impact not yet tied to a ticker."
+
+
+def _decision_thesis(decision: dict[str, Any], basis: dict[str, Any]) -> str:
+    reasons = _string_list(decision.get("inclusion_reasons"))
+    if reasons:
+        return "; ".join(reasons[:3])
+    counts = basis.get("source_counts")
+    if isinstance(counts, dict) and counts:
+        leaders = ", ".join(f"{key}:{value}" for key, value in list(counts.items())[:4])
+        return f"Decision score is supported by source families {leaders}."
+    return f"Decision model ranks this at {decision.get('score') or 0} with {decision.get('evidence_count') or 0} evidence rows."
+
+
+def _decision_evidence(decision: dict[str, Any], basis: dict[str, Any]) -> list[str]:
+    evidence = []
+    counts = basis.get("source_counts")
+    if isinstance(counts, dict):
+        evidence.extend(f"{key}: {value}" for key, value in counts.items() if value)
+    if decision.get("evidence_count"):
+        evidence.append(f"{decision.get('evidence_count')} evidence rows")
+    if decision.get("source_cluster"):
+        evidence.append(str(decision.get("source_cluster")))
+    return evidence[:4]
+
+
+def _severity_from_decision(decision: dict[str, Any]) -> str:
+    grade = str(decision.get("action_grade") or "").lower()
+    freshness = str(decision.get("freshness_status") or "").lower()
+    if "reject" in grade or "stale" in freshness:
+        return "bad"
+    if "act" in grade:
+        return "good"
+    if "research" in grade:
+        return "watch"
+    return "info"
+
+
+def _is_watch_universe(row: dict[str, Any]) -> bool:
+    counts = _dict_from_value(row.get("source_counts"))
+    reasons = " ".join(_string_list(row.get("inclusion_reasons"))).lower()
+    return bool(counts.get("config_watchlist") or counts.get("watchlist") or "watchlist" in reasons)
+
+
+def _metric_number(metrics: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = metrics.get(key)
+        number = _number_from_any(value)
+        if number:
+            return number
+    return None
+
+
+def _number_from_any(value: Any) -> float:
+    if isinstance(value, (int, float)) and value == value:
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace("$", "").replace(",", "").replace("%", ""))
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _quality_score(decision: dict[str, Any], metrics: dict[str, Any], valuation: dict[str, Any]) -> float:
+    score = _number_from_any(decision.get("action_score") or decision.get("decision_score") or decision.get("score"))
+    roic = _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital") or 0
+    pe = _metric_number(metrics, "forward_pe", "forwardPE", "pe_forward") or 0
+    upside = _number_from_any(valuation.get("upside_pct"))
+    if not score:
+        score = 45
+    if roic:
+        score += min(20, max(-10, roic / 2))
+    if pe:
+        score += 10 if pe < 20 else -8 if pe > 45 else 2
+    if upside:
+        score += max(-10, min(15, upside / 3))
+    return max(0, min(100, score))
+
+
+def _star_rating(score: float) -> str:
+    stars = max(1, min(5, round(score / 20)))
+    return f"{stars}/5"
+
+
+def _value_signal(valuation: dict[str, Any], metrics: dict[str, Any]) -> str:
+    upside = _number_from_any(valuation.get("upside_pct"))
+    if upside:
+        return f"{upside:+.1f}% fair-value gap"
+    pe = _metric_number(metrics, "forward_pe", "forwardPE", "pe_forward")
+    if pe:
+        return f"{pe:.1f}x fwd P/E"
+    return "No valuation row"
+
+
+def _universe_next_action(decision: dict[str, Any], watch_state: str) -> str:
+    catalyst = _meaningful_text(decision.get("catalyst_window"))
+    if catalyst:
+        return catalyst
+    if watch_state == "owned":
+        return "Review sizing and thesis fit."
+    if watch_state == "watched":
+        return "Keep in review queue until evidence or price changes."
+    return "Promote only if source consensus or valuation improves."
+
+
+def _signal_next_action(*values: Any, fallback: str) -> str:
+    for value in values:
+        text = _meaningful_text(value)
+        if text:
+            return text
+    return fallback
+
+
+def _meaningful_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if text in {"", "-", "none", "None", "null", "N/A", "n/a"} else text
+
+
+def _watch_sort(row: dict[str, Any]) -> int:
+    return {"owned": 0, "watched": 1, "candidate": 2}.get(str(row.get("watch_state")), 3)
+
+
+def _source_family_counts(decision_rows: list[dict[str, Any]]) -> dict[str, tuple[list[str], list[str]]]:
+    output: dict[str, tuple[list[str], list[str]]] = {}
+    for row in decision_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        grade = str(row.get("action_grade") or "").lower()
+        basis = _dict_from_value(row.get("decision_basis"))
+        counts = basis.get("source_counts") if isinstance(basis.get("source_counts"), dict) else _dict_from_value(row.get("source_counts"))
+        for key, value in counts.items() if isinstance(counts, dict) else []:
+            if not value:
+                continue
+            bullish, bearish = output.setdefault(str(key), ([], []))
+            if "reject" in grade or "stale" in grade:
+                bearish.append(symbol)
+            else:
+                bullish.append(symbol)
+    return output
+
+
+def _source_count_rows(con: Any, source_name: str, content_type: str, table_name: str, symbol_column: str, time_column: str) -> list[dict[str, Any]]:
+    try:
+        result = query_rows(
+            con,
+            f"""
+            SELECT count(*) AS items_count,
+                   count(DISTINCT {symbol_column}) AS tickers_count,
+                   max({time_column}) AS latest_at
+            FROM {table_name}
+            """,
+        )[0]
+    except Exception:
+        return []
+    count = int(result.get("items_count") or 0)
+    if count <= 0:
+        return []
+    return [
+        {
+            "source_name": source_name,
+            "content_type": content_type,
+            "items_count": count,
+            "tickers_count": int(result.get("tickers_count") or 0),
+            "latest_at": result.get("latest_at"),
+        }
+    ]
+
+
+def _provider_source_rows(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT provider, capability, count(*) AS items_count, max(finished_at) AS latest_at
+        FROM provider_runs
+        GROUP BY provider, capability
+        ORDER BY latest_at DESC NULLS LAST
+        LIMIT 40
+        """,
+    )
+    return [
+        {
+            "source_name": f"{row.get('provider')}: {row.get('capability')}",
+            "content_type": "provider",
+            "items_count": int(row.get("items_count") or 0),
+            "tickers_count": 0,
+            "latest_at": row.get("latest_at"),
+        }
+        for row in rows
+    ]
+
+
+def _source_family_for_name(name: str) -> str:
+    if "arco" in name or "birdclaw" in name:
+        return "thesis"
+    if "sec" in name or "filing" in name or "disclosure" in name:
+        return "filing"
+    if "news" in name:
+        return "news"
+    if "research" in name:
+        return "research"
+    if "tradingview" in name:
+        return "tradingview"
+    if "yfinance" in name:
+        return "quote"
+    return name.split(":")[0]
 
 
 def candidates(con: Any) -> list[dict[str, Any]]:

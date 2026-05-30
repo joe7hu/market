@@ -88,6 +88,11 @@ export type PanelData = {
   agentRecommendations: TablePayload;
   paperOrders: TablePayload;
   dailyBrief: TablePayload;
+  feedSignals: TablePayload;
+  universeScreen: TablePayload;
+  sourceConsensus: TablePayload;
+  ownershipConsensus: TablePayload;
+  marketContext: TablePayload;
   exposureClusters: TablePayload;
   correlationEdges: TablePayload;
   portfolioRiskCards: TablePayload;
@@ -146,6 +151,11 @@ export type PanelEndpoint =
   | "agentRecommendations"
   | "paperOrders"
   | "dailyBrief"
+  | "feedSignals"
+  | "universeScreen"
+  | "sourceConsensus"
+  | "ownershipConsensus"
+  | "marketContext"
   | "exposureClusters"
   | "correlationEdges"
   | "portfolioRiskCards"

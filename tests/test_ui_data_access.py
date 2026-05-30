@@ -59,6 +59,25 @@ def test_ticker_payload_includes_quote_and_signal_context_for_deep_links() -> No
     assert payload["tables"]["opportunity_sources"][0]["source_key"] == "technicals"
 
 
+def test_new_ia_panel_scopes_are_backend_owned() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "feed_signals": [{"id": "f1", "title": "Portfolio signal"}],
+            "universe_screen": [{"symbol": "NVDA", "watch_state": "watched"}],
+            "source_consensus": [{"source_name": "Arco / Birdclaw"}],
+            "ownership_consensus": [{"symbol": "NVDA", "holders": 2}],
+            "market_context": [{"metric": "Position sizing posture"}],
+        },
+    )
+
+    assert data_access.panel_snapshot_payload(panel_data, "feed")["tables"]["feed_signals"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_context"]["count"] == 1
+
+
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     config = {
         "database": {"duckdb_path": "/tmp/market.duckdb"},

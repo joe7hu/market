@@ -64,6 +64,11 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   agent_recommendations: "agentRecommendations",
   paper_orders: "paperOrders",
   daily_brief: "dailyBrief",
+  feed_signals: "feedSignals",
+  universe_screen: "universeScreen",
+  source_consensus: "sourceConsensus",
+  ownership_consensus: "ownershipConsensus",
+  market_context: "marketContext",
   exposure_clusters: "exposureClusters",
   correlation_edges: "correlationEdges",
   portfolio_risk_cards: "portfolioRiskCards",
@@ -117,7 +122,7 @@ async function settle<T>(
 }
 
 export async function loadPanelData(): Promise<PanelData> {
-  return loadPanelScope("today");
+  return loadPanelScope("feed");
 }
 
 export async function loadPanelScope(scope: string, existing?: PanelData): Promise<PanelData> {
@@ -178,6 +183,11 @@ export function emptyPanelData(): PanelData {
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
     dailyBrief: EMPTY_TABLE,
+    feedSignals: EMPTY_TABLE,
+    universeScreen: EMPTY_TABLE,
+    sourceConsensus: EMPTY_TABLE,
+    ownershipConsensus: EMPTY_TABLE,
+    marketContext: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
     correlationEdges: EMPTY_TABLE,
     portfolioRiskCards: EMPTY_TABLE,
@@ -249,6 +259,11 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("agentRecommendations", getJson<TablePayload>("/api/agent/recommendations")),
     settle("paperOrders", getJson<TablePayload>("/api/paper-orders")),
     settle("dailyBrief", getJson<TablePayload>("/api/daily-brief")),
+    settle("feedSignals", getJson<TablePayload>("/api/feed")),
+    settle("universeScreen", getJson<TablePayload>("/api/watchlist-screen")),
+    settle("sourceConsensus", getJson<TablePayload>("/api/source-consensus")),
+    settle("ownershipConsensus", getJson<TablePayload>("/api/ownership-consensus")),
+    settle("marketContext", getJson<TablePayload>("/api/market-context")),
     settle("exposureClusters", getJson<TablePayload>("/api/portfolio-risk/exposure-clusters")),
     settle("correlationEdges", getJson<TablePayload>("/api/portfolio-risk/correlation-edges")),
     settle("portfolioRiskCards", getJson<TablePayload>("/api/portfolio-risk/cards")),
@@ -306,6 +321,11 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     agentRecommendations: EMPTY_TABLE,
     paperOrders: EMPTY_TABLE,
     dailyBrief: EMPTY_TABLE,
+    feedSignals: EMPTY_TABLE,
+    universeScreen: EMPTY_TABLE,
+    sourceConsensus: EMPTY_TABLE,
+    ownershipConsensus: EMPTY_TABLE,
+    marketContext: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
     correlationEdges: EMPTY_TABLE,
     portfolioRiskCards: EMPTY_TABLE,
@@ -453,6 +473,21 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "dailyBrief":
         data.dailyBrief = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "feedSignals":
+        data.feedSignals = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "universeScreen":
+        data.universeScreen = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceConsensus":
+        data.sourceConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "ownershipConsensus":
+        data.ownershipConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "marketContext":
+        data.marketContext = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "exposureClusters":
         data.exposureClusters = (result.value as TablePayload) ?? EMPTY_TABLE;

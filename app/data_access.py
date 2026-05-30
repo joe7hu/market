@@ -379,6 +379,11 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     broker_status = panel_data.rows("broker_status")
     agent_recommendations = panel_data.rows("agent_recommendations")
     daily_brief = panel_data.rows("daily_brief")
+    feed_signals = panel_data.rows("feed_signals")
+    universe_screen = panel_data.rows("universe_screen")
+    source_consensus = panel_data.rows("source_consensus")
+    ownership_consensus = panel_data.rows("ownership_consensus")
+    market_context = panel_data.rows("market_context")
     portfolio_risk_cards = panel_data.rows("portfolio_risk_cards")
     review_actions = panel_data.rows("review_actions")
     priority_rows = decision_queue or candidates
@@ -406,6 +411,11 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "broker_providers": len(broker_status),
             "agent_recommendations": len(agent_recommendations),
             "daily_brief": len(daily_brief),
+            "feed_signals": len(feed_signals),
+            "universe_screen": len(universe_screen),
+            "source_consensus": len(source_consensus),
+            "ownership_consensus": len(ownership_consensus),
+            "market_context": len(market_context),
             "portfolio_risk_cards": len(portfolio_risk_cards),
             "review_actions": len(review_actions),
         },
@@ -420,6 +430,11 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "broker_status": broker_status[:8],
         "agent_recommendations": agent_recommendations[:8],
         "daily_brief": daily_brief[:12],
+        "feed_signals": feed_signals[:12],
+        "universe_screen": universe_screen[:12],
+        "source_consensus": source_consensus[:12],
+        "ownership_consensus": ownership_consensus[:12],
+        "market_context": market_context[:12],
         "portfolio_risk_cards": portfolio_risk_cards[:8],
         "review_actions": review_actions[:8],
         "disclosures": disclosures[:8],
@@ -429,7 +444,19 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
 
 def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     scopes: dict[str, list[str]] = {
+        "feed": [
+            "feed_signals",
+            "universe_screen",
+            "daily_brief",
+            "decision_queue",
+            "portfolio",
+            "quotes",
+            "thesis_monitor",
+            "portfolio_risk_cards",
+            "review_actions",
+        ],
         "today": [
+            "feed_signals",
             "decision_readiness",
             "decision_queue",
             "discovered_universe",
@@ -460,6 +487,35 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "correlation_edges",
             "portfolio_risk_cards",
             "review_actions",
+        ],
+        "watchlist": [
+            "universe_screen",
+            "discovered_universe",
+            "decision_queue",
+            "quotes",
+            "portfolio",
+            "screener",
+            "valuations",
+        ],
+        "sources": [
+            "source_consensus",
+            "feed_signals",
+            "source_health",
+            "source_freshness",
+            "opportunity_sources",
+            "theses",
+            "news",
+        ],
+        "superinvestors": [
+            "ownership_consensus",
+            "disclosures",
+        ],
+        "market": [
+            "market_context",
+            "portfolio_risk_cards",
+            "exposure_clusters",
+            "quotes",
+            "valuations",
         ],
         "dashboard": [
             "decision_readiness",
@@ -583,7 +639,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "tradingview_alerts",
             "tradingview_chart_state",
         ],
-        "filings": ["disclosures"],
+        "filings": ["ownership_consensus", "disclosures"],
         "calendar": ["catalysts", "earnings"],
         "health": ["source_freshness", "source_health", "provider_runs", "broker_status", "broker_accounts", "broker_positions", "agent_recommendations", "paper_orders"],
         "settings": [],
@@ -592,7 +648,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     return {
         "scope": scope,
         "status": status_payload(panel_data),
-        "dashboard": dashboard_payload(panel_data) if scope in {"today", "dashboard"} else None,
+        "dashboard": dashboard_payload(panel_data) if scope in {"feed", "today", "dashboard"} else None,
         "tables": {name: {"rows": panel_data.rows(name), "count": len(panel_data.rows(name))} for name in selected},
     }
 
