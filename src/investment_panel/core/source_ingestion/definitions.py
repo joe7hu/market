@@ -197,7 +197,7 @@ SOURCE_DEFINITIONS = [
         "enabled": True,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Market consumes summarized Arco/Birdclaw exports and source refs; it does not scrape X/Twitter.",
     },
     {
@@ -509,7 +509,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -521,7 +521,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -533,7 +533,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -545,7 +545,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -557,7 +557,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -569,7 +569,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Use only Arco/Birdclaw exported refs or permitted public references; do not scrape X/Twitter in Market.",
     },
     {
@@ -581,7 +581,7 @@ SOURCE_DEFINITIONS = [
         "enabled": False,
         "ingestion_mode": "arco_birdclaw_bridge",
         "raw_access": "local_private_refs",
-        "source_url": "/Users/joehu/brain/raw/sources/arco",
+        "source_url": "/Volumes/agent/brain/raw/sources/arco",
         "notes": "Covers @balajis, @karpathy, @citrini, @BillAckman, and @dylan522p through Arco/Birdclaw exports only.",
     },
 ]

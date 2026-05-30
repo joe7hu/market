@@ -8,7 +8,7 @@ nas:
   duckdb_snapshot_dir: /Volumes/agent/data-sources/market-mini/duckdb-snapshots
 
 arco:
-  raw_dir: $HOME/brain/raw/sources/arco
+  raw_dir: /Volumes/agent/brain/raw/sources/arco
   signals_path: signals.json
   beliefs_path: beliefs.json
   brief_beliefs_glob: brief-beliefs/brief-beliefs-*.json

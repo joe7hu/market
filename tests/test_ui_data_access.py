@@ -141,7 +141,7 @@ def test_ticker_payload_excludes_health_only_operational_tables() -> None:
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     config = {
         "database": {"duckdb_path": "/tmp/market.duckdb"},
-        "arco": {"raw_dir": "/Users/joehu/brain/raw/sources/arco"},
+        "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
         "birdclaw": {"command": "birdclaw export"},
     }
     panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
@@ -151,7 +151,7 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     assert payload["status"]["ready"] is True
     assert payload["config"]["database"]["duckdb_path"] == "/tmp/market.duckdb"
     assert payload["integration"]["duckdb_path"] == "/tmp/market.duckdb"
-    assert payload["integration"]["arco_raw_dir"] == "/Users/joehu/brain/raw/sources/arco"
+    assert payload["integration"]["arco_raw_dir"] == "/Volumes/agent/brain/raw/sources/arco"
     assert payload["integration"]["birdclaw_command"] == "birdclaw export"
 
 

@@ -70,6 +70,8 @@ The broad daily refresh workflow is documented in
 [docs/full-market-refresh.md](docs/full-market-refresh.md). It coordinates
 Arco import, daily screening, free-source refresh, disclosures, event calendar,
 analyses, and the DB snapshot before the decision desk reads the data.
+This workflow should run from the canonical `mini1.local` checkout at
+`/Users/joehu/proj/market`, not from temporary or topic-specific worktrees.
 
 ## API
 

@@ -36,7 +36,7 @@ class NasConfig:
 
 @dataclass(frozen=True)
 class ArcoConfig:
-    raw_dir: Path = Path("/Users/joehu/brain/raw/sources/arco")
+    raw_dir: Path = Path("/Volumes/agent/brain/raw/sources/arco")
     signals_path: str = "signals.json"
     beliefs_path: str = "beliefs.json"
     brief_beliefs_glob: str = "brief-beliefs/brief-beliefs-*.json"
@@ -203,7 +203,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
     arco_raw = raw.get("arco", {})
     arco = ArcoConfig(
-        raw_dir=resolve_path(arco_raw.get("raw_dir", "/Users/joehu/brain/raw/sources/arco"), base),
+        raw_dir=resolve_path(arco_raw.get("raw_dir", "/Volumes/agent/brain/raw/sources/arco"), base),
         signals_path=arco_raw.get("signals_path", "signals.json"),
         beliefs_path=arco_raw.get("beliefs_path", "beliefs.json"),
         brief_beliefs_glob=arco_raw.get("brief_beliefs_glob", "brief-beliefs/brief-beliefs-*.json"),

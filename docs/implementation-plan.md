@@ -5,7 +5,7 @@
 The `market` repo starts as a greenfield repository. The adjacent local repos are:
 
 - `/Users/joehu/proj/birdclaw`: local-first X/Twitter storage and CLI. It owns archive/live X ingestion and stores canonical Twitter data in SQLite under `~/.birdclaw`.
-- `/Users/joehu/proj/arco`: personal intelligence layer over Birdclaw, explicit browser captures, market context, signal radar, belief ledger, and wiki outputs. It writes machine-readable snapshots under `/Users/joehu/brain/raw/sources/arco`.
+- `/Users/joehu/proj/arco`: personal intelligence layer over Birdclaw, explicit browser captures, market context, signal radar, belief ledger, and wiki outputs. It writes machine-readable snapshots under `/Volumes/agent/brain/raw/sources/arco`.
 
 The panel should not duplicate Birdclaw or Arco. For v0, Arco is the canonical upstream source for X-derived thesis flow because it already handles source weighting, propagation denoising, author memory, beliefs, browser captures, and qualitative market context. Birdclaw remains the raw X ingestion layer and a manual refresh fallback.
 

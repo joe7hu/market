@@ -80,7 +80,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             "market_dir": "/Volumes/agent/data-sources/market-mini",
             "duckdb_snapshot_dir": "/Volumes/agent/data-sources/market-mini/duckdb-snapshots",
         },
-        "arco": {"raw_dir": "/Users/joehu/brain/raw/sources/arco"},
+        "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
         "trader_profile_dir": "data/trader_profiles",
         "prompt_dir": "prompts",
     }

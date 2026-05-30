@@ -7,8 +7,15 @@ sequential because later steps depend on earlier evidence and market-data rows.
 ## Command
 
 ```bash
+cd /Users/joehu/proj/market
+git pull --rebase origin main
 uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
 ```
+
+Run this on `mini1.local` from the canonical checkout. Do not schedule the full
+refresh from stale worktrees such as
+`/Users/joehu/proj/market-source-modularization`; their status files can look
+fresh while the primary app checkout remains stale.
 
 For LAN access after the refresh:
 
@@ -26,7 +33,7 @@ http://192.168.50.197:8000/api/status
 ## Step Order
 
 1. `update_arco_data`: import the latest Arco brief evidence from
-   `/Users/joehu/brain/raw/sources/arco`.
+   `/Volumes/agent/brain/raw/sources/arco`.
 2. `daily_screen`: rebuild the configured and evidence-derived universe, daily
    prices, fundamentals, technicals, candidates, and base analyses.
 3. `update_free_sources`: refresh TradingView/OpenCLI and yfinance rows for
@@ -92,3 +99,13 @@ uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
 Keep the separate disclosure automation if it already exists; this full refresh
 is the missing broad-market workflow that ensures the decision desk has current
 market, evidence, event, analysis, and snapshot state.
+
+Cross-machine freshness is checked from Arco:
+
+```bash
+cd /Users/joehu/proj/arco
+node bin/arco.mjs status-gates
+```
+
+The Market gates are `mini-market-full-refresh.json` and
+`mini-market-db-snapshot.json`, both fresh under 24 hours.
