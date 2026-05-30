@@ -1,19 +1,13 @@
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
-import { type KeyboardEvent } from "react";
 
-import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
-import type { AppModel } from "@/model";
+import { ClickableDecisionCard, DataTableFrame, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import type { PanelData, RowRecord } from "@/types";
-import { rows } from "@/utils";
-import { booleanField, displayField, fullField, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { buildThesisMonitorViewModel } from "@/viewModels/thesisMonitor";
+import { booleanField, displayField, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { DataGridSection } from "./dataGridSection";
 
-export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelData; model: AppModel; onOpenTicker: (symbol: string) => void }) {
-  const monitorRows = rows(data.thesisMonitor);
-  const thesisRows = rows(data.theses);
-  const needsReview = monitorRows.filter((row) => booleanField(row, ["needs_review"]));
-  const stale = monitorRows.filter((row) => booleanField(row, ["stale_thesis"]));
-  const contradictions = monitorRows.filter((row) => listField(row, ["contradiction_flags"]).length);
-  const invalidationWatch = monitorRows.filter((row) => Number.isFinite(numberField(row, ["invalidation_distance_pct"], Number.NaN)) || textField(row, ["invalidation_price"]));
+export function ThesisMonitorPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: (symbol: string) => void }) {
+  const viewModel = buildThesisMonitorViewModel(data);
 
   return (
     <section>
@@ -24,20 +18,20 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricTile label="Needs Review" value={needsReview.length} caption="thesis review reasons" tone={needsReview.length ? "warn" : "good"} />
-        <MetricTile label="Aging Thesis" value={stale.length} caption="theses to revisit" tone={stale.length ? "warn" : "good"} />
-        <MetricTile label="Contradictions" value={contradictions.length} caption="evidence conflicts" tone={contradictions.length ? "bad" : "good"} />
-        <MetricTile label="Invalidation Watch" value={invalidationWatch.length} caption="price or thesis trigger" tone={invalidationWatch.length ? "info" : "muted"} />
+        <MetricTile label="Needs Review" value={viewModel.needsReview.length} caption="thesis review reasons" tone={viewModel.needsReview.length ? "warn" : "good"} />
+        <MetricTile label="Aging Thesis" value={viewModel.stale.length} caption="theses to revisit" tone={viewModel.stale.length ? "warn" : "good"} />
+        <MetricTile label="Contradictions" value={viewModel.contradictions.length} caption="evidence conflicts" tone={viewModel.contradictions.length ? "bad" : "good"} />
+        <MetricTile label="Invalidation Watch" value={viewModel.invalidationWatch.length} caption="price or thesis trigger" tone={viewModel.invalidationWatch.length ? "info" : "muted"} />
       </div>
 
-      {monitorRows.length ? (
+      {viewModel.monitorRows.length ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
           <div className="space-y-3">
-            {monitorRows.slice(0, 16).map((row, index) => <ThesisCard key={textField(row, ["symbol"], `row-${index}`)} row={row} onOpenTicker={onOpenTicker} />)}
+            {viewModel.monitorRows.slice(0, 16).map((row, index) => <ThesisCard key={textField(row, ["symbol"], `row-${index}`)} row={row} onOpenTicker={onOpenTicker} />)}
           </div>
           <div className="space-y-4">
-            <QueuePanel title="Review Queue" rows={needsReview} empty="No thesis or contradiction reviews are active." onOpenTicker={onOpenTicker} />
-            <QueuePanel title="Invalidation Watch" rows={invalidationWatch} empty="No invalidation triggers are active." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Review Queue" rows={viewModel.needsReview} empty="No thesis or contradiction reviews are active." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Invalidation Watch" rows={viewModel.invalidationWatch} empty="No invalidation triggers are active." onOpenTicker={onOpenTicker} />
           </div>
         </div>
       ) : (
@@ -45,30 +39,7 @@ export function ThesisMonitorPage({ data, model, onOpenTicker }: { data: PanelDa
       )}
 
       <div className="mt-4">
-        <DataTableFrame title="Structured Thesis Fields">
-          <table className="w-full min-w-[920px] text-sm">
-            <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Symbol</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Thesis</th>
-                <th className="px-3 py-2">Invalidation</th>
-                <th className="px-3 py-2">Review Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(monitorRows.length ? monitorRows : thesisRows).slice(0, 32).map((row, index) => (
-                <tr key={index} className="border-b border-border align-top">
-                  <td className="px-3 py-2 font-semibold">{displayField(row, ["symbol", "ticker"])}</td>
-                  <td className="px-3 py-2">{displayField(row, ["status"])}</td>
-                  <td className="px-3 py-2">{fullField(row, ["thesis", "thesis_text"], "No thesis")}</td>
-                  <td className="px-3 py-2">{fullField(row, ["invalidation", "invalidation_text", "invalidation_price"], "No invalidation")}</td>
-                  <td className="px-3 py-2">{fullField(row, ["review_reason", "stale_reason"], "-")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </DataTableFrame>
+        <DataGridSection title="Structured Thesis Fields" rows={(viewModel.monitorRows.length ? viewModel.monitorRows : viewModel.thesisRows).slice(0, 32)} onOpenTicker={onOpenTicker} />
       </div>
     </section>
   );
@@ -84,47 +55,30 @@ function ThesisCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symb
   const evidence = listField(row, ["evidence_links", "evidence", "sources"]);
   const age = numberField(row, ["last_reviewed_age_days"], Number.NaN);
   const primarySymbol = symbols[0];
-  const openTicker = () => {
-    if (primarySymbol) onOpenTicker(primarySymbol);
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!primarySymbol) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onOpenTicker(primarySymbol);
-    }
-  };
 
   return (
-    <div
-      role={primarySymbol ? "button" : undefined}
-      tabIndex={primarySymbol ? 0 : -1}
-      aria-disabled={primarySymbol ? undefined : true}
-      className={primarySymbol ? "block w-full cursor-pointer text-left transition-transform hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" : "block w-full cursor-default text-left"}
-      onClick={openTicker}
-      onKeyDown={onKeyDown}
-    >
-      <DecisionCard
-        title={`${symbols[0] || "Symbol"}: ${displayField(row, ["thesis", "thesis_text"], "No thesis")}`}
-        status={<StatusBadge tone={tone}>{needsReview ? "Review" : titleLabel(status)}</StatusBadge>}
-        reason={
-          <div className="space-y-1">
-            <div>{displayField(row, ["why_owned", "why_watched", "why", "reason"], "No why-owned/watched field")}</div>
-            {Number.isFinite(age) ? <div className="text-muted-foreground">Last reviewed {Math.round(age)} days ago</div> : null}
-          </div>
-        }
-        evidence={<EvidenceList items={evidence.slice(0, 4)} />}
-        nextAction={
-          <div className="space-y-1">
-            <div>{displayField(row, ["review_reason", "stale_reason"], needsReview ? "Review thesis state" : "Monitor")}</div>
-            <div className="text-muted-foreground">Invalidation: {displayField(row, ["invalidation", "invalidation_text", "invalidation_price"], "Not set")}</div>
-            {flags.length ? <div className="text-red-700">Flags: {flags.map(titleLabel).join(", ")}</div> : null}
-          </div>
-        }
-        symbols={symbols}
-        tone={tone}
-      />
-    </div>
+    <ClickableDecisionCard
+      enabled={Boolean(primarySymbol)}
+      onOpen={() => primarySymbol && onOpenTicker(primarySymbol)}
+      title={`${symbols[0] || "Symbol"}: ${displayField(row, ["thesis", "thesis_text"], "No thesis")}`}
+      status={<StatusBadge tone={tone}>{needsReview ? "Review" : titleLabel(status)}</StatusBadge>}
+      reason={
+        <div className="space-y-1">
+          <div>{displayField(row, ["why_owned", "why_watched", "why", "reason"], "No why-owned/watched field")}</div>
+          {Number.isFinite(age) ? <div className="text-muted-foreground">Last reviewed {Math.round(age)} days ago</div> : null}
+        </div>
+      }
+      evidence={<EvidenceList items={evidence.slice(0, 4)} />}
+      nextAction={
+        <div className="space-y-1">
+          <div>{displayField(row, ["review_reason", "stale_reason"], needsReview ? "Review thesis state" : "Monitor")}</div>
+          <div className="text-muted-foreground">Invalidation: {displayField(row, ["invalidation", "invalidation_text", "invalidation_price"], "Not set")}</div>
+          {flags.length ? <div className="text-red-700">Flags: {flags.map(titleLabel).join(", ")}</div> : null}
+        </div>
+      }
+      symbols={symbols}
+      tone={tone}
+    />
   );
 }
 

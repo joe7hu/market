@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { HealthPage } from "../views/genericPages";
+import { HealthPage } from "../views/health";
 
 export function HealthRoute() {
   const { data, model } = useMarketData();

@@ -11,8 +11,10 @@ arco:
   raw_dir: $HOME/brain/raw/sources/arco
   signals_path: signals.json
   beliefs_path: beliefs.json
+  brief_beliefs_glob: brief-beliefs/brief-beliefs-*.json
   source_manifest_glob: source-manifest-*.json
   birdclaw_bookmarks_glob: birdclaw-bookmarks-*.json
+  web_captures_glob: web-captures-*.json
 
 market_data:
   # Online uses Yahoo chart for equities/ETFs and CoinGecko for configured

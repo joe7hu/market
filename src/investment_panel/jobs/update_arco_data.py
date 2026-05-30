@@ -23,7 +23,9 @@ def run(config_path: str | None = None) -> dict[str, int | str]:
         "database": str(config.database.duckdb_path),
         "rows": rows,
         "decision_models": decision_result,
+        "brief_beliefs_path": context.get("brief_beliefs_path"),
         "bookmarks_path": context.get("bookmarks_path"),
+        "web_captures_path": context.get("web_captures_path"),
         "manifest_path": context.get("manifest_path"),
     }
     status_path = write_source_status(

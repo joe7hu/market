@@ -1,10 +1,10 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { ResearchPage } from "../views/genericPages";
+import { ResearchPage } from "../views/research";
 
 export function ResearchRoute() {
-  const { data, model, openTicker } = useMarketData();
+  const { data, openTicker } = useMarketData();
   usePanelScope("research");
 
-  return <ResearchPage data={data} model={model} onOpenTicker={openTicker} />;
+  return <ResearchPage data={data} onOpenTicker={openTicker} />;
 }

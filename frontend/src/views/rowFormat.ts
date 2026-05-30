@@ -1,7 +1,8 @@
 import type { JsonValue, RowRecord } from "@/types";
+import type { Tone } from "@/ui/tone";
 import { displayValue, fullDisplayValue, tickerSymbol } from "@/utils";
 
-export type Tone = "good" | "warn" | "bad" | "info" | "muted";
+export type { Tone };
 
 export function textField(row: RowRecord | undefined, keys: string[], fallback = ""): string {
   if (!row) return fallback;

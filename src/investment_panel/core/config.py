@@ -39,8 +39,10 @@ class ArcoConfig:
     raw_dir: Path = Path("/Users/joehu/brain/raw/sources/arco")
     signals_path: str = "signals.json"
     beliefs_path: str = "beliefs.json"
+    brief_beliefs_glob: str = "brief-beliefs/brief-beliefs-*.json"
     source_manifest_glob: str = "source-manifest-*.json"
     birdclaw_bookmarks_glob: str = "birdclaw-bookmarks-*.json"
+    web_captures_glob: str = "web-captures-*.json"
 
 
 @dataclass(frozen=True)
@@ -204,8 +206,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         raw_dir=resolve_path(arco_raw.get("raw_dir", "/Users/joehu/brain/raw/sources/arco"), base),
         signals_path=arco_raw.get("signals_path", "signals.json"),
         beliefs_path=arco_raw.get("beliefs_path", "beliefs.json"),
+        brief_beliefs_glob=arco_raw.get("brief_beliefs_glob", "brief-beliefs/brief-beliefs-*.json"),
         source_manifest_glob=arco_raw.get("source_manifest_glob", "source-manifest-*.json"),
         birdclaw_bookmarks_glob=arco_raw.get("birdclaw_bookmarks_glob", "birdclaw-bookmarks-*.json"),
+        web_captures_glob=arco_raw.get("web_captures_glob", "web-captures-*.json"),
     )
     market_data_raw = raw.get("market_data", {})
     market_data = MarketDataConfig(
@@ -328,6 +332,10 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "raw_dir": str(config.arco.raw_dir),
             "signals_path": config.arco.signals_path,
             "beliefs_path": config.arco.beliefs_path,
+            "brief_beliefs_glob": config.arco.brief_beliefs_glob,
+            "source_manifest_glob": config.arco.source_manifest_glob,
+            "birdclaw_bookmarks_glob": config.arco.birdclaw_bookmarks_glob,
+            "web_captures_glob": config.arco.web_captures_glob,
         },
         "market_data": {
             "mode": config.market_data.mode,

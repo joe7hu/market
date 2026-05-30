@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from investment_panel.core.config import load_config
+from investment_panel.core.arco import flatten_arco_items, ingest_arco_theses, load_arco_context
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.jobs.daily_screen import run as run_daily
@@ -90,6 +91,119 @@ watchlist:
         rows = query_rows(con, "SELECT symbol, score, decision FROM candidates WHERE symbol = 'COIN'")
     assert rows
     assert rows[0]["decision"] in {"monitor", "watch", "research"}
+
+
+def test_arco_brief_ingest_enriches_from_selected_tweets_and_web_captures(tmp_path: Path) -> None:
+    arco_dir = tmp_path / "brain" / "raw" / "sources" / "arco"
+    arco_dir.mkdir(parents=True)
+    (arco_dir / "brief-beliefs").mkdir()
+    (arco_dir / "signals.json").write_text(json.dumps({"subtopics": []}), encoding="utf-8")
+    (arco_dir / "beliefs.json").write_text(json.dumps({"beliefs": []}), encoding="utf-8")
+    (arco_dir / "birdclaw-bookmarks-2026-05-10.json").write_text(
+        json.dumps(
+            {
+                "canonicalItems": [
+                    {
+                        "id": "bookmark-coin",
+                        "sourceType": "birdclaw_bookmark",
+                        "exactText": "Saved $COIN infrastructure thesis",
+                        "createdAt": "2026-05-10T10:00:00Z",
+                        "author": {"handle": "analyst"},
+                        "url": "https://x.com/analyst/status/bookmark-coin",
+                    }
+                ],
+                "observedItems": [
+                    {
+                        "id": "observed-tsla",
+                        "sourceType": "x_observed_tweet",
+                        "exactText": "Read but not bookmarked $TSLA robotaxi risk discussion",
+                        "createdAt": "2026-05-10T11:00:00Z",
+                        "author": {"handle": "observer"},
+                        "url": "https://x.com/observer/status/observed-tsla",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (arco_dir / "brief-beliefs" / "brief-beliefs-2026-05-10.json").write_text(
+        json.dumps(
+            {
+                "schema": "arco.brief-beliefs.v1",
+                "sourceBrief": "wiki/pages/arco/briefs/2026-05-10 Arco Intelligence Brief.md",
+                "beliefs": [
+                    {
+                        "id": "market-brief",
+                        "title": "Brief-selected market thesis",
+                        "claim": "Arco brief selected these sources after summarizing exported X and web evidence.",
+                        "confidence": "medium",
+                        "evidence": [
+                            {"author": "analyst", "url": "https://x.com/analyst/status/bookmark-coin"},
+                            {"author": "observer", "url": "https://x.com/observer/status/observed-tsla"},
+                            {"author": "web", "url": "https://example.com/nvda"},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (arco_dir / "web-captures-2026-05-10.json").write_text(
+        json.dumps(
+            {
+                "canonicalItems": [
+                    {
+                        "id": "web-nvda",
+                        "sourceType": "web_capture",
+                        "title": "$NVDA datacenter margins",
+                        "pageText": "Saved web page about $NVDA datacenter margin pressure",
+                        "capturedAt": "2026-05-10T12:00:00Z",
+                        "url": "https://example.com/nvda",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (arco_dir / "source-manifest-2026-05-10.json").write_text(
+        json.dumps(
+            {
+                "sourceSnapshots": [
+                    {"sourceId": "birdclaw_bookmarks", "path": "raw/sources/arco/birdclaw-bookmarks-2026-05-10.json"},
+                    {"sourceId": "browser_captures", "path": "raw/sources/arco/web-captures-2026-05-10.json"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+database:
+  duckdb_path: {tmp_path / "investment.duckdb"}
+arco:
+  raw_dir: {arco_dir}
+""",
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    context = load_arco_context(config.arco)
+    items = flatten_arco_items(context)
+
+    assert [item["source_type"] for item in items] == ["arco_brief_belief"]
+    assert "$COIN" in items[0]["text"]
+    assert "$TSLA" in items[0]["text"]
+    assert "$NVDA" in items[0]["text"]
+
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path) as con:
+        rows = ingest_arco_theses(con, context)
+        symbols = query_rows(con, "SELECT symbol, source_url FROM birdclaw_theses ORDER BY symbol")
+
+    assert rows == 3
+    assert [row["symbol"] for row in symbols] == ["COIN", "NVDA", "TSLA"]
+    assert {row["source_url"] for row in symbols} == {"https://x.com/analyst/status/bookmark-coin"}
 
 
 def test_research_packet_and_memo(tmp_path: Path) -> None:

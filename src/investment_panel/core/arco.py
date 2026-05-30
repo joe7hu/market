@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,22 +30,87 @@ def load_arco_context(config: ArcoConfig) -> dict[str, Any]:
     raw_dir = config.raw_dir
     signals = read_json(raw_dir / config.signals_path, {"topics": [], "subtopics": []})
     beliefs = read_json(raw_dir / config.beliefs_path, {"beliefs": []})
+    brief_beliefs_path = latest_file(raw_dir, config.brief_beliefs_glob)
     bookmarks_path = latest_file(raw_dir, config.birdclaw_bookmarks_glob)
+    web_captures_path = latest_file(raw_dir, config.web_captures_glob)
     manifest_path = latest_file(raw_dir, config.source_manifest_glob)
+    brief_beliefs = read_json(brief_beliefs_path, {"beliefs": []}) if brief_beliefs_path else {}
     bookmarks = read_json(bookmarks_path, {"canonicalItems": [], "items": []}) if bookmarks_path else {}
     manifest = read_json(manifest_path, {}) if manifest_path else {}
+    source_snapshots = load_source_snapshots(raw_dir, manifest)
+    if not source_snapshots:
+        source_snapshots = [
+            snapshot_record("birdclaw_bookmarks", bookmarks_path, bookmarks),
+            snapshot_record("browser_captures", web_captures_path, read_json(web_captures_path, {}) if web_captures_path else {}),
+        ]
+        source_snapshots = [record for record in source_snapshots if record["path"]]
     return {
         "signals": signals,
         "beliefs": beliefs,
+        "brief_beliefs": brief_beliefs,
         "bookmarks": bookmarks,
         "manifest": manifest,
+        "source_snapshots": source_snapshots,
+        "brief_beliefs_path": str(brief_beliefs_path) if brief_beliefs_path else None,
         "bookmarks_path": str(bookmarks_path) if bookmarks_path else None,
+        "web_captures_path": str(web_captures_path) if web_captures_path else None,
         "manifest_path": str(manifest_path) if manifest_path else None,
+    }
+
+
+def load_source_snapshots(raw_dir: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for entry in manifest.get("sourceSnapshots", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        path = resolve_snapshot_path(raw_dir, entry.get("path"))
+        if not path:
+            continue
+        snapshots.append(
+            {
+                "source_id": str(entry.get("sourceId") or path.stem),
+                "path": str(path),
+                "schema": entry.get("schema"),
+                "snapshot": read_json(path, {}),
+            }
+        )
+    return snapshots
+
+
+def resolve_snapshot_path(raw_dir: Path, manifest_path: Any) -> Path | None:
+    if not manifest_path:
+        return None
+    candidate = Path(str(manifest_path)).expanduser()
+    if candidate.is_absolute():
+        return candidate if candidate.exists() else None
+    direct = raw_dir / candidate
+    if direct.exists():
+        return direct
+    basename = raw_dir / candidate.name
+    if basename.exists():
+        return basename
+    for parent in [raw_dir, *raw_dir.parents]:
+        rooted = parent / candidate
+        if rooted.exists():
+            return rooted
+    return None
+
+
+def snapshot_record(source_id: str, path: Path | None, snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_id": source_id,
+        "path": str(path) if path else None,
+        "schema": snapshot.get("schema") if isinstance(snapshot, dict) else None,
+        "snapshot": snapshot,
     }
 
 
 def flatten_arco_items(context: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    brief_items = flatten_brief_beliefs(context)
+    if brief_items:
+        return brief_items
+
     for signal in context.get("signals", {}).get("subtopics", []) or []:
         evidence = signal.get("examples") or signal.get("topSources") or []
         text = " ".join(
@@ -85,50 +151,195 @@ def flatten_arco_items(context: dict[str, Any]) -> list[dict[str, Any]]:
                 "evidence": belief.get("evidence", []),
             }
         )
+    seen_source_ids: set[str] = set()
+    for record in context.get("source_snapshots", []) or []:
+        snapshot = record.get("snapshot") or {}
+        source_id = str(record.get("source_id") or "arco_snapshot")
+        for item in snapshot.get("canonicalItems", []) or []:
+            items.append(source_item(item, source_id, 0.45))
+            if item.get("id"):
+                seen_source_ids.add(str(item["id"]))
+        for item in snapshot.get("observedItems", []) or []:
+            items.append(source_item(item, f"{source_id}_observed", 0.25))
+            if item.get("id"):
+                seen_source_ids.add(str(item["id"]))
+
     bookmark_items = context.get("bookmarks", {}).get("canonicalItems") or context.get("bookmarks", {}).get("items") or []
     for item in bookmark_items:
-        text = " ".join(str(item.get(key, "")) for key in ("text", "plainText", "markdown", "title"))
+        if item.get("id") and str(item["id"]) in seen_source_ids:
+            continue
+        items.append(source_item(item, "birdclaw_bookmark", 0.45))
+    return items
+
+
+def flatten_brief_beliefs(context: dict[str, Any]) -> list[dict[str, Any]]:
+    brief = context.get("brief_beliefs") or {}
+    beliefs = brief.get("beliefs", []) or []
+    if not beliefs:
+        return []
+    source_index = source_items_by_url(context.get("source_snapshots", []) or [])
+    items: list[dict[str, Any]] = []
+    for belief in beliefs:
+        if not isinstance(belief, dict):
+            continue
+        matched_sources = matched_evidence_sources(belief, source_index)
+        fields = [
+            belief.get("title"),
+            belief.get("topic"),
+            belief.get("claim"),
+            belief.get("bet"),
+            belief.get("whyNow"),
+            belief.get("counterSignal"),
+            belief.get("confidenceRationale"),
+            belief.get("nextAction"),
+        ]
+        text = " ".join(str(value) for value in fields if value)
+        evidence_text = " ".join(item_text(source) for source in matched_sources)
+        evidence = {
+            "brief_evidence": belief.get("evidence", []),
+            "primary_sources": belief.get("primarySources", []),
+            "matched_source_items": matched_sources,
+            "source_brief": belief.get("sourceBrief") or brief.get("sourceBrief"),
+            "validation_warnings": belief.get("validationWarnings", []),
+        }
         items.append(
             {
-                "id": item.get("id") or stable_id(text),
-                "source_type": "birdclaw_bookmark",
-                "title": item.get("title") or item.get("author", {}).get("handle"),
-                "text": text,
-                "score": 0.45,
-                "raw": item,
-                "evidence": [item],
+                "id": belief.get("id") or stable_id(text),
+                "source_type": "arco_brief_belief",
+                "title": belief.get("title") or belief.get("topic"),
+                "text": " ".join(part for part in (text, evidence_text) if part),
+                "score": confidence_score(str(belief.get("confidence", ""))),
+                "raw": belief,
+                "evidence": evidence,
             }
         )
     return items
 
 
+def source_items_by_url(source_snapshots: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for record in source_snapshots:
+        snapshot = record.get("snapshot") or {}
+        for collection in ("canonicalItems", "observedItems", "items"):
+            for item in snapshot.get(collection, []) or []:
+                if not isinstance(item, dict):
+                    continue
+                for url in item_urls(item):
+                    index.setdefault(url, item)
+    return index
+
+
+def matched_evidence_sources(belief: dict[str, Any], source_index: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for evidence in list(belief.get("evidence", []) or []) + list(belief.get("primarySources", []) or []):
+        if not isinstance(evidence, dict):
+            continue
+        url = evidence.get("url") or evidence.get("sourceUrl")
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if url in source_index:
+            matched.append(source_index[url])
+    return matched
+
+
+def source_item(item: dict[str, Any], source_id: str, score: float) -> dict[str, Any]:
+    text = item_text(item)
+    source_type = str(item.get("sourceType") or source_id)
+    return {
+        "id": item.get("id") or stable_id(f"{source_type}:{text}"),
+        "source_type": source_type,
+        "title": item.get("title") or author_label(item),
+        "text": text,
+        "score": score,
+        "raw": item,
+        "evidence": [item],
+    }
+
+
+def item_text(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key, ""))
+        for key in (
+            "exactText",
+            "text",
+            "plainText",
+            "markdown",
+            "title",
+            "summary",
+            "description",
+            "selectionText",
+            "note",
+            "pageText",
+            "transcriptText",
+        )
+        if item.get(key)
+    )
+
+
+def item_urls(item: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    for key in ("url", "sourceUrl", "canonicalUrl"):
+        if item.get(key):
+            urls.append(str(item[key]))
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("canonicalUrl", "locationHref", "activeTabUrl"):
+            if metadata.get(key):
+                urls.append(str(metadata[key]))
+    links = item.get("links")
+    if isinstance(links, list):
+        for link in links:
+            if isinstance(link, dict):
+                for key in ("expandedUrl", "originalUrl", "url"):
+                    if link.get(key):
+                        urls.append(str(link[key]))
+    return urls
+
+
+def author_label(item: dict[str, Any]) -> str | None:
+    author = item.get("author")
+    if isinstance(author, dict):
+        return author.get("handle") or author.get("displayName")
+    if author:
+        return str(author)
+    return None
+
+
 def ingest_arco_theses(con: Any, context: dict[str, Any]) -> int:
-    count = 0
+    rows: list[list[Any]] = []
     for item in flatten_arco_items(context):
         symbols = symbols_from_text(item.get("text", ""))
         if not symbols and item["source_type"] == "arco_signal":
             symbols = symbols_from_text(json_dumps(item.get("raw", {})))
         for symbol in symbols:
             row_id = stable_id(f"{item['source_type']}:{item['id']}:{symbol}")
-            con.execute(
-                """
-                INSERT OR REPLACE INTO birdclaw_theses
-                (id, symbol, author, created_at, thesis_summary, claims, engagement, source_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            rows.append(
                 [
                     row_id,
                     symbol,
                     author_from_item(item),
                     timestamp_from_item(item),
                     item.get("title") or item.get("text", "")[:240],
-                    json_dumps({"source_type": item["source_type"], "text": item.get("text"), "evidence": item.get("evidence", [])}),
+                    json_dumps(
+                        {"source_type": item["source_type"], "text": item.get("text"), "evidence": item.get("evidence", [])}
+                    ),
                     json_dumps({"score": item.get("score")}),
                     source_url_from_item(item),
-                ],
+                ]
             )
-            count += 1
-    return count
+    con.execute("DELETE FROM birdclaw_theses")
+    for row in rows:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO birdclaw_theses
+            (id, symbol, author, created_at, thesis_summary, claims, engagement, source_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            row,
+        )
+    return len(rows)
 
 
 def stable_id(value: str) -> str:
@@ -144,7 +355,14 @@ def author_from_item(item: dict[str, Any]) -> str | None:
     author = raw.get("author")
     if isinstance(author, dict):
         return author.get("handle") or author.get("displayName")
+    if author:
+        return str(author)
     evidence = item.get("evidence") or []
+    if isinstance(evidence, dict):
+        brief_evidence = evidence.get("brief_evidence") or []
+        if brief_evidence and isinstance(brief_evidence[0], dict):
+            return brief_evidence[0].get("author")
+        return None
     if evidence and isinstance(evidence[0], dict):
         return evidence[0].get("author")
     return None
@@ -152,19 +370,46 @@ def author_from_item(item: dict[str, Any]) -> str | None:
 
 def timestamp_from_item(item: dict[str, Any]) -> str:
     raw = item.get("raw") or {}
-    for key in ("created_at", "createdAt", "date", "lastSeen", "updatedAt"):
+    for key in ("created_at", "createdAt", "date", "lastSeen", "updatedAt", "savedAt", "capturedAt", "bookmarkedAt"):
         if raw.get(key):
-            return str(raw[key])
+            return normalize_timestamp(str(raw[key]))
     return datetime.utcnow().isoformat()
+
+
+def normalize_timestamp(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return datetime.utcnow().isoformat()
 
 
 def source_url_from_item(item: dict[str, Any]) -> str | None:
     raw = item.get("raw") or {}
-    for key in ("url", "sourceUrl"):
+    for key in ("url", "sourceUrl", "canonicalUrl"):
         if raw.get(key):
             return str(raw[key])
+    metadata = raw.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("canonicalUrl", "locationHref", "activeTabUrl"):
+            if metadata.get(key):
+                return str(metadata[key])
+    links = raw.get("links")
+    if isinstance(links, list) and links and isinstance(links[0], dict):
+        return links[0].get("expandedUrl") or links[0].get("originalUrl")
     evidence = item.get("evidence") or []
+    if isinstance(evidence, dict):
+        for key in ("brief_evidence", "primary_sources"):
+            values = evidence.get(key) or []
+            if values and isinstance(values[0], dict):
+                url = values[0].get("url") or values[0].get("sourceUrl")
+                if url:
+                    return url
+        if evidence.get("source_brief"):
+            return str(evidence["source_brief"])
     if evidence and isinstance(evidence[0], dict):
         return evidence[0].get("url") or evidence[0].get("sourceUrl")
     return None
-

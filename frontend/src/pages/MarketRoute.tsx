@@ -1,10 +1,11 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { MarketContextPage } from "../views/genericPages";
+import { buildDatasetProfile } from "@/viewModels/datasetProfiles";
+import { DatasetPage } from "@/views/datasetPage";
 
 export function MarketRoute() {
   const { data } = useMarketData();
   usePanelScope("market");
 
-  return <MarketContextPage data={data} />;
+  return <DatasetPage profile={buildDatasetProfile("market", data)} />;
 }

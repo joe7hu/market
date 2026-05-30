@@ -1,14 +1,15 @@
 import { ArrowRight, RefreshCw } from "lucide-react";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
+import { ClickableDecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
 import type { PanelData, RowRecord } from "@/types";
-import { rows } from "@/utils";
+import { buildTodayViewModel, todayCategories } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { DataGridSection } from "./dataGridSection";
 
 type TodayPageProps = {
   data: PanelData;
@@ -19,31 +20,17 @@ type TodayPageProps = {
   onOpenTicker: (symbol: string) => void;
 };
 
-const categories: Array<{ key: string; title: string; shortTitle: string; tone: Tone; dot: string }> = [
-  { key: "top_portfolio_changes", title: "Portfolio Changes", shortTitle: "Portfolio", tone: "info", dot: "bg-blue-600" },
-  { key: "top_risks", title: "Risks", shortTitle: "Risk", tone: "warn", dot: "bg-amber-500" },
-  { key: "top_opportunities", title: "Opportunities / Research", shortTitle: "Research", tone: "good", dot: "bg-green-600" },
-  { key: "blocked_stale_items", title: "Action Checks", shortTitle: "Checks", tone: "bad", dot: "bg-red-600" },
-];
-
 export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpenTicker }: TodayPageProps) {
   const [activeCategory, setActiveCategory] = useState("all");
-  const briefRows = rows(data.dailyBrief);
-  const categoryCounts = useMemo(() => new Map(categories.map((category) => [category.key, briefRows.filter((row) => textField(row, ["category"]) === category.key).length])), [briefRows]);
-  const visibleCategories = activeCategory === "all" ? categories : categories.filter((category) => category.key === activeCategory);
-  const visibleBriefRows = activeCategory === "all" ? briefRows : briefRows.filter((row) => textField(row, ["category"]) === activeCategory);
-  const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
-  const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
-  const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
-  const portfolioPnlPct = model.portfolioValue ? (portfolioPnl / model.portfolioValue) * 100 : 0;
-  const needsReview = model.thesisMonitorRows.filter((row) => textField(row, ["needs_review"]).toLowerCase() === "yes" || textField(row, ["needs_review"]).toLowerCase() === "true").length;
-  const topAction = briefRows[0] ? textField(briefRows[0], ["next_action", "nextAction"], "Review the top decision brief item.") : "Load the daily brief before changing sizing.";
+  const viewModel = useMemo(() => buildTodayViewModel(data, model), [data, model]);
+  const visibleCategories = activeCategory === "all" ? todayCategories : todayCategories.filter((category) => category.key === activeCategory);
+  const visibleBriefRows = activeCategory === "all" ? viewModel.briefRows : viewModel.briefRows.filter((row) => textField(row, ["category"]) === activeCategory);
 
   return (
     <section>
       <PageHeader
         eyebrow="Daily decision brief"
-        title={briefRows[0] ? textField(briefRows[0], ["title"], "Today") : "Today"}
+        title={viewModel.title}
         subtitle="What changed, what matters, and the next portfolio review action."
         actions={
           <Button type="button" variant="outline" onClick={onRefresh}>
@@ -54,32 +41,32 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricTile label="Portfolio P&L" value={model.holdings.length ? `${formatMoney(portfolioPnl)} (${formatPct(portfolioPnlPct)})` : "No positions"} tone={portfolioPnl >= 0 ? "good" : "bad"} />
-        <MetricTile label="Top Exposure" value={largestHolding ? `${largestHolding.ticker} ${largestHolding.weight.toFixed(1)}%` : "None"} caption={largestHolding?.nextStep} tone={largestHolding && largestHolding.weight > 30 ? "warn" : "info"} />
-        <MetricTile label="Needs Review" value={needsReview} caption="thesis or contradiction review" tone={needsReview ? "warn" : "good"} />
-        <MetricTile label="Brief Items" value={briefRows.length} caption="portfolio, risk, and research signals" tone={briefRows.length ? "info" : "muted"} />
+        <MetricTile label="Portfolio P&L" value={model.holdings.length ? `${formatMoney(viewModel.portfolioPnl)} (${formatPct(viewModel.portfolioPnlPct)})` : "No positions"} tone={viewModel.portfolioPnl >= 0 ? "good" : "bad"} />
+        <MetricTile label="Top Exposure" value={viewModel.largestHolding ? `${viewModel.largestHolding.ticker} ${viewModel.largestHolding.weight.toFixed(1)}%` : "None"} caption={viewModel.largestHolding?.nextStep} tone={viewModel.largestHolding && viewModel.largestHolding.weight > 30 ? "warn" : "info"} />
+        <MetricTile label="Needs Review" value={viewModel.needsReview} caption="thesis or contradiction review" tone={viewModel.needsReview ? "warn" : "good"} />
+        <MetricTile label="Brief Items" value={viewModel.briefRows.length} caption="portfolio, risk, and research signals" tone={viewModel.briefRows.length ? "info" : "muted"} />
       </div>
 
-      <NextActionPanel action={topAction} lastRefresh={lastRefresh} />
+      <NextActionPanel action={viewModel.topAction} lastRefresh={lastRefresh} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-border pb-3">
-        <CategoryButton active={activeCategory === "all"} label="All" count={briefRows.length} onClick={() => setActiveCategory("all")} />
-        {categories.map((category) => (
+        <CategoryButton active={activeCategory === "all"} label="All" count={viewModel.briefRows.length} onClick={() => setActiveCategory("all")} />
+        {todayCategories.map((category) => (
           <CategoryButton
             key={category.key}
             active={activeCategory === category.key}
             label={category.shortTitle}
-            count={categoryCounts.get(category.key) ?? 0}
+            count={viewModel.categoryCounts.get(category.key) ?? 0}
             dotClassName={category.dot}
             onClick={() => setActiveCategory(category.key)}
           />
         ))}
       </div>
 
-      {briefRows.length ? (
+      {viewModel.briefRows.length ? (
         <div className={cn("grid gap-4", visibleCategories.length > 1 ? "xl:grid-cols-2" : "xl:max-w-3xl")}>
           {visibleCategories.map((category) => {
-            const categoryRows = briefRows.filter((row) => textField(row, ["category"]) === category.key).slice(0, 6);
+            const categoryRows = viewModel.briefRows.filter((row) => textField(row, ["category"]) === category.key).slice(0, 6);
             return (
               <Card key={category.key} className={cn("min-w-0 overflow-hidden", category.tone === "warn" && "border-amber-200", category.tone === "bad" && "border-red-200", category.tone === "good" && "border-green-200")}>
                 <CardHeader className="border-b border-border p-4">
@@ -106,28 +93,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       )}
 
       <div className="mt-4">
-        <DataTableFrame title="Brief Evidence">
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2">Section</th>
-                <th className="px-3 py-2">Title</th>
-                <th className="px-3 py-2">Reason</th>
-                <th className="px-3 py-2">Next</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleBriefRows.slice(0, 16).map((row, index) => (
-                <tr key={index} className="border-b border-border transition-colors hover:bg-accent/40">
-                  <td className="px-3 py-2 text-muted-foreground">{titleLabel(textField(row, ["category"], "item"))}</td>
-                  <td className="px-3 py-2 font-medium">{displayField(row, ["title"])}</td>
-                  <td className="px-3 py-2">{displayField(row, ["reason"])}</td>
-                  <td className="px-3 py-2">{displayField(row, ["next_action", "nextAction"])}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </DataTableFrame>
+        <DataGridSection title="Brief Evidence" rows={visibleBriefRows} onOpenTicker={onOpenTicker} />
       </div>
     </section>
   );
@@ -176,40 +142,23 @@ function TodayBriefCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (
   const rank = numberField(row, ["rank", "priority"], Number.NaN);
   const title = textField(row, ["title", "symbol", "ticker"], "Decision item");
   const primarySymbol = symbols[0];
-  const openTicker = () => {
-    if (primarySymbol) onOpenTicker(primarySymbol);
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!primarySymbol) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      onOpenTicker(primarySymbol);
-    }
-  };
 
   return (
-    <div
-      role={primarySymbol ? "button" : undefined}
-      tabIndex={primarySymbol ? 0 : -1}
-      aria-disabled={primarySymbol ? undefined : true}
-      className={cn("block w-full text-left transition-transform hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2", primarySymbol ? "cursor-pointer" : "cursor-default")}
-      onClick={openTicker}
-      onKeyDown={onKeyDown}
-    >
-      <DecisionCard
-        title={`${Number.isFinite(rank) ? `${rank}. ` : ""}${title}`}
-        status={<StatusBadge tone={tone}>{titleLabel(severity)}</StatusBadge>}
-        reason={displayField(row, ["reason", "why", "summary"])}
-        evidence={<EvidenceList items={evidence.slice(0, 4)} />}
-        nextAction={
-          <div className="space-y-1">
-            <div>{displayField(row, ["next_action", "nextAction"], "No explicit next action")}</div>
-            {blocker && blocker.toLowerCase() !== "none" ? <div className="text-red-700">Check: {blocker}</div> : null}
-          </div>
-        }
-        symbols={symbols}
-        tone={tone}
-      />
-    </div>
+    <ClickableDecisionCard
+      enabled={Boolean(primarySymbol)}
+      onOpen={() => primarySymbol && onOpenTicker(primarySymbol)}
+      title={`${Number.isFinite(rank) ? `${rank}. ` : ""}${title}`}
+      status={<StatusBadge tone={tone}>{titleLabel(severity)}</StatusBadge>}
+      reason={displayField(row, ["reason", "why", "summary"])}
+      evidence={<EvidenceList items={evidence.slice(0, 4)} />}
+      nextAction={
+        <div className="space-y-1">
+          <div>{displayField(row, ["next_action", "nextAction"], "No explicit next action")}</div>
+          {blocker && blocker.toLowerCase() !== "none" ? <div className="text-red-700">Check: {blocker}</div> : null}
+        </div>
+      }
+      symbols={symbols}
+      tone={tone}
+    />
   );
 }

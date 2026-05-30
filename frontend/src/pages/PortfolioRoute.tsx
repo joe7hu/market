@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { PortfolioPage } from "../views/genericPages";
+import { PortfolioPage } from "../views/portfolio";
 
 export function PortfolioRoute() {
   const { data, model, loadScope, openTicker } = useMarketData();

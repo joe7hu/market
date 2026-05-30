@@ -29,11 +29,14 @@ Keep all trading execution, brokerage integration, real-time feeds, paid APIs, v
 3. Jobs import configured watchlist and optional portfolio CSV.
 4. Jobs fetch or synthesize daily OHLCV for configured equities and crypto.
 5. Jobs calculate transparent technical features.
-6. Jobs ingest Arco snapshots:
-   - `signals.json`
-   - `beliefs.json`
-   - latest `birdclaw-bookmarks-YYYY-MM-DD.json`
-   - latest `source-manifest-YYYY-MM-DD.json`
+6. Jobs ingest the latest Arco brief-beliefs artifact as the primary thesis
+   layer:
+   - `brief-beliefs/brief-beliefs-YYYY-MM-DD.json`
+   - latest `source-manifest-YYYY-MM-DD.json` for resolving the brief's selected
+     evidence back to exported X/bookmark/observed/web source text
+   - `signals.json`, `beliefs.json`, latest `birdclaw-bookmarks-YYYY-MM-DD.json`,
+     and latest `web-captures-YYYY-MM-DD.json` remain compatibility fallbacks
+     when a brief-beliefs artifact is absent.
 7. Jobs normalize thesis/disclosure/category evidence into DuckDB.
 8. Scoring combines technicals, fundamentals placeholders, category trend, thesis flow, notable trader signal, and portfolio fit.
 9. Research packets are built only for candidates that cross thresholds or are requested manually.

@@ -17,7 +17,7 @@ import {
   Settings,
   UsersRound,
 } from "lucide-react";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -29,8 +29,7 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useMarketData } from "@/marketData";
-
-type Tone = "good" | "warn" | "bad" | "info" | "muted";
+import type { Tone } from "@/ui/tone";
 
 type NavItem = {
   to: string;
@@ -193,7 +192,17 @@ export function StatusBadge({ tone = "muted", children }: { tone?: Tone; childre
   return <Badge variant={variant}>{children}</Badge>;
 }
 
-export function DecisionCard({ title, status, reason, evidence, nextAction, symbols, tone = "info" }: { title: string; status?: ReactNode; reason?: ReactNode; evidence?: ReactNode; nextAction?: ReactNode; symbols?: string[]; tone?: Tone }) {
+export type DecisionCardProps = {
+  title: string;
+  status?: ReactNode;
+  reason?: ReactNode;
+  evidence?: ReactNode;
+  nextAction?: ReactNode;
+  symbols?: string[];
+  tone?: Tone;
+};
+
+export function DecisionCard({ title, status, reason, evidence, nextAction, symbols, tone = "info" }: DecisionCardProps) {
   return (
     <Card className={cn("overflow-hidden", toneSurface(tone))}>
       <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
@@ -211,6 +220,31 @@ export function DecisionCard({ title, status, reason, evidence, nextAction, symb
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+export function ClickableDecisionCard({ enabled, onOpen, ...cardProps }: DecisionCardProps & { enabled: boolean; onOpen: () => void }) {
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!enabled) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onOpen();
+    }
+  };
+
+  return (
+    <div
+      role={enabled ? "button" : undefined}
+      tabIndex={enabled ? 0 : -1}
+      aria-disabled={enabled ? undefined : true}
+      className={cn("block w-full text-left transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2", enabled ? "cursor-pointer hover:-translate-y-px" : "cursor-default")}
+      onClick={() => {
+        if (enabled) onOpen();
+      }}
+      onKeyDown={onKeyDown}
+    >
+      <DecisionCard {...cardProps} />
+    </div>
   );
 }
 

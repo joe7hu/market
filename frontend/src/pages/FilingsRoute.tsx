@@ -1,10 +1,11 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { FilingsPage } from "../views/genericPages";
+import { buildDatasetProfile } from "@/viewModels/datasetProfiles";
+import { DatasetPage } from "@/views/datasetPage";
 
 export function FilingsRoute() {
-  const { data, model, openTicker } = useMarketData();
+  const { data, openTicker } = useMarketData();
   usePanelScope("filings");
 
-  return <FilingsPage data={data} model={model} onOpenTicker={openTicker} />;
+  return <DatasetPage profile={buildDatasetProfile("filings", data)} onOpenTicker={openTicker} />;
 }

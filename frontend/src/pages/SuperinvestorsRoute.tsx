@@ -1,10 +1,11 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { SuperinvestorsPage } from "../views/genericPages";
+import { buildDatasetProfile } from "@/viewModels/datasetProfiles";
+import { DatasetPage } from "@/views/datasetPage";
 
 export function SuperinvestorsRoute() {
-  const { data, model, openTicker } = useMarketData();
+  const { data, openTicker } = useMarketData();
   usePanelScope("superinvestors");
 
-  return <SuperinvestorsPage data={data} model={model} onOpenTicker={openTicker} />;
+  return <DatasetPage profile={buildDatasetProfile("superinvestors", data)} onOpenTicker={openTicker} />;
 }

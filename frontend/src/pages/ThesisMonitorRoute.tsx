@@ -3,8 +3,8 @@ import { useMarketData } from "../marketData";
 import { ThesisMonitorPage } from "../views/thesisMonitor";
 
 export function ThesisMonitorRoute() {
-  const { data, model, openTicker } = useMarketData();
+  const { data, openTicker } = useMarketData();
   usePanelScope("research");
 
-  return <ThesisMonitorPage data={data} model={model} onOpenTicker={openTicker} />;
+  return <ThesisMonitorPage data={data} onOpenTicker={openTicker} />;
 }
