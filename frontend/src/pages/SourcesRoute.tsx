@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { SourcesPage } from "../marketViews";
+import { SourcesPage } from "../views/genericPages";
 
 export function SourcesRoute() {
   const { data, openTicker } = useMarketData();

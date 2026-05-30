@@ -1,10 +1,10 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { PortfolioPage } from "../marketViews";
+import { PortfolioPage } from "../views/genericPages";
 
 export function PortfolioRoute() {
-  const { model, loadScope, openTicker } = useMarketData();
+  const { data, model, loadScope, openTicker } = useMarketData();
   usePanelScope("portfolio");
 
-  return <PortfolioPage model={model} onOpenTicker={openTicker} onRefresh={() => loadScope("portfolio")} />;
+  return <PortfolioPage data={data} model={model} onOpenTicker={openTicker} onRefresh={() => loadScope("portfolio")} />;
 }

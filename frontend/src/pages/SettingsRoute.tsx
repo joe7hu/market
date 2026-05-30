@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { SettingsPage } from "../marketViews";
+import { SettingsPage } from "../views/genericPages";
 
 export function SettingsRoute() {
   const { data } = useMarketData();

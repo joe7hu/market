@@ -1,10 +1,10 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { CalendarPage } from "../marketViews";
+import { CalendarPage } from "../views/genericPages";
 
 export function CalendarRoute() {
-  const { model, openTicker } = useMarketData();
+  const { data, model, openTicker } = useMarketData();
   usePanelScope("calendar");
 
-  return <CalendarPage model={model} onOpenTicker={openTicker} />;
+  return <CalendarPage data={data} model={model} onOpenTicker={openTicker} />;
 }

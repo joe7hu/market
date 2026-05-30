@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { ThesisMonitorPage } from "../marketViews";
+import { ThesisMonitorPage } from "../views/thesisMonitor";
 
 export function ThesisMonitorRoute() {
   const { data, model, openTicker } = useMarketData();

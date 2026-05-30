@@ -1,7 +1,7 @@
 import { useParams } from "react-router-dom";
 import { usePanelScope, useTicker } from "../hooks";
 import { useMarketData } from "../marketData";
-import { TickerPage } from "../marketViews";
+import { TickerPage } from "../views/genericPages";
 
 export function TickerRoute() {
   const params = useParams();

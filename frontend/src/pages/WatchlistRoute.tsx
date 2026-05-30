@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { WatchlistPage } from "../marketViews";
+import { WatchlistPage } from "../views/genericPages";
 
 export function WatchlistRoute() {
   const { data, openTicker } = useMarketData();

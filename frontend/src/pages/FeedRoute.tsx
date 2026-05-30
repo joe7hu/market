@@ -1,6 +1,6 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { FeedPage } from "../marketViews";
+import { FeedPage } from "../views/genericPages";
 
 export function FeedRoute() {
   const { data, model, lastRefresh, loading, loadScope, openTicker } = useMarketData();

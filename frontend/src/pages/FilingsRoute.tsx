@@ -1,10 +1,10 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { FilingsPage } from "../marketViews";
+import { FilingsPage } from "../views/genericPages";
 
 export function FilingsRoute() {
-  const { model, openTicker } = useMarketData();
+  const { data, model, openTicker } = useMarketData();
   usePanelScope("filings");
 
-  return <FilingsPage model={model} onOpenTicker={openTicker} />;
+  return <FilingsPage data={data} model={model} onOpenTicker={openTicker} />;
 }

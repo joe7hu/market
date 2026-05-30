@@ -1,13 +1,14 @@
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
-import { TodayPage } from "../marketViews";
+import { TodayPage } from "../views/today";
 
 export function TodayRoute() {
-  const { model, lastRefresh, loading, loadScope, openTicker } = useMarketData();
+  const { data, model, lastRefresh, loading, loadScope, openTicker } = useMarketData();
   usePanelScope("today");
 
   return (
     <TodayPage
+      data={data}
       model={model}
       lastRefresh={lastRefresh}
       loading={loading}
