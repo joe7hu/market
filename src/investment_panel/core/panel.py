@@ -90,6 +90,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "feed_signals": feed_signals(con, config_watchlist),
             "universe_screen": universe_screen(con, config_watchlist),
             "source_consensus": source_consensus(con),
+            "source_ticker_rankings": source_ticker_rankings(con),
             "ownership_consensus": ownership_consensus(con),
             "market_context": market_context(con),
             "exposure_clusters": exposure_clusters(con),
@@ -295,6 +296,111 @@ def source_consensus(con: Any) -> list[dict[str, Any]]:
 
     sorted_output = sorted(output, key=lambda row: (row.get("is_followed") is not True, -int(row.get("items_count") or 0), str(row.get("source_name"))))
     return [_compact_empty_fields(row) for row in sorted_output]
+
+
+def source_ticker_rankings(con: Any) -> list[dict[str, Any]]:
+    """Munger-style ticker ranking from independent source contributions."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT
+            upper(s.symbol) AS symbol,
+            coalesce(nullif(r.source_name, ''), s.source_id, 'Source') AS source_name,
+            coalesce(nullif(s.source_id, ''), coalesce(nullif(r.source_name, ''), 'source')) AS source_id,
+            s.signal_type,
+            s.sentiment,
+            s.direction,
+            s.confidence,
+            s.observed_at
+        FROM ticker_source_signals s
+        LEFT JOIN source_registry r ON r.source_id = s.source_id
+        WHERE s.symbol IS NOT NULL AND trim(s.symbol) <> ''
+        """,
+    )
+    by_symbol: dict[str, dict[str, Any]] = {}
+    source_scores: dict[str, dict[str, list[float]]] = {}
+    source_mentions: dict[str, dict[str, int]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+        source_name = str(row.get("source_name") or row.get("source_id") or "Source")
+        item = by_symbol.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "mentions": 0,
+                "sum_score": 0.0,
+                "latest_signal_at": "",
+                "sources": set(),
+            },
+        )
+        score = _source_signal_score(row)
+        item["mentions"] += 1
+        item["sum_score"] = float(item["sum_score"]) + score
+        item["latest_signal_at"] = max(str(item.get("latest_signal_at") or ""), str(row.get("observed_at") or ""))
+        item["sources"].add(source_name)
+        source_scores.setdefault(symbol, {}).setdefault(source_name, []).append(score)
+        source_mentions.setdefault(symbol, {})[source_name] = source_mentions.setdefault(symbol, {}).get(source_name, 0) + 1
+
+    output: list[dict[str, Any]] = []
+    for symbol, item in by_symbol.items():
+        means = {
+            source_name: sum(scores) / len(scores)
+            for source_name, scores in source_scores.get(symbol, {}).items()
+            if scores
+        }
+        bullish_sources = [source for source, score in means.items() if score > 0.05]
+        bearish_sources = [source for source, score in means.items() if score < -0.05]
+        source_count = len(item["sources"])
+        mentions = int(item["mentions"])
+        mean_source_sentiment = sum(means.values()) / len(means) if means else 0.0
+        sentiment_score = float(item["sum_score"]) / mentions if mentions else 0.0
+        top_sources = [
+            source
+            for source, _ in sorted(
+                source_mentions.get(symbol, {}).items(),
+                key=lambda entry: (-entry[1], entry[0]),
+            )[:6]
+        ]
+        output.append(
+            {
+                "symbol": symbol,
+                "sources": source_count,
+                "analysts": source_count,
+                "mentions": mentions,
+                "sum_score": round(float(item["sum_score"]), 4),
+                "sentiment_score": round(sentiment_score, 4),
+                "mean_source_sentiment": round(mean_source_sentiment, 4),
+                "mean_of_analyst_means": round(mean_source_sentiment, 4),
+                "bullish_sources": len(bullish_sources),
+                "bearish_sources": len(bearish_sources),
+                "bullish_analysts": len(bullish_sources),
+                "bearish_analysts": len(bearish_sources),
+                "net_bulls": len(bullish_sources) - len(bearish_sources),
+                "pct_bullish": round(len(bullish_sources) / source_count, 4) if source_count else 0.0,
+                "pct_bearish": round(len(bearish_sources) / source_count, 4) if source_count else 0.0,
+                "top_sources": top_sources,
+                "latest_signal_at": item.get("latest_signal_at"),
+            }
+        )
+    return sorted(output, key=lambda row: (-int(row.get("sources") or 0), -int(row.get("mentions") or 0), -int(row.get("net_bulls") or 0), str(row.get("symbol"))))[:250]
+
+
+def _source_signal_score(row: dict[str, Any]) -> float:
+    confidence = row.get("confidence")
+    magnitude = float(confidence) if isinstance(confidence, (int, float)) else 1.0
+    magnitude = max(0.25, min(1.0, magnitude))
+    text = " ".join(
+        str(row.get(key) or "").lower()
+        for key in ("sentiment", "direction", "signal_type")
+    )
+    if any(token in text for token in ("bearish", "negative", "sell", "short", "downside", "risk", "reduced")):
+        return -magnitude
+    if any(token in text for token in ("bullish", "positive", "buy", "long", "upside", "fundamental", "filing")):
+        return magnitude
+    return 0.0
 
 
 def ownership_consensus(con: Any) -> list[dict[str, Any]]:

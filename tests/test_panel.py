@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import disclosures, feed_signals, liquidity, ownership_consensus, quotes, sepa, source_consensus, universe_screen
+from investment_panel.core.panel import disclosures, feed_signals, liquidity, ownership_consensus, quotes, sepa, source_consensus, source_ticker_rankings, universe_screen
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -152,6 +152,48 @@ def test_source_consensus_builds_per_source_ticker_history(tmp_path) -> None:
     arco = next(row for row in rows if row["source_name"] == "ArcoSource")
     assert arco["content_type"] == "private_graph"
     assert arco["bullish_symbols"] == ["MU"]
+
+
+def test_source_ticker_rankings_build_mungermode_style_symbol_rows(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO source_registry
+            (source_id, source_name, source_family, source_kind, origin, enabled, ingestion_mode,
+             raw_access, source_url, notes, config, created_at, updated_at)
+            VALUES
+            ('src_a', 'Source A', 'blog', 'feed', 'test', true, 'fixture', 'local', '', '', '{}', now(), now()),
+            ('src_b', 'Source B', 'filing', 'fixture', 'test', true, 'fixture', 'local', '', '', '{}', now(), now()),
+            ('src_c', 'Source C', 'blog', 'feed', 'test', true, 'fixture', 'local', '', '', '{}', now(), now())
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO ticker_source_signals
+            (id, source_item_id, source_id, symbol, observed_at, signal_type, sentiment, direction,
+             confidence, thesis, antithesis, catalysts, risks, invalidation, evidence_refs, needs_market_context, raw)
+            VALUES
+            ('a1', 'item-a1', 'src_a', 'NVDA', now(), 'fundamental', 'bullish', 'upside', 0.9, 'A bullish', '', '[]', '[]', '', '[]', false, '{}'),
+            ('a2', 'item-a2', 'src_a', 'NVDA', now(), 'fundamental', 'bullish', 'upside', 0.8, 'A bullish again', '', '[]', '[]', '', '[]', false, '{}'),
+            ('b1', 'item-b1', 'src_b', 'NVDA', now(), 'filing', 'bullish', 'upside', 0.7, 'B bullish', '', '[]', '[]', '', '[]', false, '{}'),
+            ('c1', 'item-c1', 'src_c', 'TSLA', now(), 'risk', 'bearish', 'downside', 0.6, 'C bearish', '', '[]', '[]', '', '[]', false, '{}')
+            """
+        )
+
+        rows = source_ticker_rankings(con)
+
+    nvda = next(row for row in rows if row["symbol"] == "NVDA")
+    tsla = next(row for row in rows if row["symbol"] == "TSLA")
+    assert nvda["sources"] == 2
+    assert nvda["mentions"] == 3
+    assert nvda["bullish_sources"] == 2
+    assert nvda["bearish_sources"] == 0
+    assert nvda["net_bulls"] == 2
+    assert "Source A" in nvda["top_sources"]
+    assert tsla["bearish_sources"] == 1
+    assert tsla["net_bulls"] == -1
 
 
 def test_feed_signals_include_source_items_with_required_decision_fields(tmp_path) -> None:

@@ -63,6 +63,7 @@ def test_api_routes_return_json() -> None:
         "/api/feed",
         "/api/watchlist-screen",
         "/api/source-consensus",
+        "/api/source-ticker-rankings",
         "/api/ownership-consensus",
         "/api/market-context",
         "/api/portfolio-risk/exposure-clusters",

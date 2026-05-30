@@ -67,6 +67,7 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   feed_signals: "feedSignals",
   universe_screen: "universeScreen",
   source_consensus: "sourceConsensus",
+  source_ticker_rankings: "sourceTickerRankings",
   ownership_consensus: "ownershipConsensus",
   market_context: "marketContext",
   exposure_clusters: "exposureClusters",
@@ -190,6 +191,7 @@ export function emptyPanelData(): PanelData {
     feedSignals: EMPTY_TABLE,
     universeScreen: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
+    sourceTickerRankings: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
@@ -270,6 +272,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("feedSignals", getJson<TablePayload>("/api/feed")),
     settle("universeScreen", getJson<TablePayload>("/api/watchlist-screen")),
     settle("sourceConsensus", getJson<TablePayload>("/api/source-consensus")),
+    settle("sourceTickerRankings", getJson<TablePayload>("/api/source-ticker-rankings")),
     settle("ownershipConsensus", getJson<TablePayload>("/api/ownership-consensus")),
     settle("marketContext", getJson<TablePayload>("/api/market-context")),
     settle("exposureClusters", getJson<TablePayload>("/api/portfolio-risk/exposure-clusters")),
@@ -336,6 +339,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     feedSignals: EMPTY_TABLE,
     universeScreen: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
+    sourceTickerRankings: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
     exposureClusters: EMPTY_TABLE,
@@ -498,6 +502,9 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "sourceConsensus":
         data.sourceConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceTickerRankings":
+        data.sourceTickerRankings = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "ownershipConsensus":
         data.ownershipConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;

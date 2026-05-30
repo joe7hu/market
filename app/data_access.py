@@ -394,6 +394,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     source_runs = panel_data.rows("source_runs")
     source_items = panel_data.rows("source_items")
     ticker_source_signals = panel_data.rows("ticker_source_signals")
+    source_ticker_rankings = panel_data.rows("source_ticker_rankings")
     broker_status = panel_data.rows("broker_status")
     agent_recommendations = panel_data.rows("agent_recommendations")
     daily_brief = panel_data.rows("daily_brief")
@@ -429,6 +430,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "source_runs": len(source_runs),
             "source_items": len(source_items),
             "ticker_source_signals": len(ticker_source_signals),
+            "source_ticker_rankings": len(source_ticker_rankings),
             "broker_providers": len(broker_status),
             "agent_recommendations": len(agent_recommendations),
             "daily_brief": len(daily_brief),
@@ -452,6 +454,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "source_runs": source_runs[:12],
         "source_items": source_items[:12],
         "ticker_source_signals": ticker_source_signals[:12],
+        "source_ticker_rankings": source_ticker_rankings[:12],
         "broker_status": broker_status[:8],
         "agent_recommendations": agent_recommendations[:8],
         "daily_brief": daily_brief[:12],
@@ -514,6 +517,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "sources": [
             "sources",
+            "source_ticker_rankings",
             "source_consensus",
             "ticker_source_signals",
             "feed_signals",

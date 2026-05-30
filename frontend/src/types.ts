@@ -91,6 +91,7 @@ export type PanelData = {
   feedSignals: TablePayload;
   universeScreen: TablePayload;
   sourceConsensus: TablePayload;
+  sourceTickerRankings: TablePayload;
   ownershipConsensus: TablePayload;
   marketContext: TablePayload;
   exposureClusters: TablePayload;
@@ -158,6 +159,7 @@ export type PanelEndpoint =
   | "feedSignals"
   | "universeScreen"
   | "sourceConsensus"
+  | "sourceTickerRankings"
   | "ownershipConsensus"
   | "marketContext"
   | "exposureClusters"

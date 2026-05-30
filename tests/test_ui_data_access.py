@@ -88,6 +88,7 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
             "feed_signals": [{"id": "f1", "title": "Portfolio signal"}],
             "universe_screen": [{"symbol": "NVDA", "watch_state": "watched"}],
             "source_consensus": [{"source_name": "Arco / Birdclaw"}],
+            "source_ticker_rankings": [{"symbol": "NVDA", "sources": 2, "mentions": 3}],
             "ownership_consensus": [{"symbol": "NVDA", "holders": 2}],
             "market_context": [{"metric": "Position sizing posture"}],
         },
@@ -114,6 +115,7 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         assert payload["dashboard"] is None
     assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_ticker_rankings"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_context"]["count"] == 1
 
