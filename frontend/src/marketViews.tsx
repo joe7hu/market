@@ -407,57 +407,47 @@ export function FeedPage({
   onRefresh,
   onOpenTicker,
 }: TodayPageProps & { data: PanelData }) {
-  const [filter, setFilter] = useState("portfolio");
+  const [filter, setFilter] = useState("watchlist");
   const feedRows = rows(data.feedSignals);
   const ownedSymbols = new Set(model.holdings.map((holding) => holding.ticker));
   const watchedSymbols = new Set(rows(data.universeScreen).filter((row) => stringField(row, ["watch_state"]) === "watched").map((row) => stringField(row, ["symbol"])));
   const visibleRows = feedRows.filter((row) => {
     const symbols = listField(row, ["symbols"]);
-    if (filter === "all") return true;
+    const sourceType = stringField(row, ["source_type", "source"]).toLowerCase();
+    if (filter === "all tickers" || filter === "all sources") return true;
+    if (filter === "filings") return sourceType.includes("filing") || sourceType.includes("disclosure");
+    if (filter === "socials") return sourceType.includes("news") || sourceType.includes("source") || sourceType.includes("thesis");
     if (filter === "portfolio") return symbols.some((symbol) => ownedSymbols.has(symbol)) || stringField(row, ["portfolio_relevance"]).toLowerCase().includes("owned");
     if (filter === "watchlist") return symbols.some((symbol) => watchedSymbols.has(symbol)) || stringField(row, ["portfolio_relevance"]).toLowerCase().includes("watchlist");
     return true;
   });
-  const lead = visibleRows[0] ?? feedRows[0];
+  const groupedRows = groupByDate((visibleRows.length ? visibleRows : feedRows).slice(0, 36));
   return (
-    <PageFrame
-      eyebrow="Portfolio Signal Feed"
-      title={lead ? stringField(lead, ["title"]) : "No current signal changes the decision queue"}
-      subtitle={lastRefresh ? `Refreshed ${lastRefresh.toLocaleTimeString()} from backend read models` : "Portfolio-aware source feed"}
-      action={
-        <div className="feed-actions">
-          <SegmentedControl options={["portfolio", "watchlist", "all"]} value={filter} onChange={setFilter} />
+    <PageFrame>
+      <section className="mm-feed-page">
+        <div className="mm-filter-row">
+          {["watchlist", "all tickers", "all sources", "filings", "socials"].map((option, index) => (
+            <Fragment key={option}>
+              {index === 2 && <span className="filter-divider">|</span>}
+              <button className={filter === option ? "active" : ""} type="button" onClick={() => setFilter(option)}>{titleLabel(option)}</button>
+            </Fragment>
+          ))}
           <IconButton label="Refresh feed" onClick={onRefresh}>
             <RefreshCw size={15} className={loading ? "spin" : ""} />
           </IconButton>
+          <span className="feed-refresh-note">{lastRefresh ? `Updated ${lastRefresh.toLocaleTimeString()}` : "Local read models"}</span>
         </div>
-      }
-    >
-      <section className="feed-layout">
-        <div className="signal-feed-stack">
-          {(visibleRows.length ? visibleRows : feedRows).slice(0, 24).map((row) => (
-            <FeedSignalCard key={stringField(row, ["id"]) || `${stringField(row, ["primary_symbol"])}-${stringField(row, ["title"])}`} row={row} onOpenTicker={onOpenTicker} />
-          ))}
-          {!feedRows.length && <EmptyState title="No feed rows" detail="The backend feed_signals read model has no portfolio, watchlist, or source rows yet." />}
-        </div>
-        <aside className="feed-context-panel">
-          <Panel title="Portfolio Context">
-            <SummaryList rows={[
-              { label: "Owned", value: String(model.holdings.length), caption: model.holdings.slice(0, 4).map((holding) => holding.ticker).join(" / ") || "Manual portfolio empty", tone: model.holdings.length ? "info" : "warn" },
-              { label: "Watchlist", value: String(watchedSymbols.size), caption: watchedSymbols.size ? [...watchedSymbols].slice(0, 5).join(" / ") : "No watched universe rows loaded", tone: watchedSymbols.size ? "info" : "muted" },
-              { label: "Review Actions", value: String(rows(data.reviewActions).length), caption: "Portfolio-owned next steps", tone: rows(data.reviewActions).length ? "warn" : "good" },
-            ]} onOpenTicker={onOpenTicker} />
-          </Panel>
-          <Panel title="Next Actions">
-            <SummaryList rows={feedRows.slice(0, 6).map((row) => ({
-              label: stringField(row, ["primary_symbol"]) || "Signal",
-              value: stringField(row, ["next_action"]) || "Review",
-              caption: stringField(row, ["portfolio_relevance"]),
-              tone: feedTone(row),
-              symbol: stringField(row, ["primary_symbol"]),
-            }))} onOpenTicker={onOpenTicker} />
-          </Panel>
-        </aside>
+        {groupedRows.map(([date, dateRows]) => (
+          <section className="feed-date-group" key={date}>
+            <h2>{date}</h2>
+            <div className="signal-feed-stack">
+              {dateRows.map((row) => (
+                <FeedSignalCard key={stringField(row, ["id"]) || `${stringField(row, ["primary_symbol"])}-${stringField(row, ["title"])}`} row={row} onOpenTicker={onOpenTicker} />
+              ))}
+            </div>
+          </section>
+        ))}
+        {!feedRows.length && <EmptyState title="No feed rows" detail="The backend feed_signals read model has no portfolio, watchlist, or source rows yet." />}
       </section>
     </PageFrame>
   );
@@ -465,29 +455,27 @@ export function FeedPage({
 
 function FeedSignalCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: (symbol: string) => void }) {
   const symbols = listField(row, ["symbols"]);
-  const primary = stringField(row, ["primary_symbol"]) || symbols[0];
   const evidence = listField(row, ["evidence"]);
   return (
     <article className={`feed-signal-card ${feedTone(row)}`}>
       <header>
         <div>
-          <span>{formatDateLabel(stringField(row, ["date"])) || "undated"} · {stringField(row, ["source"]) || "Market"}</span>
+          <span>{stringField(row, ["source"]) || "Market"} <em>{relativeDateLabel(stringField(row, ["date"]))}</em></span>
           <h2>{stringField(row, ["title"])}</h2>
-        </div>
-        <div className="ticker-chip-row">
-          {symbols.slice(0, 5).map((symbol) => (
-            <button key={symbol} type="button" onClick={() => onOpenTicker(symbol)}>{symbol}</button>
-          ))}
         </div>
       </header>
       <div className="signal-card-grid">
-        <SignalSection label="Why It Matters" value={stringField(row, ["thesis"])} />
-        <SignalSection label="Evidence" value={evidence.join(" · ") || "No source evidence loaded"} />
-        <SignalSection label="Countercase" value={stringField(row, ["antithesis"])} />
+        <SignalSection label="Thesis" value={stringField(row, ["thesis"])} />
+        <SignalSection label="Antithesis" value={stringField(row, ["antithesis"])} />
         <SignalSection label="Portfolio Fit" value={stringField(row, ["portfolio_relevance"])} />
-        <SignalSection label="Review Next" value={stringField(row, ["next_action"])} />
+        <SignalSection label="Evidence" value={evidence.join(" · ") || "No source evidence loaded"} />
+        <SignalSection label="Next Review" value={stringField(row, ["next_action"])} />
       </div>
-      {primary && <button className="signal-open" type="button" onClick={() => onOpenTicker(primary)}>Open dossier <ChevronRight size={14} /></button>}
+      <div className="ticker-chip-row">
+        {symbols.slice(0, 6).map((symbol) => (
+          <button key={symbol} type="button" onClick={() => onOpenTicker(symbol)}>{symbol}</button>
+        ))}
+      </div>
     </article>
   );
 }
@@ -509,20 +497,64 @@ function feedTone(row: RowRecord): Tone {
   return "info";
 }
 
+function groupByDate(items: RowRecord[]): Array<[string, RowRecord[]]> {
+  const groups = new Map<string, RowRecord[]>();
+  for (const item of items) {
+    const key = stringField(item, ["date"]).slice(0, 10) || "Undated";
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return [...groups.entries()];
+}
+
+function relativeDateLabel(value: string): string {
+  if (!value) return "";
+  const today = new Date();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const diffDays = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime() - new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays > 1 && diffDays < 7) return `${diffDays}d ago`;
+  return value.slice(0, 10);
+}
+
 export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: (symbol: string) => void }) {
   const [state, setState] = useState("all");
+  const [ratingFilter, setRatingFilter] = useState(0);
+  const [peFilter, setPeFilter] = useState(0);
+  const [roicFilter, setRoicFilter] = useState(0);
   const rowsSource = rows(data.universeScreen);
-  const visible = rowsSource.filter((row) => state === "all" || stringField(row, ["watch_state"]) === state);
+  const visible = rowsSource.filter((row) => {
+    if (state !== "all" && stringField(row, ["watch_state"]) !== state) return false;
+    if (ratingFilter && ratingNumber(row) < ratingFilter) return false;
+    const pe = numberField(row, ["forward_pe"], Number.NaN);
+    if (peFilter && (!Number.isFinite(pe) || pe > peFilter)) return false;
+    const roic = numberField(row, ["roic"], Number.NaN);
+    if (roicFilter && (!Number.isFinite(roic) || roic < roicFilter)) return false;
+    return true;
+  });
+  const watchedCount = rowsSource.filter((row) => stringField(row, ["watch_state"]) !== "candidate").length;
+  const candidateCount = rowsSource.length - watchedCount;
   return (
-    <PageFrame title="Watchlist" subtitle="Compact quality, value, and next-action screen">
-      <div className="watchlist-controls">
-        <SegmentedControl options={["all", "owned", "watched", "candidate"]} value={state} onChange={setState} />
-      </div>
-      <TableFrame>
+    <PageFrame>
+      <section className="mm-table-page">
+        <p className="mm-page-intro">Screen and sort tickers. Add new tickers to the universe. Customize the feed by watching and unwatching tickers.</p>
+        <div className="watchlist-controls mm-filter-row">
+          <SegmentedControl options={["all", "owned", "watched", "candidate"]} value={state} onChange={setState} />
+          <span className="filter-divider">|</span>
+          {[5, 4, 3, 2, 1].map((rating) => <button key={rating} className={ratingFilter === rating ? "active" : ""} type="button" onClick={() => setRatingFilter(ratingFilter === rating ? 0 : rating)}>{rating}/5</button>)}
+          <span className="filter-divider">|</span>
+          <span>Fwd P/E</span>
+          {[15, 20, 25].map((pe) => <button key={pe} className={peFilter === pe ? "active" : ""} type="button" onClick={() => setPeFilter(peFilter === pe ? 0 : pe)}>{"<"} {pe}</button>)}
+          <span className="filter-divider">|</span>
+          <span>ROIC</span>
+          {[15, 20, 30].map((roic) => <button key={roic} className={roicFilter === roic ? "active" : ""} type="button" onClick={() => setRoicFilter(roicFilter === roic ? 0 : roic)}>{">"} {roic}%</button>)}
+        </div>
+        <TableFrame>
         <table className="decision-table watchlist-screen-table">
           <thead>
             <tr>
-              <th>State</th>
+              <th>Watch</th>
               <th>Symbol</th>
               <th>Name</th>
               <th>Market Cap</th>
@@ -533,71 +565,143 @@ export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenT
             </tr>
           </thead>
           <tbody>
-            {visible.slice(0, 180).map((row) => {
+            {visible.slice(0, 180).map((row, index) => {
               const symbol = stringField(row, ["symbol"]);
+              const watchState = stringField(row, ["watch_state"]);
+              const showSeparator = index > 0 && watchState === "candidate" && stringField(visible[index - 1], ["watch_state"]) !== "candidate";
               return (
-                <tr key={symbol}>
-                  <td><span className={`state-pill ${stringField(row, ["watch_state"])}`}>{titleLabel(stringField(row, ["watch_state"]))}</span></td>
+                <Fragment key={symbol}>
+                  {showSeparator && <tr className="table-section-row"><td colSpan={8}>{candidateCount} candidates</td></tr>}
+                <tr>
+                  <td><span className={`watch-icon ${watchState}`}>{watchState === "candidate" ? "off" : "on"}</span></td>
                   <td><button type="button" className="ticker-link" onClick={() => onOpenTicker(symbol)}>{symbol}</button></td>
-                  <td>{stringField(row, ["name"])}</td>
-                  <td>{formatCompactMoney(numberField(row, ["market_cap"], 0))}</td>
+                  <td><strong>{stringField(row, ["name"])}</strong><small>{stringField(row, ["next_action"])}</small></td>
+                  <td>{formatMarketCap(row)}</td>
                   <td>{formatRatio(numberField(row, ["forward_pe"], Number.NaN))}</td>
                   <td>{formatOptionalPct(numberField(row, ["roic"], Number.NaN))}</td>
                   <td><span className="star-rating">{stringField(row, ["rating"])}</span></td>
-                  <td><strong>{stringField(row, ["next_action"])}</strong><small>{stringField(row, ["portfolio_relevance"])}</small></td>
+                  <td><small>{stringField(row, ["portfolio_relevance"])}</small></td>
                 </tr>
+                </Fragment>
               );
             })}
           </tbody>
         </table>
       </TableFrame>
+      </section>
       {!rowsSource.length && <EmptyState title="No watchlist screen" detail="The backend universe_screen read model has no watched or candidate rows." />}
     </PageFrame>
   );
 }
 
+function ratingNumber(row: RowRecord): number {
+  const text = stringField(row, ["rating"]);
+  const slash = text.match(/^(\d+)/);
+  if (slash) return Number(slash[1]);
+  return Math.max(0, Math.min(5, Math.round(numberField(row, ["quality_score"], 0) / 20)));
+}
+
+function formatMarketCap(row: RowRecord): string {
+  const value = numberField(row, ["market_cap"], Number.NaN);
+  return Number.isFinite(value) && value > 0 ? formatCompactMoney(value) : "--";
+}
+
+type TickerStat = {
+  symbol: string;
+  name: string;
+  netMentions: number;
+  mentions: number;
+  netSources: number;
+  sources: number;
+};
+
 export function SourcesPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: (symbol: string) => void }) {
   const sourceRows = rows(data.sourceConsensus);
   const loaded = sourceRows.filter((row) => stringField(row, ["recommendation"]) === "loaded");
   const candidates = sourceRows.filter((row) => stringField(row, ["recommendation"]) === "candidate_source");
+  const tickerStats = sourceTickerStats(sourceRows, rows(data.feedSignals));
   return (
-    <PageFrame title="Sources" subtitle="Arco, Birdclaw, filings, and curated public source consensus">
-      <section className="sources-consensus-grid">
-        <Panel title="Bullish Source Consensus">
-          <SourceConsensusList rows={loaded.filter((row) => listField(row, ["bullish_symbols"]).length).slice(0, 10)} side="bullish" onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel title="Bearish Source Consensus">
-          <SourceConsensusList rows={loaded.filter((row) => listField(row, ["bearish_symbols"]).length).slice(0, 10)} side="bearish" onOpenTicker={onOpenTicker} />
-        </Panel>
+    <PageFrame>
+      <section className="mm-table-page">
+        <p className="mm-page-intro">Aggregated 90-day sentiment across sources Joe follows. Customize the feed by promoting loaded sources and adding public source candidates.</p>
+      <section className="mm-rank-grid">
+        <RankedTickerTable title="Most Bullish Coverage" subtitle="Bullish mentions minus bearish mentions" rows={tickerStats.slice().sort((a, b) => b.netMentions - a.netMentions).slice(0, 10)} valueLabel="Net (Total)" value={(row) => `${signed(row.netMentions)} (${row.mentions})`} onOpenTicker={onOpenTicker} />
+        <RankedTickerTable title="Most Bearish Coverage" subtitle="Bullish mentions minus bearish mentions" rows={tickerStats.slice().sort((a, b) => a.netMentions - b.netMentions).slice(0, 10)} valueLabel="Net (Total)" value={(row) => `${signed(row.netMentions)} (${row.mentions})`} onOpenTicker={onOpenTicker} />
+        <RankedTickerTable title="Most Bulls" subtitle="Bullish sources minus bearish sources" rows={tickerStats.slice().sort((a, b) => b.netSources - a.netSources).slice(0, 10)} valueLabel="Net (Total)" value={(row) => `${signed(row.netSources)} (${row.sources})`} onOpenTicker={onOpenTicker} />
+        <RankedTickerTable title="Most Bears" subtitle="Bullish sources minus bearish sources" rows={tickerStats.slice().sort((a, b) => a.netSources - b.netSources).slice(0, 10)} valueLabel="Net (Total)" value={(row) => `${signed(row.netSources)} (${row.sources})`} onOpenTicker={onOpenTicker} />
       </section>
-      <Panel title="Followed / Loaded Sources">
+      <Panel title="By Source">
         <SourceTable rows={loaded} onOpenTicker={onOpenTicker} />
       </Panel>
       <Panel title="Public Sources To Consider">
         <SourceTable rows={candidates} onOpenTicker={onOpenTicker} />
       </Panel>
+      </section>
     </PageFrame>
   );
 }
 
-function SourceConsensusList({ rows, side, onOpenTicker }: { rows: RowRecord[]; side: "bullish" | "bearish"; onOpenTicker: (symbol: string) => void }) {
-  if (!rows.length) return <EmptyState title="No consensus rows" detail="No source family has enough ticker consensus for this side." />;
+function RankedTickerTable({ title, subtitle, rows, valueLabel, value, onOpenTicker }: { title: string; subtitle?: string; rows: TickerStat[]; valueLabel: string; value: (row: TickerStat) => string; onOpenTicker: (symbol: string) => void }) {
   return (
-    <div className="source-consensus-list">
-      {rows.map((row) => {
-        const symbols = listField(row, [side === "bullish" ? "bullish_symbols" : "bearish_symbols"]);
-        return (
-          <article key={`${side}-${stringField(row, ["source_name"])}`}>
-            <strong>{stringField(row, ["source_name"])}</strong>
-            <span>{stringField(row, ["content_type"])} · {displayValue(row.items_count)} rows</span>
-            <div className="ticker-chip-row">
-              {symbols.slice(0, 6).map((symbol) => <button key={symbol} type="button" onClick={() => onOpenTicker(symbol)}>{symbol}</button>)}
-            </div>
-          </article>
-        );
-      })}
-    </div>
+    <section className="mm-rank-table">
+      <h2>{title}</h2>
+      {subtitle && <p>{subtitle}</p>}
+      <table>
+        <thead><tr><th>#</th><th>Ticker</th><th>{valueLabel}</th></tr></thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${title}-${row.symbol}`}>
+              <td>{index + 1}</td>
+              <td><button type="button" onClick={() => onOpenTicker(row.symbol)}>{row.symbol}</button><span>{row.name}</span></td>
+              <td className={row.netMentions < 0 || row.netSources < 0 ? "negative" : "positive"}>{value(row)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
+}
+
+function sourceTickerStats(sourceRows: RowRecord[], feedRows: RowRecord[]): TickerStat[] {
+  const stats = new Map<string, TickerStat>();
+  const ensure = (symbol: string): TickerStat => {
+    const normalized = symbol.toUpperCase();
+    const current = stats.get(normalized);
+    if (current) return current;
+    const created = { symbol: normalized, name: companyName(normalized), netMentions: 0, mentions: 0, netSources: 0, sources: 0 };
+    stats.set(normalized, created);
+    return created;
+  };
+  for (const row of sourceRows) {
+    const bullish = listField(row, ["bullish_symbols"]);
+    const bearish = listField(row, ["bearish_symbols"]);
+    for (const symbol of bullish) {
+      const stat = ensure(symbol);
+      stat.netMentions += 1;
+      stat.mentions += 1;
+      stat.netSources += 1;
+      stat.sources += 1;
+    }
+    for (const symbol of bearish) {
+      const stat = ensure(symbol);
+      stat.netMentions -= 1;
+      stat.mentions += 1;
+      stat.netSources -= 1;
+      stat.sources += 1;
+    }
+  }
+  for (const row of feedRows) {
+    const tone = feedTone(row);
+    for (const symbol of listField(row, ["symbols"])) {
+      const stat = ensure(symbol);
+      stat.mentions += 1;
+      stat.sources += 1;
+      const bearish = tone === "bad";
+      stat.netMentions += bearish ? -1 : 1;
+      stat.netSources += bearish ? -1 : 1;
+    }
+  }
+  return [...stats.values()].filter((row) => row.mentions > 0);
 }
 
 function SourceTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
@@ -633,63 +737,77 @@ export function SuperinvestorsPage({ data, model, onOpenTicker }: { data: PanelD
   const symbolRows = rowsSource.filter((row) => stringField(row, ["symbol"]));
   const investorRows = rowsSource.filter((row) => stringField(row, ["source_type"]) === "investor");
   return (
-    <PageFrame title="Superinvestors" subtitle="Disclosure consensus, net activity, and investor drilldowns">
-      <section className="sources-consensus-grid">
-        <Panel title="Most Owned">
-          <OwnershipList rows={symbolRows.slice(0, 10)} metric="holders" onOpenTicker={onOpenTicker} />
-        </Panel>
-        <Panel title="Net Buys / Sells">
-          <OwnershipList rows={symbolRows.slice().sort((a, b) => Math.abs(numberField(b, ["net_activity"], 0)) - Math.abs(numberField(a, ["net_activity"], 0))).slice(0, 10)} metric="net_activity" onOpenTicker={onOpenTicker} />
-        </Panel>
+    <PageFrame>
+      <section className="mm-table-page">
+        <p className="mm-page-intro">Consensus disclosure portfolio of investors Joe follows. Use holder count, weight, and net activity to spot names with repeatable outside validation.</p>
+      <section className="mm-rank-grid">
+        <OwnershipRankTable title="Most Owned by # of Holders" rows={symbolRows.slice().sort((a, b) => numberField(b, ["holders"], 0) - numberField(a, ["holders"], 0)).slice(0, 10)} valueLabel="Holders" value={(row) => displayValue(row.holders)} onOpenTicker={onOpenTicker} />
+        <OwnershipRankTable title="Most Owned by Weight" rows={symbolRows.slice().sort((a, b) => numberField(b, ["total_value"], 0) - numberField(a, ["total_value"], 0)).slice(0, 10)} valueLabel="Weight" value={(row) => ownershipWeight(row, symbolRows)} onOpenTicker={onOpenTicker} />
+        <OwnershipRankTable title="Top Net Buys This Quarter" rows={symbolRows.slice().sort((a, b) => numberField(b, ["net_activity"], 0) - numberField(a, ["net_activity"], 0)).slice(0, 10)} valueLabel="Net" value={(row) => signed(numberField(row, ["net_activity"], 0))} onOpenTicker={onOpenTicker} />
+        <OwnershipRankTable title="Top Net Sells This Quarter" rows={symbolRows.slice().sort((a, b) => numberField(a, ["net_activity"], 0) - numberField(b, ["net_activity"], 0)).slice(0, 10)} valueLabel="Net" value={(row) => signed(numberField(row, ["net_activity"], 0))} onOpenTicker={onOpenTicker} />
       </section>
       <Panel title="By Investor">
         <SummaryList rows={investorRows.slice(0, 20).map((row) => ({
           label: stringField(row, ["investor"]),
-          value: `${displayValue(row.holdings)} holdings`,
-          caption: listField(row, ["symbols"]).slice(0, 8).join(" / ") || "No mapped ticker rows",
+          value: `${displayValue(row.holdings)} positions`,
+          caption: `${formatCompactMoney(numberField(row, ["total_value"], 0))} filed ${formatDateLabel(stringField(row, ["latest_filed"])) || ""}`.trim(),
           tone: "info",
         }))} onOpenTicker={onOpenTicker} />
       </Panel>
       {!rowsSource.length && <FilingsPage model={model} onOpenTicker={onOpenTicker} />}
+      </section>
     </PageFrame>
   );
 }
 
-function OwnershipList({ rows, metric, onOpenTicker }: { rows: RowRecord[]; metric: string; onOpenTicker: (symbol: string) => void }) {
+function OwnershipRankTable({ title, rows, valueLabel, value, onOpenTicker }: { title: string; rows: RowRecord[]; valueLabel: string; value: (row: RowRecord) => string; onOpenTicker: (symbol: string) => void }) {
   if (!rows.length) return <EmptyState title="No ownership rows" detail="Disclosure consensus has no ticker rows yet." />;
   return (
-    <div className="ownership-list">
-      {rows.map((row) => {
+    <section className="mm-rank-table">
+      <h2>{title}</h2>
+      <table>
+        <thead><tr><th>#</th><th>Ticker</th><th>{valueLabel}</th></tr></thead>
+        <tbody>
+      {rows.map((row, index) => {
         const symbol = stringField(row, ["symbol"]);
         const holders = listField(row, ["holder_names"]);
         return (
-          <button key={`${metric}-${symbol}`} type="button" onClick={() => onOpenTicker(symbol)}>
-            <strong>{symbol}</strong>
-            <span>{metric === "holders" ? `${displayValue(row.holders)} holders` : `${displayValue(row.net_activity)} net`}</span>
-            <small>{holders.slice(0, 3).join(" / ") || stringField(row, ["latest_filed"])}</small>
-          </button>
+          <tr key={`${title}-${symbol}`}>
+            <td>{index + 1}</td>
+            <td><button type="button" onClick={() => onOpenTicker(symbol)}>{symbol}</button><span>{holders.slice(0, 2).join(" / ") || stringField(row, ["latest_filed"])}</span></td>
+            <td className={valueLabel === "Net" ? numberField(row, ["net_activity"], 0) < 0 ? "negative" : "positive" : ""}>{value(row)}</td>
+          </tr>
         );
       })}
-    </div>
+        </tbody>
+      </table>
+    </section>
   );
+}
+
+function ownershipWeight(row: RowRecord, allRows: RowRecord[]): string {
+  const total = allRows.reduce((sum, item) => sum + numberField(item, ["total_value"], 0), 0);
+  const value = numberField(row, ["total_value"], 0);
+  return total > 0 ? `${Math.round((value / total) * 100)}%` : formatCompactMoney(value);
 }
 
 export function MarketContextPage({ data }: { data: PanelData }) {
   const contextRows = rows(data.marketContext);
   return (
-    <PageFrame title="Market" subtitle="Only macro or portfolio context that changes sizing or risk posture">
-      <div className="market-context-grid">
+    <PageFrame>
+      <section className="mm-market-page">
         {contextRows.map((row, index) => (
-          <Panel key={`${stringField(row, ["metric"])}-${index}`} title={stringField(row, ["metric"]) || "Market posture"}>
-            <div className={`market-context-card ${stringField(row, ["posture"]).toLowerCase()}`}>
-              <strong>{displayValue(row.latest_value)}{stringField(row, ["unit"])}</strong>
-              <span>{stringField(row, ["percentile"]) ? `${displayValue(row.percentile)} percentile` : titleLabel(stringField(row, ["posture"]) || "neutral")}</span>
-              <p>{stringField(row, ["portfolio_effect"])}</p>
-              <small>{formatDateLabel(stringField(row, ["date"])) || "No dated macro row"}</small>
+          <article className="mm-market-block" key={`${stringField(row, ["metric"])}-${index}`}>
+            <h2>{stringField(row, ["metric"]) || "Market posture"}</h2>
+            <p className="market-latest">Latest: <strong>{displayValue(row.latest_value)}{stringField(row, ["unit"])}</strong> <span>{stringField(row, ["percentile"]) ? `${displayValue(row.percentile)} percentile` : titleLabel(stringField(row, ["posture"]) || "neutral")}</span> <em>{formatDateLabel(stringField(row, ["date"])) || "portfolio read model"}</em></p>
+            <div className="period-pills">{["1Y", "2Y", "5Y", "10Y", "20Y", "All"].map((period, periodIndex) => <span className={periodIndex === 5 ? "active" : ""} key={period}>{period}</span>)}</div>
+            <div className="market-mini-chart" aria-label={`${stringField(row, ["metric"])} historical context`}>
+              {Array.from({ length: 22 }, (_, barIndex) => <span key={barIndex} style={{ height: `${22 + ((barIndex * 13 + index * 17) % 68)}%` }} />)}
             </div>
-          </Panel>
+            <p>{stringField(row, ["portfolio_effect"])}</p>
+          </article>
         ))}
-      </div>
+      </section>
       {!contextRows.length && <EmptyState title="No market posture rows" detail="No valuation or risk read model currently changes portfolio sizing." />}
     </PageFrame>
   );
@@ -895,59 +1013,32 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
   const signalRow = dossierModel.signalMatrix.find((row) => row.ticker === symbol);
   const decisionBrief = objectField(ticker?.decision_brief);
   const thesisMonitor = dossierModel.thesisMonitorRows.find((row) => stringField(row, ["symbol"]) === symbol);
-  const recommendation = dossierModel.agentRecommendationRows.find((row) => stringField(row, ["symbol"]) === symbol);
-  const showBrokerSurface = brokerProviderSurfaceEnabled(dossierModel);
   const dossierTabs = [
-    "Overview",
-    "Evidence Stack",
-    ...(showBrokerSurface ? ["Broker"] : []),
-    "Fundamentals",
-    "Estimates",
-    "Financials",
-    "Options",
-    "News",
-    "Filings",
-    "Memos",
+    "Price Chart",
+    "Fundamental Metrics",
+    "Superinvestors",
+    "Sources",
+    "Feed",
+    "Thesis",
   ];
-  const activeDossierTab = dossierTabs.includes(activeTab) ? activeTab : "Overview";
+  const activeDossierTab = dossierTabs.includes(activeTab) ? activeTab : "Price Chart";
 
   return (
     <PageFrame
-      eyebrow="Ticker Detail / Evidence Dossier"
       title={symbol}
       subtitle={[opportunity?.name || companyName(symbol), titleLabel(opportunity?.assetClass ?? "instrument"), titleLabel(opportunity?.category ?? "watchlist")].filter(Boolean).join(" · ")}
       action={
         <div className="ticker-actions">
-          <MetricBadge label="Grade" value={opportunity?.grade ?? "-"} tone={opportunity ? "good" : "muted"} />
-          <MetricBadge label="Action" value={opportunity?.actionGrade ?? "-"} tone={opportunity ? (opportunity.actionGrade === "Act" ? "good" : opportunity.actionGrade === "Stale" || opportunity.actionGrade === "Reject" ? "bad" : "warn") : "muted"} />
-          <MetricBadge label="Freshness" value={opportunity ? titleLabel(opportunity.freshnessStatus) : "-"} tone={opportunity ? freshnessTone(opportunity.freshnessStatus) : "muted"} />
+          <span className="ticker-rating">{opportunity?.grade ?? "Unrated"}</span>
           <IconButton label="Watch">
             <Star size={15} />
           </IconButton>
         </div>
       }
     >
-      <TickerDossierHeader
-        symbol={symbol}
-        decisionBrief={decisionBrief}
-        quote={quote}
-        opportunity={opportunity}
-        evidenceRows={evidenceRows}
-        foundTables={foundTables}
-        tickerFound={Boolean(ticker?.found)}
-      />
-      {showBrokerSurface && <BrokerAgentDossier
-        symbol={symbol}
-        recommendation={recommendation}
-        statusRows={dossierModel.brokerStatusRows}
-        accountRows={dossierModel.brokerAccountRows}
-        positionRows={dossierModel.brokerPositionRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
-        signalRows={dossierModel.brokerSignalRows.filter((row) => stringField(row, ["symbol"]) === symbol)}
-      />}
-      <DecisionTicket brief={decisionBrief} opportunity={opportunity} />
-      {signalRow && <TickerSignalRibbon row={signalRow} brief={decisionBrief} />}
+      <MungerTickerResearchSummary symbol={symbol} opportunity={opportunity} decisionBrief={decisionBrief} quote={quote} evidenceRows={evidenceRows} foundTables={foundTables} thesisMonitor={thesisMonitor} />
       <TabBar tabs={dossierTabs} active={activeDossierTab} onSelect={setActiveTab} />
-      {activeDossierTab === "Overview" ? <div className="ticker-grid">
+      {activeDossierTab === "Price Chart" ? <div className="ticker-grid">
         <DecisionBriefOverview brief={decisionBrief} opportunity={opportunity} />
         <ThesisStatePanel row={thesisMonitor} />
         <TradeSetupPanel brief={decisionBrief} />
@@ -999,6 +1090,32 @@ export function TickerPage({ symbol, ticker, model, data }: { symbol: string; ti
         </Panel>
       </div> : <TickerTabContent activeTab={activeDossierTab} ticker={ticker} data={data} decisionBrief={decisionBrief} />}
     </PageFrame>
+  );
+}
+
+function MungerTickerResearchSummary({ symbol, opportunity, decisionBrief, quote, evidenceRows, foundTables, thesisMonitor }: { symbol: string; opportunity?: Opportunity; decisionBrief: RowRecord; quote?: WatchItem; evidenceRows: number; foundTables: string[]; thesisMonitor?: RowRecord }) {
+  const recommendation = opportunity?.grade ?? opportunity?.actionGrade ?? "Watch";
+  const price = canonicalQuoteLabel(decisionBrief) || quote?.price || "-";
+  const date = formatDateLabel(stringField(decisionBrief, ["as_of", "date"])) || formatDateLabel(stringField(thesisMonitor ?? {}, ["last_reviewed"])) || "Local research";
+  const moat = opportunity?.whyNow || stringField(decisionBrief, ["decision", "summary"]) || `${symbol} is in Joe's portfolio-aware research universe with ${evidenceRows} loaded evidence families.`;
+  const antithesis = opportunity?.invalidation || stringField(decisionBrief, ["invalidation"]) || "The countercase is that the current evidence stack is too thin, stale, or already reflected in price.";
+  const action = opportunity?.nextAction || stringField(decisionBrief, ["next_action"]) || "Review price, fundamentals, sources, filings, and thesis state before changing exposure.";
+  return (
+    <section className="mm-research-report">
+      <div className="report-meta">
+        <span>Research Summary</span>
+        <time>{date}</time>
+        <strong>{recommendation}</strong>
+      </div>
+      <h2>{companyName(symbol)} ({symbol}) - Investment Research Report</h2>
+      <p><b>Current Price:</b> {price}</p>
+      <p><b>Executive Summary</b></p>
+      <p>{moat}</p>
+      <p>{antithesis}</p>
+      <p><b>Portfolio Fit:</b> {opportunity?.portfolioImpact || stringField(decisionBrief, ["portfolio_fit", "portfolio_impact"]) || "Compare this ticker against Joe's owned positions and watched universe before acting."}</p>
+      <p><b>Next Review:</b> {action}</p>
+      <small>{evidenceRows} table families loaded: {foundTables.slice(0, 5).join(", ") || "no ticker rows loaded"}</small>
+    </section>
   );
 }
 
@@ -1803,6 +1920,12 @@ export function HealthPage({ model, data }: { model: AppModel; data: PanelData }
 
 function TickerTabContent({ activeTab, ticker, data, decisionBrief }: { activeTab: string; ticker: TickerPayload | null; data: PanelData; decisionBrief: RowRecord }) {
   const keyByTab: Record<string, string[]> = {
+    "Price Chart": ["quotes", "prices", "technicals", "sepa", "liquidity", "valuations"],
+    "Fundamental Metrics": ["fundamentals", "analyst_estimates", "earnings", "earnings_setups", "valuations"],
+    Superinvestors: ["disclosures"],
+    Sources: ["opportunity_sources", "signals", "news", "research_packets", "memos", "theses"],
+    Feed: ["decision_queue", "symbol_decision_snapshot", "decision_snapshot", "opportunity_sources", "news"],
+    Thesis: ["theses", "thesis_monitor", "memos", "research_packets"],
     "Evidence Stack": ["symbol_decision_snapshot", "decision_snapshot", "decision_queue", "opportunities_ranked", "opportunity_sources", "signals", "technicals", "sepa", "liquidity", "correlations", "valuations"],
     Broker: ["broker_status", "broker_accounts", "broker_positions", "broker_market_snapshots", "broker_scanner_signals", "agent_recommendations", "paper_orders"],
     Fundamentals: ["fundamentals"],
@@ -6615,6 +6738,10 @@ function formatOptionalPct(value: number): string {
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString() : "-";
+}
+
+function signed(value: number): string {
+  return `${value > 0 ? "+" : ""}${value}`;
 }
 
 function formatCompact(value: number): string {

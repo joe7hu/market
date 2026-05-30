@@ -12,7 +12,7 @@ export function PageFrame({
   children,
 }: {
   eyebrow?: string;
-  title: string;
+  title?: string;
   subtitle?: string;
   action?: ReactNode;
   children: ReactNode;
@@ -22,7 +22,7 @@ export function PageFrame({
       <header className="page-header">
         <div>
           {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-          <h1>{title}</h1>
+          {title && <h1>{title}</h1>}
           {subtitle && <p>{subtitle}</p>}
         </div>
         {action}

@@ -1,4 +1,6 @@
-import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
+import { useState, type FormEvent } from "react";
+import { Activity, Eye, LifeBuoy, Mic, Rss, Search, Sun, UsersRound } from "lucide-react";
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { MarketDataProvider } from "./marketData";
 import { CalendarRoute } from "./pages/CalendarRoute";
 import { FeedRoute } from "./pages/FeedRoute";
@@ -17,16 +19,17 @@ import { WatchlistRoute } from "./pages/WatchlistRoute";
 type NavItem = {
   to: string;
   label: string;
+  icon: typeof Rss;
   end?: boolean;
   aliases?: string[];
 };
 
 const navItems: NavItem[] = [
-  { to: "/feed", label: "Feed", aliases: ["/", "/dashboard", "/today"] },
-  { to: "/watchlist", label: "Watchlist" },
-  { to: "/sources", label: "Sources" },
-  { to: "/superinvestors", label: "Superinvestors", aliases: ["/filings"] },
-  { to: "/market", label: "Market" },
+  { to: "/feed", label: "Feed", icon: Rss, aliases: ["/", "/dashboard", "/today"] },
+  { to: "/watchlist", label: "Watchlist", icon: Eye },
+  { to: "/superinvestors", label: "Superinvestors", icon: UsersRound, aliases: ["/filings"] },
+  { to: "/sources", label: "Sources", icon: Mic },
+  { to: "/market", label: "Market Valuation", icon: Activity },
 ];
 
 export function App() {
@@ -61,6 +64,16 @@ export function App() {
 
 function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const onSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const symbol = query.trim().toUpperCase();
+    if (symbol) {
+      navigate(`/tickers/${symbol}`);
+      setQuery("");
+    }
+  };
   return (
     <div className="market-terminal">
       <div className="terminal-shell">
@@ -72,12 +85,25 @@ function AppShell() {
           <nav className="side-nav" aria-label="Main navigation">
             {navItems.map((item) => (
               <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => isActive || item.aliases?.includes(location.pathname) ? "active" : ""}>
+                <item.icon size={16} />
                 <span>{item.label}</span>
               </NavLink>
             ))}
           </nav>
+          <div className="sidebar-utility">
+            <span><LifeBuoy size={15} /> Contact support</span>
+            <span><Sun size={15} /> Light Mode</span>
+          </div>
         </aside>
         <main className="desk-main">
+          <header className="market-topbar">
+            <form onSubmit={onSearch} className="ticker-search" role="search">
+              <Search size={16} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tickers..." aria-label="Search tickers" />
+              <kbd>⌘K</kbd>
+            </form>
+            <button type="button" className="signin-pill">Sign in</button>
+          </header>
           <Outlet />
         </main>
       </div>

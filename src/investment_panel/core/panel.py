@@ -360,12 +360,12 @@ def ownership_consensus(con: Any) -> list[dict[str, Any]]:
         symbol = str(row.get("symbol") or "").upper()
         investor = str(row.get("trader_name") or row.get("filer_name") or "Tracked investor")
         if investor:
-            investor_row = investors.setdefault(investor, {"investor": investor, "holdings": 0, "latest_filed": "", "symbols": set(), "net_buys": 0, "net_sells": 0})
+            investor_row = investors.setdefault(investor, {"investor": investor, "holdings": 0, "latest_filed": "", "symbols": set(), "net_buys": 0, "net_sells": 0, "total_value": 0.0})
             investor_row["latest_filed"] = max(str(investor_row["latest_filed"] or ""), str(row.get("filed_date") or ""))
         if not symbol:
             continue
         action = str(row.get("action") or "").lower()
-        value = _number_from_any(row.get("total_value") or row.get("holdings_value_thousands") or row.get("estimated_invested_usd") or 0)
+        value = _disclosure_value(row)
         item = by_symbol.setdefault(symbol, {"symbol": symbol, "name": symbol, "holders": set(), "net_buys": 0, "net_sells": 0, "total_value": 0.0, "latest_filed": "", "investors": []})
         item["holders"].add(investor)
         item["total_value"] = float(item["total_value"]) + value
@@ -378,6 +378,7 @@ def ownership_consensus(con: Any) -> list[dict[str, Any]]:
             item["investors"].append(investor)
         investors[investor]["symbols"].add(symbol)
         investors[investor]["holdings"] += 1
+        investors[investor]["total_value"] = float(investors[investor].get("total_value") or 0) + value
         if "sell" in action or "sale" in action or "reduc" in action:
             investors[investor]["net_sells"] += 1
         elif "buy" in action or "purchase" in action or "add" in action:
@@ -407,7 +408,7 @@ def ownership_consensus(con: Any) -> list[dict[str, Any]]:
             "net_buys": row["net_buys"],
             "net_sells": row["net_sells"],
             "net_activity": int(row["net_buys"]) - int(row["net_sells"]),
-            "total_value": 0.0,
+            "total_value": row["total_value"],
             "latest_filed": row["latest_filed"],
             "holdings": row["holdings"],
             "symbols": sorted(row["symbols"])[:10],
@@ -416,6 +417,26 @@ def ownership_consensus(con: Any) -> list[dict[str, Any]]:
     ]
     consensus_rows = sorted(output, key=lambda row: (int(row["holders"]), float(row["total_value"] or 0)), reverse=True)[:250]
     return consensus_rows + sorted(investor_rows, key=lambda row: int(row["holdings"]), reverse=True)[:100]
+
+
+def _disclosure_value(row: dict[str, Any]) -> float:
+    raw = _dict_from_value(row.get("raw"))
+    for value in (
+        row.get("total_value"),
+        row.get("holdings_value_thousands"),
+        row.get("estimated_invested_usd"),
+        row.get("amount_mid"),
+        raw.get("amount_mid"),
+        raw.get("value_usd"),
+        raw.get("estimated_invested_usd"),
+        raw.get("holdings_value_thousands"),
+        row.get("amount"),
+        raw.get("amount_raw"),
+    ):
+        parsed = _number_from_any(value)
+        if parsed:
+            return parsed
+    return 0.0
 
 
 def market_context(con: Any) -> list[dict[str, Any]]:
