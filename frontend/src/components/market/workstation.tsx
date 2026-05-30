@@ -236,8 +236,8 @@ export function DataTableFrame({ title, children, action }: { title?: string; ch
   return (
     <Card className="overflow-hidden">
       {(title || action) && (
-        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-          {title && <h2 className="text-sm font-semibold">{title}</h2>}
+        <div className="flex flex-col gap-3 border-b border-border px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          {title && <h2 className="shrink-0 text-sm font-semibold">{title}</h2>}
           {action}
         </div>
       )}
@@ -271,9 +271,9 @@ export function SourceHealthBadge() {
 
 function toneSurface(tone: Tone) {
   return {
-    good: "border-border bg-card",
-    warn: "border-border bg-amber-50/20",
-    bad: "border-border bg-red-50/20",
+    good: "border-border border-l-green-500 bg-green-50/15",
+    warn: "border-border border-l-amber-500 bg-amber-50/25",
+    bad: "border-border border-l-red-500 bg-red-50/25",
     info: "border-border bg-card",
     muted: "border-border bg-card",
   }[tone];
