@@ -227,12 +227,12 @@ function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
         <Badge variant="outline">{rows.length} rows</Badge>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
-        <table className="w-full min-w-[1180px] text-sm">
+        <table className="w-full min-w-[1260px] text-sm">
           <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Group</th>
               <th className="px-3 py-3">Symbol</th>
-              <th className="px-3 py-3">Trend</th>
+              <th className="px-3 py-3">Return Profile</th>
               <th className="px-3 py-3 text-right">% 1D</th>
               <th className="px-3 py-3 text-right">% YTD</th>
               <th className="px-3 py-3 text-right">% 1M</th>
@@ -254,7 +254,7 @@ function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
                   <p className="font-semibold">{textField(row, ["symbol"])}</p>
                   <p className="max-w-44 truncate text-xs text-muted-foreground">{textField(row, ["name"])}</p>
                 </td>
-                <td className="px-3 py-3"><TrendStrip row={row} /></td>
+                <td className="px-3 py-3"><ReturnProfile row={row} /></td>
                 <ReturnCell value={numberField(row, ["return_1d"], Number.NaN)} />
                 <ReturnCell value={numberField(row, ["return_ytd"], Number.NaN)} />
                 <ReturnCell value={numberField(row, ["return_1m"], Number.NaN)} />
@@ -324,34 +324,49 @@ function RangeCell({ value }: { value: number }) {
   );
 }
 
-function TrendStrip({ row }: { row: RowRecord }) {
-  const points = [
-    numberField(row, ["return_1w"], Number.NaN),
-    numberField(row, ["return_1m"], Number.NaN),
-    numberField(row, ["return_ytd"], Number.NaN),
-    numberField(row, ["return_1y"], Number.NaN),
+function ReturnProfile({ row }: { row: RowRecord }) {
+  const horizons = [
+    { label: "1W", value: numberField(row, ["return_1w"], Number.NaN) },
+    { label: "1M", value: numberField(row, ["return_1m"], Number.NaN) },
+    { label: "YTD", value: numberField(row, ["return_ytd"], Number.NaN) },
+    { label: "1Y", value: numberField(row, ["return_1y"], Number.NaN) },
   ];
-  if (!points.some(Number.isFinite)) return <span className="text-muted-foreground">-</span>;
-  const clean = points.map((value) => Number.isFinite(value) ? value : 0);
-  const min = Math.min(...clean, 0);
-  const max = Math.max(...clean, 0);
-  const spread = max - min || 1;
-  const path = clean.map((value, index) => {
-    const x = 4 + index * 24;
-    const y = 28 - ((value - min) / spread) * 22;
-    return `${index === 0 ? "M" : "L"}${x},${y}`;
-  }).join(" ");
-  const last = clean[clean.length - 1];
-  const stroke = last >= 0 ? "#15803d" : "#b42318";
+  const valid = horizons.filter((horizon) => Number.isFinite(horizon.value));
+  if (!valid.length) return <span className="text-muted-foreground">-</span>;
+  const maxAbs = Math.max(1, ...valid.map((horizon) => Math.abs(horizon.value)));
   return (
-    <div className="flex items-center gap-2">
-      <svg className="h-8 w-20 overflow-visible" viewBox="0 0 80 32" aria-hidden="true">
-        <path d="M4,28 L76,28" stroke="var(--border)" strokeWidth="1" />
-        <path d={path} fill="none" stroke={stroke} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
-      </svg>
-      <span className="text-[11px] text-muted-foreground">1W/1M/YTD/1Y</span>
+    <div className="min-w-56 space-y-1.5" title="1W one-week return; 1M one-month return; YTD year-to-date return; 1Y one-year return">
+      {horizons.map((horizon) => (
+        <div key={horizon.label} className="grid grid-cols-[30px_1fr_54px] items-center gap-2">
+          <span className="text-[11px] font-medium text-muted-foreground">{horizon.label}</span>
+          <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+            <span className="absolute left-1/2 top-0 h-full w-px bg-border" />
+            {Number.isFinite(horizon.value) ? (
+              <span
+                className={`absolute top-0 h-full rounded-full ${horizon.value >= 0 ? "bg-green-600" : "bg-red-600"}`}
+                style={returnBarStyle(horizon.value, maxAbs)}
+              />
+            ) : null}
+          </div>
+          <span className={`text-right text-[11px] font-semibold tabular-nums ${returnTextClass(horizon.value)}`}>
+            {formatMaybePct(horizon.value)}
+          </span>
+        </div>
+      ))}
     </div>
   );
+}
+
+function returnBarStyle(value: number, maxAbs: number): { left?: string; right?: string; width: string } {
+  const width = `${Math.max(3, Math.min(50, (Math.abs(value) / maxAbs) * 50))}%`;
+  return value >= 0 ? { left: "50%", width } : { right: "50%", width };
+}
+
+function returnTextClass(value: number): string {
+  if (!Number.isFinite(value)) return "text-muted-foreground";
+  if (value > 0) return "text-green-700";
+  if (value < 0) return "text-red-700";
+  return "text-muted-foreground";
 }
 
 function TrendMark({ value }: { value: RowRecord[string] }) {
