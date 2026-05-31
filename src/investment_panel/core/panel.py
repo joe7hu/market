@@ -824,6 +824,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
     risk_appetite_score = _risk_appetite_score(asset_rows)
     leadership_score = _leadership_score(asset_rows)
     valuation_source = _market_valuation_reference_source(valuation_reference_rows) if valuation_reference_rows else "Watchlist valuation models"
+    market_asset_source = "Market environment asset matrix" if asset_rows else "Not loaded"
 
     buckets = [
         _environment_bucket(
@@ -842,7 +843,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             "Positive trend supports normal sizing; weak trend argues for staged entries.",
             "Check whether broad indices and sectors remain above key moving averages.",
             weight=0.20,
-            source="Full Stack Investor market model sheet" if asset_rows else "Watchlist technicals",
+            source=market_asset_source if asset_rows else "Watchlist technicals",
         ),
         _environment_bucket(
             "Market Breadth",
@@ -851,7 +852,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             "Narrow breadth raises single-name selection risk.",
             "Prefer source-backed names only when breadth is not deteriorating.",
             weight=0.20,
-            source="Full Stack Investor market model sheet" if asset_rows else "Watchlist technicals",
+            source=market_asset_source if asset_rows else "Watchlist technicals",
         ),
         _environment_bucket(
             "Risk Appetite",
@@ -860,7 +861,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             "Volatility, dollar, bonds, and crypto risk appetite change timing and cash posture.",
             "Reduce chase risk when volatility or macro pressure rises.",
             weight=0.15,
-            source="Full Stack Investor market model sheet" if asset_rows else "Not loaded",
+            source=market_asset_source,
         ),
         _environment_bucket(
             "Leadership",
@@ -869,7 +870,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             "Sector and theme leadership shows whether risk is broadening or crowded.",
             "Favor leaders with breadth confirmation; fade crowded laggards.",
             weight=0.10,
-            source="Full Stack Investor market model sheet" if asset_rows else "Not loaded",
+            source=market_asset_source,
         ),
     ]
     if include_exposure:

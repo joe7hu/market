@@ -319,8 +319,8 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
     categories = {row["category"]: row for row in model_rows}
     assert categories["Overall"]["source"] == "Weighted environment model"
     assert categories["Valuation"]["source"] == "Multpl valuation tables"
-    assert categories["Price Trend"]["source"] == "Full Stack Investor market model sheet"
-    assert categories["Market Breadth"]["source"] == "Full Stack Investor market model sheet"
+    assert categories["Price Trend"]["source"] == "Market environment asset matrix"
+    assert categories["Market Breadth"]["source"] == "Market environment asset matrix"
     assert categories["Risk Appetite"]["score"] is not None
     assert categories["Leadership"]["score"] is not None
     assert {row["category"] for row in market_only_rows} == {
