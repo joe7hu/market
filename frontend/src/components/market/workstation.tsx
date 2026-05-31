@@ -74,12 +74,12 @@ export function AppShell() {
   const nav = <MainNav pathname={location.pathname} onNavigate={() => setMobileOpen(false)} />;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border bg-card lg:block">
         <ShellBrand />
         <ScrollArea className="h-[calc(100vh-85px)] px-3 py-4">{nav}</ScrollArea>
       </aside>
-      <div className="lg:pl-64">
+      <div className="min-w-0 lg:pl-64">
         <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur">
           <div className="flex min-h-16 items-center gap-3 px-3 sm:px-4 lg:px-6">
             <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
@@ -114,7 +114,7 @@ export function AppShell() {
             ) : null}
           </div>
         </header>
-        <main className="mx-auto w-full max-w-[1720px] px-3 py-4 sm:px-4 lg:px-6 lg:py-6">
+        <main className="mx-auto min-w-0 max-w-[1720px] overflow-x-hidden px-3 py-4 sm:px-4 lg:px-6 lg:py-6">
           <Outlet />
         </main>
       </div>
