@@ -439,6 +439,43 @@ CREATE TABLE IF NOT EXISTS valuation_models (
     PRIMARY KEY(symbol, as_of, method)
 );
 
+CREATE TABLE IF NOT EXISTS market_valuation_metric_points (
+    metric TEXT,
+    as_of DATE,
+    label TEXT,
+    value DOUBLE,
+    suffix TEXT,
+    higher_is_better BOOLEAN,
+    source TEXT,
+    source_url TEXT,
+    PRIMARY KEY(metric, as_of, source)
+);
+
+CREATE TABLE IF NOT EXISTS market_environment_asset_snapshots (
+    symbol TEXT,
+    as_of DATE,
+    group_name TEXT,
+    name TEXT,
+    price DOUBLE,
+    return_1d DOUBLE,
+    return_ytd DOUBLE,
+    return_1w DOUBLE,
+    return_1m DOUBLE,
+    return_1y DOUBLE,
+    pct_from_52w_high DOUBLE,
+    sma_10_up BOOLEAN,
+    sma_20_up BOOLEAN,
+    sma_50_up BOOLEAN,
+    sma_200_up BOOLEAN,
+    sma_20_gt_50 BOOLEAN,
+    sma_50_gt_200 BOOLEAN,
+    range_ratio_52w DOUBLE,
+    color TEXT,
+    source TEXT,
+    raw JSON,
+    PRIMARY KEY(symbol, as_of, group_name, source)
+);
+
 CREATE TABLE IF NOT EXISTS options_payoff_scenarios (
     id TEXT PRIMARY KEY,
     symbol TEXT,

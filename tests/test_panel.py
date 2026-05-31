@@ -7,7 +7,9 @@ from investment_panel.core.panel import (
     disclosures,
     feed_signals,
     liquidity,
+    market_environment_assets,
     market_environment_model,
+    market_valuation_reference_charts,
     market_valuation_charts,
     ownership_consensus,
     quotes,
@@ -17,6 +19,7 @@ from investment_panel.core.panel import (
     technicals,
     universe_screen,
 )
+from investment_panel.analysis.market_environment import parse_fullstack_market_model_csv, parse_multpl_valuation_table
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -208,6 +211,95 @@ def test_market_valuation_charts_include_whole_market_and_watchlist_symbols(tmp_
     assert msft["history"][-1]["fair_value"] == 125
 
 
+def test_parse_fullstack_market_model_csv_extracts_environment_rows() -> None:
+    def csv_row(values: dict[int, str]) -> str:
+        cells = [""] * 33
+        for index, value in values.items():
+            cells[index] = f'"{value}"' if "," in value else value
+        return ",".join(cells)
+
+    csv_text = "\n".join(
+        [
+            csv_row({1: "Market"}),
+            csv_row({1: "Ticker", 2: "Index"}),
+            csv_row({1: "SPY", 2: "SPDR S&P 500 ETF", 3: "590.00", 4: "0.5%", 6: "8.2%", 7: "1.1%", 8: "3.4%", 9: "15.0%", 13: "2.0%", 15: "UP", 16: "UP", 17: "UP", 18: "UP", 19: "UP", 20: "UP", 31: "92.0%", 32: "green"}),
+            csv_row({1: "Macro"}),
+            csv_row({1: "VIX", 2: "CBOE Volatility Index", 3: "16.5", 4: "-2.0%", 8: "-8.0%", 15: "DOWN", 16: "DOWN", 17: "DOWN", 18: "DOWN", 31: "40.0%", 32: "yellow"}),
+            csv_row({1: "May 28, 2026"}),
+        ]
+    )
+
+    records = parse_fullstack_market_model_csv(csv_text, source_url="https://example.com/model.csv")
+
+    spy = next(record for record in records if record["symbol"] == "SPY")
+    vix = next(record for record in records if record["symbol"] == "VIX")
+    assert spy["as_of"] == "2026-05-28"
+    assert spy["group_name"] == "Market"
+    assert spy["return_ytd"] == 8.2
+    assert spy["sma_50_gt_200"] is True
+    assert vix["group_name"] == "Macro"
+    assert vix["sma_20_up"] is False
+
+
+def test_parse_multpl_valuation_table_extracts_monthly_points() -> None:
+    html = """
+    <table>
+      <tr><th>Date</th><th>Value</th></tr>
+      <tr><td>May 29, 2026</td><td><abbr title="Estimate">†</abbr>32.67</td></tr>
+      <tr><td>May 1, 2026</td><td>&#x2002;31.42</td></tr>
+    </table>
+    """
+
+    rows = parse_multpl_valuation_table(html)
+
+    assert rows == [("2026-05-29", 32.67), ("2026-05-01", 31.42)]
+
+
+def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO market_valuation_metric_points VALUES
+            ('sp500_forward_pe', '2026-05-01', 'S&P 500 Forward P/E', 18.0, 'x', false, 'multpl', 'https://example.com'),
+            ('sp500_forward_pe', '2026-05-02', 'S&P 500 Forward P/E', 22.0, 'x', false, 'multpl', 'https://example.com'),
+            ('equity_risk_premium', '2026-05-01', 'Equity Risk Premium', 1.5, '%', true, 'multpl', 'https://example.com'),
+            ('equity_risk_premium', '2026-05-02', 'Equity Risk Premium', -1.0, '%', true, 'multpl', 'https://example.com')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO market_environment_asset_snapshots
+            (symbol, as_of, group_name, name, price, return_1d, return_ytd, return_1w,
+             return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up, sma_50_up,
+             sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w, color, source, raw)
+            VALUES
+            ('SPY', '2026-05-02', 'Market', 'S&P 500 ETF', 590, 0.2, 8, 1, 3, 15, 2, true, true, true, true, true, true, 95, 'green', 'test', '{}'),
+            ('XLK', '2026-05-02', 'Sectors', 'Technology', 240, 0.1, 10, 2, 5, 20, 3, true, true, true, true, true, true, 90, 'green', 'test', '{}'),
+            ('VIX', '2026-05-02', 'Macro', 'Volatility', 16, -2, -5, -1, -8, -10, 30, false, false, false, false, false, false, 35, 'yellow', 'test', '{}'),
+            ('TLT', '2026-05-02', 'Macro', 'Long Bonds', 92, 0.3, 2, 1, 4, 5, 8, true, true, true, true, true, false, 70, 'green', 'test', '{}')
+            """
+        )
+
+        reference_rows = market_valuation_reference_charts(con)
+        asset_rows = market_environment_assets(con)
+        model_rows = market_environment_model(con, [])
+
+    assert len(reference_rows) == 2
+    assert reference_rows[0]["metric"] == "sp500_forward_pe"
+    assert reference_rows[0]["percentile"] == 100
+    assert reference_rows[0]["score"] == 0
+    assert len(asset_rows) == 4
+    categories = {row["category"]: row for row in model_rows}
+    assert categories["Overall"]["source"] == "Weighted environment model"
+    assert categories["Valuation"]["source"] == "Multpl valuation tables"
+    assert categories["Price Trend"]["source"] == "Full Stack Investor market model sheet"
+    assert categories["Market Breadth"]["source"] == "Full Stack Investor market model sheet"
+    assert categories["Risk Appetite"]["score"] is not None
+    assert categories["Leadership"]["score"] is not None
+
+
 def test_market_environment_model_scores_valuation_trend_and_risk(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
@@ -229,7 +321,7 @@ def test_market_environment_model_scores_valuation_trend_and_risk(tmp_path) -> N
 
     overall = rows[0]
     valuation = next(row for row in rows if row["category"] == "Valuation")
-    trend = next(row for row in rows if row["category"] == "Trend")
+    trend = next(row for row in rows if row["category"] == "Price Trend")
     liquidity_row = next(row for row in rows if row["category"] == "Liquidity")
     assert overall["category"] == "Overall"
     assert valuation["posture"] == "constructive"
@@ -250,7 +342,7 @@ def test_market_environment_model_does_not_treat_missing_breadth_as_defensive(tm
 
         rows = market_environment_model(con, [{"symbol": "MSFT"}])
 
-    breadth = next(row for row in rows if row["category"] == "Breadth")
+    breadth = next(row for row in rows if row["category"] == "Market Breadth")
     assert "score" not in breadth
     assert breadth["posture"] == "not enough data"
 

@@ -3,6 +3,8 @@ import type { ReactNode } from "react";
 import {
   Bar,
   BarChart,
+  Area,
+  AreaChart,
   CartesianGrid,
   Cell,
   Line,
@@ -37,11 +39,18 @@ type ValuationBucket = {
   tone: "success" | "warning" | "info" | "outline";
 };
 
+type MetricPoint = {
+  date: string;
+  value?: number;
+};
+
 export function MarketRoute() {
   const { data } = useMarketData();
   usePanelScope("market");
 
+  const referenceRows = rows(data.marketValuationReferenceCharts);
   const valuationRows = rows(data.marketValuationCharts);
+  const assetRows = rows(data.marketEnvironmentAssets);
   const environmentRows = rows(data.marketEnvironmentModel);
   const marketRow = valuationRows.find((row) => textField(row, ["scope"]) === "whole_market");
   const tickerRows = valuationRows.filter((row) => textField(row, ["scope"]) !== "whole_market");
@@ -65,12 +74,16 @@ export function MarketRoute() {
       subtitle="The model turns valuation, trend, breadth, liquidity, event risk, and portfolio exposure into an action posture."
       metrics={metrics}
     >
-      <StanceHero overall={overall} marketRow={marketRow} drivers={drivers} tickerRows={tickerRows} buckets={buckets} />
+      <StanceHero overall={overall} marketRow={marketRow} drivers={drivers} tickerRows={tickerRows} buckets={buckets} referenceRows={referenceRows} assetRows={assetRows} />
+
+      <ReferenceValuationCharts rows={referenceRows} />
 
       <section className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
         <EnvironmentModel overall={overall} rows={drivers} />
         <MarketValuationMap marketRow={marketRow} tickerRows={tickerRows} buckets={buckets} />
       </section>
+
+      <MarketAssetMatrix rows={assetRows} />
 
       <ActionLanes rows={tickerRows} />
 
@@ -84,7 +97,23 @@ export function MarketRoute() {
   );
 }
 
-function StanceHero({ overall, marketRow, drivers, tickerRows, buckets }: { overall?: RowRecord; marketRow?: RowRecord; drivers: RowRecord[]; tickerRows: RowRecord[]; buckets: ValuationBucket[] }) {
+function StanceHero({
+  overall,
+  marketRow,
+  drivers,
+  tickerRows,
+  buckets,
+  referenceRows,
+  assetRows,
+}: {
+  overall?: RowRecord;
+  marketRow?: RowRecord;
+  drivers: RowRecord[];
+  tickerRows: RowRecord[];
+  buckets: ValuationBucket[];
+  referenceRows: RowRecord[];
+  assetRows: RowRecord[];
+}) {
   const score = numberField(overall, ["score"], Number.NaN);
   const posture = textField(overall, ["posture"], "not loaded");
   const pressure = drivers
@@ -96,20 +125,22 @@ function StanceHero({ overall, marketRow, drivers, tickerRows, buckets }: { over
   const ranked = rankTickerRows(tickerRows);
   const best = ranked[0];
   const worst = [...ranked].reverse()[0];
+  const valuationDriverScore = numberField(drivers.find((row) => textField(row, ["category"]) === "Valuation"), ["score"], Number.NaN);
+  const valuationScore = Number.isFinite(valuationDriverScore) ? valuationDriverScore : numberField(marketRow, ["valuation_score"], Number.NaN);
 
   return (
     <section className="min-w-0 overflow-hidden rounded-lg border border-border bg-[linear-gradient(135deg,#14261f_0%,#203226_46%,#36412a_100%)] text-white shadow-sm">
       <div className="grid gap-0 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="min-w-0 space-y-6 p-5 sm:p-6">
+        <div className="min-w-0 space-y-4 p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-3">
             <Badge variant={postureBadge(posture)}>{titleCase(posture)}</Badge>
             <span className="text-sm text-white/70">{Number.isFinite(score) ? `${Math.round(score)} / 100 environment score` : "Environment score unavailable"}</span>
           </div>
           <div>
-            <h2 className="max-w-3xl break-words text-2xl font-semibold tracking-normal sm:text-3xl">
+            <h2 className="max-w-3xl break-words text-xl font-semibold tracking-normal sm:text-2xl">
               {stanceHeadline(posture, pressure, support)}
             </h2>
-            <p className="mt-3 max-w-3xl break-words text-sm leading-6 text-white/72">
+            <p className="mt-2 max-w-3xl break-words text-sm leading-6 text-white/72">
               {textField(overall, ["next_action"], "Separate cheap-but-weak names from expensive leaders before adding exposure.")}
             </p>
           </div>
@@ -130,15 +161,15 @@ function StanceHero({ overall, marketRow, drivers, tickerRows, buckets }: { over
               icon={<ListChecks className="size-4" />}
               label="Action"
               value={marketActionLabel(marketRow, best, worst)}
-              detail={textField(overall, ["portfolio_effect"], "Use staged sizing until the model has enough evidence.")}
+              detail={`${referenceRows.length} valuation series, ${assetRows.length} asset rows loaded.`}
             />
           </div>
         </div>
-        <div className="min-w-0 border-t border-white/12 bg-white/[0.06] p-5 sm:p-6 xl:border-l xl:border-t-0">
+        <div className="min-w-0 border-t border-white/12 bg-white/[0.06] p-4 sm:p-5 xl:border-l xl:border-t-0">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase text-white/58">Market valuation score</p>
-              <p className="mt-1 text-xl font-semibold">{formatScore(numberField(marketRow, ["valuation_score"], Number.NaN))}</p>
+              <p className="mt-1 text-xl font-semibold">{formatScore(valuationScore)}</p>
             </div>
             <Badge variant={postureBadge(textField(marketRow, ["valuation_posture"]))}>{titleCase(textField(marketRow, ["valuation_posture"], "not loaded"))}</Badge>
           </div>
@@ -188,13 +219,17 @@ function EnvironmentModel({ overall, rows }: { overall?: RowRecord; rows: RowRec
               <div key={textField(row, ["category"])} className="grid gap-2 rounded-md border border-border bg-background px-3 py-3 sm:grid-cols-[116px_1fr_104px] sm:items-center">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold">{textField(row, ["category"])}</p>
-                  <p className="text-xs text-muted-foreground">{Number.isFinite(score) ? Math.round(score) : "--"} / 100</p>
+                  <p className="text-xs text-muted-foreground">
+                    {Number.isFinite(score) ? Math.round(score) : "--"} / 100
+                    {Number.isFinite(numberField(row, ["weight"], Number.NaN)) ? ` / ${Math.round(numberField(row, ["weight"], Number.NaN) * 100)}% weight` : ""}
+                  </p>
                 </div>
                 <div className="min-w-0">
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div className="h-full rounded-full" style={{ width: `${normalizeScore(score)}%`, background: scoreColor(score) }} />
                   </div>
                   <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{textField(row, ["evidence"])}</p>
+                  <p className="mt-1 truncate text-[11px] uppercase text-muted-foreground/75">{textField(row, ["source"])}</p>
                 </div>
                 <Badge className="justify-self-start sm:justify-self-end" variant={postureBadge(textField(row, ["posture"]))}>
                   {titleCase(textField(row, ["posture"]))}
@@ -273,6 +308,77 @@ function OutlierList({ icon, title, rows, emptyLabel }: { icon: ReactNode; title
   );
 }
 
+function ReferenceValuationCharts({ rows }: { rows: RowRecord[] }) {
+  if (!rows.length) {
+    return (
+      <Card>
+        <CardContent className="flex min-h-40 items-center justify-center p-6">
+          <EmptyChart label="No broad-market valuation series loaded" />
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold uppercase text-muted-foreground">
+          <BarChart3 className="size-4" />
+          Market Valuation Charts
+        </h2>
+        <Badge variant="outline">{rows.length} series</Badge>
+      </div>
+      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+        {rows.map((row) => <ReferenceValuationCard key={textField(row, ["metric"])} row={row} />)}
+      </div>
+    </section>
+  );
+}
+
+function ReferenceValuationCard({ row }: { row: RowRecord }) {
+  const history = metricHistoryPoints(row);
+  const latest = numberField(row, ["latest_value"], Number.NaN);
+  const percentile = numberField(row, ["percentile"], Number.NaN);
+  const suffix = textField(row, ["suffix"]);
+  return (
+    <Card className="min-w-0">
+      <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
+        <div>
+          <CardTitle className="text-base">{textField(row, ["label"])}</CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Latest: <span className="font-medium text-foreground">{formatMetricValue(latest, suffix)}</span>
+            {Number.isFinite(percentile) ? <span className={percentileTone(row, percentile)}> {Math.round(percentile)}th percentile</span> : null}
+            <span className="text-xs"> ({textField(row, ["latest_date"])})</span>
+          </p>
+        </div>
+        <Badge variant={postureBadge(textField(row, ["posture"]))}>{titleCase(textField(row, ["posture"]))}</Badge>
+      </CardHeader>
+      <CardContent className="p-4 pt-2">
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {["5Y", "10Y", "20Y", "50Y", "All"].map((label) => (
+            <span key={label} className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{label}</span>
+          ))}
+        </div>
+        <div className="h-72 min-h-72">
+          {history.length ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={history} margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="date" minTickGap={42} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
+                <YAxis domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={46} />
+                <Tooltip formatter={(value) => formatMetricValue(typeof value === "number" ? value : Number.NaN, suffix)} labelFormatter={(value) => String(value)} />
+                <ReferenceLine y={latest} stroke="var(--muted-foreground)" strokeDasharray="3 3" ifOverflow="extendDomain" />
+                <Area type="monotone" dataKey="value" stroke="#b42318" strokeWidth={4} fill="#b42318" fillOpacity={0.28} dot={false} name={textField(row, ["label"])} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <EmptyChart label="No valuation history" />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ValuationScorePanel({ row, buckets }: { row?: RowRecord; buckets: ValuationBucket[] }) {
   const score = numberField(row, ["valuation_score"], Number.NaN);
   const discounted = buckets.find((bucket) => bucket.label === "Discounted")?.count ?? 0;
@@ -311,6 +417,87 @@ function ValuationScorePanel({ row, buckets }: { row?: RowRecord; buckets: Valua
       <p className="mt-3 text-xs leading-5 text-white/62">{valuationCaption(row)}</p>
     </div>
   );
+}
+
+function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
+  const featured = featuredAssetRows(rows);
+  if (!featured.length) {
+    return (
+      <Card>
+        <CardContent className="flex min-h-40 items-center justify-center p-6">
+          <EmptyChart label="No market environment asset rows loaded" />
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card className="min-w-0 overflow-hidden">
+      <CardHeader className="flex-row items-center justify-between gap-3 p-4 pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Activity className="size-4 text-muted-foreground" />
+          Market Environment Asset Matrix
+        </CardTitle>
+        <Badge variant="outline">{rows.length} rows</Badge>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0">
+        <table className="w-full min-w-[1040px] text-sm">
+          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+            <tr>
+              <th className="px-4 py-3">Group</th>
+              <th className="px-3 py-3">Symbol</th>
+              <th className="px-3 py-3 text-right">% YTD</th>
+              <th className="px-3 py-3 text-right">% 1M</th>
+              <th className="px-3 py-3 text-right">% 1Y</th>
+              <th className="px-3 py-3 text-right">52W Gap</th>
+              <th className="px-3 py-3 text-center">20 SMA</th>
+              <th className="px-3 py-3 text-center">50 SMA</th>
+              <th className="px-3 py-3 text-center">200 SMA</th>
+              <th className="px-4 py-3 text-center">50 &gt; 200</th>
+            </tr>
+          </thead>
+          <tbody>
+            {featured.map((row) => (
+              <tr key={`${textField(row, ["group_name"])}-${textField(row, ["symbol"])}`} className="border-b border-border align-middle transition-colors hover:bg-accent/40">
+                <td className="px-4 py-3 text-xs font-medium uppercase text-muted-foreground">{textField(row, ["group_name"])}</td>
+                <td className="px-3 py-3">
+                  <p className="font-semibold">{textField(row, ["symbol"])}</p>
+                  <p className="max-w-44 truncate text-xs text-muted-foreground">{textField(row, ["name"])}</p>
+                </td>
+                <td className={valueToneClass(numberField(row, ["return_ytd"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_ytd"], Number.NaN))}</td>
+                <td className={valueToneClass(numberField(row, ["return_1m"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_1m"], Number.NaN))}</td>
+                <td className={valueToneClass(numberField(row, ["return_1y"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_1y"], Number.NaN))}</td>
+                <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{formatMaybePct(-Math.abs(numberField(row, ["pct_from_52w_high"], Number.NaN)))}</td>
+                <td className="px-3 py-3 text-center"><TrendMark value={row.sma_20_up} /></td>
+                <td className="px-3 py-3 text-center"><TrendMark value={row.sma_50_up} /></td>
+                <td className="px-3 py-3 text-center"><TrendMark value={row.sma_200_up} /></td>
+                <td className="px-4 py-3 text-center"><TrendMark value={row.sma_50_gt_200} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
+
+function featuredAssetRows(inputRows: RowRecord[]): RowRecord[] {
+  const groupLimits: Record<string, number> = {
+    Market: 12,
+    Macro: 8,
+    Sectors: 12,
+    Industries: 12,
+    "Managed ETFs": 8,
+    Countries: 8,
+    Others: 8,
+  };
+  return Object.entries(groupLimits)
+    .flatMap(([group, limit]) => inputRows.filter((row) => textField(row, ["group_name"]) === group).slice(0, limit))
+    .slice(0, 48);
+}
+
+function TrendMark({ value }: { value: RowRecord[string] }) {
+  if (typeof value !== "boolean") return <span className="text-muted-foreground">-</span>;
+  return <span className={value ? "font-semibold text-green-700" : "font-semibold text-red-700"}>{value ? "▲" : "▼"}</span>;
 }
 
 function ActionLanes({ rows }: { rows: RowRecord[] }) {
@@ -481,7 +668,7 @@ function MiniMetric({ label, value, dark = false }: { label: string; value: stri
 }
 
 function ScorePill({ value, posture }: { value: number; posture: string }) {
-  return <Badge variant={postureBadge(posture)}>{Number.isFinite(value) ? Math.round(value) : "--"}</Badge>;
+  return <Badge className="w-fit justify-self-end" variant={postureBadge(posture)}>{Number.isFinite(value) ? Math.round(value) : "--"}</Badge>;
 }
 
 function ScoreBar({ value }: { value: number }) {
@@ -517,6 +704,20 @@ function historyPoints(row: RowRecord | undefined): ChartPoint[] {
       discount_pct: numeric(point.discount_pct),
     }))
     .filter((point) => point.date && Number.isFinite(point.price));
+}
+
+function metricHistoryPoints(row: RowRecord): MetricPoint[] {
+  const value = row.history;
+  if (!Array.isArray(value)) return [];
+  const points = value
+    .filter((point): point is Record<string, JsonValue> => typeof point === "object" && point !== null && !Array.isArray(point))
+    .map((point) => ({
+      date: typeof point.date === "string" ? point.date.slice(0, 10) : "",
+      value: numeric(point.value),
+    }))
+    .filter((point) => point.date && Number.isFinite(point.value));
+  const stride = Math.max(1, Math.ceil(points.length / 420));
+  return points.filter((_, index) => index % stride === 0 || index === points.length - 1);
 }
 
 function rankTickerRows(inputRows: RowRecord[]): RowRecord[] {
@@ -587,8 +788,29 @@ function formatMaybePct(value: number): string {
   return Number.isFinite(value) ? formatPct(value) : "-";
 }
 
+function formatMetricValue(value: number, suffix: string): string {
+  if (!Number.isFinite(value)) return "-";
+  if (suffix === "%") return `${value.toFixed(2)}%`;
+  if (suffix === "x") return `${value.toFixed(2)}x`;
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 function formatScore(value: number): string {
   return Number.isFinite(value) ? `${Math.round(value)} / 100` : "-";
+}
+
+function percentileTone(row: RowRecord, percentile: number): string {
+  const higherIsBetter = row.higher_is_better === true;
+  const good = higherIsBetter ? percentile >= 70 : percentile <= 30;
+  const bad = higherIsBetter ? percentile <= 30 : percentile >= 70;
+  if (good) return "ml-2 font-medium text-green-700";
+  if (bad) return "ml-2 font-medium text-red-700";
+  return "ml-2 font-medium text-amber-700";
+}
+
+function valueToneClass(value: number): string {
+  const tone = !Number.isFinite(value) ? "text-muted-foreground" : value >= 0 ? "text-green-700" : "text-red-700";
+  return `px-3 py-3 text-right font-medium tabular-nums ${tone}`;
 }
 
 function valuationCaption(row: RowRecord | undefined): string {

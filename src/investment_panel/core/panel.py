@@ -94,7 +94,9 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "source_consensus": source_consensus(con),
             "ownership_consensus": ownership_consensus(con),
             "market_context": market_context(con),
+            "market_valuation_reference_charts": market_valuation_reference_charts(con),
             "market_valuation_charts": market_valuation_charts(con, active_watchlist),
+            "market_environment_assets": market_environment_assets(con),
             "market_environment_model": market_environment_model(con, active_watchlist),
             "exposure_clusters": exposure_clusters(con),
             "correlation_edges": correlation_edges(con),
@@ -665,6 +667,81 @@ def market_context(con: Any) -> list[dict[str, Any]]:
     return [_compact_empty_fields(row) for row in rows[:12]]
 
 
+def market_valuation_reference_charts(con: Any) -> list[dict[str, Any]]:
+    """Broad-market valuation series with latest percentile context."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT metric, as_of, label, value, suffix, higher_is_better, source, source_url
+        FROM market_valuation_metric_points
+        WHERE metric IN ('sp500_forward_pe', 'shiller_pe', 'sp500_pe', 'equity_risk_premium')
+        ORDER BY metric, as_of
+        """,
+    )
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_metric.setdefault(str(row.get("metric") or ""), []).append(row)
+    output = []
+    for metric in ("sp500_forward_pe", "shiller_pe", "sp500_pe", "equity_risk_premium"):
+        points = by_metric.get(metric) or []
+        if not points:
+            continue
+        latest = points[-1]
+        values = [_optional_number(point.get("value")) for point in points]
+        latest_value = _optional_number(latest.get("value"))
+        percentile = _percentile_rank(values, latest_value)
+        higher_is_better = bool(latest.get("higher_is_better"))
+        score = percentile if higher_is_better else (100 - percentile if percentile is not None else None)
+        output.append(
+            _compact_empty_fields(
+                {
+                    "metric": metric,
+                    "label": latest.get("label") or metric,
+                    "latest_value": latest_value,
+                    "latest_date": latest.get("as_of"),
+                    "percentile": percentile,
+                    "score": score,
+                    "suffix": latest.get("suffix"),
+                    "higher_is_better": higher_is_better,
+                    "posture": _environment_posture(score),
+                    "source": latest.get("source"),
+                    "source_url": latest.get("source_url"),
+                    "history": [{"date": str(point.get("as_of")), "value": point.get("value")} for point in points],
+                }
+            )
+        )
+    return output
+
+
+def market_environment_assets(con: Any) -> list[dict[str, Any]]:
+    """Latest broad-market asset rows used by the environment model."""
+
+    return query_rows(
+        con,
+        """
+        SELECT symbol, as_of, group_name, name, price, return_1d, return_ytd, return_1w,
+               return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up,
+               sma_50_up, sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w,
+               color, source
+        FROM market_environment_asset_snapshots
+        WHERE as_of = (SELECT max(as_of) FROM market_environment_asset_snapshots)
+        ORDER BY
+          CASE group_name
+            WHEN 'Market' THEN 0
+            WHEN 'Sectors' THEN 1
+            WHEN 'Industries' THEN 2
+            WHEN 'Managed ETFs' THEN 3
+            WHEN 'Countries' THEN 4
+            WHEN 'Others' THEN 5
+            WHEN 'Macro' THEN 6
+            ELSE 7
+          END,
+          symbol
+        """
+    )
+
+
 def market_valuation_charts(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Watchlist and whole-market valuation chart rows for the Market page."""
 
@@ -723,6 +800,8 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
     """Deterministic market environment model for sizing posture."""
 
     valuation_rows = market_valuation_charts(con, config_watchlist)
+    valuation_reference_rows = market_valuation_reference_charts(con)
+    asset_rows = market_environment_assets(con)
     ticker_rows = [row for row in valuation_rows if row.get("scope") != "whole_market"]
     technical_rows = [row for row in technicals(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
     liquidity_rows = [row for row in liquidity(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
@@ -731,28 +810,63 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
     earnings_rows = [row for row in earnings_setups(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
     technical_scores = [score for score in (_optional_number(row.get("technical_score")) for row in technical_rows) if score is not None]
     breadth_score = (_share([score >= 55 for score in technical_scores]) * 100) if technical_scores else None
+    broad_valuation_score = _average([_optional_number(row.get("score")) for row in valuation_reference_rows])
+    watchlist_valuation_score = _average([_optional_number(row.get("valuation_score")) for row in ticker_rows])
+    valuation_score = broad_valuation_score if broad_valuation_score is not None else watchlist_valuation_score
+    valuation_evidence = _market_valuation_reference_summary(valuation_reference_rows) or f"{_format_metric(_median([_optional_number(row.get('forward_pe')) for row in ticker_rows]), 'x')} median forward P/E; {_format_metric(_median([_optional_number(row.get('upside_pct')) for row in ticker_rows]), '%')} median fair-value gap."
+    asset_trend_score = _asset_trend_score(asset_rows)
+    market_trend_score = asset_trend_score if asset_trend_score is not None else _average([_optional_number(row.get("technical_score")) for row in technical_rows])
+    asset_breadth_score = _asset_breadth_score(asset_rows)
+    market_breadth_score = asset_breadth_score if asset_breadth_score is not None else breadth_score
+    risk_appetite_score = _risk_appetite_score(asset_rows)
+    leadership_score = _leadership_score(asset_rows)
+    valuation_source = _market_valuation_reference_source(valuation_reference_rows) if valuation_reference_rows else "Watchlist valuation models"
 
     buckets = [
         _environment_bucket(
             "Valuation",
-            _average([_optional_number(row.get("valuation_score")) for row in ticker_rows]),
-            f"{_format_metric(_median([_optional_number(row.get('forward_pe')) for row in ticker_rows]), 'x')} median forward P/E; {_format_metric(_median([_optional_number(row.get('upside_pct')) for row in ticker_rows]), '%')} median fair-value gap.",
+            valuation_score,
+            valuation_evidence,
             "Lean into new risk only when discounts compensate for thesis risk.",
-            "Use the valuation chart outliers as the first review queue.",
+            "Use broad-market valuation percentiles before increasing beta exposure.",
+            weight=0.25,
+            source=valuation_source,
         ),
         _environment_bucket(
-            "Trend",
-            _average([_optional_number(row.get("technical_score")) for row in technical_rows]),
-            f"{_format_metric(_average([_optional_number(row.get('return_60d')) * 100 for row in technical_rows if _optional_number(row.get('return_60d')) is not None]), '%')} average 60-day return across covered watchlist names.",
+            "Price Trend",
+            market_trend_score,
+            _asset_trend_summary(asset_rows) or f"{_format_metric(_average([_optional_number(row.get('return_60d')) * 100 for row in technical_rows if _optional_number(row.get('return_60d')) is not None]), '%')} average 60-day return across covered watchlist names.",
             "Positive trend supports normal sizing; weak trend argues for staged entries.",
-            "Check whether owned names lead or lag the watchlist tape.",
+            "Check whether broad indices and sectors remain above key moving averages.",
+            weight=0.20,
+            source="Full Stack Investor market model sheet" if asset_rows else "Watchlist technicals",
         ),
         _environment_bucket(
-            "Breadth",
-            breadth_score,
-            f"{_format_metric(breadth_score, '%')} of covered names have constructive technical scores.",
+            "Market Breadth",
+            market_breadth_score,
+            _asset_breadth_summary(asset_rows) or f"{_format_metric(breadth_score, '%')} of covered names have constructive technical scores.",
             "Narrow breadth raises single-name selection risk.",
-            "Prefer source-backed names that are working despite weak breadth.",
+            "Prefer source-backed names only when breadth is not deteriorating.",
+            weight=0.20,
+            source="Full Stack Investor market model sheet" if asset_rows else "Watchlist technicals",
+        ),
+        _environment_bucket(
+            "Risk Appetite",
+            risk_appetite_score,
+            _risk_appetite_summary(asset_rows),
+            "Volatility, dollar, bonds, and crypto risk appetite change timing and cash posture.",
+            "Reduce chase risk when volatility or macro pressure rises.",
+            weight=0.15,
+            source="Full Stack Investor market model sheet" if asset_rows else "Not loaded",
+        ),
+        _environment_bucket(
+            "Leadership",
+            leadership_score,
+            _leadership_summary(asset_rows),
+            "Sector and theme leadership shows whether risk is broadening or crowded.",
+            "Favor leaders with breadth confirmation; fade crowded laggards.",
+            weight=0.10,
+            source="Full Stack Investor market model sheet" if asset_rows else "Not loaded",
         ),
         _environment_bucket(
             "Liquidity",
@@ -760,6 +874,8 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             f"{len(liquidity_rows)} liquidity rows loaded; {_format_metric(_median([_optional_number(row.get('avg_dollar_volume')) for row in liquidity_rows]), '$')} median dollar volume.",
             "Thin liquidity should cap position size even when thesis quality is high.",
             "Avoid chasing low-volume watchlist names without a limit plan.",
+            weight=0.05,
+            source="Watchlist liquidity metrics",
         ),
         _environment_bucket(
             "Portfolio Risk",
@@ -767,6 +883,8 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             f"{len(risk_rows)} portfolio risk cards and {len(correlation_rows)} major correlation edges currently affect the model.",
             "Risk model overrides market optimism when concentration or correlation is elevated.",
             "Review the highest-severity risk card before adding exposure.",
+            weight=0.05,
+            source="Portfolio risk model",
         ),
         _environment_bucket(
             "Earnings Setup",
@@ -774,16 +892,20 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             f"{len(earnings_rows)} earnings setup rows loaded for watched names.",
             "Event risk should change timing more than thesis conviction.",
             "Stage entries around high-score setups only when valuation is not stretched.",
+            weight=0.05,
+            source="Watchlist earnings setup",
         ),
     ]
     scored = [bucket for bucket in buckets if bucket.get("score") is not None]
-    overall_score = _average([_optional_number(bucket.get("score")) for bucket in scored])
+    overall_score = _weighted_environment_score(scored)
     overall = _environment_bucket(
         "Overall",
         overall_score,
         _overall_environment_summary(scored),
         _overall_portfolio_effect(overall_score),
         _overall_next_action(overall_score),
+        weight=1.0,
+        source="Weighted environment model",
     )
     return [_compact_empty_fields(row) for row in [overall, *buckets]]
 
@@ -945,7 +1067,139 @@ def _valuation_next_action(symbol: str, upside_pct: float | None, forward_pe: fl
     return "Keep on watch unless evidence or price changes."
 
 
-def _environment_bucket(category: str, score: float | None, evidence: str, portfolio_effect: str, next_action: str) -> dict[str, Any]:
+def _market_valuation_reference_summary(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    parts = []
+    for row in rows[:4]:
+        value = _optional_number(row.get("latest_value"))
+        percentile = _optional_number(row.get("percentile"))
+        suffix = str(row.get("suffix") or "")
+        if value is None or percentile is None:
+            continue
+        formatted = f"{value:.2f}{suffix}" if suffix else f"{value:.2f}"
+        parts.append(f"{row.get('label')}: {formatted}, {percentile:.0f}th percentile")
+    return "; ".join(parts)
+
+
+def _market_valuation_reference_source(rows: list[dict[str, Any]]) -> str:
+    sources = {str(row.get("source") or "").lower() for row in rows}
+    if any("munger" in source for source in sources):
+        return "Munger Mode market metrics"
+    if "multpl" in sources:
+        return "Multpl valuation tables"
+    return "Broad-market valuation tables"
+
+
+def _asset_trend_score(rows: list[dict[str, Any]]) -> float | None:
+    candidates = [row for row in rows if row.get("group_name") in {"Market", "Sectors"}]
+    checks = []
+    for row in candidates:
+        for key in ("sma_10_up", "sma_20_up", "sma_50_up", "sma_200_up"):
+            if row.get(key) is not None:
+                checks.append(bool(row.get(key)))
+    return round(_share(checks) * 100, 2) if checks else None
+
+
+def _asset_trend_summary(rows: list[dict[str, Any]]) -> str:
+    market = [row for row in rows if row.get("group_name") == "Market"]
+    if not market:
+        return ""
+    above_200 = _share([bool(row.get("sma_200_up")) for row in market if row.get("sma_200_up") is not None]) * 100
+    avg_1m = _average([_optional_number(row.get("return_1m")) for row in market])
+    avg_1y = _average([_optional_number(row.get("return_1y")) for row in market])
+    return f"{_format_metric(above_200, '%')} of broad market rows above 200-day SMA; {_format_metric(avg_1m, '%')} 1-month average; {_format_metric(avg_1y, '%')} 1-year average."
+
+
+def _asset_breadth_score(rows: list[dict[str, Any]]) -> float | None:
+    candidates = [row for row in rows if row.get("group_name") in {"Market", "Sectors", "Industries", "Managed ETFs"}]
+    if not candidates:
+        return None
+    ma_checks = [bool(row.get("sma_20_gt_50")) for row in candidates if row.get("sma_20_gt_50") is not None]
+    ma_breadth = _share(ma_checks) * 100 if ma_checks else None
+    range_scores = [_optional_number(row.get("range_ratio_52w")) for row in candidates]
+    range_score = _average(range_scores)
+    return _average([ma_breadth, range_score])
+
+
+def _asset_breadth_summary(rows: list[dict[str, Any]]) -> str:
+    candidates = [row for row in rows if row.get("group_name") in {"Market", "Sectors", "Industries", "Managed ETFs"}]
+    if not candidates:
+        return ""
+    short_checks = [bool(row.get("sma_20_gt_50")) for row in candidates if row.get("sma_20_gt_50") is not None]
+    long_checks = [bool(row.get("sma_50_gt_200")) for row in candidates if row.get("sma_50_gt_200") is not None]
+    short_cross = _share(short_checks) * 100 if short_checks else None
+    long_cross = _share(long_checks) * 100 if long_checks else None
+    near_high = _share([(_optional_number(row.get("pct_from_52w_high")) or 100) <= 5 for row in candidates]) * 100
+    return f"{_format_metric(short_cross, '%')} have 20-day SMA above 50-day; {_format_metric(long_cross, '%')} have 50-day above 200-day; {_format_metric(near_high, '%')} are within 5% of 52-week highs."
+
+
+def _risk_appetite_score(rows: list[dict[str, Any]]) -> float | None:
+    if not rows:
+        return None
+    by_symbol = {str(row.get("symbol") or "").upper(): row for row in rows}
+    values = []
+    vix = _optional_number(by_symbol.get("VIX", {}).get("price"))
+    if vix is not None:
+        values.append(max(0, min(100, 100 - ((vix - 12) * 4))))
+    dollar_return = _optional_number(by_symbol.get("NYICDX", {}).get("return_1m"))
+    if dollar_return is not None:
+        values.append(max(0, min(100, 55 - dollar_return * 4)))
+    tlt_trend = by_symbol.get("TLT", {}).get("sma_50_gt_200")
+    if tlt_trend is not None:
+        values.append(65 if tlt_trend else 35)
+    ibit_return = _optional_number(by_symbol.get("IBIT", {}).get("return_1m"))
+    if ibit_return is not None:
+        values.append(max(0, min(100, 50 + ibit_return)))
+    return _average(values)
+
+
+def _risk_appetite_summary(rows: list[dict[str, Any]]) -> str:
+    by_symbol = {str(row.get("symbol") or "").upper(): row for row in rows}
+    vix = _optional_number(by_symbol.get("VIX", {}).get("price"))
+    dollar = _optional_number(by_symbol.get("NYICDX", {}).get("return_1m"))
+    tlt = _optional_number(by_symbol.get("TLT", {}).get("return_1m"))
+    if vix is None and dollar is None and tlt is None:
+        return "VIX, dollar, and bond inputs are not loaded."
+    return f"VIX {_format_metric(vix, '')}; dollar 1M {_format_metric(dollar, '%')}; TLT 1M {_format_metric(tlt, '%')}."
+
+
+def _leadership_score(rows: list[dict[str, Any]]) -> float | None:
+    candidates = [row for row in rows if row.get("group_name") in {"Sectors", "Industries", "Managed ETFs", "Countries"}]
+    if not candidates:
+        return None
+    positives = _share([(_optional_number(row.get("return_1m")) or 0) > 0 for row in candidates]) * 100
+    near_high = _share([(_optional_number(row.get("pct_from_52w_high")) or 100) <= 10 for row in candidates]) * 100
+    return _average([positives, near_high])
+
+
+def _leadership_summary(rows: list[dict[str, Any]]) -> str:
+    candidates = [row for row in rows if row.get("group_name") in {"Sectors", "Industries", "Managed ETFs", "Countries"}]
+    if not candidates:
+        return "Sector, theme, and country leadership rows are not loaded."
+    leaders = sorted(candidates, key=lambda row: _optional_number(row.get("return_1m")) or -999, reverse=True)[:3]
+    laggards = sorted(candidates, key=lambda row: _optional_number(row.get("return_1m")) or 999)[:2]
+    leader_text = ", ".join(f"{row.get('symbol')} {_format_metric(_optional_number(row.get('return_1m')), '%')}" for row in leaders)
+    laggard_text = ", ".join(f"{row.get('symbol')} {_format_metric(_optional_number(row.get('return_1m')), '%')}" for row in laggards)
+    return f"1-month leaders: {leader_text}; laggards: {laggard_text}."
+
+
+def _weighted_environment_score(rows: list[dict[str, Any]]) -> float | None:
+    weighted = []
+    total_weight = 0.0
+    for row in rows:
+        score = _optional_number(row.get("score"))
+        weight = _optional_number(row.get("weight")) or 0.0
+        if score is None or weight <= 0:
+            continue
+        weighted.append(score * weight)
+        total_weight += weight
+    if not weighted or total_weight <= 0:
+        return _average([_optional_number(row.get("score")) for row in rows])
+    return round(sum(weighted) / total_weight, 2)
+
+
+def _environment_bucket(category: str, score: float | None, evidence: str, portfolio_effect: str, next_action: str, weight: float | None = None, source: str | None = None) -> dict[str, Any]:
     normalized = round(max(0, min(100, score)), 2) if score is not None else None
     return {
         "category": category,
@@ -954,6 +1208,8 @@ def _environment_bucket(category: str, score: float | None, evidence: str, portf
         "evidence": evidence,
         "portfolio_effect": portfolio_effect,
         "next_action": next_action,
+        "weight": weight,
+        "source": source,
     }
 
 
@@ -1030,6 +1286,14 @@ def _median(values: list[float | None]) -> float | None:
     if len(cleaned) % 2:
         return round(cleaned[mid], 4)
     return round((cleaned[mid - 1] + cleaned[mid]) / 2, 4)
+
+
+def _percentile_rank(values: list[float | None], current: float | None) -> float | None:
+    cleaned = sorted(value for value in values if value is not None and value == value)
+    if current is None or len(cleaned) < 2:
+        return None
+    below = sum(1 for value in cleaned if value < current)
+    return round((below / (len(cleaned) - 1)) * 100, 2)
 
 
 def _optional_number(value: Any) -> float | None:

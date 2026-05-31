@@ -410,6 +410,16 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "agent_recommendations",
             "paper_orders",
             "daily_brief",
+            "feed_signals",
+            "universe_screen",
+            "manual_watchlist",
+            "source_consensus",
+            "ownership_consensus",
+            "market_context",
+            "market_valuation_reference_charts",
+            "market_valuation_charts",
+            "market_environment_assets",
+            "market_environment_model",
             "exposure_clusters",
             "correlation_edges",
             "portfolio_risk_cards",
@@ -482,7 +492,9 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     source_consensus = panel_data.rows("source_consensus")
     ownership_consensus = panel_data.rows("ownership_consensus")
     market_context = panel_data.rows("market_context")
+    market_valuation_reference_charts = panel_data.rows("market_valuation_reference_charts")
     market_valuation_charts = panel_data.rows("market_valuation_charts")
+    market_environment_assets = panel_data.rows("market_environment_assets")
     market_environment_model = panel_data.rows("market_environment_model")
     portfolio_risk_cards = panel_data.rows("portfolio_risk_cards")
     review_actions = panel_data.rows("review_actions")
@@ -519,7 +531,9 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "source_consensus": len(source_consensus),
             "ownership_consensus": len(ownership_consensus),
             "market_context": len(market_context),
+            "market_valuation_reference_charts": len(market_valuation_reference_charts),
             "market_valuation_charts": len(market_valuation_charts),
+            "market_environment_assets": len(market_environment_assets),
             "market_environment_model": len(market_environment_model),
             "portfolio_risk_cards": len(portfolio_risk_cards),
             "review_actions": len(review_actions),
@@ -544,7 +558,9 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "source_consensus": source_consensus[:12],
         "ownership_consensus": ownership_consensus[:12],
         "market_context": market_context[:12],
+        "market_valuation_reference_charts": market_valuation_reference_charts[:8],
         "market_valuation_charts": market_valuation_charts[:24],
+        "market_environment_assets": market_environment_assets[:80],
         "market_environment_model": market_environment_model[:12],
         "portfolio_risk_cards": portfolio_risk_cards[:8],
         "review_actions": review_actions[:8],
@@ -612,7 +628,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "market": [
             "market_context",
+            "market_valuation_reference_charts",
             "market_valuation_charts",
+            "market_environment_assets",
             "market_environment_model",
             "portfolio_risk_cards",
             "exposure_clusters",

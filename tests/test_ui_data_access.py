@@ -99,7 +99,9 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
             "source_consensus": [{"source_name": "Arco / Birdclaw"}],
             "ownership_consensus": [{"symbol": "NVDA", "holders": 2}],
             "market_context": [{"metric": "Position sizing posture"}],
+            "market_valuation_reference_charts": [{"metric": "sp500_forward_pe"}],
             "market_valuation_charts": [{"symbol": "MARKET", "scope": "whole_market"}],
+            "market_environment_assets": [{"symbol": "SPY", "group_name": "Market"}],
             "market_environment_model": [{"category": "Overall", "score": 55}],
         },
     )
@@ -127,7 +129,9 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_context"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_valuation_reference_charts"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_valuation_charts"]["count"] == 1
+    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_environment_assets"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_environment_model"]["count"] == 1
 
 

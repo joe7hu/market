@@ -8,6 +8,7 @@ from typing import Any, Callable
 from investment_panel.analysis.correlation import store_correlation_runs
 from investment_panel.analysis.earnings_setup import store_earnings_setups
 from investment_panel.analysis.liquidity import store_liquidity_metrics
+from investment_panel.analysis.market_environment import store_market_environment_sources
 from investment_panel.analysis.options_payoff import store_options_payoff_scenarios
 from investment_panel.analysis.sepa import store_sepa_analyses
 from investment_panel.analysis.valuation import store_valuation_models
@@ -38,6 +39,7 @@ ANALYSIS_STEPS: tuple[AnalysisStep, ...] = (
     AnalysisStep("earnings_setups", lambda con, symbols, _config: store_earnings_setups(con, symbols)),
     AnalysisStep("options_payoff_scenarios", lambda con, symbols, _config: store_options_payoff_scenarios(con, symbols)),
     AnalysisStep("valuation_rows", lambda con, symbols, _config: store_valuation_models(con, symbols)),
+    AnalysisStep("market_environment_rows", lambda con, _symbols, _config: store_market_environment_sources(con)),
 )
 
 
