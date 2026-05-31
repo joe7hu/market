@@ -94,6 +94,8 @@ export type PanelData = {
   sourceConsensus: TablePayload;
   ownershipConsensus: TablePayload;
   marketContext: TablePayload;
+  marketValuationCharts: TablePayload;
+  marketEnvironmentModel: TablePayload;
   exposureClusters: TablePayload;
   correlationEdges: TablePayload;
   portfolioRiskCards: TablePayload;
@@ -158,6 +160,8 @@ export type PanelEndpoint =
   | "sourceConsensus"
   | "ownershipConsensus"
   | "marketContext"
+  | "marketValuationCharts"
+  | "marketEnvironmentModel"
   | "exposureClusters"
   | "correlationEdges"
   | "portfolioRiskCards"

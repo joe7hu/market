@@ -186,6 +186,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
+    if os.environ.get("MARKET_DUCKDB_PATH"):
+        raw.setdefault("database", {})["duckdb_path"] = os.environ["MARKET_DUCKDB_PATH"]
 
     base = project_root()
     database = DatabaseConfig(

@@ -94,6 +94,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "source_consensus": source_consensus(con),
             "ownership_consensus": ownership_consensus(con),
             "market_context": market_context(con),
+            "market_valuation_charts": market_valuation_charts(con, active_watchlist),
+            "market_environment_model": market_environment_model(con, active_watchlist),
             "exposure_clusters": exposure_clusters(con),
             "correlation_edges": correlation_edges(con),
             "portfolio_risk_cards": portfolio_risk_cards(con),
@@ -661,6 +663,409 @@ def market_context(con: Any) -> list[dict[str, Any]]:
             }
         )
     return [_compact_empty_fields(row) for row in rows[:12]]
+
+
+def market_valuation_charts(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Watchlist and whole-market valuation chart rows for the Market page."""
+
+    symbols = _market_stance_symbols(con, config_watchlist)
+    histories = technical_price_history(con, symbols, days=253)
+    quote_by_symbol = {str(row.get("symbol") or "").upper(): row for row in quotes(con)}
+    screener_by_symbol = {str(row.get("symbol") or "").upper(): row for row in screener(con)}
+    technical_by_symbol = {str(row.get("symbol") or "").upper(): row for row in technicals(con)}
+    valuation_by_symbol = _preferred_valuation_by_symbol(valuations(con))
+    rows: list[dict[str, Any]] = []
+
+    for symbol in symbols:
+        metrics = _dict_from_value(screener_by_symbol.get(symbol, {}).get("metrics"))
+        valuation = valuation_by_symbol.get(symbol, {})
+        quote = quote_by_symbol.get(symbol, {})
+        history = histories.get(symbol, [])
+        latest_price = _optional_number(quote.get("price")) or _last_history_close(history)
+        fair_value = _optional_number(valuation.get("fair_value"))
+        upside = _optional_number(valuation.get("upside_pct"))
+        forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe")
+        ps_ratio = _ps_from_fundamentals(metrics, {})
+        market_cap = _metric_number(metrics, "market_cap", "marketCap", "market_cap_basic", "market_capitalization")
+        chart_points = _valuation_chart_points(history, latest_price, fair_value)
+        rows.append(
+            _compact_empty_fields(
+                {
+                    "symbol": symbol,
+                    "name": screener_by_symbol.get(symbol, {}).get("name") or symbol,
+                    "scope": _market_symbol_scope(symbol, quote, config_watchlist),
+                    "latest_price": latest_price,
+                    "change_pct": quote.get("change_pct"),
+                    "fair_value": fair_value,
+                    "upside_pct": upside,
+                    "forward_pe": forward_pe,
+                    "ps_ratio": ps_ratio,
+                    "market_cap": market_cap,
+                    "valuation_posture": _valuation_posture(upside, forward_pe, ps_ratio),
+                    "valuation_score": _valuation_score(upside, forward_pe, ps_ratio),
+                    "technical_score": technical_by_symbol.get(symbol, {}).get("technical_score"),
+                    "return_60d": technical_by_symbol.get(symbol, {}).get("return_60d"),
+                    "method": valuation.get("method"),
+                    "confidence": _dict_from_value(valuation.get("diagnostics")).get("confidence"),
+                    "source": valuation.get("method") or screener_by_symbol.get(symbol, {}).get("source") or quote.get("source"),
+                    "history": chart_points,
+                    "coverage": _valuation_coverage(latest_price, fair_value, forward_pe, ps_ratio, history),
+                    "next_action": _valuation_next_action(symbol, upside, forward_pe, ps_ratio),
+                }
+            )
+        )
+
+    aggregate = _market_valuation_aggregate(rows)
+    return [aggregate, *rows] if aggregate else rows
+
+
+def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Deterministic market environment model for sizing posture."""
+
+    valuation_rows = market_valuation_charts(con, config_watchlist)
+    ticker_rows = [row for row in valuation_rows if row.get("scope") != "whole_market"]
+    technical_rows = [row for row in technicals(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
+    liquidity_rows = [row for row in liquidity(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
+    risk_rows = portfolio_risk_cards(con)
+    correlation_rows = correlation_edges(con)
+    earnings_rows = [row for row in earnings_setups(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
+    technical_scores = [score for score in (_optional_number(row.get("technical_score")) for row in technical_rows) if score is not None]
+    breadth_score = (_share([score >= 55 for score in technical_scores]) * 100) if technical_scores else None
+
+    buckets = [
+        _environment_bucket(
+            "Valuation",
+            _average([_optional_number(row.get("valuation_score")) for row in ticker_rows]),
+            f"{_format_metric(_median([_optional_number(row.get('forward_pe')) for row in ticker_rows]), 'x')} median forward P/E; {_format_metric(_median([_optional_number(row.get('upside_pct')) for row in ticker_rows]), '%')} median fair-value gap.",
+            "Lean into new risk only when discounts compensate for thesis risk.",
+            "Use the valuation chart outliers as the first review queue.",
+        ),
+        _environment_bucket(
+            "Trend",
+            _average([_optional_number(row.get("technical_score")) for row in technical_rows]),
+            f"{_format_metric(_average([_optional_number(row.get('return_60d')) * 100 for row in technical_rows if _optional_number(row.get('return_60d')) is not None]), '%')} average 60-day return across covered watchlist names.",
+            "Positive trend supports normal sizing; weak trend argues for staged entries.",
+            "Check whether owned names lead or lag the watchlist tape.",
+        ),
+        _environment_bucket(
+            "Breadth",
+            breadth_score,
+            f"{_format_metric(breadth_score, '%')} of covered names have constructive technical scores.",
+            "Narrow breadth raises single-name selection risk.",
+            "Prefer source-backed names that are working despite weak breadth.",
+        ),
+        _environment_bucket(
+            "Liquidity",
+            _liquidity_score(liquidity_rows),
+            f"{len(liquidity_rows)} liquidity rows loaded; {_format_metric(_median([_optional_number(row.get('avg_dollar_volume')) for row in liquidity_rows]), '$')} median dollar volume.",
+            "Thin liquidity should cap position size even when thesis quality is high.",
+            "Avoid chasing low-volume watchlist names without a limit plan.",
+        ),
+        _environment_bucket(
+            "Portfolio Risk",
+            _portfolio_environment_score(risk_rows, correlation_rows),
+            f"{len(risk_rows)} portfolio risk cards and {len(correlation_rows)} major correlation edges currently affect the model.",
+            "Risk model overrides market optimism when concentration or correlation is elevated.",
+            "Review the highest-severity risk card before adding exposure.",
+        ),
+        _environment_bucket(
+            "Earnings Setup",
+            _average([_optional_number(row.get("score")) for row in earnings_rows]),
+            f"{len(earnings_rows)} earnings setup rows loaded for watched names.",
+            "Event risk should change timing more than thesis conviction.",
+            "Stage entries around high-score setups only when valuation is not stretched.",
+        ),
+    ]
+    scored = [bucket for bucket in buckets if bucket.get("score") is not None]
+    overall_score = _average([_optional_number(bucket.get("score")) for bucket in scored])
+    overall = _environment_bucket(
+        "Overall",
+        overall_score,
+        _overall_environment_summary(scored),
+        _overall_portfolio_effect(overall_score),
+        _overall_next_action(overall_score),
+    )
+    return [_compact_empty_fields(row) for row in [overall, *buckets]]
+
+
+def _market_stance_symbols(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[str]:
+    symbols: list[str] = []
+    for item in config_watchlist or []:
+        symbols.append(_normalize_symbol_token(item.get("symbol")))
+    for row in manual_watchlist_rows(con, include_excluded=False):
+        symbols.append(_normalize_symbol_token(row.get("symbol")))
+    for row in portfolio(con):
+        symbols.append(_normalize_symbol_token(row.get("symbol")))
+    for row in tradingview_watchlists(con):
+        symbols.extend(_symbols_from_value(row.get("symbols")))
+    for row in discovered_universe(con):
+        if _is_watch_universe(row):
+            symbols.append(_normalize_symbol_token(row.get("symbol")))
+    for benchmark in ("SPY", "QQQ", "IWM"):
+        symbols.append(benchmark)
+    return sorted({symbol for symbol in symbols if symbol})
+
+
+def _preferred_valuation_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    priority = {"blended_dcf_relative": 0, "dcf_base_case": 1, "relative_revenue_multiple": 2, "fundamental_proxy": 3}
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        current = output.get(symbol)
+        if current is None or priority.get(str(row.get("method") or ""), 99) < priority.get(str(current.get("method") or ""), 99):
+            output[symbol] = row
+    return output
+
+
+def _valuation_chart_points(history: list[dict[str, Any]], latest_price: float | None, fair_value: float | None) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for point in history[-180:]:
+        close = _number_from_any(point.get("close"))
+        if not close:
+            continue
+        row = {"date": str(point.get("date") or ""), "price": close}
+        if latest_price and fair_value:
+            row["fair_value"] = fair_value
+            row["discount_pct"] = ((fair_value - close) / close) * 100
+        points.append(row)
+    return points
+
+
+def _market_valuation_aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    components = [row for row in rows if row.get("history") or row.get("forward_pe") or row.get("upside_pct")]
+    if not components:
+        return {}
+    aggregate_history = _aggregate_normalized_history([row.get("history") for row in components if isinstance(row.get("history"), list)])
+    median_upside = _median([_optional_number(row.get("upside_pct")) for row in components])
+    median_forward_pe = _median([_optional_number(row.get("forward_pe")) for row in components])
+    median_ps = _median([_optional_number(row.get("ps_ratio")) for row in components])
+    score = _valuation_score(median_upside, median_forward_pe, median_ps)
+    return _compact_empty_fields(
+        {
+            "symbol": "MARKET",
+            "name": "Watchlist market",
+            "scope": "whole_market",
+            "component_count": len(components),
+            "forward_pe": median_forward_pe,
+            "ps_ratio": median_ps,
+            "upside_pct": median_upside,
+            "valuation_posture": _valuation_posture(median_upside, median_forward_pe, median_ps),
+            "valuation_score": score,
+            "history": aggregate_history,
+            "coverage": f"{len(components)} covered names",
+            "next_action": _valuation_next_action("MARKET", median_upside, median_forward_pe, median_ps),
+        }
+    )
+
+
+def _aggregate_normalized_history(histories: list[Any]) -> list[dict[str, Any]]:
+    by_date: dict[str, list[float]] = {}
+    for history in histories:
+        if not isinstance(history, list):
+            continue
+        valid = [point for point in history if isinstance(point, dict) and _number_from_any(point.get("price"))]
+        if not valid:
+            continue
+        base = _number_from_any(valid[0].get("price"))
+        if not base:
+            continue
+        for point in valid:
+            date = str(point.get("date") or "")
+            price = _number_from_any(point.get("price"))
+            if date and price:
+                by_date.setdefault(date, []).append((price / base) * 100)
+    return [{"date": date, "price": round(sum(values) / len(values), 2)} for date, values in sorted(by_date.items())[-180:]]
+
+
+def _market_symbol_scope(symbol: str, quote: dict[str, Any], config_watchlist: list[dict[str, Any]] | None = None) -> str:
+    if symbol in {"SPY", "QQQ", "IWM"}:
+        return "benchmark"
+    configured = {str(item.get("symbol") or "").upper() for item in config_watchlist or []}
+    if symbol in configured:
+        return "watchlist"
+    if quote:
+        return "watchlist"
+    return "coverage_gap"
+
+
+def _valuation_coverage(latest_price: float | None, fair_value: float | None, forward_pe: float | None, ps_ratio: float | None, history: list[dict[str, Any]]) -> str:
+    missing = []
+    if not latest_price:
+        missing.append("price")
+    if not fair_value and not forward_pe and not ps_ratio:
+        missing.append("valuation")
+    if not history:
+        missing.append("history")
+    return "complete" if not missing else f"missing {', '.join(missing)}"
+
+
+def _valuation_posture(upside_pct: float | None, forward_pe: float | None, ps_ratio: float | None) -> str:
+    if upside_pct is None and not forward_pe and not ps_ratio:
+        return "missing"
+    upside = _number_from_any(upside_pct)
+    pe = _number_from_any(forward_pe)
+    ps = _number_from_any(ps_ratio)
+    if upside >= 20:
+        return "discounted"
+    if upside <= -20 or pe >= 45 or ps >= 18:
+        return "stretched"
+    if upside >= 5 or (pe and pe <= 22) or (ps and ps <= 6):
+        return "fair-to-attractive"
+    return "fair"
+
+
+def _valuation_score(upside_pct: float | None, forward_pe: float | None, ps_ratio: float | None) -> float | None:
+    values = []
+    upside = _number_from_any(upside_pct)
+    pe = _number_from_any(forward_pe)
+    ps = _number_from_any(ps_ratio)
+    if upside:
+        values.append(max(0, min(100, 50 + upside)))
+    if pe:
+        values.append(max(0, min(100, 85 - pe)))
+    if ps:
+        values.append(max(0, min(100, 80 - (ps * 3))))
+    return round(sum(values) / len(values), 2) if values else None
+
+
+def _valuation_next_action(symbol: str, upside_pct: float | None, forward_pe: float | None, ps_ratio: float | None) -> str:
+    posture = _valuation_posture(upside_pct, forward_pe, ps_ratio)
+    if symbol == "MARKET":
+        if posture == "stretched":
+            return "Require stronger thesis evidence before increasing market exposure."
+        if posture == "discounted":
+            return "Review watchlist names where thesis quality and valuation now align."
+        return "Keep sizing normal and let source-backed names outrank broad exposure."
+    if posture == "stretched":
+        return "Demand catalyst or source-confirmed thesis before adding."
+    if posture == "discounted":
+        return "Check thesis and invalidation before promoting to active research."
+    return "Keep on watch unless evidence or price changes."
+
+
+def _environment_bucket(category: str, score: float | None, evidence: str, portfolio_effect: str, next_action: str) -> dict[str, Any]:
+    normalized = round(max(0, min(100, score)), 2) if score is not None else None
+    return {
+        "category": category,
+        "score": normalized,
+        "posture": _environment_posture(normalized),
+        "evidence": evidence,
+        "portfolio_effect": portfolio_effect,
+        "next_action": next_action,
+    }
+
+
+def _environment_posture(score: float | None) -> str:
+    if score is None:
+        return "not enough data"
+    if score >= 70:
+        return "constructive"
+    if score >= 45:
+        return "mixed"
+    return "defensive"
+
+
+def _liquidity_score(rows: list[dict[str, Any]]) -> float | None:
+    if not rows:
+        return None
+    grade_scores = {"A": 90, "B": 75, "C": 55, "D": 35, "F": 15}
+    values = []
+    for row in rows:
+        grade = str(row.get("grade") or "").upper()[:1]
+        if grade in grade_scores:
+            values.append(grade_scores[grade])
+        elif _number_from_any(row.get("avg_dollar_volume")):
+            values.append(min(90, max(30, _number_from_any(row.get("avg_dollar_volume")) / 1_000_000)))
+    return _average(values)
+
+
+def _portfolio_environment_score(risk_rows: list[dict[str, Any]], correlation_rows: list[dict[str, Any]]) -> float | None:
+    if not risk_rows and not correlation_rows:
+        return None
+    severity_penalty = 0
+    for row in risk_rows:
+        severity = str(row.get("severity") or row.get("level") or "").lower()
+        severity_penalty += 22 if severity in {"critical", "high"} else 12 if severity in {"medium", "warn", "warning"} else 5
+    correlation_penalty = min(25, len(correlation_rows) * 4)
+    return max(0, 85 - severity_penalty - correlation_penalty)
+
+
+def _overall_environment_summary(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No environment inputs are populated yet."
+    constructive = [row["category"] for row in rows if row.get("posture") == "constructive"]
+    defensive = [row["category"] for row in rows if row.get("posture") == "defensive"]
+    if defensive:
+        return f"Defensive pressure from {', '.join(defensive[:2])}; constructive support from {', '.join(constructive[:2]) or 'none'}."
+    return f"Constructive support from {', '.join(constructive[:3]) or 'mixed inputs'}."
+
+
+def _overall_portfolio_effect(score: float | None) -> str:
+    if score is None:
+        return "Do not change sizing until more market inputs are loaded."
+    if score >= 70:
+        return "Environment allows normal-to-full research sizing when ticker evidence is strong."
+    if score >= 45:
+        return "Environment supports staged sizing and tighter invalidation checks."
+    return "Environment argues for defensive sizing and higher evidence thresholds."
+
+
+def _overall_next_action(score: float | None) -> str:
+    if score is None:
+        return "Refresh free market sources and decision models."
+    if score >= 70:
+        return "Prioritize discounted watchlist names with constructive trend and source support."
+    if score >= 45:
+        return "Separate cheap-but-weak names from expensive leaders before adding exposure."
+    return "Review risk cards and wait for breadth or valuation improvement before adding exposure."
+
+
+def _median(values: list[float | None]) -> float | None:
+    cleaned = sorted(value for value in values if value is not None and value == value)
+    if not cleaned:
+        return None
+    mid = len(cleaned) // 2
+    if len(cleaned) % 2:
+        return round(cleaned[mid], 4)
+    return round((cleaned[mid - 1] + cleaned[mid]) / 2, 4)
+
+
+def _optional_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    number = _number_from_any(value)
+    return number if number == number else None
+
+
+def _average(values: list[float | None]) -> float | None:
+    cleaned = [value for value in values if value is not None and value == value]
+    return round(sum(cleaned) / len(cleaned), 4) if cleaned else None
+
+
+def _share(values: list[bool]) -> float:
+    return sum(1 for value in values if value) / len(values) if values else 0.0
+
+
+def _format_metric(value: float | None, unit: str) -> str:
+    if value is None:
+        return "n/a"
+    if unit == "$":
+        return f"${value / 1_000_000:.1f}M" if abs(value) >= 1_000_000 else f"${value:,.0f}"
+    if unit == "%":
+        return f"{value:+.1f}%"
+    if unit == "x":
+        return f"{value:.1f}x"
+    return f"{value:.1f}"
+
+
+def _last_history_close(history: list[dict[str, Any]]) -> float:
+    for point in reversed(history):
+        close = _number_from_any(point.get("close"))
+        if close:
+            return close
+    return 0.0
 
 
 def _symbols_from_value(value: Any) -> list[str]:

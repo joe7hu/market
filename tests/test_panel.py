@@ -3,7 +3,20 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import disclosures, feed_signals, liquidity, ownership_consensus, quotes, screener, sepa, source_consensus, technicals, universe_screen
+from investment_panel.core.panel import (
+    disclosures,
+    feed_signals,
+    liquidity,
+    market_environment_model,
+    market_valuation_charts,
+    ownership_consensus,
+    quotes,
+    screener,
+    sepa,
+    source_consensus,
+    technicals,
+    universe_screen,
+)
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -164,6 +177,82 @@ def test_universe_screen_derives_value_quality_metrics_from_loaded_fundamentals(
     assert msft["forward_pe"] == 15
     assert msft["roic"] == 20
     assert msft["forward_pe_source"] == "fundamental_proxy"
+
+
+def test_market_valuation_charts_include_whole_market_and_watchlist_symbols(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for symbol, price, fair_value, forward_pe in [("MSFT", 100, 125, 24), ("NVDA", 200, 160, 48)]:
+            con.execute("INSERT INTO prices_daily VALUES (?, '2026-05-14', ?, ?, ?, ?, 1000, 'test')", [symbol, price - 5, price + 5, price - 10, price - 2])
+            con.execute("INSERT INTO prices_daily VALUES (?, '2026-05-15', ?, ?, ?, ?, 1000, 'test')", [symbol, price - 2, price + 10, price - 4, price])
+            con.execute(
+                "INSERT INTO market_screener_rows VALUES ('run-1', ?, '2026-05-15T20:00:00Z', ?, ?, 'yfinance_info')",
+                [symbol, symbol, json.dumps({"market_cap": price * 1_000_000, "total_revenue": price * 100_000, "forward_pe": forward_pe})],
+            )
+            con.execute(
+                "INSERT INTO valuation_models VALUES (?, '2026-05-15', 'blended_dcf_relative', ?, ?, '{}', '{\"confidence\":\"medium_low\"}')",
+                [symbol, fair_value, ((fair_value - price) / price) * 100],
+            )
+
+        rows = market_valuation_charts(con, [{"symbol": "MSFT"}, {"symbol": "NVDA"}])
+
+    market = rows[0]
+    msft = next(row for row in rows if row["symbol"] == "MSFT")
+    nvda = next(row for row in rows if row["symbol"] == "NVDA")
+    assert market["symbol"] == "MARKET"
+    assert market["component_count"] == 2
+    assert len(market["history"]) == 2
+    assert msft["valuation_posture"] == "discounted"
+    assert nvda["valuation_posture"] == "stretched"
+    assert msft["history"][-1]["fair_value"] == 125
+
+
+def test_market_environment_model_scores_valuation_trend_and_risk(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-05-14', 90, 100, 80, 100, 1000, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-05-15', 110, 120, 100, 120, 1000, 'test')")
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'MSFT', '2026-05-15T20:00:00Z', 'Microsoft', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 3000, "total_revenue": 1000, "forward_pe": 20})],
+        )
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-15', 'blended_dcf_relative', 150, 25, '{}', '{}')")
+        con.execute(
+            "INSERT INTO technical_features VALUES ('MSFT', '2026-05-15', ?)",
+            [json.dumps({"close": 120, "return_60d": 0.12, "technical_score": 72})],
+        )
+        con.execute("INSERT INTO liquidity_metrics VALUES ('MSFT', '2026-05-15', 'A', 1000, 500000000, 1, 1, 1, '{}')")
+
+        rows = market_environment_model(con, [{"symbol": "MSFT"}])
+
+    overall = rows[0]
+    valuation = next(row for row in rows if row["category"] == "Valuation")
+    trend = next(row for row in rows if row["category"] == "Trend")
+    liquidity_row = next(row for row in rows if row["category"] == "Liquidity")
+    assert overall["category"] == "Overall"
+    assert valuation["posture"] == "constructive"
+    assert trend["posture"] == "constructive"
+    assert liquidity_row["posture"] == "constructive"
+    assert "next_action" in overall
+
+
+def test_market_environment_model_does_not_treat_missing_breadth_as_defensive(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-05-15', 110, 120, 100, 120, 1000, 'test')")
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'MSFT', '2026-05-15T20:00:00Z', 'Microsoft', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 3000, "total_revenue": 1000, "forward_pe": 20})],
+        )
+
+        rows = market_environment_model(con, [{"symbol": "MSFT"}])
+
+    breadth = next(row for row in rows if row["category"] == "Breadth")
+    assert "score" not in breadth
+    assert breadth["posture"] == "not enough data"
 
 
 def test_source_consensus_builds_per_source_ticker_history(tmp_path) -> None:

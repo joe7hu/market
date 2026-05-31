@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from importlib import import_module
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Iterable
@@ -85,6 +86,8 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         "prompt_dir": "prompts",
     }
     if not config_path.exists():
+        if os.environ.get("MARKET_DUCKDB_PATH"):
+            defaults["database"]["duckdb_path"] = os.environ["MARKET_DUCKDB_PATH"]
         return defaults
 
     try:
@@ -94,7 +97,10 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     with config_path.open("r", encoding="utf-8") as handle:
         parsed = yaml.safe_load(handle) or {}
-    return _deep_merge(defaults, parsed)
+    merged = _deep_merge(defaults, parsed)
+    if os.environ.get("MARKET_DUCKDB_PATH"):
+        merged.setdefault("database", {})["duckdb_path"] = os.environ["MARKET_DUCKDB_PATH"]
+    return merged
 
 
 def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:
@@ -476,6 +482,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     source_consensus = panel_data.rows("source_consensus")
     ownership_consensus = panel_data.rows("ownership_consensus")
     market_context = panel_data.rows("market_context")
+    market_valuation_charts = panel_data.rows("market_valuation_charts")
+    market_environment_model = panel_data.rows("market_environment_model")
     portfolio_risk_cards = panel_data.rows("portfolio_risk_cards")
     review_actions = panel_data.rows("review_actions")
     priority_rows = decision_queue or candidates
@@ -511,6 +519,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "source_consensus": len(source_consensus),
             "ownership_consensus": len(ownership_consensus),
             "market_context": len(market_context),
+            "market_valuation_charts": len(market_valuation_charts),
+            "market_environment_model": len(market_environment_model),
             "portfolio_risk_cards": len(portfolio_risk_cards),
             "review_actions": len(review_actions),
         },
@@ -534,6 +544,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "source_consensus": source_consensus[:12],
         "ownership_consensus": ownership_consensus[:12],
         "market_context": market_context[:12],
+        "market_valuation_charts": market_valuation_charts[:24],
+        "market_environment_model": market_environment_model[:12],
         "portfolio_risk_cards": portfolio_risk_cards[:8],
         "review_actions": review_actions[:8],
         "disclosures": disclosures[:8],
@@ -600,6 +612,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "market": [
             "market_context",
+            "market_valuation_charts",
+            "market_environment_model",
             "portfolio_risk_cards",
             "exposure_clusters",
             "quotes",
