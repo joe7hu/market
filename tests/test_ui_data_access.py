@@ -128,11 +128,15 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_context"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_valuation_reference_charts"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_valuation_charts"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_environment_assets"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "market")["tables"]["market_environment_model"]["count"] == 1
+    market_tables = data_access.panel_snapshot_payload(panel_data, "market")["tables"]
+    assert set(market_tables) == {
+        "market_valuation_reference_charts",
+        "market_environment_assets",
+        "market_environment_model",
+    }
+    assert market_tables["market_valuation_reference_charts"]["count"] == 1
+    assert market_tables["market_environment_assets"]["count"] == 1
+    assert market_tables["market_environment_model"]["count"] == 1
 
 
 def test_ticker_payload_excludes_health_only_operational_tables() -> None:

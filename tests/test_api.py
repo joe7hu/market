@@ -86,6 +86,20 @@ def test_api_routes_return_json() -> None:
         assert response.headers["content-type"].startswith("application/json")
 
 
+def test_market_snapshot_only_returns_market_tables() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/panel-snapshot?scope=market")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["tables"]) == {
+        "market_valuation_reference_charts",
+        "market_environment_assets",
+        "market_environment_model",
+    }
+
+
 def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     client = TestClient(app)
     response = client.post("/api/refresh-jobs/not-a-real-job")

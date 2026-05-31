@@ -147,6 +147,34 @@ def load_panel_data(config: dict[str, Any] | None = None) -> PanelData:
     return panel_data
 
 
+def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
+    """Load only the broad-market tables required by the Market page."""
+
+    active_config = config or load_config()
+    _resolve_core_helper()
+    from investment_panel.core.db import db, init_db
+    from investment_panel.core.panel import market_environment_assets, market_environment_model, market_valuation_reference_charts
+
+    db_path = _database_path(active_config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        tables = {
+            "market_valuation_reference_charts": market_valuation_reference_charts(con),
+            "market_environment_assets": market_environment_assets(con),
+            "market_environment_model": market_environment_model(con, [], include_exposure=False),
+        }
+    ready = any(tables.values())
+    return PanelData(
+        status=DataStatus(
+            ready=ready,
+            message="Loaded market environment data." if ready else "No market environment rows are loaded yet.",
+            source="duckdb",
+        ),
+        tables=tables,
+        metadata={},
+    )
+
+
 def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
     """Insert or update a manually entered portfolio position."""
 
@@ -627,15 +655,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
             "disclosures",
         ],
         "market": [
-            "market_context",
             "market_valuation_reference_charts",
-            "market_valuation_charts",
             "market_environment_assets",
             "market_environment_model",
-            "portfolio_risk_cards",
-            "exposure_clusters",
-            "quotes",
-            "valuations",
         ],
         "dashboard": [
             "decision_queue",

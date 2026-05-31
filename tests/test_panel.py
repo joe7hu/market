@@ -308,6 +308,7 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
         reference_rows = market_valuation_reference_charts(con)
         asset_rows = market_environment_assets(con)
         model_rows = market_environment_model(con, [])
+        market_only_rows = market_environment_model(con, [], include_exposure=False)
 
     assert len(reference_rows) == 2
     assert reference_rows[0]["metric"] == "sp500_forward_pe"
@@ -322,6 +323,14 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
     assert categories["Market Breadth"]["source"] == "Full Stack Investor market model sheet"
     assert categories["Risk Appetite"]["score"] is not None
     assert categories["Leadership"]["score"] is not None
+    assert {row["category"] for row in market_only_rows} == {
+        "Overall",
+        "Valuation",
+        "Price Trend",
+        "Market Breadth",
+        "Risk Appetite",
+        "Leadership",
+    }
 
 
 def test_market_environment_model_scores_valuation_trend_and_risk(tmp_path) -> None:

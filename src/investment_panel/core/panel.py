@@ -708,14 +708,7 @@ def market_valuation_reference_charts(con: Any) -> list[dict[str, Any]]:
                     "posture": _environment_posture(score),
                     "source": latest.get("source"),
                     "source_url": latest.get("source_url"),
-                    "history": [
-                        {
-                            "date": str(point.get("as_of")),
-                            "value": point.get("value"),
-                            "index_price": price_by_month.get(str(point.get("as_of"))[:7]),
-                        }
-                        for point in points
-                    ],
+                    "history": _sample_market_metric_history(points, price_by_month),
                 }
             )
         )
@@ -804,18 +797,20 @@ def market_valuation_charts(con: Any, config_watchlist: list[dict[str, Any]] | N
     return [aggregate, *rows] if aggregate else rows
 
 
-def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | None = None, include_exposure: bool = True) -> list[dict[str, Any]]:
     """Deterministic market environment model for sizing posture."""
 
-    valuation_rows = market_valuation_charts(con, config_watchlist)
     valuation_reference_rows = market_valuation_reference_charts(con)
     asset_rows = market_environment_assets(con)
+    needs_watchlist_fallback = not valuation_reference_rows or not asset_rows
+    valuation_rows = market_valuation_charts(con, config_watchlist) if include_exposure or needs_watchlist_fallback else []
     ticker_rows = [row for row in valuation_rows if row.get("scope") != "whole_market"]
-    technical_rows = [row for row in technicals(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
-    liquidity_rows = [row for row in liquidity(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
-    risk_rows = portfolio_risk_cards(con)
-    correlation_rows = correlation_edges(con)
-    earnings_rows = [row for row in earnings_setups(con) if str(row.get("symbol") or "").upper() in _market_stance_symbols(con, config_watchlist)]
+    stance_symbols = _market_stance_symbols(con, config_watchlist) if include_exposure or needs_watchlist_fallback else []
+    technical_rows = [row for row in technicals(con) if str(row.get("symbol") or "").upper() in stance_symbols] if stance_symbols else []
+    liquidity_rows = [row for row in liquidity(con) if str(row.get("symbol") or "").upper() in stance_symbols] if include_exposure and stance_symbols else []
+    risk_rows = portfolio_risk_cards(con) if include_exposure else []
+    correlation_rows = correlation_edges(con) if include_exposure else []
+    earnings_rows = [row for row in earnings_setups(con) if str(row.get("symbol") or "").upper() in stance_symbols] if include_exposure and stance_symbols else []
     technical_scores = [score for score in (_optional_number(row.get("technical_score")) for row in technical_rows) if score is not None]
     breadth_score = (_share([score >= 55 for score in technical_scores]) * 100) if technical_scores else None
     broad_valuation_score = _average([_optional_number(row.get("score")) for row in valuation_reference_rows])
@@ -876,34 +871,39 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             weight=0.10,
             source="Full Stack Investor market model sheet" if asset_rows else "Not loaded",
         ),
-        _environment_bucket(
-            "Liquidity",
-            _liquidity_score(liquidity_rows),
-            f"{len(liquidity_rows)} liquidity rows loaded; {_format_metric(_median([_optional_number(row.get('avg_dollar_volume')) for row in liquidity_rows]), '$')} median dollar volume.",
-            "Thin liquidity should cap position size even when thesis quality is high.",
-            "Avoid chasing low-volume watchlist names without a limit plan.",
-            weight=0.05,
-            source="Watchlist liquidity metrics",
-        ),
-        _environment_bucket(
-            "Portfolio Risk",
-            _portfolio_environment_score(risk_rows, correlation_rows),
-            f"{len(risk_rows)} portfolio risk cards and {len(correlation_rows)} major correlation edges currently affect the model.",
-            "Risk model overrides market optimism when concentration or correlation is elevated.",
-            "Review the highest-severity risk card before adding exposure.",
-            weight=0.05,
-            source="Portfolio risk model",
-        ),
-        _environment_bucket(
-            "Earnings Setup",
-            _average([_optional_number(row.get("score")) for row in earnings_rows]),
-            f"{len(earnings_rows)} earnings setup rows loaded for watched names.",
-            "Event risk should change timing more than thesis conviction.",
-            "Stage entries around high-score setups only when valuation is not stretched.",
-            weight=0.05,
-            source="Watchlist earnings setup",
-        ),
     ]
+    if include_exposure:
+        buckets.extend(
+            [
+                _environment_bucket(
+                    "Liquidity",
+                    _liquidity_score(liquidity_rows),
+                    f"{len(liquidity_rows)} liquidity rows loaded; {_format_metric(_median([_optional_number(row.get('avg_dollar_volume')) for row in liquidity_rows]), '$')} median dollar volume.",
+                    "Thin liquidity should cap position size even when thesis quality is high.",
+                    "Avoid chasing low-volume watchlist names without a limit plan.",
+                    weight=0.05,
+                    source="Watchlist liquidity metrics",
+                ),
+                _environment_bucket(
+                    "Portfolio Risk",
+                    _portfolio_environment_score(risk_rows, correlation_rows),
+                    f"{len(risk_rows)} portfolio risk cards and {len(correlation_rows)} major correlation edges currently affect the model.",
+                    "Risk model overrides market optimism when concentration or correlation is elevated.",
+                    "Review the highest-severity risk card before adding exposure.",
+                    weight=0.05,
+                    source="Portfolio risk model",
+                ),
+                _environment_bucket(
+                    "Earnings Setup",
+                    _average([_optional_number(row.get("score")) for row in earnings_rows]),
+                    f"{len(earnings_rows)} earnings setup rows loaded for watched names.",
+                    "Event risk should change timing more than thesis conviction.",
+                    "Stage entries around high-score setups only when valuation is not stretched.",
+                    weight=0.05,
+                    source="Watchlist earnings setup",
+                ),
+            ]
+        )
     scored = [bucket for bucket in buckets if bucket.get("score") is not None]
     overall_score = _weighted_environment_score(scored)
     overall = _environment_bucket(
@@ -1107,6 +1107,22 @@ def _price_overlay_by_month(points: list[dict[str, Any]]) -> dict[str, float]:
         if as_of and price is not None:
             by_month[as_of[:7]] = price
     return by_month
+
+
+def _sample_market_metric_history(points: list[dict[str, Any]], price_by_month: dict[str, float], max_points: int = 520) -> list[dict[str, Any]]:
+    if len(points) > max_points:
+        stride = max(1, (len(points) + max_points - 1) // max_points)
+        selected = [point for index, point in enumerate(points) if index % stride == 0 or index == len(points) - 1]
+    else:
+        selected = points
+    return [
+        {
+            "date": str(point.get("as_of")),
+            "value": point.get("value"),
+            "index_price": price_by_month.get(str(point.get("as_of"))[:7]),
+        }
+        for point in selected
+    ]
 
 
 def _asset_trend_score(rows: list[dict[str, Any]]) -> float | None:

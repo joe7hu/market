@@ -17,6 +17,7 @@ from app.data_access import (
     database_path,
     dashboard_payload,
     load_config,
+    load_market_panel_data,
     load_panel_data,
     panel_snapshot_payload,
     delete_portfolio_position,
@@ -84,6 +85,9 @@ def create_app() -> FastAPI:
 
     @app.get("/api/panel-snapshot")
     def panel_snapshot(scope: str = "dashboard") -> dict[str, Any]:
+        if scope == "market":
+            config = load_config()
+            return panel_snapshot_payload(load_market_panel_data(config), scope)
         _, panel_data = _context()
         return panel_snapshot_payload(panel_data, scope)
 
