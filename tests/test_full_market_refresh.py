@@ -56,6 +56,9 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
     assert result["ok"] is True
     assert [step["name"] for step in result["steps"]] == calls
     assert all(step["ok"] for step in result["steps"])
+    free_sources = next(step for step in result["steps"] if step["name"] == "free_sources_and_analyses")
+    assert free_sources["result"]["kwargs"]["equity_data"] is True
+    assert free_sources["result"]["kwargs"]["analyses"] is True
     status = json.loads(Path(result["status_path"]).read_text(encoding="utf-8"))
     assert status["job"] == "full_market_refresh"
     assert status["ok"] is True

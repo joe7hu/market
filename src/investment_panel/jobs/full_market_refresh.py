@@ -91,7 +91,7 @@ def refresh_steps(
     return [
         RefreshStep("arco_import", lambda: update_arco_data.run(config_path)),
         RefreshStep("daily_screen", lambda: daily_screen.run(config_path, online_check=online_check)),
-        RefreshStep("free_sources_and_analyses", lambda: update_free_sources.run(config_path, equity_data=False, analyses=True)),
+        RefreshStep("free_sources_and_analyses", lambda: update_free_sources.run(config_path, equity_data=True, analyses=True)),
         RefreshStep("broker_sources", lambda: update_broker_sources.run(config_path)),
         RefreshStep(
             "disclosures",

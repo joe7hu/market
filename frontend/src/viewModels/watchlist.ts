@@ -2,12 +2,10 @@ import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
 
-export type WatchlistTab = "active" | "watched" | "owned" | "candidates" | "momentum" | "quality" | "value";
-export type WatchlistSort = "rank" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol";
+export type WatchlistSort = "rank" | "state" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol" | "price" | "ps" | "pe" | "roic" | "rating" | "returnYtd" | "return1y" | "rsRank1m";
 export type WatchState = "owned" | "watched" | "candidate";
 
 export type WatchlistFilters = {
-  tab: WatchlistTab;
   query: string;
   minRating: number;
   maxForwardPe: number | null;
@@ -23,6 +21,7 @@ export type WatchlistRow = {
   price: number;
   changePct: number;
   marketCap: number;
+  psRatio: number;
   forwardPe: number;
   roic: number;
   rating: number;
@@ -31,22 +30,34 @@ export type WatchlistRow = {
   nextAction: string;
   valueSignal: string;
   valueUpsidePct: number;
+  returnYtd: number;
+  return1y: number;
   return20d: number;
   return60d: number;
   technicalScore: number;
   drawdownFromHigh: number;
-  volumeRatio: number;
   ma20Up: boolean | null;
   ma50Up: boolean | null;
   ma200Up: boolean | null;
   sourceCount: number;
   trend: number[];
+  rsRank1m: number;
+  rsRankBars: number[];
 };
 
 export type WatchlistViewModel = {
   rows: WatchlistRow[];
   visibleRows: WatchlistRow[];
-  counts: Record<WatchlistTab, number>;
+  watchedRows: WatchlistRow[];
+  unwatchedRows: WatchlistRow[];
+  counts: {
+    watched: number;
+    owned: number;
+    unwatched: number;
+    momentum: number;
+    quality: number;
+    value: number;
+  };
   metrics: {
     active: number;
     candidates: number;
@@ -60,17 +71,21 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const technicalBySymbol = indexRows(rows(data.technicals));
   const valuationBySymbol = latestValuations(rows(data.valuations));
   const allRows = rows(data.universeScreen).map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, localStates));
-  const rowsWithSymbols = allRows.filter((row) => row.symbol);
+  const rowsWithSymbols = assignRsRanks(allRows.filter((row) => row.symbol));
   const counts = tabCounts(rowsWithSymbols);
-  const visibleRows = sortRows(rowsWithSymbols.filter((row) => filterRow(row, filters)), filters.sort).slice(0, 160);
+  const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
+  const watchedRows = sortRows(visibleRows.filter((row) => isWatched(row)), filters.sort);
+  const unwatchedRows = sortRows(visibleRows.filter((row) => !isWatched(row)), filters.sort);
 
   return {
     rows: rowsWithSymbols,
-    visibleRows,
+    visibleRows: [...watchedRows, ...unwatchedRows],
+    watchedRows,
+    unwatchedRows,
     counts,
     metrics: {
-      active: counts.active,
-      candidates: counts.candidates,
+      active: counts.watched + counts.owned,
+      candidates: counts.unwatched,
       momentumLeaders: rowsWithSymbols.filter((row) => row.technicalScore >= 70).length,
       deepDrawdowns: rowsWithSymbols.filter((row) => row.drawdownFromHigh <= -0.2).length,
     },
@@ -88,6 +103,18 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const watchState = baseState === "owned" ? "owned" : localStates[symbol] ?? baseState;
   const valueUpsidePct = firstFinite([numberField(valuation, ["upside_pct"], Number.NaN), parsePercent(textField(row, ["value_signal"]))]);
 
+  const return20d = numberField(technical, ["return_20d"], Number.NaN);
+  const return60d = numberField(technical, ["return_60d"], Number.NaN);
+  const returnYtd = numberField(technical, ["return_ytd"], Number.NaN);
+  const return1y = numberField(technical, ["return_1y"], Number.NaN);
+  const drawdownFromHigh = numberField(technical, ["drawdown_from_high"], Number.NaN);
+  const ma20Up = movingAverageState(price, numberField(technical, ["ma20"], Number.NaN));
+  const ma50Up = movingAverageState(price, numberField(technical, ["ma50"], Number.NaN));
+  const ma200Up = movingAverageState(price, numberField(technical, ["ma200"], Number.NaN));
+  const oneYearTrend = priceTrendPoints(technical?.price_history_1y);
+  const sixtyDayTrend = priceTrendPoints(technical?.price_history_60d);
+  const trend = oneYearTrend ?? sixtyDayTrend ?? modeledTrendPoints(return1y, return60d, drawdownFromHigh);
+
   return {
     symbol,
     name: textField(row, ["name", "company"], symbol),
@@ -96,6 +123,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     price,
     changePct: firstFinite([numberField(row, ["change_pct"], Number.NaN), numberField(quote, ["change_pct"], Number.NaN)]),
     marketCap: numberField(row, ["market_cap"], Number.NaN),
+    psRatio: numberField(row, ["ps_ratio"], Number.NaN),
     forwardPe: numberField(row, ["forward_pe", "pe"], Number.NaN),
     roic: numberField(row, ["roic"], Number.NaN),
     rating: parseRating(textField(row, ["rating"])),
@@ -104,16 +132,19 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     nextAction: textField(row, ["next_action"], "Review against evidence before action."),
     valueSignal: textField(row, ["value_signal"], "No valuation row"),
     valueUpsidePct,
-    return20d: numberField(technical, ["return_20d"], Number.NaN),
-    return60d: numberField(technical, ["return_60d"], Number.NaN),
+    returnYtd,
+    return1y,
+    return20d,
+    return60d,
     technicalScore: numberField(technical, ["technical_score"], Number.NaN),
-    drawdownFromHigh: numberField(technical, ["drawdown_from_high"], Number.NaN),
-    volumeRatio: numberField(technical, ["volume_ratio_20_60"], Number.NaN),
-    ma20Up: movingAverageState(price, numberField(technical, ["ma20"], Number.NaN)),
-    ma50Up: movingAverageState(price, numberField(technical, ["ma50"], Number.NaN)),
-    ma200Up: movingAverageState(price, numberField(technical, ["ma200"], Number.NaN)),
+    drawdownFromHigh,
+    ma20Up,
+    ma50Up,
+    ma200Up,
     sourceCount: numberField(row, ["source_count"], 0),
-    trend: trendPoints(numberField(technical, ["return_60d"], 0), numberField(technical, ["return_20d"], 0), numberField(technical, ["drawdown_from_high"], 0)),
+    trend,
+    rsRank1m: Number.NaN,
+    rsRankBars: oneMonthBars(trend),
   };
 }
 
@@ -124,38 +155,44 @@ function filterRow(row: WatchlistRow, filters: WatchlistFilters): boolean {
   if (filters.maxForwardPe !== null && (!Number.isFinite(row.forwardPe) || row.forwardPe > filters.maxForwardPe)) return false;
   if (filters.minRoic !== null && (!Number.isFinite(row.roic) || row.roic < filters.minRoic)) return false;
 
-  if (filters.tab === "active") return row.watchState === "owned" || row.watchState === "watched";
-  if (filters.tab === "watched") return row.watchState === "watched";
-  if (filters.tab === "owned") return row.watchState === "owned";
-  if (filters.tab === "candidates") return row.watchState === "candidate";
-  if (filters.tab === "momentum") return row.technicalScore >= 70 || row.return60d >= 0.2;
-  if (filters.tab === "quality") return row.rating >= 4 || row.qualityScore >= 70 || row.roic >= 20;
-  if (filters.tab === "value") return row.valueUpsidePct >= 15;
   return true;
 }
 
 function sortRows(inputRows: WatchlistRow[], sort: WatchlistSort): WatchlistRow[] {
   const sorted = inputRows.slice();
   const numericDesc = (selector: (row: WatchlistRow) => number) => sorted.sort((a, b) => safeNumber(selector(b)) - safeNumber(selector(a)));
+  const numericAsc = (selector: (row: WatchlistRow) => number) => sorted.sort((a, b) => safeNumber(selector(a), Number.POSITIVE_INFINITY) - safeNumber(selector(b), Number.POSITIVE_INFINITY));
+  if (sort === "state") return sorted.sort((a, b) => stateRank(a.watchState) - stateRank(b.watchState) || a.symbol.localeCompare(b.symbol));
   if (sort === "momentum") return numericDesc((row) => row.technicalScore || row.return60d);
   if (sort === "quality") return numericDesc((row) => row.qualityScore);
   if (sort === "value") return numericDesc((row) => row.valueUpsidePct);
   if (sort === "marketCap") return numericDesc((row) => row.marketCap);
   if (sort === "drawdown") return sorted.sort((a, b) => safeNumber(a.drawdownFromHigh) - safeNumber(b.drawdownFromHigh));
   if (sort === "symbol") return sorted.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  if (sort === "price") return numericDesc((row) => row.price);
+  if (sort === "ps") return numericAsc((row) => row.psRatio);
+  if (sort === "pe") return numericAsc((row) => row.forwardPe);
+  if (sort === "roic") return numericDesc((row) => row.roic);
+  if (sort === "rating") return numericDesc((row) => row.rating);
+  if (sort === "returnYtd") return numericDesc((row) => row.returnYtd);
+  if (sort === "return1y") return numericDesc((row) => row.return1y);
+  if (sort === "rsRank1m") return numericDesc((row) => row.rsRank1m);
   return sorted.sort((a, b) => safeNumber(a.rank, Number.POSITIVE_INFINITY) - safeNumber(b.rank, Number.POSITIVE_INFINITY));
 }
 
-function tabCounts(inputRows: WatchlistRow[]): Record<WatchlistTab, number> {
+function tabCounts(inputRows: WatchlistRow[]): WatchlistViewModel["counts"] {
   return {
-    active: inputRows.filter((row) => row.watchState === "owned" || row.watchState === "watched").length,
     watched: inputRows.filter((row) => row.watchState === "watched").length,
     owned: inputRows.filter((row) => row.watchState === "owned").length,
-    candidates: inputRows.filter((row) => row.watchState === "candidate").length,
+    unwatched: inputRows.filter((row) => !isWatched(row)).length,
     momentum: inputRows.filter((row) => row.technicalScore >= 70 || row.return60d >= 0.2).length,
     quality: inputRows.filter((row) => row.rating >= 4 || row.qualityScore >= 70 || row.roic >= 20).length,
     value: inputRows.filter((row) => row.valueUpsidePct >= 15).length,
   };
+}
+
+function isWatched(row: WatchlistRow): boolean {
+  return row.watchState === "owned" || row.watchState === "watched";
 }
 
 function indexRows(inputRows: RowRecord[]): Map<string, RowRecord> {
@@ -208,15 +245,50 @@ function safeNumber(value: number, fallback = Number.NEGATIVE_INFINITY): number 
   return Number.isFinite(value) ? value : fallback;
 }
 
-function trendPoints(return60d: number, return20d: number, drawdown: number): number[] {
-  const baseReturn = Number.isFinite(return60d) ? return60d : 0;
-  const recentReturn = Number.isFinite(return20d) ? return20d : baseReturn / 3;
+function stateRank(state: WatchState): number {
+  if (state === "owned") return 0;
+  if (state === "watched") return 1;
+  return 2;
+}
+
+function priceTrendPoints(value: RowRecord[string]): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const closes = value
+    .map((point) => (point && typeof point === "object" && !Array.isArray(point) ? Number(point.close) : Number.NaN))
+    .filter((point) => Number.isFinite(point));
+  return closes.length >= 2 ? closes : null;
+}
+
+function modeledTrendPoints(basePeriodReturn: number, recentPeriodReturn: number, drawdown: number): number[] {
+  const baseReturn = Number.isFinite(basePeriodReturn) ? basePeriodReturn : 0;
+  const recentReturn = Number.isFinite(recentPeriodReturn) ? recentPeriodReturn : baseReturn / 3;
   const pullback = Number.isFinite(drawdown) ? Math.abs(Math.min(0, drawdown)) : 0;
-  return Array.from({ length: 12 }, (_, index) => {
-    const t = index / 11;
+  return Array.from({ length: 64 }, (_, index) => {
+    const t = index / 63;
     const drift = baseReturn * t;
-    const recent = index > 7 ? recentReturn * (t - 0.65) : 0;
+    const recent = index > 42 ? recentReturn * (t - 0.65) : 0;
     const wave = Math.sin(index * 1.7) * Math.min(0.04, pullback / 8);
     return 1 + drift + recent + wave;
   });
+}
+
+function assignRsRanks(inputRows: WatchlistRow[]): WatchlistRow[] {
+  const ranked = inputRows
+    .filter((row) => Number.isFinite(row.return20d))
+    .sort((a, b) => a.return20d - b.return20d);
+  const rankBySymbol = new Map<string, number>();
+  ranked.forEach((row, index) => {
+    const percentile = ranked.length === 1 ? 100 : 1 + Math.round((index / (ranked.length - 1)) * 98);
+    rankBySymbol.set(row.symbol, percentile);
+  });
+  return inputRows.map((row) => ({ ...row, rsRank1m: rankBySymbol.get(row.symbol) ?? Number.NaN }));
+}
+
+function oneMonthBars(points: number[]): number[] {
+  const month = points.filter((point) => Number.isFinite(point)).slice(-22);
+  if (month.length < 2) return [];
+  const min = Math.min(...month);
+  const max = Math.max(...month);
+  const spread = max - min || 1;
+  return month.map((point) => ((point - min) / spread) * 100);
 }

@@ -209,6 +209,7 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe")
         if not forward_pe:
             forward_pe = _pe_from_fundamentals(metrics, fundamental_metrics)
+        ps_ratio = _ps_from_fundamentals(metrics, fundamental_metrics)
         roic = _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital", "return_on_capital")
         if not roic:
             roic = _roic_from_fundamentals(fundamental_metrics, metrics)
@@ -218,6 +219,7 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
                 "name": universe.get("name") or screener_row.get("name") or symbol,
                 "watch_state": watch_state,
                 "market_cap": _metric_number(metrics, "market_cap", "marketCap", "market_capitalization"),
+                "ps_ratio": ps_ratio,
                 "forward_pe": forward_pe,
                 "forward_pe_source": "provider" if _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe") else "fundamental_proxy" if forward_pe else "missing",
                 "roic": roic,
@@ -864,6 +866,18 @@ def _pe_from_fundamentals(metrics: dict[str, Any], fundamental_metrics: dict[str
         net_income = revenue * margin if revenue and margin else 0.0
     if market_cap and net_income and net_income > 0:
         return round(market_cap / net_income, 2)
+    return None
+
+
+def _ps_from_fundamentals(metrics: dict[str, Any], fundamental_metrics: dict[str, Any]) -> float | None:
+    for key in ("price_to_sales", "priceToSalesTrailing12Months", "price_to_sales_ttm", "price_sales_ttm", "ps_ratio", "ev_sales", "enterprise_to_revenue"):
+        value = _number_from_any(metrics.get(key))
+        if value:
+            return round(value, 2)
+    market_cap = _metric_number(metrics, "market_cap", "marketCap", "market_cap_basic", "market_capitalization")
+    revenue = _number_from_any(metrics.get("total_revenue")) or _number_from_any(fundamental_metrics.get("revenue"))
+    if market_cap and revenue and revenue > 0:
+        return round(market_cap / revenue, 2)
     return None
 
 
@@ -1600,23 +1614,80 @@ def technicals(con: Any) -> list[dict[str, Any]]:
         FROM technical_features
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
         ORDER BY date DESC, symbol
-        LIMIT 200
+        LIMIT 1000
         """,
     )
     decoded = [decode_fields(row, ("features",)) for row in rows]
+    price_history = technical_price_history(con, [str(row.get("symbol") or "").upper() for row in decoded], days=253)
     for row in decoded:
+        symbol = str(row.get("symbol") or "").upper()
         features = row.get("features") if isinstance(row.get("features"), dict) else {}
+        history = price_history.get(symbol) or []
         row["close"] = features.get("close")
         row["ma20"] = features.get("ma20")
         row["ma50"] = features.get("ma50")
         row["ma200"] = features.get("ma200")
         row["return_20d"] = features.get("return_20d")
         row["return_60d"] = features.get("return_60d")
+        row["return_ytd"] = features.get("return_ytd") if features.get("return_ytd") is not None else period_return(history, "ytd")
+        row["return_1y"] = features.get("return_1y") if features.get("return_1y") is not None else period_return(history, "1y")
         row["technical_score"] = features.get("technical_score")
         row["drawdown_from_high"] = features.get("drawdown_from_high")
+        row["range_recovery"] = features.get("range_recovery")
         row["volume_ratio_20_60"] = features.get("volume_ratio_20_60")
+        row["price_history_1y"] = history
+        row["price_history_60d"] = history[-61:] if history else None
         row["source"] = features.get("source") or features.get("price_source")
     return [_compact_empty_fields(row) for row in decoded]
+
+
+def technical_price_history(con: Any, symbols: list[str], days: int = 253) -> dict[str, list[dict[str, Any]]]:
+    normalized = sorted({symbol for symbol in symbols if symbol})
+    if not normalized:
+        return {}
+    placeholders = ", ".join(["?"] * len(normalized))
+    history_rows = query_rows(
+        con,
+        f"""
+        SELECT symbol, date, close
+        FROM (
+            SELECT symbol, date, close,
+                   row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS recency_rank
+            FROM prices_daily
+            WHERE symbol IN ({placeholders})
+        )
+        WHERE recency_rank <= {int(days)}
+        ORDER BY symbol, date
+        """,
+        normalized,
+    )
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in history_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        close = row.get("close")
+        if not symbol or close is None:
+            continue
+        by_symbol.setdefault(symbol, []).append({"date": str(row.get("date") or ""), "close": close})
+    return by_symbol
+
+
+def period_return(history: list[dict[str, Any]], period: str) -> float | None:
+    points = [point for point in history if point.get("close") not in (None, 0)]
+    if len(points) < 2:
+        return None
+    last = points[-1]
+    last_close = _number_from_any(last.get("close"))
+    if not last_close:
+        return None
+    if period == "ytd":
+        year = str(last.get("date") or "")[:4]
+        start = next((point for point in points if str(point.get("date") or "").startswith(year)), points[0])
+    else:
+        start = points[0]
+    start_close = _number_from_any(start.get("close"))
+    if not start_close:
+        return None
+    return (last_close / start_close) - 1
 
 
 def research_packets(con: Any) -> list[dict[str, Any]]:
@@ -1902,7 +1973,7 @@ def quotes(con: Any) -> list[dict[str, Any]]:
         FROM candidates
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY priority ASC, observed_at DESC) = 1
         ORDER BY observed_at DESC, symbol
-        LIMIT 200
+        LIMIT 1000
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
@@ -1916,7 +1987,7 @@ def screener(con: Any) -> list[dict[str, Any]]:
         FROM market_screener_rows
         QUALIFY dense_rank() OVER (ORDER BY observed_at DESC) = 1
         ORDER BY observed_at DESC
-        LIMIT 200
+        LIMIT 1000
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("metrics",))) for row in rows]

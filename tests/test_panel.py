@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import disclosures, feed_signals, liquidity, ownership_consensus, quotes, sepa, source_consensus, universe_screen
+from investment_panel.core.panel import disclosures, feed_signals, liquidity, ownership_consensus, quotes, screener, sepa, source_consensus, technicals, universe_screen
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -82,6 +82,40 @@ def test_quotes_use_newest_stale_quote_when_no_fresh_source_exists(tmp_path) -> 
     assert rows[0]["freshness_status"] == "stale"
 
 
+def test_watchlist_supporting_read_models_cover_large_universe(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for index in range(205):
+            symbol = f"T{index:03d}"
+            con.execute("INSERT INTO prices_daily VALUES (?, '2026-05-14', 90, 100, 80, 100, 1000, 'test')", [symbol])
+            con.execute("INSERT INTO prices_daily VALUES (?, '2026-05-15', 110, 120, 100, 120, 1000, 'test')", [symbol])
+            con.execute(
+                "INSERT INTO technical_features VALUES (?, '2026-05-15', ?)",
+                [symbol, json.dumps({"close": 120, "return_20d": 0.1, "return_60d": 0.2, "technical_score": 70})],
+            )
+            con.execute(
+                "INSERT INTO market_screener_rows VALUES ('run-1', ?, '2026-05-15T20:00:00Z', ?, ?, 'test')",
+                [symbol, symbol, json.dumps({"market_cap": index + 1})],
+            )
+
+        quote_rows = quotes(con)
+        technical_rows = technicals(con)
+        screener_rows = screener(con)
+
+    assert len(quote_rows) == 205
+    assert len(technical_rows) == 205
+    assert len(screener_rows) == 205
+    assert "T204" in {row["symbol"] for row in quote_rows}
+    assert "T204" in {row["symbol"] for row in technical_rows}
+    assert "T204" in {row["symbol"] for row in screener_rows}
+    latest_technical = next(row for row in technical_rows if row["symbol"] == "T204")
+    assert round(latest_technical["return_ytd"], 6) == 0.2
+    assert round(latest_technical["return_1y"], 6) == 0.2
+    assert len(latest_technical["price_history_1y"]) == 2
+    assert len(latest_technical["price_history_60d"]) == 2
+
+
 def test_analysis_read_models_return_current_row_per_symbol(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
@@ -126,6 +160,7 @@ def test_universe_screen_derives_value_quality_metrics_from_loaded_fundamentals(
         rows = universe_screen(con, [{"symbol": "MSFT"}])
 
     msft = rows[0]
+    assert msft["ps_ratio"] == 3
     assert msft["forward_pe"] == 15
     assert msft["roic"] == 20
     assert msft["forward_pe_source"] == "fundamental_proxy"

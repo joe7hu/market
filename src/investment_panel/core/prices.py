@@ -11,6 +11,54 @@ import pandas as pd
 
 
 COINGECKO_IDS = {"BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana"}
+YAHOO_SYMBOL_ALIASES = {
+    "000660": "000660.KS",
+    "005380": "005380.KS",
+    "005930": "005930.KS",
+    "373220": "373220.KS",
+    "5803": "5803.T",
+    "8035": "8035.T",
+    "9984": "9984.T",
+    "ABB": "ABBNY",
+    "ABC": "COR",
+    "BLL": "BALL",
+    "BNBUSD": "BNB-USD",
+    "BTCUSD": "BTC-USD",
+    "DJI": "^DJI",
+    "ETHUSD": "ETH-USD",
+    "HINDALCO": "HINDALCO.NS",
+    "HYPEUSD": "HYPE32196-USD",
+    "HSI": "^HSI",
+    "IXIC": "^IXIC",
+    "KOSPI": "^KS11",
+    "KNOX": "KNOX.V",
+    "LPK": "LPK.DE",
+    "NI225": "^N225",
+    "NIFTY": "^NSEI",
+    "RTN": "RTX",
+    "RWE": "RWE.DE",
+    "SIVE": "SIVE.ST",
+    "SIVE.": "SIVE.ST",
+    "SOI": "SOI.PA",
+    "SPX": "^GSPC",
+    "SQ": "XYZ",
+    "TASI": "^TASI.SR",
+    "TOPIX": "1306.T",
+    "USDJPY": "JPY=X",
+    "USDKRW": "KRW=X",
+    "USDMYR": "MYR=X",
+    "USDPHP": "PHP=X",
+    "USDSGD": "SGD=X",
+    "USDTHB": "THB=X",
+    "XLMUSD": "XLM-USD",
+    "XRPUSD": "XRP-USD",
+    "ZEEL": "ZEEL.NS",
+    "399300": "399300.SZ",
+    "BPCL": "BPCL.NS",
+    "BOURSA": "BOURSA.KW",
+    "MMC": "MMCO.VI",
+    "QNBK": "QNBK.QA",
+}
 
 
 def fetch_prices(symbol: str, lookback_days: int = 260, mode: str = "online") -> pd.DataFrame:
@@ -22,9 +70,10 @@ def fetch_prices(symbol: str, lookback_days: int = 260, mode: str = "online") ->
 
 
 def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
+    provider_symbol = YAHOO_SYMBOL_ALIASES.get(symbol, symbol)
     end = int(time.time())
     start = end - lookback_days * 3 * 86400
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{provider_symbol}"
     with httpx.Client(timeout=20.0, headers={"User-Agent": "joehu-market-panel/0.1"}) as client:
         response = client.get(
             url,
@@ -57,7 +106,7 @@ def fetch_yahoo_chart(symbol: str, lookback_days: int = 260) -> pd.DataFrame:
                 "low": value_at(quote.get("low"), index) or close,
                 "close": close,
                 "volume": value_at(quote.get("volume"), index) or 0.0,
-                "source": "yahoo-chart",
+                "source": f"yahoo-chart:{provider_symbol}" if provider_symbol != symbol else "yahoo-chart",
             }
         )
     if not rows:

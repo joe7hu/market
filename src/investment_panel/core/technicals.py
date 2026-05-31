@@ -21,6 +21,11 @@ def calculate_features(prices: pd.DataFrame) -> dict[str, Any]:
     low_252 = close.rolling(min(252, len(close))).min().iloc[-1]
     ret_20 = close.iloc[-1] / close.iloc[-min(21, len(close))] - 1 if len(close) > 1 else 0
     ret_60 = close.iloc[-1] / close.iloc[-min(61, len(close))] - 1 if len(close) > 1 else 0
+    ret_1y = close.iloc[-1] / close.iloc[-min(253, len(close))] - 1 if len(close) > 1 else 0
+    last_date = pd.to_datetime(last["date"])
+    ytd_rows = ordered[pd.to_datetime(ordered["date"]).dt.year == last_date.year]
+    ytd_start = float(ytd_rows.iloc[0]["close"]) if not ytd_rows.empty else float(close.iloc[0])
+    ret_ytd = close.iloc[-1] / max(ytd_start, 1e-9) - 1
     vol_ratio = volume.iloc[-20:].mean() / max(volume.iloc[-60:].mean(), 1)
     drawdown = close.iloc[-1] / max(high_252, 1) - 1
     recovery = (close.iloc[-1] - low_252) / max(high_252 - low_252, 1e-9)
@@ -33,6 +38,8 @@ def calculate_features(prices: pd.DataFrame) -> dict[str, Any]:
         "ma200": float(ma200) if pd.notna(ma200) else None,
         "return_20d": float(ret_20),
         "return_60d": float(ret_60),
+        "return_ytd": float(ret_ytd),
+        "return_1y": float(ret_1y),
         "volume_ratio_20_60": float(vol_ratio),
         "drawdown_from_high": float(drawdown),
         "range_recovery": float(recovery),
