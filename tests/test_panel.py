@@ -298,7 +298,7 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
              return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up, sma_50_up,
              sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w, color, source, raw)
             VALUES
-            ('SPY', '2026-05-02', 'Market', 'S&P 500 ETF', 590, 0.2, 8, 1, 3, 15, 2, true, true, true, true, true, true, 95, 'green', 'test', '{}'),
+            ('SPY', '2026-05-02', 'Market', 'S&P 500 ETF', 590, 0.2, 8, 1, 3, 15, 2, true, true, true, true, true, true, 95, 'green', 'fullstack_market_model_sheet', '{}'),
             ('XLK', '2026-05-02', 'Sectors', 'Technology', 240, 0.1, 10, 2, 5, 20, 3, true, true, true, true, true, true, 90, 'green', 'test', '{}'),
             ('VIX', '2026-05-02', 'Macro', 'Volatility', 16, -2, -5, -1, -8, -10, 30, false, false, false, false, false, false, 35, 'yellow', 'test', '{}'),
             ('TLT', '2026-05-02', 'Macro', 'Long Bonds', 92, 0.3, 2, 1, 4, 5, 8, true, true, true, true, true, false, 70, 'green', 'test', '{}')
@@ -316,6 +316,7 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
     assert reference_rows[0]["score"] == 0
     assert reference_rows[0]["history"][-1]["index_price"] == 6100
     assert len(asset_rows) == 4
+    assert asset_rows[0]["source"] == "market_environment_asset_matrix"
     categories = {row["category"]: row for row in model_rows}
     assert categories["Overall"]["source"] == "Weighted environment model"
     assert categories["Valuation"]["source"] == "Multpl valuation tables"

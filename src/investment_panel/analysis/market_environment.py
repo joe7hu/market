@@ -195,7 +195,7 @@ def store_fullstack_market_model(con: Any, url: str = FULLSTACK_MARKET_MODEL_CSV
                 record.get("sma_50_gt_200"),
                 record.get("range_ratio_52w"),
                 record.get("color"),
-                "fullstack_market_model_sheet",
+                "market_environment_asset_matrix",
                 json_dumps(record.get("raw") or {}),
             ],
         )

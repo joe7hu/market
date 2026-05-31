@@ -724,7 +724,11 @@ def market_environment_assets(con: Any) -> list[dict[str, Any]]:
         SELECT symbol, as_of, group_name, name, price, return_1d, return_ytd, return_1w,
                return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up,
                sma_50_up, sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w,
-               color, source
+               color,
+               CASE
+                 WHEN source = 'fullstack_market_model_sheet' THEN 'market_environment_asset_matrix'
+                 ELSE source
+               END AS source
         FROM market_environment_asset_snapshots
         WHERE as_of = (SELECT max(as_of) FROM market_environment_asset_snapshots)
         ORDER BY
