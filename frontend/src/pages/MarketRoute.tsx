@@ -1,10 +1,7 @@
 import { Activity, BarChart3, Gauge } from "lucide-react";
 import {
-  Bar,
-  BarChart,
   Area,
   CartesianGrid,
-  Cell,
   ComposedChart,
   Line,
   ReferenceLine,
@@ -23,12 +20,6 @@ import type { JsonValue, RowRecord } from "@/types";
 import { rows } from "@/utils";
 import { formatPct, numberField, textField } from "@/views/rowFormat";
 
-type ValuationBucket = {
-  label: string;
-  count: number;
-  tone: "success" | "warning" | "info" | "outline";
-};
-
 type MetricPoint = {
   date: string;
   value?: number;
@@ -40,26 +31,18 @@ export function MarketRoute() {
   usePanelScope("market");
 
   const referenceRows = rows(data.marketValuationReferenceCharts);
-  const valuationRows = rows(data.marketValuationCharts);
   const assetRows = rows(data.marketEnvironmentAssets);
   const environmentRows = rows(data.marketEnvironmentModel);
-  const marketRow = valuationRows.find((row) => textField(row, ["scope"]) === "whole_market");
-  const tickerRows = valuationRows.filter((row) => textField(row, ["scope"]) !== "whole_market");
   const drivers = environmentRows.filter((row) => textField(row, ["category"]) !== "Overall");
   const marketDrivers = drivers.filter((row) => isMarketDriver(textField(row, ["category"])));
-  const exposureDrivers = drivers.filter((row) => isExposureDriver(textField(row, ["category"])));
-  const buckets = valuationBuckets(tickerRows);
 
   return (
     <WorkspacePage
       eyebrow="Market stance"
       title="Where the Market Stands"
-      subtitle="Broad market conditions are separated from your portfolio and watchlist exposure."
+      subtitle="Broad market valuation, trend, breadth, risk appetite, and leadership."
     >
-      <section className="grid min-w-0 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <MarketEnvironmentPanel rows={marketDrivers} referenceRows={referenceRows} assetRows={assetRows} />
-        <ExposureOverlayPanel rows={exposureDrivers} marketRow={marketRow} tickerRows={tickerRows} buckets={buckets} />
-      </section>
+      <MarketEnvironmentPanel rows={marketDrivers} referenceRows={referenceRows} assetRows={assetRows} />
 
       <ReferenceValuationCharts rows={referenceRows} />
 
@@ -104,33 +87,6 @@ function MarketEnvironmentPanel({ rows, referenceRows, assetRows }: { rows: RowR
   );
 }
 
-function ExposureOverlayPanel({ rows, marketRow, tickerRows, buckets }: { rows: RowRecord[]; marketRow?: RowRecord; tickerRows: RowRecord[]; buckets: ValuationBucket[] }) {
-  const score = weightedDriverScore(rows);
-  return (
-    <Card className="min-w-0">
-      <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
-        <div>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <BarChart3 className="size-4 text-muted-foreground" />
-            My Exposure Overlay
-          </CardTitle>
-          <p className="mt-1 text-xs text-muted-foreground">Portfolio, liquidity, event, and watchlist valuation context.</p>
-        </div>
-        <ScorePill value={score} posture={postureFromScore(score)} />
-      </CardHeader>
-      <CardContent className="space-y-4 p-4 pt-2">
-        <div className="grid gap-2 sm:grid-cols-3">
-          <MiniMetric label="Watchlist Score" value={formatScore(numberField(marketRow, ["valuation_score"], Number.NaN))} />
-          <MiniMetric label="Median P/S" value={formatMultiple(numberField(marketRow, ["ps_ratio"], Number.NaN))} />
-          <MiniMetric label="Coverage" value={`${numberField(marketRow, ["component_count"], tickerRows.length)}`} />
-        </div>
-        <WatchlistValuationDistribution marketRow={marketRow} buckets={buckets} />
-        <DriverRows rows={rows} />
-      </CardContent>
-    </Card>
-  );
-}
-
 function DriverRows({ rows }: { rows: RowRecord[] }) {
   if (!rows.length) {
     return <EmptyChart label="No model rows loaded" />;
@@ -161,35 +117,6 @@ function DriverRows({ rows }: { rows: RowRecord[] }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function WatchlistValuationDistribution({ marketRow, buckets }: { marketRow?: RowRecord; buckets: ValuationBucket[] }) {
-  const chartRows = buckets.map((bucket) => ({ ...bucket, fill: bucketColor(bucket.label) }));
-
-  return (
-    <div className="rounded-md border border-border bg-background p-3">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold">Watchlist Valuation Distribution</p>
-          <p className="mt-1 text-xs text-muted-foreground">{valuationCaption(marketRow)}</p>
-        </div>
-        <Badge variant={postureBadge(textField(marketRow, ["valuation_posture"]))}>{titleCase(textField(marketRow, ["valuation_posture"], "not loaded"))}</Badge>
-      </div>
-      <div className="h-44 min-h-44">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartRows} margin={{ left: 0, right: 12, top: 14, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-            <YAxis allowDecimals={false} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={28} />
-            <Tooltip formatter={(value) => [formatChartNumber(value), "Names"]} />
-            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-              {chartRows.map((row) => <Cell key={row.label} fill={row.fill} />)}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
     </div>
   );
 }
@@ -468,29 +395,8 @@ function metricHistoryPoints(row: RowRecord): MetricPoint[] {
   return points.filter((_, index) => index % stride === 0 || index === points.length - 1);
 }
 
-function valuationBuckets(inputRows: RowRecord[]): ValuationBucket[] {
-  const buckets: ValuationBucket[] = [
-    { label: "Discounted", count: 0, tone: "success" },
-    { label: "Fair", count: 0, tone: "info" },
-    { label: "Stretched", count: 0, tone: "warning" },
-    { label: "Missing", count: 0, tone: "outline" },
-  ];
-  for (const row of inputRows) {
-    const posture = textField(row, ["valuation_posture"]).toLowerCase();
-    if (posture === "discounted") buckets[0].count += 1;
-    else if (posture === "stretched") buckets[2].count += 1;
-    else if (isFairPosture(posture)) buckets[1].count += 1;
-    else buckets[3].count += 1;
-  }
-  return buckets;
-}
-
 function isMarketDriver(category: string): boolean {
   return ["Valuation", "Price Trend", "Market Breadth", "Risk Appetite", "Leadership"].includes(category);
-}
-
-function isExposureDriver(category: string): boolean {
-  return ["Liquidity", "Portfolio Risk", "Earnings Setup"].includes(category);
 }
 
 function weightedDriverScore(inputRows: RowRecord[]): number {
@@ -522,10 +428,6 @@ function numeric(value: JsonValue | undefined): number | undefined {
 
 function titleCase(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function formatMultiple(value: number): string {
-  return Number.isFinite(value) ? `${value.toFixed(1)}x` : "-";
 }
 
 function formatMaybePct(value: number): string {
@@ -581,17 +483,6 @@ function groupPillClass(group: string): string {
   return "border-border bg-muted text-muted-foreground";
 }
 
-function valuationCaption(row: RowRecord | undefined): string {
-  const ps = numberField(row, ["ps_ratio"], Number.NaN);
-  const pe = numberField(row, ["forward_pe"], Number.NaN);
-  const gap = numberField(row, ["upside_pct"], Number.NaN);
-  const parts = [];
-  if (Number.isFinite(ps)) parts.push(`${formatMultiple(ps)} median P/S`);
-  if (Number.isFinite(pe)) parts.push(`${formatMultiple(pe)} median forward P/E`);
-  if (Number.isFinite(gap)) parts.push(`${formatMaybePct(gap)} median fair-value gap`);
-  return parts.length ? parts.join("; ") : "Valuation uses available multiples until fair-value coverage improves.";
-}
-
 function formatChartNumber(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-";
 }
@@ -604,23 +495,11 @@ function postureBadge(value: string): "default" | "secondary" | "outline" | "des
   return "info";
 }
 
-function isFairPosture(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return normalized.includes("fair") || normalized.includes("attractive");
-}
-
 function scoreColor(value: number): string {
   if (!Number.isFinite(value)) return "var(--muted-foreground)";
   if (value >= 70) return "var(--success)";
   if (value >= 45) return "var(--primary)";
   return "var(--warning)";
-}
-
-function bucketColor(value: string): string {
-  if (value === "Discounted") return "var(--success)";
-  if (value === "Stretched") return "var(--warning)";
-  if (value === "Missing") return "var(--muted-foreground)";
-  return "var(--primary)";
 }
 
 function normalizeScore(value: number): number {
