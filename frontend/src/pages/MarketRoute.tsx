@@ -149,6 +149,7 @@ function ReferenceValuationCharts({ rows }: { rows: RowRecord[] }) {
 
 function ReferenceValuationCard({ row }: { row: RowRecord }) {
   const history = metricHistoryPoints(row);
+  const indexDomain = logIndexDomain(history);
   const latest = numberField(row, ["latest_value"], Number.NaN);
   const percentile = numberField(row, ["percentile"], Number.NaN);
   const suffix = textField(row, ["suffix"]);
@@ -184,7 +185,7 @@ function ReferenceValuationCard({ row }: { row: RowRecord }) {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" minTickGap={42} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
                 <YAxis yAxisId="metric" domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={46} />
-                <YAxis yAxisId="index" orientation="right" domain={["dataMin", "dataMax"]} hide />
+                <YAxis yAxisId="index" orientation="right" scale="log" domain={indexDomain} allowDataOverflow hide />
                 <Tooltip
                   formatter={(value, name) => {
                     if (name === "S&P 500") return [formatChartNumber(value), "S&P 500"];
@@ -408,6 +409,17 @@ function metricHistoryPoints(row: RowRecord): MetricPoint[] {
     .filter((point) => point.date && Number.isFinite(point.value));
   const stride = Math.max(1, Math.ceil(points.length / 420));
   return points.filter((_, index) => index % stride === 0 || index === points.length - 1);
+}
+
+function logIndexDomain(points: MetricPoint[]): [number, number] {
+  const values = points
+    .map((point) => point.index_price)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+  if (!values.length) return [1, 10];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return [Math.max(1, min * 0.9), max * 1.1];
+  return [Math.max(1, min * 0.96), max * 1.04];
 }
 
 function isMarketDriver(category: string): boolean {
