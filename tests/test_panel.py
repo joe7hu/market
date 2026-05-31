@@ -19,7 +19,7 @@ from investment_panel.core.panel import (
     technicals,
     universe_screen,
 )
-from investment_panel.analysis.market_environment import parse_fullstack_market_model_csv, parse_multpl_valuation_table
+from investment_panel.analysis.market_environment import parse_fred_ten_year_yield_csv, parse_fullstack_market_model_csv, parse_history_of_market_forward_pe_json, parse_multpl_valuation_table
 
 
 def test_13f_disclosures_include_allocation_and_filing_history(tmp_path) -> None:
@@ -255,6 +255,27 @@ def test_parse_multpl_valuation_table_extracts_monthly_points() -> None:
     assert rows == [("2026-05-29", 32.67), ("2026-05-01", 31.42)]
 
 
+def test_parse_history_of_market_forward_pe_json_extracts_points() -> None:
+    payload = {
+        "forward": [
+            {"date": "2026-03-31", "value": 21.54},
+            {"date": "2025-12-31", "value": "20.85"},
+        ]
+    }
+
+    rows = parse_history_of_market_forward_pe_json(payload)
+
+    assert rows == [("2026-03-31", 21.54), ("2025-12-31", 20.85)]
+
+
+def test_parse_fred_ten_year_yield_csv_uses_latest_monthly_observation() -> None:
+    csv_text = "observation_date,DGS10\n2026-05-28,4.42\n2026-05-29,4.40\n2026-06-01,.\n"
+
+    rows = parse_fred_ten_year_yield_csv(csv_text)
+
+    assert rows == {"2026-05": 4.40}
+
+
 def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
@@ -265,7 +286,9 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
             ('sp500_forward_pe', '2026-05-01', 'S&P 500 Forward P/E', 18.0, 'x', false, 'multpl', 'https://example.com'),
             ('sp500_forward_pe', '2026-05-02', 'S&P 500 Forward P/E', 22.0, 'x', false, 'multpl', 'https://example.com'),
             ('equity_risk_premium', '2026-05-01', 'Equity Risk Premium', 1.5, '%', true, 'multpl', 'https://example.com'),
-            ('equity_risk_premium', '2026-05-02', 'Equity Risk Premium', -1.0, '%', true, 'multpl', 'https://example.com')
+            ('equity_risk_premium', '2026-05-02', 'Equity Risk Premium', -1.0, '%', true, 'multpl', 'https://example.com'),
+            ('sp500_price', '2026-05-01', 'S&P 500 Price', 6000, '', true, 'multpl', 'https://example.com'),
+            ('sp500_price', '2026-05-02', 'S&P 500 Price', 6100, '', true, 'multpl', 'https://example.com')
             """
         )
         con.execute(
@@ -290,6 +313,7 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
     assert reference_rows[0]["metric"] == "sp500_forward_pe"
     assert reference_rows[0]["percentile"] == 100
     assert reference_rows[0]["score"] == 0
+    assert reference_rows[0]["history"][-1]["index_price"] == 6100
     assert len(asset_rows) == 4
     categories = {row["category"]: row for row in model_rows}
     assert categories["Overall"]["source"] == "Weighted environment model"

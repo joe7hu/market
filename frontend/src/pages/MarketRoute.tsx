@@ -1,14 +1,13 @@
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Gauge, ListChecks, ShieldAlert } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, Gauge, ListChecks, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   Bar,
   BarChart,
   Area,
-  AreaChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -20,18 +19,10 @@ import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { DataGridSection } from "@/views/dataGridSection";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 import type { JsonValue, RowRecord } from "@/types";
 import { rows } from "@/utils";
-import { displayField, formatMoney, formatPct, numberField, textField, toneFromText } from "@/views/rowFormat";
-
-type ChartPoint = {
-  date: string;
-  price?: number;
-  fair_value?: number;
-  discount_pct?: number;
-};
+import { formatPct, numberField, textField, toneFromText } from "@/views/rowFormat";
 
 type ValuationBucket = {
   label: string;
@@ -42,6 +33,7 @@ type ValuationBucket = {
 type MetricPoint = {
   date: string;
   value?: number;
+  index_price?: number;
 };
 
 export function MarketRoute() {
@@ -57,14 +49,12 @@ export function MarketRoute() {
   const overall = environmentRows.find((row) => textField(row, ["category"]) === "Overall");
   const drivers = environmentRows.filter((row) => textField(row, ["category"]) !== "Overall");
   const buckets = valuationBuckets(tickerRows);
-  const discounted = buckets.find((bucket) => bucket.label === "Discounted")?.count ?? 0;
-  const stretched = buckets.find((bucket) => bucket.label === "Stretched")?.count ?? 0;
   const marketScore = numberField(marketRow, ["valuation_score"], Number.NaN);
   const metrics: MetricSpec[] = [
     ["Regime", titleCase(textField(overall, ["posture"], "Not loaded")), textField(overall, ["next_action"], "Refresh market scope"), toneFromText(textField(overall, ["posture"]))],
     ["Valuation", Number.isFinite(marketScore) ? `${Math.round(marketScore)} / 100` : "-", valuationCaption(marketRow), scoreTone(marketScore)],
-    ["Watchlist", `${tickerRows.length}`, "valuation rows with price history", tickerRows.length ? "info" : "warn"],
-    ["Tilt", `${discounted}/${stretched}`, "discounted / stretched", stretched > discounted ? "warn" : discounted > stretched ? "good" : "info"],
+    ["Series", `${referenceRows.length}`, "broad valuation charts loaded", referenceRows.length >= 4 ? "good" : "warn"],
+    ["Assets", `${assetRows.length}`, "environment matrix rows loaded", assetRows.length ? "info" : "warn"],
   ];
 
   return (
@@ -84,15 +74,6 @@ export function MarketRoute() {
       </section>
 
       <MarketAssetMatrix rows={assetRows} />
-
-      <ActionLanes rows={tickerRows} />
-
-      <WatchlistValuationBoard rows={tickerRows} />
-
-      <section className="grid gap-4 xl:grid-cols-2">
-        <DataGridSection title="Portfolio Effects" rows={rows(data.marketContext)} />
-        <DataGridSection title="Risk Overrides" rows={rows(data.portfolioRiskCards)} />
-      </section>
     </WorkspacePage>
   );
 }
@@ -245,8 +226,6 @@ function EnvironmentModel({ overall, rows }: { overall?: RowRecord; rows: RowRec
 
 function MarketValuationMap({ marketRow, tickerRows, buckets }: { marketRow?: RowRecord; tickerRows: RowRecord[]; buckets: ValuationBucket[] }) {
   const chartRows = buckets.map((bucket) => ({ ...bucket, fill: bucketColor(bucket.label) }));
-  const discounted = rankTickerRows(tickerRows).filter((row) => textField(row, ["valuation_posture"]) === "discounted").slice(0, 4);
-  const stretched = rankTickerRows(tickerRows).filter((row) => textField(row, ["valuation_posture"]) === "stretched").slice(-4).reverse();
 
   return (
     <Card className="min-w-0">
@@ -279,32 +258,8 @@ function MarketValuationMap({ marketRow, tickerRows, buckets }: { marketRow?: Ro
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <OutlierList icon={<ArrowDownRight className="size-4" />} title="Cheapest Queue" rows={discounted} emptyLabel="No discounted watchlist names" />
-          <OutlierList icon={<ArrowUpRight className="size-4" />} title="Wait Queue" rows={stretched} emptyLabel="No stretched watchlist names" />
-        </div>
       </CardContent>
     </Card>
-  );
-}
-
-function OutlierList({ icon, title, rows, emptyLabel }: { icon: ReactNode; title: string; rows: RowRecord[]; emptyLabel: string }) {
-  return (
-    <div className="rounded-md border border-border bg-background">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">
-        {icon}
-        {title}
-      </div>
-      <div className="divide-y divide-border">
-        {rows.length ? rows.map((row) => (
-          <div key={textField(row, ["symbol"])} className="grid grid-cols-[56px_1fr_auto] items-center gap-3 px-3 py-2">
-            <span className="font-semibold">{textField(row, ["symbol"])}</span>
-            <span className="truncate text-xs text-muted-foreground">{textField(row, ["next_action"])}</span>
-            <span className="text-sm font-medium tabular-nums">{formatMaybePct(numberField(row, ["upside_pct"], Number.NaN))}</span>
-          </div>
-        )) : <div className="px-3 py-4 text-xs text-muted-foreground">{emptyLabel}</div>}
-      </div>
-    </div>
   );
 }
 
@@ -357,18 +312,32 @@ function ReferenceValuationCard({ row }: { row: RowRecord }) {
           {["5Y", "10Y", "20Y", "50Y", "All"].map((label) => (
             <span key={label} className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{label}</span>
           ))}
+          <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="h-0.5 w-4 rounded-full bg-red-700" />
+            Valuation
+            <span className="h-0.5 w-4 rounded-full bg-blue-700" />
+            S&P 500
+          </span>
         </div>
         <div className="h-72 min-h-72">
           {history.length ? (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={history} margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>
+              <ComposedChart data={history} margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" minTickGap={42} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-                <YAxis domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={46} />
-                <Tooltip formatter={(value) => formatMetricValue(typeof value === "number" ? value : Number.NaN, suffix)} labelFormatter={(value) => String(value)} />
-                <ReferenceLine y={latest} stroke="var(--muted-foreground)" strokeDasharray="3 3" ifOverflow="extendDomain" />
-                <Area type="monotone" dataKey="value" stroke="#b42318" strokeWidth={4} fill="#b42318" fillOpacity={0.28} dot={false} name={textField(row, ["label"])} />
-              </AreaChart>
+                <YAxis yAxisId="metric" domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={46} />
+                <YAxis yAxisId="index" orientation="right" domain={["dataMin", "dataMax"]} hide />
+                <Tooltip
+                  formatter={(value, name) => {
+                    if (name === "S&P 500") return [formatChartNumber(value), "S&P 500"];
+                    return [formatMetricValue(typeof value === "number" ? value : Number.NaN, suffix), textField(row, ["label"])];
+                  }}
+                  labelFormatter={(value) => String(value)}
+                />
+                <ReferenceLine yAxisId="metric" y={latest} stroke="var(--muted-foreground)" strokeDasharray="3 3" ifOverflow="extendDomain" />
+                <Area yAxisId="metric" type="monotone" dataKey="value" stroke="#b42318" strokeWidth={3} fill="#b42318" fillOpacity={0.22} dot={false} name={textField(row, ["label"])} />
+                <Line yAxisId="index" type="monotone" dataKey="index_price" stroke="#1d4ed8" strokeDasharray="5 3" strokeWidth={2.75} dot={false} name="S&P 500" connectNulls />
+              </ComposedChart>
             </ResponsiveContainer>
           ) : (
             <EmptyChart label="No valuation history" />
@@ -440,11 +409,13 @@ function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
         <Badge variant="outline">{rows.length} rows</Badge>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
-        <table className="w-full min-w-[1040px] text-sm">
+        <table className="w-full min-w-[1180px] text-sm">
           <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Group</th>
               <th className="px-3 py-3">Symbol</th>
+              <th className="px-3 py-3">Trend</th>
+              <th className="px-3 py-3 text-right">% 1D</th>
               <th className="px-3 py-3 text-right">% YTD</th>
               <th className="px-3 py-3 text-right">% 1M</th>
               <th className="px-3 py-3 text-right">% 1Y</th>
@@ -456,17 +427,21 @@ function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
             </tr>
           </thead>
           <tbody>
-            {featured.map((row) => (
-              <tr key={`${textField(row, ["group_name"])}-${textField(row, ["symbol"])}`} className="border-b border-border align-middle transition-colors hover:bg-accent/40">
-                <td className="px-4 py-3 text-xs font-medium uppercase text-muted-foreground">{textField(row, ["group_name"])}</td>
+            {featured.map((row, index) => (
+              <tr key={`${textField(row, ["group_name"])}-${textField(row, ["symbol"])}`} className={assetRowClass(featured, row, index)}>
+                <td className="px-4 py-3 text-xs font-medium uppercase">
+                  <GroupPill value={textField(row, ["group_name"])} />
+                </td>
                 <td className="px-3 py-3">
                   <p className="font-semibold">{textField(row, ["symbol"])}</p>
                   <p className="max-w-44 truncate text-xs text-muted-foreground">{textField(row, ["name"])}</p>
                 </td>
-                <td className={valueToneClass(numberField(row, ["return_ytd"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_ytd"], Number.NaN))}</td>
-                <td className={valueToneClass(numberField(row, ["return_1m"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_1m"], Number.NaN))}</td>
-                <td className={valueToneClass(numberField(row, ["return_1y"], Number.NaN))}>{formatMaybePct(numberField(row, ["return_1y"], Number.NaN))}</td>
-                <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">{formatMaybePct(-Math.abs(numberField(row, ["pct_from_52w_high"], Number.NaN)))}</td>
+                <td className="px-3 py-3"><TrendStrip row={row} /></td>
+                <ReturnCell value={numberField(row, ["return_1d"], Number.NaN)} />
+                <ReturnCell value={numberField(row, ["return_ytd"], Number.NaN)} />
+                <ReturnCell value={numberField(row, ["return_1m"], Number.NaN)} />
+                <ReturnCell value={numberField(row, ["return_1y"], Number.NaN)} />
+                <td className="px-3 py-3"><RangeCell value={numberField(row, ["pct_from_52w_high"], Number.NaN)} /></td>
                 <td className="px-3 py-3 text-center"><TrendMark value={row.sma_20_up} /></td>
                 <td className="px-3 py-3 text-center"><TrendMark value={row.sma_50_up} /></td>
                 <td className="px-3 py-3 text-center"><TrendMark value={row.sma_200_up} /></td>
@@ -495,167 +470,75 @@ function featuredAssetRows(inputRows: RowRecord[]): RowRecord[] {
     .slice(0, 48);
 }
 
+function assetRowClass(rows: RowRecord[], row: RowRecord, index: number): string {
+  const group = textField(row, ["group_name"]);
+  const previous = index > 0 ? textField(rows[index - 1], ["group_name"]) : "";
+  const separator = index > 0 && group !== previous ? "border-t-2 border-t-border" : "";
+  return `border-b border-border align-middle transition-colors hover:bg-accent/45 ${separator} ${groupBackgroundClass(group)}`;
+}
+
+function GroupPill({ value }: { value: string }) {
+  return <span className={`inline-flex min-w-24 justify-center rounded-md border px-2 py-1 text-[11px] font-semibold uppercase ${groupPillClass(value)}`}>{value}</span>;
+}
+
+function ReturnCell({ value }: { value: number }) {
+  const tone = returnToneClass(value);
+  return (
+    <td className="px-3 py-3 text-right">
+      <span className={`inline-flex min-w-16 justify-end rounded-md px-2 py-1 font-semibold tabular-nums ${tone}`}>
+        {formatMaybePct(value)}
+      </span>
+    </td>
+  );
+}
+
+function RangeCell({ value }: { value: number }) {
+  if (!Number.isFinite(value)) return <span className="block text-right text-muted-foreground">-</span>;
+  const distance = Math.max(0, Math.min(100, Math.abs(value)));
+  const width = `${100 - distance}%`;
+  return (
+    <div className="min-w-28">
+      <div className="mb-1 text-right text-xs font-medium tabular-nums text-muted-foreground">{formatMaybePct(-distance)}</div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary/70" style={{ width }} />
+      </div>
+    </div>
+  );
+}
+
+function TrendStrip({ row }: { row: RowRecord }) {
+  const points = [
+    numberField(row, ["return_1w"], Number.NaN),
+    numberField(row, ["return_1m"], Number.NaN),
+    numberField(row, ["return_ytd"], Number.NaN),
+    numberField(row, ["return_1y"], Number.NaN),
+  ];
+  if (!points.some(Number.isFinite)) return <span className="text-muted-foreground">-</span>;
+  const clean = points.map((value) => Number.isFinite(value) ? value : 0);
+  const min = Math.min(...clean, 0);
+  const max = Math.max(...clean, 0);
+  const spread = max - min || 1;
+  const path = clean.map((value, index) => {
+    const x = 4 + index * 24;
+    const y = 28 - ((value - min) / spread) * 22;
+    return `${index === 0 ? "M" : "L"}${x},${y}`;
+  }).join(" ");
+  const last = clean[clean.length - 1];
+  const stroke = last >= 0 ? "#15803d" : "#b42318";
+  return (
+    <div className="flex items-center gap-2">
+      <svg className="h-8 w-20 overflow-visible" viewBox="0 0 80 32" aria-hidden="true">
+        <path d="M4,28 L76,28" stroke="var(--border)" strokeWidth="1" />
+        <path d={path} fill="none" stroke={stroke} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" />
+      </svg>
+      <span className="text-[11px] text-muted-foreground">1W/1M/YTD/1Y</span>
+    </div>
+  );
+}
+
 function TrendMark({ value }: { value: RowRecord[string] }) {
   if (typeof value !== "boolean") return <span className="text-muted-foreground">-</span>;
-  return <span className={value ? "font-semibold text-green-700" : "font-semibold text-red-700"}>{value ? "▲" : "▼"}</span>;
-}
-
-function ActionLanes({ rows }: { rows: RowRecord[] }) {
-  const ranked = rankTickerRows(rows);
-  const lanes = [
-    {
-      title: "Add Only With Discount",
-      tone: "success" as const,
-      rows: ranked.filter((row) => textField(row, ["valuation_posture"]) === "discounted").slice(0, 5),
-    },
-    {
-      title: "Hold And Monitor",
-      tone: "info" as const,
-      rows: ranked.filter((row) => isFairPosture(textField(row, ["valuation_posture"]))).slice(0, 5),
-    },
-    {
-      title: "Wait For Reset",
-      tone: "warning" as const,
-      rows: ranked.filter((row) => textField(row, ["valuation_posture"]) === "stretched").reverse().slice(0, 5),
-    },
-  ];
-
-  return (
-    <section>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold uppercase text-muted-foreground">
-          <Activity className="size-4" />
-          Action Lanes
-        </h2>
-        <Badge variant="outline">{rows.length} watchlist names</Badge>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-3">
-        {lanes.map((lane) => (
-          <Card key={lane.title} className="min-w-0">
-            <CardHeader className="flex-row items-center justify-between gap-3 p-4 pb-2">
-              <CardTitle className="text-sm">{lane.title}</CardTitle>
-              <Badge variant={lane.tone}>{lane.rows.length}</Badge>
-            </CardHeader>
-            <CardContent className="p-4 pt-2">
-              <div className="divide-y divide-border rounded-md border border-border bg-background">
-                {lane.rows.length ? lane.rows.map((row) => (
-                  <div key={textField(row, ["symbol"])} className="grid grid-cols-[64px_1fr_auto] items-center gap-3 px-3 py-3">
-                    <div className="min-w-0">
-                      <p className="font-semibold">{textField(row, ["symbol"])}</p>
-                      <p className="truncate text-xs text-muted-foreground">{textField(row, ["name"])}</p>
-                    </div>
-                    <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{textField(row, ["next_action"])}</p>
-                    <span className="text-sm font-semibold tabular-nums">{formatMaybePct(numberField(row, ["upside_pct"], Number.NaN))}</span>
-                  </div>
-                )) : <div className="px-3 py-5 text-sm text-muted-foreground">No names in this lane.</div>}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function WatchlistValuationBoard({ rows }: { rows: RowRecord[] }) {
-  const sorted = rankTickerRows(rows);
-  if (!sorted.length) {
-    return (
-      <Card>
-        <CardContent className="flex min-h-40 items-center justify-center p-6">
-          <EmptyChart label="No watchlist valuation rows" />
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card className="min-w-0 overflow-hidden">
-      <CardHeader className="flex-row items-center justify-between gap-3 p-4 pb-2">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <ListChecks className="size-4 text-muted-foreground" />
-          Watchlist Valuation Board
-        </CardTitle>
-        <Badge variant="outline">{sorted.length} names</Badge>
-      </CardHeader>
-      <CardContent className="overflow-x-auto p-0">
-        <table className="w-full min-w-[980px] text-sm">
-          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-            <tr>
-              <th className="px-4 py-3">Ticker</th>
-              <th className="px-3 py-3">Price vs fair value</th>
-              <th className="px-3 py-3">Gap</th>
-              <th className="px-3 py-3">P/E</th>
-              <th className="px-3 py-3">P/S</th>
-              <th className="px-3 py-3">Score</th>
-              <th className="px-3 py-3">Posture</th>
-              <th className="px-4 py-3">Next action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((row) => (
-              <tr key={textField(row, ["symbol"])} className="border-b border-border align-middle transition-colors hover:bg-accent/40">
-                <td className="px-4 py-3">
-                  <p className="font-semibold">{textField(row, ["symbol"])}</p>
-                  <p className="max-w-36 truncate text-xs text-muted-foreground">{textField(row, ["name"])}</p>
-                </td>
-                <td className="px-3 py-3">
-                  <TickerSparkline row={row} />
-                </td>
-                <td className="px-3 py-3 font-medium tabular-nums">{formatMaybePct(numberField(row, ["upside_pct"], Number.NaN))}</td>
-                <td className="px-3 py-3 tabular-nums text-muted-foreground">{formatMultiple(numberField(row, ["forward_pe"], Number.NaN))}</td>
-                <td className="px-3 py-3 tabular-nums text-muted-foreground">{formatMultiple(numberField(row, ["ps_ratio"], Number.NaN))}</td>
-                <td className="px-3 py-3">
-                  <ScoreBar value={numberField(row, ["valuation_score"], Number.NaN)} />
-                </td>
-                <td className="px-3 py-3">
-                  <Badge variant={postureBadge(textField(row, ["valuation_posture"]))}>{titleCase(textField(row, ["valuation_posture"]))}</Badge>
-                </td>
-                <td className="max-w-[340px] px-4 py-3 text-xs leading-5 text-muted-foreground">{textField(row, ["next_action"])}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CardContent>
-    </Card>
-  );
-}
-
-function WholeMarketChart({ row, dark = false }: { row?: RowRecord; dark?: boolean }) {
-  const history = historyPoints(row);
-  if (!history.length) return <EmptyChart label={displayField(row, ["coverage"], "No valuation history")} dark={dark} />;
-  return (
-    <div className="h-60 min-h-60">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={history} margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={dark ? "rgba(255,255,255,0.18)" : "var(--border)"} />
-          <XAxis dataKey="date" minTickGap={42} tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: dark ? "rgba(255,255,255,0.58)" : "var(--muted-foreground)" }} />
-          <YAxis domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: dark ? "rgba(255,255,255,0.58)" : "var(--muted-foreground)" }} width={44} />
-          <Tooltip formatter={(value) => formatChartNumber(value)} labelFormatter={(value) => String(value)} />
-          <Line type="monotone" dataKey="price" stroke={dark ? "#a7f3d0" : "var(--primary)"} strokeWidth={2.5} dot={false} name="Indexed price" />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-function TickerSparkline({ row }: { row: RowRecord }) {
-  const history = historyPoints(row);
-  if (!history.length) return <span className="text-xs text-muted-foreground">{displayField(row, ["coverage"], "No history")}</span>;
-  return (
-    <div className="h-16 w-56">
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={history} margin={{ left: 2, right: 2, top: 4, bottom: 4 }}>
-          <YAxis domain={["dataMin", "dataMax"]} hide />
-          <XAxis dataKey="date" hide />
-          <ReferenceLine y={numberField(row, ["fair_value"], Number.NaN)} stroke="var(--muted-foreground)" strokeDasharray="3 3" ifOverflow="extendDomain" />
-          <Line type="monotone" dataKey="price" stroke="var(--primary)" strokeWidth={2} dot={false} name="Price" />
-          <Line type="monotone" dataKey="fair_value" stroke="var(--muted-foreground)" strokeDasharray="4 4" strokeWidth={1.25} dot={false} name="Fair value" />
-          <Tooltip formatter={(value, name) => [formatChartNumber(value), name === "fair_value" ? "Fair value" : "Price"]} labelFormatter={(value) => String(value)} />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  return <span className={value ? "rounded-md bg-green-50 px-2 py-1 font-semibold text-green-800" : "rounded-md bg-red-50 px-2 py-1 font-semibold text-red-800"}>{value ? "▲" : "▼"}</span>;
 }
 
 function MiniMetric({ label, value, dark = false }: { label: string; value: string; dark?: boolean }) {
@@ -692,20 +575,6 @@ function EmptyChart({ label, dark = false }: { label: string; dark?: boolean }) 
   );
 }
 
-function historyPoints(row: RowRecord | undefined): ChartPoint[] {
-  const value = row?.history;
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((point): point is Record<string, JsonValue> => typeof point === "object" && point !== null && !Array.isArray(point))
-    .map((point) => ({
-      date: typeof point.date === "string" ? point.date.slice(0, 10) : "",
-      price: numeric(point.price),
-      fair_value: numeric(point.fair_value),
-      discount_pct: numeric(point.discount_pct),
-    }))
-    .filter((point) => point.date && Number.isFinite(point.price));
-}
-
 function metricHistoryPoints(row: RowRecord): MetricPoint[] {
   const value = row.history;
   if (!Array.isArray(value)) return [];
@@ -714,6 +583,7 @@ function metricHistoryPoints(row: RowRecord): MetricPoint[] {
     .map((point) => ({
       date: typeof point.date === "string" ? point.date.slice(0, 10) : "",
       value: numeric(point.value),
+      index_price: numeric(point.index_price),
     }))
     .filter((point) => point.date && Number.isFinite(point.value));
   const stride = Math.max(1, Math.ceil(points.length / 420));
@@ -808,9 +678,33 @@ function percentileTone(row: RowRecord, percentile: number): string {
   return "ml-2 font-medium text-amber-700";
 }
 
-function valueToneClass(value: number): string {
-  const tone = !Number.isFinite(value) ? "text-muted-foreground" : value >= 0 ? "text-green-700" : "text-red-700";
-  return `px-3 py-3 text-right font-medium tabular-nums ${tone}`;
+function returnToneClass(value: number): string {
+  if (!Number.isFinite(value)) return "bg-muted text-muted-foreground";
+  if (value >= 10) return "bg-green-100 text-green-900";
+  if (value > 0) return "bg-green-50 text-green-800";
+  if (value <= -10) return "bg-red-100 text-red-900";
+  if (value < 0) return "bg-red-50 text-red-800";
+  return "bg-muted text-muted-foreground";
+}
+
+function groupBackgroundClass(group: string): string {
+  if (group === "Market") return "bg-blue-50/30";
+  if (group === "Macro") return "bg-amber-50/35";
+  if (group === "Sectors") return "bg-green-50/25";
+  if (group === "Industries") return "bg-violet-50/25";
+  if (group === "Managed ETFs") return "bg-sky-50/25";
+  if (group === "Countries") return "bg-cyan-50/25";
+  return "bg-background";
+}
+
+function groupPillClass(group: string): string {
+  if (group === "Market") return "border-blue-200 bg-blue-50 text-blue-800";
+  if (group === "Macro") return "border-amber-200 bg-amber-50 text-amber-800";
+  if (group === "Sectors") return "border-green-200 bg-green-50 text-green-800";
+  if (group === "Industries") return "border-violet-200 bg-violet-50 text-violet-800";
+  if (group === "Managed ETFs") return "border-sky-200 bg-sky-50 text-sky-800";
+  if (group === "Countries") return "border-cyan-200 bg-cyan-50 text-cyan-800";
+  return "border-border bg-muted text-muted-foreground";
 }
 
 function valuationCaption(row: RowRecord | undefined): string {
@@ -833,13 +727,6 @@ function postureBadge(value: string): "default" | "secondary" | "outline" | "des
   if (normalized.includes("constructive") || normalized.includes("discounted") || normalized.includes("attractive")) return "success";
   if (normalized.includes("defensive") || normalized.includes("stretched")) return "warning";
   if (normalized.includes("not enough") || normalized.includes("missing")) return "outline";
-  return "info";
-}
-
-function valuationTone(value: number): "good" | "warn" | "info" | "muted" {
-  if (!Number.isFinite(value)) return "muted";
-  if (value >= 10) return "good";
-  if (value <= -10) return "warn";
   return "info";
 }
 

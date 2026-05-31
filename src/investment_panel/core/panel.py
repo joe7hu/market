@@ -675,13 +675,14 @@ def market_valuation_reference_charts(con: Any) -> list[dict[str, Any]]:
         """
         SELECT metric, as_of, label, value, suffix, higher_is_better, source, source_url
         FROM market_valuation_metric_points
-        WHERE metric IN ('sp500_forward_pe', 'shiller_pe', 'sp500_pe', 'equity_risk_premium')
+        WHERE metric IN ('sp500_forward_pe', 'shiller_pe', 'sp500_pe', 'equity_risk_premium', 'sp500_price')
         ORDER BY metric, as_of
         """,
     )
     by_metric: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_metric.setdefault(str(row.get("metric") or ""), []).append(row)
+    price_by_month = _price_overlay_by_month(by_metric.get("sp500_price") or [])
     output = []
     for metric in ("sp500_forward_pe", "shiller_pe", "sp500_pe", "equity_risk_premium"):
         points = by_metric.get(metric) or []
@@ -707,7 +708,14 @@ def market_valuation_reference_charts(con: Any) -> list[dict[str, Any]]:
                     "posture": _environment_posture(score),
                     "source": latest.get("source"),
                     "source_url": latest.get("source_url"),
-                    "history": [{"date": str(point.get("as_of")), "value": point.get("value")} for point in points],
+                    "history": [
+                        {
+                            "date": str(point.get("as_of")),
+                            "value": point.get("value"),
+                            "index_price": price_by_month.get(str(point.get("as_of"))[:7]),
+                        }
+                        for point in points
+                    ],
                 }
             )
         )
@@ -1089,6 +1097,16 @@ def _market_valuation_reference_source(rows: list[dict[str, Any]]) -> str:
     if "multpl" in sources:
         return "Multpl valuation tables"
     return "Broad-market valuation tables"
+
+
+def _price_overlay_by_month(points: list[dict[str, Any]]) -> dict[str, float]:
+    by_month: dict[str, float] = {}
+    for point in points:
+        as_of = str(point.get("as_of") or "")
+        price = _optional_number(point.get("value"))
+        if as_of and price is not None:
+            by_month[as_of[:7]] = price
+    return by_month
 
 
 def _asset_trend_score(rows: list[dict[str, Any]]) -> float | None:

@@ -15,6 +15,8 @@ from investment_panel.core.db import json_dumps
 
 
 MUNGER_MARKET_METRICS_URL = "https://mungermode.com/api/v1/market/metrics"
+FRED_TEN_YEAR_YIELD_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10"
+HISTORY_OF_MARKET_FORWARD_PE_URL = "https://historyofmarket.com/api/sp500/forward-pe.json"
 FULLSTACK_MARKET_MODEL_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/e/"
     "2PACX-1vSaW8H7OeWjfAO2Gcv69Qy541T7BdwULlob4gdKL8LMb97qAmHCn1sMTIzJPgVsm4hmQVBK7NEoEQab/"
@@ -24,8 +26,9 @@ FULLSTACK_MARKET_MODEL_CSV_URL = (
 VALUATION_METRICS = {"sp500_forward_pe", "shiller_pe", "sp500_pe", "equity_risk_premium", "sp500_price"}
 ENVIRONMENT_GROUPS = {"Market", "Sectors", "Industries", "Managed ETFs", "Countries", "Others", "Macro"}
 MULTPL_VALUATION_METRICS = {
-    "shiller_pe": ("Shiller P/E (CAPE)", "https://www.multpl.com/shiller-pe/table/by-month"),
-    "sp500_pe": ("S&P 500 Trailing P/E", "https://www.multpl.com/s-p-500-pe-ratio/table/by-month"),
+    "shiller_pe": ("Shiller P/E (CAPE)", "https://www.multpl.com/shiller-pe/table/by-month", "x", False),
+    "sp500_pe": ("S&P 500 Trailing P/E", "https://www.multpl.com/s-p-500-pe-ratio/table/by-month", "x", False),
+    "sp500_price": ("S&P 500 Price", "https://www.multpl.com/s-p-500-historical-prices/table/by-month", "", True),
 }
 
 
@@ -33,7 +36,13 @@ def store_market_environment_sources(con: Any) -> int:
     """Persist public broad-market model inputs used by /market."""
 
     count = 0
-    for loader in (store_munger_market_metrics, store_multpl_valuation_metrics, store_fullstack_market_model):
+    for loader in (
+        store_munger_market_metrics,
+        store_multpl_valuation_metrics,
+        store_history_of_market_forward_pe_metric,
+        store_equity_risk_premium_metric,
+        store_fullstack_market_model,
+    ):
         try:
             count += loader(con)
         except (httpx.HTTPError, ValueError):
@@ -74,7 +83,7 @@ def store_munger_market_metrics(con: Any, url: str = MUNGER_MARKET_METRICS_URL) 
 
 def store_multpl_valuation_metrics(con: Any) -> int:
     count = 0
-    for metric, (label, url) in MULTPL_VALUATION_METRICS.items():
+    for metric, (label, url, suffix, higher_is_better) in MULTPL_VALUATION_METRICS.items():
         response = httpx.get(url, timeout=30.0, follow_redirects=True, headers={"User-Agent": "joehu-market-panel/0.1"})
         response.raise_for_status()
         for as_of, value in parse_multpl_valuation_table(response.text):
@@ -82,11 +91,72 @@ def store_multpl_valuation_metrics(con: Any) -> int:
                 """
                 INSERT OR REPLACE INTO market_valuation_metric_points
                 (metric, as_of, label, value, suffix, higher_is_better, source, source_url)
-                VALUES (?, ?, ?, ?, 'x', false, 'multpl', ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'multpl', ?)
                 """,
-                [metric, as_of, label, value, url],
+                [metric, as_of, label, value, suffix, higher_is_better, url],
             )
             count += 1
+    return count
+
+
+def store_history_of_market_forward_pe_metric(con: Any, url: str = HISTORY_OF_MARKET_FORWARD_PE_URL) -> int:
+    response = httpx.get(url, timeout=30.0, follow_redirects=True, headers={"User-Agent": "joehu-market-panel/0.1"})
+    response.raise_for_status()
+    count = 0
+    for as_of, value in parse_history_of_market_forward_pe_json(response.json()):
+        con.execute(
+            """
+            INSERT OR REPLACE INTO market_valuation_metric_points
+            (metric, as_of, label, value, suffix, higher_is_better, source, source_url)
+            VALUES ('sp500_forward_pe', ?, 'S&P 500 Forward P/E', ?, 'x', false, 'historyofmarket', ?)
+            """,
+            [as_of, value, url],
+        )
+        count += 1
+    return count
+
+
+def store_equity_risk_premium_metric(
+    con: Any,
+    ten_year_url: str = FRED_TEN_YEAR_YIELD_CSV_URL,
+) -> int:
+    cape_rows = con.execute(
+        """
+        SELECT as_of, value
+        FROM market_valuation_metric_points
+        WHERE metric = 'shiller_pe'
+        ORDER BY as_of
+        """
+    ).fetchall()
+    if not cape_rows:
+        return 0
+    response = httpx.get(
+        ten_year_url,
+        timeout=httpx.Timeout(90.0, connect=15.0),
+        follow_redirects=True,
+        headers={"User-Agent": "python-httpx", "Accept": "text/csv"},
+    )
+    response.raise_for_status()
+    yields_by_month = parse_fred_ten_year_yield_csv(response.text)
+    count = 0
+    for as_of, cape in cape_rows:
+        cape_value = _number(cape)
+        as_of_text = _date_string(as_of)
+        if not cape_value or not as_of_text:
+            continue
+        ten_year_yield = yields_by_month.get(as_of_text[:7])
+        if ten_year_yield is None:
+            continue
+        erp = (100 / cape_value) - ten_year_yield
+        con.execute(
+            """
+            INSERT OR REPLACE INTO market_valuation_metric_points
+            (metric, as_of, label, value, suffix, higher_is_better, source, source_url)
+            VALUES ('equity_risk_premium', ?, 'Equity Risk Premium (1/CAPE - 10Y)', ?, '%', true, 'multpl_fred', ?)
+            """,
+            [as_of_text, round(erp, 4), ten_year_url],
+        )
+        count += 1
     return count
 
 
@@ -143,6 +213,29 @@ def parse_multpl_valuation_table(text: str) -> list[tuple[str, float]]:
         if as_of and value is not None:
             records.append((as_of, value))
     return records
+
+
+def parse_history_of_market_forward_pe_json(payload: dict[str, Any]) -> list[tuple[str, float]]:
+    records: list[tuple[str, float]] = []
+    for point in payload.get("forward") or []:
+        if not isinstance(point, dict):
+            continue
+        as_of = _date_from_text(point.get("date"))
+        value = _number(point.get("value"))
+        if as_of and value is not None:
+            records.append((as_of, value))
+    return records
+
+
+def parse_fred_ten_year_yield_csv(text: str) -> dict[str, float]:
+    by_month: dict[str, float] = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        date_value = row.get("observation_date") or row.get("DATE") or row.get("date")
+        yield_value = _number(row.get("DGS10"))
+        as_of = _date_from_text(date_value)
+        if as_of and yield_value is not None:
+            by_month[as_of[:7]] = yield_value
+    return by_month
 
 
 def parse_fullstack_market_model_csv(text: str, source_url: str = FULLSTACK_MARKET_MODEL_CSV_URL) -> list[dict[str, Any]]:
@@ -218,7 +311,7 @@ def _date_from_text(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"):
+    for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%B %Y", "%b %Y"):
         try:
             return datetime.strptime(text[:32], fmt).date().isoformat()
         except ValueError:
