@@ -1,15 +1,15 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, BarChart3, Gauge } from "lucide-react";
 import {
-  Area,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+  ColorType,
+  CrosshairMode,
+  createChart,
+  LineSeries,
+  PriceScaleMode,
+  type LineData,
+  type PriceFormat,
+  type Time,
+} from "lightweight-charts";
 
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
@@ -25,6 +25,29 @@ type MetricPoint = {
   value?: number;
   index_price?: number;
 };
+
+type PeriodOption = {
+  key: string;
+  years: number;
+};
+
+const DEFAULT_MARKET_PERIODS: PeriodOption[] = [
+  { key: "5Y", years: 5 },
+  { key: "10Y", years: 10 },
+  { key: "20Y", years: 20 },
+  { key: "30Y", years: 30 },
+  { key: "50Y", years: 50 },
+  { key: "All", years: 0 },
+];
+
+const FORWARD_PE_PERIODS: PeriodOption[] = [
+  { key: "1Y", years: 1 },
+  { key: "2Y", years: 2 },
+  { key: "5Y", years: 5 },
+  { key: "10Y", years: 10 },
+  { key: "20Y", years: 20 },
+  { key: "All", years: 0 },
+];
 
 export function MarketRoute() {
   const { data } = useMarketData();
@@ -140,7 +163,7 @@ function ReferenceValuationCharts({ rows }: { rows: RowRecord[] }) {
         </h2>
         <Badge variant="outline">{rows.length} series</Badge>
       </div>
-      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+      <div className="mx-auto grid w-full max-w-5xl min-w-0 gap-4">
         {rows.map((row) => <ReferenceValuationCard key={textField(row, ["metric"])} row={row} />)}
       </div>
     </section>
@@ -149,15 +172,20 @@ function ReferenceValuationCharts({ rows }: { rows: RowRecord[] }) {
 
 function ReferenceValuationCard({ row }: { row: RowRecord }) {
   const history = metricHistoryPoints(row);
-  const indexDomain = logIndexDomain(history);
+  const metric = textField(row, ["metric"]);
+  const periods = metric === "sp500_forward_pe" ? FORWARD_PE_PERIODS : DEFAULT_MARKET_PERIODS;
+  const [selectedPeriod, setSelectedPeriod] = useState("All");
+  const period = periods.find((option) => option.key === selectedPeriod) ?? periods[periods.length - 1];
+  const visibleHistory = useMemo(() => filterMetricPeriod(history, period.years), [history, period.years]);
   const latest = numberField(row, ["latest_value"], Number.NaN);
   const percentile = numberField(row, ["percentile"], Number.NaN);
   const suffix = textField(row, ["suffix"]);
+  const label = textField(row, ["label"]);
   return (
     <Card className="min-w-0">
       <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
         <div>
-          <CardTitle className="text-base">{textField(row, ["label"])}</CardTitle>
+          <CardTitle className="text-base">{label}</CardTitle>
           <p className="mt-1 text-sm text-muted-foreground">
             Latest: <span className="font-medium text-foreground">{formatMetricValue(latest, suffix)}</span>
             {Number.isFinite(percentile) ? <span className={percentileTone(row, percentile)}> {Math.round(percentile)}th percentile</span> : null}
@@ -168,36 +196,26 @@ function ReferenceValuationCard({ row }: { row: RowRecord }) {
       </CardHeader>
       <CardContent className="p-4 pt-2">
         <div className="mb-3 flex flex-wrap gap-1.5">
-          {["5Y", "10Y", "20Y", "50Y", "All"].map((label) => (
-            <span key={label} className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">{label}</span>
+          {periods.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setSelectedPeriod(option.key)}
+              className={option.key === selectedPeriod ? "rounded-full bg-slate-900 px-2.5 py-0.5 text-xs font-semibold text-white" : "rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/80"}
+            >
+              {option.key}
+            </button>
           ))}
           <span className="ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="h-0.5 w-4 rounded-full bg-red-700" />
+            <span className="h-0.5 w-4 rounded-full bg-slate-500" />
             Valuation
-            <span className="h-0.5 w-4 rounded-full bg-blue-700" />
+            <span className="h-0.5 w-4 rounded-full bg-blue-500/50" />
             S&P 500
           </span>
         </div>
-        <div className="h-72 min-h-72">
-          {history.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={history} margin={{ left: 0, right: 8, top: 12, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" minTickGap={42} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-                <YAxis yAxisId="metric" domain={["dataMin", "dataMax"]} tickLine={false} axisLine={false} tick={{ fontSize: 11 }} width={46} />
-                <YAxis yAxisId="index" orientation="right" scale="log" domain={indexDomain} allowDataOverflow hide />
-                <Tooltip
-                  formatter={(value, name) => {
-                    if (name === "S&P 500") return [formatChartNumber(value), "S&P 500"];
-                    return [formatMetricValue(typeof value === "number" ? value : Number.NaN, suffix), textField(row, ["label"])];
-                  }}
-                  labelFormatter={(value) => String(value)}
-                />
-                <ReferenceLine yAxisId="metric" y={latest} stroke="var(--muted-foreground)" strokeDasharray="3 3" ifOverflow="extendDomain" />
-                <Area yAxisId="metric" type="monotone" dataKey="value" stroke="#b42318" strokeWidth={3} fill="#b42318" fillOpacity={0.22} dot={false} name={textField(row, ["label"])} />
-                <Line yAxisId="index" type="monotone" dataKey="index_price" stroke="#1d4ed8" strokeDasharray="5 3" strokeWidth={2.75} dot={false} name="S&P 500" connectNulls />
-              </ComposedChart>
-            </ResponsiveContainer>
+        <div className="h-[360px] min-h-[360px]">
+          {visibleHistory.length ? (
+            <LightweightValuationChart data={visibleHistory} suffix={suffix} metricLabel={label} />
           ) : (
             <EmptyChart label="No valuation history" />
           )}
@@ -205,6 +223,86 @@ function ReferenceValuationCard({ row }: { row: RowRecord }) {
       </CardContent>
     </Card>
   );
+}
+
+function LightweightValuationChart({ data, suffix, metricLabel }: { data: MetricPoint[]; suffix: string; metricLabel: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const metricData = useMemo(() => metricLineData(data, "value"), [data]);
+  const overlayData = useMemo(() => metricLineData(data, "index_price"), [data]);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || !metricData.length) return;
+
+    const chart = createChart(element, {
+      autoSize: true,
+      height: 360,
+      layout: {
+        background: { type: ColorType.Solid, color: "#ffffff" },
+        textColor: "#64748b",
+        fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+      },
+      grid: {
+        vertLines: { color: "#f1f5f9" },
+        horzLines: { color: "#f1f5f9" },
+      },
+      leftPriceScale: {
+        visible: overlayData.length > 0,
+        mode: PriceScaleMode.Logarithmic,
+        borderColor: "#e2e8f0",
+      },
+      rightPriceScale: {
+        borderColor: "#e2e8f0",
+      },
+      timeScale: {
+        borderColor: "#e2e8f0",
+        rightOffset: 2,
+        minBarSpacing: 0.001,
+        timeVisible: false,
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+      },
+      handleScroll: false,
+      handleScale: false,
+    });
+
+    if (overlayData.length) {
+      const overlay = chart.addSeries(LineSeries, {
+        color: "rgba(59, 130, 246, 0.35)",
+        lineWidth: 1,
+        priceScaleId: "left",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 3,
+        priceFormat: {
+          type: "price",
+          precision: 0,
+          minMove: 1,
+        },
+      });
+      overlay.setData(overlayData);
+    }
+
+    const metric = chart.addSeries(LineSeries, {
+      color: "#64748b",
+      lineWidth: 2,
+      priceScaleId: "right",
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 4,
+      title: metricLabel,
+      priceFormat: metricPriceFormat(suffix),
+    });
+    metric.setData(metricData);
+    chart.timeScale().fitContent();
+
+    return () => chart.remove();
+  }, [metricData, metricLabel, overlayData, suffix]);
+
+  return <div ref={containerRef} className="h-[360px] min-h-[360px] w-full overflow-hidden rounded-lg" />;
 }
 
 function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
@@ -411,15 +509,40 @@ function metricHistoryPoints(row: RowRecord): MetricPoint[] {
   return points.filter((_, index) => index % stride === 0 || index === points.length - 1);
 }
 
-function logIndexDomain(points: MetricPoint[]): [number, number] {
-  const values = points
-    .map((point) => point.index_price)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-  if (!values.length) return [1, 10];
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (min === max) return [Math.max(1, min * 0.9), max * 1.1];
-  return [Math.max(1, min * 0.96), max * 1.04];
+function filterMetricPeriod(points: MetricPoint[], years: number): MetricPoint[] {
+  if (!years) return points;
+  const cutoff = new Date();
+  cutoff.setFullYear(cutoff.getFullYear() - years);
+  const cutoffDate = cutoff.toISOString().slice(0, 10);
+  return points.filter((point) => point.date >= cutoffDate);
+}
+
+function metricLineData(points: MetricPoint[], key: "value" | "index_price"): LineData<Time>[] {
+  return points
+    .filter((point) => typeof point[key] === "number" && Number.isFinite(point[key]) && (key !== "index_price" || Number(point[key]) > 0))
+    .map((point) => ({ time: point.date as Time, value: Number(point[key]) }));
+}
+
+function metricPriceFormat(suffix: string): PriceFormat {
+  if (suffix === "%") {
+    return {
+      type: "custom",
+      formatter: (value) => `${Number(value).toFixed(2)}%`,
+      minMove: 0.01,
+    };
+  }
+  if (suffix === "x") {
+    return {
+      type: "custom",
+      formatter: (value) => `${Number(value).toFixed(2)}x`,
+      minMove: 0.01,
+    };
+  }
+  return {
+    type: "price",
+    precision: 2,
+    minMove: 0.01,
+  };
 }
 
 function isMarketDriver(category: string): boolean {
@@ -508,10 +631,6 @@ function groupPillClass(group: string): string {
   if (group === "Managed ETFs") return "border-sky-200 bg-sky-50 text-sky-800";
   if (group === "Countries") return "border-cyan-200 bg-cyan-50 text-cyan-800";
   return "border-border bg-muted text-muted-foreground";
-}
-
-function formatChartNumber(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-";
 }
 
 function postureBadge(value: string): "default" | "secondary" | "outline" | "destructive" | "success" | "warning" | "info" {
