@@ -868,7 +868,7 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
             source=market_asset_source,
         ),
         _environment_bucket(
-            "Leadership",
+            "Sector / Theme Leadership",
             leadership_score,
             _leadership_summary(asset_rows),
             "Sector and theme leadership shows whether risk is broadening or crowded.",

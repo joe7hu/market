@@ -323,14 +323,14 @@ def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(t
     assert categories["Price Trend"]["source"] == "Market environment asset matrix"
     assert categories["Market Breadth"]["source"] == "Market environment asset matrix"
     assert categories["Risk Appetite"]["score"] is not None
-    assert categories["Leadership"]["score"] is not None
+    assert categories["Sector / Theme Leadership"]["score"] is not None
     assert {row["category"] for row in market_only_rows} == {
         "Overall",
         "Valuation",
         "Price Trend",
         "Market Breadth",
         "Risk Appetite",
-        "Leadership",
+        "Sector / Theme Leadership",
     }
 
 

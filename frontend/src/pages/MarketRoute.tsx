@@ -546,7 +546,7 @@ function metricPriceFormat(suffix: string): PriceFormat {
 }
 
 function isMarketDriver(category: string): boolean {
-  return ["Valuation", "Price Trend", "Market Breadth", "Risk Appetite", "Leadership"].includes(category);
+  return ["Valuation", "Price Trend", "Market Breadth", "Risk Appetite", "Sector / Theme Leadership"].includes(category);
 }
 
 function weightedDriverScore(inputRows: RowRecord[]): number {
