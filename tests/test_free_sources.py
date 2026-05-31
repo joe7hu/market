@@ -358,7 +358,7 @@ def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
     assert tables["earnings_setups"]
 
 
-def test_update_free_sources_refreshes_equity_data_before_decision_models(tmp_path: Path, monkeypatch) -> None:
+def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path, monkeypatch) -> None:
     cfg = SimpleNamespace(
         database=SimpleNamespace(duckdb_path=tmp_path / "investment.duckdb"),
         nas=SimpleNamespace(status_dir=tmp_path / "status"),
@@ -375,5 +375,7 @@ def test_update_free_sources_refreshes_equity_data_before_decision_models(tmp_pa
 
     result = update_free_sources.run("config.yaml")
 
-    assert calls == ["equity", "tradingview", "yfinance", "analysis", "decision"]
+    assert calls == ["decision", "equity", "tradingview", "decision", "yfinance", "analysis", "decision"]
+    assert result["preflight_decision_models"] == {"status": "ok"}
+    assert result["post_tradingview_decision_models"] == {"status": "ok"}
     assert result["equity_data"] == {"status": "ok"}

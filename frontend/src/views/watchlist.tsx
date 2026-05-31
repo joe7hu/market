@@ -1,6 +1,7 @@
-import { Search, Star, StarOff } from "lucide-react";
+import { Plus, Search, Star, StarOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api";
 import { DataTableFrame, EmptyState, MetricTile, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,8 +22,9 @@ const tabs: Array<{ key: WatchlistTab; label: string }> = [
   { key: "value", label: "Value" },
 ];
 
-export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenTicker: OpenTicker }) {
-  const [localStates, setLocalStates] = useState<Record<string, WatchState | undefined>>(() => readLocalStates());
+export function WatchlistPage({ data, onOpenTicker, onRefresh }: { data: PanelData; onOpenTicker: OpenTicker; onRefresh: () => Promise<void> }) {
+  const [pendingSymbol, setPendingSymbol] = useState<string | null>(null);
+  const [newSymbol, setNewSymbol] = useState("");
   const [filters, setFilters] = useState<WatchlistFilters>({
     tab: "active",
     query: "",
@@ -31,19 +33,51 @@ export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenT
     minRoic: null,
     sort: "rank",
   });
-  const viewModel = useMemo(() => buildWatchlistViewModel(data, filters, localStates), [data, filters, localStates]);
-
-  useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(localStates));
-  }, [localStates]);
+  const viewModel = useMemo(() => buildWatchlistViewModel(data, filters, {}), [data, filters]);
 
   const updateFilter = <K extends keyof WatchlistFilters>(key: K, value: WatchlistFilters[K]) => setFilters((current) => ({ ...current, [key]: value }));
-  const setWatchState = (symbol: string, currentState: WatchState) => {
-    setLocalStates((current) => {
-      const next = { ...current };
-      next[symbol] = currentState === "candidate" ? "watched" : "candidate";
-      return next;
-    });
+
+  useEffect(() => {
+    const legacyStates = readLocalStates();
+    const entries = Object.entries(legacyStates).filter((entry): entry is [string, WatchState] => Boolean(entry[0] && entry[1]));
+    if (!entries.length) return;
+    let cancelled = false;
+    void Promise.all(
+      entries.map(([symbol, state]) => (state === "watched" ? saveWatchlistSymbol(symbol) : deleteWatchlistSymbol(symbol))),
+    ).then(async () => {
+      if (cancelled) return;
+      window.localStorage.removeItem(storageKey);
+      await onRefresh();
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [onRefresh]);
+
+  const persistWatchState = async (symbol: string, currentState: WatchState) => {
+    setPendingSymbol(symbol);
+    try {
+      if (currentState === "candidate") {
+        await saveWatchlistSymbol(symbol);
+      } else {
+        await deleteWatchlistSymbol(symbol);
+      }
+      await onRefresh();
+    } finally {
+      setPendingSymbol(null);
+    }
+  };
+  const addSymbol = async () => {
+    const symbol = newSymbol.trim().toUpperCase();
+    if (!symbol) return;
+    setPendingSymbol(symbol);
+    try {
+      await saveWatchlistSymbol(symbol);
+      setNewSymbol("");
+      await onRefresh();
+    } finally {
+      setPendingSymbol(null);
+    }
   };
 
   return (
@@ -59,15 +93,32 @@ export function WatchlistPage({ data, onOpenTicker }: { data: PanelData; onOpenT
         <MetricTile label="Deep Drawdowns" value={viewModel.metrics.deepDrawdowns} caption="20%+ below high" tone={viewModel.metrics.deepDrawdowns ? "warn" : "good"} />
       </div>
 
-      <WatchlistControls filters={filters} counts={viewModel.counts} totalRows={viewModel.rows.length} visibleRows={viewModel.visibleRows.length} onChange={updateFilter} />
-      <WatchlistTable rows={viewModel.visibleRows} onOpenTicker={onOpenTicker} onSetWatchState={setWatchState} />
+      <WatchlistControls
+        filters={filters}
+        counts={viewModel.counts}
+        totalRows={viewModel.rows.length}
+        visibleRows={viewModel.visibleRows.length}
+        newSymbol={newSymbol}
+        pending={Boolean(pendingSymbol)}
+        onNewSymbolChange={setNewSymbol}
+        onAddSymbol={addSymbol}
+        onChange={updateFilter}
+      />
+      <WatchlistTable rows={viewModel.visibleRows} pendingSymbol={pendingSymbol} onOpenTicker={onOpenTicker} onSetWatchState={persistWatchState} />
     </WorkspacePage>
   );
 }
 
-function WatchlistControls({ filters, counts, totalRows, visibleRows, onChange }: { filters: WatchlistFilters; counts: Record<WatchlistTab, number>; totalRows: number; visibleRows: number; onChange: <K extends keyof WatchlistFilters>(key: K, value: WatchlistFilters[K]) => void }) {
+function WatchlistControls({ filters, counts, totalRows, visibleRows, newSymbol, pending, onNewSymbolChange, onAddSymbol, onChange }: { filters: WatchlistFilters; counts: Record<WatchlistTab, number>; totalRows: number; visibleRows: number; newSymbol: string; pending: boolean; onNewSymbolChange: (value: string) => void; onAddSymbol: () => void; onChange: <K extends keyof WatchlistFilters>(key: K, value: WatchlistFilters[K]) => void }) {
   return (
     <div className="space-y-3 border-b border-border pb-4">
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Input value={newSymbol} onChange={(event) => onNewSymbolChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void onAddSymbol(); }} placeholder="Add ticker" aria-label="Add ticker to watchlist" className="max-w-xs uppercase" />
+        <Button type="button" className="gap-2 sm:w-auto" disabled={pending || !newSymbol.trim()} onClick={() => void onAddSymbol()}>
+          <Plus />
+          Add
+        </Button>
+      </div>
       <div className="flex flex-wrap gap-2">
         {tabs.map((tab) => (
           <Button key={tab.key} type="button" variant={filters.tab === tab.key ? "default" : "outline"} size="sm" className={cn("gap-2", filters.tab !== tab.key && "bg-card")} onClick={() => onChange("tab", tab.key)}>
@@ -130,7 +181,7 @@ function WatchlistControls({ filters, counts, totalRows, visibleRows, onChange }
   );
 }
 
-function WatchlistTable({ rows, onOpenTicker, onSetWatchState }: { rows: WatchlistRow[]; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => void }) {
+function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: { rows: WatchlistRow[]; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
   if (!rows.length) return <EmptyState title="No watchlist matches" detail="Adjust the filters or switch tabs to widen the ticker set." />;
   return (
     <DataTableFrame title="Watchlist Matrix">
@@ -163,7 +214,7 @@ function WatchlistTable({ rows, onOpenTicker, onSetWatchState }: { rows: Watchli
                 {row.watchState === "owned" ? (
                   <StatusBadge tone="info">Owned</StatusBadge>
                 ) : (
-                  <Button type="button" variant="ghost" size="sm" className="min-w-24 justify-start" onClick={() => onSetWatchState(row.symbol, row.watchState)}>
+                  <Button type="button" variant="ghost" size="sm" className="min-w-24 justify-start" disabled={pendingSymbol === row.symbol} onClick={() => void onSetWatchState(row.symbol, row.watchState)}>
                     {row.watchState === "watched" ? <StarOff /> : <Star />}
                     {row.watchState === "watched" ? "Unwatch" : "Watch"}
                   </Button>

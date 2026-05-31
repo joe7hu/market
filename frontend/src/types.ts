@@ -90,6 +90,7 @@ export type PanelData = {
   dailyBrief: TablePayload;
   feedSignals: TablePayload;
   universeScreen: TablePayload;
+  manualWatchlist: TablePayload;
   sourceConsensus: TablePayload;
   ownershipConsensus: TablePayload;
   marketContext: TablePayload;
@@ -153,6 +154,7 @@ export type PanelEndpoint =
   | "dailyBrief"
   | "feedSignals"
   | "universeScreen"
+  | "manualWatchlist"
   | "sourceConsensus"
   | "ownershipConsensus"
   | "marketContext"

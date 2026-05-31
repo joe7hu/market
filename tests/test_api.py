@@ -62,6 +62,7 @@ def test_api_routes_return_json() -> None:
         "/api/daily-brief",
         "/api/feed",
         "/api/watchlist-screen",
+        "/api/watchlist/symbols",
         "/api/source-consensus",
         "/api/ownership-consensus",
         "/api/market-context",

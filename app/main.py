@@ -20,7 +20,9 @@ from app.data_access import (
     load_panel_data,
     panel_snapshot_payload,
     delete_portfolio_position,
+    delete_watchlist_symbol,
     save_portfolio_position,
+    save_watchlist_symbol,
     settings_payload,
     signals_payload,
     table_payload,
@@ -41,6 +43,13 @@ class PortfolioPositionInput(BaseModel):
     quantity: float
     avg_cost: float
     purchase_date: str | None = None
+    notes: str = ""
+
+
+class WatchlistSymbolInput(BaseModel):
+    symbol: str
+    name: str | None = None
+    asset_class: str = "equity"
     notes: str = ""
 
 
@@ -153,6 +162,7 @@ def create_app() -> FastAPI:
             saved = save_portfolio_position(config, position.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
         _, panel_data = _context()
         return {"position": saved, "portfolio": table_payload(panel_data, "portfolio")}
 
@@ -163,6 +173,7 @@ def create_app() -> FastAPI:
             deleted = delete_portfolio_position(config, symbol)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
         _, panel_data = _context()
         return {"position": deleted, "portfolio": table_payload(panel_data, "portfolio")}
 
@@ -397,6 +408,35 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "universe_screen")
 
+    @app.get("/api/watchlist/symbols")
+    def watchlist_symbols() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "manual_watchlist")
+
+    @app.post("/api/watchlist/symbols")
+    def save_watchlist_symbol_endpoint(item: WatchlistSymbolInput, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        try:
+            saved = save_watchlist_symbol(config, item.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
+        _, panel_data = _context()
+        return {"watchlist_symbol": saved, "watchlist": table_payload(panel_data, "universe_screen")}
+
+    @app.delete("/api/watchlist/symbols/{symbol}")
+    def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        try:
+            deleted = delete_watchlist_symbol(config, symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
+        _, panel_data = _context()
+        return {"watchlist_symbol": deleted, "watchlist": table_payload(panel_data, "universe_screen")}
+
     @app.get("/api/source-consensus")
     def source_consensus() -> dict[str, Any]:
         _, panel_data = _context()
@@ -481,6 +521,10 @@ def _context() -> tuple[dict[str, Any], Any]:
         value = (config, load_panel_data(config))
         _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
         return value
+
+
+def _invalidate_context_cache() -> None:
+    _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
 
 
 def _require_local_request(request: Request) -> None:

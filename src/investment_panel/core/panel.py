@@ -12,7 +12,7 @@ from investment_panel.core.config import AppConfig, config_to_dict, load_config
 from investment_panel.core import brokers
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.daily_brief import daily_brief
-from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, refresh_decision_read_models
+from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, effective_watchlist, manual_watchlist_rows, refresh_decision_read_models
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
@@ -39,7 +39,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
     # rejects simultaneous connections to one file when read_only differs.
     with db(db_path, read_only=False) as con:
         ensure_canonical_sources(con)
-        decision_refresh = ensure_decision_read_models(con, config_watchlist)
+        active_watchlist = effective_watchlist(con, config_watchlist)
+        decision_refresh = ensure_decision_read_models(con, active_watchlist)
         decision_snapshots = symbol_decision_snapshots(con)
         tables = {
             "signals": signal_rows(con),
@@ -54,7 +55,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "candidates": candidates(con),
             "portfolio": portfolio(con),
             "theses": theses(con),
-            "thesis_monitor": thesis_monitor_rows(con, config_watchlist),
+            "manual_watchlist": manual_watchlist_rows(con),
+            "thesis_monitor": thesis_monitor_rows(con, active_watchlist),
             "catalysts": catalysts(con),
             "fundamentals": fundamentals(con),
             "disclosures": disclosures(con),
@@ -87,8 +89,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "agent_recommendations": brokers.agent_recommendations(con),
             "paper_orders": brokers.paper_orders(con),
             "daily_brief": daily_brief(con),
-            "feed_signals": feed_signals(con, config_watchlist),
-            "universe_screen": universe_screen(con, config_watchlist),
+            "feed_signals": feed_signals(con, active_watchlist),
+            "universe_screen": universe_screen(con, active_watchlist),
             "source_consensus": source_consensus(con),
             "ownership_consensus": ownership_consensus(con),
             "market_context": market_context(con),
@@ -172,6 +174,11 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
     """Compact watched/candidate ticker screen with quality, value, and action columns."""
 
     configured_watch = {str(item.get("symbol") or "").upper() for item in (config_watchlist or []) if item.get("symbol")}
+    excluded_watch = {
+        str(item.get("symbol") or "").upper()
+        for item in manual_watchlist_rows(con, include_excluded=True)
+        if item.get("watch_state") == "excluded"
+    }
     portfolio_symbols = {str(row.get("symbol") or "").upper() for row in portfolio(con)}
     quote_by_symbol = {str(row.get("symbol") or "").upper(): row for row in quotes(con)}
     decision_by_symbol = {str(row.get("symbol") or "").upper(): row for row in decision_queue(con)}
@@ -197,7 +204,7 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         metrics = _dict_from_value(screener_row.get("metrics"))
         fundamental_metrics = _dict_from_value(fundamental_by_symbol.get(symbol, {}).get("metrics"))
         valuation = valuation_by_symbol.get(symbol, {})
-        watch_state = "owned" if symbol in portfolio_symbols else "watched" if symbol in configured_watch or _is_watch_universe(universe) else "candidate"
+        watch_state = "owned" if symbol in portfolio_symbols else "candidate" if symbol in excluded_watch else "watched" if symbol in configured_watch or _is_watch_universe(universe) else "candidate"
         quality = _quality_score(decision, metrics, valuation)
         forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe")
         if not forward_pe:
@@ -1360,7 +1367,7 @@ def discovered_universe(con: Any) -> list[dict[str, Any]]:
     for row in decoded:
         row["latest_source_at"] = row.get("latest_source_timestamp")
         counts = row.get("source_counts") if isinstance(row.get("source_counts"), dict) else {}
-        row["source_count"] = sum(int(value or 0) for key, value in counts.items() if key not in {"config_watchlist", "config", "instrument", "instruments", "candidate"})
+        row["source_count"] = sum(int(value or 0) for key, value in counts.items() if key not in {"config_watchlist", "manual_watchlist", "config", "instrument", "instruments", "candidate"})
         row["total_source_count"] = sum(int(value or 0) for value in counts.values())
         row["next_event_at"] = row.get("next_event_at") or "No upcoming event loaded"
     return [_compact_empty_fields(row) for row in decoded]

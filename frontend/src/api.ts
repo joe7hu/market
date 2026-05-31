@@ -66,6 +66,7 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   daily_brief: "dailyBrief",
   feed_signals: "feedSignals",
   universe_screen: "universeScreen",
+  manual_watchlist: "manualWatchlist",
   source_consensus: "sourceConsensus",
   ownership_consensus: "ownershipConsensus",
   market_context: "marketContext",
@@ -134,6 +135,19 @@ export async function loadPanelScope(scope: string, existing?: PanelData): Promi
   return data;
 }
 
+export async function saveWatchlistSymbol(symbol: string): Promise<TablePayload> {
+  const payload = await sendJson<{ watchlist?: TablePayload }>("/api/watchlist/symbols", "POST", {
+    symbol,
+    asset_class: watchlistAssetClass(symbol),
+  });
+  return payload.watchlist ?? EMPTY_TABLE;
+}
+
+export async function deleteWatchlistSymbol(symbol: string): Promise<TablePayload> {
+  const payload = await sendJson<{ watchlist?: TablePayload }>(`/api/watchlist/symbols/${encodeURIComponent(symbol)}`, "DELETE");
+  return payload.watchlist ?? EMPTY_TABLE;
+}
+
 export function emptyPanelData(): PanelData {
   return {
     dashboard: {},
@@ -185,6 +199,7 @@ export function emptyPanelData(): PanelData {
     dailyBrief: EMPTY_TABLE,
     feedSignals: EMPTY_TABLE,
     universeScreen: EMPTY_TABLE,
+    manualWatchlist: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
@@ -211,6 +226,11 @@ function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload): Pan
     }
   }
   return next;
+}
+
+function watchlistAssetClass(symbol: string): "crypto" | "equity" {
+  const normalized = symbol.trim().toUpperCase();
+  return normalized.endsWith("-USD") || ["BTC", "ETH", "SOL"].includes(normalized) ? "crypto" : "equity";
 }
 
 export async function loadLegacyPanelData(): Promise<PanelData> {
@@ -261,6 +281,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("dailyBrief", getJson<TablePayload>("/api/daily-brief")),
     settle("feedSignals", getJson<TablePayload>("/api/feed")),
     settle("universeScreen", getJson<TablePayload>("/api/watchlist-screen")),
+    settle("manualWatchlist", getJson<TablePayload>("/api/watchlist/symbols")),
     settle("sourceConsensus", getJson<TablePayload>("/api/source-consensus")),
     settle("ownershipConsensus", getJson<TablePayload>("/api/ownership-consensus")),
     settle("marketContext", getJson<TablePayload>("/api/market-context")),
@@ -323,6 +344,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     dailyBrief: EMPTY_TABLE,
     feedSignals: EMPTY_TABLE,
     universeScreen: EMPTY_TABLE,
+    manualWatchlist: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
@@ -479,6 +501,9 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
         break;
       case "universeScreen":
         data.universeScreen = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "manualWatchlist":
+        data.manualWatchlist = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "sourceConsensus":
         data.sourceConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;

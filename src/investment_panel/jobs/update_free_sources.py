@@ -24,18 +24,23 @@ def run(
     analyses: bool = True,
 ) -> dict[str, Any]:
     config = load_config(config_path)
-    equity_result = update_equity_data.run(config_path) if equity_data else {"status": "skipped"}
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
         ensure_portfolio_instruments(con)
+        preflight_decision_result = refresh_decision_read_models(con, config.watchlist)
+    equity_result = update_equity_data.run(config_path) if equity_data else {"status": "skipped"}
+    with db(config.database.duckdb_path) as con:
         tradingview_result = update_tradingview_sources(con, config) if tradingview else {"status": "skipped"}
+        post_tradingview_decision_result = refresh_decision_read_models(con, config.watchlist)
         yfinance_result = update_yfinance_sources(con, config) if yfinance else {"status": "skipped"}
         analysis_result = run_all_analyses(con, config) if analyses else {"status": "skipped"}
         decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {
         "database": str(config.database.duckdb_path),
+        "preflight_decision_models": preflight_decision_result,
         "equity_data": equity_result,
         "tradingview": tradingview_result,
+        "post_tradingview_decision_models": post_tradingview_decision_result,
         "yfinance": yfinance_result,
         "analysis": analysis_result,
         "decision_models": decision_result,

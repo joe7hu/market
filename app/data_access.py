@@ -182,6 +182,90 @@ def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) ->
     return {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes}
 
 
+def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    """Insert or update a manually entered watchlist symbol."""
+
+    symbol = str(item.get("symbol", "")).strip().upper()
+    if not symbol:
+        raise ValueError("symbol is required")
+    name = str(item.get("name") or "").strip() or symbol
+    notes = str(item.get("notes", "") or "").strip()
+
+    _resolve_core_helper()
+    from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import SYMBOL_RE, refresh_decision_read_models, upsert_instrument_preserving
+    from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+
+    normalized = normalize_symbol(symbol)
+    if not normalized or not SYMBOL_RE.match(normalized):
+        raise ValueError("symbol must be a valid ticker")
+    requested_asset_class = str(item.get("asset_class") or "").strip().lower()
+    if normalized.endswith("-USD"):
+        asset_class = "crypto"
+    else:
+        asset_class = requested_asset_class or infer_asset_class(normalized)
+    if asset_class not in {"equity", "etf", "crypto"}:
+        raise ValueError("asset_class must be equity, etf, or crypto")
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT INTO manual_watchlist (symbol, name, asset_class, watch_state, notes, created_at, updated_at)
+            VALUES (?, ?, ?, 'watched', ?, now(), now())
+            ON CONFLICT (symbol) DO UPDATE
+            SET name = excluded.name,
+                asset_class = excluded.asset_class,
+                watch_state = 'watched',
+                notes = excluded.notes,
+                updated_at = now()
+            """,
+            [normalized, name, asset_class, notes],
+        )
+        upsert_instrument_preserving(
+            con,
+            {
+                "symbol": normalized,
+                "name": name,
+                "asset_class": asset_class,
+                "category": "watchlist",
+                "source": "manual_watchlist",
+            },
+        )
+        refresh_decision_read_models(con, config.get("watchlist", []))
+    return {"symbol": normalized, "name": name, "asset_class": asset_class, "notes": notes}
+
+
+def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+    normalized = symbol.strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+
+    _resolve_core_helper()
+    from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import SYMBOL_RE, refresh_decision_read_models
+    from investment_panel.core.instruments import normalize_symbol
+
+    normalized = normalize_symbol(normalized)
+    if not normalized or not SYMBOL_RE.match(normalized):
+        raise ValueError("symbol must be a valid ticker")
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT INTO manual_watchlist (symbol, name, asset_class, watch_state, notes, created_at, updated_at)
+            VALUES (?, ?, ?, 'excluded', '', now(), now())
+            ON CONFLICT (symbol) DO UPDATE
+            SET watch_state = 'excluded',
+                updated_at = now()
+            """,
+            [normalized, normalized, "crypto" if normalized.endswith("-USD") else "equity"],
+        )
+        refresh_decision_read_models(con, config.get("watchlist", []))
+    return {"symbol": normalized, "deleted": True}
+
+
 def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, Any]:
     normalized = symbol.strip().upper()
     if not normalized:
@@ -493,6 +577,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
         ],
         "watchlist": [
             "universe_screen",
+            "manual_watchlist",
             "discovered_universe",
             "decision_queue",
             "quotes",

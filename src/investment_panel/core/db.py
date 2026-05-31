@@ -113,6 +113,16 @@ CREATE TABLE IF NOT EXISTS portfolio_positions (
     notes TEXT
 );
 
+CREATE TABLE IF NOT EXISTS manual_watchlist (
+    symbol TEXT PRIMARY KEY,
+    name TEXT,
+    asset_class TEXT,
+    watch_state TEXT,
+    notes TEXT,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS theses (
     symbol TEXT PRIMARY KEY,
     thesis_json JSON,
@@ -788,11 +798,15 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
         "ticker_source_signals": {
             "needs_market_context": "BOOLEAN",
         },
+        "manual_watchlist": {
+            "watch_state": "TEXT",
+        },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
         for column, column_type in columns_to_add.items():
             if column not in existing_columns:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    con.execute("UPDATE manual_watchlist SET watch_state = 'watched' WHERE watch_state IS NULL OR watch_state = ''")
 
 
 @contextmanager

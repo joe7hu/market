@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as api_main
-from investment_panel.core.db import db, init_db
+from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.decision import classify_freshness, symbol_freshness_detail
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.sources import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, source_ingestion_audit
@@ -39,6 +39,35 @@ def test_discovered_universe_merges_all_source_clusters(tmp_path: Path) -> None:
         assert "next_event_at" in row
         assert row.get("eligibility_status") in {"eligible", "ineligible", "watch_only", "source_thin"}
         assert nonempty_list(row.get("inclusion_reasons"))
+
+
+def test_manual_watchlist_is_persisted_universe_source_for_all_pages(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO manual_watchlist (symbol, name, asset_class, notes, created_at, updated_at)
+            VALUES ('CRWV', 'CoreWeave', 'equity', 'manual AI infra watch', now(), now())
+            """
+        )
+
+    panel = load_panel_data(config_for(db_path) | {"watchlist": []})
+    discovered = require_rows(panel, "discovered_universe")
+    screen = require_rows(panel, "universe_screen")
+
+    discovered_row = row_for_symbol(discovered, "CRWV")
+    screen_row = row_for_symbol(screen, "CRWV")
+
+    assert discovered_row["source_counts"]["manual_watchlist"] == 1
+    assert discovered_row["source_count"] == 0
+    assert "manual watchlist" in discovered_row["inclusion_reasons"]
+    assert screen_row["watch_state"] == "watched"
+
+    with db(db_path) as con:
+        instrument = row_for_symbol(query_rows(con, "SELECT symbol, name, asset_class, source FROM instruments"), "CRWV")
+    assert instrument["source"] == "manual_watchlist"
 
 
 def test_source_freshness_contracts_degrade_stale_and_docs_only_rows(tmp_path: Path) -> None:

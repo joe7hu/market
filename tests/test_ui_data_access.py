@@ -183,3 +183,81 @@ def test_save_and_delete_portfolio_position(tmp_path) -> None:
 
     assert deleted == {"symbol": "NVDA", "deleted": True}
     assert panel_data.rows("portfolio") == []
+
+
+def test_delete_config_watchlist_symbol_persists_unwatch_override(tmp_path) -> None:
+    config = {
+        "database": {"duckdb_path": str(tmp_path / "watchlist.duckdb")},
+        "watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}],
+    }
+
+    before = data_access.load_panel_data(config)
+    assert next(row for row in before.rows("universe_screen") if row["symbol"] == "NVDA")["watch_state"] == "watched"
+
+    deleted = data_access.delete_watchlist_symbol(config, "NVDA")
+    after = data_access.load_panel_data(config)
+
+    assert deleted == {"symbol": "NVDA", "deleted": True}
+    assert next(row for row in after.rows("universe_screen") if row["symbol"] == "NVDA")["watch_state"] == "candidate"
+    assert after.rows("manual_watchlist") == []
+
+    from investment_panel.core.db import db, query_rows
+
+    with db(config["database"]["duckdb_path"]) as con:
+        overrides = query_rows(con, "SELECT symbol, watch_state FROM manual_watchlist WHERE symbol = 'NVDA'")
+    assert overrides == [{"symbol": "NVDA", "watch_state": "excluded"}]
+
+
+def test_delete_source_watchlist_symbol_persists_unwatch_override(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "source-watchlist.duckdb")}, "watchlist": []}
+
+    from investment_panel.core.db import db, init_db, json_dumps, query_rows
+
+    init_db(config["database"]["duckdb_path"])
+    with db(config["database"]["duckdb_path"]) as con:
+        con.execute(
+            """
+            INSERT INTO tradingview_watchlists (id, observed_at, name, color, symbol_count, symbols, source, raw)
+            VALUES ('tv-ai', now(), 'AI', NULL, 1, ?, 'tradingview', '{}')
+            """,
+            [json_dumps(["PLTR"])],
+        )
+
+    before = data_access.load_panel_data(config)
+    assert next(row for row in before.rows("universe_screen") if row["symbol"] == "PLTR")["watch_state"] == "watched"
+
+    deleted = data_access.delete_watchlist_symbol(config, "PLTR")
+    after = data_access.load_panel_data(config)
+
+    assert deleted == {"symbol": "PLTR", "deleted": True}
+    assert next(row for row in after.rows("universe_screen") if row["symbol"] == "PLTR")["watch_state"] == "candidate"
+
+    with db(config["database"]["duckdb_path"]) as con:
+        overrides = query_rows(con, "SELECT symbol, watch_state FROM manual_watchlist WHERE symbol = 'PLTR'")
+    assert overrides == [{"symbol": "PLTR", "watch_state": "excluded"}]
+
+
+def test_save_watchlist_crypto_alias_uses_crypto_asset_class(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "crypto-watchlist.duckdb")}}
+
+    saved = data_access.save_watchlist_symbol(config, {"symbol": "btc", "asset_class": "equity"})
+    panel_data = data_access.load_panel_data(config)
+
+    assert saved["symbol"] == "BTC-USD"
+    assert saved["asset_class"] == "crypto"
+    assert next(row for row in panel_data.rows("discovered_universe") if row["symbol"] == "BTC-USD")["asset_class"] == "crypto"
+
+    from investment_panel.core.db import db, query_rows
+
+    with db(config["database"]["duckdb_path"]) as con:
+        instruments = query_rows(con, "SELECT symbol, asset_class FROM instruments WHERE symbol = 'BTC-USD'")
+    assert instruments == [{"symbol": "BTC-USD", "asset_class": "crypto"}]
+
+
+def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "bad-watchlist.duckdb")}}
+
+    import pytest
+
+    with pytest.raises(ValueError, match="valid ticker"):
+        data_access.save_watchlist_symbol(config, {"symbol": "ABC!"})
