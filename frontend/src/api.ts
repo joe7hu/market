@@ -2,6 +2,7 @@ import type {
   DashboardPayload,
   PanelData,
   PanelEndpoint,
+  JsonValue,
   RowRecord,
   SettingsPayload,
   TablePayload,
@@ -15,6 +16,31 @@ type PanelSnapshotPayload = {
   status?: DashboardPayload["status"];
   dashboard?: DashboardPayload | null;
   tables?: Record<string, TablePayload>;
+};
+
+export type RefreshJob = {
+  id?: string;
+  job_name?: string;
+  status?: "running" | "succeeded" | "failed" | string;
+  started_at?: string;
+  finished_at?: string | null;
+  error?: string | null;
+  summary?: JsonValue;
+};
+
+export type RefreshJobsPayload = {
+  rows?: RefreshJob[];
+  count?: number;
+  allowlist?: string[];
+  latest_status?: {
+    ok?: boolean;
+    status?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    failedStep?: string | null;
+    job?: string;
+    host?: string;
+  } | null;
 };
 
 export type PanelScopeOptions = {
@@ -175,6 +201,14 @@ export async function saveWatchlistSymbol(symbol: string): Promise<TablePayload>
 export async function deleteWatchlistSymbol(symbol: string): Promise<TablePayload> {
   const payload = await sendJson<{ watchlist?: TablePayload }>(`/api/watchlist/symbols/${encodeURIComponent(symbol)}`, "DELETE");
   return payload.watchlist ?? EMPTY_TABLE;
+}
+
+export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
+  return getJson<RefreshJobsPayload>("/api/refresh-jobs");
+}
+
+export async function startRefreshJob(jobName: string): Promise<RefreshJob> {
+  return sendJson<RefreshJob>(`/api/refresh-jobs/${encodeURIComponent(jobName)}/background`, "POST");
 }
 
 export function emptyPanelData(): PanelData {

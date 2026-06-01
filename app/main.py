@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
+import json
 from threading import RLock
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,7 +33,7 @@ from app.data_access import (
     table_payload,
     ticker_payload,
 )
-from investment_panel.core.refresh_jobs import ALLOWLIST, refresh_job_rows, run_refresh_job
+from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, fail_running_jobs, refresh_job_rows, run_refresh_job, start_refresh_job
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import load_config as load_core_config
 from investment_panel.core.db import db, init_db
@@ -61,12 +63,20 @@ class PaperOrderInput(BaseModel):
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
+TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
 _CONTEXT_CACHE: dict[str, Any] = {"expires_at": 0.0, "config_key": None, "value": None}
 _CONTEXT_LOCK = RLock()
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    config = load_config()
+    fail_running_jobs(database_path(config), "Server restarted before refresh job completed.")
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title=APP_TITLE)
+    app = FastAPI(title=APP_TITLE, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -497,7 +507,7 @@ def create_app() -> FastAPI:
     def refresh_jobs() -> dict[str, Any]:
         config = load_config()
         rows = refresh_job_rows(database_path(config))
-        return {"rows": rows, "count": len(rows), "allowlist": sorted(ALLOWLIST)}
+        return {"rows": rows, "count": len(rows), "allowlist": sorted(ALLOWLIST), "latest_status": _full_market_refresh_status(config)}
 
     @app.post("/api/refresh-jobs/{job_name}")
     def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
@@ -507,7 +517,21 @@ def create_app() -> FastAPI:
             result = run_refresh_job(job_name, database_path(config), "config.yaml")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
         return result
+
+    @app.post("/api/refresh-jobs/{job_name}/background")
+    def launch_refresh_job_background(job_name: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        try:
+            job = start_refresh_job(job_name, db_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if job.get("created"):
+            background_tasks.add_task(_execute_background_refresh_job, job["id"], job_name, db_path)
+        return job
 
     @app.get("/api/settings")
     def settings() -> dict[str, Any]:
@@ -535,6 +559,24 @@ def _invalidate_context_cache() -> None:
     _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
 
 
+def _execute_background_refresh_job(job_id: str, job_name: str, db_path: Path) -> None:
+    try:
+        execute_refresh_job(job_id, job_name, db_path, "config.yaml", raise_on_error=False)
+    finally:
+        _invalidate_context_cache()
+
+
+def _full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None:
+    status_dir = Path(config.get("nas", {}).get("status_dir", "/Volumes/agent/data-sources/status"))
+    status_path = status_dir / "mini-market-full-refresh.json"
+    if not status_path.exists():
+        return None
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _require_local_request(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host in {"localhost", "testclient"}:
@@ -543,7 +585,7 @@ def _require_local_request(request: Request) -> None:
         address = ip_address(host)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Write actions are available only from the local network.") from exc
-    if not (address.is_loopback or address.is_private or address.is_link_local):
+    if not (address.is_loopback or address.is_private or address.is_link_local or address in TAILSCALE_CGNAT):
         raise HTTPException(status_code=403, detail="Write actions are available only from the local network.")
 
 
