@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Minus, Plus, Search, Star } from "lucide-react";
+import { ArrowDown, ArrowUp, Minus, Plus, RefreshCw, Search, Star } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -131,8 +131,27 @@ const columnHelp = {
 } as const;
 
 type ColumnHelpKey = keyof typeof columnHelp;
+type WatchlistRefreshStatus = "idle" | "starting" | "running" | "succeeded" | "failed";
 
-export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPage }: { data: PanelData; onOpenTicker: OpenTicker; onRefresh: () => Promise<void>; onLoadUnwatchedPage: (offset: number) => Promise<void> }) {
+export function WatchlistPage({
+  data,
+  refreshStatus,
+  refreshFinishedAt,
+  refreshError,
+  onManualRefresh,
+  onOpenTicker,
+  onRefresh,
+  onLoadUnwatchedPage,
+}: {
+  data: PanelData;
+  refreshStatus: WatchlistRefreshStatus;
+  refreshFinishedAt: Date | null;
+  refreshError: string | null;
+  onManualRefresh: () => Promise<void>;
+  onOpenTicker: OpenTicker;
+  onRefresh: () => Promise<void>;
+  onLoadUnwatchedPage: (offset: number) => Promise<void>;
+}) {
   const [pendingSymbol, setPendingSymbol] = useState<string | null>(null);
   const [loadingUnwatched, setLoadingUnwatched] = useState(false);
   const [newSymbol, setNewSymbol] = useState("");
@@ -207,6 +226,14 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPa
       eyebrow="Market data"
       title="Watchlist"
       subtitle="Dynamic ticker selection, valuation quality, and momentum context for deciding what deserves attention."
+      actions={
+        <WatchlistRefreshAction
+          status={refreshStatus}
+          finishedAt={refreshFinishedAt}
+          error={refreshError}
+          onRefresh={onManualRefresh}
+        />
+      }
     >
       <WatchlistControls
         filters={filters}
@@ -239,6 +266,23 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPa
         onSetWatchState={persistWatchState}
       />
     </WorkspacePage>
+  );
+}
+
+function WatchlistRefreshAction({ status, finishedAt, error, onRefresh }: { status: WatchlistRefreshStatus; finishedAt: Date | null; error: string | null; onRefresh: () => Promise<void> }) {
+  const running = status === "starting" || status === "running";
+  const buttonLabel = running ? "Refreshing" : status === "failed" ? "Retry refresh" : "Refresh all";
+  const statusText = refreshStatusText(status, finishedAt, error);
+  return (
+    <div className="flex flex-col items-start gap-1 sm:items-end">
+      <Button type="button" variant="outline" className="gap-2" disabled={running} onClick={() => void onRefresh()}>
+        <RefreshCw className={cn("size-4", running && "animate-spin")} />
+        {buttonLabel}
+      </Button>
+      <div className={cn("text-xs tabular-nums", status === "failed" ? "text-red-700" : "text-muted-foreground")} aria-live="polite">
+        {statusText}
+      </div>
+    </div>
   );
 }
 
@@ -651,6 +695,27 @@ function readLocalStates(): Record<string, WatchState | undefined> {
   } catch {
     return {};
   }
+}
+
+function refreshStatusText(status: WatchlistRefreshStatus, finishedAt: Date | null, error: string | null): string {
+  if (status === "starting") return "Starting background refresh";
+  if (status === "running") return "Refreshing data in background";
+  if (status === "failed") return error ? `Refresh failed: ${shorten(error)}` : "Refresh failed";
+  if (finishedAt) return `Fresh at ${formatTimestamp(finishedAt)}`;
+  return "No completed refresh yet";
+}
+
+function formatTimestamp(value: Date): string {
+  return value.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function shorten(value: string): string {
+  return value.length > 72 ? `${value.slice(0, 69)}...` : value;
 }
 
 function formatPrice(value: number): string {

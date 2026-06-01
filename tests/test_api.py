@@ -113,6 +113,7 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
 
 
 def test_local_write_guard_allows_private_lan_clients() -> None:
+    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
 
