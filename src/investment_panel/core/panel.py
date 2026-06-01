@@ -187,6 +187,7 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
     quote_by_symbol = {str(row.get("symbol") or "").upper(): row for row in quotes(con)}
     decision_by_symbol = {str(row.get("symbol") or "").upper(): row for row in decision_queue(con)}
     screener_by_symbol = {str(row.get("symbol") or "").upper(): row for row in screener(con)}
+    valuation_percentile_by_symbol = _valuation_percentiles_by_symbol(con, list(screener_by_symbol))
     fundamental_by_symbol: dict[str, dict[str, Any]] = {}
     for row in fundamentals(con):
         symbol = str(row.get("symbol") or "").upper()
@@ -197,6 +198,10 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         symbol = str(row.get("symbol") or "").upper()
         if symbol and symbol not in valuation_by_symbol:
             valuation_by_symbol[symbol] = row
+    technical_rows = technicals(con)
+    technical_by_symbol = {str(row.get("symbol") or "").upper(): row for row in technical_rows}
+    rs_rank_1m_by_symbol = _rank_percentiles(technical_rows, "return_20d")
+    rs_rank_3m_by_symbol = _rank_percentiles(technical_rows, "return_3m")
 
     rows = []
     for universe in discovered_universe(con):
@@ -208,6 +213,7 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         metrics = _dict_from_value(screener_row.get("metrics"))
         fundamental_metrics = _dict_from_value(fundamental_by_symbol.get(symbol, {}).get("metrics"))
         valuation = valuation_by_symbol.get(symbol, {})
+        technical = technical_by_symbol.get(symbol, {})
         watch_state = "owned" if symbol in portfolio_symbols else "candidate" if symbol in excluded_watch else "watched" if symbol in configured_watch or _is_watch_universe(universe) else "candidate"
         quality = _quality_score(decision, metrics, valuation)
         forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward")
@@ -216,27 +222,52 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         roic = _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital", "return_on_capital")
         if not roic:
             roic = _roic_from_fundamentals(fundamental_metrics, metrics)
+        revenue = _metric_number(metrics, "total_revenue", "totalRevenue", "revenue") or _optional_number(fundamental_metrics.get("revenue"))
+        revenue_growth = _metric_number_present(metrics, "revenue_growth", "revenueGrowth")
+        if revenue_growth is None:
+            revenue_growth = _optional_number(fundamental_metrics.get("revenue_growth"))
+        free_cash_flow = _free_cash_flow(metrics, fundamental_metrics)
+        fcf_margin = _ratio(free_cash_flow, revenue)
+        market_cap = _metric_number(metrics, "market_cap", "marketCap", "market_cap_basic", "market_capitalization")
+        fcf_yield = _ratio(free_cash_flow, market_cap)
+        valuation_percentile = _optional_number(valuation.get("valuation_percentile_own_history"))
+        if valuation_percentile is None:
+            valuation_percentile = _optional_number(valuation.get("own_history_percentile"))
+        if valuation_percentile is None:
+            valuation_percentile = valuation_percentile_by_symbol.get(symbol)
         rows.append(
             {
                 "symbol": symbol,
                 "name": universe.get("name") or screener_row.get("name") or symbol,
                 "watch_state": watch_state,
-                "market_cap": _metric_number(metrics, "market_cap", "marketCap", "market_capitalization"),
+                "market_cap": market_cap,
                 "ps_ratio": ps_ratio,
                 "pe_ratio": pe_ratio,
                 "forward_pe": forward_pe,
                 "forward_pe_source": "provider" if forward_pe else "missing",
+                "rev_yoy": revenue_growth,
+                "revenue_yoy": revenue_growth,
+                "free_cash_flow": free_cash_flow,
+                "fcf_yield": fcf_yield,
+                "fcf_margin": fcf_margin,
                 "roic": roic,
                 "roic_source": "provider" if _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital", "return_on_capital") else "fundamental_proxy" if roic else "missing",
                 "rating": _star_rating(quality),
                 "quality_score": quality,
                 "value_signal": _value_signal(valuation, metrics),
+                "valuation_percentile_own_history": valuation_percentile,
                 "action": decision.get("action_grade") or "Watch",
                 "next_action": _universe_next_action(decision, watch_state),
                 "portfolio_relevance": _portfolio_relevance([symbol], {s: {} for s in portfolio_symbols}, configured_watch, decision),
                 "freshness": decision.get("freshness_status") or quote_by_symbol.get(symbol, {}).get("freshness_status") or "unknown",
                 "price": quote_by_symbol.get(symbol, {}).get("price"),
                 "change_pct": quote_by_symbol.get(symbol, {}).get("change_pct"),
+                "rs_rank_1m": rs_rank_1m_by_symbol.get(symbol),
+                "rs_rank_3m": rs_rank_3m_by_symbol.get(symbol),
+                "rs_3m": rs_rank_3m_by_symbol.get(symbol),
+                "return_3m": technical.get("return_3m"),
+                "relvol_1m": technical.get("rel_volume_1m") or technical.get("relvol_1m"),
+                "atr_pct_1m": technical.get("atr_pct_1m"),
                 "source_count": universe.get("source_count") or universe.get("total_source_count") or 0,
                 "rank": universe.get("universe_rank"),
             }
@@ -1550,6 +1581,16 @@ def _metric_number(metrics: dict[str, Any], *keys: str) -> float | None:
     return None
 
 
+def _metric_number_present(metrics: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key not in metrics:
+            continue
+        number = _optional_number(metrics.get(key))
+        if number is not None:
+            return number
+    return None
+
+
 def _number_from_any(value: Any) -> float:
     if isinstance(value, (int, float)) and value == value:
         return float(value)
@@ -1605,6 +1646,110 @@ def _roic_from_fundamentals(fundamental_metrics: dict[str, Any], metrics: dict[s
     if margin:
         return round(margin * 100, 2)
     return None
+
+
+def _free_cash_flow(metrics: dict[str, Any], fundamental_metrics: dict[str, Any]) -> float | None:
+    direct = _metric_number_present(metrics, "free_cash_flow", "freeCashflow", "free_cashflow")
+    if direct is None:
+        direct = _optional_number(fundamental_metrics.get("free_cash_flow"))
+    if direct is not None:
+        return direct
+    operating_cash_flow = _metric_number_present(metrics, "operating_cash_flow", "operatingCashflow", "totalCashFromOperatingActivities")
+    if operating_cash_flow is None:
+        operating_cash_flow = _optional_number(fundamental_metrics.get("operating_cash_flow"))
+    capex = _metric_number_present(metrics, "capital_expenditures", "capitalExpenditures")
+    if capex is None:
+        capex = _optional_number(fundamental_metrics.get("capital_expenditures"))
+    if operating_cash_flow is None:
+        return _fcf_proxy(metrics, fundamental_metrics)
+    if capex is None:
+        return operating_cash_flow
+    return operating_cash_flow + capex if capex < 0 else operating_cash_flow - capex
+
+
+def _fcf_proxy(metrics: dict[str, Any], fundamental_metrics: dict[str, Any]) -> float | None:
+    revenue = _metric_number(metrics, "total_revenue", "totalRevenue", "revenue") or _number_from_any(fundamental_metrics.get("revenue"))
+    net_margin = _metric_number_present(metrics, "net_margin", "profitMargins", "profit_margin")
+    if net_margin is None:
+        net_margin = _optional_number(fundamental_metrics.get("net_margin"))
+    if not revenue or net_margin is None:
+        return None
+    return revenue * net_margin * 0.75
+
+
+def _ratio(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator is None or not denominator:
+        return None
+    return numerator / denominator
+
+
+def _rank_percentiles(rows: list[dict[str, Any]], metric: str) -> dict[str, float]:
+    ranked = [
+        (str(row.get("symbol") or "").upper(), _optional_number(row.get(metric)))
+        for row in rows
+        if str(row.get("symbol") or "").upper()
+    ]
+    ranked = [(symbol, value) for symbol, value in ranked if value is not None]
+    ranked.sort(key=lambda item: item[1])
+    if not ranked:
+        return {}
+    if len(ranked) == 1:
+        return {ranked[0][0]: 100.0}
+    return {
+        symbol: round(1 + (index / (len(ranked) - 1)) * 98, 2)
+        for index, (symbol, _value) in enumerate(ranked)
+    }
+
+
+def _valuation_percentiles_by_symbol(con: Any, symbols: list[str]) -> dict[str, float]:
+    normalized = sorted({symbol for symbol in symbols if symbol})
+    if not normalized:
+        return {}
+    placeholders = ", ".join(["?"] * len(normalized))
+    rows = query_rows(
+        con,
+        f"""
+        SELECT symbol, metrics
+        FROM market_screener_rows
+        WHERE symbol IN ({placeholders})
+        ORDER BY symbol, observed_at
+        """,
+        normalized,
+    )
+    ps_by_symbol: dict[str, list[float]] = {}
+    pe_by_symbol: dict[str, list[float]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        metrics = _dict_from_value(row.get("metrics"))
+        ps = _ps_from_fundamentals(metrics, {})
+        pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward")
+        if ps:
+            ps_by_symbol.setdefault(symbol, []).append(ps)
+        if pe:
+            pe_by_symbol.setdefault(symbol, []).append(pe)
+
+    output: dict[str, float] = {}
+    for symbol in normalized:
+        percentiles = []
+        if values := ps_by_symbol.get(symbol):
+            percentiles.append(_own_history_percentile(values))
+        if values := pe_by_symbol.get(symbol):
+            percentiles.append(_own_history_percentile(values))
+        cleaned = [value for value in percentiles if value is not None]
+        if cleaned:
+            output[symbol] = round(sum(cleaned) / len(cleaned), 2)
+    return output
+
+
+def _own_history_percentile(values: list[float]) -> float | None:
+    cleaned = sorted(value for value in values if value == value)
+    if not cleaned:
+        return None
+    if len(cleaned) == 1:
+        return 50.0
+    current = values[-1]
+    below = sum(1 for value in cleaned if value < current)
+    return round((below / (len(cleaned) - 1)) * 100, 2)
 
 
 def _quality_score(decision: dict[str, Any], metrics: dict[str, Any], valuation: dict[str, Any]) -> float:
@@ -2340,14 +2485,20 @@ def technicals(con: Any) -> list[dict[str, Any]]:
         row["ma200"] = features.get("ma200")
         row["return_20d"] = features.get("return_20d")
         row["return_60d"] = features.get("return_60d")
+        row["return_3m"] = features.get("return_3m") if features.get("return_3m") is not None else trailing_return(history, days=63)
         row["return_ytd"] = features.get("return_ytd") if features.get("return_ytd") is not None else period_return(history, "ytd")
         row["return_1y"] = features.get("return_1y") if features.get("return_1y") is not None else period_return(history, "1y")
         row["technical_score"] = features.get("technical_score")
         row["drawdown_from_high"] = features.get("drawdown_from_high")
         row["range_recovery"] = features.get("range_recovery")
         row["volume_ratio_20_60"] = features.get("volume_ratio_20_60")
+        row["rel_volume_1m"] = features.get("rel_volume_1m") if features.get("rel_volume_1m") is not None else relative_volume(history, recent_days=22, baseline_days=63)
+        row["volume_bars_1m"] = one_month_volume_bar_points(history)
+        row["atr_pct_1m"] = features.get("atr_pct_1m") if features.get("atr_pct_1m") is not None else average_true_range_pct(history, days=22)
+        row["atr_pct_1m_points"] = true_range_pct_points(history, days=22)
         row["chart_1y"] = sampled_price_points(history, max_points=253)
         row["rs_1m_bars"] = one_month_bar_points(history)
+        row["rs_3m_bars"] = period_bar_points(history, days=63)
         row["source"] = features.get("source") or features.get("price_source")
     return [_compact_empty_fields(row) for row in decoded]
 
@@ -2360,9 +2511,9 @@ def technical_price_history(con: Any, symbols: list[str], days: int = 253) -> di
     history_rows = query_rows(
         con,
         f"""
-        SELECT symbol, date, close
+        SELECT symbol, date, high, low, close, volume
         FROM (
-            SELECT symbol, date, close,
+            SELECT symbol, date, high, low, close, volume,
                    row_number() OVER (PARTITION BY symbol ORDER BY date DESC) AS recency_rank
             FROM prices_daily
             WHERE symbol IN ({placeholders})
@@ -2378,7 +2529,15 @@ def technical_price_history(con: Any, symbols: list[str], days: int = 253) -> di
         close = row.get("close")
         if not symbol or close is None:
             continue
-        by_symbol.setdefault(symbol, []).append({"date": str(row.get("date") or ""), "close": close})
+        by_symbol.setdefault(symbol, []).append(
+            {
+                "date": str(row.get("date") or ""),
+                "high": row.get("high"),
+                "low": row.get("low"),
+                "close": close,
+                "volume": row.get("volume"),
+            }
+        )
     return by_symbol
 
 
@@ -2398,7 +2557,11 @@ def sampled_price_points(history: list[dict[str, Any]], max_points: int = 253) -
 
 
 def one_month_bar_points(history: list[dict[str, Any]]) -> list[float] | None:
-    closes = [_number_from_any(point.get("close")) for point in history[-22:]]
+    return period_bar_points(history, days=22)
+
+
+def period_bar_points(history: list[dict[str, Any]], days: int) -> list[float] | None:
+    closes = [_number_from_any(point.get("close")) for point in history[-days:]]
     closes = [close for close in closes if close]
     if len(closes) < 2:
         return None
@@ -2406,6 +2569,68 @@ def one_month_bar_points(history: list[dict[str, Any]]) -> list[float] | None:
     high = max(closes)
     spread = high - low or 1
     return [round(((close - low) / spread) * 100, 2) for close in closes]
+
+
+def one_month_volume_bar_points(history: list[dict[str, Any]]) -> list[float] | None:
+    volumes = [_number_from_any(point.get("volume")) for point in history[-22:]]
+    volumes = [volume for volume in volumes if volume and volume > 0]
+    if len(volumes) < 2:
+        return None
+    peak = max(volumes) or 1
+    return [round((volume / peak) * 100, 2) for volume in volumes]
+
+
+def trailing_return(history: list[dict[str, Any]], days: int) -> float | None:
+    points = [point for point in history[-days:] if point.get("close") not in (None, 0)]
+    if len(points) < 2:
+        return None
+    start = _number_from_any(points[0].get("close"))
+    end = _number_from_any(points[-1].get("close"))
+    if not start or not end:
+        return None
+    return (end / start) - 1
+
+
+def relative_volume(history: list[dict[str, Any]], recent_days: int, baseline_days: int) -> float | None:
+    volumes = [_number_from_any(point.get("volume")) for point in history if point.get("volume") not in (None, 0)]
+    volumes = [volume for volume in volumes if volume and volume > 0]
+    if len(volumes) < recent_days + 1:
+        return None
+    recent = volumes[-recent_days:]
+    baseline = volumes[-(recent_days + baseline_days) : -recent_days] or volumes[:-recent_days]
+    recent_avg = sum(recent) / len(recent)
+    baseline_avg = sum(baseline) / len(baseline) if baseline else None
+    if not baseline_avg:
+        return None
+    return recent_avg / baseline_avg
+
+
+def true_range_pct_points(history: list[dict[str, Any]], days: int) -> list[float] | None:
+    points = history[-(days + 1) :]
+    values: list[float] = []
+    previous_close: float | None = None
+    for point in points:
+        high = _number_from_any(point.get("high"))
+        low = _number_from_any(point.get("low"))
+        close = _number_from_any(point.get("close"))
+        if not high or not low or not close:
+            previous_close = close
+            continue
+        ranges = [high - low]
+        if previous_close:
+            ranges.extend([abs(high - previous_close), abs(low - previous_close)])
+        true_range = max(ranges)
+        values.append(true_range / close)
+        previous_close = close
+    values = values[-days:]
+    return [round(value, 4) for value in values] if len(values) >= 2 else None
+
+
+def average_true_range_pct(history: list[dict[str, Any]], days: int) -> float | None:
+    values = true_range_pct_points(history, days)
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def period_return(history: list[dict[str, Any]], period: str) -> float | None:
@@ -2722,8 +2947,8 @@ def screener(con: Any) -> list[dict[str, Any]]:
         """
         SELECT run_id, symbol, observed_at, name, metrics, source
         FROM market_screener_rows
-        QUALIFY dense_rank() OVER (ORDER BY observed_at DESC) = 1
-        ORDER BY observed_at DESC
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
+        ORDER BY observed_at DESC, symbol
         LIMIT 1000
         """,
     )
@@ -2943,8 +3168,19 @@ def valuations(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
-        SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics
-        FROM valuation_models
+        WITH valuation_history AS (
+            SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics,
+                   CASE
+                     WHEN count(*) OVER (PARTITION BY symbol, method) > 1
+                     THEN (1 - percent_rank() OVER (PARTITION BY symbol, method ORDER BY upside_pct)) * 100
+                     ELSE NULL
+                   END AS own_history_percentile
+            FROM valuation_models
+        )
+        SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics,
+               own_history_percentile,
+               own_history_percentile AS valuation_percentile_own_history
+        FROM valuation_history
         QUALIFY dense_rank() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, upside_pct DESC NULLS LAST
         LIMIT 200

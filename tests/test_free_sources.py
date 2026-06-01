@@ -101,6 +101,12 @@ def test_company_facts_uses_latest_revenue_across_fallback_tags() -> None:
                 "Assets": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 500}]}},
                 "Liabilities": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 100}]}},
                 "CashAndCashEquivalentsAtCarryingValue": {"units": {"USD": [{"form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 80}]}},
+                "NetCashProvidedByUsedInOperatingActivities": {
+                    "units": {"USD": [{"fy": 2025, "fp": "FY", "form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 70}]}
+                },
+                "PaymentsToAcquirePropertyPlantAndEquipment": {
+                    "units": {"USD": [{"fy": 2025, "fp": "FY", "form": "10-K", "end": "2025-01-26", "filed": "2025-02-26", "val": 10}]}
+                },
             }
         }
     }
@@ -111,6 +117,8 @@ def test_company_facts_uses_latest_revenue_across_fallback_tags() -> None:
     assert metrics["revenue"] == 200
     assert metrics["revenue_prior"] == 150
     assert metrics["net_margin"] == 0.25
+    assert metrics["free_cash_flow"] == 60
+    assert metrics["fcf_margin"] == 0.3
 
 
 def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Path) -> None:
@@ -136,6 +144,9 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
                 "totalRevenue": 7_000_000_000,
                 "revenueGrowth": 0.12,
                 "profitMargins": 0.18,
+                "freeCashflow": 900_000_000,
+                "operatingCashflow": 1_100_000_000,
+                "capitalExpenditures": 200_000_000,
                 "totalCash": 1_000_000_000,
                 "totalDebt": 500_000_000,
                 "quoteType": "EQUITY",
@@ -155,6 +166,9 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
     assert metrics["price_to_book"] == 4.2
     assert metrics["total_revenue"] == 7_000_000_000
     assert metrics["net_margin"] == 0.18
+    assert metrics["free_cash_flow"] == 900_000_000
+    assert metrics["operating_cash_flow"] == 1_100_000_000
+    assert metrics["capital_expenditures"] == 200_000_000
 
 
 def test_tradingview_provider_interface_uses_json_runner() -> None:

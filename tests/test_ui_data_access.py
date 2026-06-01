@@ -148,6 +148,7 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
                 {"symbol": "AMD", "watch_state": "candidate"},
             ],
             "quotes": [{"symbol": "NVDA", "price": 100}, {"symbol": "AMD", "price": 50}],
+            "fundamentals": [{"symbol": "NVDA", "metrics": {"revenue_growth": 0.12}}, {"symbol": "AMD", "metrics": {"revenue_growth": 0.2}}],
             "technicals": [{"symbol": "NVDA", "chart_1y": [1, 2]}, {"symbol": "AMD", "chart_1y": [2, 3]}],
             "valuations": [{"symbol": "NVDA", "upside_pct": 10}, {"symbol": "AMD", "upside_pct": 20}],
         },
@@ -158,6 +159,8 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
 
     assert watched["tables"]["watchlist_watched"]["rows"] == [{"symbol": "NVDA", "watch_state": "watched"}]
     assert unwatched["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "AMD", "watch_state": "candidate"}]
+    assert watched["tables"]["watchlist_watched_fundamentals"]["rows"][0]["symbol"] == "NVDA"
+    assert unwatched["tables"]["watchlist_unwatched_fundamentals"]["rows"][0]["symbol"] == "AMD"
     assert watched["tables"]["watchlist_watched_technicals"]["rows"][0]["symbol"] == "NVDA"
     assert unwatched["tables"]["watchlist_unwatched_technicals"]["rows"][0]["symbol"] == "AMD"
 
@@ -371,6 +374,47 @@ def test_save_watchlist_crypto_alias_uses_crypto_asset_class(tmp_path) -> None:
     with db(config["database"]["duckdb_path"]) as con:
         instruments = query_rows(con, "SELECT symbol, asset_class FROM instruments WHERE symbol = 'BTC-USD'")
     assert instruments == [{"symbol": "BTC-USD", "asset_class": "crypto"}]
+
+
+def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch) -> None:
+    import pandas as pd
+
+    config = {
+        "database": {"duckdb_path": str(tmp_path / "populate-watchlist.duckdb")},
+        "market_data": {"lookback_days": 30, "mode": "online"},
+        "data_sources": {"yfinance": {"enabled": False}},
+        "scoring": {"weights": {"technical": 1.0}},
+        "watchlist": [],
+    }
+    data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
+
+    def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
+        assert symbol == "XYZ"
+        assert lookback_days == 30
+        assert mode == "online"
+        return pd.DataFrame(
+            [
+                {"symbol": "XYZ", "date": "2026-01-01", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 100, "source": "test"},
+                {"symbol": "XYZ", "date": "2026-01-02", "open": 10, "high": 12, "low": 10, "close": 12, "volume": 120, "source": "test"},
+            ]
+        )
+
+    monkeypatch.setattr("investment_panel.core.prices.fetch_prices", fetch_prices)
+    monkeypatch.setattr("investment_panel.core.prices.upsert_prices", lambda con, frame: len(frame))
+    monkeypatch.setattr("investment_panel.core.technicals.compute_and_store", lambda con, symbol: symbol == "XYZ")
+    monkeypatch.setattr("investment_panel.analysis.valuation.store_valuation_models", lambda con, symbols: len(symbols) * 2)
+    monkeypatch.setattr("investment_panel.core.scoring.score_and_store", lambda con, symbols, weights: [{"symbol": symbol} for symbol in symbols])
+    monkeypatch.setattr("investment_panel.core.decision.refresh_decision_read_models", lambda con, watchlist: {"status": "decision_models_refreshed"})
+
+    result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
+
+    assert result["status"] == "ok"
+    assert result["price_rows"] == 2
+    assert result["technical_rows"] == 1
+    assert result["valuation_rows"] == 2
+    assert result["scored"] == 1
+    assert result["decision_models"] == {"status": "decision_models_refreshed"}
+    assert result["errors"] == {}
 
 
 def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:

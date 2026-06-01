@@ -1,8 +1,9 @@
 import { ArrowDown, ArrowUp, Minus, Plus, Search, Star } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api";
-import { DataTableFrame, EmptyState, MetricTile } from "@/components/market/workstation";
+import { DataTableFrame, EmptyState } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,6 +14,107 @@ import { buildWatchlistViewModel, type WatchState, type WatchlistFilters, type W
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 const storageKey = "market.watchlist.localStates.v1";
+
+const columnHelp = {
+  watch: {
+    label: "Watch",
+    detail: "Manual watchlist state. Starred rows stay in the watched set; unstar to demote a name when the thesis or setup no longer deserves attention.",
+  },
+  ticker: {
+    label: "Ticker",
+    detail: "Canonical symbol that opens the ticker dossier. Use the dossier before a buy, hold, or sell decision when a row-level signal needs evidence.",
+  },
+  company: {
+    label: "Company",
+    detail: "Company or fund name from configured instruments, TradingView, or yfinance. A ticker-only name usually means reference data is still thin.",
+  },
+  price: {
+    label: "Price",
+    detail: "Latest stored daily or intraday price. Treat a missing or stale price as a coverage gap before acting.",
+  },
+  marketCap: {
+    label: "Mkt Cap",
+    detail: "Latest market capitalization from screener or yfinance data. Use it to size opportunity/risk and avoid comparing small caps directly with mega caps.",
+  },
+  ps: {
+    label: "P/S",
+    detail: "Price-to-sales multiple from the latest screener or yfinance fundamentals. Lower can support buys, but only with acceptable growth and margins.",
+  },
+  pe: {
+    label: "P/E",
+    detail: "Trailing price-to-earnings multiple. High values require stronger durability/growth; negative or missing earnings show as blank.",
+  },
+  forwardPe: {
+    label: "Fwd P/E",
+    detail: "Forward price-to-earnings from estimates or yfinance. Prefer it over trailing P/E for changing earnings cycles, but verify estimate quality.",
+  },
+  revenueGrowth: {
+    label: "Rev YoY",
+    detail: "Year-over-year revenue growth from SEC facts or yfinance revenue growth. Rising growth supports buys/holds; slowing growth can trigger review.",
+  },
+  fcfYield: {
+    label: "FCF Yield",
+    detail: "Free cash flow divided by market cap. Higher yield can mark cheaper self-funding businesses; weak or negative yield raises valuation risk.",
+  },
+  fcfMargin: {
+    label: "FCF Margin",
+    detail: "Free cash flow divided by revenue. Higher margins support quality/hold conviction; deterioration can weaken the thesis even if revenue grows.",
+  },
+  roic: {
+    label: "ROIC",
+    detail: "Return on invested capital from fundamentals or screeners. Sustained high ROIC supports quality buys/holds; low ROIC needs a turnaround case.",
+  },
+  returnYtd: {
+    label: "% YTD",
+    detail: "Price return from the first available trading day of the current year. Use it as context for crowdedness and tax-year momentum.",
+  },
+  chart1y: {
+    label: "Chart 1Y",
+    detail: "One-year stored close-price sparkline. A rising line supports trend alignment; a falling line needs valuation or thesis evidence to offset it.",
+  },
+  return1y: {
+    label: "% 1Y",
+    detail: "Trailing one-year price return. Compare it with RS 3M to see whether momentum is persistent or only a short-term bounce.",
+  },
+  drawdown: {
+    label: "Delta 52W Highs",
+    detail: "Percent below the stored 52-week high. Small gaps show strength; deep gaps may be value setups or sell-risk depending on fundamentals.",
+  },
+  rs3m: {
+    label: "RS 3M",
+    detail: "Percentile rank among tickers with technical coverage by trailing 3-month return; bars show the 3-month rank path. Favor high/rising ranks for buys and holds.",
+  },
+  relVol1m: {
+    label: "RelVol 1M",
+    detail: "Recent 1-month average volume divided by the prior-volume baseline. 0.95x means about 5% below normal; >1.2x can confirm institutional interest.",
+  },
+  atrPct1m: {
+    label: "ATR % 1M",
+    detail: "Average true range over roughly 1 month divided by price. +3.6% means a normal daily range near 3.6%; use it for position sizing and stops.",
+  },
+  valuationPercentile: {
+    label: "Val %ile",
+    detail: "Current valuation percentile versus the ticker's own stored history. Low percentile is cheaper than usual; high percentile needs exceptional growth or quality.",
+  },
+  sma20: {
+    label: "20SMA",
+    detail: "Whether price is above the 20-day simple moving average. Good for short-term timing; a break below can flag a failed entry.",
+  },
+  sma50: {
+    label: "50SMA",
+    detail: "Whether price is above the 50-day simple moving average. Helps decide whether a pullback is orderly or momentum is weakening.",
+  },
+  sma200: {
+    label: "200SMA",
+    detail: "Whether price is above the 200-day simple moving average. Below it, require stronger valuation/thesis evidence before buying.",
+  },
+  next: {
+    label: "Next",
+    detail: "Backend-generated next action from decision models and source coverage. Use it as a prompt for research, hold review, or sell-risk checks.",
+  },
+} as const;
+
+type ColumnHelpKey = keyof typeof columnHelp;
 
 export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPage }: { data: PanelData; onOpenTicker: OpenTicker; onRefresh: () => Promise<void>; onLoadUnwatchedPage: (offset: number) => Promise<void> }) {
   const [pendingSymbol, setPendingSymbol] = useState<string | null>(null);
@@ -90,13 +192,6 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPa
       title="Watchlist"
       subtitle="Dynamic ticker selection, valuation quality, and momentum context for deciding what deserves attention."
     >
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricTile label="Active Watchlist" value={viewModel.metrics.active} caption="owned and watched names" tone={viewModel.metrics.active ? "info" : "muted"} />
-        <MetricTile label="Candidate Pool" value={viewModel.metrics.candidates} caption="unwatched screened names" tone={viewModel.metrics.candidates ? "info" : "muted"} />
-        <MetricTile label="Momentum Leaders" value={viewModel.metrics.momentumLeaders} caption="RS score above 70" tone={viewModel.metrics.momentumLeaders ? "good" : "muted"} />
-        <MetricTile label="Deep Drawdowns" value={viewModel.metrics.deepDrawdowns} caption="20%+ below high" tone={viewModel.metrics.deepDrawdowns ? "warn" : "good"} />
-      </div>
-
       <WatchlistControls
         filters={filters}
         counts={viewModel.counts}
@@ -165,7 +260,13 @@ function WatchlistControls({ filters, counts, totalRows, visibleRows, newSymbol,
             <SelectItem value="value">Value upside</SelectItem>
             <SelectItem value="returnYtd">% YTD</SelectItem>
             <SelectItem value="return1y">% 1Y</SelectItem>
-            <SelectItem value="rsRank1m">RS Rank 1M</SelectItem>
+            <SelectItem value="rsRank3m">RS Rank 3M</SelectItem>
+            <SelectItem value="revenueGrowth">Rev YoY</SelectItem>
+            <SelectItem value="fcfYield">FCF Yield</SelectItem>
+            <SelectItem value="fcfMargin">FCF Margin</SelectItem>
+            <SelectItem value="relVol1m">RelVol 1M</SelectItem>
+            <SelectItem value="atrPct1m">ATR % 1M</SelectItem>
+            <SelectItem value="valuationPercentile">Valuation percentile</SelectItem>
             <SelectItem value="rating">Rating</SelectItem>
             <SelectItem value="roic">ROIC</SelectItem>
             <SelectItem value="ps">P/S</SelectItem>
@@ -263,54 +364,89 @@ function LoadMoreSentinel({ loading, onLoadMore }: { loading: boolean; onLoadMor
 
 function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: { rows: WatchlistRow[]; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
   return (
-    <DataTableFrame title="">
-      <table className="w-full min-w-[1600px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <th className="w-12 px-2 py-2 text-center"><Star className="mx-auto size-3.5" aria-label="Watch" /></th>
-            <th className="px-2 py-2">Ticker</th>
-            <th className="px-2 py-2">Company</th>
-            <th className="px-2 py-2 text-right">Price</th>
-            <th className="px-2 py-2 text-right">Mkt Cap</th>
-            <th className="px-2 py-2 text-right">P/S</th>
-            <th className="px-2 py-2 text-right">P/E</th>
-            <th className="px-2 py-2 text-right">Fwd P/E</th>
-            <th className="px-2 py-2 text-right">% YTD</th>
-            <th className="px-2 py-2">Chart 1Y</th>
-            <th className="px-2 py-2 text-right">% 1Y</th>
-            <th className="px-2 py-2">Delta 52W Highs</th>
-            <th className="px-2 py-2">RS Rank 1M</th>
-            <th className="px-2 py-2 text-center">20SMA</th>
-            <th className="px-2 py-2 text-center">50SMA</th>
-            <th className="px-2 py-2 text-center">200SMA</th>
-            <th className="px-2 py-2">Next</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.symbol} className="border-b border-border align-middle transition-colors hover:bg-accent/35">
-              <td className="px-2 py-2 text-center"><WatchStar row={row} pending={pendingSymbol === row.symbol} onSetWatchState={onSetWatchState} /></td>
-              <td className="px-2 py-2"><Button type="button" variant="link" className="h-auto min-w-11 justify-start p-0 font-semibold" onClick={() => onOpenTicker(row.symbol)}>{row.symbol}</Button></td>
-              <td className="max-w-60 px-2 py-2"><div className="truncate" title={row.name}>{row.name}</div></td>
-              <td className="px-2 py-2 text-right tabular-nums">{formatPrice(row.price)}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{formatMarketCap(row.marketCap)}</td>
-              <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.psRatio, 8, 20))}>{formatMultiple(row.psRatio)}</td>
-              <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.peRatio, 25, 50))}>{formatMultiple(row.peRatio)}</td>
-              <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.forwardPe, 25, 50))}>{formatMultiple(row.forwardPe)}</td>
-              <td className={cn("px-2 py-2 text-right tabular-nums", percentCellTone(row.returnYtd))}>{formatPercent(row.returnYtd, true)}</td>
-              <td className="px-2 py-2"><Sparkline points={row.trend} /></td>
-              <td className={cn("px-2 py-2 text-right tabular-nums", percentCellTone(row.return1y))}>{formatPercent(row.return1y, true)}</td>
-              <td className="px-2 py-2"><DrawdownBar value={row.drawdownFromHigh} /></td>
-              <td className="px-2 py-2"><RsRankMiniChart rank={row.rsRank1m} bars={row.rsRankBars} /></td>
-              <td className="px-2 py-2 text-center"><MaFlag state={row.ma20Up} /></td>
-              <td className="px-2 py-2 text-center"><MaFlag state={row.ma50Up} /></td>
-              <td className="px-2 py-2 text-center"><MaFlag state={row.ma200Up} /></td>
-              <td className="max-w-72 px-2 py-2 text-xs leading-5 text-muted-foreground"><div className="line-clamp-2">{row.nextAction}</div></td>
+    <TooltipProvider delayDuration={150}>
+      <DataTableFrame title="">
+        <table className="watchlist-table w-full min-w-[2200px] text-sm">
+          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+            <tr>
+              <ColumnHeader id="watch" className="w-12 text-center"><Star className="mx-auto size-3.5" aria-label="Watch" /></ColumnHeader>
+              <ColumnHeader id="ticker" />
+              <ColumnHeader id="company" />
+              <ColumnHeader id="price" className="text-right" />
+              <ColumnHeader id="marketCap" className="text-right" />
+              <ColumnHeader id="ps" className="text-right" />
+              <ColumnHeader id="pe" className="text-right" />
+              <ColumnHeader id="forwardPe" className="text-right" />
+              <ColumnHeader id="revenueGrowth" className="text-right" />
+              <ColumnHeader id="fcfYield" className="text-right" />
+              <ColumnHeader id="fcfMargin" className="text-right" />
+              <ColumnHeader id="roic" className="text-right" />
+              <ColumnHeader id="returnYtd" className="text-right" />
+              <ColumnHeader id="chart1y" />
+              <ColumnHeader id="return1y" className="text-right" />
+              <ColumnHeader id="drawdown" />
+              <ColumnHeader id="rs3m" className="text-right" />
+              <ColumnHeader id="relVol1m" />
+              <ColumnHeader id="atrPct1m" />
+              <ColumnHeader id="valuationPercentile" />
+              <ColumnHeader id="sma20" className="text-center" />
+              <ColumnHeader id="sma50" className="text-center" />
+              <ColumnHeader id="sma200" className="text-center" />
+              <ColumnHeader id="next" />
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </DataTableFrame>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.symbol} className="border-b border-border align-middle transition-colors hover:bg-accent/35">
+                <td className="px-2 py-2 text-center"><WatchStar row={row} pending={pendingSymbol === row.symbol} onSetWatchState={onSetWatchState} /></td>
+                <td className="px-2 py-2"><Button type="button" variant="link" className="h-auto min-w-11 justify-start p-0 font-semibold" onClick={() => onOpenTicker(row.symbol)}>{row.symbol}</Button></td>
+                <td className="max-w-60 px-2 py-2"><div className="truncate" title={row.name}>{row.name}</div></td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatPrice(row.price)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatMarketCap(row.marketCap)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.psRatio, 8, 20))}>{formatMultiple(row.psRatio)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.peRatio, 25, 50))}>{formatMultiple(row.peRatio)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.forwardPe, 25, 50))}>{formatMultiple(row.forwardPe)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", growthTone(row.revenueGrowthYoy))}>{formatPercent(row.revenueGrowthYoy, true)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", fcfYieldTone(row.fcfYield))}>{formatPercent(row.fcfYield, true)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", fcfMarginTone(row.fcfMargin))}>{formatPercent(row.fcfMargin, true)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", roicTone(row.roic))}>{formatPercent(row.roic, false)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", returnTone(row.returnYtd))}>{formatPercent(row.returnYtd, true)}</td>
+                <td className="px-2 py-2"><Sparkline points={row.trend} /></td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", returnTone(row.return1y))}>{formatPercent(row.return1y, true)}</td>
+                <td className="px-2 py-2"><DrawdownBar value={row.drawdownFromHigh} /></td>
+                <td className="px-2 py-2"><RsRankMiniChart rank={row.rsRank3m} bars={row.rsRank3mBars} /></td>
+                <td className="px-2 py-2"><VolumeBars value={row.relVol1m} bars={row.relVolBars} /></td>
+                <td className="px-2 py-2"><AtrMiniLine value={row.atrPct1m} points={row.atrTrend} /></td>
+                <td className="px-2 py-2"><ValuationPercentile value={row.valuationPercentile} /></td>
+                <td className="px-2 py-2 text-center"><MaFlag state={row.ma20Up} /></td>
+                <td className="px-2 py-2 text-center"><MaFlag state={row.ma50Up} /></td>
+                <td className="px-2 py-2 text-center"><MaFlag state={row.ma200Up} /></td>
+                <td className="max-w-72 px-2 py-2 text-xs leading-5 text-muted-foreground"><div className="line-clamp-2">{row.nextAction}</div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </DataTableFrame>
+    </TooltipProvider>
+  );
+}
+
+function ColumnHeader({ id, className, children }: { id: ColumnHelpKey; className?: string; children?: ReactNode }) {
+  const help = columnHelp[id];
+  return (
+    <th className={cn("px-2 py-2", className)}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0} className="inline-flex cursor-help items-center gap-1 whitespace-nowrap underline decoration-dotted underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {children ?? help.label}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-80 text-xs leading-5">
+          <div className="mb-1 font-semibold">{help.label}</div>
+          <div>{help.detail}</div>
+        </TooltipContent>
+      </Tooltip>
+    </th>
   );
 }
 
@@ -382,7 +518,7 @@ function RsRankMiniChart({ rank, bars }: { rank: number; bars: number[] }) {
   return (
     <div className="min-w-36">
       <div className="mb-1 text-right text-xs tabular-nums">{Number.isFinite(rank) ? rank.toFixed(0) : "-"}</div>
-      <div className="relative flex h-8 items-end gap-px pr-px" aria-label="1 month relative strength bars">
+      <div className="relative flex h-8 items-end gap-px pr-px" aria-label="3 month relative strength bars">
         {finiteBars.length ? finiteBars.map((bar, index) => (
           <span
             key={`${index}-${bar.toFixed(1)}`}
@@ -397,6 +533,66 @@ function RsRankMiniChart({ rank, bars }: { rank: number; bars: number[] }) {
             style={{ left: `${peakLeftPct}%` }}
           />
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function VolumeBars({ value, bars }: { value: number; bars: number[] }) {
+  const finiteBars = bars.filter((bar) => Number.isFinite(bar));
+  const hot = Number.isFinite(value) && value >= 1.2;
+  return (
+    <div className="min-w-32">
+      <div className={cn("mb-1 text-right text-xs tabular-nums", hot ? "text-amber-700" : "text-muted-foreground")}>
+        {Number.isFinite(value) ? `${value.toFixed(2)}x` : "-"}
+      </div>
+      <div className="flex h-8 items-end gap-px pr-px" aria-label="1 month relative volume bars">
+        {finiteBars.length ? finiteBars.map((bar, index) => (
+          <span
+            key={`${index}-${bar.toFixed(1)}`}
+            className={cn("w-1 flex-1 rounded-[1px]", hot ? "bg-amber-500" : "bg-sky-400")}
+            style={{ height: `${Math.max(3, Math.min(30, 3 + bar * 0.27))}px` }}
+          />
+        )) : <span className="text-xs text-muted-foreground">-</span>}
+      </div>
+    </div>
+  );
+}
+
+function AtrMiniLine({ value, points }: { value: number; points: number[] }) {
+  const width = 96;
+  const height = 28;
+  const safePoints = points.filter((point) => Number.isFinite(point));
+  const label = formatPercent(value, true);
+  if (safePoints.length < 2) {
+    return <div className="min-w-28 text-right text-xs tabular-nums text-muted-foreground">{label}</div>;
+  }
+  const min = Math.min(...safePoints);
+  const max = Math.max(...safePoints);
+  const spread = max - min || 1;
+  const path = safePoints.map((point, index) => {
+    const x = (index / Math.max(1, safePoints.length - 1)) * width;
+    const y = height - ((point - min) / spread) * (height - 4) - 2;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <div className="min-w-32">
+      <div className="mb-1 text-right text-xs tabular-nums">{label}</div>
+      <svg width={width} height={height} role="img" aria-label="1 month ATR percent line">
+        <path d={path} fill="none" stroke="#64748b" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  );
+}
+
+function ValuationPercentile({ value }: { value: number }) {
+  const pct = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : Number.NaN;
+  const tone = pct <= 30 ? "bg-green-600" : pct <= 70 ? "bg-amber-500" : "bg-red-600";
+  return (
+    <div className="min-w-28">
+      <div className="mb-1 text-right text-xs tabular-nums">{Number.isFinite(pct) ? `${pct.toFixed(0)}th` : "-"}</div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        {Number.isFinite(pct) ? <div className={cn("h-full rounded-full", tone)} style={{ width: `${Math.max(4, pct)}%` }} /> : null}
       </div>
     </div>
   );
@@ -443,12 +639,45 @@ function formatPercent(value: number, ratio: boolean): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
-function percentCellTone(value: number): string {
+function returnTone(value: number): string {
   if (!Number.isFinite(value)) return "";
   if (value >= 0.5) return "bg-green-100 text-green-900";
   if (value >= 0) return "bg-green-50 text-green-800";
   if (value <= -0.2) return "bg-red-100 text-red-900";
   return "bg-red-50 text-red-800";
+}
+
+function growthTone(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (value >= 0.15) return "bg-green-100 text-green-900";
+  if (value >= 0.03) return "bg-green-50 text-green-800";
+  if (value >= 0) return "bg-amber-50 text-amber-900";
+  if (value <= -0.1) return "bg-red-100 text-red-900";
+  return "bg-red-50 text-red-800";
+}
+
+function fcfYieldTone(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (value >= 0.05) return "bg-green-100 text-green-900";
+  if (value >= 0.02) return "bg-green-50 text-green-800";
+  if (value >= 0) return "bg-amber-50 text-amber-900";
+  return "bg-red-50 text-red-800";
+}
+
+function fcfMarginTone(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (value >= 0.2) return "bg-green-100 text-green-900";
+  if (value >= 0.08) return "bg-green-50 text-green-800";
+  if (value >= 0) return "bg-amber-50 text-amber-900";
+  return "bg-red-50 text-red-800";
+}
+
+function roicTone(value: number): string {
+  if (!Number.isFinite(value)) return "text-muted-foreground";
+  if (value >= 25) return "bg-green-100 text-green-900";
+  if (value >= 15) return "bg-green-50 text-green-800";
+  if (value < 5) return "bg-red-50 text-red-800";
+  return "bg-amber-50 text-amber-900";
 }
 
 function multipleTone(value: number, goodMax: number, warnMax: number): string {

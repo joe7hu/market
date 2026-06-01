@@ -19,6 +19,7 @@ from investment_panel.core.panel import (
     source_consensus,
     technicals,
     universe_screen,
+    valuations,
 )
 from investment_panel.analysis.market_environment import parse_fred_ten_year_yield_csv, parse_fullstack_market_model_csv, parse_history_of_market_forward_pe_json, parse_multpl_valuation_table
 
@@ -133,6 +134,30 @@ def test_watchlist_supporting_read_models_cover_large_universe(tmp_path) -> None
     assert latest_technical["rs_1m_bars"] == [0.0, 100.0]
 
 
+def test_screener_keeps_latest_row_per_symbol_not_only_latest_run(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'ORCL', '2026-05-31T20:00:00Z', 'Oracle', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 100})],
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-2', 'CRCL', '2026-05-31T20:01:00Z', 'Circle', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 200})],
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-3', 'ORCL', '2026-05-31T19:00:00Z', 'Oracle old', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 50})],
+        )
+
+        rows = screener(con)
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["ORCL"]["metrics"]["market_cap"] == 100
+    assert by_symbol["CRCL"]["metrics"]["market_cap"] == 200
+
+
 def test_technicals_keep_full_one_year_chart_as_compact_points(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
@@ -153,6 +178,48 @@ def test_technicals_keep_full_one_year_chart_as_compact_points(tmp_path) -> None
     assert row["chart_1y"][:3] == [100.0, 101.0, 102.0]
     assert row["chart_1y"][-3:] == [350.0, 351.0, 352.0]
     assert "price_history_1y" not in row
+
+
+def test_technicals_include_watchlist_volume_and_atr_context(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    start = date(2026, 1, 1)
+    with db(db_path) as con:
+        for offset in range(90):
+            close = 100 + offset
+            volume = 1000 if offset < 68 else 2000 + offset
+            day = (start + timedelta(days=offset)).isoformat()
+            con.execute(
+                "INSERT INTO prices_daily VALUES ('VOL', ?, ?, ?, ?, ?, ?, 'test')",
+                [day, close - 1, close + 3, close - 2, close, volume],
+            )
+        con.execute(
+            "INSERT INTO technical_features VALUES ('VOL', ?, ?)",
+            [(start + timedelta(days=89)).isoformat(), json.dumps({"close": 189, "technical_score": 70})],
+        )
+
+        row = next(row for row in technicals(con) if row["symbol"] == "VOL")
+
+    assert row["return_3m"] > 0.45
+    assert row["rel_volume_1m"] > 2
+    assert len(row["volume_bars_1m"]) == 22
+    assert row["atr_pct_1m"] > 0
+    assert len(row["atr_pct_1m_points"]) == 22
+    assert len(row["rs_3m_bars"]) == 63
+
+
+def test_valuations_include_own_history_expensiveness_percentile(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-13', 'blended', 100, -10, '{}', '{}')")
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-14', 'blended', 110, 10, '{}', '{}')")
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-15', 'blended', 120, 30, '{}', '{}')")
+
+        row = next(row for row in valuations(con) if row["symbol"] == "MSFT")
+
+    assert row["own_history_percentile"] == 0
+    assert row["valuation_percentile_own_history"] == 0
 
 
 def test_analysis_read_models_return_current_row_per_symbol(tmp_path) -> None:
@@ -193,8 +260,16 @@ def test_universe_screen_derives_value_quality_metrics_from_loaded_fundamentals(
         )
         con.execute(
             "INSERT INTO market_screener_rows VALUES ('run-1', 'MSFT', now(), 'Microsoft', ?, 'yfinance_info')",
-            [json.dumps({"market_cap": 3000, "total_revenue": 1000, "net_margin": 0.2})],
+            [json.dumps({"market_cap": 3000, "total_revenue": 1000, "revenue_growth": 0.12, "net_margin": 0.2, "free_cash_flow": 300})],
         )
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-05-14', 90, 100, 80, 100, 1000, 'test')")
+        con.execute("INSERT INTO prices_daily VALUES ('MSFT', '2026-05-15', 110, 120, 100, 120, 2000, 'test')")
+        con.execute(
+            "INSERT INTO technical_features VALUES ('MSFT', '2026-05-15', ?)",
+            [json.dumps({"close": 120, "return_3m": 0.22, "rel_volume_1m": 1.4, "atr_pct_1m": 0.05})],
+        )
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-13', 'blended', 100, -10, '{}', '{}')")
+        con.execute("INSERT INTO valuation_models VALUES ('MSFT', '2026-05-15', 'blended', 120, 30, '{}', '{}')")
 
         rows = universe_screen(con, [{"symbol": "MSFT"}])
 
@@ -203,6 +278,14 @@ def test_universe_screen_derives_value_quality_metrics_from_loaded_fundamentals(
     assert msft["pe_ratio"] == 15
     assert msft.get("forward_pe") is None
     assert msft["roic"] == 20
+    assert msft["rev_yoy"] == 0.12
+    assert msft["fcf_yield"] == 0.1
+    assert msft["fcf_margin"] == 0.3
+    assert msft["rs_3m"] == 100
+    assert msft["return_3m"] == 0.22
+    assert msft["relvol_1m"] == 1.4
+    assert msft["atr_pct_1m"] == 0.05
+    assert msft["valuation_percentile_own_history"] == 0
     assert msft["forward_pe_source"] == "missing"
 
 
@@ -233,6 +316,71 @@ def test_universe_screen_keeps_provider_forward_pe_separate_from_current_pe(tmp_
     assert nvda["pe_ratio"] == 32.4
     assert nvda["forward_pe"] == 16.7
     assert nvda["forward_pe_source"] == "provider"
+
+
+def test_universe_screen_does_not_render_missing_growth_as_zero(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for rank, symbol in [(1, "MISS"), (2, "FLAT")]:
+            con.execute(
+                """
+                INSERT INTO discovered_universe (
+                    symbol, name, asset_class, inclusion_reasons, source_counts,
+                    latest_source_timestamp, latest_observed_at, next_event_at,
+                    eligibility_status, eligibility_detail, evidence_score,
+                    discovery_score, liquidity_score, recency_score, universe_rank,
+                    decision_universe_member, updated_at
+                )
+                VALUES (?, ?, 'equity', '["configured watchlist"]', '{"config_watchlist": 1}', now(), now(), NULL, 'eligible', '', 1, 1, 1, 1, ?, true, now())
+                """,
+                [symbol, symbol, rank],
+            )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'MISS', now(), 'Missing Growth', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 1000, "total_revenue": 100, "net_margin": 0.1})],
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'FLAT', now(), 'Flat Growth', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 1000, "total_revenue": 100, "revenue_growth": 0.0, "net_margin": 0.1})],
+        )
+
+        rows = universe_screen(con, [{"symbol": "MISS"}, {"symbol": "FLAT"}])
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["MISS"].get("rev_yoy") is None
+    assert by_symbol["MISS"].get("revenue_yoy") is None
+    assert by_symbol["FLAT"]["rev_yoy"] == 0.0
+    assert by_symbol["FLAT"]["revenue_yoy"] == 0.0
+
+
+def test_universe_screen_preserves_reported_zero_free_cash_flow(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO discovered_universe (
+                symbol, name, asset_class, inclusion_reasons, source_counts,
+                latest_source_timestamp, latest_observed_at, next_event_at,
+                eligibility_status, eligibility_detail, evidence_score,
+                discovery_score, liquidity_score, recency_score, universe_rank,
+                decision_universe_member, updated_at
+            )
+            VALUES ('ZFCF', 'Zero FCF', 'equity', '["configured watchlist"]', '{"config_watchlist": 1}', now(), now(), NULL, 'eligible', '', 1, 1, 1, 1, 1, true, now())
+            """
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'ZFCF', now(), 'Zero FCF', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 1000, "total_revenue": 100, "net_margin": 0.2, "operating_cash_flow": 50, "free_cash_flow": 0})],
+        )
+
+        rows = universe_screen(con, [{"symbol": "ZFCF"}])
+
+    row = rows[0]
+    assert row["free_cash_flow"] == 0
+    assert row["fcf_yield"] == 0
+    assert row["fcf_margin"] == 0
 
 
 def test_market_valuation_charts_include_whole_market_and_watchlist_symbols(tmp_path) -> None:

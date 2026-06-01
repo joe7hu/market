@@ -21,6 +21,7 @@ from app.data_access import (
     load_market_panel_data,
     load_panel_data,
     panel_snapshot_payload,
+    populate_watchlist_symbol_data,
     delete_portfolio_position,
     delete_watchlist_symbol,
     save_portfolio_position,
@@ -426,8 +427,12 @@ def create_app() -> FastAPI:
             saved = save_watchlist_symbol(config, item.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            refresh_result = populate_watchlist_symbol_data(config, saved["symbol"], saved.get("asset_class"))
+        except Exception as exc:  # pragma: no cover - defensive API boundary
+            refresh_result = {"status": "error", "symbol": saved["symbol"], "errors": {"refresh": f"{type(exc).__name__}: {exc}"}}
         _invalidate_context_cache()
-        return {"watchlist_symbol": saved, "watchlist": {"rows": [], "count": 0}}
+        return {"watchlist_symbol": saved, "data_refresh": refresh_result, "watchlist": {"rows": [], "count": 0}}
 
     @app.delete("/api/watchlist/symbols/{symbol}")
     def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str, Any]:

@@ -96,6 +96,8 @@ export type PanelData = {
   watchlistUnwatched: TablePayload;
   watchlistWatchedQuotes: TablePayload;
   watchlistUnwatchedQuotes: TablePayload;
+  watchlistWatchedFundamentals: TablePayload;
+  watchlistUnwatchedFundamentals: TablePayload;
   watchlistWatchedTechnicals: TablePayload;
   watchlistUnwatchedTechnicals: TablePayload;
   watchlistWatchedValuations: TablePayload;
@@ -178,6 +180,8 @@ export type PanelEndpoint =
   | "watchlistUnwatched"
   | "watchlistWatchedQuotes"
   | "watchlistUnwatchedQuotes"
+  | "watchlistWatchedFundamentals"
+  | "watchlistUnwatchedFundamentals"
   | "watchlistWatchedTechnicals"
   | "watchlistUnwatchedTechnicals"
   | "watchlistWatchedValuations"

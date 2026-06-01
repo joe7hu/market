@@ -269,6 +269,101 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
     return {"symbol": normalized, "name": name, "asset_class": asset_class, "notes": notes}
 
 
+def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_class: str | None = None) -> dict[str, Any]:
+    """Best-effort targeted market-data refresh for a newly watched symbol."""
+
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return {"status": "skipped", "error": "symbol is required"}
+
+    _resolve_core_helper()
+    from investment_panel.analysis.valuation import store_valuation_models
+    from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import refresh_decision_read_models
+    from investment_panel.core.free_sources import store_yfinance_market_snapshot, update_instrument_from_yfinance
+    from investment_panel.core.prices import fetch_prices, upsert_prices
+    from investment_panel.core.scoring import score_and_store
+    from investment_panel.core.technicals import compute_and_store
+    from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
+
+    db_path = _database_path(config)
+    market_data = config.get("market_data", {})
+    data_sources = config.get("data_sources", {})
+    yfinance_config = data_sources.get("yfinance", {}) if isinstance(data_sources.get("yfinance"), dict) else {}
+    scoring = config.get("scoring", {}) if isinstance(config.get("scoring"), dict) else {}
+    weights = scoring.get("weights") or {
+        "technical": 0.25,
+        "fundamental": 0.20,
+        "category": 0.20,
+        "thesis": 0.15,
+        "trader": 0.10,
+        "portfolio_fit": 0.10,
+    }
+    result: dict[str, Any] = {
+        "status": "ok",
+        "symbol": normalized,
+        "asset_class": asset_class,
+        "price_rows": 0,
+        "technical_rows": 0,
+        "market_snapshots": 0,
+        "valuation_rows": 0,
+        "scored": 0,
+        "errors": {},
+    }
+
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        if asset_class in {"equity", "etf", "crypto"}:
+            try:
+                frame = fetch_prices(
+                    normalized,
+                    int(market_data.get("lookback_days", 260)),
+                    str(market_data.get("mode", "online")),
+                )
+                result["price_rows"] = upsert_prices(con, frame)
+            except Exception as exc:  # pragma: no cover - provider boundary
+                result["errors"]["prices"] = f"{type(exc).__name__}: {exc}"
+
+            try:
+                result["technical_rows"] = 1 if compute_and_store(con, normalized) else 0
+            except Exception as exc:  # pragma: no cover - defensive provider boundary
+                result["errors"]["technicals"] = f"{type(exc).__name__}: {exc}"
+
+        if asset_class in {"equity", "etf"} and yfinance_config.get("enabled", True):
+            try:
+                provider = YFinanceProvider()
+                info = provider.info(normalized)
+                update_instrument_from_yfinance(con, normalized, info)
+                observed_at = datetime.utcnow().isoformat()
+                run_id = f"watchlist:{normalized}:{observed_at}"
+                result["market_snapshots"] = 1 if store_yfinance_market_snapshot(con, run_id, normalized, observed_at, info) else 0
+            except YFinanceUnavailable as exc:
+                result["errors"]["yfinance"] = str(exc)
+            except Exception as exc:  # pragma: no cover - provider boundary
+                result["errors"]["yfinance"] = f"{type(exc).__name__}: {exc}"
+
+        try:
+            result["valuation_rows"] = store_valuation_models(con, [normalized])
+        except Exception as exc:  # pragma: no cover - defensive analysis boundary
+            result["errors"]["valuation"] = f"{type(exc).__name__}: {exc}"
+
+        try:
+            result["scored"] = len(score_and_store(con, [normalized], weights))
+        except Exception as exc:  # pragma: no cover - defensive analysis boundary
+            result["errors"]["scoring"] = f"{type(exc).__name__}: {exc}"
+
+        try:
+            result["decision_models"] = refresh_decision_read_models(con, config.get("watchlist", []))
+        except Exception as exc:  # pragma: no cover - defensive read-model boundary
+            result["errors"]["decision_models"] = f"{type(exc).__name__}: {exc}"
+
+    if result["errors"] and not any(result[key] for key in ("price_rows", "technical_rows", "market_snapshots", "valuation_rows", "scored")):
+        result["status"] = "error"
+    elif result["errors"]:
+        result["status"] = "partial"
+    return result
+
+
 def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, Any]:
     normalized = symbol.strip().upper()
     if not normalized:
@@ -786,6 +881,7 @@ def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0
     table_rows = {
         prefix: page_rows,
         f"{prefix}_quotes": _rows_for_symbols(panel_data.rows("quotes"), symbols),
+        f"{prefix}_fundamentals": _rows_for_symbols(panel_data.rows("fundamentals"), symbols),
         f"{prefix}_technicals": _rows_for_symbols(panel_data.rows("technicals"), symbols),
         f"{prefix}_valuations": _rows_for_symbols(panel_data.rows("valuations"), symbols),
         f"{prefix}_screener": _rows_for_symbols(panel_data.rows("screener"), symbols),

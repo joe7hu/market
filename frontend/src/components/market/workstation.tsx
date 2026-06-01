@@ -60,6 +60,7 @@ export function AppShell() {
   const { model, loading, lastRefresh } = useMarketData();
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const widePage = location.pathname.startsWith("/watchlist");
 
   const onSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -114,7 +115,7 @@ export function AppShell() {
             ) : null}
           </div>
         </header>
-        <main className="mx-auto min-w-0 max-w-[1720px] overflow-x-hidden px-3 py-4 sm:px-4 lg:px-6 lg:py-6">
+        <main className={cn("mx-auto min-w-0 overflow-x-hidden px-3 py-4 sm:px-4 lg:py-6", widePage ? "max-w-none lg:px-3" : "max-w-[1720px] lg:px-6")}>
           <Outlet />
         </main>
       </div>

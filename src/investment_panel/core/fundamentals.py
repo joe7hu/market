@@ -15,6 +15,8 @@ NET_INCOME_TAGS = ["NetIncomeLoss"]
 ASSET_TAGS = ["Assets"]
 LIABILITY_TAGS = ["Liabilities"]
 CASH_TAGS = ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]
+OPERATING_CASH_FLOW_TAGS = ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]
+CAPEX_TAGS = ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpenditures"]
 
 
 def update_equity_fundamentals(con: Any, instruments: list[dict[str, Any]], user_agent: str) -> int:
@@ -58,9 +60,12 @@ def metrics_from_company_facts(payload: dict[str, Any]) -> dict[str, Any]:
     assets = latest_instant_fact(facts, ASSET_TAGS)
     liabilities = latest_instant_fact(facts, LIABILITY_TAGS)
     cash = latest_instant_fact(facts, CASH_TAGS)
+    operating_cash_flow = latest_annual_fact(facts, OPERATING_CASH_FLOW_TAGS)
+    capital_expenditures = latest_annual_fact(facts, CAPEX_TAGS)
     revenue_growth = growth(revenue, revenue_prior)
     net_margin = ratio(net_income, revenue)
     debt_to_assets = ratio(liabilities, assets)
+    free_cash_flow = cash_flow_after_capex(operating_cash_flow, capital_expenditures)
     return {
         "status": "ok",
         "period_end": revenue.get("end") or assets.get("end"),
@@ -74,6 +79,10 @@ def metrics_from_company_facts(payload: dict[str, Any]) -> dict[str, Any]:
         "assets": assets.get("val"),
         "liabilities": liabilities.get("val"),
         "cash": cash.get("val"),
+        "operating_cash_flow": operating_cash_flow.get("val"),
+        "capital_expenditures": capital_expenditures.get("val"),
+        "free_cash_flow": free_cash_flow,
+        "fcf_margin": ratio({"val": free_cash_flow}, revenue) if free_cash_flow is not None else None,
         "debt_to_assets": debt_to_assets,
     }
 
@@ -122,3 +131,14 @@ def ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> float | Non
     if not numerator or not denominator or not denominator.get("val"):
         return None
     return float(numerator["val"]) / float(denominator["val"])
+
+
+def cash_flow_after_capex(operating_cash_flow: dict[str, Any], capital_expenditures: dict[str, Any]) -> float | None:
+    operating = operating_cash_flow.get("val") if operating_cash_flow else None
+    capex = capital_expenditures.get("val") if capital_expenditures else None
+    if operating is None:
+        return None
+    if capex is None:
+        return float(operating)
+    capex_value = float(capex)
+    return float(operating) + capex_value if capex_value < 0 else float(operating) - capex_value
