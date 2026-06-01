@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from ipaddress import ip_address
 from threading import RLock
 import time
 from typing import Any
@@ -84,12 +85,12 @@ def create_app() -> FastAPI:
         return dashboard_payload(panel_data)
 
     @app.get("/api/panel-snapshot")
-    def panel_snapshot(scope: str = "dashboard") -> dict[str, Any]:
+    def panel_snapshot(scope: str = "dashboard", offset: int = 0, limit: int | None = None) -> dict[str, Any]:
         if scope == "market":
             config = load_config()
-            return panel_snapshot_payload(load_market_panel_data(config), scope)
+            return panel_snapshot_payload(load_market_panel_data(config), scope, offset=offset, limit=limit)
         _, panel_data = _context()
-        return panel_snapshot_payload(panel_data, scope)
+        return panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
 
     @app.get("/api/decision-readiness")
     def decision_readiness() -> dict[str, Any]:
@@ -426,8 +427,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _invalidate_context_cache()
-        _, panel_data = _context()
-        return {"watchlist_symbol": saved, "watchlist": table_payload(panel_data, "universe_screen")}
+        return {"watchlist_symbol": saved, "watchlist": {"rows": [], "count": 0}}
 
     @app.delete("/api/watchlist/symbols/{symbol}")
     def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str, Any]:
@@ -438,8 +438,7 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _invalidate_context_cache()
-        _, panel_data = _context()
-        return {"watchlist_symbol": deleted, "watchlist": table_payload(panel_data, "universe_screen")}
+        return {"watchlist_symbol": deleted, "watchlist": {"rows": [], "count": 0}}
 
     @app.get("/api/source-consensus")
     def source_consensus() -> dict[str, Any]:
@@ -533,8 +532,14 @@ def _invalidate_context_cache() -> None:
 
 def _require_local_request(request: Request) -> None:
     host = request.client.host if request.client else ""
-    if host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
-        raise HTTPException(status_code=403, detail="Refresh jobs are available only from the local machine.")
+    if host in {"localhost", "testclient"}:
+        return
+    try:
+        address = ip_address(host)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.") from exc
+    if not (address.is_loopback or address.is_private or address.is_link_local):
+        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.")
 
 
 def _mount_frontend(app: FastAPI) -> None:

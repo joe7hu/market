@@ -227,7 +227,7 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
 
     _resolve_core_helper()
     from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import SYMBOL_RE, refresh_decision_read_models, upsert_instrument_preserving
+    from investment_panel.core.decision import SYMBOL_RE, upsert_instrument_preserving
     from investment_panel.core.instruments import infer_asset_class, normalize_symbol
 
     normalized = normalize_symbol(symbol)
@@ -266,7 +266,6 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
                 "source": "manual_watchlist",
             },
         )
-        refresh_decision_read_models(con, config.get("watchlist", []))
     return {"symbol": normalized, "name": name, "asset_class": asset_class, "notes": notes}
 
 
@@ -277,7 +276,7 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
 
     _resolve_core_helper()
     from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import SYMBOL_RE, refresh_decision_read_models
+    from investment_panel.core.decision import SYMBOL_RE
     from investment_panel.core.instruments import normalize_symbol
 
     normalized = normalize_symbol(normalized)
@@ -296,7 +295,6 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
             """,
             [normalized, normalized, "crypto" if normalized.endswith("-USD") else "equity"],
         )
-        refresh_decision_read_models(con, config.get("watchlist", []))
     return {"symbol": normalized, "deleted": True}
 
 
@@ -597,7 +595,10 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     }
 
 
-def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
+def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
+    if scope in {"watchlist-watched", "watchlist-unwatched"}:
+        return watchlist_section_payload(panel_data, scope, offset=offset, limit=limit)
+
     scopes: dict[str, list[str]] = {
         "feed": [
             "feed_signals",
@@ -773,6 +774,113 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str) -> dict[str, Any]:
     }
 
 
+def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0, limit: int | None = None) -> dict[str, Any]:
+    watched = scope == "watchlist-watched"
+    prefix = "watchlist_watched" if watched else "watchlist_unwatched"
+    sanitized_offset = max(0, int(offset or 0))
+    sanitized_limit = max(1, int(limit)) if limit is not None else None
+    universe_rows = [row for row in _watchlist_universe_rows(panel_data) if _is_active_watchlist_row(row) == watched]
+    total_count = len(universe_rows)
+    page_rows = universe_rows[sanitized_offset : sanitized_offset + sanitized_limit] if sanitized_limit is not None else universe_rows
+    symbols = {str(row.get("symbol") or row.get("ticker") or "").upper() for row in page_rows if row.get("symbol") or row.get("ticker")}
+    table_rows = {
+        prefix: page_rows,
+        f"{prefix}_quotes": _rows_for_symbols(panel_data.rows("quotes"), symbols),
+        f"{prefix}_technicals": _rows_for_symbols(panel_data.rows("technicals"), symbols),
+        f"{prefix}_valuations": _rows_for_symbols(panel_data.rows("valuations"), symbols),
+        f"{prefix}_screener": _rows_for_symbols(panel_data.rows("screener"), symbols),
+        f"{prefix}_decision_queue": _rows_for_symbols(panel_data.rows("decision_queue"), symbols),
+        f"{prefix}_portfolio": _rows_for_symbols(panel_data.rows("portfolio"), symbols),
+    }
+    table_counts = {name: len(rows) for name, rows in table_rows.items()}
+    table_counts[prefix] = total_count
+    if watched:
+        unwatched_count = len([row for row in _watchlist_universe_rows(panel_data) if not _is_active_watchlist_row(row)])
+        table_rows["watchlist_unwatched"] = []
+        table_counts["watchlist_unwatched"] = unwatched_count
+    return {
+        "scope": scope,
+        "status": status_payload(panel_data),
+        "dashboard": None,
+        "tables": {
+            name: {
+                "rows": rows,
+                "count": table_counts[name],
+                "offset": sanitized_offset if name == prefix else 0,
+                "limit": sanitized_limit,
+            }
+            for name, rows in table_rows.items()
+        },
+    }
+
+
+def _watchlist_universe_rows(panel_data: PanelData) -> list[dict[str, Any]]:
+    manual_by_symbol = _manual_watchlist_by_symbol(panel_data)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_row in panel_data.rows("universe_screen"):
+        symbol = _primary_symbol(raw_row)
+        if not symbol:
+            continue
+        seen.add(symbol)
+        manual = manual_by_symbol.get(symbol)
+        watch_state = str((manual or {}).get("watch_state") or raw_row.get("watch_state") or "").lower()
+        if watch_state == "excluded":
+            continue
+        row = dict(raw_row)
+        if manual:
+            row["watch_state"] = watch_state or "watched"
+            row["name"] = manual.get("name") or row.get("name") or symbol
+            row["asset_class"] = manual.get("asset_class") or row.get("asset_class")
+        rows.append(row)
+
+    for symbol, manual in manual_by_symbol.items():
+        if symbol in seen:
+            continue
+        watch_state = str(manual.get("watch_state") or "watched").lower()
+        if watch_state == "excluded":
+            continue
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": manual.get("name") or symbol,
+                "asset_class": manual.get("asset_class") or ("crypto" if symbol.endswith("-USD") else "equity"),
+                "watch_state": "watched",
+                "source_count": 0,
+                "rating": "-",
+                "quality_score": None,
+                "value_signal": "manual",
+                "action": "Watch",
+                "next_action": "New manual watchlist symbol. Run market refresh for full valuation and momentum context.",
+                "freshness": "manual",
+            }
+        )
+    return rows
+
+
+def _manual_watchlist_by_symbol(panel_data: PanelData) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for row in panel_data.rows("manual_watchlist"):
+        symbol = _primary_symbol(row)
+        if symbol:
+            rows[symbol] = row
+    return rows
+
+
+def _is_active_watchlist_row(row: dict[str, Any]) -> bool:
+    return str(row.get("watch_state") or "").lower() in {"owned", "watched"}
+
+
+def _primary_symbol(row: dict[str, Any]) -> str:
+    return str(row.get("symbol") or row.get("ticker") or "").upper()
+
+
+def _rows_for_symbols(rows: list[dict[str, Any]], symbols: set[str]) -> list[dict[str, Any]]:
+    if not symbols:
+        return []
+    return [row for row in rows if _row_symbols(row) & symbols]
+
+
 def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     normalized_ticker = ticker.upper()
     tables = {
@@ -899,6 +1007,7 @@ def _ticker_fundamental_context(symbol: str, decision: dict[str, Any], universe:
         "filing_date": decision.get("as_of") or universe.get("updated_at"),
         "metrics": {
             "market_cap": universe.get("market_cap"),
+            "pe_ratio": universe.get("pe_ratio"),
             "forward_pe": universe.get("forward_pe"),
             "forward_pe_source": universe.get("forward_pe_source"),
             "roic": universe.get("roic"),

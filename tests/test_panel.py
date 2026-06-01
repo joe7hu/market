@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 
 from investment_panel.core.db import db, init_db
 from investment_panel.core.panel import (
@@ -128,8 +129,30 @@ def test_watchlist_supporting_read_models_cover_large_universe(tmp_path) -> None
     latest_technical = next(row for row in technical_rows if row["symbol"] == "T204")
     assert round(latest_technical["return_ytd"], 6) == 0.2
     assert round(latest_technical["return_1y"], 6) == 0.2
-    assert len(latest_technical["price_history_1y"]) == 2
-    assert len(latest_technical["price_history_60d"]) == 2
+    assert latest_technical["chart_1y"] == [100.0, 120.0]
+    assert latest_technical["rs_1m_bars"] == [0.0, 100.0]
+
+
+def test_technicals_keep_full_one_year_chart_as_compact_points(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    start = date(2025, 1, 1)
+    with db(db_path) as con:
+        for offset in range(253):
+            close = 100 + offset
+            day = (start + timedelta(days=offset)).isoformat()
+            con.execute("INSERT INTO prices_daily VALUES ('FULL', ?, ?, ?, ?, ?, 1000, 'test')", [day, close, close, close, close])
+        con.execute(
+            "INSERT INTO technical_features VALUES ('FULL', '2025-09-10', ?)",
+            [json.dumps({"close": 352, "return_20d": 0.1, "return_60d": 0.2, "technical_score": 70})],
+        )
+
+        row = next(row for row in technicals(con) if row["symbol"] == "FULL")
+
+    assert len(row["chart_1y"]) == 253
+    assert row["chart_1y"][:3] == [100.0, 101.0, 102.0]
+    assert row["chart_1y"][-3:] == [350.0, 351.0, 352.0]
+    assert "price_history_1y" not in row
 
 
 def test_analysis_read_models_return_current_row_per_symbol(tmp_path) -> None:
@@ -177,9 +200,39 @@ def test_universe_screen_derives_value_quality_metrics_from_loaded_fundamentals(
 
     msft = rows[0]
     assert msft["ps_ratio"] == 3
-    assert msft["forward_pe"] == 15
+    assert msft["pe_ratio"] == 15
+    assert msft.get("forward_pe") is None
     assert msft["roic"] == 20
-    assert msft["forward_pe_source"] == "fundamental_proxy"
+    assert msft["forward_pe_source"] == "missing"
+
+
+def test_universe_screen_keeps_provider_forward_pe_separate_from_current_pe(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO discovered_universe (
+                symbol, name, asset_class, inclusion_reasons, source_counts,
+                latest_source_timestamp, latest_observed_at, next_event_at,
+                eligibility_status, eligibility_detail, evidence_score,
+                discovery_score, liquidity_score, recency_score, universe_rank,
+                decision_universe_member, updated_at
+            )
+            VALUES ('NVDA', 'NVIDIA', 'equity', '["configured watchlist"]', '{"config_watchlist": 1}', now(), now(), NULL, 'eligible', '', 1, 1, 1, 1, 1, true, now())
+            """
+        )
+        con.execute(
+            "INSERT INTO market_screener_rows VALUES ('run-1', 'NVDA', now(), 'NVIDIA', ?, 'yfinance_info')",
+            [json.dumps({"market_cap": 5000, "total_revenue": 100, "net_margin": 0.5, "trailing_pe": 32.4, "forward_pe": 16.7})],
+        )
+
+        rows = universe_screen(con, [{"symbol": "NVDA"}])
+
+    nvda = rows[0]
+    assert nvda["pe_ratio"] == 32.4
+    assert nvda["forward_pe"] == 16.7
+    assert nvda["forward_pe_source"] == "provider"
 
 
 def test_market_valuation_charts_include_whole_market_and_watchlist_symbols(tmp_path) -> None:

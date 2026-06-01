@@ -210,9 +210,8 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
         valuation = valuation_by_symbol.get(symbol, {})
         watch_state = "owned" if symbol in portfolio_symbols else "candidate" if symbol in excluded_watch else "watched" if symbol in configured_watch or _is_watch_universe(universe) else "candidate"
         quality = _quality_score(decision, metrics, valuation)
-        forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe")
-        if not forward_pe:
-            forward_pe = _pe_from_fundamentals(metrics, fundamental_metrics)
+        forward_pe = _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward")
+        pe_ratio = _pe_from_fundamentals(metrics, fundamental_metrics)
         ps_ratio = _ps_from_fundamentals(metrics, fundamental_metrics)
         roic = _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital", "return_on_capital")
         if not roic:
@@ -224,8 +223,9 @@ def universe_screen(con: Any, config_watchlist: list[dict[str, Any]] | None = No
                 "watch_state": watch_state,
                 "market_cap": _metric_number(metrics, "market_cap", "marketCap", "market_capitalization"),
                 "ps_ratio": ps_ratio,
+                "pe_ratio": pe_ratio,
                 "forward_pe": forward_pe,
-                "forward_pe_source": "provider" if _metric_number(metrics, "forward_pe", "forwardPE", "forward_pe_ratio", "pe_forward", "trailingPE", "trailing_pe") else "fundamental_proxy" if forward_pe else "missing",
+                "forward_pe_source": "provider" if forward_pe else "missing",
                 "roic": roic,
                 "roic_source": "provider" if _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital", "return_on_capital") else "fundamental_proxy" if roic else "missing",
                 "rating": _star_rating(quality),
@@ -1610,7 +1610,7 @@ def _roic_from_fundamentals(fundamental_metrics: dict[str, Any], metrics: dict[s
 def _quality_score(decision: dict[str, Any], metrics: dict[str, Any], valuation: dict[str, Any]) -> float:
     score = _number_from_any(decision.get("action_score") or decision.get("decision_score") or decision.get("score"))
     roic = _metric_number(metrics, "roic", "returnOnInvestedCapital", "return_on_invested_capital") or 0
-    pe = _metric_number(metrics, "forward_pe", "forwardPE", "pe_forward") or 0
+    pe = _metric_number(metrics, "forward_pe", "forwardPE", "pe_forward", "trailing_pe", "trailingPE", "price_earnings", "pe_ratio") or 0
     upside = _number_from_any(valuation.get("upside_pct"))
     if not score:
         score = 45
@@ -1635,6 +1635,9 @@ def _value_signal(valuation: dict[str, Any], metrics: dict[str, Any]) -> str:
     pe = _metric_number(metrics, "forward_pe", "forwardPE", "pe_forward")
     if pe:
         return f"{pe:.1f}x fwd P/E"
+    pe = _metric_number(metrics, "trailing_pe", "trailingPE", "price_earnings", "pe_ratio")
+    if pe:
+        return f"{pe:.1f}x P/E"
     return "No valuation row"
 
 
@@ -2343,8 +2346,8 @@ def technicals(con: Any) -> list[dict[str, Any]]:
         row["drawdown_from_high"] = features.get("drawdown_from_high")
         row["range_recovery"] = features.get("range_recovery")
         row["volume_ratio_20_60"] = features.get("volume_ratio_20_60")
-        row["price_history_1y"] = history
-        row["price_history_60d"] = history[-61:] if history else None
+        row["chart_1y"] = sampled_price_points(history, max_points=253)
+        row["rs_1m_bars"] = one_month_bar_points(history)
         row["source"] = features.get("source") or features.get("price_source")
     return [_compact_empty_fields(row) for row in decoded]
 
@@ -2377,6 +2380,32 @@ def technical_price_history(con: Any, symbols: list[str], days: int = 253) -> di
             continue
         by_symbol.setdefault(symbol, []).append({"date": str(row.get("date") or ""), "close": close})
     return by_symbol
+
+
+def sampled_price_points(history: list[dict[str, Any]], max_points: int = 253) -> list[float] | None:
+    closes = [_number_from_any(point.get("close")) for point in history]
+    closes = [close for close in closes if close]
+    if len(closes) < 2:
+        return None
+    if len(closes) <= max_points:
+        return [round(close, 4) for close in closes]
+    last_index = len(closes) - 1
+    sampled: list[float] = []
+    for index in range(max_points):
+        source_index = round((index / (max_points - 1)) * last_index)
+        sampled.append(round(closes[source_index], 4))
+    return sampled
+
+
+def one_month_bar_points(history: list[dict[str, Any]]) -> list[float] | None:
+    closes = [_number_from_any(point.get("close")) for point in history[-22:]]
+    closes = [close for close in closes if close]
+    if len(closes) < 2:
+        return None
+    low = min(closes)
+    high = max(closes)
+    spread = high - low or 1
+    return [round(((close - low) / spread) * 100, 2) for close in closes]
 
 
 def period_return(history: list[dict[str, Any]], period: str) -> float | None:

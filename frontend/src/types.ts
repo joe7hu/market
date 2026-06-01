@@ -13,6 +13,8 @@ export type ApiStatus = {
 export type TablePayload = {
   rows?: RowRecord[];
   count?: number;
+  offset?: number;
+  limit?: number | null;
   status?: ApiStatus;
 };
 
@@ -90,6 +92,20 @@ export type PanelData = {
   dailyBrief: TablePayload;
   feedSignals: TablePayload;
   universeScreen: TablePayload;
+  watchlistWatched: TablePayload;
+  watchlistUnwatched: TablePayload;
+  watchlistWatchedQuotes: TablePayload;
+  watchlistUnwatchedQuotes: TablePayload;
+  watchlistWatchedTechnicals: TablePayload;
+  watchlistUnwatchedTechnicals: TablePayload;
+  watchlistWatchedValuations: TablePayload;
+  watchlistUnwatchedValuations: TablePayload;
+  watchlistWatchedScreener: TablePayload;
+  watchlistUnwatchedScreener: TablePayload;
+  watchlistWatchedDecisionQueue: TablePayload;
+  watchlistUnwatchedDecisionQueue: TablePayload;
+  watchlistWatchedPortfolio: TablePayload;
+  watchlistUnwatchedPortfolio: TablePayload;
   manualWatchlist: TablePayload;
   sourceConsensus: TablePayload;
   ownershipConsensus: TablePayload;
@@ -158,6 +174,20 @@ export type PanelEndpoint =
   | "dailyBrief"
   | "feedSignals"
   | "universeScreen"
+  | "watchlistWatched"
+  | "watchlistUnwatched"
+  | "watchlistWatchedQuotes"
+  | "watchlistUnwatchedQuotes"
+  | "watchlistWatchedTechnicals"
+  | "watchlistUnwatchedTechnicals"
+  | "watchlistWatchedValuations"
+  | "watchlistUnwatchedValuations"
+  | "watchlistWatchedScreener"
+  | "watchlistUnwatchedScreener"
+  | "watchlistWatchedDecisionQueue"
+  | "watchlistUnwatchedDecisionQueue"
+  | "watchlistWatchedPortfolio"
+  | "watchlistUnwatchedPortfolio"
   | "manualWatchlist"
   | "sourceConsensus"
   | "ownershipConsensus"

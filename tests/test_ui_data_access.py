@@ -139,6 +139,104 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert market_tables["market_environment_model"]["count"] == 1
 
 
+def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [
+                {"symbol": "NVDA", "watch_state": "watched"},
+                {"symbol": "AMD", "watch_state": "candidate"},
+            ],
+            "quotes": [{"symbol": "NVDA", "price": 100}, {"symbol": "AMD", "price": 50}],
+            "technicals": [{"symbol": "NVDA", "chart_1y": [1, 2]}, {"symbol": "AMD", "chart_1y": [2, 3]}],
+            "valuations": [{"symbol": "NVDA", "upside_pct": 10}, {"symbol": "AMD", "upside_pct": 20}],
+        },
+    )
+
+    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+    unwatched = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched")
+
+    assert watched["tables"]["watchlist_watched"]["rows"] == [{"symbol": "NVDA", "watch_state": "watched"}]
+    assert unwatched["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "AMD", "watch_state": "candidate"}]
+    assert watched["tables"]["watchlist_watched_technicals"]["rows"][0]["symbol"] == "NVDA"
+    assert unwatched["tables"]["watchlist_unwatched_technicals"]["rows"][0]["symbol"] == "AMD"
+
+
+def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [
+                {"symbol": "NVDA", "watch_state": "watched"},
+                {"symbol": "AMD", "watch_state": "candidate"},
+                {"symbol": "MSFT", "watch_state": "candidate"},
+                {"symbol": "TSLA", "watch_state": "candidate"},
+            ],
+            "quotes": [{"symbol": "AMD", "price": 50}, {"symbol": "MSFT", "price": 100}, {"symbol": "TSLA", "price": 200}],
+            "technicals": [{"symbol": "AMD", "chart_1y": [1, 2]}, {"symbol": "MSFT", "chart_1y": [2, 3]}, {"symbol": "TSLA", "chart_1y": [3, 4]}],
+        },
+    )
+
+    page = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched", offset=1, limit=1)
+
+    assert page["tables"]["watchlist_unwatched"]["count"] == 3
+    assert page["tables"]["watchlist_unwatched"]["offset"] == 1
+    assert page["tables"]["watchlist_unwatched"]["limit"] == 1
+    assert page["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "MSFT", "watch_state": "candidate"}]
+    assert page["tables"]["watchlist_unwatched_quotes"]["rows"] == [{"symbol": "MSFT", "price": 100}]
+
+
+def test_watchlist_watched_scope_includes_unwatched_count_without_rows() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [
+                {"symbol": "NVDA", "watch_state": "watched"},
+                {"symbol": "AMD", "watch_state": "candidate"},
+            ],
+        },
+    )
+
+    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+
+    assert watched["tables"]["watchlist_watched"]["count"] == 1
+    assert watched["tables"]["watchlist_unwatched"]["count"] == 1
+    assert watched["tables"]["watchlist_unwatched"]["rows"] == []
+
+
+def test_watchlist_section_includes_manual_symbol_before_read_model_refresh() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [],
+            "manual_watchlist": [{"symbol": "IBM", "name": "IBM", "asset_class": "equity", "watch_state": "watched"}],
+        },
+    )
+
+    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+
+    assert watched["tables"]["watchlist_watched"]["count"] == 1
+    assert watched["tables"]["watchlist_watched"]["rows"][0]["symbol"] == "IBM"
+    assert watched["tables"]["watchlist_watched"]["rows"][0]["watch_state"] == "watched"
+
+
+def test_watchlist_section_manual_exclusion_removes_symbol_from_sections() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [{"symbol": "AAPL", "watch_state": "watched"}],
+            "manual_watchlist": [{"symbol": "AAPL", "name": "Apple", "asset_class": "equity", "watch_state": "excluded"}],
+        },
+    )
+
+    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+    unwatched = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched")
+
+    assert watched["tables"]["watchlist_watched"]["rows"] == []
+    assert watched["tables"]["watchlist_unwatched"]["count"] == 0
+    assert unwatched["tables"]["watchlist_unwatched"]["rows"] == []
+
+
 def test_ticker_payload_excludes_health_only_operational_tables() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),

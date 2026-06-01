@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Minus, Plus, Search, Star } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api";
 import { DataTableFrame, EmptyState, MetricTile } from "@/components/market/workstation";
@@ -14,8 +14,9 @@ import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 const storageKey = "market.watchlist.localStates.v1";
 
-export function WatchlistPage({ data, onOpenTicker, onRefresh }: { data: PanelData; onOpenTicker: OpenTicker; onRefresh: () => Promise<void> }) {
+export function WatchlistPage({ data, onOpenTicker, onRefresh, onLoadUnwatchedPage }: { data: PanelData; onOpenTicker: OpenTicker; onRefresh: () => Promise<void>; onLoadUnwatchedPage: (offset: number) => Promise<void> }) {
   const [pendingSymbol, setPendingSymbol] = useState<string | null>(null);
+  const [loadingUnwatched, setLoadingUnwatched] = useState(false);
   const [newSymbol, setNewSymbol] = useState("");
   const [filters, setFilters] = useState<WatchlistFilters>({
     query: "",
@@ -25,8 +26,20 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh }: { data: PanelDa
     sort: "rank",
   });
   const viewModel = useMemo(() => buildWatchlistViewModel(data, filters, {}), [data, filters]);
+  const loadedUnwatchedCount = data.watchlistUnwatched.rows?.length ?? 0;
+  const totalUnwatchedCount = data.watchlistUnwatched.count ?? loadedUnwatchedCount;
+  const canLoadMoreUnwatched = loadedUnwatchedCount < totalUnwatchedCount;
 
   const updateFilter = <K extends keyof WatchlistFilters>(key: K, value: WatchlistFilters[K]) => setFilters((current) => ({ ...current, [key]: value }));
+  const loadMoreUnwatched = useCallback(async () => {
+    if (loadingUnwatched || !canLoadMoreUnwatched) return;
+    setLoadingUnwatched(true);
+    try {
+      await onLoadUnwatchedPage(loadedUnwatchedCount);
+    } finally {
+      setLoadingUnwatched(false);
+    }
+  }, [canLoadMoreUnwatched, loadedUnwatchedCount, loadingUnwatched, onLoadUnwatchedPage]);
 
   useEffect(() => {
     const legacyStates = readLocalStates();
@@ -87,7 +100,7 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh }: { data: PanelDa
       <WatchlistControls
         filters={filters}
         counts={viewModel.counts}
-        totalRows={viewModel.rows.length}
+        totalRows={viewModel.watchedRows.length + totalUnwatchedCount}
         visibleRows={viewModel.visibleRows.length}
         newSymbol={newSymbol}
         pending={Boolean(pendingSymbol)}
@@ -105,8 +118,11 @@ export function WatchlistPage({ data, onOpenTicker, onRefresh }: { data: PanelDa
       />
       <WatchlistSection
         title="Not watched"
-        detail={`${viewModel.unwatchedRows.length.toLocaleString()} shown from the discovered universe`}
+        detail={`${viewModel.unwatchedRows.length.toLocaleString()} shown from ${loadedUnwatchedCount.toLocaleString()} loaded / ${totalUnwatchedCount.toLocaleString()} candidates`}
         rows={viewModel.unwatchedRows}
+        canLoadMore={canLoadMoreUnwatched}
+        loadingMore={loadingUnwatched}
+        onLoadMore={loadMoreUnwatched}
         pendingSymbol={pendingSymbol}
         onOpenTicker={onOpenTicker}
         onSetWatchState={persistWatchState}
@@ -154,6 +170,7 @@ function WatchlistControls({ filters, counts, totalRows, visibleRows, newSymbol,
             <SelectItem value="roic">ROIC</SelectItem>
             <SelectItem value="ps">P/S</SelectItem>
             <SelectItem value="pe">P/E</SelectItem>
+            <SelectItem value="forwardPe">Fwd P/E</SelectItem>
             <SelectItem value="price">Price</SelectItem>
             <SelectItem value="marketCap">Market cap</SelectItem>
             <SelectItem value="drawdown">Delta 52W high</SelectItem>
@@ -170,9 +187,9 @@ function WatchlistControls({ filters, counts, totalRows, visibleRows, newSymbol,
           </SelectContent>
         </Select>
         <Select value={filters.maxForwardPe === null ? "any" : String(filters.maxForwardPe)} onValueChange={(value) => onChange("maxForwardPe", value === "any" ? null : Number(value))}>
-          <SelectTrigger aria-label="Maximum PE"><SelectValue placeholder="P/E" /></SelectTrigger>
+          <SelectTrigger aria-label="Maximum forward PE"><SelectValue placeholder="Fwd P/E" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="any">Any P/E</SelectItem>
+            <SelectItem value="any">Any fwd P/E</SelectItem>
             <SelectItem value="15">Under 15x</SelectItem>
             <SelectItem value="20">Under 20x</SelectItem>
             <SelectItem value="25">Under 25x</SelectItem>
@@ -191,7 +208,7 @@ function WatchlistControls({ filters, counts, totalRows, visibleRows, newSymbol,
         </Select>
       </div>
 
-      <div className="text-xs text-muted-foreground">{visibleRows.toLocaleString()} shown from {totalRows.toLocaleString()} loaded symbols</div>
+      <div className="text-xs text-muted-foreground">{visibleRows.toLocaleString()} shown from {totalRows.toLocaleString()} available symbols</div>
     </div>
   );
 }
@@ -204,8 +221,8 @@ function CountPill({ label, value }: { label: string; value: number }) {
   );
 }
 
-function WatchlistSection({ title, detail, rows, pendingSymbol, onOpenTicker, onSetWatchState }: { title: string; detail: string; rows: WatchlistRow[]; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
-  if (!rows.length) return <EmptyState title={`No ${title.toLowerCase()} matches`} detail="Adjust the filters to widen the ticker set." />;
+function WatchlistSection({ title, detail, rows, canLoadMore = false, loadingMore = false, onLoadMore, pendingSymbol, onOpenTicker, onSetWatchState }: { title: string; detail: string; rows: WatchlistRow[]; canLoadMore?: boolean; loadingMore?: boolean; onLoadMore?: () => Promise<void>; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
+  if (!rows.length && !canLoadMore) return <EmptyState title={`No ${title.toLowerCase()} matches`} detail="Adjust the filters to widen the ticker set." />;
   return (
     <div className="space-y-2">
       <div className="flex items-end justify-between gap-3">
@@ -214,7 +231,32 @@ function WatchlistSection({ title, detail, rows, pendingSymbol, onOpenTicker, on
           <p className="text-xs text-muted-foreground">{detail}</p>
         </div>
       </div>
-      <WatchlistTable rows={rows} pendingSymbol={pendingSymbol} onOpenTicker={onOpenTicker} onSetWatchState={onSetWatchState} />
+      {rows.length ? <WatchlistTable rows={rows} pendingSymbol={pendingSymbol} onOpenTicker={onOpenTicker} onSetWatchState={onSetWatchState} /> : null}
+      {canLoadMore && onLoadMore ? <LoadMoreSentinel loading={loadingMore} onLoadMore={onLoadMore} /> : null}
+    </div>
+  );
+}
+
+function LoadMoreSentinel({ loading, onLoadMore }: { loading: boolean; onLoadMore: () => Promise<void> }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || loading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void onLoadMore();
+      },
+      { rootMargin: "720px 0px 720px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [loading, onLoadMore]);
+
+  return (
+    <div ref={ref} className="flex justify-center py-3">
+      <Button type="button" variant="outline" disabled={loading} onClick={() => void onLoadMore()}>
+        {loading ? "Loading" : "Load more"}
+      </Button>
     </div>
   );
 }
@@ -222,7 +264,7 @@ function WatchlistSection({ title, detail, rows, pendingSymbol, onOpenTicker, on
 function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: { rows: WatchlistRow[]; pendingSymbol: string | null; onOpenTicker: OpenTicker; onSetWatchState: (symbol: string, currentState: WatchState) => Promise<void> }) {
   return (
     <DataTableFrame title="">
-      <table className="w-full min-w-[1540px] text-sm">
+      <table className="w-full min-w-[1600px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <th className="w-12 px-2 py-2 text-center"><Star className="mx-auto size-3.5" aria-label="Watch" /></th>
@@ -232,6 +274,7 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
             <th className="px-2 py-2 text-right">Mkt Cap</th>
             <th className="px-2 py-2 text-right">P/S</th>
             <th className="px-2 py-2 text-right">P/E</th>
+            <th className="px-2 py-2 text-right">Fwd P/E</th>
             <th className="px-2 py-2 text-right">% YTD</th>
             <th className="px-2 py-2">Chart 1Y</th>
             <th className="px-2 py-2 text-right">% 1Y</th>
@@ -252,6 +295,7 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
               <td className="px-2 py-2 text-right tabular-nums">{formatPrice(row.price)}</td>
               <td className="px-2 py-2 text-right tabular-nums">{formatMarketCap(row.marketCap)}</td>
               <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.psRatio, 8, 20))}>{formatMultiple(row.psRatio)}</td>
+              <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.peRatio, 25, 50))}>{formatMultiple(row.peRatio)}</td>
               <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.forwardPe, 25, 50))}>{formatMultiple(row.forwardPe)}</td>
               <td className={cn("px-2 py-2 text-right tabular-nums", percentCellTone(row.returnYtd))}>{formatPercent(row.returnYtd, true)}</td>
               <td className="px-2 py-2"><Sparkline points={row.trend} /></td>
@@ -333,10 +377,12 @@ function DrawdownBar({ value }: { value: number }) {
 function RsRankMiniChart({ rank, bars }: { rank: number; bars: number[] }) {
   const finiteBars = bars.filter((bar) => Number.isFinite(bar));
   const rising = finiteBars.length >= 2 ? finiteBars.at(-1)! >= finiteBars[0]! : true;
+  const peakIndex = finiteBars.reduce((bestIndex, bar, index) => (bar >= finiteBars[bestIndex] ? index : bestIndex), 0);
+  const peakLeftPct = finiteBars.length > 1 ? (peakIndex / (finiteBars.length - 1)) * 100 : 100;
   return (
     <div className="min-w-36">
       <div className="mb-1 text-right text-xs tabular-nums">{Number.isFinite(rank) ? rank.toFixed(0) : "-"}</div>
-      <div className={cn("flex h-8 items-end gap-px border-r-2 pr-px", rising ? "border-green-600" : "border-red-600")} aria-label="1 month relative strength bars">
+      <div className="relative flex h-8 items-end gap-px pr-px" aria-label="1 month relative strength bars">
         {finiteBars.length ? finiteBars.map((bar, index) => (
           <span
             key={`${index}-${bar.toFixed(1)}`}
@@ -344,6 +390,13 @@ function RsRankMiniChart({ rank, bars }: { rank: number; bars: number[] }) {
             style={{ height: `${Math.max(3, Math.min(30, 3 + bar * 0.27))}px` }}
           />
         )) : <span className="text-xs text-muted-foreground">-</span>}
+        {finiteBars.length ? (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 top-0 w-0.5 -translate-x-1/2 rounded-full bg-foreground/70"
+            style={{ left: `${peakLeftPct}%` }}
+          />
+        ) : null}
       </div>
     </div>
   );

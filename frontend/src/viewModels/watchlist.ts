@@ -2,7 +2,7 @@ import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
 
-export type WatchlistSort = "rank" | "state" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol" | "price" | "ps" | "pe" | "roic" | "rating" | "returnYtd" | "return1y" | "rsRank1m";
+export type WatchlistSort = "rank" | "state" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol" | "price" | "ps" | "pe" | "forwardPe" | "roic" | "rating" | "returnYtd" | "return1y" | "rsRank1m";
 export type WatchState = "owned" | "watched" | "candidate";
 
 export type WatchlistFilters = {
@@ -22,6 +22,7 @@ export type WatchlistRow = {
   changePct: number;
   marketCap: number;
   psRatio: number;
+  peRatio: number;
   forwardPe: number;
   roic: number;
   rating: number;
@@ -67,29 +68,37 @@ export type WatchlistViewModel = {
 };
 
 export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilters, localStates: Record<string, WatchState | undefined>): WatchlistViewModel {
-  const quoteBySymbol = indexRows(rows(data.quotes));
-  const technicalBySymbol = indexRows(rows(data.technicals));
-  const valuationBySymbol = latestValuations(rows(data.valuations));
-  const allRows = rows(data.universeScreen).map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, localStates));
+  const sectionRows = [...rows(data.watchlistWatched), ...rows(data.watchlistUnwatched)];
+  const screenRows = sectionRows.length ? sectionRows : rows(data.universeScreen);
+  const quoteBySymbol = indexRows([...rows(data.quotes), ...rows(data.watchlistWatchedQuotes), ...rows(data.watchlistUnwatchedQuotes)]);
+  const technicalBySymbol = indexRows([...rows(data.technicals), ...rows(data.watchlistWatchedTechnicals), ...rows(data.watchlistUnwatchedTechnicals)]);
+  const valuationBySymbol = latestValuations([...rows(data.valuations), ...rows(data.watchlistWatchedValuations), ...rows(data.watchlistUnwatchedValuations)]);
+  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, localStates));
   const rowsWithSymbols = assignRsRanks(allRows.filter((row) => row.symbol));
   const counts = tabCounts(rowsWithSymbols);
   const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
   const watchedRows = sortRows(visibleRows.filter((row) => isWatched(row)), filters.sort);
   const unwatchedRows = sortRows(visibleRows.filter((row) => !isWatched(row)), filters.sort);
+  const totalUnwatchedCount = data.watchlistUnwatched.count ?? counts.unwatched;
+  const displayCounts = filtersAreActive(filters) ? counts : { ...counts, unwatched: Math.max(counts.unwatched, totalUnwatchedCount) };
 
   return {
     rows: rowsWithSymbols,
     visibleRows: [...watchedRows, ...unwatchedRows],
     watchedRows,
     unwatchedRows,
-    counts,
+    counts: displayCounts,
     metrics: {
-      active: counts.watched + counts.owned,
-      candidates: counts.unwatched,
+      active: displayCounts.watched + displayCounts.owned,
+      candidates: displayCounts.unwatched,
       momentumLeaders: rowsWithSymbols.filter((row) => row.technicalScore >= 70).length,
       deepDrawdowns: rowsWithSymbols.filter((row) => row.drawdownFromHigh <= -0.2).length,
     },
   };
+}
+
+function filtersAreActive(filters: WatchlistFilters): boolean {
+  return Boolean(filters.query.trim() || filters.minRating || filters.maxForwardPe !== null || filters.minRoic !== null);
 }
 
 function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
@@ -111,9 +120,10 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const ma20Up = movingAverageState(price, numberField(technical, ["ma20"], Number.NaN));
   const ma50Up = movingAverageState(price, numberField(technical, ["ma50"], Number.NaN));
   const ma200Up = movingAverageState(price, numberField(technical, ["ma200"], Number.NaN));
-  const oneYearTrend = priceTrendPoints(technical?.price_history_1y);
+  const oneYearTrend = priceTrendPoints(technical?.chart_1y) ?? priceTrendPoints(technical?.price_history_1y);
   const sixtyDayTrend = priceTrendPoints(technical?.price_history_60d);
   const trend = oneYearTrend ?? sixtyDayTrend ?? modeledTrendPoints(return1y, return60d, drawdownFromHigh);
+  const rsBars = priceTrendPoints(technical?.rs_1m_bars) ?? oneMonthBars(trend);
 
   return {
     symbol,
@@ -124,7 +134,8 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     changePct: firstFinite([numberField(row, ["change_pct"], Number.NaN), numberField(quote, ["change_pct"], Number.NaN)]),
     marketCap: numberField(row, ["market_cap"], Number.NaN),
     psRatio: numberField(row, ["ps_ratio"], Number.NaN),
-    forwardPe: numberField(row, ["forward_pe", "pe"], Number.NaN),
+    peRatio: numberField(row, ["pe_ratio", "trailing_pe", "pe"], Number.NaN),
+    forwardPe: numberField(row, ["forward_pe"], Number.NaN),
     roic: numberField(row, ["roic"], Number.NaN),
     rating: parseRating(textField(row, ["rating"])),
     qualityScore: numberField(row, ["quality_score"], Number.NaN),
@@ -144,7 +155,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     sourceCount: numberField(row, ["source_count"], 0),
     trend,
     rsRank1m: Number.NaN,
-    rsRankBars: oneMonthBars(trend),
+    rsRankBars: rsBars,
   };
 }
 
@@ -171,7 +182,8 @@ function sortRows(inputRows: WatchlistRow[], sort: WatchlistSort): WatchlistRow[
   if (sort === "symbol") return sorted.sort((a, b) => a.symbol.localeCompare(b.symbol));
   if (sort === "price") return numericDesc((row) => row.price);
   if (sort === "ps") return numericAsc((row) => row.psRatio);
-  if (sort === "pe") return numericAsc((row) => row.forwardPe);
+  if (sort === "pe") return numericAsc((row) => row.peRatio);
+  if (sort === "forwardPe") return numericAsc((row) => row.forwardPe);
   if (sort === "roic") return numericDesc((row) => row.roic);
   if (sort === "rating") return numericDesc((row) => row.rating);
   if (sort === "returnYtd") return numericDesc((row) => row.returnYtd);
@@ -254,7 +266,10 @@ function stateRank(state: WatchState): number {
 function priceTrendPoints(value: RowRecord[string]): number[] | null {
   if (!Array.isArray(value)) return null;
   const closes = value
-    .map((point) => (point && typeof point === "object" && !Array.isArray(point) ? Number(point.close) : Number.NaN))
+    .map((point) => {
+      if (typeof point === "number") return point;
+      return point && typeof point === "object" && !Array.isArray(point) ? Number(point.close) : Number.NaN;
+    })
     .filter((point) => Number.isFinite(point));
   return closes.length >= 2 ? closes : null;
 }

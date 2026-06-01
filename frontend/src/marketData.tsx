@@ -1,17 +1,17 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { emptyPanelData, loadPanelScope } from "./api";
+import { emptyPanelData, loadPanelScope, type PanelScopeOptions } from "./api";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData } from "./types";
 
-export type PanelScope = "feed" | "today" | "watchlist" | "sources" | "superinvestors" | "market" | "portfolio" | "research" | "filings" | "calendar" | "health" | "settings";
+export type PanelScope = "feed" | "today" | "watchlist" | "watchlist-watched" | "watchlist-unwatched" | "sources" | "superinvestors" | "market" | "portfolio" | "research" | "filings" | "calendar" | "health" | "settings";
 
 type MarketDataContextValue = {
   data: PanelData;
   model: AppModel;
   loading: boolean;
   lastRefresh: Date | null;
-  loadScope: (scope: PanelScope) => Promise<void>;
+  loadScope: (scope: PanelScope, options?: PanelScopeOptions) => Promise<void>;
   openTicker: (symbol: string) => void;
 };
 
@@ -25,10 +25,10 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
   const dataRef = useRef(data);
   dataRef.current = data;
 
-  const loadScope = useCallback(async (scope: PanelScope) => {
+  const loadScope = useCallback(async (scope: PanelScope, options?: PanelScopeOptions) => {
     setLoading(true);
     try {
-      const nextData = await loadPanelScope(scope, dataRef.current);
+      const nextData = await loadPanelScope(scope, dataRef.current, options);
       dataRef.current = nextData;
       setData(nextData);
       setLastRefresh(new Date());

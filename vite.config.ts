@@ -15,6 +15,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    allowedHosts: [".tail46d3fb.ts.net"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",

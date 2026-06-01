@@ -128,6 +128,11 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
                 "sharesOutstanding": 250_000_000,
                 "regularMarketPrice": 200,
                 "previousClose": 195,
+                "trailingPE": 32.5,
+                "forwardPE": 18.25,
+                "pegRatio": 1.4,
+                "priceToSalesTrailing12Months": 7.1,
+                "priceToBook": 4.2,
                 "totalRevenue": 7_000_000_000,
                 "revenueGrowth": 0.12,
                 "profitMargins": 0.18,
@@ -143,6 +148,11 @@ def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Pa
     metrics = json.loads(rows[0]["metrics"])
     assert metrics["market_cap_basic"] == 50_000_000_000
     assert metrics["shares_outstanding"] == 250_000_000
+    assert metrics["trailing_pe"] == 32.5
+    assert metrics["forward_pe"] == 18.25
+    assert metrics["peg_ratio"] == 1.4
+    assert metrics["price_to_sales"] == 7.1
+    assert metrics["price_to_book"] == 4.2
     assert metrics["total_revenue"] == 7_000_000_000
     assert metrics["net_margin"] == 0.18
 

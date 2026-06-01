@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.data_access import ticker_decision_brief
-from app.main import app
+from app.main import app, _require_local_request
 
 
 def test_api_routes_return_json() -> None:
@@ -105,6 +107,14 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     response = client.post("/api/refresh-jobs/not-a-real-job")
     assert response.status_code == 400
     assert "allowlisted" in response.text
+
+
+def test_local_write_guard_allows_private_lan_clients() -> None:
+    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
+    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
+
+    with pytest.raises(HTTPException):
+        _require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
 
 
 def test_ticker_decision_brief_prefers_quote_row_over_decision_snapshot_price() -> None:

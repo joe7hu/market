@@ -29,7 +29,7 @@ export type AppModel = {
 };
 
 export function buildModel(data: PanelData): AppModel {
-  const quoteRows = rows(data.quotes);
+  const quoteRows = [...rows(data.quotes), ...rows(data.watchlistWatchedQuotes), ...rows(data.watchlistUnwatchedQuotes)];
   const holdings = buildHoldings(rows(data.portfolio), quoteRows);
   const portfolioValue = holdings.reduce((total, holding) => total + holding.marketValue, 0);
   const weightedHoldings = holdings.map((holding) => ({
@@ -49,7 +49,7 @@ export function buildModel(data: PanelData): AppModel {
     portfolioValue,
     latestHealthCheck: newestDateLabel(healthRows.map((row) => textField(row, ["checked_at", "last_run_at", "as_of", "updated_at", "timestamp"]))),
     sources: {
-      watchlist: quoteRows.length ? "live" : "empty",
+      watchlist: quoteRows.length || rows(data.watchlistWatched).length || rows(data.watchlistUnwatched).length ? "live" : "empty",
       opportunities: rows(data.decisionQueue).length || rows(data.opportunitiesRanked).length ? "live" : "empty",
       holdings: holdings.length ? "live" : "empty",
       filings: rows(data.disclosures).length ? "live" : "empty",
