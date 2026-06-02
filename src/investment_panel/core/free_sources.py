@@ -65,12 +65,16 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             result["personal_surfaces"] = "skipped_cdp_not_connected"
         requested_options_symbols = option_symbols(con, config)
         refreshed_option_symbols: list[str] = []
+        option_errors: list[str] = []
         for symbol in requested_options_symbols:
             expiries = []
+            expiry_error = False
             for candidate in tradingview_symbol_candidates(symbol):
                 try:
                     expiries = provider.options_expiries(candidate)
-                except OpenCliError:
+                except OpenCliError as exc:
+                    expiry_error = True
+                    option_errors.append(f"{symbol}:expiries:{candidate}:{exc}")
                     continue
                 if expiries:
                     break
@@ -78,6 +82,7 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             first_expiry = next((row.get("expiry") for row in expiries if row.get("expiry")), None)
             if first_expiry:
                 chain = []
+                chain_error = False
                 for candidate in tradingview_symbol_candidates(symbol):
                     try:
                         chain = provider.options_chain(
@@ -85,7 +90,9 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
                             str(first_expiry),
                             strikes_around_spot=config.data_sources.tradingview.strikes_around_spot,
                         )
-                    except OpenCliError:
+                    except OpenCliError as exc:
+                        chain_error = True
+                        option_errors.append(f"{symbol}:chain:{candidate}:{exc}")
                         continue
                     if chain:
                         break
@@ -93,12 +100,15 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
                 result["chains"] += stored_chain_rows
                 if stored_chain_rows:
                     refreshed_option_symbols.append(symbol)
-                else:
+                elif not chain_error:
                     clear_options_intelligence(con, [symbol], source="tradingview")
-            else:
+            elif not expiry_error:
                 clear_options_intelligence(con, [symbol], source="tradingview")
         if refreshed_option_symbols:
             result["options_intelligence"] = refresh_options_intelligence(con, refreshed_option_symbols, source="tradingview")
+        if option_errors:
+            result["option_errors"] = option_errors[:25]
+            result["option_error_count"] = len(option_errors)
         if quote_errors:
             result["quote_errors"] = quote_errors[:10]
     except OpenCliError as exc:
@@ -382,7 +392,7 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
         """,
     )
     ranked = [row["symbol"] for row in rows]
-    return unique_symbols([*watchlist, *ranked, *equity_symbols(con)])[:12]
+    return unique_symbols([*watchlist, *ranked, *equity_symbols(con)])
 
 
 def tradingview_search_symbols(con: Any, config: AppConfig) -> list[str]:
