@@ -65,6 +65,9 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "options_expiries": options_expiries(con),
             "options_chain": options_chain(con),
             "options_payoff_scenarios": options_payoff_scenarios(con),
+            "options_provider_capabilities": options_provider_capabilities(con),
+            "options_expiry_signals": options_expiry_signals(con),
+            "options_ticker_signals": options_ticker_signals(con),
             "news": news(con),
             "tradingview_symbol_search": tradingview_symbol_search(con),
             "tradingview_watchlists": tradingview_watchlists(con),
@@ -2972,7 +2975,8 @@ def options_chain(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
-        SELECT symbol, expiry, strike, option_type, bid, ask, mid, iv, delta, gamma, theta, vega, observed_at, source, raw
+        SELECT symbol, expiry, strike, option_type, bid, ask, mid, iv, delta, gamma,
+               theta, vega, rho, theo, bid_iv, ask_iv, contract_symbol, observed_at, source, raw
         FROM options_chain
         QUALIFY dense_rank() OVER (PARTITION BY symbol, expiry ORDER BY observed_at DESC) = 1
         ORDER BY observed_at DESC, symbol, expiry, strike, option_type
@@ -2980,6 +2984,54 @@ def options_chain(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def options_provider_capabilities(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT provider, observed_at, supports_expiries, supports_chain_quotes,
+               supports_greeks, supports_theoretical_price, supports_open_interest,
+               supports_volume, supports_full_chain, status, detail, raw
+        FROM options_provider_capabilities
+        ORDER BY observed_at DESC, provider
+        LIMIT 20
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def options_expiry_signals(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, expiry, as_of, source, dte, spot, contract_count, chain_rows,
+               atm_strike, atm_iv, expected_move, expected_move_pct, put_call_iv_skew,
+               call_spread_pct, put_spread_pct, spread_quality, liquidity_score,
+               hedge_put_strike, hedge_put_mid, covered_call_strike, covered_call_mid,
+               unavailable_signals, raw
+        FROM options_expiry_signals
+        ORDER BY as_of DESC, symbol, dte, expiry
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("unavailable_signals", "raw"))) for row in rows]
+
+
+def options_ticker_signals(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, as_of, source, status, nearest_expiry, nearest_dte, atm_iv,
+               iv_regime, expected_move, expected_move_pct, skew_signal,
+               put_call_iv_skew, spread_quality, liquidity_score, hedge_summary,
+               income_summary, unavailable_signals, raw
+        FROM options_ticker_signals
+        ORDER BY as_of DESC, symbol
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("unavailable_signals", "raw"))) for row in rows]
 
 
 def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:

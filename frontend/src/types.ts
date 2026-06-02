@@ -65,6 +65,9 @@ export type PanelData = {
   optionsExpiries: TablePayload;
   optionsChain: TablePayload;
   optionsPayoffScenarios: TablePayload;
+  optionsProviderCapabilities: TablePayload;
+  optionsExpirySignals: TablePayload;
+  optionsTickerSignals: TablePayload;
   news: TablePayload;
   tradingviewSymbolSearch: TablePayload;
   tradingviewWatchlists: TablePayload;
@@ -108,6 +111,8 @@ export type PanelData = {
   watchlistUnwatchedDecisionQueue: TablePayload;
   watchlistWatchedPortfolio: TablePayload;
   watchlistUnwatchedPortfolio: TablePayload;
+  watchlistWatchedOptions: TablePayload;
+  watchlistUnwatchedOptions: TablePayload;
   manualWatchlist: TablePayload;
   sourceConsensus: TablePayload;
   ownershipConsensus: TablePayload;
@@ -149,6 +154,9 @@ export type PanelEndpoint =
   | "optionsExpiries"
   | "optionsChain"
   | "optionsPayoffScenarios"
+  | "optionsProviderCapabilities"
+  | "optionsExpirySignals"
+  | "optionsTickerSignals"
   | "news"
   | "tradingviewSymbolSearch"
   | "tradingviewWatchlists"
@@ -192,6 +200,8 @@ export type PanelEndpoint =
   | "watchlistUnwatchedDecisionQueue"
   | "watchlistWatchedPortfolio"
   | "watchlistUnwatchedPortfolio"
+  | "watchlistWatchedOptions"
+  | "watchlistUnwatchedOptions"
   | "manualWatchlist"
   | "sourceConsensus"
   | "ownershipConsensus"

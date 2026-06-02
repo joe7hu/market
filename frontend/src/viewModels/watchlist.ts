@@ -55,6 +55,11 @@ export type WatchlistRow = {
   atrPct1m: number;
   atrTrend: number[];
   valuationPercentile: number;
+  optionsStatus: string;
+  optionsIvRegime: string;
+  optionsExpectedMovePct: number;
+  optionsSkewSignal: string;
+  optionsSpreadQuality: string;
 };
 
 export type WatchlistViewModel = {
@@ -87,7 +92,8 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const screenerBySymbol = indexRows([...rows(data.screener), ...rows(data.watchlistWatchedScreener), ...rows(data.watchlistUnwatchedScreener)]);
   const fundamentalBySymbol = indexRows([...rows(data.fundamentals), ...rows(data.watchlistWatchedFundamentals), ...rows(data.watchlistUnwatchedFundamentals)]);
   const marketValuationBySymbol = indexRows(rows(data.marketValuationCharts));
-  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, localStates));
+  const optionsBySymbol = indexRows([...rows(data.optionsTickerSignals), ...rows(data.watchlistWatchedOptions), ...rows(data.watchlistUnwatchedOptions)]);
+  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, optionsBySymbol, localStates));
   const rowsWithSymbols = assignRelativeStrengthRanks(allRows.filter((row) => row.symbol));
   const counts = tabCounts(rowsWithSymbols);
   const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
@@ -115,7 +121,7 @@ function filtersAreActive(filters: WatchlistFilters): boolean {
   return Boolean(filters.query.trim() || filters.minRating || filters.maxForwardPe !== null || filters.minRoic !== null);
 }
 
-function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
+function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, optionsBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
   const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
   const quote = quoteBySymbol.get(symbol);
   const technical = technicalBySymbol.get(symbol);
@@ -123,6 +129,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const screener = screenerBySymbol.get(symbol);
   const fundamental = fundamentalBySymbol.get(symbol);
   const marketValuation = marketValuationBySymbol.get(symbol);
+  const options = optionsBySymbol.get(symbol);
   const screenerMetrics = objectField(screener, ["metrics"]);
   const fundamentalMetrics = objectField(fundamental, ["metrics"]);
   const valuationAssumptions = objectField(valuation, ["assumptions"]);
@@ -201,6 +208,11 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     atrPct1m,
     atrTrend,
     valuationPercentile,
+    optionsStatus: textField(options, ["status"], "missing"),
+    optionsIvRegime: textField(options, ["iv_regime"], "unknown"),
+    optionsExpectedMovePct: numberField(options, ["expected_move_pct"], Number.NaN),
+    optionsSkewSignal: textField(options, ["skew_signal"], "unknown"),
+    optionsSpreadQuality: textField(options, ["spread_quality"], "unknown"),
   };
 }
 

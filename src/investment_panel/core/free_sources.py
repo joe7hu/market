@@ -8,6 +8,7 @@ from typing import Any
 
 from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps, query_rows
+from investment_panel.core.options_intelligence import clear_options_intelligence, record_tradingview_options_capabilities, refresh_options_intelligence
 from investment_panel.providers import OpenCliError, OpenCliRunner, TradingViewProvider
 from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
 
@@ -35,6 +36,7 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
     try:
         status_rows = provider.status()
         record_provider_run(con, run_id, "tradingview", "status", observed_at, "ok", f"{len(status_rows)} status rows", status_rows)
+        record_tradingview_options_capabilities(con, observed_at)
         tradingview_ready = any(row.get("connected") or row.get("app_running") for row in status_rows)
         quote_symbols = equity_symbols(con)
         quote_errors = []
@@ -61,7 +63,9 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             result.update(personal_result)
         else:
             result["personal_surfaces"] = "skipped_cdp_not_connected"
-        for symbol in option_symbols(con, config):
+        requested_options_symbols = option_symbols(con, config)
+        refreshed_option_symbols: list[str] = []
+        for symbol in requested_options_symbols:
             expiries = []
             for candidate in tradingview_symbol_candidates(symbol):
                 try:
@@ -85,7 +89,16 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
                         continue
                     if chain:
                         break
-                result["chains"] += store_options_chain(con, symbol, observed_at, chain)
+                stored_chain_rows = store_options_chain(con, symbol, observed_at, chain)
+                result["chains"] += stored_chain_rows
+                if stored_chain_rows:
+                    refreshed_option_symbols.append(symbol)
+                else:
+                    clear_options_intelligence(con, [symbol], source="tradingview")
+            else:
+                clear_options_intelligence(con, [symbol], source="tradingview")
+        if refreshed_option_symbols:
+            result["options_intelligence"] = refresh_options_intelligence(con, refreshed_option_symbols, source="tradingview")
         if quote_errors:
             result["quote_errors"] = quote_errors[:10]
     except OpenCliError as exc:
@@ -441,6 +454,7 @@ def store_screener_rows(con: Any, run_id: str, observed_at: str, rows: list[dict
 
 def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]]) -> int:
     count = 0
+    normalized_symbol = normalize_symbol(symbol)
     for row in rows:
         expiry = row.get("expiry")
         if not expiry:
@@ -451,7 +465,7 @@ def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str,
             (symbol, expiry, dte, contracts_count, observed_at, source, raw)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [symbol, expiry, as_int(row.get("dte")), as_int(row.get("contracts_count")), observed_at, "tradingview", json_dumps(row)],
+            [normalized_symbol, expiry, as_int(row.get("dte")), as_int(row.get("contracts_count")), observed_at, "tradingview", json_dumps(row)],
         )
         count += 1
     return count
@@ -459,6 +473,7 @@ def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str,
 
 def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]]) -> int:
     count = 0
+    normalized_symbol = normalize_symbol(symbol)
     for row in rows:
         expiry = row.get("expiry")
         strike = as_float(row.get("strike"))
@@ -468,11 +483,12 @@ def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict
         con.execute(
             """
             INSERT OR REPLACE INTO options_chain
-            (symbol, expiry, strike, option_type, bid, ask, mid, iv, delta, gamma, theta, vega, observed_at, source, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (symbol, expiry, strike, option_type, bid, ask, mid, iv, delta, gamma,
+             theta, vega, rho, theo, bid_iv, ask_iv, contract_symbol, observed_at, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                symbol,
+                normalized_symbol,
                 expiry,
                 strike,
                 option_type,
@@ -484,6 +500,11 @@ def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict
                 as_float(row.get("gamma")),
                 as_float(row.get("theta")),
                 as_float(row.get("vega")),
+                as_float(row.get("rho")),
+                as_float(row.get("theo")),
+                as_float(row.get("bid_iv")),
+                as_float(row.get("ask_iv")),
+                row.get("symbol"),
                 observed_at,
                 "tradingview",
                 json_dumps(row),

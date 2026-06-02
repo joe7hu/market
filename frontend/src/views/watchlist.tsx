@@ -96,6 +96,22 @@ const columnHelp = {
     label: "Val %ile",
     detail: "Current valuation percentile versus the ticker's own stored history. Low percentile is cheaper than usual; high percentile needs exceptional growth or quality.",
   },
+  optionsStatus: {
+    label: "Opt",
+    detail: "TradingView-derived options summary status. Loaded means chain quotes, IV, and Greeks exist; OI and volume-based positioning are not part of TradingView V1.",
+  },
+  optionsIv: {
+    label: "Opt IV",
+    detail: "Nearest usable expiry ATM implied volatility bucket from TradingView option-chain IV.",
+  },
+  optionsMove: {
+    label: "Opt Move",
+    detail: "Nearest usable expiry expected move from the ATM call plus put mid price divided by spot.",
+  },
+  optionsSkew: {
+    label: "Skew",
+    detail: "25-delta put IV minus call IV. Put premium means downside options are priced richer than upside calls.",
+  },
   sma20: {
     label: "20SMA",
     detail: "Whether price is above the 20-day simple moving average. Good for short-term timing; a break below can flag a failed entry.",
@@ -366,7 +382,7 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
   return (
     <TooltipProvider delayDuration={150}>
       <DataTableFrame title="">
-        <table className="watchlist-table w-full min-w-[2200px] text-sm">
+        <table className="watchlist-table w-full min-w-[2500px] text-sm">
           <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
             <tr>
               <ColumnHeader id="watch" className="w-12 text-center"><Star className="mx-auto size-3.5" aria-label="Watch" /></ColumnHeader>
@@ -389,6 +405,10 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
               <ColumnHeader id="relVol1m" />
               <ColumnHeader id="atrPct1m" />
               <ColumnHeader id="valuationPercentile" />
+              <ColumnHeader id="optionsStatus" />
+              <ColumnHeader id="optionsIv" />
+              <ColumnHeader id="optionsMove" className="text-right" />
+              <ColumnHeader id="optionsSkew" />
               <ColumnHeader id="sma20" className="text-center" />
               <ColumnHeader id="sma50" className="text-center" />
               <ColumnHeader id="sma200" className="text-center" />
@@ -418,6 +438,10 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
                 <td className="px-2 py-2"><VolumeBars value={row.relVol1m} bars={row.relVolBars} /></td>
                 <td className="px-2 py-2"><AtrMiniLine value={row.atrPct1m} points={row.atrTrend} /></td>
                 <td className="px-2 py-2"><ValuationPercentile value={row.valuationPercentile} /></td>
+                <td className="px-2 py-2"><OptionsStatus status={row.optionsStatus} quality={row.optionsSpreadQuality} /></td>
+                <td className="px-2 py-2"><OptionsIvRegime regime={row.optionsIvRegime} /></td>
+                <td className="px-2 py-2 text-right tabular-nums">{formatPercent(row.optionsExpectedMovePct, true)}</td>
+                <td className="px-2 py-2"><OptionsSkew signal={row.optionsSkewSignal} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma20Up} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma50Up} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma200Up} /></td>
@@ -596,6 +620,22 @@ function ValuationPercentile({ value }: { value: number }) {
       </div>
     </div>
   );
+}
+
+function OptionsStatus({ status, quality }: { status: string; quality: string }) {
+  const loaded = status === "loaded";
+  const tone = loaded ? quality === "tight" ? "border-green-200 bg-green-50 text-green-800" : quality === "wide" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900" : "border-border bg-muted text-muted-foreground";
+  return <span className={cn("inline-flex min-w-16 justify-center rounded border px-2 py-1 text-xs font-medium", tone)}>{loaded ? quality : status}</span>;
+}
+
+function OptionsIvRegime({ regime }: { regime: string }) {
+  const tone = regime === "low" ? "bg-green-50 text-green-800" : regime === "elevated" ? "bg-red-50 text-red-800" : regime === "normal" ? "bg-sky-50 text-sky-900" : "text-muted-foreground";
+  return <span className={cn("inline-flex min-w-16 justify-center rounded px-2 py-1 text-xs font-medium", tone)}>{regime}</span>;
+}
+
+function OptionsSkew({ signal }: { signal: string }) {
+  const tone = signal === "put premium" ? "bg-amber-50 text-amber-900" : signal === "call premium" ? "bg-sky-50 text-sky-900" : signal === "neutral" ? "bg-muted text-muted-foreground" : "text-muted-foreground";
+  return <span className={cn("inline-flex min-w-24 justify-center rounded px-2 py-1 text-xs font-medium", tone)}>{signal}</span>;
 }
 
 function MaFlag({ state }: { state: boolean | null }) {
