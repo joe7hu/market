@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from investment_panel.core import free_sources as free_sources_core
 from investment_panel.analysis import run_all_analyses
 from investment_panel.analysis.earnings_setup import analyze_earnings_setup
 from investment_panel.analysis.options_payoff import OptionLeg, evaluate_strategy
@@ -15,13 +16,24 @@ from investment_panel.analysis.valuation import metrics_pass_sanity_checks, stor
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.fundamentals import metrics_from_company_facts
-from investment_panel.core.free_sources import infer_event_date, store_expiries, store_news_rows, store_options_chain, store_screener_rows, store_yfinance_market_snapshot, upsert_quote
+from investment_panel.core.free_sources import (
+    infer_event_date,
+    option_symbols,
+    store_expiries,
+    store_news_rows,
+    store_options_chain,
+    store_screener_rows,
+    store_yfinance_market_snapshot,
+    upsert_quote,
+)
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import upsert_prices
 from investment_panel.core.scoring import score_and_store
 from investment_panel.core.technicals import compute_and_store
 from investment_panel.jobs import update_free_sources
+from investment_panel.providers import OpenCliError
 from investment_panel.providers.tradingview import TradingViewProvider
+from investment_panel.core.options_intelligence import refresh_options_intelligence
 
 
 class FakeRunner:
@@ -183,6 +195,83 @@ def test_tradingview_provider_interface_uses_json_runner() -> None:
     assert provider.watchlists()[0]["name"] == "AI"
     assert provider.alerts()[0]["id"] == "a1"
     assert provider.chart_state()[0]["interval"] == "1D"
+
+
+def test_default_option_symbols_cover_full_equity_universe(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(tradingview=SimpleNamespace(options_symbols=[])),
+        watchlist=[],
+    )
+    with db(db_path) as con:
+        for index in range(15):
+            upsert_instrument(con, {"symbol": f"T{index:02d}", "name": f"Ticker {index}", "asset_class": "equity"})
+
+        symbols = option_symbols(con, config)
+
+    assert len(symbols) == 15
+    assert symbols[0] == "T00"
+    assert symbols[-1] == "T14"
+
+
+def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:
+    class ErroringOptionsProvider:
+        def __init__(self, _runner: object) -> None:
+            pass
+
+        def status(self) -> list[dict[str, object]]:
+            return [{"connected": False}]
+
+        def quote(self, _symbol: str) -> dict[str, object]:
+            return {}
+
+        def screener(self, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
+            raise OpenCliError("scanner 429")
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(
+            opencli=SimpleNamespace(enabled=True, command="opencli", timeout_seconds=1),
+            tradingview=SimpleNamespace(
+                enabled=True,
+                options_symbols=[],
+                screener_limit=0,
+                news_limit=0,
+                strikes_around_spot=6,
+                personal_surfaces_enabled=False,
+            ),
+        ),
+        watchlist=[{"symbol": "TSLA", "asset_class": "equity"}],
+    )
+    monkeypatch.setattr(free_sources_core, "TradingViewProvider", ErroringOptionsProvider)
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
+        con.execute("INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T15:30:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')")
+        store_expiries(con, "TSLA", "2026-06-02T15:30:00Z", [{"expiry": "2026-06-05", "dte": 3, "contracts_count": 2}])
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-02T15:30:00Z",
+            [
+                {"expiry": "2026-06-05", "strike": 100, "type": "put", "bid": 3.9, "ask": 4.1, "mid": 4, "iv": 0.36, "delta": -0.48},
+                {"expiry": "2026-06-05", "strike": 100, "type": "call", "bid": 4.9, "ask": 5.1, "mid": 5, "iv": 0.34, "delta": 0.52},
+            ],
+        )
+        refresh_options_intelligence(con, ["TSLA"], reference_date="2026-06-02")
+
+        result = free_sources_core.update_tradingview_sources(con, config)
+        rows = query_rows(con, "SELECT symbol FROM options_ticker_signals WHERE symbol = 'TSLA'")
+
+    assert result["option_error_count"] == 4
+    assert rows == [{"symbol": "TSLA"}]
 
 
 def test_infer_event_date_prioritizes_earnings_over_dividends() -> None:
