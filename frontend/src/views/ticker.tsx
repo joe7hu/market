@@ -26,6 +26,7 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
         <TradingViewChart symbol={symbol} ticker={ticker} />
         <AnalystEstimatePanel rows={compactRows(tables.analyst_estimates)} />
       </div>
+      <OptionsIntelligencePanel ticker={ticker} />
       <div className="grid min-w-0 gap-4 xl:grid-cols-2">
         <ThesisPanel rows={thesisRows.length ? thesisRows : compactRows(tables.thesis_monitor)} />
         <SourceCoveragePanel
@@ -191,6 +192,77 @@ function AnalystEstimatePanel({ rows }: { rows: RowRecord[] }) {
       <div className="p-4">
         <div className="mb-3 text-sm text-muted-foreground">{latest ? `yfinance snapshot ${displayField(latest, ["as_of"])}` : "No analyst estimate row is loaded."}</div>
         <MetricGrid rows={rowsToShow} empty="No analyst estimate metrics are loaded." />
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function OptionsIntelligencePanel({ ticker }: { ticker: TickerPayload | null }) {
+  const tickerSignal = latestRow(compactRows(ticker?.tables?.options_ticker_signals), ["as_of"]);
+  const expiries = compactRows(ticker?.tables?.options_expiry_signals)
+    .sort((a, b) => dateSortValue(a, ["expiry"]) - dateSortValue(b, ["expiry"]))
+    .slice(0, 8);
+  const capability = compactRows(ticker?.tables?.options_provider_capabilities).find((row) => textField(row, ["provider"]) === "tradingview");
+  const unavailableRows = unavailableSignals(tickerSignal).slice(0, 6).map((row) => ({
+    signal: displayField(row, ["signal"], "Signal"),
+    reason: displayField(row, ["reason"], "Unavailable from TradingView V1"),
+  }));
+  const metrics = presentMetricCells([
+    ["Status", displayField(tickerSignal, ["status"], "Missing"), displayField(tickerSignal, ["source"], "No options signal row")],
+    ["ATM IV", ratioMetric(tickerSignal, "atm_iv"), displayField(tickerSignal, ["iv_regime"], "IV regime unavailable")],
+    ["Expected Move", optionMove(tickerSignal), displayField(tickerSignal, ["nearest_expiry"], "No expiry")],
+    ["Skew", displayField(tickerSignal, ["skew_signal"], "-"), skewDetail(tickerSignal)],
+    ["Spread", displayField(tickerSignal, ["spread_quality"], "-"), liquidityDetail(tickerSignal)],
+    ["Hedge", displayField(tickerSignal, ["hedge_summary"], "-"), "25-delta put candidate"],
+    ["Income", displayField(tickerSignal, ["income_summary"], "-"), "30-delta call candidate"],
+  ]);
+  const expiryRows = expiries.map((row) => ({
+    expiry: displayField(row, ["expiry"], "-"),
+    dte: displayField(row, ["dte"], "-"),
+    atm: moneyOrNumber(row, "atm_strike"),
+    iv: ratioMetric(row, "atm_iv"),
+    move: optionMove(row),
+    skew: skewDetail(row),
+    spread: displayField(row, ["spread_quality"], "-"),
+  }));
+  return (
+    <DataTableFrame
+      title="Options Intelligence"
+      action={capability ? <StatusBadge tone={capability.supports_open_interest ? "good" : "warn"}>{displayField(capability, ["status"], "limited")}</StatusBadge> : null}
+    >
+      <div className="grid gap-0 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.65fr)]">
+        <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
+          <MetricGrid rows={metrics} empty="No options signal row is loaded for this ticker." />
+          <div className="mt-4 overflow-x-auto">
+            <SimpleTable
+              rows={expiryRows}
+              empty="No expiry-level options signals are loaded."
+              columns={[
+                ["expiry", "Expiry"],
+                ["dte", "DTE"],
+                ["atm", "ATM"],
+                ["iv", "IV"],
+                ["move", "Move"],
+                ["skew", "Skew"],
+                ["spread", "Spread"],
+              ]}
+            />
+          </div>
+        </div>
+        <div className="p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">Positioning Gates</h3>
+            <StatusBadge tone="warn">OI/volume missing</StatusBadge>
+          </div>
+          <SimpleTable
+            rows={unavailableRows}
+            empty="No unavailable options signal metadata is loaded."
+            columns={[
+              ["signal", "Signal"],
+              ["reason", "Why"],
+            ]}
+          />
+        </div>
       </div>
     </DataTableFrame>
   );
@@ -444,6 +516,38 @@ function targetRange(row: RowRecord | undefined): string {
   const low = moneyMetric(row, "low");
   const high = moneyMetric(row, "high");
   return low === "-" && high === "-" ? "-" : `${low} / ${high}`;
+}
+
+function optionMove(row: RowRecord | undefined): string {
+  const move = numberFrom(row?.expected_move);
+  const pct = numberFrom(row?.expected_move_pct);
+  if (move === null && pct === null) return "-";
+  const parts = [];
+  if (move !== null) parts.push(formatCompactMoney(move));
+  if (pct !== null) parts.push(formatPct(pct * 100));
+  return parts.join(" / ");
+}
+
+function skewDetail(row: RowRecord | undefined): string {
+  const skew = numberFrom(row?.put_call_iv_skew);
+  return skew === null ? "25-delta skew unavailable" : `${formatPct(skew * 100)} put-call IV`;
+}
+
+function liquidityDetail(row: RowRecord | undefined): string {
+  const score = numberFrom(row?.liquidity_score);
+  return score === null ? "spread quality from bid/ask" : `${score.toFixed(0)} spread-derived score`;
+}
+
+function moneyOrNumber(row: RowRecord | undefined, key: string): string {
+  const value = numberFrom(row?.[key]);
+  if (value === null) return "-";
+  return value >= 100 ? value.toFixed(0) : value.toFixed(2);
+}
+
+function unavailableSignals(row: RowRecord | undefined): RowRecord[] {
+  const value = row?.unavailable_signals;
+  if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object" && !Array.isArray(item)) as RowRecord[];
+  return [];
 }
 
 function numberFrom(value: RowRecord[string]): number | null {

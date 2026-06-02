@@ -76,7 +76,13 @@ Sources:
 - The TradingView adapter in `himself65/finance-skills` is read-only and
   attaches to the logged-in TradingView desktop app over CDP.
 - Useful data surfaces: quotes, screeners, news, watchlists, alerts, chart
-  state/screenshots, options expiries, and options chains with greeks/IV.
+  state/screenshots, options expiries, and options chains with bid/ask/mid,
+  IV, Greeks, rho, theoretical price, bid IV, ask IV, and OPRA contract
+  symbols.
+- TradingView's current OpenCLI options-chain output does not include contract
+  open interest or volume. Market therefore gates OI/volume-derived signals
+  such as GEX regime, call/put walls, gamma flip, max pain, and unusual volume
+  until an IBKR or dedicated options-data provider supplies those fields.
 - Caveat: availability follows the logged-in TradingView account/session and
   desktop app state.
 - Market stores TradingView personal surfaces as read-only metadata:

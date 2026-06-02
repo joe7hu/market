@@ -289,6 +289,21 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "options_payoff_scenarios")
 
+    @app.get("/api/options-provider-capabilities")
+    def options_provider_capabilities() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_provider_capabilities")
+
+    @app.get("/api/options-expiry-signals")
+    def options_expiry_signals() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_expiry_signals")
+
+    @app.get("/api/options-ticker-signals")
+    def options_ticker_signals() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "options_ticker_signals")
+
     @app.get("/api/news")
     def news() -> dict[str, Any]:
         _, panel_data = _context()

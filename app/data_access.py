@@ -509,6 +509,9 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "options_expiries",
             "options_chain",
             "options_payoff_scenarios",
+            "options_provider_capabilities",
+            "options_expiry_signals",
+            "options_ticker_signals",
             "news",
             "tradingview_symbol_search",
             "tradingview_watchlists",
@@ -600,6 +603,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     earnings_setups = panel_data.rows("earnings_setups")
     valuations = panel_data.rows("valuations")
     option_payoffs = panel_data.rows("options_payoff_scenarios")
+    option_signals = panel_data.rows("options_ticker_signals")
     source_health = panel_data.rows("source_health")
     sources = panel_data.rows("sources")
     source_runs = panel_data.rows("source_runs")
@@ -640,6 +644,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "earnings_setups": len(earnings_setups),
             "valuations": len(valuations),
             "options_payoff_scenarios": len(option_payoffs),
+            "options_ticker_signals": len(option_signals),
             "sources": len(sources) or len(source_freshness) or len(source_health),
             "source_runs": len(source_runs),
             "source_items": len(source_items),
@@ -715,6 +720,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "sepa",
             "valuations",
             "options_payoff_scenarios",
+            "options_ticker_signals",
             "disclosures",
             "theses",
             "thesis_monitor",
@@ -738,6 +744,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "technicals",
             "valuations",
             "tradingview_watchlists",
+            "options_ticker_signals",
         ],
         "sources": [
             "source_consensus",
@@ -774,6 +781,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "valuations",
             "options_expiries",
             "options_payoff_scenarios",
+            "options_provider_capabilities",
+            "options_expiry_signals",
+            "options_ticker_signals",
             "disclosures",
             "theses",
             "thesis_monitor",
@@ -806,6 +816,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "valuations",
             "options_expiries",
             "options_payoff_scenarios",
+            "options_expiry_signals",
+            "options_ticker_signals",
             "screener",
             "tradingview_symbol_search",
             "tradingview_watchlists",
@@ -852,6 +864,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "analyst_estimates",
             "valuations",
             "options_payoff_scenarios",
+            "options_ticker_signals",
             "tradingview_alerts",
             "tradingview_chart_state",
         ],
@@ -887,6 +900,7 @@ def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0
         f"{prefix}_screener": _rows_for_symbols(panel_data.rows("screener"), symbols),
         f"{prefix}_decision_queue": _rows_for_symbols(panel_data.rows("decision_queue"), symbols),
         f"{prefix}_portfolio": _rows_for_symbols(panel_data.rows("portfolio"), symbols),
+        f"{prefix}_options": _rows_for_symbols(panel_data.rows("options_ticker_signals"), symbols),
     }
     table_counts = {name: len(rows) for name, rows in table_rows.items()}
     table_counts[prefix] = total_count
@@ -1003,6 +1017,9 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "options_expiries": _matching_ticker_rows(panel_data.rows("options_expiries"), normalized_ticker),
         "options_chain": _matching_ticker_rows(panel_data.rows("options_chain"), normalized_ticker),
         "options_payoff_scenarios": _matching_ticker_rows(panel_data.rows("options_payoff_scenarios"), normalized_ticker),
+        "options_provider_capabilities": panel_data.rows("options_provider_capabilities"),
+        "options_expiry_signals": _matching_ticker_rows(panel_data.rows("options_expiry_signals"), normalized_ticker),
+        "options_ticker_signals": _matching_ticker_rows(panel_data.rows("options_ticker_signals"), normalized_ticker),
         "news": _matching_ticker_rows(panel_data.rows("news"), normalized_ticker),
         "tradingview_symbol_search": _matching_ticker_rows(panel_data.rows("tradingview_symbol_search"), normalized_ticker),
         "tradingview_watchlists": _matching_ticker_rows(panel_data.rows("tradingview_watchlists"), normalized_ticker),
@@ -1797,7 +1814,7 @@ def _source_health_by_family(tables: dict[str, list[dict[str, Any]]]) -> dict[st
         "technical": ["technicals", "sepa"],
         "valuation": ["valuations"],
         "earnings": ["earnings", "earnings_setups", "analyst_estimates"],
-        "options": ["options_expiries", "options_chain", "options_payoff_scenarios"],
+        "options": ["options_expiries", "options_chain", "options_payoff_scenarios", "options_expiry_signals", "options_ticker_signals"],
         "thesis": ["theses", "memos"],
         "research_packet": ["research_packets"],
         "news": ["news"],

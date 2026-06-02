@@ -281,10 +281,79 @@ CREATE TABLE IF NOT EXISTS options_chain (
     gamma DOUBLE,
     theta DOUBLE,
     vega DOUBLE,
+    rho DOUBLE,
+    theo DOUBLE,
+    bid_iv DOUBLE,
+    ask_iv DOUBLE,
+    contract_symbol TEXT,
     observed_at TIMESTAMP,
     source TEXT,
     raw JSON,
     PRIMARY KEY(symbol, expiry, strike, option_type, observed_at, source)
+);
+
+CREATE TABLE IF NOT EXISTS options_provider_capabilities (
+    provider TEXT PRIMARY KEY,
+    observed_at TIMESTAMP,
+    supports_expiries BOOLEAN,
+    supports_chain_quotes BOOLEAN,
+    supports_greeks BOOLEAN,
+    supports_theoretical_price BOOLEAN,
+    supports_open_interest BOOLEAN,
+    supports_volume BOOLEAN,
+    supports_full_chain BOOLEAN,
+    status TEXT,
+    detail TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS options_expiry_signals (
+    symbol TEXT,
+    expiry DATE,
+    as_of TIMESTAMP,
+    source TEXT,
+    dte INTEGER,
+    spot DOUBLE,
+    contract_count INTEGER,
+    chain_rows INTEGER,
+    atm_strike DOUBLE,
+    atm_iv DOUBLE,
+    expected_move DOUBLE,
+    expected_move_pct DOUBLE,
+    put_call_iv_skew DOUBLE,
+    call_spread_pct DOUBLE,
+    put_spread_pct DOUBLE,
+    spread_quality TEXT,
+    liquidity_score DOUBLE,
+    hedge_put_strike DOUBLE,
+    hedge_put_mid DOUBLE,
+    covered_call_strike DOUBLE,
+    covered_call_mid DOUBLE,
+    unavailable_signals JSON,
+    raw JSON,
+    PRIMARY KEY(symbol, expiry, source)
+);
+
+CREATE TABLE IF NOT EXISTS options_ticker_signals (
+    symbol TEXT,
+    as_of TIMESTAMP,
+    source TEXT,
+    status TEXT,
+    nearest_expiry DATE,
+    nearest_dte INTEGER,
+    atm_iv DOUBLE,
+    iv_regime TEXT,
+    expected_move DOUBLE,
+    expected_move_pct DOUBLE,
+    skew_signal TEXT,
+    put_call_iv_skew DOUBLE,
+    spread_quality TEXT,
+    liquidity_score DOUBLE,
+    hedge_summary TEXT,
+    income_summary TEXT,
+    unavailable_signals JSON,
+    raw JSON,
+    PRIMARY KEY(symbol, source)
 );
 
 CREATE TABLE IF NOT EXISTS news_items (
@@ -837,6 +906,13 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
         },
         "manual_watchlist": {
             "watch_state": "TEXT",
+        },
+        "options_chain": {
+            "rho": "DOUBLE",
+            "theo": "DOUBLE",
+            "bid_iv": "DOUBLE",
+            "ask_iv": "DOUBLE",
+            "contract_symbol": "TEXT",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

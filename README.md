@@ -92,6 +92,9 @@ This workflow should run from the canonical `mini1.local` checkout at
 - `GET /api/options-expiries`
 - `GET /api/options-chain`
 - `GET /api/options-payoff-scenarios`
+- `GET /api/options-provider-capabilities`
+- `GET /api/options-expiry-signals`
+- `GET /api/options-ticker-signals`
 - `GET /api/news`
 - `GET /api/tradingview-symbol-search`
 - `GET /api/tradingview-watchlists`
