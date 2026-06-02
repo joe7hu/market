@@ -122,6 +122,45 @@ def test_exchange_qualified_symbols_are_normalized_for_quote_join(tmp_path) -> N
     assert round(signal["expected_move_pct"], 4) == 0.055
 
 
+def test_expired_chain_rows_do_not_drive_ticker_signal(tmp_path) -> None:
+    db_path = tmp_path / "expired-options.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T15:30:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_expiries(con, "TSLA", "2026-05-10T15:30:00Z", [{"expiry": "2026-05-11", "dte": 1, "contracts_count": 2}])
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-05-10T15:30:00Z",
+            [
+                option_row("2026-05-11", 100, "put", 9.8, 10.2, 0.90, -0.5, "OPRA:TSLA260511P100.0"),
+                option_row("2026-05-11", 100, "call", 9.8, 10.2, 0.88, 0.5, "OPRA:TSLA260511C100.0"),
+            ],
+        )
+        store_expiries(con, "TSLA", "2026-06-02T15:30:00Z", [{"expiry": "2026-06-05", "dte": 3, "contracts_count": 2}])
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-02T15:30:00Z",
+            [
+                option_row("2026-06-05", 100, "put", 3.9, 4.1, 0.36, -0.48, "OPRA:TSLA260605P100.0"),
+                option_row("2026-06-05", 100, "call", 4.9, 5.1, 0.34, 0.52, "OPRA:TSLA260605C100.0"),
+            ],
+        )
+
+        counts = refresh_options_intelligence(con, ["TSLA"], reference_date="2026-06-02")
+        expiries = query_rows(con, "SELECT expiry FROM options_expiry_signals WHERE symbol = 'TSLA'")
+        ticker = query_rows(con, "SELECT nearest_expiry, atm_iv, expected_move_pct FROM options_ticker_signals WHERE symbol = 'TSLA'")[0]
+
+    assert counts == {"expiry_signals": 1, "ticker_signals": 1}
+    assert [str(row["expiry"]) for row in expiries] == ["2026-06-05"]
+    assert str(ticker["nearest_expiry"]) == "2026-06-05"
+    assert round(ticker["atm_iv"], 2) == 0.35
+    assert round(ticker["expected_move_pct"], 2) == 0.09
+
+
 def test_clear_options_intelligence_removes_only_target_symbol(tmp_path) -> None:
     db_path = tmp_path / "clear-options.duckdb"
     init_db(db_path)

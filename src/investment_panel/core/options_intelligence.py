@@ -70,10 +70,16 @@ def record_tradingview_options_capabilities(con: Any, observed_at: str | None = 
     )
 
 
-def refresh_options_intelligence(con: Any, symbols: list[str] | None = None, source: str = "tradingview") -> dict[str, int]:
+def refresh_options_intelligence(
+    con: Any,
+    symbols: list[str] | None = None,
+    source: str = "tradingview",
+    reference_date: str | None = None,
+) -> dict[str, int]:
     requested_symbols = [_normalize_symbol(symbol) for symbol in symbols or [] if symbol]
     symbol_filter = _symbol_filter(symbols)
-    params = [source, *symbol_filter["params"]]
+    today = reference_date or datetime.utcnow().date().isoformat()
+    params = [source, today, *symbol_filter["params"]]
     rows = query_rows(
         con,
         f"""
@@ -81,7 +87,7 @@ def refresh_options_intelligence(con: Any, symbols: list[str] | None = None, sou
                gamma, theta, vega, rho, theo, bid_iv, ask_iv, contract_symbol,
                observed_at, source
         FROM options_chain
-        WHERE source = ? {symbol_filter["sql"]}
+        WHERE source = ? AND TRY_CAST(expiry AS DATE) >= TRY_CAST(? AS DATE) {symbol_filter["sql"]}
         QUALIFY dense_rank() OVER (PARTITION BY symbol, expiry, source ORDER BY observed_at DESC) = 1
         ORDER BY symbol, expiry, strike, option_type
         """,
@@ -92,7 +98,7 @@ def refresh_options_intelligence(con: Any, symbols: list[str] | None = None, sou
         f"""
         SELECT symbol, expiry, dte, contracts_count, observed_at, source
         FROM options_expiries
-        WHERE source = ? {symbol_filter["sql"]}
+        WHERE source = ? AND TRY_CAST(expiry AS DATE) >= TRY_CAST(? AS DATE) {symbol_filter["sql"]}
         QUALIFY row_number() OVER (PARTITION BY symbol, expiry, source ORDER BY observed_at DESC) = 1
         """,
         params,
@@ -102,7 +108,11 @@ def refresh_options_intelligence(con: Any, symbols: list[str] | None = None, sou
         f"""
         SELECT symbol, price, observed_at
         FROM quotes_intraday
-        WHERE symbol IN (SELECT DISTINCT symbol FROM options_chain WHERE source = ? {symbol_filter["sql"]})
+        WHERE symbol IN (
+            SELECT DISTINCT symbol
+            FROM options_chain
+            WHERE source = ? AND TRY_CAST(expiry AS DATE) >= TRY_CAST(? AS DATE) {symbol_filter["sql"]}
+        )
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY observed_at DESC) = 1
         """,
         params,
