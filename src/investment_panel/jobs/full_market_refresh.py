@@ -21,6 +21,7 @@ from investment_panel.jobs import (
     update_disclosures,
     update_event_calendar,
     update_free_sources,
+    refresh_options_radar,
 )
 
 
@@ -92,6 +93,7 @@ def refresh_steps(
         RefreshStep("arco_import", lambda: update_arco_data.run(config_path)),
         RefreshStep("daily_screen", lambda: daily_screen.run(config_path, online_check=online_check)),
         RefreshStep("free_sources_and_analyses", lambda: update_free_sources.run(config_path, equity_data=True, analyses=True)),
+        RefreshStep("options_radar", lambda: refresh_options_radar.run(config_path)),
         RefreshStep("broker_sources", lambda: update_broker_sources.run(config_path)),
         RefreshStep(
             "disclosures",

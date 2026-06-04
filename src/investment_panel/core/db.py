@@ -356,6 +356,189 @@ CREATE TABLE IF NOT EXISTS options_ticker_signals (
     PRIMARY KEY(symbol, source)
 );
 
+CREATE TABLE IF NOT EXISTS option_strategy_versions (
+    strategy_version TEXT PRIMARY KEY,
+    strategy_name TEXT,
+    version INTEGER,
+    created_at TIMESTAMP,
+    status TEXT,
+    parameters JSON,
+    promoted_at TIMESTAMP,
+    supersedes TEXT,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS option_snapshot (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    underlying_price DOUBLE,
+    expiration DATE,
+    strike DOUBLE,
+    option_type TEXT,
+    bid DOUBLE,
+    ask DOUBLE,
+    mid DOUBLE,
+    last DOUBLE,
+    volume DOUBLE,
+    open_interest DOUBLE,
+    iv DOUBLE,
+    delta DOUBLE,
+    gamma DOUBLE,
+    theta DOUBLE,
+    vega DOUBLE,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    data_source TEXT,
+    contract_id TEXT,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time, data_source)
+);
+
+CREATE TABLE IF NOT EXISTS option_features (
+    snapshot_time TIMESTAMP,
+    contract_id TEXT,
+    ticker TEXT,
+    required_2x_price DOUBLE,
+    required_5x_price DOUBLE,
+    required_10x_price DOUBLE,
+    required_move_10x_pct DOUBLE,
+    breakeven DOUBLE,
+    iv_percentile DOUBLE,
+    iv_rank DOUBLE,
+    liquidity_score DOUBLE,
+    convexity_score DOUBLE,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time)
+);
+
+CREATE TABLE IF NOT EXISTS stock_features (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    price DOUBLE,
+    ma_20 DOUBLE,
+    ma_50 DOUBLE,
+    ma_200 DOUBLE,
+    rs_vs_qqq_20d DOUBLE,
+    rs_vs_qqq_60d DOUBLE,
+    atr_pct DOUBLE,
+    volume_ratio DOUBLE,
+    distance_from_52w_high DOUBLE,
+    base_length_days INTEGER,
+    breakout_level DOUBLE,
+    raw JSON,
+    PRIMARY KEY(ticker, snapshot_time)
+);
+
+CREATE TABLE IF NOT EXISTS agent_thesis (
+    thesis_id TEXT PRIMARY KEY,
+    ticker TEXT,
+    created_at TIMESTAMP,
+    agent_version TEXT,
+    bull_target_price DOUBLE,
+    bull_target_date DATE,
+    base_target_price DOUBLE,
+    core_thesis TEXT,
+    required_proofs JSON,
+    invalidation_conditions JSON,
+    catalysts JSON,
+    catalyst_summary TEXT,
+    bear_case TEXT,
+    confidence DOUBLE,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS candidate_event (
+    event_id TEXT PRIMARY KEY,
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    state TEXT,
+    premium_mid DOUBLE,
+    premium_fill_assumption DOUBLE,
+    required_10x_price DOUBLE,
+    required_move_pct DOUBLE,
+    buy_under DOUBLE,
+    trigger_reason TEXT,
+    thesis_id TEXT,
+    score DOUBLE,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS shadow_trade (
+    trade_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    entry_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    exit_time TIMESTAMP,
+    exit_price DOUBLE,
+    status TEXT,
+    max_return_seen DOUBLE,
+    max_drawdown_seen DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    exit_reason TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS option_attribution (
+    attribution_id TEXT PRIMARY KEY,
+    trade_id TEXT,
+    event_id TEXT,
+    contract_id TEXT,
+    snapshot_time TIMESTAMP,
+    prior_snapshot_time TIMESTAMP,
+    option_return DOUBLE,
+    underlying_return DOUBLE,
+    iv_change DOUBLE,
+    theta_decay DOUBLE,
+    spread_change DOUBLE,
+    stock_move_effect DOUBLE,
+    iv_effect DOUBLE,
+    theta_effect DOUBLE,
+    spread_effect DOUBLE,
+    unexplained_effect DOUBLE,
+    label TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS missed_winner_event (
+    missed_id TEXT PRIMARY KEY,
+    detected_at TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    first_snapshot_time TIMESTAMP,
+    winner_snapshot_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    winner_price DOUBLE,
+    max_return_seen DOUBLE,
+    winner_threshold TEXT,
+    filter_reason TEXT,
+    proposed_strategy_family TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_mutation_proposal (
+    proposal_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    source_type TEXT,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    proposed_parameter_changes JSON,
+    rationale TEXT,
+    expected_effect TEXT,
+    risk TEXT,
+    status TEXT,
+    requires_backtest BOOLEAN,
+    requires_forward_test BOOLEAN,
+    human_approval_status TEXT,
+    evidence_refs JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS news_items (
     id TEXT PRIMARY KEY,
     published_at TIMESTAMP,

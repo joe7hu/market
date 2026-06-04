@@ -304,6 +304,56 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "options_ticker_signals")
 
+    @app.get("/api/option-strategy-versions")
+    def option_strategy_versions() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "option_strategy_versions")
+
+    @app.get("/api/option-snapshot")
+    def option_snapshot() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "option_snapshot")
+
+    @app.get("/api/option-features")
+    def option_features() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "option_features")
+
+    @app.get("/api/stock-features")
+    def stock_features() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "stock_features")
+
+    @app.get("/api/agent-thesis")
+    def agent_thesis() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "agent_thesis")
+
+    @app.get("/api/candidate-events")
+    def candidate_events() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "candidate_event")
+
+    @app.get("/api/shadow-trades")
+    def shadow_trades() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "shadow_trade")
+
+    @app.get("/api/option-attributions")
+    def option_attributions() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "option_attribution")
+
+    @app.get("/api/missed-winner-events")
+    def missed_winner_events() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "missed_winner_event")
+
+    @app.get("/api/strategy-mutation-proposals")
+    def strategy_mutation_proposals() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "strategy_mutation_proposal")
+
     @app.get("/api/news")
     def news() -> dict[str, Any]:
         _, panel_data = _context()
