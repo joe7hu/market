@@ -15,6 +15,7 @@ from investment_panel.providers.yfinance_provider import YFinanceProvider, YFina
 RADAR_MIN_DTE = 365
 RADAR_MAX_DTE = 900
 RADAR_MAX_EXPIRIES_PER_SYMBOL = 2
+RADAR_STRIKES_AROUND_SPOT = 24
 
 
 def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
@@ -38,6 +39,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
         "alerts": 0,
         "chart_states": 0,
         "chain_expiries": 0,
+        "radar_chain_expiries": 0,
     }
     if target_symbols:
         result["target_symbols"] = target_symbols
@@ -96,6 +98,12 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                 symbol_chain_rows = 0
                 any_chain_error = False
                 for expiry in selected_expiries:
+                    strikes_around_spot = option_chain_strikes_around_spot(
+                        expiry,
+                        expiries,
+                        observed_at,
+                        configured=config.data_sources.tradingview.strikes_around_spot,
+                    )
                     chain = []
                     chain_error = False
                     for candidate in tradingview_symbol_candidates(symbol):
@@ -103,7 +111,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                             chain = provider.options_chain(
                                 candidate,
                                 str(expiry),
-                                strikes_around_spot=config.data_sources.tradingview.strikes_around_spot,
+                                strikes_around_spot=strikes_around_spot,
                             )
                         except OpenCliError as exc:
                             chain_error = True
@@ -116,6 +124,8 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                     if stored_chain_rows:
                         symbol_chain_rows += stored_chain_rows
                         result["chain_expiries"] += 1
+                        if strikes_around_spot > config.data_sources.tradingview.strikes_around_spot:
+                            result["radar_chain_expiries"] += 1
                     if chain_error:
                         any_chain_error = True
                 if symbol_chain_rows:
@@ -443,6 +453,26 @@ def selected_option_expiries(
             selected.append(str(best["expiry"]))
             remaining = [row for row in remaining if row["expiry"] != best["expiry"]]
     return _unique_strings(selected)
+
+
+def option_chain_strikes_around_spot(
+    expiry: str,
+    rows: list[dict[str, Any]],
+    observed_at: str,
+    *,
+    configured: int,
+    radar_min_dte: int = RADAR_MIN_DTE,
+    radar_max_dte: int = RADAR_MAX_DTE,
+    radar_strikes_around_spot: int = RADAR_STRIKES_AROUND_SPOT,
+) -> int:
+    """Use wider LEAP strike sampling for 10x radar math without widening near-term chains."""
+
+    normalized = [_expiry_row(row, observed_at) for row in rows]
+    match = next((row for row in normalized if row and str(row["expiry"]) == str(expiry)), None)
+    dte = int(match["dte"]) if match else None
+    if dte is not None and radar_min_dte <= dte <= radar_max_dte:
+        return max(configured, radar_strikes_around_spot)
+    return configured
 
 
 def _expiry_row(row: dict[str, Any], observed_at: str) -> dict[str, Any] | None:

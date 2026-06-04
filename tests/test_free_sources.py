@@ -18,6 +18,7 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.fundamentals import metrics_from_company_facts
 from investment_panel.core.free_sources import (
     infer_event_date,
+    option_chain_strikes_around_spot,
     option_symbols,
     selected_option_expiries,
     store_expiries,
@@ -242,8 +243,24 @@ def test_selected_option_expiries_computes_missing_dte() -> None:
     assert expiries == ["2026-06-05", "2027-06-02", "2028-06-02"]
 
 
+def test_option_chain_strikes_around_spot_widens_only_radar_leaps() -> None:
+    rows = [
+        {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+        {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+        {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+    ]
+
+    near_term = option_chain_strikes_around_spot("2026-06-05", rows, "2026-06-02T15:30:00Z", configured=6)
+    leap = option_chain_strikes_around_spot("2027-06-02", rows, "2026-06-02T15:30:00Z", configured=6)
+    far_leap = option_chain_strikes_around_spot("2028-11-18", rows, "2026-06-02T15:30:00Z", configured=6)
+
+    assert near_term == 6
+    assert leap == 24
+    assert far_leap == 24
+
+
 def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path, monkeypatch) -> None:
-    chain_calls: list[str] = []
+    chain_calls: list[tuple[str, int]] = []
     quote_calls: list[str] = []
 
     class MultiExpiryOptionsProvider:
@@ -273,7 +290,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
 
         def options_chain(self, _symbol: str, expiry: str | None = None, strikes_around_spot: int = 6) -> list[dict[str, object]]:
             assert expiry is not None
-            chain_calls.append(expiry)
+            chain_calls.append((expiry, strikes_around_spot))
             return [{"expiry": expiry, "strike": 120, "type": "call", "bid": 4.8, "ask": 5.2, "mid": 5.0, "iv": 0.42, "delta": 0.31}]
 
     db_path = tmp_path / "investment.duckdb"
@@ -301,9 +318,10 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
         rows = query_rows(con, "SELECT expiry, count(*) AS count FROM options_chain GROUP BY expiry ORDER BY expiry")
 
     assert quote_calls == ["TSLA"]
-    assert chain_calls == ["2026-06-05", "2027-06-02", "2028-11-18"]
+    assert chain_calls == [("2026-06-05", 6), ("2027-06-02", 24), ("2028-11-18", 24)]
     assert result["target_symbols"] == ["TSLA"]
     assert result["chain_expiries"] == 3
+    assert result["radar_chain_expiries"] == 2
     assert result["chains"] == 3
     assert rows == [
         {"expiry": date(2026, 6, 5), "count": 1},
