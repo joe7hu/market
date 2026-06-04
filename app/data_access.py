@@ -526,6 +526,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "news",
             "tradingview_symbol_search",
             "tradingview_watchlists",
@@ -625,6 +626,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     strategy_proposals = panel_data.rows("strategy_mutation_proposal")
     strategy_backtests = panel_data.rows("strategy_backtest_result")
     strategy_forward_tests = panel_data.rows("strategy_forward_test_result")
+    strategy_cohorts = panel_data.rows("strategy_cohort_result")
     agent_thesis_requests = panel_data.rows("agent_thesis_request")
     agent_thesis_validations = panel_data.rows("agent_thesis_validation")
     source_health = panel_data.rows("source_health")
@@ -675,6 +677,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "strategy_mutation_proposals": len(strategy_proposals),
             "strategy_backtests": len(strategy_backtests),
             "strategy_forward_tests": len(strategy_forward_tests),
+            "strategy_cohorts": len(strategy_cohorts),
             "agent_thesis_requests": len(agent_thesis_requests),
             "agent_thesis_validations": len(agent_thesis_validations),
             "sources": len(sources) or len(source_freshness) or len(source_health),
@@ -729,6 +732,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "strategy_mutation_proposals": strategy_proposals[:12],
         "strategy_backtests": strategy_backtests[:12],
         "strategy_forward_tests": strategy_forward_tests[:12],
+        "strategy_cohorts": strategy_cohorts[:12],
         "agent_thesis_requests": agent_thesis_requests[:12],
         "agent_thesis_validations": agent_thesis_validations[:12],
         "disclosures": disclosures[:8],
@@ -769,6 +773,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "disclosures",
             "theses",
             "thesis_monitor",
@@ -849,6 +854,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "disclosures",
             "theses",
             "thesis_monitor",
@@ -890,6 +896,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "agent_thesis_request",
             "agent_thesis_validation",
             "screener",
@@ -946,6 +953,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "agent_thesis_request",
             "agent_thesis_validation",
             "tradingview_alerts",
@@ -960,6 +968,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_mutation_proposal",
             "strategy_backtest_result",
             "strategy_forward_test_result",
+            "strategy_cohort_result",
             "agent_thesis",
             "agent_thesis_request",
             "agent_thesis_validation",

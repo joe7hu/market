@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import date, datetime
 from statistics import mean
 from typing import Any
@@ -59,6 +60,7 @@ def refresh_options_radar(
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
     evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
+    cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
     return {
         "option_snapshots": snapshot_rows,
         "option_features": feature_rows,
@@ -71,6 +73,7 @@ def refresh_options_radar(
         "missed_winners": missed_rows,
         "strategy_mutation_proposals": proposal_rows,
         **evaluation_rows,
+        "strategy_cohorts": cohort_rows,
     }
 
 
@@ -1070,6 +1073,111 @@ def refresh_strategy_proposal_evaluations(con: Any, *, strategy_version: str = D
     return {"strategy_backtests": backtests, "strategy_forward_tests": forward_tests, "strategy_gate_updates": updates}
 
 
+def refresh_strategy_cohort_results(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    con.execute("DELETE FROM strategy_cohort_result WHERE strategy_version = ?", [strategy_version])
+    rows = _historical_candidate_rows(con)
+    if not rows:
+        return 0
+    strategy = _strategy_parameters(con, strategy_version)
+    records = _strategy_outcome_records(con, rows, strategy_version, strategy)
+    if not records:
+        return 0
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        for cohort in record.get("cohorts") or []:
+            cohort_type = str(cohort.get("type") or "")
+            cohort_value = str(cohort.get("value") or "")
+            if cohort_type and cohort_value:
+                grouped[(cohort_type, cohort_value)].append(record)
+
+    evaluated_at = datetime.utcnow().isoformat()
+    count = 0
+    for (cohort_type, cohort_value), cohort_records in sorted(grouped.items()):
+        result = build_strategy_cohort_result(
+            strategy_version=strategy_version,
+            cohort_type=cohort_type,
+            cohort_value=cohort_value,
+            evaluated_at=evaluated_at,
+            records=cohort_records,
+        )
+        con.execute(
+            """
+            INSERT OR REPLACE INTO strategy_cohort_result
+            (cohort_id, evaluated_at, strategy_version, cohort_type,
+             cohort_value, candidate_count, hit_rate_2x, hit_rate_5x,
+             hit_rate_10x, false_positive_rate, median_max_return,
+             median_max_drawdown, average_time_to_2x, early_entry_rate,
+             theta_iv_bleed_rate, good_convexity_rate, qqq_above_200d_rate,
+             raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                result["cohort_id"],
+                result["evaluated_at"],
+                result["strategy_version"],
+                result["cohort_type"],
+                result["cohort_value"],
+                result["candidate_count"],
+                result["hit_rate_2x"],
+                result["hit_rate_5x"],
+                result["hit_rate_10x"],
+                result["false_positive_rate"],
+                result["median_max_return"],
+                result["median_max_drawdown"],
+                result["average_time_to_2x"],
+                result["early_entry_rate"],
+                result["theta_iv_bleed_rate"],
+                result["good_convexity_rate"],
+                result["qqq_above_200d_rate"],
+                json_dumps(result["raw"]),
+            ],
+        )
+        count += 1
+    return count
+
+
+def build_strategy_cohort_result(
+    *,
+    strategy_version: str,
+    cohort_type: str,
+    cohort_value: str,
+    evaluated_at: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metrics = _outcome_metrics(records)
+    count = int(metrics["candidate_count"])
+    labels = [str(row.get("latest_attribution_label") or "") for row in records]
+    qqq_above = [row for row in records if row.get("qqq_above_200d") is True]
+    early_entries = [row for row in records if row.get("timing_label") in {"early_but_worked", "false_positive_drawdown"}]
+    return {
+        "cohort_id": stable_id("strategy_cohort_result", strategy_version, cohort_type, cohort_value),
+        "evaluated_at": evaluated_at,
+        "strategy_version": strategy_version,
+        "cohort_type": cohort_type,
+        "cohort_value": cohort_value,
+        "candidate_count": count,
+        "hit_rate_2x": metrics["hit_rate_2x"],
+        "hit_rate_5x": metrics["hit_rate_5x"],
+        "hit_rate_10x": metrics["hit_rate_10x"],
+        "false_positive_rate": metrics["false_positive_rate"],
+        "median_max_return": metrics["median_max_return"],
+        "median_max_drawdown": metrics["median_max_drawdown"],
+        "average_time_to_2x": metrics["average_time_to_2x"],
+        "early_entry_rate": len(early_entries) / count if count else 0.0,
+        "theta_iv_bleed_rate": labels.count("theta_iv_bleed") / count if count else 0.0,
+        "good_convexity_rate": labels.count("good_convexity") / count if count else 0.0,
+        "qqq_above_200d_rate": len(qqq_above) / count if count else 0.0,
+        "raw": {
+            "promotion_policy": "cohort_analysis_is_diagnostic_only",
+            "sample_outcomes": metrics["outcomes"][:20],
+            "timing_labels": _value_counts([str(row.get("timing_label") or "unknown") for row in records]),
+            "attribution_labels": _value_counts([label or "none" for label in labels]),
+            "cohort_definition": _cohort_definition(cohort_type, cohort_value),
+        },
+    }
+
+
 def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[str, Any] | None:
     rows = _historical_candidate_rows(con)
     if not rows:
@@ -1386,9 +1494,11 @@ def _historical_candidate_rows(con: Any) -> list[dict[str, Any]]:
     )
 
 
-def _strategy_outcomes(con: Any, rows: list[dict[str, Any]], strategy_version: str, strategy: dict[str, Any]) -> dict[str, Any]:
+def _strategy_outcome_records(con: Any, rows: list[dict[str, Any]], strategy_version: str, strategy: dict[str, Any]) -> list[dict[str, Any]]:
     outcomes = []
     seen: set[tuple[str, str]] = set()
+    qqq_cache: dict[str, bool | None] = {}
+    attribution_labels = _latest_attribution_labels(con)
     for row in rows:
         event = build_candidate_event(row, strategy_version, strategy)
         if not event or event["state"] != "FIRE":
@@ -1398,9 +1508,26 @@ def _strategy_outcomes(con: Any, rows: list[dict[str, Any]], strategy_version: s
             continue
         seen.add(key)
         outcome = _hypothetical_outcome(con, event)
-        if outcome:
-            outcomes.append(outcome)
-    return _outcome_metrics(outcomes)
+        if not outcome:
+            continue
+        snapshot_time = _iso(event["snapshot_time"])
+        qqq_above_200d = _qqq_above_200d(con, snapshot_time, qqq_cache)
+        outcome.update(
+            {
+                "ticker": event["ticker"],
+                "strategy_version": strategy_version,
+                "setup_type": _setup_type(row, event),
+                "cohorts": _cohort_labels(row, event, qqq_above_200d),
+                "qqq_above_200d": qqq_above_200d,
+                "latest_attribution_label": attribution_labels.get(event["event_id"]),
+            }
+        )
+        outcomes.append(outcome)
+    return outcomes
+
+
+def _strategy_outcomes(con: Any, rows: list[dict[str, Any]], strategy_version: str, strategy: dict[str, Any]) -> dict[str, Any]:
+    return _outcome_metrics(_strategy_outcome_records(con, rows, strategy_version, strategy))
 
 
 def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -1423,6 +1550,10 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
     returns = [(snapshot_time, (mid or 0) / entry - 1) for snapshot_time, mid in marks]
     max_time, max_return = max(returns, key=lambda item: item[1])
     _min_time, max_drawdown = min(returns, key=lambda item: item[1])
+    time_to_2x = _first_hit_days(event["snapshot_time"], returns, 1.0)
+    time_to_5x = _first_hit_days(event["snapshot_time"], returns, 4.0)
+    time_to_10x = _first_hit_days(event["snapshot_time"], returns, 9.0)
+    drawdown_before_2x = _drawdown_before_threshold(returns, 1.0)
     return {
         "event_id": event["event_id"],
         "contract_id": event["contract_id"],
@@ -1430,9 +1561,11 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
         "entry_price": entry,
         "max_return_seen": max_return,
         "max_drawdown_seen": max_drawdown,
-        "time_to_2x": _first_hit_days(event["snapshot_time"], returns, 1.0),
-        "time_to_5x": _first_hit_days(event["snapshot_time"], returns, 4.0),
-        "time_to_10x": _first_hit_days(event["snapshot_time"], returns, 9.0),
+        "time_to_2x": time_to_2x,
+        "time_to_5x": time_to_5x,
+        "time_to_10x": time_to_10x,
+        "drawdown_before_2x": drawdown_before_2x,
+        "timing_label": _timing_label(time_to_2x, max_drawdown, drawdown_before_2x),
         "max_return_time": max_time,
     }
 
@@ -1496,6 +1629,129 @@ def _first_hit_days(entry_time: Any, returns: list[tuple[Any, float]], threshold
         if value >= threshold:
             return _elapsed_days(entry_time, snapshot_time)
     return None
+
+
+def _drawdown_before_threshold(returns: list[tuple[Any, float]], threshold: float) -> float | None:
+    observed: list[float] = []
+    for _snapshot_time, value in returns:
+        observed.append(value)
+        if value >= threshold:
+            break
+    return min(observed) if observed else None
+
+
+def _timing_label(time_to_2x: int | None, max_drawdown: float | None, drawdown_before_2x: float | None) -> str:
+    if time_to_2x is not None and (drawdown_before_2x or 0.0) <= -0.30:
+        return "early_but_worked"
+    if time_to_2x is None and (max_drawdown or 0.0) <= -0.40:
+        return "false_positive_drawdown"
+    if time_to_2x is not None and time_to_2x <= 5:
+        return "fast_confirmation"
+    if time_to_2x is not None:
+        return "worked_after_wait"
+    return "pending_or_failed"
+
+
+def _latest_attribution_labels(con: Any) -> dict[str, str]:
+    rows = query_rows(
+        con,
+        """
+        SELECT event_id, label
+        FROM option_attribution
+        QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY snapshot_time DESC) = 1
+        """,
+    )
+    return {str(row["event_id"]): str(row["label"]) for row in rows if row.get("event_id") and row.get("label")}
+
+
+def _qqq_above_200d(con: Any, snapshot_time: str, cache: dict[str, bool | None]) -> bool | None:
+    snapshot_date = _date(snapshot_time)
+    if snapshot_date is None:
+        return None
+    key = snapshot_date.isoformat()
+    if key in cache:
+        return cache[key]
+    rows = query_rows(
+        con,
+        """
+        SELECT close
+        FROM prices_daily
+        WHERE symbol = 'QQQ' AND date <= TRY_CAST(? AS DATE)
+        ORDER BY date DESC
+        LIMIT 200
+        """,
+        [key],
+    )
+    closes = [_number(row.get("close")) for row in reversed(rows)]
+    clean = [value for value in closes if value is not None]
+    if len(clean) < 200:
+        cache[key] = None
+    else:
+        cache[key] = clean[-1] >= (_average(clean[-200:]) or 10**9)
+    return cache[key]
+
+
+def _setup_type(row: dict[str, Any], event: dict[str, Any]) -> str:
+    raw = event.get("raw") if isinstance(event.get("raw"), dict) else {}
+    blockers = [str(item) for item in raw.get("blockers", [])] if isinstance(raw.get("blockers"), list) else []
+    positives = [str(item) for item in raw.get("positives", [])] if isinstance(raw.get("positives"), list) else []
+    price = _number(row.get("price"))
+    ma50 = _number(row.get("ma_50"))
+    breakout = _number(row.get("breakout_level"))
+    base_length = _integer(row.get("base_length_days")) or 0
+    distance_from_high = _number(row.get("distance_from_52w_high"))
+    rs20 = _number(row.get("rs_vs_qqq_20d"))
+    if "stock_below_50d" in blockers or (price is not None and ma50 is not None and price < ma50):
+        return "early_reversal"
+    if distance_from_high is not None and distance_from_high <= -0.30:
+        return "post_crash_recovery"
+    if base_length >= 30 and price is not None and breakout is not None and price >= breakout * 0.98:
+        return "post_base_breakout"
+    if rs20 is not None and rs20 >= 0.05:
+        return "relative_strength_leader"
+    if "premium_inside_buy_under" in positives and "stock_above_50d" in positives:
+        return "reclaiming_50d"
+    return "standard_reversal"
+
+
+def _cohort_labels(row: dict[str, Any], event: dict[str, Any], qqq_above_200d: bool | None) -> list[dict[str, str]]:
+    labels = [{"type": "setup_type", "value": _setup_type(row, event)}]
+    required_move = _number(row.get("required_move_10x_pct"))
+    iv_percentile = _number(row.get("iv_percentile"))
+    spread_pct = _number(row.get("spread_pct"))
+    if required_move is not None:
+        value = "under_200pct" if required_move <= 2.0 else "under_350pct" if required_move <= 3.5 else "over_350pct"
+        labels.append({"type": "required_move_bucket", "value": value})
+    if iv_percentile is not None:
+        value = "low_iv" if iv_percentile < 50 else "normal_iv" if iv_percentile <= 70 else "high_iv"
+        labels.append({"type": "iv_regime", "value": value})
+    if spread_pct is not None:
+        value = "tight_spread" if spread_pct <= 0.15 else "usable_spread" if spread_pct <= 0.25 else "wide_spread"
+        labels.append({"type": "liquidity_regime", "value": value})
+    value = "qqq_above_200d" if qqq_above_200d is True else "qqq_below_200d" if qqq_above_200d is False else "qqq_200d_unknown"
+    labels.append({"type": "market_regime", "value": value})
+    return labels
+
+
+def _value_counts(values: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _cohort_definition(cohort_type: str, cohort_value: str) -> str:
+    definitions = {
+        ("setup_type", "early_reversal"): "Stock had not reclaimed the 50D context at candidate time.",
+        ("setup_type", "post_crash_recovery"): "Stock was at least 30% below its 52-week high at candidate time.",
+        ("setup_type", "post_base_breakout"): "Stock had a 30+ day base and was near or above the stored breakout level.",
+        ("setup_type", "relative_strength_leader"): "20-day relative strength versus QQQ was at least +5%.",
+        ("setup_type", "reclaiming_50d"): "Candidate passed premium and 50D reclaim gates.",
+        ("setup_type", "standard_reversal"): "Candidate passed baseline gates without a stronger deterministic setup bucket.",
+        ("market_regime", "qqq_above_200d"): "QQQ close was at or above its 200-day moving average.",
+        ("market_regime", "qqq_below_200d"): "QQQ close was below its 200-day moving average.",
+    }
+    return definitions.get((cohort_type, cohort_value), f"{cohort_type}={cohort_value}")
 
 
 def _proposed_strategy_parameters(base: dict[str, Any], value: Any) -> dict[str, Any]:

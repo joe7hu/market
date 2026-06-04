@@ -202,14 +202,23 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         result = refresh_options_radar(con, ["TSLA"])
         attribution = query_rows(con, "SELECT * FROM option_attribution")[0]
         first_trade = query_rows(con, "SELECT * FROM shadow_trade ORDER BY entry_time LIMIT 1")[0]
+        cohorts = query_rows(con, "SELECT * FROM strategy_cohort_result")
+        setup_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_type = 'setup_type'")[0]
+        market_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_value = 'qqq_above_200d'")[0]
 
     assert result["option_attributions"] == 1
+    assert result["strategy_cohorts"] >= 4
     assert attribution["trade_id"] == first_trade["trade_id"]
     assert attribution["label"] == "good_convexity"
     assert attribution["option_return"] > 1.0
     assert attribution["underlying_return"] > 0
     assert first_trade["max_return_seen"] > 1.0
     assert first_trade["time_to_2x"] == 1
+    assert setup_cohort["candidate_count"] == 1
+    assert setup_cohort["hit_rate_2x"] == 1.0
+    assert setup_cohort["good_convexity_rate"] == 1.0
+    assert market_cohort["qqq_above_200d_rate"] == 1.0
+    assert cohorts
 
 
 def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposal(tmp_path) -> None:

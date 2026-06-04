@@ -82,6 +82,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "strategy_mutation_proposal": strategy_mutation_proposal(con),
             "strategy_backtest_result": strategy_backtest_result(con),
             "strategy_forward_test_result": strategy_forward_test_result(con),
+            "strategy_cohort_result": strategy_cohort_result(con),
             "news": news(con),
             "tradingview_symbol_search": tradingview_symbol_search(con),
             "tradingview_watchlists": tradingview_watchlists(con),
@@ -3265,6 +3266,24 @@ def strategy_forward_test_result(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
+
+
+def strategy_cohort_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT cohort_id, evaluated_at, strategy_version, cohort_type,
+               cohort_value, candidate_count, hit_rate_2x, hit_rate_5x,
+               hit_rate_10x, false_positive_rate, median_max_return,
+               median_max_drawdown, average_time_to_2x, early_entry_rate,
+               theta_iv_bleed_rate, good_convexity_rate, qqq_above_200d_rate,
+               raw
+        FROM strategy_cohort_result
+        ORDER BY evaluated_at DESC, cohort_type, candidate_count DESC
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:

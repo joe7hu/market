@@ -374,6 +374,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "strategy_forward_test_result")
 
+    @app.get("/api/strategy-cohorts")
+    def strategy_cohorts() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "strategy_cohort_result")
+
     @app.get("/api/news")
     def news() -> dict[str, Any]:
         _, panel_data = _context()

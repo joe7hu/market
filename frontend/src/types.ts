@@ -82,6 +82,7 @@ export type PanelData = {
   strategyMutationProposal: TablePayload;
   strategyBacktestResult: TablePayload;
   strategyForwardTestResult: TablePayload;
+  strategyCohortResult: TablePayload;
   news: TablePayload;
   tradingviewSymbolSearch: TablePayload;
   tradingviewWatchlists: TablePayload;
@@ -185,6 +186,7 @@ export type PanelEndpoint =
   | "strategyMutationProposal"
   | "strategyBacktestResult"
   | "strategyForwardTestResult"
+  | "strategyCohortResult"
   | "news"
   | "tradingviewSymbolSearch"
   | "tradingviewWatchlists"

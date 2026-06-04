@@ -612,6 +612,27 @@ CREATE TABLE IF NOT EXISTS strategy_forward_test_result (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS strategy_cohort_result (
+    cohort_id TEXT PRIMARY KEY,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    cohort_type TEXT,
+    cohort_value TEXT,
+    candidate_count INTEGER,
+    hit_rate_2x DOUBLE,
+    hit_rate_5x DOUBLE,
+    hit_rate_10x DOUBLE,
+    false_positive_rate DOUBLE,
+    median_max_return DOUBLE,
+    median_max_drawdown DOUBLE,
+    average_time_to_2x DOUBLE,
+    early_entry_rate DOUBLE,
+    theta_iv_bleed_rate DOUBLE,
+    good_convexity_rate DOUBLE,
+    qqq_above_200d_rate DOUBLE,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS news_items (
     id TEXT PRIMARY KEY,
     published_at TIMESTAMP,

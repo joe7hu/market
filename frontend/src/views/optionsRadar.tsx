@@ -23,6 +23,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const proposals = rows(data.strategyMutationProposal);
   const backtests = rows(data.strategyBacktestResult);
   const forwardTests = rows(data.strategyForwardTestResult);
+  const cohorts = rows(data.strategyCohortResult);
   const thesisRequests = rows(data.agentThesisRequest);
   const thesisValidations = rows(data.agentThesisValidation);
   const agentTheses = rows(data.agentThesis);
@@ -50,7 +51,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
     ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x`, openShadowCount ? "info" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
-    ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting`, humanPending ? "warn" : "info"],
+    ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting, ${cohorts.length.toLocaleString()} cohorts`, humanPending ? "warn" : "info"],
   ];
 
   const latestSnapshot = latestDate(optionSnapshots, "snapshot_time");
@@ -84,6 +85,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
         <TabsContent value="learning" className="space-y-4">
           <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} />
+          <CohortResultsTable rows={cohorts} />
           <StrategyProposalsTable rows={proposals} backtestByProposal={latestBacktestByProposal} forwardByProposal={latestForwardByProposal} />
         </TabsContent>
 
@@ -239,6 +241,59 @@ function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenT
                 <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["proposed_strategy_family"])}</Truncated></Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["entry_price_assumption"])}</Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["winner_price"])}</Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
+  if (!rows.length) {
+    return <EmptyState title="No cohort results" detail="No deterministic setup cohorts have enough shadow outcomes yet." icon={Activity} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Cohort Learning" count={rows.length} />}>
+      <table className="w-full min-w-[1180px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Cohort</Head>
+            <Head className="text-right">Candidates</Head>
+            <Head className="text-right">2x</Head>
+            <Head className="text-right">5x</Head>
+            <Head className="text-right">10x</Head>
+            <Head className="text-right">Median Max</Head>
+            <Head className="text-right">Median DD</Head>
+            <Head className="text-right">Early</Head>
+            <Head className="text-right">Bleed</Head>
+            <Head className="text-right">Convexity</Head>
+            <Head className="text-right">QQQ 200D</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const key = textField(row, ["cohort_id"], `${textField(row, ["cohort_type"])}-${textField(row, ["cohort_value"])}`);
+            return (
+              <tr key={key} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell className="max-w-[260px]">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{titleLabel(displayField(row, ["cohort_value"]))}</div>
+                    <div className="truncate text-xs text-muted-foreground">{displayField(row, ["cohort_type"])}</div>
+                  </div>
+                </Cell>
+                <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["candidate_count"], Number.NaN), 0)}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_10x"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["median_max_return"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["median_max_drawdown"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["early_entry_rate"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["theta_iv_bleed_rate"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["good_convexity_rate"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["qqq_above_200d_rate"], Number.NaN))}</Cell>
               </tr>
             );
           })}
