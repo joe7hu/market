@@ -68,6 +68,20 @@ export type PanelData = {
   optionsProviderCapabilities: TablePayload;
   optionsExpirySignals: TablePayload;
   optionsTickerSignals: TablePayload;
+  optionStrategyVersions: TablePayload;
+  optionSnapshot: TablePayload;
+  optionFeatures: TablePayload;
+  stockFeatures: TablePayload;
+  agentThesis: TablePayload;
+  agentThesisRequest: TablePayload;
+  agentThesisValidation: TablePayload;
+  candidateEvent: TablePayload;
+  shadowTrade: TablePayload;
+  optionAttribution: TablePayload;
+  missedWinnerEvent: TablePayload;
+  strategyMutationProposal: TablePayload;
+  strategyBacktestResult: TablePayload;
+  strategyForwardTestResult: TablePayload;
   news: TablePayload;
   tradingviewSymbolSearch: TablePayload;
   tradingviewWatchlists: TablePayload;
@@ -157,6 +171,20 @@ export type PanelEndpoint =
   | "optionsProviderCapabilities"
   | "optionsExpirySignals"
   | "optionsTickerSignals"
+  | "optionStrategyVersions"
+  | "optionSnapshot"
+  | "optionFeatures"
+  | "stockFeatures"
+  | "agentThesis"
+  | "agentThesisRequest"
+  | "agentThesisValidation"
+  | "candidateEvent"
+  | "shadowTrade"
+  | "optionAttribution"
+  | "missedWinnerEvent"
+  | "strategyMutationProposal"
+  | "strategyBacktestResult"
+  | "strategyForwardTestResult"
   | "news"
   | "tradingviewSymbolSearch"
   | "tradingviewWatchlists"

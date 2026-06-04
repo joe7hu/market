@@ -6,6 +6,7 @@ import { FeedRoute } from "./pages/FeedRoute";
 import { HealthRoute } from "./pages/HealthRoute";
 import { MarketRoute } from "./pages/MarketRoute";
 import { NotFoundRoute } from "./pages/NotFoundRoute";
+import { OptionsRadarRoute } from "./pages/OptionsRadarRoute";
 import { PortfolioRoute } from "./pages/PortfolioRoute";
 import { ResearchRoute } from "./pages/ResearchRoute";
 import { SettingsRoute } from "./pages/SettingsRoute";
@@ -33,6 +34,7 @@ export function App() {
           <Route path="portfolio" element={<PortfolioRoute />} />
           <Route path="research" element={<Navigate to="/research-queue" replace />} />
           <Route path="research-queue" element={<ResearchRoute />} />
+          <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />
           <Route path="calendar" element={<CalendarRoute />} />

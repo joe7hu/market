@@ -21,6 +21,7 @@ def test_api_routes_return_json() -> None:
         "/api/panel-snapshot?scope=sources",
         "/api/panel-snapshot?scope=superinvestors",
         "/api/panel-snapshot?scope=market",
+        "/api/panel-snapshot?scope=options-radar",
         "/api/panel-snapshot?scope=today",
         "/api/panel-snapshot?scope=dashboard",
         "/api/decision-readiness",
@@ -116,6 +117,31 @@ def test_market_snapshot_only_returns_market_tables() -> None:
         "market_valuation_reference_charts",
         "market_environment_assets",
         "market_environment_model",
+    }
+
+
+def test_options_radar_snapshot_returns_radar_tables() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/panel-snapshot?scope=options-radar")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload["tables"]) == {
+        "option_strategy_versions",
+        "candidate_event",
+        "shadow_trade",
+        "option_attribution",
+        "missed_winner_event",
+        "strategy_mutation_proposal",
+        "strategy_backtest_result",
+        "strategy_forward_test_result",
+        "agent_thesis",
+        "agent_thesis_request",
+        "agent_thesis_validation",
+        "option_snapshot",
+        "option_features",
+        "stock_features",
     }
 
 
