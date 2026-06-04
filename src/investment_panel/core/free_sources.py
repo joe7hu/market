@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date, datetime
 from typing import Any
 
@@ -263,7 +264,7 @@ def update_tradingview_personal_surfaces(
     return result
 
 
-def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
+def update_yfinance_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
     if not config.data_sources.yfinance.enabled:
         return {"status": "disabled", "provider": "yfinance"}
     try:
@@ -275,8 +276,20 @@ def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
     today = date.today().isoformat()
     observed_at = datetime.utcnow().isoformat()
     run_id = stable_id(f"yfinance:{observed_at}")
-    result = {"status": "ok", "provider": "yfinance", "estimates": 0, "earnings": 0, "etf_premiums": 0, "market_snapshots": 0}
-    for instrument in query_rows(con, "SELECT symbol, asset_class FROM instruments ORDER BY symbol"):
+    target_symbols = unique_symbols(symbols or [])
+    result = {
+        "status": "ok",
+        "provider": "yfinance",
+        "estimates": 0,
+        "earnings": 0,
+        "etf_premiums": 0,
+        "market_snapshots": 0,
+        "options_liquidity": 0,
+        "options_liquidity_expiries": 0,
+    }
+    if target_symbols:
+        result["target_symbols"] = target_symbols
+    for instrument in yfinance_instruments(con, target_symbols):
         symbol = instrument["symbol"]
         if str(symbol).endswith("-USD"):
             continue
@@ -314,8 +327,197 @@ def update_yfinance_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             result["earnings"] += 1
         except Exception as exc:
             record_source_health(con, f"yfinance:{symbol}", "error", str(exc), "https://pypi.org/project/yfinance/")
+    liquidity_result = update_yfinance_options_liquidity(con, provider, target_symbols, observed_at, run_id)
+    result.update(liquidity_result)
     record_source_health(con, "yfinance_enrichment", "ok", json_dumps(result), "https://pypi.org/project/yfinance/")
     return result
+
+
+def yfinance_instruments(con: Any, symbols: list[str] | None = None) -> list[dict[str, Any]]:
+    target_symbols = unique_symbols(symbols or [])
+    if not target_symbols:
+        return query_rows(con, "SELECT symbol, asset_class FROM instruments ORDER BY symbol")
+    placeholders = ", ".join(["?"] * len(target_symbols))
+    existing = query_rows(con, f"SELECT symbol, asset_class FROM instruments WHERE symbol IN ({placeholders}) ORDER BY symbol", target_symbols)
+    found = {str(row["symbol"]).upper() for row in existing}
+    missing = [{"symbol": symbol, "asset_class": "equity"} for symbol in target_symbols if symbol not in found]
+    return [*existing, *missing]
+
+
+def update_yfinance_options_liquidity(
+    con: Any,
+    provider: YFinanceProvider,
+    symbols: list[str] | None,
+    observed_at: str,
+    run_id: str,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"options_liquidity": 0, "options_liquidity_expiries": 0}
+    errors: list[str] = []
+    record_yfinance_options_liquidity_capabilities(con, observed_at)
+    for chain in latest_tradingview_option_chain_expiries(con, symbols):
+        symbol = str(chain["symbol"]).upper()
+        expiry = str(chain["expiry"])
+        try:
+            liquidity_rows = provider.options_chain_liquidity(symbol, expiry)
+        except Exception as exc:
+            errors.append(f"{symbol}:{expiry}:{exc}")
+            continue
+        updated = store_yfinance_options_liquidity(
+            con,
+            symbol,
+            expiry,
+            observed_at,
+            chain["observed_at"],
+            liquidity_rows,
+        )
+        if updated:
+            result["options_liquidity"] += updated
+            result["options_liquidity_expiries"] += 1
+    status = "ok" if not errors else "partial"
+    detail = json_dumps(result if not errors else {**result, "errors": errors[:10], "error_count": len(errors)})
+    record_provider_run(con, stable_id(f"{run_id}:options-liquidity"), "yfinance", "options-liquidity", observed_at, status, detail, result)
+    record_source_health(con, "yfinance_options_liquidity", status, detail, "https://pypi.org/project/yfinance/")
+    if errors:
+        result["options_liquidity_errors"] = errors[:10]
+        result["options_liquidity_error_count"] = len(errors)
+    return result
+
+
+def record_yfinance_options_liquidity_capabilities(con: Any, observed_at: str) -> None:
+    raw = {
+        "available_fields": ["expiry", "strike", "type", "volume", "open_interest", "openInterest", "last", "contract_symbol"],
+        "role": "supplemental_liquidity_overlay",
+        "base_chain_source": "tradingview",
+    }
+    con.execute(
+        """
+        INSERT OR REPLACE INTO options_provider_capabilities
+        (provider, observed_at, supports_expiries, supports_chain_quotes,
+         supports_greeks, supports_theoretical_price, supports_open_interest,
+         supports_volume, supports_full_chain, status, detail, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "yfinance_options_liquidity",
+            observed_at,
+            True,
+            False,
+            False,
+            False,
+            True,
+            True,
+            True,
+            "supplemental",
+            "Yahoo/yfinance supplies option contract open interest and volume, merged into TradingView quote/Greek chain rows for deterministic liquidity gates.",
+            json_dumps(raw),
+        ],
+    )
+
+
+def latest_tradingview_option_chain_expiries(con: Any, symbols: list[str] | None = None) -> list[dict[str, Any]]:
+    target_symbols = unique_symbols(symbols or [])
+    symbol_filter = ""
+    params: list[Any] = ["tradingview"]
+    if target_symbols:
+        placeholders = ", ".join(["?"] * len(target_symbols))
+        symbol_filter = f"AND oc.symbol IN ({placeholders})"
+        params.extend(target_symbols)
+    return query_rows(
+        con,
+        f"""
+        SELECT oc.symbol, oc.expiry, max(oc.observed_at) AS observed_at, count(*) AS chain_rows
+        FROM options_chain oc
+        WHERE oc.source = ?
+          {symbol_filter}
+          AND oc.observed_at = (
+              SELECT max(latest.observed_at)
+              FROM options_chain latest
+              WHERE latest.symbol = oc.symbol AND latest.source = oc.source
+          )
+        GROUP BY oc.symbol, oc.expiry
+        ORDER BY oc.symbol, oc.expiry
+        """,
+        params,
+    )
+
+
+def store_yfinance_options_liquidity(
+    con: Any,
+    symbol: str,
+    expiry: str,
+    liquidity_observed_at: str,
+    chain_observed_at: Any,
+    rows: list[dict[str, Any]],
+) -> int:
+    by_contract: dict[tuple[float, str], dict[str, Any]] = {}
+    for row in rows:
+        strike = as_float(row.get("strike"))
+        option_type = str(row.get("type") or row.get("option_type") or "").lower()
+        if strike is None or option_type not in {"call", "put"}:
+            continue
+        by_contract[(strike, option_type)] = row
+    if not by_contract:
+        return 0
+    chain_rows = query_rows(
+        con,
+        """
+        SELECT symbol, expiry, strike, option_type, observed_at, source, raw
+        FROM options_chain
+        WHERE symbol = ?
+          AND expiry = TRY_CAST(? AS DATE)
+          AND observed_at = TRY_CAST(? AS TIMESTAMP)
+          AND source = 'tradingview'
+        """,
+        [symbol.upper(), expiry, str(chain_observed_at)],
+    )
+    updated = 0
+    for chain in chain_rows:
+        strike = as_float(chain.get("strike"))
+        option_type = str(chain.get("option_type") or "").lower()
+        if strike is None:
+            continue
+        liquidity = by_contract.get((strike, option_type))
+        if not liquidity:
+            continue
+        volume = as_int(liquidity.get("volume"))
+        open_interest = as_int(liquidity.get("open_interest") if liquidity.get("open_interest") is not None else liquidity.get("openInterest"))
+        if volume is None and open_interest is None:
+            continue
+        raw = parse_json_object(chain.get("raw"))
+        if volume is not None:
+            raw["volume"] = volume
+        if open_interest is not None:
+            raw["open_interest"] = open_interest
+            raw["openInterest"] = open_interest
+        last = as_float(liquidity.get("last"))
+        if last is not None:
+            raw.setdefault("last", last)
+        raw["liquidity_source"] = "yfinance"
+        raw["liquidity_observed_at"] = liquidity_observed_at
+        raw["liquidity_contract_symbol"] = liquidity.get("contract_symbol") or liquidity.get("contractSymbol")
+        con.execute(
+            """
+            UPDATE options_chain
+            SET raw = ?
+            WHERE symbol = ?
+              AND expiry = ?
+              AND strike = ?
+              AND option_type = ?
+              AND observed_at = ?
+              AND source = ?
+            """,
+            [
+                json_dumps(raw),
+                chain["symbol"],
+                chain["expiry"],
+                chain["strike"],
+                chain["option_type"],
+                chain["observed_at"],
+                chain["source"],
+            ],
+        )
+        updated += 1
+    return updated
 
 
 def store_yfinance_market_snapshot(con: Any, run_id: str, symbol: str, observed_at: str, info: dict[str, Any]) -> bool:
@@ -857,6 +1059,18 @@ def record_source_health(con: Any, source: str, status: str, detail: str, source
         """,
         [source, datetime.utcnow().isoformat(), status, detail, source_url],
     )
+
+
+def parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not value:
+        return {}
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
 
 
 def normalize_symbol(value: Any) -> str:

@@ -594,6 +594,7 @@ def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path,
     )
     calls: list[str] = []
     tradingview_symbols: list[str] | None = None
+    yfinance_symbols: list[str] | None = None
 
     def fake_update_tradingview_sources(_con: object, _config: object, **kwargs: object) -> dict[str, str]:
         nonlocal tradingview_symbols
@@ -602,10 +603,17 @@ def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path,
         tradingview_symbols = list(symbols) if isinstance(symbols, list) else None
         return {"status": "ok"}
 
+    def fake_update_yfinance_sources(_con: object, _config: object, **kwargs: object) -> dict[str, str]:
+        nonlocal yfinance_symbols
+        calls.append("yfinance")
+        symbols = kwargs.get("symbols")
+        yfinance_symbols = list(symbols) if isinstance(symbols, list) else None
+        return {"status": "ok"}
+
     monkeypatch.setattr(update_free_sources, "load_config", lambda _path=None: cfg)
     monkeypatch.setattr(update_free_sources.update_equity_data, "run", lambda _path=None: calls.append("equity") or {"status": "ok"})
     monkeypatch.setattr(update_free_sources, "update_tradingview_sources", fake_update_tradingview_sources)
-    monkeypatch.setattr(update_free_sources, "update_yfinance_sources", lambda _con, _config: calls.append("yfinance") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "update_yfinance_sources", fake_update_yfinance_sources)
     monkeypatch.setattr(update_free_sources, "run_all_analyses", lambda _con, _config: calls.append("analysis") or {"status": "ok"})
     monkeypatch.setattr(update_free_sources, "refresh_decision_read_models", lambda _con, _watchlist: calls.append("decision") or {"status": "ok"})
 
@@ -613,6 +621,7 @@ def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path,
 
     assert calls == ["decision", "equity", "tradingview", "decision", "yfinance", "analysis", "decision"]
     assert tradingview_symbols == ["TSLA", "NVDA"]
+    assert yfinance_symbols == ["TSLA", "NVDA"]
     assert result["preflight_decision_models"] == {"status": "ok"}
     assert result["post_tradingview_decision_models"] == {"status": "ok"}
     assert result["equity_data"] == {"status": "ok"}

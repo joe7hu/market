@@ -33,7 +33,7 @@ def run(
     with db(config.database.duckdb_path) as con:
         tradingview_result = update_tradingview_sources(con, config, symbols=symbols) if tradingview else {"status": "skipped"}
         post_tradingview_decision_result = refresh_decision_read_models(con, config.watchlist)
-        yfinance_result = update_yfinance_sources(con, config) if yfinance else {"status": "skipped"}
+        yfinance_result = update_yfinance_sources(con, config, symbols=symbols) if yfinance else {"status": "skipped"}
         analysis_result = run_all_analyses(con, config) if analyses else {"status": "skipped"}
         decision_result = refresh_decision_read_models(con, config.watchlist)
     result = {

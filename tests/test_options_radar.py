@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.free_sources import store_options_chain
+from investment_panel.core.free_sources import store_options_chain, store_yfinance_options_liquidity
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     StrategyPromotionError,
@@ -89,6 +89,63 @@ def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_p
     assert "missing_open_interest" in event["trigger_reason"]
     assert "missing_volume" in event["trigger_reason"]
     assert trades == []
+
+
+def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp_path) -> None:
+    db_path = tmp_path / "radar-yfinance-liquidity.duckdb"
+    init_db(db_path)
+    chain_observed_at = "2026-06-02T20:00:00Z"
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', ?, 100, 1, 1, 'USD', 'tradingview', '{}')", [chain_observed_at])
+        store_options_chain(
+            con,
+            "RBLX",
+            chain_observed_at,
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:RBLX270918C120"),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:RBLX270918C180"),
+            ],
+        )
+        updated = store_yfinance_options_liquidity(
+            con,
+            "RBLX",
+            "2027-09-18",
+            "2026-06-02T20:05:00Z",
+            chain_observed_at,
+            [
+                {
+                    "expiry": "2027-09-18",
+                    "strike": 120,
+                    "type": "call",
+                    "volume": 25,
+                    "openInterest": 250,
+                    "contract_symbol": "RBLX270918C00120000",
+                },
+                {
+                    "expiry": "2027-09-18",
+                    "strike": 180,
+                    "type": "call",
+                    "volume": 25,
+                    "openInterest": 250,
+                    "contract_symbol": "RBLX270918C00180000",
+                },
+            ],
+        )
+
+        result = refresh_options_radar(con, ["RBLX"])
+        snapshot = query_rows(con, "SELECT volume, open_interest FROM option_snapshot WHERE contract_id = 'OPRA:RBLX270918C120'")[0]
+        event = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:RBLX270918C120'")[0]
+        trades = query_rows(con, "SELECT * FROM shadow_trade")
+
+    assert updated == 2
+    assert snapshot == {"volume": 25, "open_interest": 250}
+    assert result["shadow_trades"] == 1
+    assert event["state"] == "FIRE"
+    assert "open_interest_supported" in event["trigger_reason"]
+    assert "volume_seen" in event["trigger_reason"]
+    assert len(trades) == 1
 
 
 def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
