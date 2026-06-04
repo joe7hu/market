@@ -140,7 +140,9 @@ def agent_thesis_prompt(ticker: str) -> str:
         f"Generate a structured options thesis for {ticker}. "
         "Return JSON only with keys: ticker, bull_target_price, bull_target_date, "
         "base_target_price, core_thesis, required_proofs, catalysts, invalidation, "
-        "bear_case, confidence, evidence_refs. Do not recommend or execute trades."
+        "bear_case, confidence, evidence_refs. Agents create hypotheses only; "
+        "deterministic code validates proofs, catalysts, invalidation, options math, and state. "
+        "Do not recommend or execute trades."
     )
 
 
@@ -285,6 +287,7 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
     )
     count = 0
     for thesis in rows:
+        thesis = decode_json_fields(thesis, ("required_proofs", "invalidation_conditions", "catalysts", "evidence_refs", "raw"))
         candidate = first_row(
             con,
             """
@@ -303,14 +306,54 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
             [thesis["ticker"]],
             ("raw",),
         )
-        validation = build_agent_thesis_validation(thesis, candidate, stock)
+        source_signals = query_decoded(
+            con,
+            """
+            SELECT source_item_id, source_id, observed_at, signal_type, sentiment,
+                   direction, confidence, thesis, antithesis, catalysts, risks,
+                   invalidation, evidence_refs
+            FROM ticker_source_signals
+            WHERE symbol = ?
+            ORDER BY observed_at DESC, confidence DESC NULLS LAST
+            LIMIT 12
+            """,
+            [thesis["ticker"]],
+            ("catalysts", "risks", "evidence_refs"),
+        )
+        dated_catalysts = query_decoded(
+            con,
+            """
+            SELECT id, event_date, event, expected_impact, source,
+                   verification_status, source_url, raw
+            FROM catalysts
+            WHERE symbol = ?
+            ORDER BY event_date ASC NULLS LAST
+            LIMIT 8
+            """,
+            [thesis["ticker"]],
+            ("raw",),
+        )
+        news = query_decoded(
+            con,
+            """
+            SELECT id, published_at, provider, title, related_symbols, link, source
+            FROM news_items
+            WHERE contains(CAST(related_symbols AS VARCHAR), ?)
+            ORDER BY published_at DESC
+            LIMIT 8
+            """,
+            [thesis["ticker"]],
+            ("related_symbols",),
+        )
+        validation = build_agent_thesis_validation(thesis, candidate, stock, source_signals, dated_catalysts, news)
         con.execute(
             """
             INSERT OR REPLACE INTO agent_thesis_validation
             (validation_id, thesis_id, ticker, validated_at, state, reason,
              option_still_valid, stock_progress, iv_status, candidate_state,
+             proof_status, catalyst_status, invalidation_status, evidence_status,
              evidence_refs, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 validation["validation_id"],
@@ -323,6 +366,10 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
                 validation["stock_progress"],
                 validation["iv_status"],
                 validation["candidate_state"],
+                validation["proof_status"],
+                validation["catalyst_status"],
+                validation["invalidation_status"],
+                validation["evidence_status"],
                 json_dumps(validation["evidence_refs"]),
                 json_dumps(validation["raw"]),
             ],
@@ -331,7 +378,14 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
     return count
 
 
-def build_agent_thesis_validation(thesis: dict[str, Any], candidate: dict[str, Any] | None, stock: dict[str, Any] | None) -> dict[str, Any]:
+def build_agent_thesis_validation(
+    thesis: dict[str, Any],
+    candidate: dict[str, Any] | None,
+    stock: dict[str, Any] | None,
+    source_signals: list[dict[str, Any]] | None = None,
+    dated_catalysts: list[dict[str, Any]] | None = None,
+    news: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     ticker = str(thesis.get("ticker") or "").upper()
     raw_candidate = _json(candidate.get("raw")) if candidate else {}
     blockers = [str(item) for item in raw_candidate.get("blockers") or []]
@@ -343,31 +397,60 @@ def build_agent_thesis_validation(thesis: dict[str, Any], candidate: dict[str, A
     invalidation_price = _invalidation_price(invalidation)
     option_still_valid = candidate_state in {"FIRE", "SETUP", "WATCH"} and not hard_rejects
     iv_status = "overpriced" if any("iv" in item for item in [*blockers, *hard_rejects]) else "acceptable_or_unknown"
+    as_of_date = _date_value((candidate or {}).get("snapshot_time")) or _date_value((stock or {}).get("snapshot_time")) or date.today()
+    proof_check = _proof_check(_string_list(thesis.get("required_proofs")), source_signals or [], news or [])
+    catalyst_check = _catalyst_check(_catalyst_list(thesis.get("catalysts")), dated_catalysts or [], source_signals or [], news or [], as_of_date)
+    evidence_status = _evidence_status(_list_value(thesis.get("evidence_refs")), source_signals or [], news or [])
+    invalidation_status = "missing"
     if price is not None and invalidation_price is not None and price <= invalidation_price:
         state = "invalidated"
         reason = "Latest price is through the agent thesis invalidation level."
         stock_progress = "invalidation_breached"
+        invalidation_status = "breached"
     elif candidate_state == "REJECT" or hard_rejects:
         state = "weakening"
         reason = f"Latest deterministic candidate state is {candidate_state}."
         stock_progress = "candidate_rejected"
+        invalidation_status = "clear" if invalidation_price is not None else "missing"
     elif price is not None and base_target is not None and price >= base_target:
         state = "validated"
         reason = "Latest price is at or above the agent base target."
         stock_progress = "base_target_reached"
+        invalidation_status = "clear" if invalidation_price is not None else "missing"
     elif option_still_valid:
         state = "pending"
         reason = "Thesis remains pending; deterministic option gates have not invalidated it."
         stock_progress = "tracking"
+        invalidation_status = "clear" if invalidation_price is not None else "missing"
     else:
         state = "weakening"
         reason = "Thesis lacks a current valid option candidate."
         stock_progress = "option_context_missing"
+        invalidation_status = "clear" if invalidation_price is not None else "missing"
+    if proof_check["status"] == "missing":
+        reason = f"{reason} Required proof list is missing."
+    elif proof_check["status"] == "pending" and state == "validated":
+        state = "pending"
+        reason = "Price reached the base target, but required proofs are not source-backed yet."
     evidence_refs = _list_value(thesis.get("evidence_refs"))
     if candidate:
         evidence_refs.append({"type": "candidate_event", "id": candidate.get("event_id")})
+    for signal in (source_signals or [])[:3]:
+        if signal.get("source_item_id"):
+            evidence_refs.append({"type": "ticker_source_signal", "id": signal.get("source_item_id")})
+    for catalyst in (dated_catalysts or [])[:2]:
+        if catalyst.get("id"):
+            evidence_refs.append({"type": "catalyst", "id": catalyst.get("id")})
     return {
-        "validation_id": stable_id("agent_thesis_validation", thesis.get("thesis_id"), candidate_state, price, invalidation_price),
+        "validation_id": stable_id(
+            "agent_thesis_validation",
+            thesis.get("thesis_id"),
+            candidate_state,
+            price,
+            invalidation_price,
+            proof_check["status"],
+            catalyst_check["status"],
+        ),
         "thesis_id": thesis.get("thesis_id"),
         "ticker": ticker,
         "validated_at": datetime.utcnow().isoformat(),
@@ -377,11 +460,19 @@ def build_agent_thesis_validation(thesis: dict[str, Any], candidate: dict[str, A
         "stock_progress": stock_progress,
         "iv_status": iv_status,
         "candidate_state": candidate_state,
+        "proof_status": proof_check["status"],
+        "catalyst_status": catalyst_check["status"],
+        "invalidation_status": invalidation_status,
+        "evidence_status": evidence_status,
         "evidence_refs": evidence_refs,
         "raw": {
             "price": price,
             "base_target_price": base_target,
             "invalidation_price": invalidation_price,
+            "as_of_date": as_of_date.isoformat(),
+            "proof_check": proof_check,
+            "catalyst_check": catalyst_check,
+            "evidence_status": evidence_status,
             "blockers": blockers,
             "hard_rejects": hard_rejects,
             "authority": "deterministic_validation_only",
@@ -424,6 +515,11 @@ def _json(value: Any) -> dict[str, Any]:
 
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
+        decoded = _json_or_value(value)
+        if isinstance(decoded, list):
+            return _string_list(decoded)
+        if decoded != value:
+            return _string_list(decoded)
         return [value.strip()] if value.strip() else []
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -431,6 +527,10 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _catalyst_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        decoded = _json_or_value(value)
+        if decoded != value:
+            return _catalyst_list(decoded)
     if not isinstance(value, list):
         return []
     catalysts: list[dict[str, Any]] = []
@@ -449,6 +549,127 @@ def _catalyst_summary(catalysts: list[dict[str, Any]]) -> str:
         watch = catalyst.get("what_to_watch") or catalyst.get("summary") or catalyst.get("description")
         summaries.append(f"{label}: {watch}" if watch else str(label))
     return "; ".join(summaries)
+
+
+def _proof_check(required_proofs: list[str], source_signals: list[dict[str, Any]], news: list[dict[str, Any]]) -> dict[str, Any]:
+    if not required_proofs:
+        return {"status": "missing", "matched": [], "missing": [], "match_count": 0, "required_count": 0}
+    corpus = _evidence_corpus(source_signals, news)
+    matched: list[str] = []
+    missing: list[str] = []
+    for proof in required_proofs:
+        tokens = _content_tokens(proof)
+        if tokens and any(token in corpus for token in tokens):
+            matched.append(proof)
+        else:
+            missing.append(proof)
+    if len(matched) == len(required_proofs):
+        status = "supported"
+    elif matched:
+        status = "partial"
+    else:
+        status = "pending"
+    return {
+        "status": status,
+        "matched": matched,
+        "missing": missing,
+        "match_count": len(matched),
+        "required_count": len(required_proofs),
+    }
+
+
+def _catalyst_check(
+    thesis_catalysts: list[dict[str, Any]],
+    dated_catalysts: list[dict[str, Any]],
+    source_signals: list[dict[str, Any]],
+    news: list[dict[str, Any]],
+    as_of_date: date,
+) -> dict[str, Any]:
+    if not thesis_catalysts:
+        return {"status": "missing", "matched": [], "scheduled": []}
+    scheduled = [
+        catalyst
+        for catalyst in dated_catalysts
+        if (event_date := _date_value(catalyst.get("event_date"))) is not None and event_date >= as_of_date
+    ]
+    if scheduled:
+        return {
+            "status": "scheduled",
+            "matched": [str(item.get("event") or item.get("event_kind") or item.get("id")) for item in scheduled[:3]],
+            "scheduled": [str(item.get("event_date")) for item in scheduled[:3]],
+        }
+    corpus = _evidence_corpus(source_signals, news)
+    matched: list[str] = []
+    for catalyst in thesis_catalysts:
+        text = " ".join(str(catalyst.get(key) or "") for key in ("type", "expected_window", "what_to_watch", "summary", "description"))
+        tokens = _content_tokens(text)
+        if tokens and any(token in corpus for token in tokens):
+            matched.append(text.strip())
+    if matched:
+        return {"status": "source_confirmed", "matched": matched[:3], "scheduled": []}
+    return {"status": "pending", "matched": [], "scheduled": []}
+
+
+def _evidence_status(evidence_refs: list[Any], source_signals: list[dict[str, Any]], news: list[dict[str, Any]]) -> str:
+    if evidence_refs and source_signals:
+        return "source_backed"
+    if evidence_refs:
+        return "agent_cited"
+    if source_signals:
+        return "source_context_available"
+    if news:
+        return "news_only"
+    return "missing"
+
+
+def _evidence_corpus(source_signals: list[dict[str, Any]], news: list[dict[str, Any]]) -> set[str]:
+    texts: list[str] = []
+    for signal in source_signals:
+        texts.extend(
+            [
+                str(signal.get("signal_type") or ""),
+                str(signal.get("thesis") or ""),
+                str(signal.get("antithesis") or ""),
+                str(signal.get("invalidation") or ""),
+                json.dumps(signal.get("catalysts") or ""),
+                json.dumps(signal.get("risks") or ""),
+            ]
+        )
+    for item in news:
+        texts.extend([str(item.get("title") or ""), str(item.get("provider") or ""), str(item.get("source") or "")])
+    return {token for text in texts for token in _content_tokens(text)}
+
+
+STOP_WORDS = {
+    "about",
+    "after",
+    "before",
+    "below",
+    "consecutive",
+    "expected",
+    "growth",
+    "improve",
+    "improves",
+    "next",
+    "quarter",
+    "quarters",
+    "recover",
+    "recovers",
+    "related",
+    "should",
+    "stock",
+    "target",
+    "watch",
+    "without",
+}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text).lower())
+        if len(token) >= 4 and token not in STOP_WORDS
+    }
 
 
 def _invalidation_price(invalidation: list[str]) -> float | None:
@@ -484,6 +705,23 @@ def _date_string(value: Any) -> str | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
     except ValueError:
         return text
+
+
+def _date_value(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
 
 
 def _number(value: Any) -> float | None:

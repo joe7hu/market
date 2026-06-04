@@ -3151,6 +3151,7 @@ def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
         """
         SELECT validation_id, thesis_id, ticker, validated_at, state, reason,
                option_still_valid, stock_progress, iv_status, candidate_state,
+               proof_status, catalyst_status, invalidation_status, evidence_status,
                evidence_refs, raw
         FROM agent_thesis_validation
         ORDER BY validated_at DESC, ticker

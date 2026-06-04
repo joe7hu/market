@@ -716,6 +716,10 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
             <Head>Option</Head>
             <Head>Stock Progress</Head>
             <Head>IV</Head>
+            <Head>Proofs</Head>
+            <Head>Catalysts</Head>
+            <Head>Invalidation</Head>
+            <Head>Evidence</Head>
             <Head>Reason</Head>
           </tr>
         </thead>
@@ -731,6 +735,10 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
                 <Cell>{displayField(row, ["option_still_valid"])}</Cell>
                 <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["stock_progress"])}</Truncated></Cell>
                 <Cell className="max-w-[200px]"><Truncated>{displayField(row, ["iv_status"])}</Truncated></Cell>
+                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["proof_status"]))}>{titleLabel(displayField(row, ["proof_status"], "unknown"))}</StatusBadge></Cell>
+                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["catalyst_status"]))}>{titleLabel(displayField(row, ["catalyst_status"], "unknown"))}</StatusBadge></Cell>
+                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["invalidation_status"]))}>{titleLabel(displayField(row, ["invalidation_status"], "unknown"))}</StatusBadge></Cell>
+                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["evidence_status"]))}>{titleLabel(displayField(row, ["evidence_status"], "unknown"))}</StatusBadge></Cell>
                 <Cell className="max-w-[420px]"><Truncated>{displayField(row, ["reason"])}</Truncated></Cell>
               </tr>
             );
@@ -1034,6 +1042,14 @@ function thesisStateTone(state: string): Tone {
   if (normalized.includes("validated")) return "good";
   if (normalized.includes("weakening")) return "warn";
   return "info";
+}
+
+function validationStatusTone(status: string): Tone {
+  const normalized = status.toLowerCase();
+  if (["supported", "scheduled", "source_confirmed", "clear", "source_backed"].includes(normalized)) return "good";
+  if (["partial", "pending", "agent_cited", "source_context_available", "news_only"].includes(normalized)) return "warn";
+  if (["breached", "missing"].includes(normalized)) return "bad";
+  return "muted";
 }
 
 function attributionTone(label: string): Tone {

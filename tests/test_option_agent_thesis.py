@@ -31,6 +31,33 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     with db(db_path) as con:
         seed_fire_candidate(con)
         refresh_options_radar(con, ["TSLA"])
+        con.execute(
+            """
+            INSERT INTO ticker_source_signals
+            (id, source_item_id, source_id, symbol, observed_at, signal_type,
+             sentiment, direction, confidence, thesis, antithesis, catalysts,
+             risks, invalidation, evidence_refs, needs_market_context, raw)
+            VALUES (
+             'sig-tsla-proof', 'source-tsla-proof', 'test_research', 'TSLA',
+             '2026-06-03T12:00:00Z', 'earnings', 'positive', 'bullish', 0.9,
+             'gross margin stabilizes while deliveries recover into the next report',
+             'pricing pressure remains the bear case',
+             '[{"type":"earnings","what_to_watch":"margins and delivery guide"}]',
+             '["pricing pressure"]',
+             'stock breaks below $80 without recovery',
+             '[{"type":"source_item","id":"source-tsla-proof"}]',
+             true,
+             '{}'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO catalysts
+            (id, symbol, event_date, event, expected_impact, source, verification_status, raw)
+            VALUES ('cat-tsla-earnings', 'TSLA', '2026-06-15', 'earnings', 'high', 'test', 'confirmed', '{}')
+            """
+        )
 
         thesis_id = upsert_agent_thesis(
             con,
@@ -61,6 +88,10 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     assert validation["state"] == "validated"
     assert validation["candidate_state"] == "FIRE"
     assert validation["option_still_valid"] is True
+    assert validation["proof_status"] == "supported"
+    assert validation["catalyst_status"] == "scheduled"
+    assert validation["invalidation_status"] == "clear"
+    assert validation["evidence_status"] == "source_backed"
 
 
 def test_agent_thesis_requires_structured_hypothesis_fields(tmp_path) -> None:

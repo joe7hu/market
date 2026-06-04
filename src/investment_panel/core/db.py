@@ -472,6 +472,10 @@ CREATE TABLE IF NOT EXISTS agent_thesis_validation (
     stock_progress TEXT,
     iv_status TEXT,
     candidate_state TEXT,
+    proof_status TEXT,
+    catalyst_status TEXT,
+    invalidation_status TEXT,
+    evidence_status TEXT,
     evidence_refs JSON,
     raw JSON
 );
@@ -1270,6 +1274,15 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
     }.items():
         if column not in catalyst_columns:
             con.execute(f"ALTER TABLE catalysts ADD COLUMN {column} {column_type}")
+    thesis_validation_columns = {row[1] for row in con.execute("PRAGMA table_info('agent_thesis_validation')").fetchall()}
+    for column, column_type in {
+        "proof_status": "TEXT",
+        "catalyst_status": "TEXT",
+        "invalidation_status": "TEXT",
+        "evidence_status": "TEXT",
+    }.items():
+        if column not in thesis_validation_columns:
+            con.execute(f"ALTER TABLE agent_thesis_validation ADD COLUMN {column} {column_type}")
     for table, columns_to_add in {
         "discovered_universe": {
             "latest_observed_at": "TIMESTAMP",
