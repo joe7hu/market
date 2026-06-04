@@ -60,6 +60,7 @@ def refresh_options_radar(
     candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
     candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
     transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
+    exited_rows = apply_shadow_trade_exits(con, strategy_version=strategy_version)
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
@@ -80,6 +81,7 @@ def refresh_options_radar(
         "candidate_event_marks": candidate_mark_rows,
         "candidate_event_attributions": candidate_attribution_rows,
         "radar_state_transitions": transition_rows,
+        "shadow_trades_exited": exited_rows,
         "option_attributions": attribution_rows,
         "missed_winners": missed_rows,
         "strategy_mutation_proposals": proposal_rows,
@@ -609,15 +611,30 @@ def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
     rows = query_rows(
         con,
         """
-        SELECT event_id, snapshot_time, premium_fill_assumption
-        FROM candidate_event
-        WHERE strategy_version = ? AND state = 'FIRE'
-        ORDER BY snapshot_time
+        WITH latest_validation AS (
+            SELECT *
+            FROM agent_thesis_validation
+            QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY validated_at DESC) = 1
+        )
+        SELECT
+            ce.event_id,
+            ce.snapshot_time,
+            ce.premium_fill_assumption,
+            ce.ticker,
+            lv.state AS thesis_validation_state,
+            lv.invalidation_status AS thesis_invalidation_status,
+            lv.red_team_status AS thesis_red_team_status
+        FROM candidate_event ce
+        LEFT JOIN latest_validation lv ON lv.ticker = ce.ticker
+        WHERE ce.strategy_version = ? AND ce.state = 'FIRE'
+        ORDER BY ce.snapshot_time
         """,
         [strategy_version],
     )
     count = 0
     for row in rows:
+        if _thesis_validation_blocks_entry(row):
+            continue
         trade_id = stable_id("shadow_trade", row["event_id"])
         before = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
         con.execute(
@@ -647,6 +664,72 @@ def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
         )
         after = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
         count += int(after) - int(before)
+    return count
+
+
+def apply_shadow_trade_exits(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    rows = query_rows(
+        con,
+        """
+        WITH latest_exit AS (
+            SELECT
+                transition_id,
+                snapshot_time,
+                state,
+                trigger_reason,
+                trade_id,
+                mark_id,
+                row_number() OVER (
+                    PARTITION BY trade_id
+                    ORDER BY snapshot_time DESC, evaluated_at DESC
+                ) AS rn
+            FROM radar_state_transition
+            WHERE strategy_version = ?
+                  AND trade_id IS NOT NULL
+                  AND state IN ('EXIT', 'INVALIDATED')
+        )
+        SELECT
+            st.trade_id,
+            st.entry_price_assumption,
+            st.raw,
+            latest_exit.transition_id,
+            latest_exit.snapshot_time,
+            latest_exit.state,
+            latest_exit.trigger_reason,
+            stm.mark_price
+        FROM latest_exit
+        JOIN shadow_trade st ON st.trade_id = latest_exit.trade_id
+        LEFT JOIN shadow_trade_mark stm ON stm.mark_id = latest_exit.mark_id
+        WHERE latest_exit.rn = 1
+              AND COALESCE(st.status, 'open') = 'open'
+        """,
+        [strategy_version],
+    )
+    count = 0
+    for row in rows:
+        exit_time = _iso(row.get("snapshot_time"))
+        exit_price = _number(row.get("mark_price"))
+        if exit_price is None:
+            exit_price = _number(row.get("entry_price_assumption"))
+        raw = {
+            **_json(row.get("raw")),
+            "exit_state": row.get("state"),
+            "exit_transition_id": row.get("transition_id"),
+            "exit_authority": "deterministic_radar_state",
+        }
+        con.execute(
+            """
+            UPDATE shadow_trade
+            SET exit_time = ?,
+                exit_price = ?,
+                status = 'closed',
+                exit_reason = ?,
+                raw = ?
+            WHERE trade_id = ?
+            """,
+            [exit_time, exit_price, row.get("trigger_reason"), json_dumps(raw), row.get("trade_id")],
+        )
+        count += 1
     return count
 
 
@@ -1273,7 +1356,26 @@ def build_radar_state(
         "candidate_blockers": raw_candidate.get("blockers") or [],
         "candidate_hard_rejects": raw_candidate.get("hard_rejects") or [],
     }
+    if thesis_validation:
+        evidence_refs.append({"type": "agent_thesis_validation", "id": thesis_validation.get("validation_id")})
+        raw.update(
+            {
+                "thesis_validation_state": str(thesis_validation.get("state") or "").lower() or None,
+                "thesis_invalidation_status": thesis_validation.get("invalidation_status"),
+                "thesis_red_team_status": thesis_validation.get("red_team_status"),
+                "thesis_proof_status": thesis_validation.get("proof_status"),
+                "thesis_catalyst_status": thesis_validation.get("catalyst_status"),
+            }
+        )
+    thesis_exit_reason = _thesis_exit_reason(thesis_validation)
     if not trade:
+        if thesis_exit_reason:
+            return {
+                "state": "INVALIDATED",
+                "trigger_reason": thesis_exit_reason,
+                "evidence_refs": evidence_refs,
+                "raw": raw,
+            }
         return {
             "state": candidate_state,
             "trigger_reason": str(candidate.get("trigger_reason") or candidate_state.lower()),
@@ -1286,8 +1388,6 @@ def build_radar_state(
     snapshot_time = _iso(candidate.get("snapshot_time"))
     if mark:
         evidence_refs.append({"type": "shadow_trade_mark", "id": mark.get("mark_id")})
-    if thesis_validation:
-        evidence_refs.append({"type": "agent_thesis_validation", "id": thesis_validation.get("validation_id")})
     validation_state = str((thesis_validation or {}).get("state") or "").lower()
     current_return = _number((mark or {}).get("current_return"))
     max_drawdown = _number((mark or {}).get("max_drawdown_since_alert"))
@@ -1306,8 +1406,8 @@ def build_radar_state(
     )
     if snapshot_time == entry_time:
         return {"state": "FIRE", "trigger_reason": "premium_triggered_shadow_entry", "evidence_refs": evidence_refs, "raw": raw}
-    if validation_state == "invalidated":
-        return {"state": "INVALIDATED", "trigger_reason": "agent_thesis_invalidated", "evidence_refs": evidence_refs, "raw": raw}
+    if thesis_exit_reason:
+        return {"state": "INVALIDATED", "trigger_reason": thesis_exit_reason, "evidence_refs": evidence_refs, "raw": raw}
     if current_return is not None and current_return <= -0.60:
         return {"state": "EXIT", "trigger_reason": "option_loss_60pct", "evidence_refs": evidence_refs, "raw": raw}
     if max_drawdown is not None and max_drawdown <= -0.60:
@@ -2027,6 +2127,29 @@ def promote_strategy_mutation(con: Any, proposal_id: str, *, approved_by: str | 
         ],
     )
     return str(proposal["proposed_strategy_version"])
+
+
+def _thesis_validation_blocks_entry(row: dict[str, Any]) -> bool:
+    return _thesis_exit_reason(
+        {
+            "state": row.get("thesis_validation_state"),
+            "invalidation_status": row.get("thesis_invalidation_status"),
+            "red_team_status": row.get("thesis_red_team_status"),
+        }
+    ) is not None
+
+
+def _thesis_exit_reason(thesis_validation: dict[str, Any] | None) -> str | None:
+    if not thesis_validation:
+        return None
+    validation_state = str(thesis_validation.get("state") or "").lower()
+    invalidation_status = str(thesis_validation.get("invalidation_status") or "").lower()
+    red_team_status = str(thesis_validation.get("red_team_status") or "").lower()
+    if validation_state == "invalidated" or invalidation_status == "breached":
+        return "agent_thesis_invalidated"
+    if red_team_status == "hard_risk_triggered":
+        return "hard_red_team_risk"
+    return None
 
 
 def _attribution_label(

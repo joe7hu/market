@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.free_sources import store_options_chain, store_yfinance_options_liquidity
+from investment_panel.core.option_agent_thesis import upsert_agent_thesis
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     StrategyPromotionError,
@@ -261,6 +263,103 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
     assert setup_cohort["good_convexity_rate"] == 1.0
     assert market_cohort["qqq_above_200d_rate"] == 1.0
     assert cohorts
+
+
+def test_hard_red_team_validation_invalidates_and_closes_shadow_trade(tmp_path) -> None:
+    db_path = tmp_path / "radar-red-team-exit.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "TSLA", slope=0.12)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
+            ],
+        )
+        first = refresh_options_radar(con, ["TSLA"])
+        assert first["shadow_trades"] == 1
+
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T20:00:00Z', 103, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-03T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 3.9, 4.1, 0.24, 0.29, "OPRA:TSLA270918C120", volume=30, open_interest=260),
+                option_row("2027-09-18", 180, "call", 7.0, 8.0, 0.50, 0.30, "OPRA:TSLA270918C180", volume=30, open_interest=260),
+            ],
+        )
+        con.execute(
+            """
+            INSERT INTO equity_fundamentals
+            VALUES ('TSLA', '2026-03-31', '2026-05-01', '10-Q', ?, 'https://example.com/tsla')
+            """,
+            [
+                json.dumps(
+                    {
+                        "free_cash_flow": -250000000,
+                        "cash": 50000000,
+                        "total_debt": 600000000,
+                        "assets": 1000000000,
+                        "liabilities": 800000000,
+                    }
+                ),
+            ],
+        )
+        upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "created_at": "2026-06-03T21:00:00Z",
+                "bull_target_price": 180,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 95,
+                "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
+                "required_proofs": ["gross margin stabilizes"],
+                "catalysts": [{"type": "earnings", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Cash burn and balance sheet pressure can overwhelm the rebound thesis.",
+                "confidence": 55,
+                "evidence_refs": [{"type": "source_signal", "id": "agent-red-team"}],
+            },
+        )
+
+        result = refresh_options_radar(con, ["TSLA"])
+        transitions = query_rows(
+            con,
+            """
+            SELECT state, previous_state, trigger_reason
+            FROM radar_state_transition
+            WHERE contract_id = 'OPRA:TSLA270918C120'
+            ORDER BY snapshot_time
+            """,
+        )
+        trades = query_rows(con, "SELECT status, exit_time, exit_price, exit_reason, raw FROM shadow_trade ORDER BY entry_time")
+        validation = query_rows(con, "SELECT state, red_team_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
+
+    assert result["agent_thesis_validations"] == 1
+    assert result["shadow_trades"] == 0
+    assert result["shadow_trades_exited"] == 1
+    assert validation == {"state": "pending", "red_team_status": "hard_risk_triggered"}
+    assert transitions == [
+        {"state": "FIRE", "previous_state": None, "trigger_reason": "premium_triggered_shadow_entry"},
+        {"state": "INVALIDATED", "previous_state": "FIRE", "trigger_reason": "hard_red_team_risk"},
+    ]
+    assert len(trades) == 1
+    assert trades[0]["status"] == "closed"
+    assert str(trades[0]["exit_time"]).startswith("2026-06-03")
+    assert trades[0]["exit_price"] == 4.0
+    assert trades[0]["exit_reason"] == "hard_red_team_risk"
+    assert "deterministic_radar_state" in str(trades[0]["raw"])
 
 
 def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposal(tmp_path) -> None:
