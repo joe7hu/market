@@ -12,6 +12,7 @@ from investment_panel.core.db import db, init_db, json_dumps, query_rows
 from investment_panel.jobs import (
     daily_screen,
     full_market_refresh,
+    refresh_options_radar,
     refresh_decision_models,
     update_arco_data,
     update_disclosures,
@@ -30,6 +31,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "daily_screen": lambda config_path: daily_screen.run(config_path, online_check=False),
     "update_arco_data": lambda config_path: update_arco_data.run(config_path),
     "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
+    "refresh_options_radar": lambda config_path: refresh_options_radar.run(config_path),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     "update_disclosures": lambda config_path: update_disclosures.run(config_path, online_check=False, max_filings=3, fetch_holdings=False),
     "update_event_calendar": lambda config_path: update_event_calendar.run(config_path),

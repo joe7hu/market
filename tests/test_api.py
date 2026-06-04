@@ -166,6 +166,14 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     assert "allowlisted" in response.text
 
 
+def test_refresh_jobs_exposes_options_radar_job() -> None:
+    client = TestClient(app)
+    response = client.get("/api/refresh-jobs")
+
+    assert response.status_code == 200
+    assert "refresh_options_radar" in response.json()["allowlist"]
+
+
 def test_local_write_guard_allows_private_lan_clients() -> None:
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))

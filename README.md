@@ -44,6 +44,7 @@ uv run python -m investment_panel.jobs.update_crypto_data --config config.yaml
 uv run python -m investment_panel.jobs.update_arco_data --config config.yaml
 uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --online-check
 uv run python -m investment_panel.jobs.update_free_sources --config config.yaml
+uv run python -m investment_panel.jobs.refresh_options_radar --config config.yaml
 uv run python -m investment_panel.jobs.update_event_calendar --config config.yaml
 uv run python -m investment_panel.jobs.snapshot_database --config config.yaml
 uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
@@ -68,8 +69,9 @@ documented in [docs/trader-disclosure-pipeline.md](docs/trader-disclosure-pipeli
 
 The broad daily refresh workflow is documented in
 [docs/full-market-refresh.md](docs/full-market-refresh.md). It coordinates
-Arco import, daily screening, free-source refresh, disclosures, event calendar,
-analyses, and the DB snapshot before the decision desk reads the data.
+Arco import, daily screening, free-source refresh, deterministic options-radar
+validation, broker context, disclosures, event calendar, analyses, and the DB
+snapshot before the decision desk reads the data.
 This workflow should run from the canonical `mini1.local` checkout at
 `/Users/joehu/proj/market`, not from temporary or topic-specific worktrees.
 

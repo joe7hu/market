@@ -45,13 +45,21 @@ http://192.168.50.197:8000/api/status
    `source_registry`, `source_runs`, `source_items`, and
    `ticker_source_signals`, then promote source-discovered tickers to
    refreshable instruments with explicit market-context blockers.
-4. `update_disclosures`: refresh public disclosures, official House filings,
+4. `options_radar`: materialize the deterministic 10x options radar from the
+   refreshed option/stock rows: point-in-time snapshots, 10x math, feature
+   scores, candidate events, shadow-trade marks, attribution, state
+   transitions, missed-winner events, cohort results, and agent work queues.
+   This is also exposed as the standalone `refresh_options_radar` refresh job
+   for local reruns after option-source changes.
+5. `update_broker_sources`: refresh read-only broker account, position, and
+   recommendation context.
+6. `update_disclosures`: refresh public disclosures, official House filings,
    configured 13F trackers, disclosure symbol prices, and trader replicas.
    Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
    a heavier 13F holdings refresh is intended.
-5. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
+7. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
    events.
-6. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
+8. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
 
 The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
 Each underlying job still writes its own status file.
@@ -85,6 +93,11 @@ After a successful refresh:
 - `/api/tickers/{symbol}/decision-snapshot` explains action grade, source
   cluster, freshness, decision basis, blocking gates, portfolio impact, and
   invalidation.
+- `/api/panel-snapshot?scope=options-radar` includes nonempty radar tables when
+  option chains exist: `option_snapshot`, `option_features`, `stock_features`,
+  `candidate_event`, `candidate_event_mark`, `candidate_event_attribution`,
+  `shadow_trade`, `radar_state_transition`, `missed_winner_event`, and
+  strategy validation/proposal tables.
 
 ## Suggested Daily Schedule
 
