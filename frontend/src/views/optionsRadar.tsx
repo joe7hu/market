@@ -437,7 +437,7 @@ function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenT
 
   return (
     <DataTableFrame title={<SectionTitle title="Missed Winners" count={rows.length} />}>
-      <table className="w-full min-w-[1040px] text-sm">
+      <table className="w-full min-w-[1160px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
@@ -719,6 +719,7 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
             <Head>Proofs</Head>
             <Head>Catalysts</Head>
             <Head>Invalidation</Head>
+            <Head>Red Team</Head>
             <Head>Evidence</Head>
             <Head>Reason</Head>
           </tr>
@@ -738,6 +739,7 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
                 <Cell><StatusBadge tone={validationStatusTone(textField(row, ["proof_status"]))}>{titleLabel(displayField(row, ["proof_status"], "unknown"))}</StatusBadge></Cell>
                 <Cell><StatusBadge tone={validationStatusTone(textField(row, ["catalyst_status"]))}>{titleLabel(displayField(row, ["catalyst_status"], "unknown"))}</StatusBadge></Cell>
                 <Cell><StatusBadge tone={validationStatusTone(textField(row, ["invalidation_status"]))}>{titleLabel(displayField(row, ["invalidation_status"], "unknown"))}</StatusBadge></Cell>
+                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{titleLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge></Cell>
                 <Cell><StatusBadge tone={validationStatusTone(textField(row, ["evidence_status"]))}>{titleLabel(displayField(row, ["evidence_status"], "unknown"))}</StatusBadge></Cell>
                 <Cell className="max-w-[420px]"><Truncated>{displayField(row, ["reason"])}</Truncated></Cell>
               </tr>
@@ -1047,8 +1049,8 @@ function thesisStateTone(state: string): Tone {
 function validationStatusTone(status: string): Tone {
   const normalized = status.toLowerCase();
   if (["supported", "scheduled", "source_confirmed", "clear", "source_backed"].includes(normalized)) return "good";
-  if (["partial", "pending", "agent_cited", "source_context_available", "news_only"].includes(normalized)) return "warn";
-  if (["breached", "missing"].includes(normalized)) return "bad";
+  if (["partial", "pending", "agent_cited", "source_context_available", "news_only", "agent_only"].includes(normalized)) return "warn";
+  if (["breached", "missing", "hard_risk_triggered"].includes(normalized)) return "bad";
   return "muted";
 }
 

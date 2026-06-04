@@ -345,15 +345,27 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
             [thesis["ticker"]],
             ("related_symbols",),
         )
-        validation = build_agent_thesis_validation(thesis, candidate, stock, source_signals, dated_catalysts, news)
+        fundamentals = first_row(
+            con,
+            """
+            SELECT symbol, period_end, filing_date, form_type, metrics, source_url
+            FROM equity_fundamentals
+            WHERE symbol = ?
+            ORDER BY filing_date DESC NULLS LAST, period_end DESC NULLS LAST
+            LIMIT 1
+            """,
+            [thesis["ticker"]],
+            ("metrics",),
+        )
+        validation = build_agent_thesis_validation(thesis, candidate, stock, source_signals, dated_catalysts, news, fundamentals)
         con.execute(
             """
             INSERT OR REPLACE INTO agent_thesis_validation
             (validation_id, thesis_id, ticker, validated_at, state, reason,
              option_still_valid, stock_progress, iv_status, candidate_state,
              proof_status, catalyst_status, invalidation_status, evidence_status,
-             evidence_refs, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             red_team_status, red_team_flags, evidence_refs, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 validation["validation_id"],
@@ -370,6 +382,8 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
                 validation["catalyst_status"],
                 validation["invalidation_status"],
                 validation["evidence_status"],
+                validation["red_team_status"],
+                json_dumps(validation["red_team_flags"]),
                 json_dumps(validation["evidence_refs"]),
                 json_dumps(validation["raw"]),
             ],
@@ -385,6 +399,7 @@ def build_agent_thesis_validation(
     source_signals: list[dict[str, Any]] | None = None,
     dated_catalysts: list[dict[str, Any]] | None = None,
     news: list[dict[str, Any]] | None = None,
+    fundamentals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ticker = str(thesis.get("ticker") or "").upper()
     raw_candidate = _json(candidate.get("raw")) if candidate else {}
@@ -401,6 +416,7 @@ def build_agent_thesis_validation(
     proof_check = _proof_check(_string_list(thesis.get("required_proofs")), source_signals or [], news or [])
     catalyst_check = _catalyst_check(_catalyst_list(thesis.get("catalysts")), dated_catalysts or [], source_signals or [], news or [], as_of_date)
     evidence_status = _evidence_status(_list_value(thesis.get("evidence_refs")), source_signals or [], news or [])
+    red_team_check = _red_team_check(thesis, candidate, stock, source_signals or [], news or [], fundamentals)
     invalidation_status = "missing"
     if price is not None and invalidation_price is not None and price <= invalidation_price:
         state = "invalidated"
@@ -450,6 +466,7 @@ def build_agent_thesis_validation(
             invalidation_price,
             proof_check["status"],
             catalyst_check["status"],
+            red_team_check["status"],
         ),
         "thesis_id": thesis.get("thesis_id"),
         "ticker": ticker,
@@ -464,6 +481,8 @@ def build_agent_thesis_validation(
         "catalyst_status": catalyst_check["status"],
         "invalidation_status": invalidation_status,
         "evidence_status": evidence_status,
+        "red_team_status": red_team_check["status"],
+        "red_team_flags": red_team_check["flags"],
         "evidence_refs": evidence_refs,
         "raw": {
             "price": price,
@@ -472,6 +491,7 @@ def build_agent_thesis_validation(
             "as_of_date": as_of_date.isoformat(),
             "proof_check": proof_check,
             "catalyst_check": catalyst_check,
+            "red_team_check": red_team_check,
             "evidence_status": evidence_status,
             "blockers": blockers,
             "hard_rejects": hard_rejects,
@@ -622,6 +642,131 @@ def _evidence_status(evidence_refs: list[Any], source_signals: list[dict[str, An
     return "missing"
 
 
+def _red_team_check(
+    thesis: dict[str, Any],
+    candidate: dict[str, Any] | None,
+    stock: dict[str, Any] | None,
+    source_signals: list[dict[str, Any]],
+    news: list[dict[str, Any]],
+    fundamentals: dict[str, Any] | None,
+) -> dict[str, Any]:
+    bear_case = str(thesis.get("bear_case") or "").strip()
+    if not bear_case:
+        return {"status": "missing", "flags": [], "source_matches": [], "hard_checks": [], "bear_case": ""}
+
+    raw_candidate = _json(candidate.get("raw")) if candidate else {}
+    blockers = [str(item) for item in raw_candidate.get("blockers") or []]
+    hard_rejects = [str(item) for item in raw_candidate.get("hard_rejects") or []]
+    candidate_reasons = [*blockers, *hard_rejects]
+    stock_raw = _json((stock or {}).get("raw"))
+    metrics = _json((fundamentals or {}).get("metrics"))
+    flags: list[dict[str, Any]] = []
+
+    for reason in candidate_reasons:
+        reason_text = reason.lower()
+        if any(token in reason_text for token in ("spread", "open_interest", "volume", "liquidity")):
+            flags.append({"type": "option_liquidity_risk", "evidence": reason})
+        if "iv" in reason_text:
+            flags.append({"type": "iv_overpricing_risk", "evidence": reason})
+        if "stock_below_50d" in reason_text or "rs_vs_qqq_20d_negative" in reason_text:
+            flags.append({"type": "technical_downtrend_risk", "evidence": reason})
+
+    price = _number((stock or {}).get("price"))
+    ma_50 = _number((stock or {}).get("ma_50"))
+    ma_200 = _number((stock or {}).get("ma_200"))
+    rs_20 = _number((stock or {}).get("rs_vs_qqq_20d"))
+    if price is not None and ma_50 is not None and price < ma_50:
+        flags.append({"type": "technical_downtrend_risk", "evidence": "price_below_50d"})
+    if price is not None and ma_200 is not None and price < ma_200:
+        flags.append({"type": "long_term_downtrend_risk", "evidence": "price_below_200d"})
+    if rs_20 is not None and rs_20 < 0:
+        flags.append({"type": "relative_strength_risk", "evidence": "rs_vs_qqq_20d_negative"})
+
+    free_cash_flow = _metric_number(metrics, "free_cash_flow", "freeCashflow", "free_cashflow")
+    operating_cash_flow = _metric_number(metrics, "operating_cash_flow", "operatingCashflow", "totalCashFromOperatingActivities")
+    cash = _metric_number(metrics, "cash", "total_cash", "totalCash")
+    debt = _metric_number(metrics, "total_debt", "totalDebt", "debt")
+    liabilities = _metric_number(metrics, "liabilities", "total_liabilities", "totalLiabilities")
+    assets = _metric_number(metrics, "assets", "total_assets", "totalAssets")
+    revenue_growth = _metric_number(metrics, "revenue_growth", "revenueGrowth", "revenue_growth_yoy")
+    if free_cash_flow is not None and free_cash_flow < 0:
+        flags.append({"type": "cash_burn_risk", "evidence": "negative_free_cash_flow"})
+    elif operating_cash_flow is not None and operating_cash_flow < 0:
+        flags.append({"type": "cash_burn_risk", "evidence": "negative_operating_cash_flow"})
+    if cash is not None and free_cash_flow is not None and free_cash_flow < 0 and cash < abs(free_cash_flow):
+        flags.append({"type": "cash_runway_risk", "evidence": "cash_less_than_one_year_negative_fcf"})
+    if debt is not None and cash is not None and debt > cash * 2:
+        flags.append({"type": "balance_sheet_risk", "evidence": "debt_more_than_2x_cash"})
+    if liabilities is not None and assets is not None and assets > 0 and liabilities / assets > 0.7:
+        flags.append({"type": "balance_sheet_risk", "evidence": "liabilities_above_70pct_assets"})
+    if revenue_growth is not None and revenue_growth < 0:
+        flags.append({"type": "growth_deceleration_risk", "evidence": "negative_revenue_growth"})
+
+    bear_tokens = _content_tokens(bear_case)
+    risk_corpus = _risk_corpus(source_signals, news)
+    source_matches = sorted(token for token in bear_tokens if token in risk_corpus)[:12]
+    hard_flags = _dedupe_flags(flags)
+    if hard_flags:
+        status = "hard_risk_triggered"
+    elif source_matches:
+        status = "source_backed"
+    else:
+        status = "agent_only"
+    return {
+        "status": status,
+        "flags": hard_flags,
+        "source_matches": source_matches,
+        "hard_checks": {
+            "stock": {
+                "price": price,
+                "ma_50": ma_50,
+                "ma_200": ma_200,
+                "rs_vs_qqq_20d": rs_20,
+                "raw": stock_raw,
+            },
+            "fundamentals": {
+                "free_cash_flow": free_cash_flow,
+                "operating_cash_flow": operating_cash_flow,
+                "cash": cash,
+                "total_debt": debt,
+                "liabilities": liabilities,
+                "assets": assets,
+                "revenue_growth": revenue_growth,
+            },
+            "candidate_reasons": candidate_reasons,
+        },
+        "bear_case": bear_case,
+    }
+
+
+def _risk_corpus(source_signals: list[dict[str, Any]], news: list[dict[str, Any]]) -> set[str]:
+    texts: list[str] = []
+    for signal in source_signals:
+        texts.extend(
+            [
+                str(signal.get("signal_type") or ""),
+                str(signal.get("antithesis") or ""),
+                str(signal.get("invalidation") or ""),
+                json.dumps(signal.get("risks") or ""),
+            ]
+        )
+    for item in news:
+        texts.extend([str(item.get("title") or ""), str(item.get("provider") or ""), str(item.get("source") or "")])
+    return {token for text in texts for token in _content_tokens(text)}
+
+
+def _dedupe_flags(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for flag in flags:
+        key = (str(flag.get("type") or ""), str(flag.get("evidence") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(flag)
+    return output
+
+
 def _evidence_corpus(source_signals: list[dict[str, Any]], news: list[dict[str, Any]]) -> set[str]:
     texts: list[str] = []
     for signal in source_signals:
@@ -729,3 +874,11 @@ def _number(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _metric_number(metrics: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = _number(metrics.get(key))
+        if value is not None:
+            return value
+    return None

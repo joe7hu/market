@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
@@ -92,6 +94,7 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     assert validation["catalyst_status"] == "scheduled"
     assert validation["invalidation_status"] == "clear"
     assert validation["evidence_status"] == "source_backed"
+    assert validation["red_team_status"] == "source_backed"
 
 
 def test_agent_thesis_requires_structured_hypothesis_fields(tmp_path) -> None:
@@ -112,6 +115,58 @@ def test_agent_thesis_requires_structured_hypothesis_fields(tmp_path) -> None:
                     "bear_case": "Demand weakens.",
                 },
             )
+
+
+def test_agent_thesis_red_team_flags_hard_fundamental_risks(tmp_path) -> None:
+    db_path = tmp_path / "agent-red-team.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_fire_candidate(con)
+        refresh_options_radar(con, ["TSLA"])
+        con.execute(
+            """
+            INSERT INTO equity_fundamentals
+            VALUES ('TSLA', '2026-03-31', '2026-05-01', '10-Q', ?, 'https://example.com/tsla')
+            """,
+            [
+                json.dumps(
+                    {
+                        "free_cash_flow": -200000000,
+                        "operating_cash_flow": -100000000,
+                        "cash": 50000000,
+                        "total_debt": 500000000,
+                        "assets": 1000000000,
+                        "liabilities": 800000000,
+                        "revenue_growth": -0.12,
+                    }
+                ),
+            ],
+        )
+        upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "created_at": "2026-06-03T12:00:00Z",
+                "bull_target_price": 180,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 95,
+                "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
+                "required_proofs": ["gross margin stabilizes"],
+                "catalysts": [{"type": "earnings", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Cash burn, debt load, and negative growth pressure can overwhelm the rebound thesis.",
+                "confidence": 55,
+                "evidence_refs": [{"type": "source_signal", "id": "agent-red-team"}],
+            },
+        )
+        result = refresh_option_agent_work(con, strategy_version="leap_10x_reversal_v1")
+        validation = query_rows(con, "SELECT red_team_status, red_team_flags, raw FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
+
+    assert result["agent_thesis_validations"] == 1
+    assert validation["red_team_status"] == "hard_risk_triggered"
+    assert "cash_burn_risk" in str(validation["red_team_flags"])
+    assert "balance_sheet_risk" in str(validation["red_team_flags"])
+    assert "growth_deceleration_risk" in str(validation["raw"])
 
 
 def seed_fire_candidate(con) -> None:

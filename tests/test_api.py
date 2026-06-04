@@ -253,9 +253,9 @@ def test_agent_thesis_post_fulfills_request_and_validates(tmp_path, monkeypatch)
     assert payload["agent_thesis_validations"] == 1
     with db(db_path) as con:
         request = query_rows(con, "SELECT status FROM agent_thesis_request WHERE ticker = 'TSLA'")[0]
-        validation = query_rows(con, "SELECT state, proof_status, catalyst_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
+        validation = query_rows(con, "SELECT state, proof_status, catalyst_status, red_team_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
     assert request["status"] == "fulfilled"
-    assert validation == {"state": "validated", "proof_status": "supported", "catalyst_status": "scheduled"}
+    assert validation == {"state": "validated", "proof_status": "supported", "catalyst_status": "scheduled", "red_team_status": "source_backed"}
 
 
 def test_agent_thesis_post_rejects_unstructured_payload(tmp_path, monkeypatch) -> None:

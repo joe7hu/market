@@ -71,7 +71,11 @@ and `GET /api/agent-postmortem-requests`. Agents fulfill those requests by
 posting structured JSON to the local-only endpoints:
 
 - `POST /api/agent-thesis`: stores an `agent_thesis`, attaches it to matching
-  candidate events, and immediately runs deterministic thesis validation.
+  candidate events, and immediately runs deterministic thesis validation. The
+  validation checks required proofs, catalysts, invalidation, evidence backing,
+  option/stock state, IV state, and red-team risk flags from source antithesis,
+  candidate blockers, technical trend, liquidity, cash burn, growth, and balance
+  sheet data.
 - `POST /api/agent-postmortems`: stores an `agent_postmortem`, materializes any
   proposed strategy mutation, and immediately runs deterministic backtest and
   forward-test gates.

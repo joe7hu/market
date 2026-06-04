@@ -476,6 +476,8 @@ CREATE TABLE IF NOT EXISTS agent_thesis_validation (
     catalyst_status TEXT,
     invalidation_status TEXT,
     evidence_status TEXT,
+    red_team_status TEXT,
+    red_team_flags JSON,
     evidence_refs JSON,
     raw JSON
 );
@@ -1280,6 +1282,8 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
         "catalyst_status": "TEXT",
         "invalidation_status": "TEXT",
         "evidence_status": "TEXT",
+        "red_team_status": "TEXT",
+        "red_team_flags": "JSON",
     }.items():
         if column not in thesis_validation_columns:
             con.execute(f"ALTER TABLE agent_thesis_validation ADD COLUMN {column} {column_type}")
