@@ -55,6 +55,8 @@ def test_api_routes_return_json() -> None:
         "/api/option-attributions",
         "/api/missed-winner-events",
         "/api/strategy-mutation-proposals",
+        "/api/strategy-backtests",
+        "/api/strategy-forward-tests",
         "/api/news",
         "/api/tradingview-symbol-search",
         "/api/tradingview-watchlists",

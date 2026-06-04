@@ -567,6 +567,51 @@ CREATE TABLE IF NOT EXISTS strategy_mutation_proposal (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS strategy_backtest_result (
+    backtest_id TEXT PRIMARY KEY,
+    proposal_id TEXT,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    lookback_start TIMESTAMP,
+    lookback_end TIMESTAMP,
+    baseline_candidate_count INTEGER,
+    proposed_candidate_count INTEGER,
+    baseline_hit_rate_2x DOUBLE,
+    baseline_hit_rate_5x DOUBLE,
+    baseline_hit_rate_10x DOUBLE,
+    proposed_hit_rate_2x DOUBLE,
+    proposed_hit_rate_5x DOUBLE,
+    proposed_hit_rate_10x DOUBLE,
+    proposed_false_positive_rate DOUBLE,
+    verdict TEXT,
+    metrics JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_forward_test_result (
+    forward_test_id TEXT PRIMARY KEY,
+    proposal_id TEXT,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    forward_start TIMESTAMP,
+    forward_end TIMESTAMP,
+    days_observed INTEGER,
+    baseline_candidate_count INTEGER,
+    proposed_candidate_count INTEGER,
+    baseline_hit_rate_2x DOUBLE,
+    baseline_hit_rate_5x DOUBLE,
+    baseline_hit_rate_10x DOUBLE,
+    proposed_hit_rate_2x DOUBLE,
+    proposed_hit_rate_5x DOUBLE,
+    proposed_hit_rate_10x DOUBLE,
+    status TEXT,
+    verdict TEXT,
+    metrics JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS news_items (
     id TEXT PRIMARY KEY,
     published_at TIMESTAMP,

@@ -12,6 +12,7 @@ from investment_panel.core.source_ingestion.utils import stable_id
 
 
 DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
+MIN_FORWARD_TEST_DAYS = 30
 
 DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "strategy_name": "leap_10x_reversal",
@@ -57,6 +58,7 @@ def refresh_options_radar(
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
+    evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
     return {
         "option_snapshots": snapshot_rows,
         "option_features": feature_rows,
@@ -68,6 +70,7 @@ def refresh_options_radar(
         "option_attributions": attribution_rows,
         "missed_winners": missed_rows,
         "strategy_mutation_proposals": proposal_rows,
+        **evaluation_rows,
     }
 
 
@@ -1036,6 +1039,261 @@ def build_strategy_mutation_proposal(row: dict[str, Any], strategy_version: str)
     }
 
 
+class StrategyPromotionError(ValueError):
+    """Raised when a strategy proposal is not eligible for promotion."""
+
+
+def refresh_strategy_proposal_evaluations(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, int]:
+    proposals = query_rows(
+        con,
+        """
+        SELECT *
+        FROM strategy_mutation_proposal
+        WHERE strategy_version = ?
+        ORDER BY created_at DESC
+        """,
+        [strategy_version],
+    )
+    backtests = 0
+    forward_tests = 0
+    updates = 0
+    for proposal in proposals:
+        backtest = build_strategy_backtest_result(con, proposal)
+        if backtest:
+            insert_strategy_backtest_result(con, backtest)
+            backtests += 1
+        forward = build_strategy_forward_test_result(con, proposal)
+        if forward:
+            insert_strategy_forward_test_result(con, forward)
+            forward_tests += 1
+        updates += update_strategy_proposal_gate_status(con, proposal["proposal_id"])
+    return {"strategy_backtests": backtests, "strategy_forward_tests": forward_tests, "strategy_gate_updates": updates}
+
+
+def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _historical_candidate_rows(con)
+    if not rows:
+        return None
+    base_params = _strategy_parameters(con, proposal["strategy_version"])
+    proposed_params = _proposed_strategy_parameters(base_params, proposal.get("proposed_parameter_changes"))
+    baseline = _strategy_outcomes(con, rows, proposal["strategy_version"], base_params)
+    proposed = _strategy_outcomes(con, rows, proposal["proposed_strategy_version"], proposed_params)
+    lookback_start = min(_iso(row["snapshot_time"]) for row in rows)
+    lookback_end = max(_iso(row["snapshot_time"]) for row in rows)
+    verdict = _backtest_verdict(baseline, proposed)
+    return {
+        "backtest_id": stable_id("strategy_backtest_result", proposal["proposal_id"], lookback_start, lookback_end),
+        "proposal_id": proposal["proposal_id"],
+        "evaluated_at": datetime.utcnow().isoformat(),
+        "strategy_version": proposal["strategy_version"],
+        "proposed_strategy_version": proposal["proposed_strategy_version"],
+        "lookback_start": lookback_start,
+        "lookback_end": lookback_end,
+        "baseline_candidate_count": baseline["candidate_count"],
+        "proposed_candidate_count": proposed["candidate_count"],
+        "baseline_hit_rate_2x": baseline["hit_rate_2x"],
+        "baseline_hit_rate_5x": baseline["hit_rate_5x"],
+        "baseline_hit_rate_10x": baseline["hit_rate_10x"],
+        "proposed_hit_rate_2x": proposed["hit_rate_2x"],
+        "proposed_hit_rate_5x": proposed["hit_rate_5x"],
+        "proposed_hit_rate_10x": proposed["hit_rate_10x"],
+        "proposed_false_positive_rate": proposed["false_positive_rate"],
+        "verdict": verdict,
+        "metrics": {"baseline": baseline, "proposed": proposed},
+        "raw": {
+            "proposal_changes": _json_or_list(proposal.get("proposed_parameter_changes")),
+            "promotion_gate": "backtest_only_never_promotes",
+        },
+    }
+
+
+def insert_strategy_backtest_result(con: Any, result: dict[str, Any]) -> None:
+    con.execute(
+        """
+        INSERT OR REPLACE INTO strategy_backtest_result
+        (backtest_id, proposal_id, evaluated_at, strategy_version,
+         proposed_strategy_version, lookback_start, lookback_end,
+         baseline_candidate_count, proposed_candidate_count,
+         baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+         proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+         proposed_false_positive_rate, verdict, metrics, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            result["backtest_id"],
+            result["proposal_id"],
+            result["evaluated_at"],
+            result["strategy_version"],
+            result["proposed_strategy_version"],
+            result["lookback_start"],
+            result["lookback_end"],
+            result["baseline_candidate_count"],
+            result["proposed_candidate_count"],
+            result["baseline_hit_rate_2x"],
+            result["baseline_hit_rate_5x"],
+            result["baseline_hit_rate_10x"],
+            result["proposed_hit_rate_2x"],
+            result["proposed_hit_rate_5x"],
+            result["proposed_hit_rate_10x"],
+            result["proposed_false_positive_rate"],
+            result["verdict"],
+            json_dumps(result["metrics"]),
+            json_dumps(result["raw"]),
+        ],
+    )
+
+
+def build_strategy_forward_test_result(con: Any, proposal: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _historical_candidate_rows(con)
+    if not rows:
+        return None
+    created_at = _iso(proposal.get("created_at"))
+    forward_rows = [row for row in rows if _iso(row.get("snapshot_time")) >= created_at]
+    if not forward_rows:
+        forward_rows = rows[-1:]
+    base_params = _strategy_parameters(con, proposal["strategy_version"])
+    proposed_params = _proposed_strategy_parameters(base_params, proposal.get("proposed_parameter_changes"))
+    baseline = _strategy_outcomes(con, forward_rows, proposal["strategy_version"], base_params)
+    proposed = _strategy_outcomes(con, forward_rows, proposal["proposed_strategy_version"], proposed_params)
+    forward_start = min(_iso(row["snapshot_time"]) for row in forward_rows)
+    forward_end = max(_iso(row["snapshot_time"]) for row in forward_rows)
+    days_observed = max(0, _elapsed_days(forward_start, forward_end) or 0)
+    verdict = _forward_test_verdict(baseline, proposed, days_observed)
+    status = "complete" if verdict in {"pass", "fail"} else "active"
+    return {
+        "forward_test_id": stable_id("strategy_forward_test_result", proposal["proposal_id"], forward_start, forward_end),
+        "proposal_id": proposal["proposal_id"],
+        "evaluated_at": datetime.utcnow().isoformat(),
+        "strategy_version": proposal["strategy_version"],
+        "proposed_strategy_version": proposal["proposed_strategy_version"],
+        "forward_start": forward_start,
+        "forward_end": forward_end,
+        "days_observed": days_observed,
+        "baseline_candidate_count": baseline["candidate_count"],
+        "proposed_candidate_count": proposed["candidate_count"],
+        "baseline_hit_rate_2x": baseline["hit_rate_2x"],
+        "baseline_hit_rate_5x": baseline["hit_rate_5x"],
+        "baseline_hit_rate_10x": baseline["hit_rate_10x"],
+        "proposed_hit_rate_2x": proposed["hit_rate_2x"],
+        "proposed_hit_rate_5x": proposed["hit_rate_5x"],
+        "proposed_hit_rate_10x": proposed["hit_rate_10x"],
+        "status": status,
+        "verdict": verdict,
+        "metrics": {"baseline": baseline, "proposed": proposed},
+        "raw": {"min_forward_test_days": MIN_FORWARD_TEST_DAYS, "promotion_gate": "forward_shadow_comparison_required"},
+    }
+
+
+def insert_strategy_forward_test_result(con: Any, result: dict[str, Any]) -> None:
+    con.execute(
+        """
+        INSERT OR REPLACE INTO strategy_forward_test_result
+        (forward_test_id, proposal_id, evaluated_at, strategy_version,
+         proposed_strategy_version, forward_start, forward_end, days_observed,
+         baseline_candidate_count, proposed_candidate_count,
+         baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+         proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+         status, verdict, metrics, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            result["forward_test_id"],
+            result["proposal_id"],
+            result["evaluated_at"],
+            result["strategy_version"],
+            result["proposed_strategy_version"],
+            result["forward_start"],
+            result["forward_end"],
+            result["days_observed"],
+            result["baseline_candidate_count"],
+            result["proposed_candidate_count"],
+            result["baseline_hit_rate_2x"],
+            result["baseline_hit_rate_5x"],
+            result["baseline_hit_rate_10x"],
+            result["proposed_hit_rate_2x"],
+            result["proposed_hit_rate_5x"],
+            result["proposed_hit_rate_10x"],
+            result["status"],
+            result["verdict"],
+            json_dumps(result["metrics"]),
+            json_dumps(result["raw"]),
+        ],
+    )
+
+
+def update_strategy_proposal_gate_status(con: Any, proposal_id: str) -> int:
+    backtest = _latest_backtest(con, proposal_id)
+    forward = _latest_forward_test(con, proposal_id)
+    if not backtest:
+        status = "backtest_required"
+    elif backtest.get("verdict") != "pass":
+        status = "backtest_failed"
+    elif not forward or forward.get("verdict") == "collecting_data":
+        status = "forward_test_required"
+    elif forward.get("verdict") != "pass":
+        status = "forward_test_failed"
+    else:
+        status = "ready_for_human_review"
+    before = query_rows(
+        con,
+        "SELECT status FROM strategy_mutation_proposal WHERE proposal_id = ?",
+        [proposal_id],
+    )
+    if not before or before[0].get("status") == status:
+        return 0
+    con.execute("UPDATE strategy_mutation_proposal SET status = ? WHERE proposal_id = ?", [status, proposal_id])
+    return 1
+
+
+def promote_strategy_mutation(con: Any, proposal_id: str, *, approved_by: str | None = None) -> str:
+    if not approved_by:
+        raise StrategyPromotionError("human approval is required before promotion")
+    proposal_rows = query_rows(con, "SELECT * FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal_id])
+    if not proposal_rows:
+        raise StrategyPromotionError(f"unknown strategy proposal: {proposal_id}")
+    proposal = proposal_rows[0]
+    backtest = _latest_backtest(con, proposal_id)
+    forward = _latest_forward_test(con, proposal_id)
+    if not backtest or backtest.get("verdict") != "pass":
+        raise StrategyPromotionError("passing backtest is required before promotion")
+    if not forward or forward.get("verdict") != "pass":
+        raise StrategyPromotionError("passing forward shadow test is required before promotion")
+    base_params = _strategy_parameters(con, proposal["strategy_version"])
+    proposed_params = _proposed_strategy_parameters(base_params, proposal.get("proposed_parameter_changes"))
+    promoted_at = datetime.utcnow().isoformat()
+    con.execute(
+        """
+        INSERT OR REPLACE INTO option_strategy_versions
+        (strategy_version, strategy_name, version, created_at, status,
+         parameters, promoted_at, supersedes, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            proposal["proposed_strategy_version"],
+            proposed_params.get("strategy_name") or proposal["proposed_strategy_version"],
+            int(base_params.get("version") or 1) + 1,
+            promoted_at,
+            "promoted",
+            json_dumps(proposed_params),
+            promoted_at,
+            proposal["strategy_version"],
+            f"Promoted from {proposal_id} after deterministic backtest, forward test, and human approval by {approved_by}.",
+        ],
+    )
+    con.execute(
+        """
+        UPDATE strategy_mutation_proposal
+        SET status = 'promoted', human_approval_status = 'approved', raw = ?
+        WHERE proposal_id = ?
+        """,
+        [
+            json_dumps({**_json(proposal.get("raw")), "approved_by": approved_by, "approved_at": promoted_at}),
+            proposal_id,
+        ],
+    )
+    return str(proposal["proposed_strategy_version"])
+
+
 def _attribution_label(
     option_return: float,
     underlying_return: float | None,
@@ -1098,6 +1356,183 @@ def _proposal_parameter_changes(filter_reason: str) -> dict[str, Any]:
     if "required_move" in filter_reason:
         return {"max_required_move_pct": 5.0, "candidate_note": "test larger required moves as a separate lottery strategy"}
     return {}
+
+
+def _historical_candidate_rows(con: Any) -> list[dict[str, Any]]:
+    return query_rows(
+        con,
+        """
+        SELECT
+            s.*,
+            f.required_2x_price,
+            f.required_5x_price,
+            f.required_10x_price,
+            f.required_move_10x_pct,
+            f.breakeven,
+            f.iv_percentile,
+            f.iv_rank,
+            f.liquidity_score,
+            f.convexity_score,
+            sf.price,
+            sf.ma_50,
+            sf.rs_vs_qqq_20d,
+            sf.base_length_days,
+            sf.breakout_level
+        FROM option_snapshot s
+        JOIN option_features f ON f.contract_id = s.contract_id AND f.snapshot_time = s.snapshot_time
+        LEFT JOIN stock_features sf ON sf.ticker = s.ticker AND sf.snapshot_time = s.snapshot_time
+        ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
+        """,
+    )
+
+
+def _strategy_outcomes(con: Any, rows: list[dict[str, Any]], strategy_version: str, strategy: dict[str, Any]) -> dict[str, Any]:
+    outcomes = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        event = build_candidate_event(row, strategy_version, strategy)
+        if not event or event["state"] != "FIRE":
+            continue
+        key = (event["contract_id"], event["snapshot_time"])
+        if key in seen:
+            continue
+        seen.add(key)
+        outcome = _hypothetical_outcome(con, event)
+        if outcome:
+            outcomes.append(outcome)
+    return _outcome_metrics(outcomes)
+
+
+def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | None:
+    entry = _number(event.get("premium_fill_assumption"))
+    if entry is None or entry <= 0:
+        return None
+    rows = query_rows(
+        con,
+        """
+        SELECT snapshot_time, mid
+        FROM option_snapshot
+        WHERE contract_id = ? AND snapshot_time >= TRY_CAST(? AS TIMESTAMP)
+        ORDER BY snapshot_time
+        """,
+        [event["contract_id"], event["snapshot_time"]],
+    )
+    marks = [(row["snapshot_time"], _number(row.get("mid"))) for row in rows if _number(row.get("mid")) is not None]
+    if not marks:
+        return None
+    returns = [(snapshot_time, (mid or 0) / entry - 1) for snapshot_time, mid in marks]
+    max_time, max_return = max(returns, key=lambda item: item[1])
+    _min_time, max_drawdown = min(returns, key=lambda item: item[1])
+    return {
+        "event_id": event["event_id"],
+        "contract_id": event["contract_id"],
+        "entry_time": event["snapshot_time"],
+        "entry_price": entry,
+        "max_return_seen": max_return,
+        "max_drawdown_seen": max_drawdown,
+        "time_to_2x": _first_hit_days(event["snapshot_time"], returns, 1.0),
+        "time_to_5x": _first_hit_days(event["snapshot_time"], returns, 4.0),
+        "time_to_10x": _first_hit_days(event["snapshot_time"], returns, 9.0),
+        "max_return_time": max_time,
+    }
+
+
+def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    count = len(outcomes)
+    if not count:
+        return {
+            "candidate_count": 0,
+            "hit_rate_2x": 0.0,
+            "hit_rate_5x": 0.0,
+            "hit_rate_10x": 0.0,
+            "false_positive_rate": 0.0,
+            "median_max_return": None,
+            "median_max_drawdown": None,
+            "average_time_to_2x": None,
+            "outcomes": [],
+        }
+    hit_2x = [row for row in outcomes if row["max_return_seen"] >= 1.0]
+    hit_5x = [row for row in outcomes if row["max_return_seen"] >= 4.0]
+    hit_10x = [row for row in outcomes if row["max_return_seen"] >= 9.0]
+    time_to_2x = [row["time_to_2x"] for row in hit_2x if row.get("time_to_2x") is not None]
+    return {
+        "candidate_count": count,
+        "hit_rate_2x": len(hit_2x) / count,
+        "hit_rate_5x": len(hit_5x) / count,
+        "hit_rate_10x": len(hit_10x) / count,
+        "false_positive_rate": 1 - (len(hit_2x) / count),
+        "median_max_return": _median([row["max_return_seen"] for row in outcomes]),
+        "median_max_drawdown": _median([row["max_drawdown_seen"] for row in outcomes]),
+        "average_time_to_2x": _average([float(value) for value in time_to_2x]) if time_to_2x else None,
+        "outcomes": outcomes[:50],
+    }
+
+
+def _backtest_verdict(baseline: dict[str, Any], proposed: dict[str, Any]) -> str:
+    if int(proposed.get("candidate_count") or 0) == 0:
+        return "fail"
+    improves_10x = float(proposed.get("hit_rate_10x") or 0) > float(baseline.get("hit_rate_10x") or 0)
+    improves_5x = float(proposed.get("hit_rate_5x") or 0) > float(baseline.get("hit_rate_5x") or 0)
+    baseline_false = float(baseline.get("false_positive_rate") or 0)
+    proposed_false = float(proposed.get("false_positive_rate") or 0)
+    allowed_false_positive = 1.0 if int(baseline.get("candidate_count") or 0) == 0 else min(1.0, baseline_false + 0.25)
+    if (improves_10x or improves_5x) and proposed_false <= allowed_false_positive:
+        return "pass"
+    return "fail"
+
+
+def _forward_test_verdict(baseline: dict[str, Any], proposed: dict[str, Any], days_observed: int) -> str:
+    if days_observed < MIN_FORWARD_TEST_DAYS:
+        return "collecting_data"
+    if int(proposed.get("candidate_count") or 0) == 0:
+        return "fail"
+    if float(proposed.get("hit_rate_5x") or 0) >= float(baseline.get("hit_rate_5x") or 0):
+        return "pass"
+    return "fail"
+
+
+def _first_hit_days(entry_time: Any, returns: list[tuple[Any, float]], threshold: float) -> int | None:
+    for snapshot_time, value in returns:
+        if value >= threshold:
+            return _elapsed_days(entry_time, snapshot_time)
+    return None
+
+
+def _proposed_strategy_parameters(base: dict[str, Any], value: Any) -> dict[str, Any]:
+    changes = _json_or_list(value)
+    if not isinstance(changes, dict):
+        changes = {}
+    return {**base, **{key: item for key, item in changes.items() if key != "candidate_note"}}
+
+
+def _latest_backtest(con: Any, proposal_id: str) -> dict[str, Any] | None:
+    rows = query_rows(
+        con,
+        """
+        SELECT *
+        FROM strategy_backtest_result
+        WHERE proposal_id = ?
+        ORDER BY evaluated_at DESC
+        LIMIT 1
+        """,
+        [proposal_id],
+    )
+    return rows[0] if rows else None
+
+
+def _latest_forward_test(con: Any, proposal_id: str) -> dict[str, Any] | None:
+    rows = query_rows(
+        con,
+        """
+        SELECT *
+        FROM strategy_forward_test_result
+        WHERE proposal_id = ?
+        ORDER BY evaluated_at DESC
+        LIMIT 1
+        """,
+        [proposal_id],
+    )
+    return rows[0] if rows else None
 
 
 def _compact_snapshot(row: dict[str, Any]) -> dict[str, Any]:
@@ -1359,6 +1794,17 @@ def _json(value: Any) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _json_or_list(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if not value:
+        return {}
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+
+
 def _list_value(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if item]
@@ -1387,6 +1833,16 @@ def _average(values: list[float]) -> float | None:
     if not clean:
         return None
     return mean(clean)
+
+
+def _median(values: list[float]) -> float | None:
+    clean = sorted(value for value in values if value is not None)
+    if not clean:
+        return None
+    midpoint = len(clean) // 2
+    if len(clean) % 2:
+        return clean[midpoint]
+    return (clean[midpoint - 1] + clean[midpoint]) / 2
 
 
 def _number(value: Any) -> float | None:

@@ -80,6 +80,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "option_attribution": option_attribution(con),
             "missed_winner_event": missed_winner_event(con),
             "strategy_mutation_proposal": strategy_mutation_proposal(con),
+            "strategy_backtest_result": strategy_backtest_result(con),
+            "strategy_forward_test_result": strategy_forward_test_result(con),
             "news": news(con),
             "tradingview_symbol_search": tradingview_symbol_search(con),
             "tradingview_watchlists": tradingview_watchlists(con),
@@ -3227,6 +3229,42 @@ def strategy_mutation_proposal(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("proposed_parameter_changes", "evidence_refs", "raw"))) for row in rows]
+
+
+def strategy_backtest_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT backtest_id, proposal_id, evaluated_at, strategy_version,
+               proposed_strategy_version, lookback_start, lookback_end,
+               baseline_candidate_count, proposed_candidate_count,
+               baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+               proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+               proposed_false_positive_rate, verdict, metrics, raw
+        FROM strategy_backtest_result
+        ORDER BY evaluated_at DESC, proposed_strategy_version
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
+
+
+def strategy_forward_test_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT forward_test_id, proposal_id, evaluated_at, strategy_version,
+               proposed_strategy_version, forward_start, forward_end,
+               days_observed, baseline_candidate_count, proposed_candidate_count,
+               baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+               proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+               status, verdict, metrics, raw
+        FROM strategy_forward_test_result
+        ORDER BY evaluated_at DESC, proposed_strategy_version
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
 
 
 def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:

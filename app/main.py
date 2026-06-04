@@ -364,6 +364,16 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "strategy_mutation_proposal")
 
+    @app.get("/api/strategy-backtests")
+    def strategy_backtests() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "strategy_backtest_result")
+
+    @app.get("/api/strategy-forward-tests")
+    def strategy_forward_tests() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "strategy_forward_test_result")
+
     @app.get("/api/news")
     def news() -> dict[str, Any]:
         _, panel_data = _context()

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
+
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.free_sources import store_options_chain
-from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
+from investment_panel.core.options_radar import (
+    DEFAULT_STRATEGY_VERSION,
+    StrategyPromotionError,
+    promote_strategy_mutation,
+    refresh_options_radar,
+)
 from investment_panel.core.panel import load_panel_data
 
 
@@ -176,19 +183,77 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
         result = refresh_options_radar(con, ["RBLX"])
         missed = query_rows(con, "SELECT * FROM missed_winner_event")[0]
         proposal = query_rows(con, "SELECT * FROM strategy_mutation_proposal")[0]
+        backtest = query_rows(con, "SELECT * FROM strategy_backtest_result")[0]
+        forward = query_rows(con, "SELECT * FROM strategy_forward_test_result")[0]
         trades = query_rows(con, "SELECT * FROM shadow_trade")
 
     assert result["missed_winners"] == 1
     assert result["strategy_mutation_proposals"] == 1
+    assert result["strategy_backtests"] == 1
+    assert result["strategy_forward_tests"] == 1
     assert trades == []
     assert missed["winner_threshold"] == "10x"
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
-    assert proposal["status"] == "proposed"
+    assert proposal["status"] == "forward_test_required"
     assert proposal["requires_backtest"] is True
     assert proposal["requires_forward_test"] is True
     assert proposal["human_approval_status"] == "required"
     assert "lower-delta" in proposal["proposed_parameter_changes"]
+    assert backtest["verdict"] == "pass"
+    assert backtest["proposed_candidate_count"] > backtest["baseline_candidate_count"]
+    assert backtest["proposed_hit_rate_10x"] > backtest["baseline_hit_rate_10x"]
+    assert forward["status"] == "active"
+    assert forward["verdict"] == "collecting_data"
+
+
+def test_strategy_promotion_requires_backtest_forward_test_and_human_approval(tmp_path) -> None:
+    db_path = tmp_path / "radar-promotion.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-20T20:00:00Z', 160, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.12, "OPRA:RBLX270918C120", volume=25, open_interest=250)],
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-20T20:00:00Z",
+            [option_row("2027-09-18", 120, "call", 49.0, 51.0, 0.30, 0.18, "OPRA:RBLX270918C120", volume=80, open_interest=450)],
+        )
+        refresh_options_radar(con, ["RBLX"])
+        proposal_id = query_rows(con, "SELECT proposal_id FROM strategy_mutation_proposal")[0]["proposal_id"]
+
+        with pytest.raises(StrategyPromotionError, match="forward shadow test"):
+            promote_strategy_mutation(con, proposal_id, approved_by="joe")
+
+        con.execute(
+            """
+            UPDATE strategy_forward_test_result
+            SET verdict = 'pass', status = 'complete', days_observed = 30
+            WHERE proposal_id = ?
+            """,
+            [proposal_id],
+        )
+        with pytest.raises(StrategyPromotionError, match="human approval"):
+            promote_strategy_mutation(con, proposal_id)
+        promoted = promote_strategy_mutation(con, proposal_id, approved_by="joe")
+        strategy = query_rows(con, "SELECT strategy_version, status, supersedes FROM option_strategy_versions WHERE strategy_version = ?", [promoted])[0]
+        proposal = query_rows(con, "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal_id])[0]
+
+    assert promoted == "leap_10x_momentum_lottery_proposed_v1"
+    assert strategy == {"strategy_version": promoted, "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
+    assert proposal == {"status": "promoted", "human_approval_status": "approved"}
 
 
 def seed_prices(con, symbol: str, start_price: float = 80.0, slope: float = 0.10) -> None:
