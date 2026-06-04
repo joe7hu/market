@@ -364,6 +364,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "shadow_trade_mark")
 
+    @app.get("/api/radar-state-transitions")
+    def radar_state_transitions() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "radar_state_transition")
+
     @app.get("/api/option-attributions")
     def option_attributions() -> dict[str, Any]:
         _, panel_data = _context()

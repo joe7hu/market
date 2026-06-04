@@ -41,9 +41,11 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
         fire = query_rows(con, "SELECT * FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C120'")[0]
         rejects = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C180'")[0]
         trades = query_rows(con, "SELECT * FROM shadow_trade")
+        transitions = query_rows(con, "SELECT contract_id, state, candidate_state FROM radar_state_transition ORDER BY contract_id")
 
     assert result["option_snapshots"] == 2
     assert result["candidate_events"] == 2
+    assert result["radar_state_transitions"] == 2
     assert strategy == [{"strategy_version": DEFAULT_STRATEGY_VERSION, "status": "shadow"}]
     assert snapshots[0]["open_interest"] == 250
     assert snapshots[0]["volume"] == 25
@@ -59,6 +61,10 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
     assert len(trades) == 1
     assert trades[0]["event_id"] == fire["event_id"]
     assert trades[0]["status"] == "open"
+    assert transitions == [
+        {"contract_id": "OPRA:TSLA270918C120", "state": "FIRE", "candidate_state": "FIRE"},
+        {"contract_id": "OPRA:TSLA270918C180", "state": "REJECT", "candidate_state": "REJECT"},
+    ]
 
 
 def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_path) -> None:
@@ -172,6 +178,7 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
     assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
     assert panel["tables"]["shadow_trade"][0]["status"] == "open"
+    assert panel["tables"]["radar_state_transition"][0]["state"] in {"FIRE", "REJECT"}
 
 
 def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
@@ -203,12 +210,14 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         attribution = query_rows(con, "SELECT * FROM option_attribution")[0]
         first_trade = query_rows(con, "SELECT * FROM shadow_trade ORDER BY entry_time LIMIT 1")[0]
         marks = query_rows(con, "SELECT * FROM shadow_trade_mark ORDER BY mark_time")
+        transitions = query_rows(con, "SELECT state, previous_state, trigger_reason FROM radar_state_transition WHERE contract_id = 'OPRA:TSLA270918C120' ORDER BY snapshot_time")
         cohorts = query_rows(con, "SELECT * FROM strategy_cohort_result")
         setup_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_type = 'setup_type'")[0]
         market_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_value = 'qqq_above_200d'")[0]
 
     assert result["option_attributions"] == 1
     assert result["shadow_trade_marks"] == 2
+    assert result["radar_state_transitions"] == 2
     assert result["strategy_cohorts"] >= 4
     assert attribution["trade_id"] == first_trade["trade_id"]
     assert attribution["label"] == "good_convexity"
@@ -223,6 +232,9 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
     assert marks[-1]["return_5d"] is None
     assert marks[-1]["max_return_since_alert"] == marks[-1]["current_return"]
     assert marks[-1]["expired_worthless_probability_change"] < 0
+    assert [row["state"] for row in transitions] == ["FIRE", "HOLD"]
+    assert transitions[-1]["previous_state"] == "FIRE"
+    assert transitions[-1]["trigger_reason"] == "hit_2x_continue_tracking"
     assert setup_cohort["candidate_count"] == 1
     assert setup_cohort["hit_rate_2x"] == 1.0
     assert setup_cohort["good_convexity_rate"] == 1.0

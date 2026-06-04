@@ -80,6 +80,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "candidate_event": candidate_event(con),
             "shadow_trade": shadow_trade(con),
             "shadow_trade_mark": shadow_trade_mark(con),
+            "radar_state_transition": radar_state_transition(con),
             "option_attribution": option_attribution(con),
             "missed_winner_event": missed_winner_event(con),
             "strategy_mutation_proposal": strategy_mutation_proposal(con),
@@ -3234,6 +3235,21 @@ def shadow_trade_mark(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def radar_state_transition(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT transition_id, evaluated_at, snapshot_time, ticker, contract_id,
+               strategy_version, previous_state, state, candidate_state, event_id,
+               trade_id, mark_id, thesis_id, trigger_reason, evidence_refs, raw
+        FROM radar_state_transition
+        ORDER BY snapshot_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("evidence_refs", "raw"))) for row in rows]
 
 
 def option_attribution(con: Any) -> list[dict[str, Any]]:

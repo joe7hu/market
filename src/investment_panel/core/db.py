@@ -575,6 +575,25 @@ CREATE TABLE IF NOT EXISTS shadow_trade_mark (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS radar_state_transition (
+    transition_id TEXT PRIMARY KEY,
+    evaluated_at TIMESTAMP,
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    previous_state TEXT,
+    state TEXT,
+    candidate_state TEXT,
+    event_id TEXT,
+    trade_id TEXT,
+    mark_id TEXT,
+    thesis_id TEXT,
+    trigger_reason TEXT,
+    evidence_refs JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS option_attribution (
     attribution_id TEXT PRIMARY KEY,
     trade_id TEXT,

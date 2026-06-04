@@ -524,6 +524,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
@@ -625,6 +626,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     option_candidates = panel_data.rows("candidate_event")
     shadow_trades = panel_data.rows("shadow_trade")
     shadow_trade_marks = panel_data.rows("shadow_trade_mark")
+    radar_state_transitions = panel_data.rows("radar_state_transition")
     option_attributions = panel_data.rows("option_attribution")
     missed_winners = panel_data.rows("missed_winner_event")
     strategy_proposals = panel_data.rows("strategy_mutation_proposal")
@@ -679,6 +681,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "option_radar_candidates": len(option_candidates),
             "shadow_trades": len(shadow_trades),
             "shadow_trade_marks": len(shadow_trade_marks),
+            "radar_state_transitions": len(radar_state_transitions),
             "option_attributions": len(option_attributions),
             "missed_winners": len(missed_winners),
             "strategy_mutation_proposals": len(strategy_proposals),
@@ -737,6 +740,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "option_radar_candidates": option_candidates[:12],
         "shadow_trades": shadow_trades[:12],
         "shadow_trade_marks": shadow_trade_marks[:12],
+        "radar_state_transitions": radar_state_transitions[:12],
         "option_attributions": option_attributions[:12],
         "missed_winners": missed_winners[:12],
         "strategy_mutation_proposals": strategy_proposals[:12],
@@ -781,6 +785,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
@@ -863,6 +868,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
@@ -906,6 +912,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
@@ -964,6 +971,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
@@ -982,6 +990,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "candidate_event",
             "shadow_trade",
             "shadow_trade_mark",
+            "radar_state_transition",
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",

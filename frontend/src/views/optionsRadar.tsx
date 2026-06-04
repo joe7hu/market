@@ -19,6 +19,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const candidates = rows(data.candidateEvent);
   const shadowTrades = rows(data.shadowTrade);
   const shadowMarks = rows(data.shadowTradeMark);
+  const stateTransitions = rows(data.radarStateTransition);
   const attributions = rows(data.optionAttribution);
   const missedWinners = rows(data.missedWinnerEvent);
   const proposals = rows(data.strategyMutationProposal);
@@ -46,6 +47,8 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const openShadowCount = countWhere(shadowTrades, (row) => !["closed", "exited"].includes(textField(row, ["status"]).toLowerCase()));
   const hit2x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_2x"));
   const hit5x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_5x"));
+  const exitStateCount = countWhere(stateTransitions, (row) => ["EXIT", "INVALIDATED"].includes(stateOf(row)));
+  const activeStateCount = countWhere(stateTransitions, (row) => ["FIRE", "HOLD", "TRIM"].includes(stateOf(row)));
   const missed10x = countWhere(missedWinners, (row) => textField(row, ["winner_threshold"]).toLowerCase() === "10x");
   const openPostmortems = countWhere(postmortemRequests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
   const humanPending = countWhere(proposals, (row) => !["approved", "rejected"].includes(textField(row, ["human_approval_status"], "pending").toLowerCase()));
@@ -54,6 +57,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const metrics: MetricSpec[] = [
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
     ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x, ${shadowMarks.length.toLocaleString()} marks`, openShadowCount ? "info" : "muted"],
+    ["States", stateTransitions.length.toLocaleString(), `${activeStateCount.toLocaleString()} active, ${exitStateCount.toLocaleString()} exit or invalidated`, exitStateCount ? "warn" : activeStateCount ? "good" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
     ["Postmortems", postmortems.length.toLocaleString(), `${openPostmortems.toLocaleString()} open requests`, openPostmortems ? "warn" : postmortems.length ? "info" : "muted"],
     ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting, ${cohorts.length.toLocaleString()} cohorts`, humanPending ? "warn" : "info"],
@@ -85,6 +89,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
         <TabsContent value="radar" className="space-y-4">
           <CandidateEventsTable rows={candidates} onOpenTicker={onOpenTicker} />
+          <RadarStateTransitionsTable rows={stateTransitions} onOpenTicker={onOpenTicker} />
           <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
           <ShadowTradeMarksTable rows={shadowMarks} onOpenTicker={onOpenTicker} />
         </TabsContent>
@@ -151,6 +156,50 @@ function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpe
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
                 <Cell>{textField(row, ["thesis_id"]) ? <StatusBadge tone="good">Attached</StatusBadge> : <StatusBadge tone="muted">Open</StatusBadge>}</Cell>
                 <Cell className="max-w-[340px]"><Truncated>{displayField(row, ["trigger_reason"])}</Truncated></Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function RadarStateTransitionsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No radar state transitions" detail="No deterministic candidate, hold, trim, exit, or invalidation transitions are stored." icon={Activity} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Radar State Transitions" count={rows.length} />}>
+      <table className="w-full min-w-[1180px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>State</Head>
+            <Head>Previous</Head>
+            <Head>Candidate</Head>
+            <Head>Snapshot</Head>
+            <Head>Contract</Head>
+            <Head>Evidence</Head>
+            <Head>Trigger</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
+            const state = stateOf(row);
+            const previous = textField(row, ["previous_state"]);
+            return (
+              <tr key={textField(row, ["transition_id"], `${ticker}-${textField(row, ["snapshot_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
+                <Cell>{previous ? <StatusBadge tone={stateTone(previous)}>{titleLabel(previous)}</StatusBadge> : <span className="text-muted-foreground">Initial</span>}</Cell>
+                <Cell><StatusBadge tone={stateTone(textField(row, ["candidate_state"]))}>{titleLabel(displayField(row, ["candidate_state"], "pending"))}</StatusBadge></Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["snapshot_time"]))}</Cell>
+                <Cell className="max-w-[250px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
+                <Cell className="max-w-[220px]"><Truncated>{transitionEvidence(row)}</Truncated></Cell>
+                <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["trigger_reason"])}</Truncated></Cell>
               </tr>
             );
           })}
@@ -784,6 +833,19 @@ function AttributionBadge({ row }: { row: RowRecord }) {
       </div>
     </div>
   );
+}
+
+function transitionEvidence(row: RowRecord): string {
+  const refs = row.evidence_refs;
+  if (!Array.isArray(refs)) return fullField(row, ["evidence_refs"]);
+  const labels = refs
+    .map((ref) => {
+      if (!ref || typeof ref !== "object" || Array.isArray(ref)) return "";
+      const item = ref as Record<string, unknown>;
+      return typeof item.type === "string" ? titleLabel(item.type) : "";
+    })
+    .filter(Boolean);
+  return labels.length ? labels.join(", ") : fullField(row, ["evidence_refs"]);
 }
 
 function VerdictBadge({ row, keys }: { row: RowRecord | undefined; keys: string[] }) {

@@ -80,6 +80,7 @@ export type PanelData = {
   candidateEvent: TablePayload;
   shadowTrade: TablePayload;
   shadowTradeMark: TablePayload;
+  radarStateTransition: TablePayload;
   optionAttribution: TablePayload;
   missedWinnerEvent: TablePayload;
   strategyMutationProposal: TablePayload;
@@ -187,6 +188,7 @@ export type PanelEndpoint =
   | "candidateEvent"
   | "shadowTrade"
   | "shadowTradeMark"
+  | "radarStateTransition"
   | "optionAttribution"
   | "missedWinnerEvent"
   | "strategyMutationProposal"
