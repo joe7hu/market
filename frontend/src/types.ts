@@ -78,6 +78,7 @@ export type PanelData = {
   agentPostmortemRequest: TablePayload;
   agentPostmortem: TablePayload;
   candidateEvent: TablePayload;
+  candidateEventMark: TablePayload;
   shadowTrade: TablePayload;
   shadowTradeMark: TablePayload;
   radarStateTransition: TablePayload;
@@ -186,6 +187,7 @@ export type PanelEndpoint =
   | "agentPostmortemRequest"
   | "agentPostmortem"
   | "candidateEvent"
+  | "candidateEventMark"
   | "shadowTrade"
   | "shadowTradeMark"
   | "radarStateTransition"

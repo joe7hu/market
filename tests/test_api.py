@@ -54,6 +54,7 @@ def test_api_routes_return_json() -> None:
         "/api/agent-postmortem-requests",
         "/api/agent-postmortems",
         "/api/candidate-events",
+        "/api/candidate-event-marks",
         "/api/shadow-trades",
         "/api/shadow-trade-marks",
         "/api/radar-state-transitions",
@@ -135,6 +136,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
     assert set(payload["tables"]) == {
         "option_strategy_versions",
         "candidate_event",
+        "candidate_event_mark",
         "shadow_trade",
         "shadow_trade_mark",
         "radar_state_transition",

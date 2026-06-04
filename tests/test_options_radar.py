@@ -40,11 +40,13 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
         feature = query_rows(con, "SELECT required_10x_price, required_move_10x_pct, iv_percentile FROM option_features WHERE contract_id = 'OPRA:TSLA270918C120'")[0]
         fire = query_rows(con, "SELECT * FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C120'")[0]
         rejects = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C180'")[0]
+        candidate_marks = query_rows(con, "SELECT contract_id, candidate_state, current_return FROM candidate_event_mark ORDER BY contract_id")
         trades = query_rows(con, "SELECT * FROM shadow_trade")
         transitions = query_rows(con, "SELECT contract_id, state, candidate_state FROM radar_state_transition ORDER BY contract_id")
 
     assert result["option_snapshots"] == 2
     assert result["candidate_events"] == 2
+    assert result["candidate_event_marks"] == 2
     assert result["radar_state_transitions"] == 2
     assert strategy == [{"strategy_version": DEFAULT_STRATEGY_VERSION, "status": "shadow"}]
     assert snapshots[0]["open_interest"] == 250
@@ -58,6 +60,8 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
     assert "10x_math_inside_cap" in fire["trigger_reason"]
     assert rejects["state"] == "REJECT"
     assert "iv_percentile_reject" in rejects["trigger_reason"]
+    assert [row["candidate_state"] for row in candidate_marks] == ["FIRE", "REJECT"]
+    assert all(row["current_return"] < 0 for row in candidate_marks)
     assert len(trades) == 1
     assert trades[0]["event_id"] == fire["event_id"]
     assert trades[0]["status"] == "open"
@@ -177,6 +181,7 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
     assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
     assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
+    assert panel["tables"]["candidate_event_mark"][0]["candidate_state"] in {"FIRE", "REJECT"}
     assert panel["tables"]["shadow_trade"][0]["status"] == "open"
     assert panel["tables"]["radar_state_transition"][0]["state"] in {"FIRE", "REJECT"}
 
@@ -209,6 +214,7 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         result = refresh_options_radar(con, ["TSLA"])
         attribution = query_rows(con, "SELECT * FROM option_attribution")[0]
         first_trade = query_rows(con, "SELECT * FROM shadow_trade ORDER BY entry_time LIMIT 1")[0]
+        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
         marks = query_rows(con, "SELECT * FROM shadow_trade_mark ORDER BY mark_time")
         transitions = query_rows(con, "SELECT state, previous_state, trigger_reason FROM radar_state_transition WHERE contract_id = 'OPRA:TSLA270918C120' ORDER BY snapshot_time")
         cohorts = query_rows(con, "SELECT * FROM strategy_cohort_result")
@@ -216,6 +222,7 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         market_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_value = 'qqq_above_200d'")[0]
 
     assert result["option_attributions"] == 1
+    assert result["candidate_event_marks"] == 3
     assert result["shadow_trade_marks"] == 2
     assert result["radar_state_transitions"] == 2
     assert result["strategy_cohorts"] >= 4
@@ -225,6 +232,11 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
     assert attribution["underlying_return"] > 0
     assert first_trade["max_return_seen"] > 1.0
     assert first_trade["time_to_2x"] == 1
+    trade_candidate_marks = [row for row in candidate_marks if row["event_id"] == first_trade["event_id"]]
+    assert len(candidate_marks) == 3
+    assert len(trade_candidate_marks) == 2
+    assert trade_candidate_marks[-1]["current_return"] > 1.0
+    assert trade_candidate_marks[-1]["time_to_2x"] == 1
     assert len(marks) == 2
     assert marks[-1]["trade_id"] == first_trade["trade_id"]
     assert marks[-1]["current_return"] > 1.0
@@ -272,14 +284,20 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
         proposal = query_rows(con, "SELECT * FROM strategy_mutation_proposal")[0]
         backtest = query_rows(con, "SELECT * FROM strategy_backtest_result")[0]
         forward = query_rows(con, "SELECT * FROM strategy_forward_test_result")[0]
+        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
         trades = query_rows(con, "SELECT * FROM shadow_trade")
 
+    assert result["candidate_event_marks"] == 3
     assert result["missed_winners"] == 1
     assert result["strategy_mutation_proposals"] == 1
     assert result["strategy_backtests"] == 1
     assert result["strategy_forward_tests"] == 1
     assert trades == []
     assert missed["winner_threshold"] == "10x"
+    best_candidate_mark = max(candidate_marks, key=lambda row: row["max_return_since_alert"])
+    assert best_candidate_mark["candidate_state"] == "REJECT"
+    assert best_candidate_mark["time_to_10x"] == 18
+    assert best_candidate_mark["max_return_since_alert"] >= 9.0
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
     assert proposal["status"] == "forward_test_required"

@@ -529,6 +529,34 @@ CREATE TABLE IF NOT EXISTS candidate_event (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS candidate_event_mark (
+    mark_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    candidate_state TEXT,
+    mark_time TIMESTAMP,
+    alert_time TIMESTAMP,
+    premium_fill_assumption DOUBLE,
+    mark_price DOUBLE,
+    current_return DOUBLE,
+    return_1d DOUBLE,
+    return_5d DOUBLE,
+    return_20d DOUBLE,
+    return_60d DOUBLE,
+    max_return_since_alert DOUBLE,
+    max_drawdown_since_alert DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    iv DOUBLE,
+    underlying_price DOUBLE,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS shadow_trade (
     trade_id TEXT PRIMARY KEY,
     event_id TEXT,

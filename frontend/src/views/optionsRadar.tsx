@@ -17,6 +17,7 @@ type OptionsRadarPageProps = {
 
 export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) {
   const candidates = rows(data.candidateEvent);
+  const candidateMarks = rows(data.candidateEventMark);
   const shadowTrades = rows(data.shadowTrade);
   const shadowMarks = rows(data.shadowTradeMark);
   const stateTransitions = rows(data.radarStateTransition);
@@ -44,6 +45,8 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const fireCount = countWhere(candidates, (row) => stateOf(row) === "FIRE");
   const setupCount = countWhere(candidates, (row) => stateOf(row) === "SETUP");
   const watchCount = countWhere(candidates, (row) => stateOf(row) === "WATCH");
+  const candidateHit2x = countWhere(candidateMarks, (row) => hasValue(row, "time_to_2x"));
+  const candidateHit5x = countWhere(candidateMarks, (row) => hasValue(row, "time_to_5x"));
   const openShadowCount = countWhere(shadowTrades, (row) => !["closed", "exited"].includes(textField(row, ["status"]).toLowerCase()));
   const hit2x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_2x"));
   const hit5x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_5x"));
@@ -56,6 +59,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
   const metrics: MetricSpec[] = [
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
+    ["Candidate Marks", candidateMarks.length.toLocaleString(), `${candidateHit2x.toLocaleString()} hit 2x, ${candidateHit5x.toLocaleString()} hit 5x`, candidateHit5x ? "good" : candidateHit2x ? "info" : candidateMarks.length ? "muted" : "muted"],
     ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x, ${shadowMarks.length.toLocaleString()} marks`, openShadowCount ? "info" : "muted"],
     ["States", stateTransitions.length.toLocaleString(), `${activeStateCount.toLocaleString()} active, ${exitStateCount.toLocaleString()} exit or invalidated`, exitStateCount ? "warn" : activeStateCount ? "good" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
@@ -89,6 +93,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
         <TabsContent value="radar" className="space-y-4">
           <CandidateEventsTable rows={candidates} onOpenTicker={onOpenTicker} />
+          <CandidateEventMarksTable rows={candidateMarks} onOpenTicker={onOpenTicker} />
           <RadarStateTransitionsTable rows={stateTransitions} onOpenTicker={onOpenTicker} />
           <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
           <ShadowTradeMarksTable rows={shadowMarks} onOpenTicker={onOpenTicker} />
@@ -156,6 +161,61 @@ function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpe
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
                 <Cell>{textField(row, ["thesis_id"]) ? <StatusBadge tone="good">Attached</StatusBadge> : <StatusBadge tone="muted">Open</StatusBadge>}</Cell>
                 <Cell className="max-w-[340px]"><Truncated>{displayField(row, ["trigger_reason"])}</Truncated></Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function CandidateEventMarksTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No candidate marks" detail="No point-in-time validation marks are stored for candidate events." icon={Activity} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Candidate Outcome Marks" count={rows.length} />}>
+      <table className="w-full min-w-[1240px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Candidate</Head>
+            <Head>Alert</Head>
+            <Head>Mark</Head>
+            <Head className="text-right">Current</Head>
+            <Head className="text-right">1D</Head>
+            <Head className="text-right">5D</Head>
+            <Head className="text-right">20D</Head>
+            <Head className="text-right">60D</Head>
+            <Head className="text-right">Max</Head>
+            <Head className="text-right">Drawdown</Head>
+            <Head>Hit Times</Head>
+            <Head className="text-right">IV</Head>
+            <Head className="text-right">Spread</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
+            const state = textField(row, ["candidate_state"]);
+            return (
+              <tr key={textField(row, ["mark_id"], `${ticker}-${textField(row, ["mark_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["alert_time"]))}</Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["mark_time"]))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["current_return"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_1d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_5d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_20d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_60d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_since_alert"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["max_drawdown_since_alert"], Number.NaN))}</Cell>
+                <Cell><HitTimes row={row} /></Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["iv"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
               </tr>
             );
           })}

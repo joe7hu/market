@@ -354,6 +354,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "candidate_event")
 
+    @app.get("/api/candidate-event-marks")
+    def candidate_event_marks() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "candidate_event_mark")
+
     @app.get("/api/shadow-trades")
     def shadow_trades() -> dict[str, Any]:
         _, panel_data = _context()
