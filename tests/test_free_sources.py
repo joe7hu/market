@@ -19,6 +19,7 @@ from investment_panel.core.fundamentals import metrics_from_company_facts
 from investment_panel.core.free_sources import (
     infer_event_date,
     option_symbols,
+    selected_option_expiries,
     store_expiries,
     store_news_rows,
     store_options_chain,
@@ -213,6 +214,97 @@ def test_default_option_symbols_cover_full_equity_universe(tmp_path: Path) -> No
     assert len(symbols) == 15
     assert symbols[0] == "T00"
     assert symbols[-1] == "T14"
+
+
+def test_selected_option_expiries_includes_near_term_and_radar_leaps() -> None:
+    rows = [
+        {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+        {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+        {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+        {"expiry": "2027-12-17", "dte": 563, "contracts_count": 180},
+        {"expiry": "2029-01-19", "dte": 962, "contracts_count": 180},
+    ]
+
+    expiries = selected_option_expiries(rows, "2026-06-02T15:30:00Z")
+
+    assert expiries == ["2026-06-05", "2027-06-02", "2028-11-18"]
+
+
+def test_selected_option_expiries_computes_missing_dte() -> None:
+    rows = [
+        {"expiry": "2028-06-02", "contracts_count": 180},
+        {"expiry": "2026-06-05", "contracts_count": 120},
+        {"expiry": "2027-06-02", "contracts_count": 180},
+    ]
+
+    expiries = selected_option_expiries(rows, "2026-06-02T15:30:00Z")
+
+    assert expiries == ["2026-06-05", "2027-06-02", "2028-06-02"]
+
+
+def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path, monkeypatch) -> None:
+    chain_calls: list[str] = []
+
+    class MultiExpiryOptionsProvider:
+        def __init__(self, _runner: object) -> None:
+            pass
+
+        def status(self) -> list[dict[str, object]]:
+            return [{"connected": False}]
+
+        def quote(self, _symbol: str) -> dict[str, object]:
+            return {"symbol": "NASDAQ:TSLA", "close": 100, "currency": "USD"}
+
+        def screener(self, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
+            return [
+                {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+                {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+                {"expiry": "2027-12-17", "dte": 563, "contracts_count": 180},
+                {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+            ]
+
+        def options_chain(self, _symbol: str, expiry: str | None = None, strikes_around_spot: int = 6) -> list[dict[str, object]]:
+            assert expiry is not None
+            chain_calls.append(expiry)
+            return [{"expiry": expiry, "strike": 120, "type": "call", "bid": 4.8, "ask": 5.2, "mid": 5.0, "iv": 0.42, "delta": 0.31}]
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(
+            opencli=SimpleNamespace(enabled=True, command="opencli", timeout_seconds=1),
+            tradingview=SimpleNamespace(
+                enabled=True,
+                options_symbols=["TSLA"],
+                screener_limit=0,
+                news_limit=0,
+                strikes_around_spot=6,
+                personal_surfaces_enabled=False,
+            ),
+        ),
+        watchlist=[],
+    )
+    monkeypatch.setattr(free_sources_core, "TradingViewProvider", MultiExpiryOptionsProvider)
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
+
+        result = free_sources_core.update_tradingview_sources(con, config)
+        rows = query_rows(con, "SELECT expiry, count(*) AS count FROM options_chain GROUP BY expiry ORDER BY expiry")
+
+    assert chain_calls == ["2026-06-05", "2027-06-02", "2028-11-18"]
+    assert result["chain_expiries"] == 3
+    assert result["chains"] == 3
+    assert rows == [
+        {"expiry": date(2026, 6, 5), "count": 1},
+        {"expiry": date(2027, 6, 2), "count": 1},
+        {"expiry": date(2028, 11, 18), "count": 1},
+    ]
 
 
 def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:

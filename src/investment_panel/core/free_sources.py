@@ -12,6 +12,10 @@ from investment_panel.core.options_intelligence import clear_options_intelligenc
 from investment_panel.providers import OpenCliError, OpenCliRunner, TradingViewProvider
 from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
 
+RADAR_MIN_DTE = 365
+RADAR_MAX_DTE = 900
+RADAR_MAX_EXPIRIES_PER_SYMBOL = 2
+
 
 def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
     if not config.data_sources.opencli.enabled or not config.data_sources.tradingview.enabled:
@@ -32,6 +36,7 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         "watchlists": 0,
         "alerts": 0,
         "chart_states": 0,
+        "chain_expiries": 0,
     }
     try:
         status_rows = provider.status()
@@ -79,28 +84,36 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
                 if expiries:
                     break
             result["expiries"] += store_expiries(con, symbol, observed_at, expiries)
-            first_expiry = next((row.get("expiry") for row in expiries if row.get("expiry")), None)
-            if first_expiry:
-                chain = []
-                chain_error = False
-                for candidate in tradingview_symbol_candidates(symbol):
-                    try:
-                        chain = provider.options_chain(
-                            candidate,
-                            str(first_expiry),
-                            strikes_around_spot=config.data_sources.tradingview.strikes_around_spot,
-                        )
-                    except OpenCliError as exc:
-                        chain_error = True
-                        option_errors.append(f"{symbol}:chain:{candidate}:{exc}")
-                        continue
-                    if chain:
-                        break
-                stored_chain_rows = store_options_chain(con, symbol, observed_at, chain)
-                result["chains"] += stored_chain_rows
-                if stored_chain_rows:
+            selected_expiries = selected_option_expiries(expiries, observed_at)
+            if selected_expiries:
+                symbol_chain_rows = 0
+                any_chain_error = False
+                for expiry in selected_expiries:
+                    chain = []
+                    chain_error = False
+                    for candidate in tradingview_symbol_candidates(symbol):
+                        try:
+                            chain = provider.options_chain(
+                                candidate,
+                                str(expiry),
+                                strikes_around_spot=config.data_sources.tradingview.strikes_around_spot,
+                            )
+                        except OpenCliError as exc:
+                            chain_error = True
+                            option_errors.append(f"{symbol}:chain:{candidate}:{exc}")
+                            continue
+                        if chain:
+                            break
+                    stored_chain_rows = store_options_chain(con, symbol, observed_at, chain)
+                    result["chains"] += stored_chain_rows
+                    if stored_chain_rows:
+                        symbol_chain_rows += stored_chain_rows
+                        result["chain_expiries"] += 1
+                    if chain_error:
+                        any_chain_error = True
+                if symbol_chain_rows:
                     refreshed_option_symbols.append(symbol)
-                elif not chain_error:
+                elif not any_chain_error:
                     clear_options_intelligence(con, [symbol], source="tradingview")
             elif not expiry_error:
                 clear_options_intelligence(con, [symbol], source="tradingview")
@@ -393,6 +406,75 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
     )
     ranked = [row["symbol"] for row in rows]
     return unique_symbols([*watchlist, *ranked, *equity_symbols(con)])
+
+
+def selected_option_expiries(
+    rows: list[dict[str, Any]],
+    observed_at: str,
+    *,
+    radar_min_dte: int = RADAR_MIN_DTE,
+    radar_max_dte: int = RADAR_MAX_DTE,
+    max_radar_expiries: int = RADAR_MAX_EXPIRIES_PER_SYMBOL,
+) -> list[str]:
+    """Pick near-term coverage plus representative LEAP expiries for the radar."""
+
+    normalized = sorted(
+        (row for row in (_expiry_row(row, observed_at) for row in rows) if row is not None),
+        key=lambda row: int(row["dte"]),
+    )
+    if not normalized:
+        return []
+    selected: list[str] = [str(normalized[0]["expiry"])]
+    radar_rows = [row for row in normalized if radar_min_dte <= int(row["dte"]) <= radar_max_dte]
+    if radar_rows and max_radar_expiries > 0:
+        targets = _radar_expiry_targets(radar_min_dte, radar_max_dte, max_radar_expiries)
+        remaining = radar_rows[:]
+        for target in targets:
+            if not remaining:
+                break
+            best = min(remaining, key=lambda row: abs(int(row["dte"]) - target))
+            selected.append(str(best["expiry"]))
+            remaining = [row for row in remaining if row["expiry"] != best["expiry"]]
+    return _unique_strings(selected)
+
+
+def _expiry_row(row: dict[str, Any], observed_at: str) -> dict[str, Any] | None:
+    expiry = row.get("expiry")
+    if not expiry:
+        return None
+    dte = as_int(row.get("dte"))
+    if dte is None:
+        dte = _dte_from_expiry(str(expiry), observed_at)
+    if dte is None:
+        return None
+    return {"expiry": str(expiry), "dte": dte}
+
+
+def _radar_expiry_targets(min_dte: int, max_dte: int, count: int) -> list[int]:
+    if count <= 1:
+        return [min_dte]
+    step = (max_dte - min_dte) / max(1, count - 1)
+    return [round(min_dte + step * index) for index in range(count)]
+
+
+def _dte_from_expiry(expiry: str, observed_at: str) -> int | None:
+    try:
+        expiry_date = date.fromisoformat(expiry[:10])
+        observed_date = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return None
+    return (expiry_date - observed_date).days
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
 
 
 def tradingview_search_symbols(con: Any, config: AppConfig) -> list[str]:
