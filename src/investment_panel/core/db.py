@@ -476,6 +476,41 @@ CREATE TABLE IF NOT EXISTS agent_thesis_validation (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS agent_postmortem_request (
+    request_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    source_type TEXT,
+    source_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    priority_score DOUBLE,
+    status TEXT,
+    prompt TEXT,
+    context JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_postmortem (
+    postmortem_id TEXT PRIMARY KEY,
+    request_id TEXT,
+    source_type TEXT,
+    source_id TEXT,
+    created_at TIMESTAMP,
+    agent_version TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    outcome_type TEXT,
+    failure_type TEXT,
+    evidence JSON,
+    proposed_rule_change TEXT,
+    proposed_parameter_changes JSON,
+    expected_effect TEXT,
+    risk TEXT,
+    confidence DOUBLE,
+    evidence_refs JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS candidate_event (
     event_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,

@@ -59,6 +59,9 @@ def refresh_options_radar(
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
+    from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work
+
+    postmortem_work = refresh_option_agent_postmortem_work(con, strategy_version=strategy_version)
     evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
     cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
     return {
@@ -72,6 +75,7 @@ def refresh_options_radar(
         "option_attributions": attribution_rows,
         "missed_winners": missed_rows,
         "strategy_mutation_proposals": proposal_rows,
+        **postmortem_work,
         **evaluation_rows,
         "strategy_cohorts": cohort_rows,
     }

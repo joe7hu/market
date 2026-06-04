@@ -75,6 +75,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "agent_thesis": agent_thesis(con),
             "agent_thesis_request": agent_thesis_request(con),
             "agent_thesis_validation": agent_thesis_validation(con),
+            "agent_postmortem_request": agent_postmortem_request(con),
+            "agent_postmortem": agent_postmortem(con),
             "candidate_event": candidate_event(con),
             "shadow_trade": shadow_trade(con),
             "option_attribution": option_attribution(con),
@@ -3152,6 +3154,37 @@ def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("evidence_refs", "raw"))) for row in rows]
+
+
+def agent_postmortem_request(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT request_id, created_at, source_type, source_id, ticker,
+               strategy_version, priority_score, status, prompt, context, raw
+        FROM agent_postmortem_request
+        ORDER BY created_at DESC, priority_score DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
+
+
+def agent_postmortem(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT postmortem_id, request_id, source_type, source_id, created_at,
+               agent_version, ticker, strategy_version, outcome_type,
+               failure_type, evidence, proposed_rule_change,
+               proposed_parameter_changes, expected_effect, risk, confidence,
+               evidence_refs, raw
+        FROM agent_postmortem
+        ORDER BY created_at DESC, confidence DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("evidence", "proposed_parameter_changes", "evidence_refs", "raw"))) for row in rows]
 
 
 def candidate_event(con: Any) -> list[dict[str, Any]]:

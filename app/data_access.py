@@ -519,6 +519,8 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "agent_thesis",
             "agent_thesis_request",
             "agent_thesis_validation",
+            "agent_postmortem_request",
+            "agent_postmortem",
             "candidate_event",
             "shadow_trade",
             "option_attribution",
@@ -629,6 +631,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     strategy_cohorts = panel_data.rows("strategy_cohort_result")
     agent_thesis_requests = panel_data.rows("agent_thesis_request")
     agent_thesis_validations = panel_data.rows("agent_thesis_validation")
+    agent_postmortem_requests = panel_data.rows("agent_postmortem_request")
+    agent_postmortems = panel_data.rows("agent_postmortem")
     source_health = panel_data.rows("source_health")
     sources = panel_data.rows("sources")
     source_runs = panel_data.rows("source_runs")
@@ -680,6 +684,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "strategy_cohorts": len(strategy_cohorts),
             "agent_thesis_requests": len(agent_thesis_requests),
             "agent_thesis_validations": len(agent_thesis_validations),
+            "agent_postmortem_requests": len(agent_postmortem_requests),
+            "agent_postmortems": len(agent_postmortems),
             "sources": len(sources) or len(source_freshness) or len(source_health),
             "source_runs": len(source_runs),
             "source_items": len(source_items),
@@ -735,6 +741,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "strategy_cohorts": strategy_cohorts[:12],
         "agent_thesis_requests": agent_thesis_requests[:12],
         "agent_thesis_validations": agent_thesis_validations[:12],
+        "agent_postmortem_requests": agent_postmortem_requests[:12],
+        "agent_postmortems": agent_postmortems[:12],
         "disclosures": disclosures[:8],
         "news": news[:8],
     }
@@ -956,6 +964,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "strategy_cohort_result",
             "agent_thesis_request",
             "agent_thesis_validation",
+            "agent_postmortem_request",
+            "agent_postmortem",
             "tradingview_alerts",
             "tradingview_chart_state",
         ],
@@ -972,6 +982,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "agent_thesis",
             "agent_thesis_request",
             "agent_thesis_validation",
+            "agent_postmortem_request",
+            "agent_postmortem",
             "option_snapshot",
             "option_features",
             "stock_features",

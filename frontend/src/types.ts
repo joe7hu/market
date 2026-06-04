@@ -75,6 +75,8 @@ export type PanelData = {
   agentThesis: TablePayload;
   agentThesisRequest: TablePayload;
   agentThesisValidation: TablePayload;
+  agentPostmortemRequest: TablePayload;
+  agentPostmortem: TablePayload;
   candidateEvent: TablePayload;
   shadowTrade: TablePayload;
   optionAttribution: TablePayload;
@@ -179,6 +181,8 @@ export type PanelEndpoint =
   | "agentThesis"
   | "agentThesisRequest"
   | "agentThesisValidation"
+  | "agentPostmortemRequest"
+  | "agentPostmortem"
   | "candidateEvent"
   | "shadowTrade"
   | "optionAttribution"

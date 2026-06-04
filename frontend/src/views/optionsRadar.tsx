@@ -26,6 +26,8 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const cohorts = rows(data.strategyCohortResult);
   const thesisRequests = rows(data.agentThesisRequest);
   const thesisValidations = rows(data.agentThesisValidation);
+  const postmortemRequests = rows(data.agentPostmortemRequest);
+  const postmortems = rows(data.agentPostmortem);
   const agentTheses = rows(data.agentThesis);
   const optionSnapshots = rows(data.optionSnapshot);
   const optionFeatures = rows(data.optionFeatures);
@@ -44,6 +46,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const hit2x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_2x"));
   const hit5x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_5x"));
   const missed10x = countWhere(missedWinners, (row) => textField(row, ["winner_threshold"]).toLowerCase() === "10x");
+  const openPostmortems = countWhere(postmortemRequests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
   const humanPending = countWhere(proposals, (row) => !["approved", "rejected"].includes(textField(row, ["human_approval_status"], "pending").toLowerCase()));
   const forwardCollecting = countWhere(forwardTests, (row) => textField(row, ["verdict", "status"]).toLowerCase() === "collecting_data");
 
@@ -51,6 +54,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
     ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x`, openShadowCount ? "info" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
+    ["Postmortems", postmortems.length.toLocaleString(), `${openPostmortems.toLocaleString()} open requests`, openPostmortems ? "warn" : postmortems.length ? "info" : "muted"],
     ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting, ${cohorts.length.toLocaleString()} cohorts`, humanPending ? "warn" : "info"],
   ];
 
@@ -85,6 +89,8 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
         <TabsContent value="learning" className="space-y-4">
           <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} />
+          <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} />
+          <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} />
           <CohortResultsTable rows={cohorts} />
           <StrategyProposalsTable rows={proposals} backtestByProposal={latestBacktestByProposal} forwardByProposal={latestForwardByProposal} />
         </TabsContent>
@@ -294,6 +300,87 @@ function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["theta_iv_bleed_rate"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["good_convexity_rate"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["qqq_above_200d_rate"], Number.NaN))}</Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function PostmortemRequestsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No postmortem requests" detail="No important outcomes are queued for agent postmortem." icon={BrainCircuit} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Agent Postmortem Queue" count={rows.length} />}>
+      <table className="w-full min-w-[1040px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Status</Head>
+            <Head>Outcome</Head>
+            <Head className="text-right">Priority</Head>
+            <Head>Strategy</Head>
+            <Head>Created</Head>
+            <Head>Prompt</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"]);
+            const status = textField(row, ["status"], "open");
+            return (
+              <tr key={textField(row, ["request_id"], `${ticker}-${textField(row, ["source_id"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
+                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["source_type"])}</Truncated></Cell>
+                <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["priority_score"], Number.NaN))}</Cell>
+                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</Cell>
+                <Cell className="max-w-[380px]"><Truncated>{displayField(row, ["prompt"])}</Truncated></Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function PostmortemsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No postmortems" detail="No structured agent postmortems are stored." icon={BrainCircuit} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Structured Postmortems" count={rows.length} />}>
+      <table className="w-full min-w-[1180px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Outcome</Head>
+            <Head>Failure</Head>
+            <Head className="text-right">Confidence</Head>
+            <Head>Rule Change</Head>
+            <Head>Expected Effect</Head>
+            <Head>Risk</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"]);
+            return (
+              <tr key={textField(row, ["postmortem_id"], `${ticker}-${textField(row, ["source_id"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["outcome_type"])}</Truncated></Cell>
+                <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["failure_type"])}</Truncated></Cell>
+                <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["confidence"], Number.NaN))}</Cell>
+                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["proposed_rule_change"])}</Truncated></Cell>
+                <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["expected_effect"])}</Truncated></Cell>
+                <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["risk"])}</Truncated></Cell>
               </tr>
             );
           })}
