@@ -49,6 +49,9 @@ def refresh_options_radar(
     feature_rows = refresh_option_features(con, symbols=symbols, source=source)
     stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
     candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source)
+    from investment_panel.core.option_agent_thesis import refresh_option_agent_work
+
+    agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
     shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
     marked_rows = mark_shadow_trades(con)
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
@@ -59,6 +62,7 @@ def refresh_options_radar(
         "option_features": feature_rows,
         "stock_features": stock_rows,
         "candidate_events": candidate_rows,
+        **agent_work,
         "shadow_trades": shadow_rows,
         "shadow_trades_marked": marked_rows,
         "option_attributions": attribution_rows,

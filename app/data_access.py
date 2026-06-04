@@ -517,6 +517,8 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "option_features",
             "stock_features",
             "agent_thesis",
+            "agent_thesis_request",
+            "agent_thesis_validation",
             "candidate_event",
             "shadow_trade",
             "option_attribution",
@@ -619,6 +621,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     option_attributions = panel_data.rows("option_attribution")
     missed_winners = panel_data.rows("missed_winner_event")
     strategy_proposals = panel_data.rows("strategy_mutation_proposal")
+    agent_thesis_requests = panel_data.rows("agent_thesis_request")
+    agent_thesis_validations = panel_data.rows("agent_thesis_validation")
     source_health = panel_data.rows("source_health")
     sources = panel_data.rows("sources")
     source_runs = panel_data.rows("source_runs")
@@ -665,6 +669,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "option_attributions": len(option_attributions),
             "missed_winners": len(missed_winners),
             "strategy_mutation_proposals": len(strategy_proposals),
+            "agent_thesis_requests": len(agent_thesis_requests),
+            "agent_thesis_validations": len(agent_thesis_validations),
             "sources": len(sources) or len(source_freshness) or len(source_health),
             "source_runs": len(source_runs),
             "source_items": len(source_items),
@@ -715,6 +721,8 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "option_attributions": option_attributions[:12],
         "missed_winners": missed_winners[:12],
         "strategy_mutation_proposals": strategy_proposals[:12],
+        "agent_thesis_requests": agent_thesis_requests[:12],
+        "agent_thesis_validations": agent_thesis_validations[:12],
         "disclosures": disclosures[:8],
         "news": news[:8],
     }
@@ -755,6 +763,9 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "theses",
             "thesis_monitor",
             "research_packets",
+            "agent_thesis",
+            "agent_thesis_request",
+            "agent_thesis_validation",
             "ticker_memos",
             "opportunity_sources",
             "daily_brief",
@@ -819,6 +830,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "option_features",
             "stock_features",
             "agent_thesis",
+            "agent_thesis_request",
+            "agent_thesis_validation",
             "candidate_event",
             "shadow_trade",
             "option_attribution",
@@ -863,6 +876,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
+            "agent_thesis_request",
+            "agent_thesis_validation",
             "screener",
             "tradingview_symbol_search",
             "tradingview_watchlists",
@@ -915,6 +930,8 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "option_attribution",
             "missed_winner_event",
             "strategy_mutation_proposal",
+            "agent_thesis_request",
+            "agent_thesis_validation",
             "tradingview_alerts",
             "tradingview_chart_state",
         ],

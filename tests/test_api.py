@@ -48,6 +48,8 @@ def test_api_routes_return_json() -> None:
         "/api/option-features",
         "/api/stock-features",
         "/api/agent-thesis",
+        "/api/agent-thesis-requests",
+        "/api/agent-thesis-validations",
         "/api/candidate-events",
         "/api/shadow-trades",
         "/api/option-attributions",

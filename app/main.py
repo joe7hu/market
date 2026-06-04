@@ -329,6 +329,16 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "agent_thesis")
 
+    @app.get("/api/agent-thesis-requests")
+    def agent_thesis_requests() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "agent_thesis_request")
+
+    @app.get("/api/agent-thesis-validations")
+    def agent_thesis_validations() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "agent_thesis_validation")
+
     @app.get("/api/candidate-events")
     def candidate_events() -> dict[str, Any]:
         _, panel_data = _context()

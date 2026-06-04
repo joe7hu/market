@@ -73,6 +73,8 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "option_features": option_features(con),
             "stock_features": stock_features(con),
             "agent_thesis": agent_thesis(con),
+            "agent_thesis_request": agent_thesis_request(con),
+            "agent_thesis_validation": agent_thesis_validation(con),
             "candidate_event": candidate_event(con),
             "shadow_trade": shadow_trade(con),
             "option_attribution": option_attribution(con),
@@ -3118,6 +3120,35 @@ def agent_thesis(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("required_proofs", "invalidation_conditions", "catalysts", "evidence_refs", "raw"))) for row in rows]
+
+
+def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT request_id, created_at, ticker, event_id, strategy_version,
+               priority_score, status, prompt, context, raw
+        FROM agent_thesis_request
+        ORDER BY created_at DESC, priority_score DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
+
+
+def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT validation_id, thesis_id, ticker, validated_at, state, reason,
+               option_still_valid, stock_progress, iv_status, candidate_state,
+               evidence_refs, raw
+        FROM agent_thesis_validation
+        ORDER BY validated_at DESC, ticker
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("evidence_refs", "raw"))) for row in rows]
 
 
 def candidate_event(con: Any) -> list[dict[str, Any]]:

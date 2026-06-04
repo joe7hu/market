@@ -448,6 +448,34 @@ CREATE TABLE IF NOT EXISTS agent_thesis (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS agent_thesis_request (
+    request_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    ticker TEXT,
+    event_id TEXT,
+    strategy_version TEXT,
+    priority_score DOUBLE,
+    status TEXT,
+    prompt TEXT,
+    context JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_thesis_validation (
+    validation_id TEXT PRIMARY KEY,
+    thesis_id TEXT,
+    ticker TEXT,
+    validated_at TIMESTAMP,
+    state TEXT,
+    reason TEXT,
+    option_still_valid BOOLEAN,
+    stock_progress TEXT,
+    iv_status TEXT,
+    candidate_state TEXT,
+    evidence_refs JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS candidate_event (
     event_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,
