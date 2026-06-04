@@ -7,8 +7,25 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
 from app.data_access import ticker_decision_brief
+import app.main as app_main
 from app.main import app, _require_local_request
+from tests.test_option_agent_postmortem import seed_missed_winner
+from tests.test_option_agent_thesis import seed_fire_candidate
+
+
+def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
+    app_main._invalidate_context_cache()
+    monkeypatch.setattr(
+        app_main,
+        "load_config",
+        lambda _path=None: {
+            "database": {"duckdb_path": str(db_path)},
+            "nas": {"status_dir": str(db_path.parent / "status")},
+        },
+    )
 
 
 def test_api_routes_return_json() -> None:
@@ -172,6 +189,130 @@ def test_refresh_jobs_exposes_options_radar_job() -> None:
 
     assert response.status_code == 200
     assert "refresh_options_radar" in response.json()["allowlist"]
+
+
+def test_agent_thesis_post_fulfills_request_and_validates(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "agent-thesis-api.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_fire_candidate(con)
+        refresh_options_radar(con, ["TSLA"])
+        con.execute(
+            """
+            INSERT INTO ticker_source_signals
+            (id, source_item_id, source_id, symbol, observed_at, signal_type,
+             sentiment, direction, confidence, thesis, antithesis, catalysts,
+             risks, invalidation, evidence_refs, needs_market_context, raw)
+            VALUES (
+             'sig-tsla-api-proof', 'source-tsla-api-proof', 'test_research', 'TSLA',
+             '2026-06-03T12:00:00Z', 'earnings', 'positive', 'bullish', 0.9,
+             'gross margin stabilizes while deliveries recover into the next report',
+             'pricing pressure remains the bear case',
+             '[{"type":"earnings","what_to_watch":"margins and delivery guide"}]',
+             '["pricing pressure"]',
+             'stock breaks below $80 without recovery',
+             '[{"type":"source_item","id":"source-tsla-api-proof"}]',
+             true,
+             '{}'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO catalysts
+            (id, symbol, event_date, event, expected_impact, source, verification_status, raw)
+            VALUES ('cat-tsla-api-earnings', 'TSLA', '2026-06-15', 'earnings', 'high', 'test', 'confirmed', '{}')
+            """
+        )
+
+    _use_temp_api_db(monkeypatch, db_path)
+    client = TestClient(app)
+    response = client.post(
+        "/api/agent-thesis",
+        json={
+            "ticker": "TSLA",
+            "strategy_version": DEFAULT_STRATEGY_VERSION,
+            "created_at": "2026-06-03T12:00:00Z",
+            "bull_target_price": 180,
+            "bull_target_date": "2028-01-21",
+            "base_target_price": 95,
+            "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
+            "required_proofs": ["gross margin stabilizes", "deliveries recover"],
+            "catalysts": [{"type": "earnings", "what_to_watch": "margins and delivery guide"}],
+            "invalidation": ["stock breaks below $80 without recovery"],
+            "bear_case": "Demand weakness and pricing pressure can keep the stock below trend.",
+            "confidence": 72,
+            "evidence_refs": [{"type": "source_signal", "id": "source-tsla-api-proof"}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "accepted"
+    assert payload["agent_theses_attached"] >= 1
+    assert payload["agent_thesis_validations"] == 1
+    with db(db_path) as con:
+        request = query_rows(con, "SELECT status FROM agent_thesis_request WHERE ticker = 'TSLA'")[0]
+        validation = query_rows(con, "SELECT state, proof_status, catalyst_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
+    assert request["status"] == "fulfilled"
+    assert validation == {"state": "validated", "proof_status": "supported", "catalyst_status": "scheduled"}
+
+
+def test_agent_thesis_post_rejects_unstructured_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "agent-thesis-invalid-api.duckdb"
+    init_db(db_path)
+    _use_temp_api_db(monkeypatch, db_path)
+    client = TestClient(app)
+
+    response = client.post("/api/agent-thesis", json={"ticker": "TSLA", "bull_target_price": 180})
+
+    assert response.status_code == 400
+    assert "core_thesis" in response.text
+
+
+def test_agent_postmortem_post_keeps_strategy_mutation_gated(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "agent-postmortem-api.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_missed_winner(con)
+        refresh_options_radar(con, ["RBLX"])
+        request = query_rows(con, "SELECT * FROM agent_postmortem_request")[0]
+
+    _use_temp_api_db(monkeypatch, db_path)
+    client = TestClient(app)
+    response = client.post(
+        "/api/agent-postmortems",
+        json={
+            "request_id": request["request_id"],
+            "ticker": "RBLX",
+            "strategy_version": DEFAULT_STRATEGY_VERSION,
+            "source_type": request["source_type"],
+            "source_id": request["source_id"],
+            "outcome_type": "missed_10x_winner",
+            "failure_type": "delta_range_too_strict",
+            "evidence": ["Contract was rejected for delta_outside_strategy_range before reaching 10x."],
+            "proposed_rule_change": "Test a lower-delta sleeve for strong momentum reversals.",
+            "proposed_parameter_changes": {"delta_min": 0.10, "candidate_note": "agent postmortem lower-delta sleeve"},
+            "expected_effect": "Increase recall for lower-delta 10x winners.",
+            "risk": "May increase false positives and earlier entries.",
+            "confidence": 70,
+            "evidence_refs": [{"type": "missed_winner_event", "id": request["source_id"]}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "accepted"
+    assert payload["strategy_backtests"] >= 1
+    assert payload["strategy_forward_tests"] >= 1
+    with db(db_path) as con:
+        stored_request = query_rows(con, "SELECT status FROM agent_postmortem_request WHERE request_id = ?", [request["request_id"]])[0]
+        proposal = query_rows(con, "SELECT status, requires_backtest, requires_forward_test, human_approval_status FROM strategy_mutation_proposal")[0]
+    assert stored_request["status"] == "fulfilled"
+    assert proposal["requires_backtest"] is True
+    assert proposal["requires_forward_test"] is True
+    assert proposal["human_approval_status"] == "required"
+    assert proposal["status"] in {"forward_test_required", "backtest_failed", "ready_for_human_review"}
 
 
 def test_local_write_guard_allows_private_lan_clients() -> None:

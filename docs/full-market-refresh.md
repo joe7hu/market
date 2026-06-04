@@ -64,6 +64,22 @@ http://192.168.50.197:8000/api/status
 The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
 Each underlying job still writes its own status file.
 
+## Agent Handoff
+
+The radar exposes open hypothesis work through `GET /api/agent-thesis-requests`
+and `GET /api/agent-postmortem-requests`. Agents fulfill those requests by
+posting structured JSON to the local-only endpoints:
+
+- `POST /api/agent-thesis`: stores an `agent_thesis`, attaches it to matching
+  candidate events, and immediately runs deterministic thesis validation.
+- `POST /api/agent-postmortems`: stores an `agent_postmortem`, materializes any
+  proposed strategy mutation, and immediately runs deterministic backtest and
+  forward-test gates.
+
+These endpoints are handoff boundaries, not trading commands. Agent payloads are
+hypotheses and proposals only; deterministic code still owns option math,
+candidate state, validation, backtests, forward tests, and human-approval gates.
+
 ## Freshness Contracts
 
 - Intraday quotes, options, and news are stale after `4` market hours.

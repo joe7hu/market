@@ -37,6 +37,9 @@ from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, f
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import load_config as load_core_config
 from investment_panel.core.db import db, init_db
+from investment_panel.core.option_agent_postmortem import AgentPostmortemValidationError, upsert_agent_postmortem
+from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_option_agent_work, upsert_agent_thesis
+from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_strategy_proposal_evaluations
 from investment_panel.core.sources import source_detail_payload, source_ingestion_audit
 
 
@@ -329,6 +332,27 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "agent_thesis")
 
+    @app.post("/api/agent-thesis")
+    def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        init_db(db_path)
+        strategy_version = _payload_strategy_version(payload)
+        try:
+            with db(db_path, read_only=False) as con:
+                thesis_id = upsert_agent_thesis(con, payload)
+                agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
+        except AgentThesisValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
+        return {
+            "status": "accepted",
+            "thesis_id": thesis_id,
+            "strategy_version": strategy_version,
+            **agent_work,
+        }
+
     @app.get("/api/agent-thesis-requests")
     def agent_thesis_requests() -> dict[str, Any]:
         _, panel_data = _context()
@@ -348,6 +372,27 @@ def create_app() -> FastAPI:
     def agent_postmortems() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "agent_postmortem")
+
+    @app.post("/api/agent-postmortems")
+    def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        init_db(db_path)
+        strategy_version = _payload_strategy_version(payload)
+        try:
+            with db(db_path, read_only=False) as con:
+                postmortem_id = upsert_agent_postmortem(con, payload)
+                evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
+        except AgentPostmortemValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
+        return {
+            "status": "accepted",
+            "postmortem_id": postmortem_id,
+            "strategy_version": strategy_version,
+            **evaluation_rows,
+        }
 
     @app.get("/api/candidate-events")
     def candidate_events() -> dict[str, Any]:
@@ -684,6 +729,12 @@ def _execute_background_refresh_job(job_id: str, job_name: str, db_path: Path) -
         execute_refresh_job(job_id, job_name, db_path, "config.yaml", raise_on_error=False)
     finally:
         _invalidate_context_cache()
+
+
+def _payload_strategy_version(payload: dict[str, Any]) -> str:
+    request = payload.get("request")
+    request_strategy = request.get("strategy_version") if isinstance(request, dict) else None
+    return str(payload.get("strategy_version") or request_strategy or DEFAULT_STRATEGY_VERSION)
 
 
 def _full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None:
