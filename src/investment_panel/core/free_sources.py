@@ -17,9 +17,10 @@ RADAR_MAX_DTE = 900
 RADAR_MAX_EXPIRIES_PER_SYMBOL = 2
 
 
-def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
+def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
     if not config.data_sources.opencli.enabled or not config.data_sources.tradingview.enabled:
         return {"status": "disabled", "provider": "tradingview"}
+    target_symbols = unique_symbols(symbols or [])
     runner = OpenCliRunner(config.data_sources.opencli.command, config.data_sources.opencli.timeout_seconds)
     provider = TradingViewProvider(runner)
     observed_at = datetime.utcnow().isoformat()
@@ -38,12 +39,14 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
         "chart_states": 0,
         "chain_expiries": 0,
     }
+    if target_symbols:
+        result["target_symbols"] = target_symbols
     try:
         status_rows = provider.status()
         record_provider_run(con, run_id, "tradingview", "status", observed_at, "ok", f"{len(status_rows)} status rows", status_rows)
         record_tradingview_options_capabilities(con, observed_at)
         tradingview_ready = any(row.get("connected") or row.get("app_running") for row in status_rows)
-        quote_symbols = equity_symbols(con)
+        quote_symbols = target_symbols or equity_symbols(con)
         quote_errors = []
         for symbol in quote_symbols:
             quote = None
@@ -58,17 +61,21 @@ def update_tradingview_sources(con: Any, config: AppConfig) -> dict[str, Any]:
             if quote:
                 upsert_quote(con, symbol, observed_at, quote)
                 result["quotes"] += 1
-        screener_rows = provider.screener(limit=config.data_sources.tradingview.screener_limit)
-        store_screener_rows(con, run_id, observed_at, screener_rows)
-        result["screener_rows"] = len(screener_rows)
-        news_rows = provider.news(limit=config.data_sources.tradingview.news_limit)
-        result["news_items"] = store_news_rows(con, news_rows, "tradingview")
+        if target_symbols:
+            result["screener_rows"] = 0
+            result["news_items"] = 0
+        else:
+            screener_rows = provider.screener(limit=config.data_sources.tradingview.screener_limit)
+            store_screener_rows(con, run_id, observed_at, screener_rows)
+            result["screener_rows"] = len(screener_rows)
+            news_rows = provider.news(limit=config.data_sources.tradingview.news_limit)
+            result["news_items"] = store_news_rows(con, news_rows, "tradingview")
         if tradingview_ready:
             personal_result = update_tradingview_personal_surfaces(con, config, provider, run_id, observed_at)
             result.update(personal_result)
         else:
             result["personal_surfaces"] = "skipped_cdp_not_connected"
-        requested_options_symbols = option_symbols(con, config)
+        requested_options_symbols = target_symbols or option_symbols(con, config)
         refreshed_option_symbols: list[str] = []
         option_errors: list[str] = []
         for symbol in requested_options_symbols:

@@ -22,6 +22,7 @@ def run(
     tradingview: bool = True,
     yfinance: bool = True,
     analyses: bool = True,
+    symbols: list[str] | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
@@ -30,7 +31,7 @@ def run(
         preflight_decision_result = refresh_decision_read_models(con, config.watchlist)
     equity_result = update_equity_data.run(config_path) if equity_data else {"status": "skipped"}
     with db(config.database.duckdb_path) as con:
-        tradingview_result = update_tradingview_sources(con, config) if tradingview else {"status": "skipped"}
+        tradingview_result = update_tradingview_sources(con, config, symbols=symbols) if tradingview else {"status": "skipped"}
         post_tradingview_decision_result = refresh_decision_read_models(con, config.watchlist)
         yfinance_result = update_yfinance_sources(con, config) if yfinance else {"status": "skipped"}
         analysis_result = run_all_analyses(con, config) if analyses else {"status": "skipped"}
@@ -65,6 +66,7 @@ def main() -> None:
     parser.add_argument("--skip-tradingview", action="store_true")
     parser.add_argument("--skip-yfinance", action="store_true")
     parser.add_argument("--skip-analyses", action="store_true")
+    parser.add_argument("--symbol", action="append", dest="symbols", default=None)
     args = parser.parse_args()
     print(
         json.dumps(
@@ -74,6 +76,7 @@ def main() -> None:
                 tradingview=not args.skip_tradingview,
                 yfinance=not args.skip_yfinance,
                 analyses=not args.skip_analyses,
+                symbols=args.symbols,
             ),
             indent=2,
             default=str,

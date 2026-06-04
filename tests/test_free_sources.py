@@ -244,6 +244,7 @@ def test_selected_option_expiries_computes_missing_dte() -> None:
 
 def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path, monkeypatch) -> None:
     chain_calls: list[str] = []
+    quote_calls: list[str] = []
 
     class MultiExpiryOptionsProvider:
         def __init__(self, _runner: object) -> None:
@@ -253,13 +254,14 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
             return [{"connected": False}]
 
         def quote(self, _symbol: str) -> dict[str, object]:
+            quote_calls.append(_symbol)
             return {"symbol": "NASDAQ:TSLA", "close": 100, "currency": "USD"}
 
         def screener(self, limit: int = 50) -> list[dict[str, object]]:
-            return []
+            raise AssertionError("targeted options refresh should not run screener")
 
         def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
-            return []
+            raise AssertionError("targeted options refresh should not run news")
 
         def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
             return [
@@ -293,11 +295,14 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
     monkeypatch.setattr(free_sources_core, "TradingViewProvider", MultiExpiryOptionsProvider)
     with db(db_path) as con:
         upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
+        upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"})
 
-        result = free_sources_core.update_tradingview_sources(con, config)
+        result = free_sources_core.update_tradingview_sources(con, config, symbols=["TSLA"])
         rows = query_rows(con, "SELECT expiry, count(*) AS count FROM options_chain GROUP BY expiry ORDER BY expiry")
 
+    assert quote_calls == ["TSLA"]
     assert chain_calls == ["2026-06-05", "2027-06-02", "2028-11-18"]
+    assert result["target_symbols"] == ["TSLA"]
     assert result["chain_expiries"] == 3
     assert result["chains"] == 3
     assert rows == [
@@ -570,17 +575,26 @@ def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path,
         watchlist=[],
     )
     calls: list[str] = []
+    tradingview_symbols: list[str] | None = None
+
+    def fake_update_tradingview_sources(_con: object, _config: object, **kwargs: object) -> dict[str, str]:
+        nonlocal tradingview_symbols
+        calls.append("tradingview")
+        symbols = kwargs.get("symbols")
+        tradingview_symbols = list(symbols) if isinstance(symbols, list) else None
+        return {"status": "ok"}
 
     monkeypatch.setattr(update_free_sources, "load_config", lambda _path=None: cfg)
     monkeypatch.setattr(update_free_sources.update_equity_data, "run", lambda _path=None: calls.append("equity") or {"status": "ok"})
-    monkeypatch.setattr(update_free_sources, "update_tradingview_sources", lambda _con, _config: calls.append("tradingview") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "update_tradingview_sources", fake_update_tradingview_sources)
     monkeypatch.setattr(update_free_sources, "update_yfinance_sources", lambda _con, _config: calls.append("yfinance") or {"status": "ok"})
     monkeypatch.setattr(update_free_sources, "run_all_analyses", lambda _con, _config: calls.append("analysis") or {"status": "ok"})
     monkeypatch.setattr(update_free_sources, "refresh_decision_read_models", lambda _con, _watchlist: calls.append("decision") or {"status": "ok"})
 
-    result = update_free_sources.run("config.yaml")
+    result = update_free_sources.run("config.yaml", symbols=["TSLA", "NVDA"])
 
     assert calls == ["decision", "equity", "tradingview", "decision", "yfinance", "analysis", "decision"]
+    assert tradingview_symbols == ["TSLA", "NVDA"]
     assert result["preflight_decision_models"] == {"status": "ok"}
     assert result["post_tradingview_decision_models"] == {"status": "ok"}
     assert result["equity_data"] == {"status": "ok"}
