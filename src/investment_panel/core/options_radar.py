@@ -56,6 +56,7 @@ def refresh_options_radar(
     agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
     shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
     marked_rows = mark_shadow_trades(con)
+    mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
@@ -72,6 +73,7 @@ def refresh_options_radar(
         **agent_work,
         "shadow_trades": shadow_rows,
         "shadow_trades_marked": marked_rows,
+        "shadow_trade_marks": mark_rows,
         "option_attributions": attribution_rows,
         "missed_winners": missed_rows,
         "strategy_mutation_proposals": proposal_rows,
@@ -698,6 +700,138 @@ def mark_shadow_trades(con: Any) -> int:
         )
         count += 1
     return count
+
+
+def refresh_shadow_trade_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    trades = query_rows(
+        con,
+        """
+        SELECT
+            st.*,
+            ce.contract_id,
+            ce.ticker,
+            ce.strategy_version
+        FROM shadow_trade st
+        JOIN candidate_event ce ON ce.event_id = st.event_id
+        WHERE ce.strategy_version = ?
+        """,
+        [strategy_version],
+    )
+    count = 0
+    for trade in trades:
+        snapshots = query_rows(
+            con,
+            """
+            SELECT *
+            FROM option_snapshot
+            WHERE contract_id = ? AND snapshot_time >= TRY_CAST(? AS TIMESTAMP)
+            ORDER BY snapshot_time
+            """,
+            [trade["contract_id"], trade["entry_time"]],
+        )
+        for mark in build_shadow_trade_marks(trade, snapshots):
+            con.execute(
+                """
+                INSERT OR REPLACE INTO shadow_trade_mark
+                (mark_id, trade_id, event_id, contract_id, ticker, strategy_version,
+                 mark_time, entry_time, entry_price_assumption, mark_price,
+                 current_return, return_1d, return_5d, return_20d, return_60d,
+                 max_return_since_alert, max_drawdown_since_alert, time_to_2x,
+                 time_to_5x, time_to_10x, dte, spread_pct, iv, underlying_price,
+                 expired_worthless_probability_change, raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    mark["mark_id"],
+                    mark["trade_id"],
+                    mark["event_id"],
+                    mark["contract_id"],
+                    mark["ticker"],
+                    mark["strategy_version"],
+                    mark["mark_time"],
+                    mark["entry_time"],
+                    mark["entry_price_assumption"],
+                    mark["mark_price"],
+                    mark["current_return"],
+                    mark["return_1d"],
+                    mark["return_5d"],
+                    mark["return_20d"],
+                    mark["return_60d"],
+                    mark["max_return_since_alert"],
+                    mark["max_drawdown_since_alert"],
+                    mark["time_to_2x"],
+                    mark["time_to_5x"],
+                    mark["time_to_10x"],
+                    mark["dte"],
+                    mark["spread_pct"],
+                    mark["iv"],
+                    mark["underlying_price"],
+                    mark["expired_worthless_probability_change"],
+                    json_dumps(mark["raw"]),
+                ],
+            )
+            count += 1
+    return count
+
+
+def build_shadow_trade_marks(trade: dict[str, Any], snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entry_price = _number(trade.get("entry_price_assumption"))
+    if entry_price is None or entry_price <= 0:
+        return []
+    clean_snapshots = [row for row in snapshots if _number(row.get("mid")) is not None]
+    if not clean_snapshots:
+        return []
+    entry_time = _iso(trade.get("entry_time"))
+    entry_delta = _bounded_abs_delta(clean_snapshots[0].get("delta"))
+    returns: list[tuple[Any, float]] = []
+    marks: list[dict[str, Any]] = []
+    for snapshot in clean_snapshots:
+        mark_price = _number(snapshot.get("mid"))
+        if mark_price is None:
+            continue
+        mark_time = _iso(snapshot.get("snapshot_time"))
+        current_return = mark_price / entry_price - 1
+        returns.append((mark_time, current_return))
+        values = [value for _time, value in returns]
+        mark_delta = _bounded_abs_delta(snapshot.get("delta"))
+        worthless_change = None if entry_delta is None or mark_delta is None else entry_delta - mark_delta
+        marks.append(
+            {
+                "mark_id": stable_id("shadow_trade_mark", trade.get("trade_id"), mark_time),
+                "trade_id": trade.get("trade_id"),
+                "event_id": trade.get("event_id"),
+                "contract_id": trade.get("contract_id"),
+                "ticker": _normalize_symbol(trade.get("ticker") or snapshot.get("ticker")),
+                "strategy_version": trade.get("strategy_version"),
+                "mark_time": mark_time,
+                "entry_time": entry_time,
+                "entry_price_assumption": entry_price,
+                "mark_price": mark_price,
+                "current_return": current_return,
+                "return_1d": _return_at_horizon(entry_time, returns, 1, mark_time),
+                "return_5d": _return_at_horizon(entry_time, returns, 5, mark_time),
+                "return_20d": _return_at_horizon(entry_time, returns, 20, mark_time),
+                "return_60d": _return_at_horizon(entry_time, returns, 60, mark_time),
+                "max_return_since_alert": max(values),
+                "max_drawdown_since_alert": min(values),
+                "time_to_2x": _first_hit_days(entry_time, returns, 1.0),
+                "time_to_5x": _first_hit_days(entry_time, returns, 4.0),
+                "time_to_10x": _first_hit_days(entry_time, returns, 9.0),
+                "dte": _integer(snapshot.get("dte")),
+                "spread_pct": _number(snapshot.get("spread_pct")),
+                "iv": _number(snapshot.get("iv")),
+                "underlying_price": _number(snapshot.get("underlying_price")),
+                "expired_worthless_probability_change": worthless_change,
+                "raw": {
+                    "authority": "shadow_validation_only",
+                    "return_horizon_method": "first_snapshot_at_or_after_horizon",
+                    "expired_worthless_probability_proxy": "abs(entry_delta)-abs(mark_delta)",
+                    "entry_delta_abs": entry_delta,
+                    "mark_delta_abs": mark_delta,
+                },
+            }
+        )
+    return marks
 
 
 def refresh_option_attributions(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
@@ -1635,6 +1769,17 @@ def _first_hit_days(entry_time: Any, returns: list[tuple[Any, float]], threshold
     return None
 
 
+def _return_at_horizon(entry_time: Any, returns: list[tuple[Any, float]], horizon_days: int, mark_time: Any) -> float | None:
+    elapsed_to_mark = _elapsed_days(entry_time, mark_time)
+    if elapsed_to_mark is None or elapsed_to_mark < horizon_days:
+        return None
+    for snapshot_time, value in returns:
+        elapsed = _elapsed_days(entry_time, snapshot_time)
+        if elapsed is not None and elapsed >= horizon_days:
+            return value
+    return None
+
+
 def _drawdown_before_threshold(returns: list[tuple[Any, float]], threshold: float) -> float | None:
     observed: list[float] = []
     for _snapshot_time, value in returns:
@@ -1864,6 +2009,13 @@ def _diff(left: float | None, right: float | None) -> float | None:
     if left is None or right is None:
         return None
     return left - right
+
+
+def _bounded_abs_delta(value: Any) -> float | None:
+    delta = _number(value)
+    if delta is None:
+        return None
+    return max(0.0, min(1.0, abs(delta)))
 
 
 def _liquidity_score(spread_pct: float | None, open_interest: float | None, volume: float | None) -> float | None:

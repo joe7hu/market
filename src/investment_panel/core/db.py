@@ -546,6 +546,35 @@ CREATE TABLE IF NOT EXISTS shadow_trade (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS shadow_trade_mark (
+    mark_id TEXT PRIMARY KEY,
+    trade_id TEXT,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    mark_time TIMESTAMP,
+    entry_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    mark_price DOUBLE,
+    current_return DOUBLE,
+    return_1d DOUBLE,
+    return_5d DOUBLE,
+    return_20d DOUBLE,
+    return_60d DOUBLE,
+    max_return_since_alert DOUBLE,
+    max_drawdown_since_alert DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    iv DOUBLE,
+    underlying_price DOUBLE,
+    expired_worthless_probability_change DOUBLE,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS option_attribution (
     attribution_id TEXT PRIMARY KEY,
     trade_id TEXT,

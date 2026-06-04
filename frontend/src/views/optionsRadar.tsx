@@ -18,6 +18,7 @@ type OptionsRadarPageProps = {
 export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) {
   const candidates = rows(data.candidateEvent);
   const shadowTrades = rows(data.shadowTrade);
+  const shadowMarks = rows(data.shadowTradeMark);
   const attributions = rows(data.optionAttribution);
   const missedWinners = rows(data.missedWinnerEvent);
   const proposals = rows(data.strategyMutationProposal);
@@ -52,7 +53,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
   const metrics: MetricSpec[] = [
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
-    ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x`, openShadowCount ? "info" : "muted"],
+    ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x, ${shadowMarks.length.toLocaleString()} marks`, openShadowCount ? "info" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
     ["Postmortems", postmortems.length.toLocaleString(), `${openPostmortems.toLocaleString()} open requests`, openPostmortems ? "warn" : postmortems.length ? "info" : "muted"],
     ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting, ${cohorts.length.toLocaleString()} cohorts`, humanPending ? "warn" : "info"],
@@ -85,6 +86,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
         <TabsContent value="radar" className="space-y-4">
           <CandidateEventsTable rows={candidates} onOpenTicker={onOpenTicker} />
           <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
+          <ShadowTradeMarksTable rows={shadowMarks} onOpenTicker={onOpenTicker} />
         </TabsContent>
 
         <TabsContent value="learning" className="space-y-4">
@@ -207,6 +209,56 @@ function ShadowTradesTable({
                   {attribution ? <AttributionBadge row={attribution} /> : <span className="text-muted-foreground">No mark</span>}
                 </Cell>
                 <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["exit_reason"], displayField(row, ["exit_time"]))}</Truncated></Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function ShadowTradeMarksTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No shadow marks" detail="No point-in-time validation marks are stored for shadow trades." icon={Activity} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Daily Shadow Validation Marks" count={rows.length} />}>
+      <table className="w-full min-w-[1240px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Mark</Head>
+            <Head className="text-right">Current</Head>
+            <Head className="text-right">1D</Head>
+            <Head className="text-right">5D</Head>
+            <Head className="text-right">20D</Head>
+            <Head className="text-right">60D</Head>
+            <Head className="text-right">Max</Head>
+            <Head className="text-right">Drawdown</Head>
+            <Head className="text-right">IV</Head>
+            <Head className="text-right">Spread</Head>
+            <Head className="text-right">Worthless Proxy</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
+            return (
+              <tr key={textField(row, ["mark_id"], `${ticker}-${textField(row, ["mark_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["mark_time"]))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["current_return"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_1d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_5d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_20d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_60d"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_since_alert"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["max_drawdown_since_alert"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["iv"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["expired_worthless_probability_change"], Number.NaN))}</Cell>
               </tr>
             );
           })}

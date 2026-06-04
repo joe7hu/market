@@ -79,6 +79,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "agent_postmortem": agent_postmortem(con),
             "candidate_event": candidate_event(con),
             "shadow_trade": shadow_trade(con),
+            "shadow_trade_mark": shadow_trade_mark(con),
             "option_attribution": option_attribution(con),
             "missed_winner_event": missed_winner_event(con),
             "strategy_mutation_proposal": strategy_mutation_proposal(con),
@@ -3211,6 +3212,24 @@ def shadow_trade(con: Any) -> list[dict[str, Any]]:
                time_to_5x, time_to_10x, exit_reason, raw
         FROM shadow_trade
         ORDER BY entry_time DESC, trade_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def shadow_trade_mark(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT mark_id, trade_id, event_id, contract_id, ticker,
+               strategy_version, mark_time, entry_time, entry_price_assumption,
+               mark_price, current_return, return_1d, return_5d, return_20d,
+               return_60d, max_return_since_alert, max_drawdown_since_alert,
+               time_to_2x, time_to_5x, time_to_10x, dte, spread_pct, iv,
+               underlying_price, expired_worthless_probability_change, raw
+        FROM shadow_trade_mark
+        ORDER BY mark_time DESC, ticker, contract_id
         LIMIT 1000
         """,
     )
