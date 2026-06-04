@@ -18,6 +18,7 @@ type OptionsRadarPageProps = {
 export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) {
   const candidates = rows(data.candidateEvent);
   const candidateMarks = rows(data.candidateEventMark);
+  const candidateAttributions = rows(data.candidateEventAttribution);
   const shadowTrades = rows(data.shadowTrade);
   const shadowMarks = rows(data.shadowTradeMark);
   const stateTransitions = rows(data.radarStateTransition);
@@ -59,7 +60,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
 
   const metrics: MetricSpec[] = [
     ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
-    ["Candidate Marks", candidateMarks.length.toLocaleString(), `${candidateHit2x.toLocaleString()} hit 2x, ${candidateHit5x.toLocaleString()} hit 5x`, candidateHit5x ? "good" : candidateHit2x ? "info" : candidateMarks.length ? "muted" : "muted"],
+    ["Candidate Marks", candidateMarks.length.toLocaleString(), `${candidateHit2x.toLocaleString()} hit 2x, ${candidateHit5x.toLocaleString()} hit 5x, ${candidateAttributions.length.toLocaleString()} attributions`, candidateHit5x ? "good" : candidateHit2x ? "info" : candidateMarks.length ? "muted" : "muted"],
     ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x, ${shadowMarks.length.toLocaleString()} marks`, openShadowCount ? "info" : "muted"],
     ["States", stateTransitions.length.toLocaleString(), `${activeStateCount.toLocaleString()} active, ${exitStateCount.toLocaleString()} exit or invalidated`, exitStateCount ? "warn" : activeStateCount ? "good" : "muted"],
     ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
@@ -94,6 +95,7 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
         <TabsContent value="radar" className="space-y-4">
           <CandidateEventsTable rows={candidates} onOpenTicker={onOpenTicker} />
           <CandidateEventMarksTable rows={candidateMarks} onOpenTicker={onOpenTicker} />
+          <CandidateEventAttributionsTable rows={candidateAttributions} onOpenTicker={onOpenTicker} />
           <RadarStateTransitionsTable rows={stateTransitions} onOpenTicker={onOpenTicker} />
           <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
           <ShadowTradeMarksTable rows={shadowMarks} onOpenTicker={onOpenTicker} />
@@ -216,6 +218,57 @@ function CandidateEventMarksTable({ rows, onOpenTicker }: { rows: RowRecord[]; o
                 <Cell><HitTimes row={row} /></Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["iv"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function CandidateEventAttributionsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+  if (!rows.length) {
+    return <EmptyState title="No candidate attribution" detail="No candidate events have multiple point-in-time marks yet." icon={Activity} />;
+  }
+
+  return (
+    <DataTableFrame title={<SectionTitle title="Candidate Event Attribution" count={rows.length} />}>
+      <table className="w-full min-w-[1260px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Candidate</Head>
+            <Head>Window</Head>
+            <Head>Label</Head>
+            <Head className="text-right">Option</Head>
+            <Head className="text-right">Underlying</Head>
+            <Head className="text-right">IV</Head>
+            <Head className="text-right">Theta</Head>
+            <Head className="text-right">Spread</Head>
+            <Head className="text-right">Unexplained</Head>
+            <Head>Contract</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 80).map((row) => {
+            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
+            const state = textField(row, ["candidate_state"]);
+            return (
+              <tr key={textField(row, ["attribution_id"], `${ticker}-${textField(row, ["snapshot_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">
+                  {formatDate(textField(row, ["prior_snapshot_time"]))} {"->"} {formatDate(textField(row, ["snapshot_time"]))}
+                </Cell>
+                <Cell><AttributionBadge row={row} /></Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["option_return"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["underlying_return"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["iv_change"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["theta_effect"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["spread_change"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["unexplained_effect"], Number.NaN))}</Cell>
+                <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
               </tr>
             );
           })}

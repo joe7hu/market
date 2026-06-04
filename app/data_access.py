@@ -523,6 +523,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "agent_postmortem",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",
@@ -626,6 +627,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
     option_signals = panel_data.rows("options_ticker_signals")
     option_candidates = panel_data.rows("candidate_event")
     candidate_event_marks = panel_data.rows("candidate_event_mark")
+    candidate_event_attributions = panel_data.rows("candidate_event_attribution")
     shadow_trades = panel_data.rows("shadow_trade")
     shadow_trade_marks = panel_data.rows("shadow_trade_mark")
     radar_state_transitions = panel_data.rows("radar_state_transition")
@@ -682,6 +684,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
             "options_ticker_signals": len(option_signals),
             "option_radar_candidates": len(option_candidates),
             "candidate_event_marks": len(candidate_event_marks),
+            "candidate_event_attributions": len(candidate_event_attributions),
             "shadow_trades": len(shadow_trades),
             "shadow_trade_marks": len(shadow_trade_marks),
             "radar_state_transitions": len(radar_state_transitions),
@@ -742,6 +745,7 @@ def dashboard_payload(panel_data: PanelData) -> dict[str, Any]:
         "review_actions": review_actions[:8],
         "option_radar_candidates": option_candidates[:12],
         "candidate_event_marks": candidate_event_marks[:12],
+        "candidate_event_attributions": candidate_event_attributions[:12],
         "shadow_trades": shadow_trades[:12],
         "shadow_trade_marks": shadow_trade_marks[:12],
         "radar_state_transitions": radar_state_transitions[:12],
@@ -788,6 +792,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "options_ticker_signals",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",
@@ -872,6 +877,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "agent_thesis_validation",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",
@@ -917,6 +923,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "options_ticker_signals",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",
@@ -977,6 +984,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "options_ticker_signals",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",
@@ -997,6 +1005,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "option_strategy_versions",
             "candidate_event",
             "candidate_event_mark",
+            "candidate_event_attribution",
             "shadow_trade",
             "shadow_trade_mark",
             "radar_state_transition",

@@ -79,6 +79,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "agent_postmortem": agent_postmortem(con),
             "candidate_event": candidate_event(con),
             "candidate_event_mark": candidate_event_mark(con),
+            "candidate_event_attribution": candidate_event_attribution(con),
             "shadow_trade": shadow_trade(con),
             "shadow_trade_mark": shadow_trade_mark(con),
             "radar_state_transition": radar_state_transition(con),
@@ -3232,6 +3233,23 @@ def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
                underlying_price, raw
         FROM candidate_event_mark
         ORDER BY mark_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT attribution_id, event_id, contract_id, ticker, strategy_version,
+               candidate_state, snapshot_time, prior_snapshot_time,
+               option_return, underlying_return, iv_change, theta_decay,
+               spread_change, stock_move_effect, iv_effect, theta_effect,
+               spread_effect, unexplained_effect, label, raw
+        FROM candidate_event_attribution
+        ORDER BY snapshot_time DESC, ticker, contract_id
         LIMIT 1000
         """,
     )

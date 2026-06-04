@@ -407,15 +407,45 @@ def _candidate_context(con: Any, source: dict[str, Any]) -> dict[str, Any] | Non
 def _latest_attribution_context(con: Any, source: dict[str, Any]) -> dict[str, Any] | None:
     source_type = str(source.get("source_type") or "")
     source_id = str(source.get("source_id") or "")
-    if not source_type.startswith("shadow"):
+    if source_type.startswith("shadow"):
+        rows = query_rows(
+            con,
+            """
+            SELECT a.*
+            FROM candidate_event_attribution a
+            JOIN shadow_trade st ON st.event_id = a.event_id
+            WHERE st.trade_id = ?
+            ORDER BY a.snapshot_time DESC
+            LIMIT 1
+            """,
+            [source_id],
+        )
+        if rows:
+            return decode_json_fields(rows[0], ("raw",))
+        rows = query_rows(
+            con,
+            """
+            SELECT a.*
+            FROM option_attribution a
+            JOIN shadow_trade st ON st.event_id = a.event_id
+            WHERE st.trade_id = ?
+            ORDER BY a.snapshot_time DESC
+            LIMIT 1
+            """,
+            [source_id],
+        )
+        return decode_json_fields(rows[0], ("raw",)) if rows else None
+    if source_type != "missed_winner":
         return None
     rows = query_rows(
         con,
         """
         SELECT a.*
-        FROM option_attribution a
-        JOIN shadow_trade st ON st.event_id = a.event_id
-        WHERE st.trade_id = ?
+        FROM candidate_event_attribution a
+        JOIN missed_winner_event mw
+          ON mw.contract_id = a.contract_id
+         AND mw.strategy_version = a.strategy_version
+        WHERE mw.missed_id = ?
         ORDER BY a.snapshot_time DESC
         LIMIT 1
         """,

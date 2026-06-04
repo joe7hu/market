@@ -47,6 +47,7 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
     assert result["option_snapshots"] == 2
     assert result["candidate_events"] == 2
     assert result["candidate_event_marks"] == 2
+    assert result["candidate_event_attributions"] == 0
     assert result["radar_state_transitions"] == 2
     assert strategy == [{"strategy_version": DEFAULT_STRATEGY_VERSION, "status": "shadow"}]
     assert snapshots[0]["open_interest"] == 250
@@ -182,6 +183,7 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
     assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
     assert panel["tables"]["candidate_event_mark"][0]["candidate_state"] in {"FIRE", "REJECT"}
+    assert "candidate_event_attribution" in panel["tables"]
     assert panel["tables"]["shadow_trade"][0]["status"] == "open"
     assert panel["tables"]["radar_state_transition"][0]["state"] in {"FIRE", "REJECT"}
 
@@ -213,6 +215,7 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
 
         result = refresh_options_radar(con, ["TSLA"])
         attribution = query_rows(con, "SELECT * FROM option_attribution")[0]
+        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution")[0]
         first_trade = query_rows(con, "SELECT * FROM shadow_trade ORDER BY entry_time LIMIT 1")[0]
         candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
         marks = query_rows(con, "SELECT * FROM shadow_trade_mark ORDER BY mark_time")
@@ -222,6 +225,7 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         market_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_value = 'qqq_above_200d'")[0]
 
     assert result["option_attributions"] == 1
+    assert result["candidate_event_attributions"] == 1
     assert result["candidate_event_marks"] == 3
     assert result["shadow_trade_marks"] == 2
     assert result["radar_state_transitions"] == 2
@@ -230,6 +234,11 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
     assert attribution["label"] == "good_convexity"
     assert attribution["option_return"] > 1.0
     assert attribution["underlying_return"] > 0
+    assert candidate_attribution["event_id"] == first_trade["event_id"]
+    assert candidate_attribution["candidate_state"] == "FIRE"
+    assert candidate_attribution["label"] == "good_convexity"
+    assert candidate_attribution["option_return"] > 1.0
+    assert candidate_attribution["underlying_return"] > 0
     assert first_trade["max_return_seen"] > 1.0
     assert first_trade["time_to_2x"] == 1
     trade_candidate_marks = [row for row in candidate_marks if row["event_id"] == first_trade["event_id"]]
@@ -285,9 +294,11 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
         backtest = query_rows(con, "SELECT * FROM strategy_backtest_result")[0]
         forward = query_rows(con, "SELECT * FROM strategy_forward_test_result")[0]
         candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
+        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution")[0]
         trades = query_rows(con, "SELECT * FROM shadow_trade")
 
     assert result["candidate_event_marks"] == 3
+    assert result["candidate_event_attributions"] == 1
     assert result["missed_winners"] == 1
     assert result["strategy_mutation_proposals"] == 1
     assert result["strategy_backtests"] == 1
@@ -298,6 +309,9 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
     assert best_candidate_mark["candidate_state"] == "REJECT"
     assert best_candidate_mark["time_to_10x"] == 18
     assert best_candidate_mark["max_return_since_alert"] >= 9.0
+    assert candidate_attribution["candidate_state"] == "REJECT"
+    assert candidate_attribution["label"] == "good_convexity"
+    assert candidate_attribution["option_return"] >= 9.0
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
     assert proposal["status"] == "forward_test_required"

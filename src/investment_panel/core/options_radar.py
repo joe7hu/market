@@ -58,6 +58,7 @@ def refresh_options_radar(
     marked_rows = mark_shadow_trades(con)
     mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
     candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
+    candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
     transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
@@ -77,6 +78,7 @@ def refresh_options_radar(
         "shadow_trades_marked": marked_rows,
         "shadow_trade_marks": mark_rows,
         "candidate_event_marks": candidate_mark_rows,
+        "candidate_event_attributions": candidate_attribution_rows,
         "radar_state_transitions": transition_rows,
         "option_attributions": attribution_rows,
         "missed_winners": missed_rows,
@@ -963,6 +965,157 @@ def build_candidate_event_marks(event: dict[str, Any], snapshots: list[dict[str,
             }
         )
     return marks
+
+
+def refresh_candidate_event_attributions(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    rows = query_rows(
+        con,
+        """
+        SELECT
+            m.*,
+            s.mid AS snapshot_mid,
+            s.underlying_price AS snapshot_underlying_price,
+            s.iv AS snapshot_iv,
+            s.spread_pct AS snapshot_spread_pct,
+            s.delta,
+            s.vega,
+            s.theta
+        FROM candidate_event_mark m
+        LEFT JOIN option_snapshot s
+          ON s.contract_id = m.contract_id
+         AND s.snapshot_time = m.mark_time
+        WHERE m.strategy_version = ?
+        ORDER BY m.event_id, m.mark_time
+        """,
+        [strategy_version],
+    )
+    con.execute("DELETE FROM candidate_event_attribution WHERE strategy_version = ?", [strategy_version])
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        event_id = str(row.get("event_id") or "")
+        if event_id:
+            grouped[event_id].append(row)
+
+    count = 0
+    for marks in grouped.values():
+        for index in range(1, len(marks)):
+            attribution = build_candidate_event_attribution(marks[index - 1], marks[index])
+            if not attribution:
+                continue
+            con.execute(
+                """
+                INSERT OR REPLACE INTO candidate_event_attribution
+                (attribution_id, event_id, contract_id, ticker, strategy_version,
+                 candidate_state, snapshot_time, prior_snapshot_time,
+                 option_return, underlying_return, iv_change, theta_decay,
+                 spread_change, stock_move_effect, iv_effect, theta_effect,
+                 spread_effect, unexplained_effect, label, raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    attribution["attribution_id"],
+                    attribution["event_id"],
+                    attribution["contract_id"],
+                    attribution["ticker"],
+                    attribution["strategy_version"],
+                    attribution["candidate_state"],
+                    attribution["snapshot_time"],
+                    attribution["prior_snapshot_time"],
+                    attribution["option_return"],
+                    attribution["underlying_return"],
+                    attribution["iv_change"],
+                    attribution["theta_decay"],
+                    attribution["spread_change"],
+                    attribution["stock_move_effect"],
+                    attribution["iv_effect"],
+                    attribution["theta_effect"],
+                    attribution["spread_effect"],
+                    attribution["unexplained_effect"],
+                    attribution["label"],
+                    json_dumps(attribution["raw"]),
+                ],
+            )
+            count += 1
+    return count
+
+
+def build_candidate_event_attribution(prior: dict[str, Any], latest: dict[str, Any]) -> dict[str, Any] | None:
+    prior_mid = _number(prior.get("mark_price"))
+    if prior_mid is None:
+        prior_mid = _number(prior.get("snapshot_mid"))
+    latest_mid = _number(latest.get("mark_price"))
+    if latest_mid is None:
+        latest_mid = _number(latest.get("snapshot_mid"))
+    if prior_mid is None or latest_mid is None or prior_mid <= 0:
+        return None
+
+    prior_underlying = _number(prior.get("underlying_price"))
+    if prior_underlying is None:
+        prior_underlying = _number(prior.get("snapshot_underlying_price"))
+    latest_underlying = _number(latest.get("underlying_price"))
+    if latest_underlying is None:
+        latest_underlying = _number(latest.get("snapshot_underlying_price"))
+    underlying_change = None if prior_underlying is None or latest_underlying is None else latest_underlying - prior_underlying
+    underlying_return = None if prior_underlying is None or prior_underlying <= 0 or latest_underlying is None else latest_underlying / prior_underlying - 1
+
+    prior_iv = _number(prior.get("iv"))
+    if prior_iv is None:
+        prior_iv = _number(prior.get("snapshot_iv"))
+    latest_iv = _number(latest.get("iv"))
+    if latest_iv is None:
+        latest_iv = _number(latest.get("snapshot_iv"))
+    iv_change = _diff(latest_iv, prior_iv)
+
+    prior_spread = _number(prior.get("spread_pct"))
+    if prior_spread is None:
+        prior_spread = _number(prior.get("snapshot_spread_pct"))
+    latest_spread = _number(latest.get("spread_pct"))
+    if latest_spread is None:
+        latest_spread = _number(latest.get("snapshot_spread_pct"))
+    spread_change = _diff(latest_spread, prior_spread)
+
+    days = max(1, _elapsed_days(prior.get("mark_time"), latest.get("mark_time")) or 1)
+    theta_decay = (_number(prior.get("theta")) or 0.0) * days
+    stock_move_effect = ((_number(prior.get("delta")) or 0.0) * (underlying_change or 0.0)) / prior_mid
+    iv_effect = ((_number(prior.get("vega")) or 0.0) * (iv_change or 0.0)) / prior_mid
+    theta_effect = theta_decay / prior_mid
+    spread_effect = -(spread_change or 0.0)
+    option_return = latest_mid / prior_mid - 1
+    explained = stock_move_effect + iv_effect + theta_effect + spread_effect
+    unexplained = option_return - explained
+    label = _attribution_label(option_return, underlying_return, iv_change, theta_effect, spread_change)
+    return {
+        "attribution_id": stable_id("candidate_event_attribution", latest.get("event_id"), latest.get("mark_time")),
+        "event_id": latest.get("event_id"),
+        "contract_id": latest.get("contract_id"),
+        "ticker": _normalize_symbol(latest.get("ticker")),
+        "strategy_version": latest.get("strategy_version"),
+        "candidate_state": str(latest.get("candidate_state") or "").upper(),
+        "snapshot_time": _iso(latest.get("mark_time")),
+        "prior_snapshot_time": _iso(prior.get("mark_time")),
+        "option_return": option_return,
+        "underlying_return": underlying_return,
+        "iv_change": iv_change,
+        "theta_decay": theta_decay,
+        "spread_change": spread_change,
+        "stock_move_effect": stock_move_effect,
+        "iv_effect": iv_effect,
+        "theta_effect": theta_effect,
+        "spread_effect": spread_effect,
+        "unexplained_effect": unexplained,
+        "label": label,
+        "raw": {
+            "authority": "candidate_attribution_only",
+            "days": days,
+            "prior_mark_id": prior.get("mark_id"),
+            "latest_mark_id": latest.get("mark_id"),
+            "prior_mid": prior_mid,
+            "latest_mid": latest_mid,
+            "prior_underlying": prior_underlying,
+            "latest_underlying": latest_underlying,
+            "method": "candidate_mark_delta_vega_theta_spread_approximation",
+        },
+    }
 
 
 def _shadow_trades_by_contract(con: Any, strategy_version: str) -> dict[str, list[dict[str, Any]]]:
@@ -2141,9 +2294,23 @@ def _latest_attribution_labels(con: Any) -> dict[str, str]:
     rows = query_rows(
         con,
         """
+        WITH candidate_labels AS (
+            SELECT event_id, label
+            FROM candidate_event_attribution
+            QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY snapshot_time DESC) = 1
+        ),
+        shadow_labels AS (
+            SELECT event_id, label
+            FROM option_attribution
+            QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY snapshot_time DESC) = 1
+        )
         SELECT event_id, label
-        FROM option_attribution
-        QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY snapshot_time DESC) = 1
+        FROM candidate_labels
+        UNION ALL
+        SELECT s.event_id, s.label
+        FROM shadow_labels s
+        LEFT JOIN candidate_labels c ON c.event_id = s.event_id
+        WHERE c.event_id IS NULL
         """,
     )
     return {str(row["event_id"]): str(row["label"]) for row in rows if row.get("event_id") and row.get("label")}

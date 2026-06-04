@@ -557,6 +557,29 @@ CREATE TABLE IF NOT EXISTS candidate_event_mark (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS candidate_event_attribution (
+    attribution_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    candidate_state TEXT,
+    snapshot_time TIMESTAMP,
+    prior_snapshot_time TIMESTAMP,
+    option_return DOUBLE,
+    underlying_return DOUBLE,
+    iv_change DOUBLE,
+    theta_decay DOUBLE,
+    spread_change DOUBLE,
+    stock_move_effect DOUBLE,
+    iv_effect DOUBLE,
+    theta_effect DOUBLE,
+    spread_effect DOUBLE,
+    unexplained_effect DOUBLE,
+    label TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS shadow_trade (
     trade_id TEXT PRIMARY KEY,
     event_id TEXT,
