@@ -707,6 +707,8 @@ CREATE TABLE IF NOT EXISTS strategy_mutation_proposal (
     requires_backtest BOOLEAN,
     requires_forward_test BOOLEAN,
     human_approval_status TEXT,
+    approved_by TEXT,
+    approved_at TIMESTAMP,
     evidence_refs JSON,
     raw JSON
 );
@@ -1349,6 +1351,10 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             "bid_iv": "DOUBLE",
             "ask_iv": "DOUBLE",
             "contract_symbol": "TEXT",
+        },
+        "strategy_mutation_proposal": {
+            "approved_by": "TEXT",
+            "approved_at": "TIMESTAMP",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

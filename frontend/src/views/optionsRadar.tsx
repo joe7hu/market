@@ -681,6 +681,8 @@ function StrategyProposalsTable({
             const backtestVerdict = textField(backtest, ["verdict"]).toLowerCase();
             const forwardVerdict = textField(forward, ["verdict", "status"]).toLowerCase();
             const isPromoting = promotingProposal === proposalId;
+            const approvedBy = textField(row, ["approved_by"]);
+            const approvedAt = textField(row, ["approved_at"]);
             const canPromote =
               Boolean(proposalId) &&
               status === "ready_for_human_review" &&
@@ -693,7 +695,16 @@ function StrategyProposalsTable({
                 <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
                 <Cell><VerdictBadge row={backtest} keys={["verdict"]} /></Cell>
                 <Cell><VerdictBadge row={forward} keys={["verdict", "status"]} /></Cell>
-                <Cell><StatusBadge tone={human === "approved" ? "good" : human === "rejected" ? "bad" : "warn"}>{titleLabel(human)}</StatusBadge></Cell>
+                <Cell>
+                  <div className="min-w-0">
+                    <StatusBadge tone={human === "approved" ? "good" : human === "rejected" ? "bad" : "warn"}>{titleLabel(human)}</StatusBadge>
+                    {approvedBy || approvedAt ? (
+                      <div className="mt-1 max-w-[180px] truncate text-xs text-muted-foreground">
+                        {approvedBy ? `by ${approvedBy}` : "approved"}{approvedAt ? ` ${formatDate(approvedAt)}` : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                </Cell>
                 <Cell className="max-w-[260px]"><Truncated>{fullField(row, ["proposed_parameter_changes"])}</Truncated></Cell>
                 <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["rationale"])}</Truncated></Cell>
                 <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["risk"])}</Truncated></Cell>

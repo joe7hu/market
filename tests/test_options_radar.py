@@ -540,12 +540,24 @@ def test_strategy_promotion_requires_backtest_forward_test_and_human_approval(tm
         with pytest.raises(StrategyPromotionError, match="human approval"):
             promote_strategy_mutation(con, proposal_id)
         promoted = promote_strategy_mutation(con, proposal_id, approved_by="joe")
+        refresh_options_radar(con, ["RBLX"])
         strategy = query_rows(con, "SELECT strategy_version, status, supersedes FROM option_strategy_versions WHERE strategy_version = ?", [promoted])[0]
-        proposal = query_rows(con, "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal_id])[0]
+        proposal = query_rows(
+            con,
+            """
+            SELECT status, human_approval_status, approved_by, approved_at
+            FROM strategy_mutation_proposal
+            WHERE proposal_id = ?
+            """,
+            [proposal_id],
+        )[0]
 
     assert promoted == "leap_10x_momentum_lottery_proposed_v1"
     assert strategy == {"strategy_version": promoted, "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
-    assert proposal == {"status": "promoted", "human_approval_status": "approved"}
+    assert proposal["status"] == "promoted"
+    assert proposal["human_approval_status"] == "approved"
+    assert proposal["approved_by"] == "joe"
+    assert proposal["approved_at"]
 
 
 def seed_prices(con, symbol: str, start_price: float = 80.0, slope: float = 0.10) -> None:

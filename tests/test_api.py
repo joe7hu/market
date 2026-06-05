@@ -360,13 +360,24 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     assert payload["proposal_id"] == proposal_id
     assert payload["strategy_version"] == "leap_10x_momentum_lottery_proposed_v1"
     with db(db_path) as con:
-        proposal = query_rows(con, "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal_id])[0]
+        proposal = query_rows(
+            con,
+            """
+            SELECT status, human_approval_status, approved_by, approved_at
+            FROM strategy_mutation_proposal
+            WHERE proposal_id = ?
+            """,
+            [proposal_id],
+        )[0]
         strategy = query_rows(
             con,
             "SELECT strategy_version, status, supersedes FROM option_strategy_versions WHERE strategy_version = ?",
             [payload["strategy_version"]],
         )[0]
-    assert proposal == {"status": "promoted", "human_approval_status": "approved"}
+    assert proposal["status"] == "promoted"
+    assert proposal["human_approval_status"] == "approved"
+    assert proposal["approved_by"] == "joe"
+    assert proposal["approved_at"]
     assert strategy == {"strategy_version": payload["strategy_version"], "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
 
 

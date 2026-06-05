@@ -1733,7 +1733,14 @@ def generate_strategy_mutation_proposals(con: Any, *, strategy_version: str = DE
         proposal = build_strategy_mutation_proposal(row, strategy_version)
         if not proposal:
             continue
-        before = query_rows(con, "SELECT count(*) AS count FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal["proposal_id"]])[0]["count"]
+        existing_rows = query_rows(
+            con,
+            "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?",
+            [proposal["proposal_id"]],
+        )
+        if existing_rows and _strategy_proposal_is_terminal(existing_rows[0]):
+            continue
+        before = 1 if existing_rows else 0
         con.execute(
             """
             INSERT OR REPLACE INTO strategy_mutation_proposal
@@ -2088,6 +2095,13 @@ def insert_strategy_forward_test_result(con: Any, result: dict[str, Any]) -> Non
 
 
 def update_strategy_proposal_gate_status(con: Any, proposal_id: str) -> int:
+    before = query_rows(
+        con,
+        "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?",
+        [proposal_id],
+    )
+    if not before or _strategy_proposal_is_terminal(before[0]):
+        return 0
     backtest = _latest_backtest(con, proposal_id)
     forward = _latest_forward_test(con, proposal_id)
     if not backtest:
@@ -2100,15 +2114,16 @@ def update_strategy_proposal_gate_status(con: Any, proposal_id: str) -> int:
         status = "forward_test_failed"
     else:
         status = "ready_for_human_review"
-    before = query_rows(
-        con,
-        "SELECT status FROM strategy_mutation_proposal WHERE proposal_id = ?",
-        [proposal_id],
-    )
-    if not before or before[0].get("status") == status:
+    if before[0].get("status") == status:
         return 0
     con.execute("UPDATE strategy_mutation_proposal SET status = ? WHERE proposal_id = ?", [status, proposal_id])
     return 1
+
+
+def _strategy_proposal_is_terminal(proposal: dict[str, Any]) -> bool:
+    status = str(proposal.get("status") or "").lower()
+    human_status = str(proposal.get("human_approval_status") or "").lower()
+    return status in {"promoted", "rejected"} or human_status in {"approved", "rejected"}
 
 
 def promote_strategy_mutation(con: Any, proposal_id: str, *, approved_by: str | None = None) -> str:
@@ -2149,10 +2164,16 @@ def promote_strategy_mutation(con: Any, proposal_id: str, *, approved_by: str | 
     con.execute(
         """
         UPDATE strategy_mutation_proposal
-        SET status = 'promoted', human_approval_status = 'approved', raw = ?
+        SET status = 'promoted',
+            human_approval_status = 'approved',
+            approved_by = ?,
+            approved_at = ?,
+            raw = ?
         WHERE proposal_id = ?
         """,
         [
+            approved_by,
+            promoted_at,
             json_dumps({**_json(proposal.get("raw")), "approved_by": approved_by, "approved_at": promoted_at}),
             proposal_id,
         ],

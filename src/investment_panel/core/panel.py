@@ -3331,7 +3331,8 @@ def strategy_mutation_proposal(con: Any) -> list[dict[str, Any]]:
         SELECT proposal_id, created_at, source_type, strategy_version,
                proposed_strategy_version, proposed_parameter_changes, rationale,
                expected_effect, risk, status, requires_backtest,
-               requires_forward_test, human_approval_status, evidence_refs, raw
+               requires_forward_test, human_approval_status, approved_by,
+               approved_at, evidence_refs, raw
         FROM strategy_mutation_proposal
         ORDER BY created_at DESC, proposed_strategy_version
         LIMIT 500
