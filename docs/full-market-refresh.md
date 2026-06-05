@@ -45,16 +45,75 @@ http://192.168.50.197:8000/api/status
    `source_registry`, `source_runs`, `source_items`, and
    `ticker_source_signals`, then promote source-discovered tickers to
    refreshable instruments with explicit market-context blockers.
-4. `update_disclosures`: refresh public disclosures, official House filings,
+4. `options_radar`: materialize the deterministic 10x options radar from the
+   refreshed option/stock rows: point-in-time snapshots, 10x math, feature
+   scores, candidate events, shadow-trade marks, attribution, state
+   transitions, missed-winner events, cohort results, and agent work queues.
+   This is also exposed as the standalone `refresh_options_radar` refresh job
+   for local reruns after option-source changes.
+5. `run_option_agents`: optionally run configured local external agent commands
+   for open options-radar thesis and postmortem handoffs. This step is
+   default-disabled; when enabled, Market passes one request JSON over stdin,
+   accepts only structured JSON over stdout, then persists and validates it
+   through the deterministic backend.
+6. `update_broker_sources`: refresh read-only broker account, position, and
+   recommendation context.
+7. `update_disclosures`: refresh public disclosures, official House filings,
    configured 13F trackers, disclosure symbol prices, and trader replicas.
    Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
    a heavier 13F holdings refresh is intended.
-5. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
+8. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
    events.
-6. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
+9. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
 
 The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
 Each underlying job still writes its own status file.
+
+## Agent Handoff
+
+The radar exposes open hypothesis work through `GET /api/agent-thesis-requests`
+and `GET /api/agent-postmortem-requests`. Agents fulfill those requests by
+posting structured JSON to the local-only endpoints:
+
+- `POST /api/agent-thesis`: stores an `agent_thesis`, attaches it to matching
+  candidate events, and immediately runs deterministic thesis validation. The
+  validation checks required proofs, catalysts, invalidation, evidence backing,
+  option/stock state, IV state, and red-team risk flags from source antithesis,
+  candidate blockers, technical trend, liquidity, cash burn, growth, and balance
+  sheet data. Validation rows are keyed by thesis, strategy version, validation
+  date, and candidate event so the daily loop can compare point-in-time thesis
+  state without mixing strategy versions.
+- `POST /api/agent-postmortems`: stores an `agent_postmortem`, materializes any
+  proposed strategy mutation, and immediately runs deterministic backtest and
+  forward-test gates.
+
+The same handoff can run as a job with `market-run-option-agents` or the
+allowlisted `run_option_agents` refresh job. Configure commands under:
+
+```yaml
+agents:
+  option_thesis:
+    enabled: true
+    command: "market-openai-option-thesis-agent"
+    timeout_seconds: 120
+    limit: 20
+  option_postmortem:
+    enabled: true
+    command: "market-openai-option-postmortem-agent"
+    timeout_seconds: 120
+    limit: 20
+```
+
+Each command receives one request object on stdin with `request`, `prompt`,
+`context`, `output_schema`, and guardrails. It must return one JSON object on
+stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
+`MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
+for local runs. The built-in OpenAI commands require `OPENAI_API_KEY`; use
+`MARKET_OPENAI_MODEL` to override the default model.
+
+These endpoints are handoff boundaries, not trading commands. Agent payloads are
+hypotheses and proposals only; deterministic code still owns option math,
+candidate state, validation, backtests, forward tests, and human-approval gates.
 
 ## Freshness Contracts
 
@@ -85,6 +144,11 @@ After a successful refresh:
 - `/api/tickers/{symbol}/decision-snapshot` explains action grade, source
   cluster, freshness, decision basis, blocking gates, portfolio impact, and
   invalidation.
+- `/api/panel-snapshot?scope=options-radar` includes nonempty radar tables when
+  option chains exist: `option_snapshot`, `option_features`, `stock_features`,
+  `candidate_event`, `candidate_event_mark`, `candidate_event_attribution`,
+  `shadow_trade`, `radar_state_transition`, `missed_winner_event`, and
+  strategy validation/proposal tables.
 
 ## Suggested Daily Schedule
 

@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Target,
   UsersRound,
 } from "lucide-react";
 import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
@@ -45,6 +46,7 @@ const navItems: NavItem[] = [
   { to: "/watchlist", label: "Watchlist", icon: Eye },
   { to: "/portfolio", label: "Portfolio", icon: Landmark },
   { to: "/research-queue", label: "Research", icon: BookOpenCheck, aliases: ["/research", "/opportunities"] },
+  { to: "/options-radar", label: "Options", icon: Target },
   { to: "/thesis-monitor", label: "Theses", icon: AlertTriangle },
   { to: "/superinvestors", label: "Superinvestors", icon: UsersRound, aliases: ["/filings"] },
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
@@ -60,7 +62,7 @@ export function AppShell() {
   const { model, loading, lastRefresh } = useMarketData();
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const widePage = location.pathname.startsWith("/watchlist");
+  const widePage = location.pathname.startsWith("/watchlist") || location.pathname.startsWith("/options-radar");
 
   const onSearch = (event: FormEvent) => {
     event.preventDefault();

@@ -41,6 +41,26 @@ class YFinanceProvider:
             "earnings_history": frame_to_records(getattr(ticker, "earnings_history", None)),
         }
 
+    def options_chain_liquidity(self, symbol: str, expiry: str) -> list[dict[str, Any]]:
+        chain = self.ticker(symbol).option_chain(expiry)
+        rows: list[dict[str, Any]] = []
+        for option_type, frame in (("call", getattr(chain, "calls", None)), ("put", getattr(chain, "puts", None))):
+            for row in frame_to_records(frame):
+                rows.append(
+                    {
+                        "expiry": expiry,
+                        "type": option_type,
+                        "strike": row.get("strike"),
+                        "volume": row.get("volume"),
+                        "open_interest": row.get("openInterest"),
+                        "openInterest": row.get("openInterest"),
+                        "last": row.get("lastPrice"),
+                        "contract_symbol": row.get("contractSymbol"),
+                        "raw": row,
+                    }
+                )
+        return rows
+
 
 def frame_to_records(value: Any) -> list[dict[str, Any]]:
     if value is None:

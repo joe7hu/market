@@ -68,6 +68,27 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "options_provider_capabilities": options_provider_capabilities(con),
             "options_expiry_signals": options_expiry_signals(con),
             "options_ticker_signals": options_ticker_signals(con),
+            "option_strategy_versions": option_strategy_versions(con),
+            "option_snapshot": option_snapshot(con),
+            "option_features": option_features(con),
+            "stock_features": stock_features(con),
+            "agent_thesis": agent_thesis(con),
+            "agent_thesis_request": agent_thesis_request(con),
+            "agent_thesis_validation": agent_thesis_validation(con),
+            "agent_postmortem_request": agent_postmortem_request(con),
+            "agent_postmortem": agent_postmortem(con),
+            "candidate_event": candidate_event(con),
+            "candidate_event_mark": candidate_event_mark(con),
+            "candidate_event_attribution": candidate_event_attribution(con),
+            "shadow_trade": shadow_trade(con),
+            "shadow_trade_mark": shadow_trade_mark(con),
+            "radar_state_transition": radar_state_transition(con),
+            "option_attribution": option_attribution(con),
+            "missed_winner_event": missed_winner_event(con),
+            "strategy_mutation_proposal": strategy_mutation_proposal(con),
+            "strategy_backtest_result": strategy_backtest_result(con),
+            "strategy_forward_test_result": strategy_forward_test_result(con),
+            "strategy_cohort_result": strategy_cohort_result(con),
             "news": news(con),
             "tradingview_symbol_search": tradingview_symbol_search(con),
             "tradingview_watchlists": tradingview_watchlists(con),
@@ -3032,6 +3053,346 @@ def options_ticker_signals(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("unavailable_signals", "raw"))) for row in rows]
+
+
+def option_strategy_versions(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT strategy_version, strategy_name, version, created_at, status,
+               parameters, promoted_at, supersedes, notes
+        FROM option_strategy_versions
+        ORDER BY created_at DESC, strategy_version
+        LIMIT 100
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("parameters",))) for row in rows]
+
+
+def option_snapshot(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT snapshot_time, ticker, underlying_price, expiration, strike, option_type,
+               bid, ask, mid, last, volume, open_interest, iv, delta, gamma, theta,
+               vega, dte, spread_pct, data_source, contract_id, raw
+        FROM option_snapshot
+        ORDER BY snapshot_time DESC, ticker, expiration, strike, option_type
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def option_features(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT snapshot_time, contract_id, ticker, required_2x_price,
+               required_5x_price, required_10x_price, required_move_10x_pct,
+               breakeven, iv_percentile, iv_rank, liquidity_score,
+               convexity_score, raw
+        FROM option_features
+        ORDER BY snapshot_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def stock_features(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT snapshot_time, ticker, price, ma_20, ma_50, ma_200,
+               rs_vs_qqq_20d, rs_vs_qqq_60d, atr_pct, volume_ratio,
+               distance_from_52w_high, base_length_days, breakout_level, raw
+        FROM stock_features
+        ORDER BY snapshot_time DESC, ticker
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def agent_thesis(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT thesis_id, ticker, created_at, agent_version, bull_target_price,
+               bull_target_date, base_target_price, core_thesis, required_proofs,
+               invalidation_conditions, catalysts, catalyst_summary, bear_case,
+               confidence, evidence_refs, raw
+        FROM agent_thesis
+        ORDER BY created_at DESC, ticker
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("required_proofs", "invalidation_conditions", "catalysts", "evidence_refs", "raw"))) for row in rows]
+
+
+def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT request_id, created_at, ticker, event_id, strategy_version,
+               priority_score, status, prompt, context, raw
+        FROM agent_thesis_request
+        ORDER BY created_at DESC, priority_score DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
+
+
+def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT validation_id, thesis_id, ticker, strategy_version,
+               validation_date, candidate_event_id, candidate_snapshot_time,
+               validated_at, state, reason, option_still_valid, stock_progress,
+               iv_status, candidate_state,
+               proof_status, catalyst_status, invalidation_status, evidence_status,
+               red_team_status, red_team_flags, evidence_refs, raw
+        FROM agent_thesis_validation
+        ORDER BY validation_date DESC NULLS LAST, validated_at DESC, ticker
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("red_team_flags", "evidence_refs", "raw"))) for row in rows]
+
+
+def agent_postmortem_request(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT request_id, created_at, source_type, source_id, ticker,
+               strategy_version, priority_score, status, prompt, context, raw
+        FROM agent_postmortem_request
+        ORDER BY created_at DESC, priority_score DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
+
+
+def agent_postmortem(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT postmortem_id, request_id, source_type, source_id, created_at,
+               agent_version, ticker, strategy_version, outcome_type,
+               failure_type, evidence, proposed_rule_change,
+               proposed_parameter_changes, expected_effect, risk, confidence,
+               evidence_refs, raw
+        FROM agent_postmortem
+        ORDER BY created_at DESC, confidence DESC NULLS LAST
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("evidence", "proposed_parameter_changes", "evidence_refs", "raw"))) for row in rows]
+
+
+def candidate_event(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT event_id, snapshot_time, ticker, contract_id, strategy_version,
+               state, premium_mid, premium_fill_assumption, required_10x_price,
+               required_move_pct, buy_under, trigger_reason, thesis_id, score, raw
+        FROM candidate_event
+        ORDER BY snapshot_time DESC, score DESC, ticker
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def shadow_trade(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT trade_id, event_id, entry_time, entry_price_assumption, exit_time,
+               exit_price, status, max_return_seen, max_drawdown_seen, time_to_2x,
+               time_to_5x, time_to_10x, exit_reason, raw
+        FROM shadow_trade
+        ORDER BY entry_time DESC, trade_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT mark_id, event_id, contract_id, ticker, strategy_version,
+               candidate_state, mark_time, alert_time, premium_fill_assumption,
+               mark_price, current_return, return_1d, return_5d, return_20d,
+               return_60d, max_return_since_alert, max_drawdown_since_alert,
+               time_to_2x, time_to_5x, time_to_10x, dte, spread_pct, iv,
+               underlying_price, raw
+        FROM candidate_event_mark
+        ORDER BY mark_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT attribution_id, event_id, contract_id, ticker, strategy_version,
+               candidate_state, snapshot_time, prior_snapshot_time,
+               option_return, underlying_return, iv_change, theta_decay,
+               spread_change, stock_move_effect, iv_effect, theta_effect,
+               spread_effect, unexplained_effect, label, raw
+        FROM candidate_event_attribution
+        ORDER BY snapshot_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def shadow_trade_mark(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT mark_id, trade_id, event_id, contract_id, ticker,
+               strategy_version, mark_time, entry_time, entry_price_assumption,
+               mark_price, current_return, return_1d, return_5d, return_20d,
+               return_60d, max_return_since_alert, max_drawdown_since_alert,
+               time_to_2x, time_to_5x, time_to_10x, dte, spread_pct, iv,
+               underlying_price, expired_worthless_probability_change, raw
+        FROM shadow_trade_mark
+        ORDER BY mark_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def radar_state_transition(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT transition_id, evaluated_at, snapshot_time, ticker, contract_id,
+               strategy_version, previous_state, state, candidate_state, event_id,
+               trade_id, mark_id, thesis_id, trigger_reason, evidence_refs, raw
+        FROM radar_state_transition
+        ORDER BY snapshot_time DESC, ticker, contract_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("evidence_refs", "raw"))) for row in rows]
+
+
+def option_attribution(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT attribution_id, trade_id, event_id, contract_id, snapshot_time,
+               prior_snapshot_time, option_return, underlying_return, iv_change,
+               theta_decay, spread_change, stock_move_effect, iv_effect,
+               theta_effect, spread_effect, unexplained_effect, label, raw
+        FROM option_attribution
+        ORDER BY snapshot_time DESC, trade_id
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def missed_winner_event(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT missed_id, detected_at, ticker, contract_id, strategy_version,
+               first_snapshot_time, winner_snapshot_time, entry_price_assumption,
+               winner_price, max_return_seen, winner_threshold, filter_reason,
+               proposed_strategy_family, raw
+        FROM missed_winner_event
+        ORDER BY detected_at DESC, max_return_seen DESC
+        LIMIT 1000
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def strategy_mutation_proposal(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT proposal_id, created_at, source_type, strategy_version,
+               proposed_strategy_version, proposed_parameter_changes, rationale,
+               expected_effect, risk, status, requires_backtest,
+               requires_forward_test, human_approval_status, approved_by,
+               approved_at, evidence_refs, raw
+        FROM strategy_mutation_proposal
+        ORDER BY created_at DESC, proposed_strategy_version
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("proposed_parameter_changes", "evidence_refs", "raw"))) for row in rows]
+
+
+def strategy_backtest_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT backtest_id, proposal_id, evaluated_at, strategy_version,
+               proposed_strategy_version, lookback_start, lookback_end,
+               baseline_candidate_count, proposed_candidate_count,
+               baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+               proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+               proposed_false_positive_rate, verdict, metrics, raw
+        FROM strategy_backtest_result
+        ORDER BY evaluated_at DESC, proposed_strategy_version
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
+
+
+def strategy_forward_test_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT forward_test_id, proposal_id, evaluated_at, strategy_version,
+               proposed_strategy_version, forward_start, forward_end,
+               days_observed, baseline_candidate_count, proposed_candidate_count,
+               baseline_hit_rate_2x, baseline_hit_rate_5x, baseline_hit_rate_10x,
+               proposed_hit_rate_2x, proposed_hit_rate_5x, proposed_hit_rate_10x,
+               status, verdict, metrics, raw
+        FROM strategy_forward_test_result
+        ORDER BY evaluated_at DESC, proposed_strategy_version
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
+
+
+def strategy_cohort_result(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT cohort_id, evaluated_at, strategy_version, cohort_type,
+               cohort_value, candidate_count, hit_rate_2x, hit_rate_5x,
+               hit_rate_10x, false_positive_rate, median_max_return,
+               median_max_drawdown, average_time_to_2x, early_entry_rate,
+               theta_iv_bleed_rate, good_convexity_rate, qqq_above_200d_rate,
+               raw
+        FROM strategy_cohort_result
+        ORDER BY evaluated_at DESC, cohort_type, candidate_count DESC
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def options_payoff_scenarios(con: Any) -> list[dict[str, Any]]:

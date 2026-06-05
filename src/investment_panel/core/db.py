@@ -356,6 +356,429 @@ CREATE TABLE IF NOT EXISTS options_ticker_signals (
     PRIMARY KEY(symbol, source)
 );
 
+CREATE TABLE IF NOT EXISTS option_strategy_versions (
+    strategy_version TEXT PRIMARY KEY,
+    strategy_name TEXT,
+    version INTEGER,
+    created_at TIMESTAMP,
+    status TEXT,
+    parameters JSON,
+    promoted_at TIMESTAMP,
+    supersedes TEXT,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS option_snapshot (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    underlying_price DOUBLE,
+    expiration DATE,
+    strike DOUBLE,
+    option_type TEXT,
+    bid DOUBLE,
+    ask DOUBLE,
+    mid DOUBLE,
+    last DOUBLE,
+    volume DOUBLE,
+    open_interest DOUBLE,
+    iv DOUBLE,
+    delta DOUBLE,
+    gamma DOUBLE,
+    theta DOUBLE,
+    vega DOUBLE,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    data_source TEXT,
+    contract_id TEXT,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time, data_source)
+);
+
+CREATE TABLE IF NOT EXISTS option_features (
+    snapshot_time TIMESTAMP,
+    contract_id TEXT,
+    ticker TEXT,
+    required_2x_price DOUBLE,
+    required_5x_price DOUBLE,
+    required_10x_price DOUBLE,
+    required_move_10x_pct DOUBLE,
+    breakeven DOUBLE,
+    iv_percentile DOUBLE,
+    iv_rank DOUBLE,
+    liquidity_score DOUBLE,
+    convexity_score DOUBLE,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time)
+);
+
+CREATE TABLE IF NOT EXISTS stock_features (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    price DOUBLE,
+    ma_20 DOUBLE,
+    ma_50 DOUBLE,
+    ma_200 DOUBLE,
+    rs_vs_qqq_20d DOUBLE,
+    rs_vs_qqq_60d DOUBLE,
+    atr_pct DOUBLE,
+    volume_ratio DOUBLE,
+    distance_from_52w_high DOUBLE,
+    base_length_days INTEGER,
+    breakout_level DOUBLE,
+    raw JSON,
+    PRIMARY KEY(ticker, snapshot_time)
+);
+
+CREATE TABLE IF NOT EXISTS agent_thesis (
+    thesis_id TEXT PRIMARY KEY,
+    ticker TEXT,
+    created_at TIMESTAMP,
+    agent_version TEXT,
+    bull_target_price DOUBLE,
+    bull_target_date DATE,
+    base_target_price DOUBLE,
+    core_thesis TEXT,
+    required_proofs JSON,
+    invalidation_conditions JSON,
+    catalysts JSON,
+    catalyst_summary TEXT,
+    bear_case TEXT,
+    confidence DOUBLE,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_thesis_request (
+    request_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    ticker TEXT,
+    event_id TEXT,
+    strategy_version TEXT,
+    priority_score DOUBLE,
+    status TEXT,
+    prompt TEXT,
+    context JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_thesis_validation (
+    validation_id TEXT PRIMARY KEY,
+    thesis_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    validation_date DATE,
+    candidate_event_id TEXT,
+    candidate_snapshot_time TIMESTAMP,
+    validated_at TIMESTAMP,
+    state TEXT,
+    reason TEXT,
+    option_still_valid BOOLEAN,
+    stock_progress TEXT,
+    iv_status TEXT,
+    candidate_state TEXT,
+    proof_status TEXT,
+    catalyst_status TEXT,
+    invalidation_status TEXT,
+    evidence_status TEXT,
+    red_team_status TEXT,
+    red_team_flags JSON,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_postmortem_request (
+    request_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    source_type TEXT,
+    source_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    priority_score DOUBLE,
+    status TEXT,
+    prompt TEXT,
+    context JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS agent_postmortem (
+    postmortem_id TEXT PRIMARY KEY,
+    request_id TEXT,
+    source_type TEXT,
+    source_id TEXT,
+    created_at TIMESTAMP,
+    agent_version TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    outcome_type TEXT,
+    failure_type TEXT,
+    evidence JSON,
+    proposed_rule_change TEXT,
+    proposed_parameter_changes JSON,
+    expected_effect TEXT,
+    risk TEXT,
+    confidence DOUBLE,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS candidate_event (
+    event_id TEXT PRIMARY KEY,
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    state TEXT,
+    premium_mid DOUBLE,
+    premium_fill_assumption DOUBLE,
+    required_10x_price DOUBLE,
+    required_move_pct DOUBLE,
+    buy_under DOUBLE,
+    trigger_reason TEXT,
+    thesis_id TEXT,
+    score DOUBLE,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS candidate_event_mark (
+    mark_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    candidate_state TEXT,
+    mark_time TIMESTAMP,
+    alert_time TIMESTAMP,
+    premium_fill_assumption DOUBLE,
+    mark_price DOUBLE,
+    current_return DOUBLE,
+    return_1d DOUBLE,
+    return_5d DOUBLE,
+    return_20d DOUBLE,
+    return_60d DOUBLE,
+    max_return_since_alert DOUBLE,
+    max_drawdown_since_alert DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    iv DOUBLE,
+    underlying_price DOUBLE,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS candidate_event_attribution (
+    attribution_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    candidate_state TEXT,
+    snapshot_time TIMESTAMP,
+    prior_snapshot_time TIMESTAMP,
+    option_return DOUBLE,
+    underlying_return DOUBLE,
+    iv_change DOUBLE,
+    theta_decay DOUBLE,
+    spread_change DOUBLE,
+    stock_move_effect DOUBLE,
+    iv_effect DOUBLE,
+    theta_effect DOUBLE,
+    spread_effect DOUBLE,
+    unexplained_effect DOUBLE,
+    label TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS shadow_trade (
+    trade_id TEXT PRIMARY KEY,
+    event_id TEXT,
+    entry_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    exit_time TIMESTAMP,
+    exit_price DOUBLE,
+    status TEXT,
+    max_return_seen DOUBLE,
+    max_drawdown_seen DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    exit_reason TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS shadow_trade_mark (
+    mark_id TEXT PRIMARY KEY,
+    trade_id TEXT,
+    event_id TEXT,
+    contract_id TEXT,
+    ticker TEXT,
+    strategy_version TEXT,
+    mark_time TIMESTAMP,
+    entry_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    mark_price DOUBLE,
+    current_return DOUBLE,
+    return_1d DOUBLE,
+    return_5d DOUBLE,
+    return_20d DOUBLE,
+    return_60d DOUBLE,
+    max_return_since_alert DOUBLE,
+    max_drawdown_since_alert DOUBLE,
+    time_to_2x INTEGER,
+    time_to_5x INTEGER,
+    time_to_10x INTEGER,
+    dte INTEGER,
+    spread_pct DOUBLE,
+    iv DOUBLE,
+    underlying_price DOUBLE,
+    expired_worthless_probability_change DOUBLE,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS radar_state_transition (
+    transition_id TEXT PRIMARY KEY,
+    evaluated_at TIMESTAMP,
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    previous_state TEXT,
+    state TEXT,
+    candidate_state TEXT,
+    event_id TEXT,
+    trade_id TEXT,
+    mark_id TEXT,
+    thesis_id TEXT,
+    trigger_reason TEXT,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS option_attribution (
+    attribution_id TEXT PRIMARY KEY,
+    trade_id TEXT,
+    event_id TEXT,
+    contract_id TEXT,
+    snapshot_time TIMESTAMP,
+    prior_snapshot_time TIMESTAMP,
+    option_return DOUBLE,
+    underlying_return DOUBLE,
+    iv_change DOUBLE,
+    theta_decay DOUBLE,
+    spread_change DOUBLE,
+    stock_move_effect DOUBLE,
+    iv_effect DOUBLE,
+    theta_effect DOUBLE,
+    spread_effect DOUBLE,
+    unexplained_effect DOUBLE,
+    label TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS missed_winner_event (
+    missed_id TEXT PRIMARY KEY,
+    detected_at TIMESTAMP,
+    ticker TEXT,
+    contract_id TEXT,
+    strategy_version TEXT,
+    first_snapshot_time TIMESTAMP,
+    winner_snapshot_time TIMESTAMP,
+    entry_price_assumption DOUBLE,
+    winner_price DOUBLE,
+    max_return_seen DOUBLE,
+    winner_threshold TEXT,
+    filter_reason TEXT,
+    proposed_strategy_family TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_mutation_proposal (
+    proposal_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    source_type TEXT,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    proposed_parameter_changes JSON,
+    rationale TEXT,
+    expected_effect TEXT,
+    risk TEXT,
+    status TEXT,
+    requires_backtest BOOLEAN,
+    requires_forward_test BOOLEAN,
+    human_approval_status TEXT,
+    approved_by TEXT,
+    approved_at TIMESTAMP,
+    evidence_refs JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_backtest_result (
+    backtest_id TEXT PRIMARY KEY,
+    proposal_id TEXT,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    lookback_start TIMESTAMP,
+    lookback_end TIMESTAMP,
+    baseline_candidate_count INTEGER,
+    proposed_candidate_count INTEGER,
+    baseline_hit_rate_2x DOUBLE,
+    baseline_hit_rate_5x DOUBLE,
+    baseline_hit_rate_10x DOUBLE,
+    proposed_hit_rate_2x DOUBLE,
+    proposed_hit_rate_5x DOUBLE,
+    proposed_hit_rate_10x DOUBLE,
+    proposed_false_positive_rate DOUBLE,
+    verdict TEXT,
+    metrics JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_forward_test_result (
+    forward_test_id TEXT PRIMARY KEY,
+    proposal_id TEXT,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    proposed_strategy_version TEXT,
+    forward_start TIMESTAMP,
+    forward_end TIMESTAMP,
+    days_observed INTEGER,
+    baseline_candidate_count INTEGER,
+    proposed_candidate_count INTEGER,
+    baseline_hit_rate_2x DOUBLE,
+    baseline_hit_rate_5x DOUBLE,
+    baseline_hit_rate_10x DOUBLE,
+    proposed_hit_rate_2x DOUBLE,
+    proposed_hit_rate_5x DOUBLE,
+    proposed_hit_rate_10x DOUBLE,
+    status TEXT,
+    verdict TEXT,
+    metrics JSON,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS strategy_cohort_result (
+    cohort_id TEXT PRIMARY KEY,
+    evaluated_at TIMESTAMP,
+    strategy_version TEXT,
+    cohort_type TEXT,
+    cohort_value TEXT,
+    candidate_count INTEGER,
+    hit_rate_2x DOUBLE,
+    hit_rate_5x DOUBLE,
+    hit_rate_10x DOUBLE,
+    false_positive_rate DOUBLE,
+    median_max_return DOUBLE,
+    median_max_drawdown DOUBLE,
+    average_time_to_2x DOUBLE,
+    early_entry_rate DOUBLE,
+    theta_iv_bleed_rate DOUBLE,
+    good_convexity_rate DOUBLE,
+    qqq_above_200d_rate DOUBLE,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS news_items (
     id TEXT PRIMARY KEY,
     published_at TIMESTAMP,
@@ -859,6 +1282,21 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
     }.items():
         if column not in catalyst_columns:
             con.execute(f"ALTER TABLE catalysts ADD COLUMN {column} {column_type}")
+    thesis_validation_columns = {row[1] for row in con.execute("PRAGMA table_info('agent_thesis_validation')").fetchall()}
+    for column, column_type in {
+        "strategy_version": "TEXT",
+        "validation_date": "DATE",
+        "candidate_event_id": "TEXT",
+        "candidate_snapshot_time": "TIMESTAMP",
+        "proof_status": "TEXT",
+        "catalyst_status": "TEXT",
+        "invalidation_status": "TEXT",
+        "evidence_status": "TEXT",
+        "red_team_status": "TEXT",
+        "red_team_flags": "JSON",
+    }.items():
+        if column not in thesis_validation_columns:
+            con.execute(f"ALTER TABLE agent_thesis_validation ADD COLUMN {column} {column_type}")
     for table, columns_to_add in {
         "discovered_universe": {
             "latest_observed_at": "TIMESTAMP",
@@ -913,6 +1351,10 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             "bid_iv": "DOUBLE",
             "ask_iv": "DOUBLE",
             "contract_symbol": "TEXT",
+        },
+        "strategy_mutation_proposal": {
+            "approved_by": "TEXT",
+            "approved_at": "TIMESTAMP",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

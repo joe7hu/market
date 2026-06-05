@@ -43,6 +43,13 @@ export type RefreshJobsPayload = {
   } | null;
 };
 
+export type StrategyPromotionResult = {
+  status?: string;
+  proposal_id?: string;
+  strategy_version?: string;
+  approved_by?: string;
+};
+
 export type PanelScopeOptions = {
   offset?: number;
   limit?: number;
@@ -74,6 +81,27 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   options_provider_capabilities: "optionsProviderCapabilities",
   options_expiry_signals: "optionsExpirySignals",
   options_ticker_signals: "optionsTickerSignals",
+  option_strategy_versions: "optionStrategyVersions",
+  option_snapshot: "optionSnapshot",
+  option_features: "optionFeatures",
+  stock_features: "stockFeatures",
+  agent_thesis: "agentThesis",
+  agent_thesis_request: "agentThesisRequest",
+  agent_thesis_validation: "agentThesisValidation",
+  agent_postmortem_request: "agentPostmortemRequest",
+  agent_postmortem: "agentPostmortem",
+  candidate_event: "candidateEvent",
+  candidate_event_mark: "candidateEventMark",
+  candidate_event_attribution: "candidateEventAttribution",
+  shadow_trade: "shadowTrade",
+  shadow_trade_mark: "shadowTradeMark",
+  radar_state_transition: "radarStateTransition",
+  option_attribution: "optionAttribution",
+  missed_winner_event: "missedWinnerEvent",
+  strategy_mutation_proposal: "strategyMutationProposal",
+  strategy_backtest_result: "strategyBacktestResult",
+  strategy_forward_test_result: "strategyForwardTestResult",
+  strategy_cohort_result: "strategyCohortResult",
   news: "news",
   tradingview_symbol_search: "tradingviewSymbolSearch",
   tradingview_watchlists: "tradingviewWatchlists",
@@ -160,7 +188,16 @@ async function sendJson<T>(path: string, method: "POST" | "DELETE", body?: unkno
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `${response.status} ${response.statusText}`);
+    let message = text || `${response.status} ${response.statusText}`;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      }
+    } catch {
+      // Keep the raw response text when the server does not return JSON.
+    }
+    throw new Error(message);
   }
   return (await response.json()) as T;
 }
@@ -216,6 +253,14 @@ export async function startRefreshJob(jobName: string): Promise<RefreshJob> {
   return sendJson<RefreshJob>(`/api/refresh-jobs/${encodeURIComponent(jobName)}/background`, "POST");
 }
 
+export async function promoteStrategyMutation(proposalId: string, approvedBy = "joe"): Promise<StrategyPromotionResult> {
+  return sendJson<StrategyPromotionResult>(
+    `/api/strategy-mutation-proposals/${encodeURIComponent(proposalId)}/promote`,
+    "POST",
+    { approved_by: approvedBy },
+  );
+}
+
 export function emptyPanelData(): PanelData {
   return {
     dashboard: {},
@@ -243,6 +288,27 @@ export function emptyPanelData(): PanelData {
     optionsProviderCapabilities: EMPTY_TABLE,
     optionsExpirySignals: EMPTY_TABLE,
     optionsTickerSignals: EMPTY_TABLE,
+    optionStrategyVersions: EMPTY_TABLE,
+    optionSnapshot: EMPTY_TABLE,
+    optionFeatures: EMPTY_TABLE,
+    stockFeatures: EMPTY_TABLE,
+    agentThesis: EMPTY_TABLE,
+    agentThesisRequest: EMPTY_TABLE,
+    agentThesisValidation: EMPTY_TABLE,
+    agentPostmortemRequest: EMPTY_TABLE,
+    agentPostmortem: EMPTY_TABLE,
+    candidateEvent: EMPTY_TABLE,
+    candidateEventMark: EMPTY_TABLE,
+    candidateEventAttribution: EMPTY_TABLE,
+    shadowTrade: EMPTY_TABLE,
+    shadowTradeMark: EMPTY_TABLE,
+    radarStateTransition: EMPTY_TABLE,
+    optionAttribution: EMPTY_TABLE,
+    missedWinnerEvent: EMPTY_TABLE,
+    strategyMutationProposal: EMPTY_TABLE,
+    strategyBacktestResult: EMPTY_TABLE,
+    strategyForwardTestResult: EMPTY_TABLE,
+    strategyCohortResult: EMPTY_TABLE,
     news: EMPTY_TABLE,
     tradingviewSymbolSearch: EMPTY_TABLE,
     tradingviewWatchlists: EMPTY_TABLE,
@@ -445,6 +511,27 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     optionsProviderCapabilities: EMPTY_TABLE,
     optionsExpirySignals: EMPTY_TABLE,
     optionsTickerSignals: EMPTY_TABLE,
+    optionStrategyVersions: EMPTY_TABLE,
+    optionSnapshot: EMPTY_TABLE,
+    optionFeatures: EMPTY_TABLE,
+    stockFeatures: EMPTY_TABLE,
+    agentThesis: EMPTY_TABLE,
+    agentThesisRequest: EMPTY_TABLE,
+    agentThesisValidation: EMPTY_TABLE,
+    agentPostmortemRequest: EMPTY_TABLE,
+    agentPostmortem: EMPTY_TABLE,
+    candidateEvent: EMPTY_TABLE,
+    candidateEventMark: EMPTY_TABLE,
+    candidateEventAttribution: EMPTY_TABLE,
+    shadowTrade: EMPTY_TABLE,
+    shadowTradeMark: EMPTY_TABLE,
+    radarStateTransition: EMPTY_TABLE,
+    optionAttribution: EMPTY_TABLE,
+    missedWinnerEvent: EMPTY_TABLE,
+    strategyMutationProposal: EMPTY_TABLE,
+    strategyBacktestResult: EMPTY_TABLE,
+    strategyForwardTestResult: EMPTY_TABLE,
+    strategyCohortResult: EMPTY_TABLE,
     news: EMPTY_TABLE,
     tradingviewSymbolSearch: EMPTY_TABLE,
     tradingviewWatchlists: EMPTY_TABLE,

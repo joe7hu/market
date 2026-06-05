@@ -1,0 +1,32 @@
+"""Refresh deterministic 10x options radar tables."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from typing import Any
+
+from investment_panel.core.config import load_config
+from investment_panel.core.db import db, init_db
+from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
+
+
+def run(config_path: str | None = None, symbols: list[str] | None = None, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path) as con:
+        result = refresh_options_radar(con, symbols=symbols, strategy_version=strategy_version)
+    return {"database": str(config.database.duckdb_path), "strategy_version": strategy_version, **result}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--symbol", action="append", dest="symbols", default=None)
+    parser.add_argument("--strategy-version", default=DEFAULT_STRATEGY_VERSION)
+    args = parser.parse_args()
+    print(json.dumps(run(args.config, symbols=args.symbols, strategy_version=args.strategy_version), indent=2, default=str))
+
+
+if __name__ == "__main__":
+    main()

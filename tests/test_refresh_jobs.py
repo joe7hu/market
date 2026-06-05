@@ -58,6 +58,36 @@ def test_refresh_job_marks_failed_summary_as_failed(tmp_path, monkeypatch) -> No
     assert rows[0]["summary"]["ok"] is False
 
 
+def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.refresh_options_radar,
+        "run",
+        lambda config_path: {"job": "refresh_options_radar", "config_path": config_path},
+    )
+
+    result = refresh_jobs.run_refresh_job("refresh_options_radar", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
+
+
+def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.run_option_agents,
+        "run",
+        lambda config_path: {"job": "run_option_agents", "config_path": config_path},
+    )
+
+    result = refresh_jobs.run_refresh_job("run_option_agents", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {"job": "run_option_agents", "config_path": "config.yaml"}
+
+
 def test_start_refresh_job_returns_existing_running_job(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})

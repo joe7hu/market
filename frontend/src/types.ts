@@ -68,6 +68,27 @@ export type PanelData = {
   optionsProviderCapabilities: TablePayload;
   optionsExpirySignals: TablePayload;
   optionsTickerSignals: TablePayload;
+  optionStrategyVersions: TablePayload;
+  optionSnapshot: TablePayload;
+  optionFeatures: TablePayload;
+  stockFeatures: TablePayload;
+  agentThesis: TablePayload;
+  agentThesisRequest: TablePayload;
+  agentThesisValidation: TablePayload;
+  agentPostmortemRequest: TablePayload;
+  agentPostmortem: TablePayload;
+  candidateEvent: TablePayload;
+  candidateEventMark: TablePayload;
+  candidateEventAttribution: TablePayload;
+  shadowTrade: TablePayload;
+  shadowTradeMark: TablePayload;
+  radarStateTransition: TablePayload;
+  optionAttribution: TablePayload;
+  missedWinnerEvent: TablePayload;
+  strategyMutationProposal: TablePayload;
+  strategyBacktestResult: TablePayload;
+  strategyForwardTestResult: TablePayload;
+  strategyCohortResult: TablePayload;
   news: TablePayload;
   tradingviewSymbolSearch: TablePayload;
   tradingviewWatchlists: TablePayload;
@@ -157,6 +178,27 @@ export type PanelEndpoint =
   | "optionsProviderCapabilities"
   | "optionsExpirySignals"
   | "optionsTickerSignals"
+  | "optionStrategyVersions"
+  | "optionSnapshot"
+  | "optionFeatures"
+  | "stockFeatures"
+  | "agentThesis"
+  | "agentThesisRequest"
+  | "agentThesisValidation"
+  | "agentPostmortemRequest"
+  | "agentPostmortem"
+  | "candidateEvent"
+  | "candidateEventMark"
+  | "candidateEventAttribution"
+  | "shadowTrade"
+  | "shadowTradeMark"
+  | "radarStateTransition"
+  | "optionAttribution"
+  | "missedWinnerEvent"
+  | "strategyMutationProposal"
+  | "strategyBacktestResult"
+  | "strategyForwardTestResult"
+  | "strategyCohortResult"
   | "news"
   | "tradingviewSymbolSearch"
   | "tradingviewWatchlists"

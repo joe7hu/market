@@ -148,6 +148,20 @@ class AnalysisConfig:
 
 
 @dataclass(frozen=True)
+class AgentCommandConfig:
+    enabled: bool = False
+    command: str = ""
+    timeout_seconds: int = 120
+    limit: int = 20
+
+
+@dataclass(frozen=True)
+class AgentsConfig:
+    option_thesis: AgentCommandConfig = AgentCommandConfig()
+    option_postmortem: AgentCommandConfig = AgentCommandConfig()
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     weights: dict[str, float] = field(
         default_factory=lambda: {
@@ -171,6 +185,7 @@ class AppConfig:
     data_sources: DataSourcesConfig = DataSourcesConfig()
     event_sources: EventSourcesConfig = EventSourcesConfig()
     analysis: AnalysisConfig = AnalysisConfig()
+    agents: AgentsConfig = AgentsConfig()
     scoring: ScoringConfig = ScoringConfig()
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     portfolio_csv: Path | None = None
@@ -297,6 +312,27 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
     )
+    agents_raw = raw.get("agents", {})
+    option_thesis_raw = agents_raw.get("option_thesis", {})
+    option_postmortem_raw = agents_raw.get("option_postmortem", {})
+    option_thesis_env_command = os.environ.get("MARKET_OPTION_THESIS_AGENT_COMMAND")
+    option_postmortem_env_command = os.environ.get("MARKET_OPTION_POSTMORTEM_AGENT_COMMAND")
+    option_thesis_command = str(option_thesis_env_command or option_thesis_raw.get("command", ""))
+    option_postmortem_command = str(option_postmortem_env_command or option_postmortem_raw.get("command", ""))
+    agents = AgentsConfig(
+        option_thesis=AgentCommandConfig(
+            enabled=bool(option_thesis_env_command) or bool(option_thesis_raw.get("enabled", bool(option_thesis_command))),
+            command=option_thesis_command,
+            timeout_seconds=int(option_thesis_raw.get("timeout_seconds", 120)),
+            limit=int(option_thesis_raw.get("limit", 20)),
+        ),
+        option_postmortem=AgentCommandConfig(
+            enabled=bool(option_postmortem_env_command) or bool(option_postmortem_raw.get("enabled", bool(option_postmortem_command))),
+            command=option_postmortem_command,
+            timeout_seconds=int(option_postmortem_raw.get("timeout_seconds", 120)),
+            limit=int(option_postmortem_raw.get("limit", 20)),
+        ),
+    )
     scoring_raw = raw.get("scoring", {})
     scoring = ScoringConfig(
         weights={**ScoringConfig().weights, **dict(scoring_raw.get("weights", {}))},
@@ -311,6 +347,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         data_sources=data_sources,
         event_sources=event_sources,
         analysis=analysis,
+        agents=agents,
         scoring=scoring,
         watchlist=list(raw.get("watchlist", [])),
         portfolio_csv=resolve_path(portfolio_csv, base) if portfolio_csv else None,
@@ -408,6 +445,20 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "enabled": config.analysis.enabled,
             "correlation_lookback_days": config.analysis.correlation_lookback_days,
             "max_correlation_peers": config.analysis.max_correlation_peers,
+        },
+        "agents": {
+            "option_thesis": {
+                "enabled": config.agents.option_thesis.enabled,
+                "command": config.agents.option_thesis.command,
+                "timeout_seconds": config.agents.option_thesis.timeout_seconds,
+                "limit": config.agents.option_thesis.limit,
+            },
+            "option_postmortem": {
+                "enabled": config.agents.option_postmortem.enabled,
+                "command": config.agents.option_postmortem.command,
+                "timeout_seconds": config.agents.option_postmortem.timeout_seconds,
+                "limit": config.agents.option_postmortem.limit,
+            },
         },
         "scoring": {
             "weights": config.scoring.weights,

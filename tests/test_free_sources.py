@@ -18,7 +18,9 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.fundamentals import metrics_from_company_facts
 from investment_panel.core.free_sources import (
     infer_event_date,
+    option_chain_strikes_around_spot,
     option_symbols,
+    selected_option_expiries,
     store_expiries,
     store_news_rows,
     store_options_chain,
@@ -213,6 +215,119 @@ def test_default_option_symbols_cover_full_equity_universe(tmp_path: Path) -> No
     assert len(symbols) == 15
     assert symbols[0] == "T00"
     assert symbols[-1] == "T14"
+
+
+def test_selected_option_expiries_includes_near_term_and_radar_leaps() -> None:
+    rows = [
+        {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+        {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+        {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+        {"expiry": "2027-12-17", "dte": 563, "contracts_count": 180},
+        {"expiry": "2029-01-19", "dte": 962, "contracts_count": 180},
+    ]
+
+    expiries = selected_option_expiries(rows, "2026-06-02T15:30:00Z")
+
+    assert expiries == ["2026-06-05", "2027-06-02", "2028-11-18"]
+
+
+def test_selected_option_expiries_computes_missing_dte() -> None:
+    rows = [
+        {"expiry": "2028-06-02", "contracts_count": 180},
+        {"expiry": "2026-06-05", "contracts_count": 120},
+        {"expiry": "2027-06-02", "contracts_count": 180},
+    ]
+
+    expiries = selected_option_expiries(rows, "2026-06-02T15:30:00Z")
+
+    assert expiries == ["2026-06-05", "2027-06-02", "2028-06-02"]
+
+
+def test_option_chain_strikes_around_spot_widens_only_radar_leaps() -> None:
+    rows = [
+        {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+        {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+        {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+    ]
+
+    near_term = option_chain_strikes_around_spot("2026-06-05", rows, "2026-06-02T15:30:00Z", configured=6)
+    leap = option_chain_strikes_around_spot("2027-06-02", rows, "2026-06-02T15:30:00Z", configured=6)
+    far_leap = option_chain_strikes_around_spot("2028-11-18", rows, "2026-06-02T15:30:00Z", configured=6)
+
+    assert near_term == 6
+    assert leap == 24
+    assert far_leap == 24
+
+
+def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path, monkeypatch) -> None:
+    chain_calls: list[tuple[str, int]] = []
+    quote_calls: list[str] = []
+
+    class MultiExpiryOptionsProvider:
+        def __init__(self, _runner: object) -> None:
+            pass
+
+        def status(self) -> list[dict[str, object]]:
+            return [{"connected": False}]
+
+        def quote(self, _symbol: str) -> dict[str, object]:
+            quote_calls.append(_symbol)
+            return {"symbol": "NASDAQ:TSLA", "close": 100, "currency": "USD"}
+
+        def screener(self, limit: int = 50) -> list[dict[str, object]]:
+            raise AssertionError("targeted options refresh should not run screener")
+
+        def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+            raise AssertionError("targeted options refresh should not run news")
+
+        def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
+            return [
+                {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},
+                {"expiry": "2027-06-02", "dte": 365, "contracts_count": 180},
+                {"expiry": "2027-12-17", "dte": 563, "contracts_count": 180},
+                {"expiry": "2028-11-18", "dte": 900, "contracts_count": 240},
+            ]
+
+        def options_chain(self, _symbol: str, expiry: str | None = None, strikes_around_spot: int = 6) -> list[dict[str, object]]:
+            assert expiry is not None
+            chain_calls.append((expiry, strikes_around_spot))
+            return [{"expiry": expiry, "strike": 120, "type": "call", "bid": 4.8, "ask": 5.2, "mid": 5.0, "iv": 0.42, "delta": 0.31}]
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(
+            opencli=SimpleNamespace(enabled=True, command="opencli", timeout_seconds=1),
+            tradingview=SimpleNamespace(
+                enabled=True,
+                options_symbols=["TSLA"],
+                screener_limit=0,
+                news_limit=0,
+                strikes_around_spot=6,
+                personal_surfaces_enabled=False,
+            ),
+        ),
+        watchlist=[],
+    )
+    monkeypatch.setattr(free_sources_core, "TradingViewProvider", MultiExpiryOptionsProvider)
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
+        upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"})
+
+        result = free_sources_core.update_tradingview_sources(con, config, symbols=["TSLA"])
+        rows = query_rows(con, "SELECT expiry, count(*) AS count FROM options_chain GROUP BY expiry ORDER BY expiry")
+
+    assert quote_calls == ["TSLA"]
+    assert chain_calls == [("2026-06-05", 6), ("2027-06-02", 24), ("2028-11-18", 24)]
+    assert result["target_symbols"] == ["TSLA"]
+    assert result["chain_expiries"] == 3
+    assert result["radar_chain_expiries"] == 2
+    assert result["chains"] == 3
+    assert rows == [
+        {"expiry": date(2026, 6, 5), "count": 1},
+        {"expiry": date(2027, 6, 2), "count": 1},
+        {"expiry": date(2028, 11, 18), "count": 1},
+    ]
 
 
 def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:
@@ -478,17 +593,35 @@ def test_update_free_sources_promotes_universe_before_enrichment(tmp_path: Path,
         watchlist=[],
     )
     calls: list[str] = []
+    tradingview_symbols: list[str] | None = None
+    yfinance_symbols: list[str] | None = None
+
+    def fake_update_tradingview_sources(_con: object, _config: object, **kwargs: object) -> dict[str, str]:
+        nonlocal tradingview_symbols
+        calls.append("tradingview")
+        symbols = kwargs.get("symbols")
+        tradingview_symbols = list(symbols) if isinstance(symbols, list) else None
+        return {"status": "ok"}
+
+    def fake_update_yfinance_sources(_con: object, _config: object, **kwargs: object) -> dict[str, str]:
+        nonlocal yfinance_symbols
+        calls.append("yfinance")
+        symbols = kwargs.get("symbols")
+        yfinance_symbols = list(symbols) if isinstance(symbols, list) else None
+        return {"status": "ok"}
 
     monkeypatch.setattr(update_free_sources, "load_config", lambda _path=None: cfg)
     monkeypatch.setattr(update_free_sources.update_equity_data, "run", lambda _path=None: calls.append("equity") or {"status": "ok"})
-    monkeypatch.setattr(update_free_sources, "update_tradingview_sources", lambda _con, _config: calls.append("tradingview") or {"status": "ok"})
-    monkeypatch.setattr(update_free_sources, "update_yfinance_sources", lambda _con, _config: calls.append("yfinance") or {"status": "ok"})
+    monkeypatch.setattr(update_free_sources, "update_tradingview_sources", fake_update_tradingview_sources)
+    monkeypatch.setattr(update_free_sources, "update_yfinance_sources", fake_update_yfinance_sources)
     monkeypatch.setattr(update_free_sources, "run_all_analyses", lambda _con, _config: calls.append("analysis") or {"status": "ok"})
     monkeypatch.setattr(update_free_sources, "refresh_decision_read_models", lambda _con, _watchlist: calls.append("decision") or {"status": "ok"})
 
-    result = update_free_sources.run("config.yaml")
+    result = update_free_sources.run("config.yaml", symbols=["TSLA", "NVDA"])
 
     assert calls == ["decision", "equity", "tradingview", "decision", "yfinance", "analysis", "decision"]
+    assert tradingview_symbols == ["TSLA", "NVDA"]
+    assert yfinance_symbols == ["TSLA", "NVDA"]
     assert result["preflight_decision_models"] == {"status": "ok"}
     assert result["post_tradingview_decision_models"] == {"status": "ok"}
     assert result["equity_data"] == {"status": "ok"}
