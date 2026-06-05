@@ -51,15 +51,20 @@ http://192.168.50.197:8000/api/status
    transitions, missed-winner events, cohort results, and agent work queues.
    This is also exposed as the standalone `refresh_options_radar` refresh job
    for local reruns after option-source changes.
-5. `update_broker_sources`: refresh read-only broker account, position, and
+5. `run_option_agents`: optionally run configured local external agent commands
+   for open options-radar thesis and postmortem handoffs. This step is
+   default-disabled; when enabled, Market passes one request JSON over stdin,
+   accepts only structured JSON over stdout, then persists and validates it
+   through the deterministic backend.
+6. `update_broker_sources`: refresh read-only broker account, position, and
    recommendation context.
-6. `update_disclosures`: refresh public disclosures, official House filings,
+7. `update_disclosures`: refresh public disclosures, official House filings,
    configured 13F trackers, disclosure symbol prices, and trader replicas.
    Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
    a heavier 13F holdings refresh is intended.
-7. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
+8. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
    events.
-8. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
+9. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
 
 The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
 Each underlying job still writes its own status file.
@@ -81,6 +86,29 @@ posting structured JSON to the local-only endpoints:
 - `POST /api/agent-postmortems`: stores an `agent_postmortem`, materializes any
   proposed strategy mutation, and immediately runs deterministic backtest and
   forward-test gates.
+
+The same handoff can run as a job with `market-run-option-agents` or the
+allowlisted `run_option_agents` refresh job. Configure commands under:
+
+```yaml
+agents:
+  option_thesis:
+    enabled: true
+    command: "your-thesis-agent-command"
+    timeout_seconds: 120
+    limit: 20
+  option_postmortem:
+    enabled: true
+    command: "your-postmortem-agent-command"
+    timeout_seconds: 120
+    limit: 20
+```
+
+Each command receives one request object on stdin with `request`, `prompt`,
+`context`, `output_schema`, and guardrails. It must return one JSON object on
+stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
+`MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
+for local runs.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,

@@ -38,6 +38,7 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
     monkeypatch.setattr(full_market_refresh.daily_screen, "run", fake_run("daily_screen"))
     monkeypatch.setattr(full_market_refresh.update_free_sources, "run", fake_run("free_sources_and_analyses"))
     monkeypatch.setattr(full_market_refresh.refresh_options_radar, "run", fake_run("options_radar"))
+    monkeypatch.setattr(full_market_refresh.run_option_agents, "run", fake_run("option_agents"))
     monkeypatch.setattr(full_market_refresh.update_broker_sources, "run", fake_run("broker_sources"))
     monkeypatch.setattr(full_market_refresh.update_disclosures, "run", fake_run("disclosures"))
     monkeypatch.setattr(full_market_refresh.update_event_calendar, "run", fake_run("event_calendar"))
@@ -50,6 +51,7 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
         "daily_screen",
         "free_sources_and_analyses",
         "options_radar",
+        "option_agents",
         "broker_sources",
         "disclosures",
         "event_calendar",

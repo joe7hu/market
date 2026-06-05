@@ -101,6 +101,21 @@ analysis:
   correlation_lookback_days: 180
   max_correlation_peers: 8
 
+agents:
+  # Optional local commands that read one request JSON from stdin and return
+  # structured JSON. Disabled by default so deterministic refreshes never block
+  # on an LLM/provider process unless explicitly configured.
+  option_thesis:
+    enabled: false
+    command: ""
+    timeout_seconds: 120
+    limit: 20
+  option_postmortem:
+    enabled: false
+    command: ""
+    timeout_seconds: 120
+    limit: 20
+
 disclosures:
   # Add normalized public disclosure CSVs here to build scalable trader
   # replica portfolios. Expected columns include trader_name, symbol,
