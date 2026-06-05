@@ -839,7 +839,7 @@ function AgentThesisTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTic
 
   return (
     <DataTableFrame title={<SectionTitle title="Structured Hypotheses" count={rows.length} />}>
-      <table className="w-full min-w-[1100px] text-sm">
+      <table className="w-full min-w-[1320px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
@@ -847,7 +847,9 @@ function AgentThesisTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTic
             <Head>Bull Date</Head>
             <Head className="text-right">Base Target</Head>
             <Head className="text-right">Confidence</Head>
+            <Head>Catalysts</Head>
             <Head>Core Thesis</Head>
+            <Head>Bear Case</Head>
             <Head>Invalidation</Head>
           </tr>
         </thead>
@@ -861,7 +863,9 @@ function AgentThesisTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTic
                 <Cell className="whitespace-nowrap text-muted-foreground">{formatShortDate(textField(row, ["bull_target_date"]))}</Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["base_target_price"])}</Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["confidence"], Number.NaN))}</Cell>
+                <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["catalyst_summary"], fullField(row, ["catalysts"]))}</Truncated></Cell>
                 <Cell className="max-w-[380px]"><Truncated>{displayField(row, ["core_thesis"])}</Truncated></Cell>
+                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["bear_case"])}</Truncated></Cell>
                 <Cell className="max-w-[320px]"><Truncated>{fullField(row, ["invalidation_conditions"])}</Truncated></Cell>
               </tr>
             );
