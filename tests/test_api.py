@@ -315,6 +315,61 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(tmp_path, monkeypat
     assert proposal["status"] in {"forward_test_required", "backtest_failed", "ready_for_human_review"}
 
 
+def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "strategy-promotion-api.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_missed_winner(con)
+        refresh_options_radar(con, ["RBLX"])
+        proposal_id = query_rows(con, "SELECT proposal_id FROM strategy_mutation_proposal")[0]["proposal_id"]
+
+    _use_temp_api_db(monkeypatch, db_path)
+    client = TestClient(app)
+    blocked = client.post(
+        f"/api/strategy-mutation-proposals/{proposal_id}/promote",
+        json={"approved_by": "joe"},
+    )
+
+    assert blocked.status_code == 400
+    assert "forward shadow test" in blocked.text
+
+    with db(db_path) as con:
+        con.execute(
+            """
+            UPDATE strategy_forward_test_result
+            SET verdict = 'pass', status = 'complete', days_observed = 30
+            WHERE proposal_id = ?
+            """,
+            [proposal_id],
+        )
+
+    unapproved = client.post(
+        f"/api/strategy-mutation-proposals/{proposal_id}/promote",
+        json={"approved_by": ""},
+    )
+    response = client.post(
+        f"/api/strategy-mutation-proposals/{proposal_id}/promote",
+        json={"approved_by": "joe"},
+    )
+
+    assert unapproved.status_code == 400
+    assert "human approval" in unapproved.text
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "promoted"
+    assert payload["proposal_id"] == proposal_id
+    assert payload["strategy_version"] == "leap_10x_momentum_lottery_proposed_v1"
+    with db(db_path) as con:
+        proposal = query_rows(con, "SELECT status, human_approval_status FROM strategy_mutation_proposal WHERE proposal_id = ?", [proposal_id])[0]
+        strategy = query_rows(
+            con,
+            "SELECT strategy_version, status, supersedes FROM option_strategy_versions WHERE strategy_version = ?",
+            [payload["strategy_version"]],
+        )[0]
+    assert proposal == {"status": "promoted", "human_approval_status": "approved"}
+    assert strategy == {"strategy_version": payload["strategy_version"], "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
+
+
 def test_local_write_guard_allows_private_lan_clients() -> None:
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
     _require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))

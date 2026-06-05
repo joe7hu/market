@@ -1,6 +1,7 @@
-import { Activity, BrainCircuit, GitBranchPlus, Target, TrendingUp } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { Activity, BrainCircuit, CheckCircle2, GitBranchPlus, Loader2, Target, TrendingUp } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
 
+import { promoteStrategyMutation } from "@/api";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -13,9 +14,12 @@ import { WorkspacePage, type MetricSpec, type OpenTicker } from "./workspacePage
 type OptionsRadarPageProps = {
   data: PanelData;
   onOpenTicker: OpenTicker;
+  onRefresh: () => Promise<void> | void;
 };
 
-export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) {
+export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
+  const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
   const candidates = rows(data.candidateEvent);
   const candidateMarks = rows(data.candidateEventMark);
   const candidateAttributions = rows(data.candidateEventAttribution);
@@ -71,6 +75,20 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
   const latestSnapshot = latestDate(optionSnapshots, "snapshot_time");
   const latestStrategy = strategyVersions[0];
 
+  async function handlePromoteProposal(proposalId: string) {
+    if (!proposalId || promotingProposal) return;
+    setPromotingProposal(proposalId);
+    setPromotionError(null);
+    try {
+      await promoteStrategyMutation(proposalId, "joe");
+      await onRefresh();
+    } catch (error) {
+      setPromotionError(error instanceof Error ? error.message : "Promotion failed");
+    } finally {
+      setPromotingProposal(null);
+    }
+  }
+
   return (
     <WorkspacePage
       eyebrow="Options Radar"
@@ -106,7 +124,14 @@ export function OptionsRadarPage({ data, onOpenTicker }: OptionsRadarPageProps) 
           <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} />
           <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} />
           <CohortResultsTable rows={cohorts} />
-          <StrategyProposalsTable rows={proposals} backtestByProposal={latestBacktestByProposal} forwardByProposal={latestForwardByProposal} />
+          <StrategyProposalsTable
+            rows={proposals}
+            backtestByProposal={latestBacktestByProposal}
+            forwardByProposal={latestForwardByProposal}
+            promotingProposal={promotingProposal}
+            promotionError={promotionError}
+            onPromote={handlePromoteProposal}
+          />
         </TabsContent>
 
         <TabsContent value="theses" className="space-y-4">
@@ -608,18 +633,31 @@ function StrategyProposalsTable({
   rows,
   backtestByProposal,
   forwardByProposal,
+  promotingProposal,
+  promotionError,
+  onPromote,
 }: {
   rows: RowRecord[];
   backtestByProposal: Map<string, RowRecord>;
   forwardByProposal: Map<string, RowRecord>;
+  promotingProposal: string | null;
+  promotionError: string | null;
+  onPromote: (proposalId: string) => Promise<void> | void;
 }) {
   if (!rows.length) {
     return <EmptyState title="No strategy proposals" detail="No mutation proposals are waiting in the learning engine." icon={GitBranchPlus} />;
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title="Strategy Mutation Gates" count={rows.length} />}>
-      <table className="w-full min-w-[1180px] text-sm">
+    <DataTableFrame
+      title={
+        <div className="flex flex-wrap items-center gap-2">
+          <SectionTitle title="Strategy Mutation Gates" count={rows.length} />
+          {promotionError ? <StatusBadge tone="bad">{promotionError}</StatusBadge> : null}
+        </div>
+      }
+    >
+      <table className="w-full min-w-[1260px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Proposal</Head>
@@ -630,6 +668,7 @@ function StrategyProposalsTable({
             <Head>Change</Head>
             <Head>Rationale</Head>
             <Head>Risk</Head>
+            <Head className="text-right">Action</Head>
           </tr>
         </thead>
         <tbody>
@@ -639,6 +678,15 @@ function StrategyProposalsTable({
             const forward = forwardByProposal.get(proposalId);
             const status = textField(row, ["status"], "pending");
             const human = textField(row, ["human_approval_status"], "pending");
+            const backtestVerdict = textField(backtest, ["verdict"]).toLowerCase();
+            const forwardVerdict = textField(forward, ["verdict", "status"]).toLowerCase();
+            const isPromoting = promotingProposal === proposalId;
+            const canPromote =
+              Boolean(proposalId) &&
+              status === "ready_for_human_review" &&
+              human !== "approved" &&
+              backtestVerdict === "pass" &&
+              forwardVerdict === "pass";
             return (
               <tr key={proposalId || textField(row, ["proposed_strategy_version"])} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["proposed_strategy_version"])}</Truncated></Cell>
@@ -649,6 +697,24 @@ function StrategyProposalsTable({
                 <Cell className="max-w-[260px]"><Truncated>{fullField(row, ["proposed_parameter_changes"])}</Truncated></Cell>
                 <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["rationale"])}</Truncated></Cell>
                 <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["risk"])}</Truncated></Cell>
+                <Cell className="text-right">
+                  {human === "approved" ? (
+                    <StatusBadge tone="good">Promoted</StatusBadge>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9 min-h-9"
+                      disabled={!canPromote || isPromoting}
+                      title={canPromote ? "Promote strategy" : "Promotion requires passing gates"}
+                      onClick={() => void onPromote(proposalId)}
+                    >
+                      {isPromoting ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+                      <span>Promote</span>
+                    </Button>
+                  )}
+                </Cell>
               </tr>
             );
           })}

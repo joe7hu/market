@@ -43,6 +43,13 @@ export type RefreshJobsPayload = {
   } | null;
 };
 
+export type StrategyPromotionResult = {
+  status?: string;
+  proposal_id?: string;
+  strategy_version?: string;
+  approved_by?: string;
+};
+
 export type PanelScopeOptions = {
   offset?: number;
   limit?: number;
@@ -181,7 +188,16 @@ async function sendJson<T>(path: string, method: "POST" | "DELETE", body?: unkno
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `${response.status} ${response.statusText}`);
+    let message = text || `${response.status} ${response.statusText}`;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      }
+    } catch {
+      // Keep the raw response text when the server does not return JSON.
+    }
+    throw new Error(message);
   }
   return (await response.json()) as T;
 }
@@ -235,6 +251,14 @@ export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
 
 export async function startRefreshJob(jobName: string): Promise<RefreshJob> {
   return sendJson<RefreshJob>(`/api/refresh-jobs/${encodeURIComponent(jobName)}/background`, "POST");
+}
+
+export async function promoteStrategyMutation(proposalId: string, approvedBy = "joe"): Promise<StrategyPromotionResult> {
+  return sendJson<StrategyPromotionResult>(
+    `/api/strategy-mutation-proposals/${encodeURIComponent(proposalId)}/promote`,
+    "POST",
+    { approved_by: approvedBy },
+  );
 }
 
 export function emptyPanelData(): PanelData {

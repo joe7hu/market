@@ -39,7 +39,12 @@ from investment_panel.core.config import load_config as load_core_config
 from investment_panel.core.db import db, init_db
 from investment_panel.core.option_agent_postmortem import AgentPostmortemValidationError, upsert_agent_postmortem
 from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_option_agent_work, upsert_agent_thesis
-from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_strategy_proposal_evaluations
+from investment_panel.core.options_radar import (
+    DEFAULT_STRATEGY_VERSION,
+    StrategyPromotionError,
+    promote_strategy_mutation,
+    refresh_strategy_proposal_evaluations,
+)
 from investment_panel.core.sources import source_detail_payload, source_ingestion_audit
 
 
@@ -63,6 +68,10 @@ class WatchlistSymbolInput(BaseModel):
 
 class PaperOrderInput(BaseModel):
     recommendation_id: str
+
+
+class StrategyPromotionInput(BaseModel):
+    approved_by: str = "joe"
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
@@ -438,6 +447,30 @@ def create_app() -> FastAPI:
     def strategy_mutation_proposals() -> dict[str, Any]:
         _, panel_data = _context()
         return table_payload(panel_data, "strategy_mutation_proposal")
+
+    @app.post("/api/strategy-mutation-proposals/{proposal_id}/promote")
+    def promote_strategy_mutation_endpoint(
+        proposal_id: str,
+        request: Request,
+        payload: StrategyPromotionInput | None = None,
+    ) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        init_db(db_path)
+        approved_by = payload.approved_by.strip() if payload else "joe"
+        try:
+            with db(db_path, read_only=False) as con:
+                strategy_version = promote_strategy_mutation(con, proposal_id, approved_by=approved_by)
+        except StrategyPromotionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
+        return {
+            "status": "promoted",
+            "proposal_id": proposal_id,
+            "strategy_version": strategy_version,
+            "approved_by": approved_by,
+        }
 
     @app.get("/api/strategy-backtests")
     def strategy_backtests() -> dict[str, Any]:
