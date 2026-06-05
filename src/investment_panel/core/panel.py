@@ -69,6 +69,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "options_expiry_signals": options_expiry_signals(con),
             "options_ticker_signals": options_ticker_signals(con),
             "option_strategy_versions": option_strategy_versions(con),
+            "option_radar_summary": option_radar_summary(con),
             "option_snapshot": option_snapshot(con),
             "option_features": option_features(con),
             "stock_features": stock_features(con),
@@ -3067,6 +3068,67 @@ def option_strategy_versions(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("parameters",))) for row in rows]
+
+
+def option_radar_summary(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        WITH latest_snapshot AS (
+            SELECT max(snapshot_time) AS snapshot_time
+            FROM option_snapshot
+        ),
+        latest_candidates AS (
+            SELECT max(snapshot_time) AS snapshot_time
+            FROM candidate_event
+        )
+        SELECT
+            (SELECT snapshot_time FROM latest_snapshot) AS latest_snapshot_time,
+            (SELECT snapshot_time FROM latest_candidates) AS latest_candidate_time,
+            (SELECT count(DISTINCT ticker) FROM option_snapshot WHERE snapshot_time = (SELECT snapshot_time FROM latest_snapshot)) AS scanned_tickers_current,
+            (SELECT count(*) FROM option_snapshot WHERE snapshot_time = (SELECT snapshot_time FROM latest_snapshot)) AS snapshot_rows_current,
+            (SELECT count(DISTINCT ticker) FROM option_snapshot) AS scanned_tickers_total,
+            (SELECT count(*) FROM option_snapshot) AS snapshot_rows_total,
+            (SELECT string_agg(DISTINCT data_source, ', ' ORDER BY data_source) FROM option_snapshot) AS data_sources,
+            (
+                SELECT count(DISTINCT ticker)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state != 'REJECT'
+            ) AS opportunity_tickers_current,
+            (
+                SELECT count(*)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state != 'REJECT'
+            ) AS opportunity_rows_current,
+            (
+                SELECT count(*)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state = 'FIRE'
+            ) AS fire_rows_current,
+            (
+                SELECT count(*)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state = 'SETUP'
+            ) AS setup_rows_current,
+            (
+                SELECT count(*)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state = 'WATCH'
+            ) AS watch_rows_current,
+            (
+                SELECT count(*)
+                FROM candidate_event
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND state = 'REJECT'
+            ) AS reject_rows_current
+        """,
+    )
+    return [_compact_empty_fields(row) for row in rows]
 
 
 def option_snapshot(con: Any) -> list[dict[str, Any]]:

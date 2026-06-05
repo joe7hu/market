@@ -41,6 +41,41 @@ class YFinanceProvider:
             "earnings_history": frame_to_records(getattr(ticker, "earnings_history", None)),
         }
 
+    def options_expiries(self, symbol: str) -> list[dict[str, Any]]:
+        ticker = self.ticker(symbol)
+        expiries = getattr(ticker, "options", None) or []
+        return [{"expiry": str(expiry)} for expiry in expiries if expiry]
+
+    def options_chain(self, symbol: str, expiry: str) -> list[dict[str, Any]]:
+        chain = self.ticker(symbol).option_chain(expiry)
+        rows: list[dict[str, Any]] = []
+        for option_type, frame in (("call", getattr(chain, "calls", None)), ("put", getattr(chain, "puts", None))):
+            for row in frame_to_records(frame):
+                bid = number_or_none(row.get("bid"))
+                ask = number_or_none(row.get("ask"))
+                last = number_or_none(row.get("lastPrice"))
+                mid = ((bid + ask) / 2) if bid is not None and ask is not None and ask >= bid else last
+                contract_symbol = row.get("contractSymbol")
+                rows.append(
+                    {
+                        "expiry": expiry,
+                        "type": option_type,
+                        "strike": row.get("strike"),
+                        "bid": bid,
+                        "ask": ask,
+                        "mid": mid,
+                        "last": last,
+                        "iv": row.get("impliedVolatility"),
+                        "volume": row.get("volume"),
+                        "open_interest": row.get("openInterest"),
+                        "openInterest": row.get("openInterest"),
+                        "symbol": contract_symbol,
+                        "contract_symbol": contract_symbol,
+                        "raw": row,
+                    }
+                )
+        return rows
+
     def options_chain_liquidity(self, symbol: str, expiry: str) -> list[dict[str, Any]]:
         chain = self.ticker(symbol).option_chain(expiry)
         rows: list[dict[str, Any]] = []
@@ -88,6 +123,16 @@ def scalar_or_records(value: Any) -> Any:
         except Exception:
             pass
     return json_safe(value)
+
+
+def number_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
 
 
 def json_safe(value: Any) -> Any:

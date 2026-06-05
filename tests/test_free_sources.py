@@ -26,6 +26,7 @@ from investment_panel.core.free_sources import (
     store_options_chain,
     store_screener_rows,
     store_yfinance_market_snapshot,
+    update_yfinance_options_chains,
     upsert_quote,
 )
 from investment_panel.core.panel import load_panel_data
@@ -215,6 +216,94 @@ def test_default_option_symbols_cover_full_equity_universe(tmp_path: Path) -> No
     assert len(symbols) == 15
     assert symbols[0] == "T00"
     assert symbols[-1] == "T14"
+
+
+def test_default_option_symbols_use_ranked_decision_queue_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(tradingview=SimpleNamespace(options_symbols=[], option_scan_limit=12)),
+        watchlist=[{"symbol": "KEEP", "asset_class": "equity"}],
+    )
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "KEEP", "name": "Keep", "asset_class": "equity"})
+        for index in range(30):
+            upsert_instrument(con, {"symbol": f"EQ{index:02d}", "name": f"Equity {index}", "asset_class": "equity"})
+        for index in range(20):
+            action_grade = "Reject" if index == 0 else "Stale" if index == 1 else "Watch"
+            con.execute(
+                """
+                INSERT INTO decision_queue
+                (symbol, as_of, rank, action_grade, score, decision_score, action_score)
+                VALUES (?, current_timestamp, ?, ?, ?, ?, ?)
+                """,
+                [f"DQ{index:02d}", index + 1, action_grade, 100 - index, 90 - index, 80 - index],
+            )
+
+        symbols = option_symbols(con, config)
+
+    assert len(symbols) == 12
+    assert symbols[0] == "KEEP"
+    assert "DQ00" not in symbols
+    assert "DQ01" not in symbols
+    assert symbols[1:4] == ["DQ02", "DQ03", "DQ04"]
+    assert "EQ00" not in symbols
+
+
+def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(data_sources=SimpleNamespace(tradingview=SimpleNamespace(strikes_around_spot=2)))
+
+    class FakeYFinanceOptionsProvider:
+        def options_expiries(self, symbol: str) -> list[dict[str, object]]:
+            assert symbol == "RBLX"
+            return [
+                {"expiry": "2026-06-19", "dte": 17},
+                {"expiry": "2027-06-18", "dte": 381},
+                {"expiry": "2028-01-21", "dte": 598},
+            ]
+
+        def options_chain(self, symbol: str, expiry: str) -> list[dict[str, object]]:
+            assert symbol == "RBLX"
+            return [
+                {
+                    "expiry": expiry,
+                    "type": "call",
+                    "strike": strike,
+                    "bid": 4.0,
+                    "ask": 4.5,
+                    "mid": 4.25,
+                    "last": 4.2,
+                    "iv": 0.35,
+                    "volume": 12,
+                    "open_interest": 140,
+                    "symbol": f"RBLX{expiry.replace('-', '')}C{strike}",
+                }
+                for strike in [70, 80, 90, 100, 110, 120, 130]
+            ]
+
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "RBLX", "name": "Roblox", "asset_class": "equity"})
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'test', '{}')")
+
+        result = update_yfinance_options_chains(
+            con,
+            FakeYFinanceOptionsProvider(),  # type: ignore[arg-type]
+            ["RBLX"],
+            "2026-06-02T20:05:00Z",
+            "run1",
+            config,  # type: ignore[arg-type]
+        )
+        expiries = query_rows(con, "SELECT symbol, source, count(*) AS rows FROM options_expiries GROUP BY symbol, source")
+        chains = query_rows(con, "SELECT symbol, source, count(*) AS rows, min(strike) AS min_strike, max(strike) AS max_strike FROM options_chain GROUP BY symbol, source")
+
+    assert result["options_expiries"] == 3
+    assert result["options_chain_expiries"] == 3
+    assert result["options_chain_symbols"] == 1
+    assert result["options_chains"] == 19
+    assert expiries == [{"symbol": "RBLX", "source": "yfinance", "rows": 3}]
+    assert chains == [{"symbol": "RBLX", "source": "yfinance", "rows": 19, "min_strike": 70.0, "max_strike": 130.0}]
 
 
 def test_selected_option_expiries_includes_near_term_and_radar_leaps() -> None:

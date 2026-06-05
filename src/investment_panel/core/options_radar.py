@@ -41,7 +41,7 @@ def refresh_options_radar(
     symbols: list[str] | None = None,
     *,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
-    source: str = "tradingview",
+    source: str | None = None,
     snapshot_time: str | None = None,
 ) -> dict[str, int]:
     """Refresh the deterministic radar tables from already-ingested market data."""
@@ -117,14 +117,15 @@ def persist_option_snapshots(
     con: Any,
     symbols: list[str] | None = None,
     *,
-    source: str = "tradingview",
+    source: str | None = None,
     snapshot_time: str | None = None,
 ) -> int:
     """Copy raw chain rows into the event-sourced radar snapshot table."""
 
     symbol_filter = _symbol_filter(symbols, table_alias="oc")
+    source_filter = _source_filter(source, table_alias="oc")
     observed_filter = "AND oc.observed_at = TRY_CAST(? AS TIMESTAMP)" if snapshot_time else ""
-    params: list[Any] = [source, *symbol_filter["params"]]
+    params: list[Any] = [*source_filter["params"], *symbol_filter["params"]]
     if snapshot_time:
         params.append(snapshot_time)
     rows = query_rows(
@@ -164,7 +165,7 @@ def persist_option_snapshots(
                 )
             ) AS underlying_price
         FROM options_chain oc
-        WHERE oc.source = ? {symbol_filter["sql"]} {observed_filter}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]} {observed_filter}
         ORDER BY oc.observed_at, oc.symbol, oc.expiry, oc.strike, oc.option_type
         """,
         params,
@@ -181,6 +182,7 @@ def persist_option_snapshots(
         bid = _number(row.get("bid"))
         ask = _number(row.get("ask"))
         contract_id = _contract_id(ticker, expiration, strike, option_type, row.get("contract_symbol") or raw.get("symbol"))
+        data_source = str(row.get("source") or source or "unknown")
         con.execute(
             """
             INSERT OR REPLACE INTO option_snapshot
@@ -209,7 +211,7 @@ def persist_option_snapshots(
                 _number(row.get("vega")),
                 _integer(raw.get("dte")) or _days_to_expiration(expiration, snapshot_at),
                 _spread_pct(bid, ask, mid),
-                source,
+                data_source,
                 contract_id,
                 json_dumps(raw),
             ],
@@ -218,17 +220,18 @@ def persist_option_snapshots(
     return count
 
 
-def refresh_option_features(con: Any, symbols: list[str] | None = None, *, source: str = "tradingview") -> int:
+def refresh_option_features(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
     rows = query_rows(
         con,
         f"""
         SELECT *
         FROM option_snapshot s
-        WHERE s.data_source = ? {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
         ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
         """,
-        [source, *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"]],
     )
     iv_history = _iv_history_by_ticker(rows)
     count = 0
@@ -307,17 +310,18 @@ def build_option_feature(snapshot: dict[str, Any], iv_history: list[float]) -> d
     }
 
 
-def refresh_stock_features_for_option_snapshots(con: Any, symbols: list[str] | None = None, *, source: str = "tradingview") -> int:
+def refresh_stock_features_for_option_snapshots(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
     rows = query_rows(
         con,
         f"""
         SELECT DISTINCT s.ticker, s.snapshot_time
         FROM option_snapshot s
-        WHERE s.data_source = ? {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
         ORDER BY s.snapshot_time, s.ticker
         """,
-        [source, *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"]],
     )
     count = 0
     for row in rows:
@@ -413,10 +417,11 @@ def generate_candidate_events(
     symbols: list[str] | None = None,
     *,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
-    source: str = "tradingview",
+    source: str | None = None,
 ) -> int:
     strategy = _strategy_parameters(con, strategy_version)
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
     rows = query_rows(
         con,
         f"""
@@ -445,10 +450,10 @@ def generate_candidate_events(
             FROM agent_thesis
             QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY created_at DESC) = 1
         ) t ON t.ticker = s.ticker
-        WHERE s.data_source = ? {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
         ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
         """,
-        [source, *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"]],
     )
     count = 0
     for row in rows:
@@ -1598,18 +1603,19 @@ def detect_missed_winners(
     symbols: list[str] | None = None,
     *,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
-    source: str = "tradingview",
+    source: str | None = None,
 ) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
     rows = query_rows(
         con,
         f"""
         SELECT *
         FROM option_snapshot s
-        WHERE s.data_source = ? {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
         ORDER BY s.contract_id, s.snapshot_time
         """,
-        [source, *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"]],
     )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -2650,6 +2656,12 @@ def _symbol_filter(symbols: list[str] | None, *, table_alias: str, column: str =
         return {"sql": "", "params": []}
     placeholders = ", ".join(["?"] * len(clean))
     return {"sql": f"AND {table_alias}.{column} IN ({placeholders})", "params": clean}
+
+
+def _source_filter(source: str | None, *, table_alias: str, column: str = "source") -> dict[str, Any]:
+    if not source:
+        return {"sql": "", "params": []}
+    return {"sql": f"AND {table_alias}.{column} = ?", "params": [source]}
 
 
 def _contract_id(ticker: str, expiration: Any, strike: float | None, option_type: str, provider_symbol: Any) -> str:

@@ -170,6 +170,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
         "agent_thesis_validation",
         "agent_postmortem_request",
         "agent_postmortem",
+        "option_radar_summary",
         "option_snapshot",
         "option_features",
         "stock_features",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import date, datetime
 from typing import Any
 
@@ -17,6 +18,7 @@ RADAR_MIN_DTE = 365
 RADAR_MAX_DTE = 900
 RADAR_MAX_EXPIRIES_PER_SYMBOL = 2
 RADAR_STRIKES_AROUND_SPOT = 24
+OPTION_SCAN_LIMIT = 80
 
 
 def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
@@ -327,10 +329,103 @@ def update_yfinance_sources(con: Any, config: AppConfig, symbols: list[str] | No
             result["earnings"] += 1
         except Exception as exc:
             record_source_health(con, f"yfinance:{symbol}", "error", str(exc), "https://pypi.org/project/yfinance/")
+    chain_result = update_yfinance_options_chains(con, provider, target_symbols or option_symbols(con, config), observed_at, run_id, config)
+    result.update(chain_result)
     liquidity_result = update_yfinance_options_liquidity(con, provider, target_symbols, observed_at, run_id)
     result.update(liquidity_result)
     record_source_health(con, "yfinance_enrichment", "ok", json_dumps(result), "https://pypi.org/project/yfinance/")
     return result
+
+
+def update_yfinance_options_chains(
+    con: Any,
+    provider: YFinanceProvider,
+    symbols: list[str] | None,
+    observed_at: str,
+    run_id: str,
+    config: AppConfig,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "options_expiries": 0,
+        "options_chains": 0,
+        "options_chain_expiries": 0,
+        "options_chain_symbols": 0,
+        "options_chain_symbols_requested": 0,
+    }
+    errors: list[str] = []
+    record_yfinance_options_chain_capabilities(con, observed_at)
+    requested_symbols = unique_symbols(symbols or [])
+    result["options_chain_symbols_requested"] = len(requested_symbols)
+    for symbol in requested_symbols:
+        try:
+            expiries = provider.options_expiries(symbol)
+        except Exception as exc:
+            errors.append(f"{symbol}:expiries:{exc}")
+            continue
+        result["options_expiries"] += store_expiries(con, symbol, observed_at, expiries, source="yfinance")
+        selected_expiries = selected_option_expiries(expiries, observed_at)
+        if not selected_expiries:
+            continue
+        spot = latest_option_scan_spot(con, symbol)
+        symbol_chain_rows = 0
+        for expiry in selected_expiries:
+            try:
+                chain = provider.options_chain(symbol, str(expiry))
+            except Exception as exc:
+                errors.append(f"{symbol}:chain:{expiry}:{exc}")
+                continue
+            strikes_around_spot = option_chain_strikes_around_spot(
+                str(expiry),
+                expiries,
+                observed_at,
+                configured=config.data_sources.tradingview.strikes_around_spot,
+            )
+            filtered_chain = filter_chain_rows_around_spot(chain, spot, strikes_around_spot)
+            stored = store_options_chain(con, symbol, observed_at, filtered_chain, source="yfinance")
+            result["options_chains"] += stored
+            if stored:
+                result["options_chain_expiries"] += 1
+                symbol_chain_rows += stored
+        if symbol_chain_rows:
+            result["options_chain_symbols"] += 1
+    status = "ok" if not errors else "partial"
+    detail = json_dumps(result if not errors else {**result, "errors": errors[:10], "error_count": len(errors)})
+    record_provider_run(con, stable_id(f"{run_id}:options-chains"), "yfinance", "options-chains", observed_at, status, detail, result)
+    record_source_health(con, "yfinance_options_chains", status, detail, "https://pypi.org/project/yfinance/")
+    if errors:
+        result["options_chain_errors"] = errors[:10]
+        result["options_chain_error_count"] = len(errors)
+    return result
+
+
+def record_yfinance_options_chain_capabilities(con: Any, observed_at: str) -> None:
+    raw = {
+        "available_fields": ["expiry", "strike", "type", "bid", "ask", "mid", "last", "iv", "volume", "open_interest", "contract_symbol"],
+        "role": "primary_option_chain_source",
+    }
+    con.execute(
+        """
+        INSERT OR REPLACE INTO options_provider_capabilities
+        (provider, observed_at, supports_expiries, supports_chain_quotes,
+         supports_greeks, supports_theoretical_price, supports_open_interest,
+         supports_volume, supports_full_chain, status, detail, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "yfinance_options_chains",
+            observed_at,
+            True,
+            True,
+            False,
+            False,
+            True,
+            True,
+            True,
+            "primary",
+            "Yahoo/yfinance supplies expiries and full option chain bid/ask/last/IV/OI/volume for broad deterministic 10x radar coverage; Greeks are unavailable.",
+            json_dumps(raw),
+        ],
+    )
 
 
 def yfinance_instruments(con: Any, symbols: list[str] | None = None) -> list[dict[str, Any]]:
@@ -607,12 +702,28 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
     configured = [symbol.upper() for symbol in config.data_sources.tradingview.options_symbols]
     if configured:
         return configured
+    scan_limit = option_scan_limit(config)
     watchlist = [
         str(item.get("symbol") or "").upper()
         for item in config.watchlist
         if item.get("symbol") and str(item.get("asset_class") or "").lower() in {"equity", "etf"}
     ]
-    rows = query_rows(
+    decision_rows = query_rows(
+        con,
+        """
+        SELECT symbol
+        FROM decision_queue
+        WHERE symbol NOT LIKE '%-USD'
+          AND upper(COALESCE(action_grade, '')) NOT IN ('REJECT', 'STALE')
+        ORDER BY rank NULLS LAST,
+                 action_score DESC NULLS LAST,
+                 decision_score DESC NULLS LAST,
+                 score DESC NULLS LAST
+        LIMIT ?
+        """,
+        [scan_limit],
+    )
+    candidate_rows = query_rows(
         con,
         """
         SELECT symbol
@@ -620,11 +731,27 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
         WHERE symbol NOT LIKE '%-USD'
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY run_date DESC, score DESC) = 1
         ORDER BY score DESC
-        LIMIT 5
+        LIMIT ?
         """,
+        [scan_limit],
     )
-    ranked = [row["symbol"] for row in rows]
-    return unique_symbols([*watchlist, *ranked, *equity_symbols(con)])
+    selected = unique_symbols(
+        [
+            *watchlist,
+            *[row["symbol"] for row in decision_rows],
+            *[row["symbol"] for row in candidate_rows],
+            *equity_symbols(con),
+        ]
+    )
+    return selected[: max(scan_limit, len(watchlist))]
+
+
+def option_scan_limit(config: AppConfig) -> int:
+    value = getattr(config.data_sources.tradingview, "option_scan_limit", OPTION_SCAN_LIMIT)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return OPTION_SCAN_LIMIT
 
 
 def selected_option_expiries(
@@ -747,6 +874,62 @@ def unique_symbols(symbols: list[str]) -> list[str]:
     return output
 
 
+def latest_option_scan_spot(con: Any, symbol: str) -> float | None:
+    normalized = normalize_symbol(symbol)
+    quote_rows = query_rows(
+        con,
+        """
+        SELECT price
+        FROM quotes_intraday
+        WHERE symbol = ?
+        ORDER BY observed_at DESC
+        LIMIT 1
+        """,
+        [normalized],
+    )
+    if quote_rows:
+        price = as_float(quote_rows[0].get("price"))
+        if price is not None and price > 0:
+            return price
+    price_rows = query_rows(
+        con,
+        """
+        SELECT close
+        FROM prices_daily
+        WHERE symbol = ?
+        ORDER BY date DESC
+        LIMIT 1
+        """,
+        [normalized],
+    )
+    if price_rows:
+        price = as_float(price_rows[0].get("close"))
+        if price is not None and price > 0:
+            return price
+    return None
+
+
+def filter_chain_rows_around_spot(rows: list[dict[str, Any]], spot: float | None, strikes_around_spot: int) -> list[dict[str, Any]]:
+    if spot is None or spot <= 0 or strikes_around_spot <= 0:
+        return rows
+    max_rows_per_type = max(1, int(strikes_around_spot)) * 2 + 1
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        option_type = str(row.get("type") or row.get("option_type") or "").lower()
+        expiry = str(row.get("expiry") or "")
+        grouped.setdefault((expiry, option_type), []).append(row)
+    filtered: list[dict[str, Any]] = []
+    for grouped_rows in grouped.values():
+        with_strikes = [(as_float(row.get("strike")), row) for row in grouped_rows]
+        usable = [(strike, row) for strike, row in with_strikes if strike is not None]
+        if not usable:
+            filtered.extend(grouped_rows)
+            continue
+        nearest = sorted(usable, key=lambda item: abs(float(item[0]) - spot))[:max_rows_per_type]
+        filtered.extend(row for _strike, row in sorted(nearest, key=lambda item: float(item[0])))
+    return filtered
+
+
 def upsert_quote(con: Any, symbol: str, observed_at: str, row: dict[str, Any]) -> None:
     con.execute(
         """
@@ -783,7 +966,7 @@ def store_screener_rows(con: Any, run_id: str, observed_at: str, rows: list[dict
         )
 
 
-def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]]) -> int:
+def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]], *, source: str = "tradingview") -> int:
     count = 0
     normalized_symbol = normalize_symbol(symbol)
     for row in rows:
@@ -796,19 +979,19 @@ def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str,
             (symbol, expiry, dte, contracts_count, observed_at, source, raw)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            [normalized_symbol, expiry, as_int(row.get("dte")), as_int(row.get("contracts_count")), observed_at, "tradingview", json_dumps(row)],
+            [normalized_symbol, expiry, as_int(row.get("dte")), as_int(row.get("contracts_count")), observed_at, source, json_dumps(row)],
         )
         count += 1
     return count
 
 
-def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]]) -> int:
+def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]], *, source: str = "tradingview") -> int:
     count = 0
     normalized_symbol = normalize_symbol(symbol)
     for row in rows:
         expiry = row.get("expiry")
         strike = as_float(row.get("strike"))
-        option_type = row.get("type")
+        option_type = str(row.get("type") or row.get("option_type") or "").lower()
         if not expiry or strike is None or not option_type:
             continue
         con.execute(
@@ -835,9 +1018,9 @@ def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict
                 as_float(row.get("theo")),
                 as_float(row.get("bid_iv")),
                 as_float(row.get("ask_iv")),
-                row.get("symbol"),
+                row.get("contract_symbol") or row.get("contractSymbol") or row.get("symbol"),
                 observed_at,
-                "tradingview",
+                source,
                 json_dumps(row),
             ],
         )
@@ -1080,9 +1263,12 @@ def normalize_symbol(value: Any) -> str:
 
 def as_float(value: Any) -> float | None:
     try:
-        return float(value) if value is not None else None
+        number = float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+    if number is None or not math.isfinite(number):
+        return None
+    return number
 
 
 def as_int(value: Any) -> int | None:

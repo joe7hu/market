@@ -73,6 +73,7 @@ class TradingViewConfig:
     screener_limit: int = 50
     news_limit: int = 50
     strikes_around_spot: int = 6
+    option_scan_limit: int = 80
 
 
 @dataclass(frozen=True)
@@ -263,6 +264,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             screener_limit=int(tradingview_raw.get("screener_limit", 50)),
             news_limit=int(tradingview_raw.get("news_limit", 50)),
             strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
+            option_scan_limit=int(tradingview_raw.get("option_scan_limit", 80)),
         ),
         yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
         brokers=BrokerSourcesConfig(
@@ -399,6 +401,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "screener_limit": config.data_sources.tradingview.screener_limit,
                 "news_limit": config.data_sources.tradingview.news_limit,
                 "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,
+                "option_scan_limit": config.data_sources.tradingview.option_scan_limit,
             },
             "yfinance": {"enabled": config.data_sources.yfinance.enabled},
             "brokers": {

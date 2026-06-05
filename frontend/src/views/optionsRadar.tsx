@@ -21,58 +21,44 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
   const candidates = rows(data.candidateEvent);
-  const candidateMarks = rows(data.candidateEventMark);
-  const candidateAttributions = rows(data.candidateEventAttribution);
-  const shadowTrades = rows(data.shadowTrade);
-  const shadowMarks = rows(data.shadowTradeMark);
-  const stateTransitions = rows(data.radarStateTransition);
-  const attributions = rows(data.optionAttribution);
   const missedWinners = rows(data.missedWinnerEvent);
   const proposals = rows(data.strategyMutationProposal);
   const backtests = rows(data.strategyBacktestResult);
   const forwardTests = rows(data.strategyForwardTestResult);
-  const cohorts = rows(data.strategyCohortResult);
-  const thesisRequests = rows(data.agentThesisRequest);
   const thesisValidations = rows(data.agentThesisValidation);
-  const postmortemRequests = rows(data.agentPostmortemRequest);
   const postmortems = rows(data.agentPostmortem);
   const agentTheses = rows(data.agentThesis);
   const optionSnapshots = rows(data.optionSnapshot);
-  const optionFeatures = rows(data.optionFeatures);
-  const stockFeatures = rows(data.stockFeatures);
   const strategyVersions = rows(data.optionStrategyVersions);
+  const radarSummary = rows(data.optionRadarSummary)[0];
+  const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
 
-  const eventById = useMemo(() => mapBy(candidates, "event_id"), [candidates]);
-  const latestAttributionByEvent = useMemo(() => latestBy(attributions, "event_id", "snapshot_time"), [attributions]);
+  const opportunityCandidates = useMemo(
+    () => candidates.filter((row) => isOpportunityCandidate(row) && (!latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime)),
+    [candidates, latestCandidateTime],
+  );
+  const opportunityTickers = useMemo(() => uniqueText(opportunityCandidates, "ticker"), [opportunityCandidates]);
+  const scannedTickers = useMemo(() => uniqueText(optionSnapshots, "ticker"), [optionSnapshots]);
+
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
   const latestForwardByProposal = useMemo(() => latestBy(forwardTests, "proposal_id", "evaluated_at"), [forwardTests]);
 
-  const fireCount = countWhere(candidates, (row) => stateOf(row) === "FIRE");
-  const setupCount = countWhere(candidates, (row) => stateOf(row) === "SETUP");
-  const watchCount = countWhere(candidates, (row) => stateOf(row) === "WATCH");
-  const candidateHit2x = countWhere(candidateMarks, (row) => hasValue(row, "time_to_2x"));
-  const candidateHit5x = countWhere(candidateMarks, (row) => hasValue(row, "time_to_5x"));
-  const openShadowCount = countWhere(shadowTrades, (row) => !["closed", "exited"].includes(textField(row, ["status"]).toLowerCase()));
-  const hit2x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_2x"));
-  const hit5x = countWhere(shadowTrades, (row) => hasValue(row, "time_to_5x"));
-  const exitStateCount = countWhere(stateTransitions, (row) => ["EXIT", "INVALIDATED"].includes(stateOf(row)));
-  const activeStateCount = countWhere(stateTransitions, (row) => ["FIRE", "HOLD", "TRIM"].includes(stateOf(row)));
-  const missed10x = countWhere(missedWinners, (row) => textField(row, ["winner_threshold"]).toLowerCase() === "10x");
-  const openPostmortems = countWhere(postmortemRequests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
-  const humanPending = countWhere(proposals, (row) => !["approved", "rejected"].includes(textField(row, ["human_approval_status"], "pending").toLowerCase()));
-  const forwardCollecting = countWhere(forwardTests, (row) => textField(row, ["verdict", "status"]).toLowerCase() === "collecting_data");
+  const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
+  const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
+  const scannedTickerCount = numberField(radarSummary, ["scanned_tickers_current"], scannedTickers.length);
+  const fireCount = numberField(radarSummary, ["fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "FIRE"));
+  const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
+  const watchCount = numberField(radarSummary, ["watch_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "WATCH"));
 
   const metrics: MetricSpec[] = [
-    ["Fire", fireCount.toLocaleString(), `${setupCount.toLocaleString()} setup, ${watchCount.toLocaleString()} watch`, fireCount ? "good" : setupCount ? "warn" : "muted"],
-    ["Candidate Marks", candidateMarks.length.toLocaleString(), `${candidateHit2x.toLocaleString()} hit 2x, ${candidateHit5x.toLocaleString()} hit 5x, ${candidateAttributions.length.toLocaleString()} attributions`, candidateHit5x ? "good" : candidateHit2x ? "info" : candidateMarks.length ? "muted" : "muted"],
-    ["Shadow", openShadowCount.toLocaleString(), `${hit2x.toLocaleString()} hit 2x, ${hit5x.toLocaleString()} hit 5x, ${shadowMarks.length.toLocaleString()} marks`, openShadowCount ? "info" : "muted"],
-    ["States", stateTransitions.length.toLocaleString(), `${activeStateCount.toLocaleString()} active, ${exitStateCount.toLocaleString()} exit or invalidated`, exitStateCount ? "warn" : activeStateCount ? "good" : "muted"],
-    ["Missed Winners", missedWinners.length.toLocaleString(), `${missed10x.toLocaleString()} reached 10x`, missedWinners.length ? "warn" : "muted"],
-    ["Postmortems", postmortems.length.toLocaleString(), `${openPostmortems.toLocaleString()} open requests`, openPostmortems ? "warn" : postmortems.length ? "info" : "muted"],
-    ["Strategy Gates", humanPending.toLocaleString(), `${forwardCollecting.toLocaleString()} forward tests collecting, ${cohorts.length.toLocaleString()} cohorts`, humanPending ? "warn" : "info"],
+    ["Opportunities", opportunityCount.toLocaleString(), `${opportunityTickerCount.toLocaleString()} tickers with FIRE, SETUP, or WATCH`, opportunityCount ? "good" : "muted"],
+    ["Fire", fireCount.toLocaleString(), "ready now", fireCount ? "good" : "muted"],
+    ["Setup", setupCount.toLocaleString(), "close, but not ready", setupCount ? "warn" : "muted"],
+    ["Watch", watchCount.toLocaleString(), "worth tracking", watchCount ? "info" : "muted"],
+    ["Scanned", scannedTickerCount.toLocaleString(), "tickers with option snapshots", scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
   ];
 
-  const latestSnapshot = latestDate(optionSnapshots, "snapshot_time");
+  const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"], latestDate(optionSnapshots, "snapshot_time"));
   const latestStrategy = strategyVersions[0];
 
   async function handlePromoteProposal(proposalId: string) {
@@ -104,26 +90,18 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     >
       <Tabs defaultValue="radar" className="min-w-0">
         <TabsList className="h-auto max-w-full flex-wrap justify-start">
-          <TabsTrigger value="radar">Radar</TabsTrigger>
+          <TabsTrigger value="radar">Opportunities</TabsTrigger>
           <TabsTrigger value="learning">Learning</TabsTrigger>
-          <TabsTrigger value="theses">Thesis Queue</TabsTrigger>
-          <TabsTrigger value="data">Data</TabsTrigger>
+          <TabsTrigger value="theses">Theses</TabsTrigger>
         </TabsList>
 
         <TabsContent value="radar" className="space-y-4">
-          <CandidateEventsTable rows={candidates} onOpenTicker={onOpenTicker} />
-          <CandidateEventMarksTable rows={candidateMarks} onOpenTicker={onOpenTicker} />
-          <CandidateEventAttributionsTable rows={candidateAttributions} onOpenTicker={onOpenTicker} />
-          <RadarStateTransitionsTable rows={stateTransitions} onOpenTicker={onOpenTicker} />
-          <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
-          <ShadowTradeMarksTable rows={shadowMarks} onOpenTicker={onOpenTicker} />
+          <CandidateEventsTable rows={opportunityCandidates} onOpenTicker={onOpenTicker} />
         </TabsContent>
 
         <TabsContent value="learning" className="space-y-4">
           <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} />
-          <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} />
           <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} />
-          <CohortResultsTable rows={cohorts} />
           <StrategyProposalsTable
             rows={proposals}
             backtestByProposal={latestBacktestByProposal}
@@ -135,13 +113,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsContent>
 
         <TabsContent value="theses" className="space-y-4">
-          <ThesisRequestsTable rows={thesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} />
-          <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} />
           <AgentThesisTable rows={agentTheses} onOpenTicker={onOpenTicker} />
-        </TabsContent>
-
-        <TabsContent value="data" className="space-y-4">
-          <DataSamples optionSnapshots={optionSnapshots} optionFeatures={optionFeatures} stockFeatures={stockFeatures} strategyVersions={strategyVersions} onOpenTicker={onOpenTicker} />
+          <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} />
         </TabsContent>
       </Tabs>
     </WorkspacePage>
@@ -1104,6 +1077,16 @@ function MetricPill({ label, value }: { label: string; value: string }) {
 
 function rows(table: TablePayload): RowRecord[] {
   return table.rows ?? [];
+}
+
+const OPPORTUNITY_STATES = new Set(["FIRE", "SETUP", "WATCH", "HOLD", "TRIM"]);
+
+function isOpportunityCandidate(row: RowRecord): boolean {
+  return OPPORTUNITY_STATES.has(stateOf(row));
+}
+
+function uniqueText(items: RowRecord[], key: string): string[] {
+  return Array.from(new Set(items.map((row) => textField(row, [key])).filter(Boolean)));
 }
 
 function countWhere(items: RowRecord[], predicate: (row: RowRecord) => boolean): number {

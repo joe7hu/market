@@ -1003,6 +1003,7 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
         ],
         "options-radar": [
             "option_strategy_versions",
+            "option_radar_summary",
             "candidate_event",
             "candidate_event_mark",
             "candidate_event_attribution",

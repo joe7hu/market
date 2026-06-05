@@ -57,6 +57,10 @@ data_sources:
     screener_limit: 50
     news_limit: 50
     strikes_around_spot: 6
+    # Broader 10x-radar source universe. The scanner takes the configured
+    # watchlist plus the top ranked decision-queue symbols, then materializes
+    # only candidates that pass deterministic option gates.
+    option_scan_limit: 80
   yfinance:
     enabled: true
   brokers:

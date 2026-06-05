@@ -161,6 +161,36 @@ def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp
     assert len(trades) == 1
 
 
+def test_options_radar_reads_yfinance_chain_source_by_default(tmp_path) -> None:
+    db_path = tmp_path / "radar-yfinance-source.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "RBLX270918C00120000", volume=25, open_interest=250),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "RBLX270918C00180000", volume=25, open_interest=250),
+            ],
+            source="yfinance",
+        )
+
+        tradingview_only = refresh_options_radar(con, ["RBLX"], source="tradingview")
+        result = refresh_options_radar(con, ["RBLX"])
+        snapshot = query_rows(con, "SELECT data_source, contract_id FROM option_snapshot WHERE contract_id = 'RBLX270918C00120000'")[0]
+        event = query_rows(con, "SELECT state, contract_id FROM candidate_event WHERE contract_id = 'RBLX270918C00120000'")[0]
+
+    assert tradingview_only["option_snapshots"] == 0
+    assert result["option_snapshots"] == 2
+    assert snapshot == {"data_source": "yfinance", "contract_id": "RBLX270918C00120000"}
+    assert event["state"] == "FIRE"
+    assert event["contract_id"] == "RBLX270918C00120000"
+
+
 def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     db_path = tmp_path / "panel-radar.duckdb"
     init_db(db_path)
@@ -182,6 +212,8 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
         refresh_options_radar(con, ["TSLA"])
 
     panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
+    assert panel["tables"]["option_radar_summary"][0]["scanned_tickers_current"] == 1
+    assert panel["tables"]["option_radar_summary"][0]["opportunity_tickers_current"] == 1
     assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
     assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
     assert panel["tables"]["candidate_event_mark"][0]["candidate_state"] in {"FIRE", "REJECT"}
