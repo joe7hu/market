@@ -94,12 +94,12 @@ allowlisted `run_option_agents` refresh job. Configure commands under:
 agents:
   option_thesis:
     enabled: true
-    command: "your-thesis-agent-command"
+    command: "market-openai-option-thesis-agent"
     timeout_seconds: 120
     limit: 20
   option_postmortem:
     enabled: true
-    command: "your-postmortem-agent-command"
+    command: "market-openai-option-postmortem-agent"
     timeout_seconds: 120
     limit: 20
 ```
@@ -108,7 +108,8 @@ Each command receives one request object on stdin with `request`, `prompt`,
 `context`, `output_schema`, and guardrails. It must return one JSON object on
 stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
 `MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
-for local runs.
+for local runs. The built-in OpenAI commands require `OPENAI_API_KEY`; use
+`MARKET_OPENAI_MODEL` to override the default model.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
