@@ -87,6 +87,10 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     assert attached["thesis_id"] == thesis_id
     assert request["status"] == "fulfilled"
     assert validation["thesis_id"] == thesis_id
+    assert validation["strategy_version"] == "leap_10x_reversal_v1"
+    assert str(validation["validation_date"]) == "2026-06-02"
+    assert validation["candidate_event_id"]
+    assert str(validation["candidate_snapshot_time"]).startswith("2026-06-02")
     assert validation["state"] == "validated"
     assert validation["candidate_state"] == "FIRE"
     assert validation["option_still_valid"] is True
@@ -95,6 +99,53 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     assert validation["invalidation_status"] == "clear"
     assert validation["evidence_status"] == "source_backed"
     assert validation["red_team_status"] == "source_backed"
+
+
+def test_agent_thesis_validations_are_strategy_scoped_daily_rows(tmp_path) -> None:
+    db_path = tmp_path / "agent-validation-strategy.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_fire_candidate(con)
+        refresh_options_radar(con, ["TSLA"])
+        thesis_id = upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "created_at": "2026-06-03T12:00:00Z",
+                "bull_target_price": 180,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 120,
+                "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
+                "required_proofs": ["gross margin stabilizes"],
+                "catalysts": [{"type": "earnings", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Demand weakness can keep the stock below trend.",
+                "confidence": 60,
+                "evidence_refs": [{"type": "source_signal", "id": "agent-strategy-scope"}],
+            },
+        )
+
+        first = refresh_option_agent_work(con, strategy_version="leap_10x_reversal_v1")
+        second = refresh_option_agent_work(con, strategy_version="leap_10x_reversal_v1")
+        refresh_options_radar(con, ["TSLA"], strategy_version="leap_10x_reversal_v2")
+        validations = query_rows(
+            con,
+            """
+            SELECT thesis_id, strategy_version, validation_date,
+                   candidate_event_id, candidate_snapshot_time
+            FROM agent_thesis_validation
+            ORDER BY strategy_version
+            """,
+        )
+
+    assert first["agent_thesis_validations"] == 1
+    assert second["agent_thesis_validations"] == 1
+    assert len(validations) == 2
+    assert {row["strategy_version"] for row in validations} == {"leap_10x_reversal_v1", "leap_10x_reversal_v2"}
+    assert all(row["thesis_id"] == thesis_id for row in validations)
+    assert all(str(row["validation_date"]) == "2026-06-02" for row in validations)
+    assert all(row["candidate_event_id"] for row in validations)
+    assert all(str(row["candidate_snapshot_time"]).startswith("2026-06-02") for row in validations)
 
 
 def test_agent_thesis_requires_structured_hypothesis_fields(tmp_path) -> None:

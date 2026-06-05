@@ -707,10 +707,12 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
 
   return (
     <DataTableFrame title={<SectionTitle title="Thesis Validation" count={rows.length} />}>
-      <table className="w-full min-w-[1040px] text-sm">
+      <table className="w-full min-w-[1220px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
+            <Head>Date</Head>
+            <Head>Strategy</Head>
             <Head>State</Head>
             <Head>Candidate</Head>
             <Head>Option</Head>
@@ -731,6 +733,8 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
             return (
               <tr key={textField(row, ["validation_id"], `${ticker}-${textField(row, ["validated_at"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["validation_date", "validated_at"]))}</Cell>
+                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
                 <Cell><StatusBadge tone={thesisStateTone(state)}>{titleLabel(state)}</StatusBadge></Cell>
                 <Cell><StatusBadge tone={stateTone(textField(row, ["candidate_state"]))}>{titleLabel(displayField(row, ["candidate_state"], "pending"))}</StatusBadge></Cell>
                 <Cell>{displayField(row, ["option_still_valid"])}</Cell>

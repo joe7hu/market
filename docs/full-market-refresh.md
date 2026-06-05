@@ -75,7 +75,9 @@ posting structured JSON to the local-only endpoints:
   validation checks required proofs, catalysts, invalidation, evidence backing,
   option/stock state, IV state, and red-team risk flags from source antithesis,
   candidate blockers, technical trend, liquidity, cash burn, growth, and balance
-  sheet data.
+  sheet data. Validation rows are keyed by thesis, strategy version, validation
+  date, and candidate event so the daily loop can compare point-in-time thesis
+  state without mixing strategy versions.
 - `POST /api/agent-postmortems`: stores an `agent_postmortem`, materializes any
   proposed strategy mutation, and immediately runs deterministic backtest and
   forward-test gates.

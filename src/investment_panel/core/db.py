@@ -465,6 +465,10 @@ CREATE TABLE IF NOT EXISTS agent_thesis_validation (
     validation_id TEXT PRIMARY KEY,
     thesis_id TEXT,
     ticker TEXT,
+    strategy_version TEXT,
+    validation_date DATE,
+    candidate_event_id TEXT,
+    candidate_snapshot_time TIMESTAMP,
     validated_at TIMESTAMP,
     state TEXT,
     reason TEXT,
@@ -1278,6 +1282,10 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             con.execute(f"ALTER TABLE catalysts ADD COLUMN {column} {column_type}")
     thesis_validation_columns = {row[1] for row in con.execute("PRAGMA table_info('agent_thesis_validation')").fetchall()}
     for column, column_type in {
+        "strategy_version": "TEXT",
+        "validation_date": "DATE",
+        "candidate_event_id": "TEXT",
+        "candidate_snapshot_time": "TIMESTAMP",
         "proof_status": "TEXT",
         "catalyst_status": "TEXT",
         "invalidation_status": "TEXT",

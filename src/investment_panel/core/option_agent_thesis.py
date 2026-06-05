@@ -357,20 +357,34 @@ def refresh_agent_thesis_validations(con: Any, *, strategy_version: str) -> int:
             [thesis["ticker"]],
             ("metrics",),
         )
-        validation = build_agent_thesis_validation(thesis, candidate, stock, source_signals, dated_catalysts, news, fundamentals)
+        validation = build_agent_thesis_validation(
+            thesis,
+            candidate,
+            stock,
+            source_signals,
+            dated_catalysts,
+            news,
+            fundamentals,
+            strategy_version=strategy_version,
+        )
         con.execute(
             """
             INSERT OR REPLACE INTO agent_thesis_validation
-            (validation_id, thesis_id, ticker, validated_at, state, reason,
+            (validation_id, thesis_id, ticker, strategy_version, validation_date,
+             candidate_event_id, candidate_snapshot_time, validated_at, state, reason,
              option_still_valid, stock_progress, iv_status, candidate_state,
              proof_status, catalyst_status, invalidation_status, evidence_status,
              red_team_status, red_team_flags, evidence_refs, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 validation["validation_id"],
                 validation["thesis_id"],
                 validation["ticker"],
+                validation["strategy_version"],
+                validation["validation_date"],
+                validation["candidate_event_id"],
+                validation["candidate_snapshot_time"],
                 validation["validated_at"],
                 validation["state"],
                 validation["reason"],
@@ -400,6 +414,8 @@ def build_agent_thesis_validation(
     dated_catalysts: list[dict[str, Any]] | None = None,
     news: list[dict[str, Any]] | None = None,
     fundamentals: dict[str, Any] | None = None,
+    *,
+    strategy_version: str = "unknown",
 ) -> dict[str, Any]:
     ticker = str(thesis.get("ticker") or "").upper()
     raw_candidate = _json(candidate.get("raw")) if candidate else {}
@@ -412,7 +428,9 @@ def build_agent_thesis_validation(
     invalidation_price = _invalidation_price(invalidation)
     option_still_valid = candidate_state in {"FIRE", "SETUP", "WATCH"} and not hard_rejects
     iv_status = "overpriced" if any("iv" in item for item in [*blockers, *hard_rejects]) else "acceptable_or_unknown"
-    as_of_date = _date_value((candidate or {}).get("snapshot_time")) or _date_value((stock or {}).get("snapshot_time")) or date.today()
+    candidate_event_id = (candidate or {}).get("event_id")
+    candidate_snapshot_time = _iso_or_none((candidate or {}).get("snapshot_time"))
+    as_of_date = _date_value(candidate_snapshot_time) or _date_value((stock or {}).get("snapshot_time")) or date.today()
     proof_check = _proof_check(_string_list(thesis.get("required_proofs")), source_signals or [], news or [])
     catalyst_check = _catalyst_check(_catalyst_list(thesis.get("catalysts")), dated_catalysts or [], source_signals or [], news or [], as_of_date)
     evidence_status = _evidence_status(_list_value(thesis.get("evidence_refs")), source_signals or [], news or [])
@@ -461,15 +479,16 @@ def build_agent_thesis_validation(
         "validation_id": stable_id(
             "agent_thesis_validation",
             thesis.get("thesis_id"),
-            candidate_state,
-            price,
-            invalidation_price,
-            proof_check["status"],
-            catalyst_check["status"],
-            red_team_check["status"],
+            strategy_version,
+            candidate_event_id,
+            as_of_date.isoformat(),
         ),
         "thesis_id": thesis.get("thesis_id"),
         "ticker": ticker,
+        "strategy_version": strategy_version,
+        "validation_date": as_of_date.isoformat(),
+        "candidate_event_id": candidate_event_id,
+        "candidate_snapshot_time": candidate_snapshot_time,
         "validated_at": datetime.utcnow().isoformat(),
         "state": state,
         "reason": reason,
@@ -489,6 +508,9 @@ def build_agent_thesis_validation(
             "base_target_price": base_target,
             "invalidation_price": invalidation_price,
             "as_of_date": as_of_date.isoformat(),
+            "strategy_version": strategy_version,
+            "candidate_event_id": candidate_event_id,
+            "candidate_snapshot_time": candidate_snapshot_time,
             "proof_check": proof_check,
             "catalyst_check": catalyst_check,
             "red_team_check": red_team_check,
@@ -850,6 +872,16 @@ def _date_string(value: Any) -> str | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
     except ValueError:
         return text
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 def _date_value(value: Any) -> date | None:

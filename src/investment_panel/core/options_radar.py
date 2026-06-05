@@ -611,9 +611,16 @@ def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
     rows = query_rows(
         con,
         """
-        WITH latest_validation AS (
+        WITH candidate_validation AS (
             SELECT *
             FROM agent_thesis_validation
+            WHERE strategy_version = ? AND candidate_event_id IS NOT NULL
+            QUALIFY row_number() OVER (PARTITION BY candidate_event_id ORDER BY validated_at DESC) = 1
+        ),
+        legacy_ticker_validation AS (
+            SELECT *
+            FROM agent_thesis_validation
+            WHERE strategy_version = ? AND candidate_event_id IS NULL
             QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY validated_at DESC) = 1
         )
         SELECT
@@ -621,15 +628,20 @@ def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
             ce.snapshot_time,
             ce.premium_fill_assumption,
             ce.ticker,
-            lv.state AS thesis_validation_state,
-            lv.invalidation_status AS thesis_invalidation_status,
-            lv.red_team_status AS thesis_red_team_status
+            COALESCE(cv.state, lv.state) AS thesis_validation_state,
+            COALESCE(cv.invalidation_status, lv.invalidation_status) AS thesis_invalidation_status,
+            COALESCE(cv.red_team_status, lv.red_team_status) AS thesis_red_team_status
         FROM candidate_event ce
-        LEFT JOIN latest_validation lv ON lv.ticker = ce.ticker
+        LEFT JOIN candidate_validation cv
+          ON cv.candidate_event_id = ce.event_id
+         AND cv.strategy_version = ce.strategy_version
+        LEFT JOIN legacy_ticker_validation lv
+          ON lv.ticker = ce.ticker
+         AND lv.strategy_version = ce.strategy_version
         WHERE ce.strategy_version = ? AND ce.state = 'FIRE'
         ORDER BY ce.snapshot_time
         """,
-        [strategy_version],
+        [strategy_version, strategy_version, strategy_version],
     )
     count = 0
     for row in rows:
@@ -1240,14 +1252,30 @@ def _shadow_marks_by_trade(con: Any, strategy_version: str) -> dict[str, list[di
     return grouped
 
 
-def _latest_thesis_validation_by_ticker(con: Any) -> dict[str, dict[str, Any]]:
+def _latest_thesis_validation_by_candidate_event(con: Any, strategy_version: str) -> dict[str, dict[str, Any]]:
     rows = query_rows(
         con,
         """
         SELECT *
         FROM agent_thesis_validation
+        WHERE strategy_version = ? AND candidate_event_id IS NOT NULL
+        QUALIFY row_number() OVER (PARTITION BY candidate_event_id ORDER BY validated_at DESC) = 1
+        """,
+        [strategy_version],
+    )
+    return {str(row.get("candidate_event_id")): row for row in rows if row.get("candidate_event_id")}
+
+
+def _latest_legacy_thesis_validation_by_ticker(con: Any, strategy_version: str) -> dict[str, dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT *
+        FROM agent_thesis_validation
+        WHERE strategy_version = ? AND candidate_event_id IS NULL
         QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY validated_at DESC) = 1
         """,
+        [strategy_version],
     )
     return {_normalize_symbol(row.get("ticker")): row for row in rows if row.get("ticker")}
 
@@ -1280,7 +1308,8 @@ def refresh_radar_state_transitions(con: Any, *, strategy_version: str = DEFAULT
     con.execute("DELETE FROM radar_state_transition WHERE strategy_version = ?", [strategy_version])
     trades_by_contract = _shadow_trades_by_contract(con, strategy_version)
     marks_by_trade = _shadow_marks_by_trade(con, strategy_version)
-    thesis_validation_by_ticker = _latest_thesis_validation_by_ticker(con)
+    thesis_validation_by_candidate_event = _latest_thesis_validation_by_candidate_event(con, strategy_version)
+    legacy_thesis_validation_by_ticker = _latest_legacy_thesis_validation_by_ticker(con, strategy_version)
     evaluated_at = datetime.utcnow().isoformat()
     previous_by_contract: dict[str, str] = {}
     count = 0
@@ -1289,7 +1318,9 @@ def refresh_radar_state_transitions(con: Any, *, strategy_version: str = DEFAULT
         snapshot_time = _iso(candidate.get("snapshot_time"))
         trade = _trade_for_snapshot(trades_by_contract.get(contract_id, []), snapshot_time)
         mark = _mark_for_snapshot(marks_by_trade.get(str((trade or {}).get("trade_id") or ""), []), snapshot_time) if trade else None
-        thesis_validation = thesis_validation_by_ticker.get(_normalize_symbol(candidate.get("ticker")))
+        thesis_validation = thesis_validation_by_candidate_event.get(str(candidate.get("event_id") or ""))
+        if not thesis_validation:
+            thesis_validation = legacy_thesis_validation_by_ticker.get(_normalize_symbol(candidate.get("ticker")))
         state = build_radar_state(candidate, trade, mark, thesis_validation)
         previous_state = previous_by_contract.get(contract_id)
         if previous_state == state["state"]:

@@ -362,6 +362,80 @@ def test_hard_red_team_validation_invalidates_and_closes_shadow_trade(tmp_path) 
     assert "deterministic_radar_state" in str(trades[0]["raw"])
 
 
+def test_candidate_scoped_thesis_validation_does_not_block_other_fire_events(tmp_path) -> None:
+    db_path = tmp_path / "radar-candidate-scoped-validation.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "TSLA", slope=0.12)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 130, "call", 4.0, 4.4, 0.25, 0.30, "OPRA:TSLA270918C130", volume=25, open_interest=250),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
+            ],
+        )
+        con.execute(
+            """
+            INSERT INTO equity_fundamentals
+            VALUES ('TSLA', '2026-03-31', '2026-05-01', '10-Q', ?, 'https://example.com/tsla')
+            """,
+            [
+                json.dumps(
+                    {
+                        "free_cash_flow": -250000000,
+                        "cash": 50000000,
+                        "total_debt": 600000000,
+                        "assets": 1000000000,
+                        "liabilities": 800000000,
+                    }
+                ),
+            ],
+        )
+        upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "created_at": "2026-06-03T21:00:00Z",
+                "bull_target_price": 180,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 95,
+                "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
+                "required_proofs": ["gross margin stabilizes"],
+                "catalysts": [{"type": "earnings", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Cash burn and balance sheet pressure can overwhelm the rebound thesis.",
+                "confidence": 55,
+                "evidence_refs": [{"type": "source_signal", "id": "candidate-scope"}],
+            },
+        )
+
+        result = refresh_options_radar(con, ["TSLA"])
+        fire_events = query_rows(
+            con,
+            "SELECT event_id, contract_id FROM candidate_event WHERE state = 'FIRE' ORDER BY contract_id",
+        )
+        validation = query_rows(
+            con,
+            "SELECT candidate_event_id, red_team_status FROM agent_thesis_validation WHERE ticker = 'TSLA'",
+        )[0]
+        trades = query_rows(con, "SELECT event_id FROM shadow_trade ORDER BY event_id")
+
+    blocked_event_id = validation["candidate_event_id"]
+    traded_event_ids = {row["event_id"] for row in trades}
+    assert result["agent_thesis_validations"] == 1
+    assert validation["red_team_status"] == "hard_risk_triggered"
+    assert len(fire_events) == 2
+    assert blocked_event_id not in traded_event_ids
+    assert traded_event_ids == {row["event_id"] for row in fire_events if row["event_id"] != blocked_event_id}
+
+
 def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposal(tmp_path) -> None:
     db_path = tmp_path / "radar-missed.duckdb"
     init_db(db_path)
