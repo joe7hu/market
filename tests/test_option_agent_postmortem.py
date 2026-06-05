@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.free_sources import store_options_chain
-from investment_panel.core.option_agent_postmortem import AgentPostmortemValidationError, upsert_agent_postmortem
+from investment_panel.core.option_agent_postmortem import AgentPostmortemValidationError, refresh_agent_postmortem_requests, upsert_agent_postmortem
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
 from tests.test_options_radar import option_row, seed_prices
 
@@ -24,6 +26,61 @@ def test_missed_winner_opens_agent_postmortem_request(tmp_path) -> None:
     assert request["status"] == "open"
     assert "Return JSON only" in request["prompt"]
     assert "do not recommend, pick, execute, or promote trades" in request["prompt"]
+
+
+def test_shadow_big_winner_opens_agent_postmortem_request(tmp_path) -> None:
+    db_path = tmp_path / "postmortem-shadow-winner.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_shadow_outcome(con, latest_bid=24.0, latest_ask=26.0)
+
+        result = refresh_options_radar(con, ["TSLA"])
+        request = query_rows(con, "SELECT * FROM agent_postmortem_request WHERE source_type = 'shadow_big_winner_5x'")[0]
+        context = json.loads(request["context"])
+
+    assert result["agent_postmortem_requests"] == 1
+    assert request["ticker"] == "TSLA"
+    assert request["strategy_version"] == DEFAULT_STRATEGY_VERSION
+    assert request["priority_score"] >= 4.0
+    assert context["candidate_event"]["state"] == "FIRE"
+    assert context["latest_attribution"]["label"] == "good_convexity"
+
+
+def test_shadow_big_loser_opens_agent_postmortem_request(tmp_path) -> None:
+    db_path = tmp_path / "postmortem-shadow-loser.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_shadow_outcome(con, latest_bid=1.4, latest_ask=1.6)
+
+        result = refresh_options_radar(con, ["TSLA"])
+        request = query_rows(con, "SELECT * FROM agent_postmortem_request WHERE source_type = 'shadow_big_loser'")[0]
+        context = json.loads(request["context"])
+
+    assert result["agent_postmortem_requests"] == 1
+    assert request["ticker"] == "TSLA"
+    assert request["priority_score"] > 0.40
+    assert context["candidate_event"]["state"] == "FIRE"
+    assert context["latest_attribution"]["option_return"] < -0.40
+
+
+def test_thesis_postmortem_requests_are_strategy_scoped_and_exact_context(tmp_path) -> None:
+    db_path = tmp_path / "postmortem-thesis-scope.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        insert_thesis_validation(con, "validation-other", "leap_10x_reversal_v2", "invalidated", "2026-06-05T20:00:00Z")
+        insert_thesis_validation(con, "validation-default", DEFAULT_STRATEGY_VERSION, "invalidated", "2026-06-04T20:00:00Z")
+
+        created = refresh_agent_postmortem_requests(con, strategy_version=DEFAULT_STRATEGY_VERSION, limit=10)
+        requests = query_rows(con, "SELECT * FROM agent_postmortem_request")
+        context = json.loads(requests[0]["context"])
+
+    assert created == 1
+    assert len(requests) == 1
+    assert requests[0]["source_type"] == "thesis_invalidated"
+    assert requests[0]["source_id"] == "validation-default"
+    assert requests[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
+    assert context["latest_thesis_validation"]["validation_id"] == "validation-default"
+    assert context["latest_thesis_validation"]["strategy_version"] == DEFAULT_STRATEGY_VERSION
 
 
 def test_agent_postmortem_creates_gated_strategy_mutation_proposal(tmp_path) -> None:
@@ -112,4 +169,46 @@ def seed_missed_winner(con) -> None:
         "RBLX",
         "2026-06-20T20:00:00Z",
         [option_row("2027-09-18", 120, "call", 49.0, 51.0, 0.30, 0.18, "OPRA:RBLX270918C120", volume=80, open_interest=450)],
+    )
+
+
+def seed_shadow_outcome(con, *, latest_bid: float, latest_ask: float) -> None:
+    seed_prices(con, "TSLA", start_price=100, slope=0.12)
+    seed_prices(con, "QQQ", start_price=100, slope=0.02)
+    con.execute(
+        "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+    )
+    con.execute(
+        "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-20T20:00:00Z', 120, 1, 1, 'USD', 'tradingview', '{}')"
+    )
+    store_options_chain(
+        con,
+        "TSLA",
+        "2026-06-02T20:00:00Z",
+        [option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
+    )
+    store_options_chain(
+        con,
+        "TSLA",
+        "2026-06-20T20:00:00Z",
+        [option_row("2027-09-18", 120, "call", latest_bid, latest_ask, 0.30, 0.30, "OPRA:TSLA270918C120", volume=40, open_interest=275)],
+    )
+
+
+def insert_thesis_validation(con, validation_id: str, strategy_version: str, state: str, validated_at: str) -> None:
+    con.execute(
+        """
+        INSERT INTO agent_thesis_validation
+        (validation_id, thesis_id, ticker, strategy_version, validation_date,
+         candidate_event_id, candidate_snapshot_time, validated_at, state, reason,
+         option_still_valid, stock_progress, iv_status, candidate_state,
+         proof_status, catalyst_status, invalidation_status, evidence_status,
+         red_team_status, red_team_flags, evidence_refs, raw)
+        VALUES (?, 'thesis-tsla', 'TSLA', ?, DATE '2026-06-04',
+                NULL, NULL, ?, ?, 'validation state changed',
+                true, 'tracking', 'neutral', 'FIRE',
+                'unknown', 'unknown', 'triggered', 'source_backed',
+                'source_backed', '[]', '[]', ?)
+        """,
+        [validation_id, strategy_version, validated_at, state, json.dumps({"validation_id": validation_id})],
     )

@@ -79,7 +79,7 @@ def build_agent_postmortem_request(con: Any, source: dict[str, Any]) -> dict[str
         "source": decode_json_fields(source, ("raw",)),
         "candidate_event": _candidate_context(con, source),
         "latest_attribution": _latest_attribution_context(con, source),
-        "latest_thesis_validation": _latest_thesis_validation_context(con, ticker),
+        "latest_thesis_validation": _latest_thesis_validation_context(con, source, ticker),
     }
     return {
         "request_id": stable_id("agent_postmortem_request", strategy_version, source_type, source_id),
@@ -346,11 +346,12 @@ def _thesis_invalidated_sources(con: Any, *, strategy_version: str, limit: int) 
         """
         SELECT v.validation_id AS source_id,
                CASE WHEN v.state = 'invalidated' THEN 'thesis_invalidated' ELSE 'thesis_weakening' END AS source_type,
-               v.ticker, ? AS strategy_version,
+               v.ticker, v.strategy_version,
                CASE WHEN v.state = 'invalidated' THEN 3.0 ELSE 2.0 END AS priority_score,
                v.raw
         FROM agent_thesis_validation v
-        WHERE v.state IN ('invalidated', 'weakening')
+        WHERE v.strategy_version = ?
+              AND v.state IN ('invalidated', 'weakening')
         ORDER BY CASE WHEN v.state = 'invalidated' THEN 0 ELSE 1 END, v.validated_at DESC
         LIMIT ?
         """,
@@ -454,19 +455,35 @@ def _latest_attribution_context(con: Any, source: dict[str, Any]) -> dict[str, A
     return decode_json_fields(rows[0], ("raw",)) if rows else None
 
 
-def _latest_thesis_validation_context(con: Any, ticker: str) -> dict[str, Any] | None:
+def _latest_thesis_validation_context(con: Any, source: dict[str, Any], ticker: str) -> dict[str, Any] | None:
+    source_type = str(source.get("source_type") or "")
+    source_id = str(source.get("source_id") or "")
+    if source_type in {"thesis_invalidated", "thesis_weakening"} and source_id:
+        rows = query_rows(
+            con,
+            """
+            SELECT *
+            FROM agent_thesis_validation
+            WHERE validation_id = ?
+            LIMIT 1
+            """,
+            [source_id],
+        )
+        return decode_json_fields(rows[0], ("evidence_refs", "raw")) if rows else None
     if not ticker:
         return None
+    strategy_version = str(source.get("strategy_version") or "")
     rows = query_rows(
         con,
         """
         SELECT *
         FROM agent_thesis_validation
         WHERE ticker = ?
+              AND (? = '' OR strategy_version = ?)
         ORDER BY validated_at DESC
         LIMIT 1
         """,
-        [ticker],
+        [ticker, strategy_version, strategy_version],
     )
     return decode_json_fields(rows[0], ("evidence_refs", "raw")) if rows else None
 
