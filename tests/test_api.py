@@ -32,6 +32,7 @@ def test_api_routes_return_json() -> None:
     client = TestClient(app)
     for path in [
         "/api/status",
+        "/api/panel-contract",
         "/api/dashboard",
         "/api/panel-snapshot?scope=feed",
         "/api/panel-snapshot?scope=watchlist",

@@ -8,7 +8,7 @@ from ipaddress import ip_address, ip_network
 import json
 from threading import RLock
 import time
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,10 @@ from app.data_access import (
     load_config,
     load_market_panel_data,
     load_panel_data,
+    load_panel_scope_data,
+    load_ticker_panel_data,
     panel_snapshot_payload,
+    panel_contract_payload,
     populate_watchlist_symbol_data,
     delete_portfolio_position,
     delete_watchlist_symbol,
@@ -76,7 +79,7 @@ class StrategyPromotionInput(BaseModel):
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
 TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
-_CONTEXT_CACHE: dict[str, Any] = {"expires_at": 0.0, "config_key": None, "value": None}
+_CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
 _CONTEXT_LOCK = RLock()
 
 
@@ -102,6 +105,10 @@ def create_app() -> FastAPI:
         config, panel_data = _context()
         return settings_payload(config, panel_data)["status"]
 
+    @app.get("/api/panel-contract")
+    def panel_contract() -> dict[str, Any]:
+        return panel_contract_payload()
+
     @app.get("/api/dashboard")
     def dashboard() -> dict[str, Any]:
         _, panel_data = _context()
@@ -112,7 +119,10 @@ def create_app() -> FastAPI:
         if scope == "market":
             config = load_config()
             return panel_snapshot_payload(load_market_panel_data(config), scope, offset=offset, limit=limit)
-        _, panel_data = _context()
+        if scope == "dashboard":
+            _, panel_data = _context()
+            return panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
+        _, panel_data = _context(cache_key=f"scope:{scope}", loader=lambda config: load_panel_scope_data(config, scope))
         return panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
 
     @app.get("/api/decision-readiness")
@@ -162,7 +172,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tickers/{ticker}")
     def ticker_detail(ticker: str) -> dict[str, Any]:
-        _, panel_data = _context()
+        config = load_config()
+        panel_data = load_ticker_panel_data(config, ticker)
         return ticker_payload(panel_data, ticker)
 
     @app.get("/api/tickers/{ticker}/decision-snapshot")
@@ -604,7 +615,7 @@ def create_app() -> FastAPI:
         init_db(config.database.duckdb_path)
         with db(config.database.duckdb_path, read_only=False) as con:
             rows = build_and_persist_agent_recommendations(con, config.data_sources.brokers.policy)
-        _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+        _invalidate_context_cache()
         return {"status": "ok", "count": len(rows), "rows": rows[:25]}
 
     @app.get("/api/paper-orders")
@@ -703,7 +714,7 @@ def create_app() -> FastAPI:
                 result = stage_paper_order(con, payload.recommendation_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+        _invalidate_context_cache()
         return result
 
     @app.get("/api/refresh-jobs")
@@ -745,21 +756,25 @@ def create_app() -> FastAPI:
     return app
 
 
-def _context() -> tuple[dict[str, Any], Any]:
+def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | None = None) -> tuple[dict[str, Any], Any]:
     with _CONTEXT_LOCK:
         config = load_config()
         config_key = str(database_path(config))
         now = time.monotonic()
-        cached = _CONTEXT_CACHE.get("value")
-        if cached is not None and _CONTEXT_CACHE.get("config_key") == config_key and now < float(_CONTEXT_CACHE.get("expires_at") or 0):
-            return cached
-        value = (config, load_panel_data(config))
-        _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
+        entries = _CONTEXT_CACHE.setdefault("entries", {})
+        cached = entries.get(cache_key)
+        if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
+            return cached["value"]
+        active_loader = loader or load_panel_data
+        value = (config, active_loader(config))
+        entries[cache_key] = {"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS}
+        if cache_key == "full":
+            _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
         return value
 
 
 def _invalidate_context_cache() -> None:
-    _CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+    _CONTEXT_CACHE.update({"entries": {}, "expires_at": 0.0, "config_key": None, "value": None})
 
 
 def _execute_background_refresh_job(job_id: str, job_name: str, db_path: Path) -> None:

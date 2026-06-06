@@ -158,6 +158,47 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert market_tables["market_environment_model"]["count"] == 1
 
 
+def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "scoped.duckdb")}}
+
+    panel_data = data_access.load_panel_scope_data(config, "feed")
+
+    assert set(panel_data.tables) == {"feed_signals"}
+    assert panel_data.rows("source_freshness") == []
+
+
+def test_scoped_panel_status_is_ready_when_requested_table_has_rows(tmp_path) -> None:
+    db_path = tmp_path / "scoped-ready.duckdb"
+    config = {"database": {"duckdb_path": str(db_path)}}
+    data_access.load_panel_data(config)
+    from investment_panel.core.db import db
+
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO birdclaw_theses
+            VALUES ('thesis-1', 'NVDA', 'tester', '2026-06-01T12:00:00Z', 'NVDA thesis', '{}', '{}', 'https://example.com')
+            """
+        )
+        from investment_panel.core.decision import refresh_decision_read_models
+
+        refresh_decision_read_models(con, [])
+
+    panel_data = data_access.load_panel_scope_data(config, "feed")
+
+    assert panel_data.status.ready is True
+    assert panel_data.rows("feed_signals")
+
+
+def test_panel_contract_lists_scope_and_ticker_tables() -> None:
+    contract = data_access.panel_contract_payload()
+
+    assert contract["scopes"]["feed"] == ["feed_signals"]
+    assert "source_freshness" not in contract["scopes"]["watchlist"]
+    assert "universe_screen" in contract["watchlist_section_tables"]
+    assert "decision_queue" in contract["ticker_tables"]
+
+
 def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
