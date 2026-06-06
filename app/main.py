@@ -258,6 +258,11 @@ def create_app() -> FastAPI:
         _, panel_data = _context()
         return table_payload(panel_data, "source_items")
 
+    @app.get("/api/source-ticker-rankings")
+    def source_ticker_rankings() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_ticker_rankings")
+
     @app.get("/api/source-runs")
     def source_runs() -> dict[str, Any]:
         _, panel_data = _context()

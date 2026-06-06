@@ -136,7 +136,11 @@ export type PanelData = {
   watchlistWatchedOptions: TablePayload;
   watchlistUnwatchedOptions: TablePayload;
   manualWatchlist: TablePayload;
+  sources: TablePayload;
   sourceConsensus: TablePayload;
+  sourceTickerRankings: TablePayload;
+  sourceItems: TablePayload;
+  tickerSourceSignals: TablePayload;
   ownershipConsensus: TablePayload;
   marketContext: TablePayload;
   marketValuationReferenceCharts: TablePayload;
@@ -247,7 +251,11 @@ export type PanelEndpoint =
   | "watchlistWatchedOptions"
   | "watchlistUnwatchedOptions"
   | "manualWatchlist"
+  | "sources"
   | "sourceConsensus"
+  | "sourceTickerRankings"
+  | "sourceItems"
+  | "tickerSourceSignals"
   | "ownershipConsensus"
   | "marketContext"
   | "marketValuationReferenceCharts"

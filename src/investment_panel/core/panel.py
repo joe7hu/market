@@ -16,7 +16,7 @@ from investment_panel.core.decision import canonical_quote_rows, decision_readin
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
-from investment_panel.core.sources import ensure_canonical_sources, source_item_rows, source_registry_rows, source_run_rows, ticker_source_signal_rows
+from investment_panel.core.sources import ensure_canonical_sources, source_item_rows, source_registry_rows, source_run_rows, source_ticker_ranking_rows, ticker_source_signal_rows
 from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
@@ -132,6 +132,7 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[st
             "source_health": source_health(con),
             "sources": source_registry_rows(con),
             "source_runs": source_run_rows(con),
+            "source_ticker_rankings": source_ticker_ranking_rows(con),
             "source_items": source_item_rows(con),
             "ticker_source_signals": ticker_source_signal_rows(con),
         }

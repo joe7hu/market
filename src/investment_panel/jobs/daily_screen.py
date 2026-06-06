@@ -16,6 +16,7 @@ from investment_panel.core.instruments import universe_from_config_and_arco
 from investment_panel.core.portfolio import ensure_portfolio_instruments, import_portfolio_csv, portfolio_instruments, seed_empty_theses_for_portfolio
 from investment_panel.core.prices import fetch_prices, upsert_prices
 from investment_panel.core.scoring import score_and_store
+from investment_panel.core.source_ingestion.raw_sources import sync_private_raw_sources
 from investment_panel.core.sources import lightweight_online_check, record_verified_sources
 from investment_panel.core.status import snapshot_duckdb, write_source_status
 from investment_panel.core.technicals import compute_and_store
@@ -39,6 +40,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         universe = merge_universe(universe, portfolio_instruments(con))
         fundamental_rows = update_equity_fundamentals(con, universe, config.market_data.user_agent)
         thesis_rows = ingest_arco_theses(con, arco_context)
+        raw_source_result = sync_private_raw_sources(con, config.nas.source_root)
         price_rows = 0
         price_errors: dict[str, str] = {}
         feature_rows = 0
@@ -75,6 +77,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         "price_errors": price_errors,
         "feature_rows": feature_rows,
         "fundamental_rows": fundamental_rows,
+        "raw_sources": raw_source_result,
         "crypto_fundamental_rows": crypto_fundamental_rows,
         "candidates": len(candidates),
         "analysis": analysis_result,

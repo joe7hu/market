@@ -96,7 +96,11 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         tables={
             "feed_signals": [{"id": "f1", "title": "Portfolio signal"}],
             "universe_screen": [{"symbol": "NVDA", "watch_state": "watched"}],
+            "source_ticker_rankings": [{"symbol": "NVDA", "signal_count": 2}],
+            "ticker_source_signals": [{"symbol": "NVDA", "source_name": "Birdclaw primary X/Twitter"}],
+            "source_items": [{"id": "tweet-1", "source_name": "Birdclaw primary X/Twitter"}],
             "source_consensus": [{"source_name": "Arco / Birdclaw"}],
+            "sources": [{"source_id": "birdclaw_primary_tweets", "source_name": "Birdclaw primary X/Twitter"}],
             "ownership_consensus": [{"symbol": "NVDA", "holders": 2}],
             "market_context": [{"metric": "Position sizing posture"}],
             "market_valuation_reference_charts": [{"metric": "sp500_forward_pe"}],
@@ -115,7 +119,6 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         "source_health",
         "provider_runs",
         "source_runs",
-        "source_items",
         "broker_status",
         "broker_accounts",
         "paper_orders",
@@ -126,7 +129,23 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         assert operational_tables.isdisjoint(payload["tables"])
         assert payload["dashboard"] is None
     assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "sources")["tables"]["source_consensus"]["count"] == 1
+    source_tables = data_access.panel_snapshot_payload(panel_data, "sources")["tables"]
+    assert list(source_tables) == [
+        "source_ticker_rankings",
+        "ticker_source_signals",
+        "source_items",
+        "source_consensus",
+        "feed_signals",
+        "opportunity_sources",
+        "theses",
+        "news",
+        "sources",
+    ]
+    assert source_tables["source_ticker_rankings"]["count"] == 1
+    assert source_tables["ticker_source_signals"]["count"] == 1
+    assert source_tables["source_items"]["count"] == 1
+    assert source_tables["source_consensus"]["count"] == 1
+    assert source_tables["sources"]["count"] == 1
     assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
     market_tables = data_access.panel_snapshot_payload(panel_data, "market")["tables"]
     assert set(market_tables) == {

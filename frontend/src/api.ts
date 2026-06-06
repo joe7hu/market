@@ -149,7 +149,11 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   watchlist_watched_options: "watchlistWatchedOptions",
   watchlist_unwatched_options: "watchlistUnwatchedOptions",
   manual_watchlist: "manualWatchlist",
+  sources: "sources",
   source_consensus: "sourceConsensus",
+  source_ticker_rankings: "sourceTickerRankings",
+  source_items: "sourceItems",
+  ticker_source_signals: "tickerSourceSignals",
   ownership_consensus: "ownershipConsensus",
   market_context: "marketContext",
   market_valuation_reference_charts: "marketValuationReferenceCharts",
@@ -357,7 +361,11 @@ export function emptyPanelData(): PanelData {
     watchlistWatchedOptions: EMPTY_TABLE,
     watchlistUnwatchedOptions: EMPTY_TABLE,
     manualWatchlist: EMPTY_TABLE,
+    sources: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
+    sourceTickerRankings: EMPTY_TABLE,
+    sourceItems: EMPTY_TABLE,
+    tickerSourceSignals: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
     marketValuationReferenceCharts: EMPTY_TABLE,
@@ -475,7 +483,11 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     settle("feedSignals", getJson<TablePayload>("/api/feed")),
     settle("universeScreen", getJson<TablePayload>("/api/watchlist-screen")),
     settle("manualWatchlist", getJson<TablePayload>("/api/watchlist/symbols")),
+    settle("sources", getJson<TablePayload>("/api/sources")),
     settle("sourceConsensus", getJson<TablePayload>("/api/source-consensus")),
+    settle("sourceTickerRankings", getJson<TablePayload>("/api/source-ticker-rankings")),
+    settle("sourceItems", getJson<TablePayload>("/api/source-items")),
+    settle("tickerSourceSignals", getJson<TablePayload>("/api/ticker-source-signals")),
     settle("ownershipConsensus", getJson<TablePayload>("/api/ownership-consensus")),
     settle("marketContext", getJson<TablePayload>("/api/market-context")),
     settle("exposureClusters", getJson<TablePayload>("/api/portfolio-risk/exposure-clusters")),
@@ -581,7 +593,11 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     watchlistWatchedOptions: EMPTY_TABLE,
     watchlistUnwatchedOptions: EMPTY_TABLE,
     manualWatchlist: EMPTY_TABLE,
+    sources: EMPTY_TABLE,
     sourceConsensus: EMPTY_TABLE,
+    sourceTickerRankings: EMPTY_TABLE,
+    sourceItems: EMPTY_TABLE,
+    tickerSourceSignals: EMPTY_TABLE,
     ownershipConsensus: EMPTY_TABLE,
     marketContext: EMPTY_TABLE,
     marketValuationReferenceCharts: EMPTY_TABLE,
@@ -745,8 +761,20 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
       case "manualWatchlist":
         data.manualWatchlist = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
+      case "sources":
+        data.sources = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
       case "sourceConsensus":
         data.sourceConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceTickerRankings":
+        data.sourceTickerRankings = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "sourceItems":
+        data.sourceItems = (result.value as TablePayload) ?? EMPTY_TABLE;
+        break;
+      case "tickerSourceSignals":
+        data.tickerSourceSignals = (result.value as TablePayload) ?? EMPTY_TABLE;
         break;
       case "ownershipConsensus":
         data.ownershipConsensus = (result.value as TablePayload) ?? EMPTY_TABLE;

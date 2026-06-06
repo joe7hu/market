@@ -17,6 +17,7 @@ from investment_panel.core.panel import (
     screener,
     sepa,
     source_consensus,
+    source_ticker_ranking_rows,
     technicals,
     universe_screen,
     valuations,
@@ -603,6 +604,92 @@ def test_source_consensus_builds_per_source_ticker_history(tmp_path) -> None:
     arco = next(row for row in rows if row["source_name"] == "ArcoSource")
     assert arco["content_type"] == "private_graph"
     assert arco["bullish_symbols"] == ["MU"]
+
+
+def test_source_ticker_rankings_group_raw_signal_evidence(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO source_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "birdclaw_primary_tweets",
+                "Birdclaw primary X/Twitter",
+                "private_graph",
+                "tweet",
+                "market",
+                True,
+                "mounted_raw",
+                "private",
+                None,
+                None,
+                "{}",
+                "2026-06-06T00:00:00Z",
+                "2026-06-06T00:00:00Z",
+            ],
+        )
+        for item_id, title, observed_at in [
+            ("tweet-1", "NVDA and MSFT source item", "2026-06-06T02:00:00Z"),
+            ("tweet-2", "NVDA follow-up source item", "2026-06-06T03:00:00Z"),
+        ]:
+            con.execute(
+                "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    item_id,
+                    "birdclaw_primary_tweets",
+                    "run-1",
+                    "tweet",
+                    title,
+                    f"https://x.com/example/status/{item_id}",
+                    "tester",
+                    observed_at,
+                    observed_at,
+                    title,
+                    "[]",
+                    "[]",
+                    "{}",
+                    item_id,
+                    "private",
+                ],
+            )
+        for signal_id, item_id, symbol, observed_at, sentiment in [
+            ("sig-1", "tweet-1", "NVDA", "2026-06-06T02:00:00Z", "bullish"),
+            ("sig-2", "tweet-2", "NVDA", "2026-06-06T03:00:00Z", "bearish"),
+            ("sig-3", "tweet-1", "MSFT", "2026-06-06T02:00:00Z", "bullish"),
+        ]:
+            con.execute(
+                "INSERT INTO ticker_source_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    signal_id,
+                    item_id,
+                    "birdclaw_primary_tweets",
+                    symbol,
+                    observed_at,
+                    "tweet",
+                    sentiment,
+                    "unknown",
+                    0.5,
+                    f"{symbol} appeared in source evidence.",
+                    "No structured antithesis.",
+                    "[]",
+                    "[]",
+                    "Watch for follow-through.",
+                    "[]",
+                    True,
+                    "{}",
+                ],
+            )
+
+        rows = source_ticker_ranking_rows(con)
+
+    assert rows[0]["symbol"] == "NVDA"
+    assert rows[0]["signal_count"] == 2
+    assert rows[0]["source_count"] == 1
+    assert rows[0]["bullish_count"] == 1
+    assert rows[0]["bearish_count"] == 1
+    assert rows[0]["latest_source"] == "Birdclaw primary X/Twitter"
+    assert rows[0]["latest_title"] == "NVDA follow-up source item"
+    assert rows[1]["symbol"] == "MSFT"
 
 
 def test_feed_signals_include_source_items_with_required_decision_fields(tmp_path) -> None:

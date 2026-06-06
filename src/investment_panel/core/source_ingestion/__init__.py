@@ -17,8 +17,10 @@ from investment_panel.core.source_ingestion.read_models import (
     source_item_rows,
     source_registry_rows,
     source_run_rows,
+    source_ticker_ranking_rows,
     ticker_source_signal_rows,
 )
+from investment_panel.core.source_ingestion.raw_sources import sync_private_raw_sources
 from investment_panel.core.source_ingestion.audit import source_ingestion_audit
 from investment_panel.core.source_ingestion.utils import (
     decode_row,
@@ -54,9 +56,11 @@ __all__ = [
     "source_registry_rows",
     "source_row_freshness",
     "source_run_rows",
+    "source_ticker_ranking_rows",
     "stable_id",
     "symbols_from_value",
     "sync_canonical_sources",
+    "sync_private_raw_sources",
     "ticker_source_signal_rows",
     "update_signal_market_context",
     "upsert_signals_for_item",

@@ -53,18 +53,22 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
   sources: {
     title: "Sources",
     eyebrow: "Evidence",
-    subtitle: "Source-backed consensus, thesis evidence, news, and opportunity inputs.",
+    subtitle: "Ticker-ranked source evidence, raw signal ledgers, source coverage, and opportunity inputs.",
     sections: [
+      { title: "Ticker Source Rankings", getRows: (data) => rows(data.sourceTickerRankings) },
+      { title: "Ticker Source Signals", getRows: (data) => rows(data.tickerSourceSignals) },
+      { title: "Source Items", getRows: (data) => rows(data.sourceItems) },
       { title: "Source Consensus", getRows: (data) => rows(data.sourceConsensus) },
-      { title: "Source Signals", getRows: (data) => rows(data.feedSignals) },
       { title: "Opportunity Evidence", getRows: (data) => rows(data.opportunitySources) },
       { title: "Thesis Evidence", getRows: (data) => rows(data.theses) },
       { title: "News", getRows: (data) => rows(data.news) },
+      { title: "Source Directory", getRows: (data) => rows(data.sources) },
     ],
     metricLabels: [
-      ["Consensus", "Source Consensus", "cross-source agreement", "good"],
-      ["Signals", "Source Signals", "source-backed ideas", "info"],
-      ["News", "News", "recent source items", "info"],
+      ["Ranked Tickers", "Ticker Source Rankings", "source-backed ticker coverage", "good"],
+      ["Signal Rows", "Ticker Source Signals", "raw ticker evidence", "info"],
+      ["Source Items", "Source Items", "raw ingested items", "info"],
+      ["Sources", "Source Directory", "enabled source registry", "info"],
     ],
   },
   superinvestors: {

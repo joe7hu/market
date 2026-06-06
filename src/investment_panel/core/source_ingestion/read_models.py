@@ -81,7 +81,7 @@ def source_run_rows(con: Any, source_id: str | None = None, limit: int = 200) ->
     return rows
 
 
-def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 300) -> list[dict[str, Any]]:
+def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int | None = 300) -> list[dict[str, Any]]:
     sql = """
         SELECT s.*, r.source_name, r.source_family, i.title, i.url
         FROM ticker_source_signals s
@@ -92,8 +92,10 @@ def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 
     if symbol:
         sql += " WHERE upper(s.symbol) = ?"
         params.append(symbol.upper())
-    sql += " ORDER BY s.observed_at DESC NULLS LAST LIMIT ?"
-    params.append(limit)
+    sql += " ORDER BY s.observed_at DESC NULLS LAST"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     rows = []
     for row in query_rows(con, sql, params):
         decoded = decode_row(row)
@@ -101,6 +103,87 @@ def ticker_source_signal_rows(con: Any, symbol: str | None = None, limit: int = 
             decoded["url"] = _first_url(decoded.get("evidence_refs"))
         rows.append(_compact_row(decoded))
     return rows
+
+
+def source_ticker_ranking_rows(con: Any, limit: int = 250) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for row in ticker_source_signal_rows(con, limit=None):
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        group = groups.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "signals": 0,
+                "sources": set(),
+                "sentiments": {},
+                "needs_market_context": 0,
+                "confidence_values": [],
+                "latest": {},
+            },
+        )
+        group["signals"] += 1
+        source_name = str(row.get("source_name") or row.get("source_id") or "").strip()
+        if source_name:
+            group["sources"].add(source_name)
+        sentiment = str(row.get("sentiment") or "neutral").lower()
+        group["sentiments"][sentiment] = group["sentiments"].get(sentiment, 0) + 1
+        if row.get("needs_market_context"):
+            group["needs_market_context"] += 1
+        confidence = row.get("confidence")
+        if isinstance(confidence, (int, float)):
+            group["confidence_values"].append(float(confidence))
+        observed_at = str(row.get("observed_at") or "")
+        latest_at = str(group["latest"].get("observed_at") or "")
+        if observed_at >= latest_at:
+            group["latest"] = row
+
+    rankings: list[dict[str, Any]] = []
+    for group in groups.values():
+        sentiments = group["sentiments"]
+        bullish = int(sentiments.get("bullish", 0))
+        bearish = int(sentiments.get("bearish", 0))
+        neutral = int(sum(sentiments.values()) - bullish - bearish)
+        source_names = sorted(group["sources"])
+        confidence_values = group["confidence_values"]
+        avg_confidence = round(sum(confidence_values) / len(confidence_values), 3) if confidence_values else None
+        latest = group["latest"]
+        signal_count = int(group["signals"])
+        source_count = len(source_names)
+        net_consensus = bullish - bearish
+        rank_score = signal_count * 10 + source_count * 5 + net_consensus
+        rankings.append(
+            _compact_row(
+                {
+                    "symbol": group["symbol"],
+                    "rank_score": rank_score,
+                    "signal_count": signal_count,
+                    "source_count": source_count,
+                    "net_consensus": net_consensus,
+                    "bullish_count": bullish,
+                    "bearish_count": bearish,
+                    "neutral_count": neutral,
+                    "avg_confidence": avg_confidence,
+                    "latest_at": latest.get("observed_at"),
+                    "latest_source": latest.get("source_name") or latest.get("source_id"),
+                    "latest_title": latest.get("title") or latest.get("thesis"),
+                    "source_names": source_names[:8],
+                    "needs_market_context_count": int(group["needs_market_context"]),
+                }
+            )
+        )
+
+    return sorted(
+        rankings,
+        key=lambda row: (
+            row.get("rank_score") or 0,
+            row.get("signal_count") or 0,
+            row.get("source_count") or 0,
+            str(row.get("latest_at") or ""),
+        ),
+        reverse=True,
+    )[:limit]
 
 
 def source_detail_payload(con: Any, source_id: str) -> dict[str, Any]:

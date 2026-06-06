@@ -559,6 +559,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "universe_screen",
             "manual_watchlist",
             "source_consensus",
+            "source_ticker_rankings",
             "ownership_consensus",
             "market_context",
             "market_valuation_reference_charts",
@@ -831,11 +832,15 @@ def panel_snapshot_payload(panel_data: PanelData, scope: str, offset: int = 0, l
             "options_ticker_signals",
         ],
         "sources": [
+            "source_ticker_rankings",
+            "ticker_source_signals",
+            "source_items",
             "source_consensus",
             "feed_signals",
             "opportunity_sources",
             "theses",
             "news",
+            "sources",
         ],
         "superinvestors": [
             "ownership_consensus",
