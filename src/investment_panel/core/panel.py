@@ -21,9 +21,25 @@ from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
 DECISION_REFRESH_LOCK = Lock()
+DECISION_READ_MODEL_TABLES = {
+    "decision_queue",
+    "decision_readiness",
+    "discovered_universe",
+    "feed_signals",
+    "source_freshness",
+    "symbol_decision_snapshot",
+    "symbol_decision_snapshots",
+    "thesis_monitor",
+    "universe_screen",
+}
 
 
-def load_panel_data(config: dict[str, Any] | AppConfig | None = None, table_names: list[str] | set[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+def load_panel_data(
+    config: dict[str, Any] | AppConfig | None = None,
+    table_names: list[str] | set[str] | tuple[str, ...] | None = None,
+    ensure_decision_models: bool | None = None,
+    ensure_source_models: bool | None = None,
+) -> dict[str, Any]:
     app_config = config if isinstance(config, AppConfig) else load_config()
     if isinstance(config, dict):
         # FastAPI compatibility path: app.data_access passes a plain dict.
@@ -38,11 +54,18 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None, table_name
     # Keep the API read connection in the same mode as init/write jobs. DuckDB
     # rejects simultaneous connections to one file when read_only differs.
     requested_tables = set(table_names or [])
+    should_ensure_decision = (not requested_tables) if ensure_decision_models is None else ensure_decision_models
+    should_ensure_sources = should_ensure_decision or ((not requested_tables) if ensure_source_models is None else ensure_source_models)
     with db(db_path, read_only=False) as con:
-        ensure_canonical_sources(con)
+        if should_ensure_sources:
+            ensure_canonical_sources(con)
         active_watchlist = effective_watchlist(con, config_watchlist)
-        decision_refresh = ensure_decision_read_models(con, active_watchlist)
-        decision_snapshots = symbol_decision_snapshots(con)
+        decision_refresh = (
+            ensure_decision_read_models(con, active_watchlist)
+            if should_ensure_decision
+            else decision_readiness_snapshot(con, requested_tables)
+        )
+        decision_snapshots = symbol_decision_snapshots(con) if not requested_tables or requested_tables & DECISION_READ_MODEL_TABLES else []
         table_loaders = {
             "signals": lambda: signal_rows(con),
             "opportunities_ranked": lambda: opportunities_ranked(con),
@@ -149,6 +172,112 @@ def load_panel_data(config: dict[str, Any] | AppConfig | None = None, table_name
     }
 
 
+def load_ticker_dossier_data(
+    config: dict[str, Any] | AppConfig | None,
+    ticker: str,
+    ensure_decision_models: bool = True,
+) -> dict[str, Any]:
+    app_config = config if isinstance(config, AppConfig) else load_config()
+    if isinstance(config, dict):
+        db_path = Path(config.get("database", {}).get("duckdb_path", "data/investment.duckdb"))
+        if not db_path.is_absolute():
+            db_path = Path.cwd() / db_path
+        config_watchlist = list(config.get("watchlist", []))
+    else:
+        db_path = app_config.database.duckdb_path
+        config_watchlist = app_config.watchlist
+    symbol = str(ticker or "").upper().strip()
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        if ensure_decision_models:
+            ensure_canonical_sources(con)
+        active_watchlist = effective_watchlist(con, config_watchlist)
+        readiness = (
+            ensure_decision_read_models(con, active_watchlist)
+            if ensure_decision_models
+            else decision_readiness_snapshot(con, DECISION_READ_MODEL_TABLES)
+        )
+        tables = {
+            "candidates": _rows_matching_symbol(candidates(con), symbol),
+            "decision_queue": _rows_matching_symbol(decision_queue(con), symbol),
+            "discovered_universe": _rows_matching_symbol(discovered_universe(con), symbol),
+            "universe_screen": _rows_matching_symbol(universe_screen(con, active_watchlist), symbol),
+            "symbol_decision_snapshot": _rows_matching_symbol(symbol_decision_snapshots(con), symbol),
+            "symbol_decision_snapshots": _rows_matching_symbol(symbol_decision_snapshots(con), symbol),
+            "opportunities_ranked": _rows_matching_symbol(opportunities_ranked(con), symbol),
+            "opportunity_sources": _rows_matching_symbol(opportunity_sources(con), symbol),
+            "feed_signals": _rows_matching_symbol(feed_signals(con, active_watchlist), symbol),
+            "source_consensus": _rows_matching_symbol(source_consensus(con), symbol),
+            "ticker_source_signals": ticker_source_signal_rows(con, symbol=symbol),
+            "ownership_consensus": _rows_matching_symbol(ownership_consensus(con), symbol),
+            "portfolio": _rows_matching_symbol(portfolio(con), symbol),
+            "theses": _rows_matching_symbol(theses(con), symbol),
+            "thesis_monitor": _rows_matching_symbol(thesis_monitor_rows(con, active_watchlist), symbol),
+            "catalysts": _rows_matching_symbol(catalysts(con), symbol),
+            "signals": _rows_matching_symbol(signal_rows(con), symbol),
+            "fundamentals": _rows_matching_symbol(fundamentals(con), symbol),
+            "disclosures": _rows_matching_symbol(disclosures(con), symbol),
+            "quotes": _rows_matching_symbol(quotes(con), symbol),
+            "options_expiries": _rows_matching_symbol(options_expiries(con), symbol),
+            "options_chain": _rows_matching_symbol(options_chain(con), symbol),
+            "options_payoff_scenarios": _rows_matching_symbol(options_payoff_scenarios(con), symbol),
+            "options_provider_capabilities": options_provider_capabilities(con),
+            "options_expiry_signals": _rows_matching_symbol(options_expiry_signals(con), symbol),
+            "options_ticker_signals": _rows_matching_symbol(options_ticker_signals(con), symbol),
+            "news": _rows_matching_symbol(news(con), symbol),
+            "tradingview_symbol_search": _rows_matching_symbol(tradingview_symbol_search(con), symbol),
+            "tradingview_watchlists": _rows_matching_symbol(tradingview_watchlists(con), symbol),
+            "tradingview_alerts": _rows_matching_symbol(tradingview_alerts(con), symbol),
+            "tradingview_chart_state": _rows_matching_symbol(tradingview_chart_state(con), symbol),
+            "sepa": _rows_matching_symbol(sepa(con), symbol),
+            "liquidity": _rows_matching_symbol(liquidity(con), symbol),
+            "correlations": _rows_matching_symbol(correlations(con), symbol),
+            "etf_premiums": _rows_matching_symbol(etf_premiums(con), symbol),
+            "analyst_estimates": _rows_matching_symbol(analyst_estimates(con), symbol),
+            "earnings": _rows_matching_symbol(earnings(con), symbol),
+            "earnings_setups": _rows_matching_symbol(earnings_setups(con), symbol),
+            "valuations": _rows_matching_symbol(valuations(con), symbol),
+            "technicals": technicals(con, symbols=[symbol]),
+            "research_packets": _rows_matching_symbol(research_packets(con), symbol),
+            "exposure_clusters": _rows_matching_symbol(exposure_clusters(con), symbol),
+            "correlation_edges": _rows_matching_symbol(correlation_edges(con), symbol),
+            "portfolio_risk_cards": _rows_matching_symbol(portfolio_risk_cards(con), symbol),
+            "review_actions": _rows_matching_symbol(review_actions(con), symbol),
+            "ticker_memos": _rows_matching_symbol(reports(con), symbol),
+        }
+    ready = any(rows for rows in tables.values())
+    return {
+        "ready": ready,
+        "message": f"Loaded {symbol} ticker dossier." if ready else f"No ticker dossier rows loaded for {symbol}.",
+        "source": "duckdb",
+        "metadata": {"config": config_to_dict(app_config), "decision_refresh": readiness},
+        "tables": tables,
+    }
+
+
+def _rows_matching_symbol(rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
+    normalized = _normalize_symbol_token(symbol)
+    return [row for row in rows if _row_matches_symbol(row, normalized)]
+
+
+def _row_matches_symbol(row: dict[str, Any], symbol: str) -> bool:
+    if not symbol:
+        return False
+    direct_values = (
+        row.get("symbol"),
+        row.get("ticker"),
+        row.get("primary_symbol"),
+        row.get("peer_symbol"),
+        row.get("target_symbol"),
+    )
+    if any(_normalize_symbol_token(value) == symbol for value in direct_values):
+        return True
+    for key in ("symbols", "related_symbols", "tickers", "bullish_symbols", "bearish_symbols"):
+        if symbol in _symbols_from_value(row.get(key)):
+            return True
+    return False
+
+
 def ensure_decision_read_models(con: Any, config_watchlist: list[dict[str, Any]]) -> dict[str, int | str]:
     counts = query_rows(
         con,
@@ -177,6 +306,24 @@ def ensure_decision_read_models(con: Any, config_watchlist: list[dict[str, Any]]
             return {**counts, "status": "cached"}
         result = refresh_decision_read_models(con, config_watchlist)
         return {**result, "status": "refreshed"}
+
+
+def decision_readiness_snapshot(con: Any, requested_tables: set[str]) -> dict[str, int | str | list[str]]:
+    counts = query_rows(
+        con,
+        """
+        SELECT
+            (SELECT count(*) FROM discovered_universe) AS discovered_universe,
+            (SELECT count(*) FROM decision_queue) AS decision_queue,
+            (SELECT count(*) FROM source_freshness) AS source_freshness,
+            (SELECT count(*) FROM symbol_decision_snapshots) AS symbol_decision_snapshots
+        """,
+    )[0]
+    missing = [name for name, count in counts.items() if int(count or 0) == 0]
+    status = "read_only_ready" if not missing else "read_only_missing"
+    if not requested_tables & DECISION_READ_MODEL_TABLES:
+        status = "read_only_not_required"
+    return {**counts, "status": status, "missing": missing}
 
 
 def get_panel_snapshot(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
@@ -807,15 +954,70 @@ def market_environment_assets(con: Any) -> list[dict[str, Any]]:
     )
 
 
-def market_valuation_charts(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+class MarketDisplayContext:
+    """Cached market display rows for one panel load."""
+
+    def __init__(self, con: Any, symbols: list[str]) -> None:
+        self.con = con
+        self.symbols = sorted({str(symbol or "").upper() for symbol in symbols if symbol})
+        self._histories: dict[str, list[dict[str, Any]]] | None = None
+        self._quotes: dict[str, dict[str, Any]] | None = None
+        self._screener: dict[str, dict[str, Any]] | None = None
+        self._technicals: dict[str, dict[str, Any]] | None = None
+        self._valuations: dict[str, dict[str, Any]] | None = None
+
+    @property
+    def histories(self) -> dict[str, list[dict[str, Any]]]:
+        if self._histories is None:
+            self._histories = technical_price_history(self.con, self.symbols, days=253)
+        return self._histories
+
+    @property
+    def quotes_by_symbol(self) -> dict[str, dict[str, Any]]:
+        if self._quotes is None:
+            self._quotes = {str(row.get("symbol") or "").upper(): row for row in quotes(self.con) if str(row.get("symbol") or "").upper() in self.symbols}
+        return self._quotes
+
+    @property
+    def screener_by_symbol(self) -> dict[str, dict[str, Any]]:
+        if self._screener is None:
+            self._screener = {str(row.get("symbol") or "").upper(): row for row in screener(self.con) if str(row.get("symbol") or "").upper() in self.symbols}
+        return self._screener
+
+    @property
+    def technicals_by_symbol(self) -> dict[str, dict[str, Any]]:
+        if self._technicals is None:
+            self._technicals = {
+                str(row.get("symbol") or "").upper(): row
+                for row in technicals(self.con, symbols=self.symbols, price_history=self.histories)
+            }
+        return self._technicals
+
+    @property
+    def valuations_by_symbol(self) -> dict[str, dict[str, Any]]:
+        if self._valuations is None:
+            self._valuations = _preferred_valuation_by_symbol([row for row in valuations(self.con) if str(row.get("symbol") or "").upper() in self.symbols])
+        return self._valuations
+
+
+def market_display_context(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> MarketDisplayContext:
+    return MarketDisplayContext(con, _market_stance_symbols(con, config_watchlist))
+
+
+def market_valuation_charts(
+    con: Any,
+    config_watchlist: list[dict[str, Any]] | None = None,
+    context: MarketDisplayContext | None = None,
+) -> list[dict[str, Any]]:
     """Watchlist and whole-market valuation chart rows for the Market page."""
 
-    symbols = _market_stance_symbols(con, config_watchlist)
-    histories = technical_price_history(con, symbols, days=253)
-    quote_by_symbol = {str(row.get("symbol") or "").upper(): row for row in quotes(con)}
-    screener_by_symbol = {str(row.get("symbol") or "").upper(): row for row in screener(con)}
-    technical_by_symbol = {str(row.get("symbol") or "").upper(): row for row in technicals(con)}
-    valuation_by_symbol = _preferred_valuation_by_symbol(valuations(con))
+    display_context = context or market_display_context(con, config_watchlist)
+    symbols = display_context.symbols
+    histories = display_context.histories
+    quote_by_symbol = display_context.quotes_by_symbol
+    screener_by_symbol = display_context.screener_by_symbol
+    technical_by_symbol = display_context.technicals_by_symbol
+    valuation_by_symbol = display_context.valuations_by_symbol
     rows: list[dict[str, Any]] = []
 
     for symbol in symbols:
@@ -867,10 +1069,11 @@ def market_environment_model(con: Any, config_watchlist: list[dict[str, Any]] | 
     valuation_reference_rows = market_valuation_reference_charts(con)
     asset_rows = market_environment_assets(con)
     needs_watchlist_fallback = not valuation_reference_rows or not asset_rows
-    valuation_rows = market_valuation_charts(con, config_watchlist) if include_exposure or needs_watchlist_fallback else []
+    display_context = market_display_context(con, config_watchlist) if include_exposure or needs_watchlist_fallback else None
+    valuation_rows = market_valuation_charts(con, config_watchlist, context=display_context) if display_context else []
     ticker_rows = [row for row in valuation_rows if row.get("scope") != "whole_market"]
-    stance_symbols = _market_stance_symbols(con, config_watchlist) if include_exposure or needs_watchlist_fallback else []
-    technical_rows = [row for row in technicals(con) if str(row.get("symbol") or "").upper() in stance_symbols] if stance_symbols else []
+    stance_symbols = display_context.symbols if display_context else []
+    technical_rows = list(display_context.technicals_by_symbol.values()) if display_context else []
     liquidity_rows = [row for row in liquidity(con) if str(row.get("symbol") or "").upper() in stance_symbols] if include_exposure and stance_symbols else []
     risk_rows = portfolio_risk_cards(con) if include_exposure else []
     correlation_rows = correlation_edges(con) if include_exposure else []
@@ -2491,19 +2694,32 @@ def source_rows(source_key: str, title: str, rows: list[dict[str, Any]]) -> list
     ]
 
 
-def technicals(con: Any) -> list[dict[str, Any]]:
+def technicals(
+    con: Any,
+    symbols: list[str] | set[str] | tuple[str, ...] | None = None,
+    price_history: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    normalized_symbols = sorted({str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+    where_clause = ""
+    params: list[Any] = []
+    if normalized_symbols:
+        where_clause = f"WHERE upper(symbol) IN ({', '.join(['?'] * len(normalized_symbols))})"
+        params.extend(normalized_symbols)
     rows = query_rows(
         con,
-        """
+        f"""
         SELECT symbol, date, features
         FROM technical_features
+        {where_clause}
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
         ORDER BY date DESC, symbol
         LIMIT 1000
         """,
+        params,
     )
     decoded = [decode_fields(row, ("features",)) for row in rows]
-    price_history = technical_price_history(con, [str(row.get("symbol") or "").upper() for row in decoded], days=253)
+    if price_history is None:
+        price_history = technical_price_history(con, [str(row.get("symbol") or "").upper() for row in decoded], days=253)
     for row in decoded:
         symbol = str(row.get("symbol") or "").upper()
         features = row.get("features") if isinstance(row.get("features"), dict) else {}

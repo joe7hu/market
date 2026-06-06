@@ -23,6 +23,7 @@ from app.data_access import (
     load_market_panel_data,
     load_panel_data,
     load_panel_scope_data,
+    load_table_panel_data,
     load_ticker_panel_data,
     panel_snapshot_payload,
     panel_contract_payload,
@@ -127,48 +128,43 @@ def create_app() -> FastAPI:
 
     @app.get("/api/decision-readiness")
     def decision_readiness() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "decision_readiness")
+        return _table_payload("decision_readiness")
 
     @app.get("/api/candidates")
     def candidates() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "candidates")
+        return _table_payload("candidates")
 
     @app.get("/api/signals")
     def signals() -> dict[str, Any]:
-        _, panel_data = _context()
+        _, panel_data = _context(
+            cache_key="table:signals",
+            loader=lambda config: load_panel_data(config, table_names=("signals", "candidates")),
+        )
         return signals_payload(panel_data)
 
     @app.get("/api/opportunities-ranked")
     def opportunities_ranked() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "opportunities_ranked")
+        return _table_payload("opportunities_ranked")
 
     @app.get("/api/opportunity-sources")
     def opportunity_sources() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "opportunity_sources")
+        return _table_payload("opportunity_sources")
 
     @app.get("/api/discovered-universe")
     def discovered_universe() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "discovered_universe")
+        return _table_payload("discovered_universe")
 
     @app.get("/api/decision-queue")
     def decision_queue() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "decision_queue")
+        return _table_payload("decision_queue")
 
     @app.get("/api/source-freshness")
     def source_freshness() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_freshness")
+        return _table_payload("source_freshness")
 
     @app.get("/api/symbol-decision-snapshots")
     def symbol_decision_snapshots() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "symbol_decision_snapshots")
+        return _table_payload("symbol_decision_snapshots")
 
     @app.get("/api/tickers/{ticker}")
     def ticker_detail(ticker: str) -> dict[str, Any]:
@@ -191,8 +187,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/portfolio")
     def portfolio() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "portfolio")
+        return _table_payload("portfolio")
 
     @app.post("/api/portfolio/positions")
     def save_position(position: PortfolioPositionInput) -> dict[str, Any]:
@@ -218,43 +213,35 @@ def create_app() -> FastAPI:
 
     @app.get("/api/theses")
     def theses() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "theses")
+        return _table_payload("theses")
 
     @app.get("/api/thesis-monitor")
     def thesis_monitor() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "thesis_monitor")
+        return _table_payload("thesis_monitor")
 
     @app.get("/api/trader-twins")
     def trader_twins() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "trader_twins")
+        return _table_payload("trader_twins")
 
     @app.get("/api/catalysts")
     def catalysts() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "catalysts")
+        return _table_payload("catalysts")
 
     @app.get("/api/fundamentals")
     def fundamentals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "fundamentals")
+        return _table_payload("fundamentals")
 
     @app.get("/api/disclosures")
     def disclosures() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "disclosures")
+        return _table_payload("disclosures")
 
     @app.get("/api/source-health")
     def source_health() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_health")
+        return _table_payload("source_health")
 
     @app.get("/api/sources")
     def sources() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "sources")
+        return _table_payload("sources")
 
     @app.get("/api/sources/{source_id}")
     def source_detail(source_id: str) -> dict[str, Any]:
@@ -266,23 +253,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/source-items")
     def source_items() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_items")
+        return _table_payload("source_items")
 
     @app.get("/api/source-ticker-rankings")
     def source_ticker_rankings() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_ticker_rankings")
+        return _table_payload("source_ticker_rankings")
 
     @app.get("/api/source-runs")
     def source_runs() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_runs")
+        return _table_payload("source_runs")
 
     @app.get("/api/ticker-source-signals")
     def ticker_source_signals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "ticker_source_signals")
+        return _table_payload("ticker_source_signals")
 
     @app.get("/api/source-ingestion-audit")
     def source_audit() -> dict[str, Any]:
@@ -294,68 +277,55 @@ def create_app() -> FastAPI:
 
     @app.get("/api/quotes")
     def quotes() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "quotes")
+        return _table_payload("quotes")
 
     @app.get("/api/screener")
     def screener() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "screener")
+        return _table_payload("screener")
 
     @app.get("/api/options-expiries")
     def options_expiries() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_expiries")
+        return _table_payload("options_expiries")
 
     @app.get("/api/options-chain")
     def options_chain() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_chain")
+        return _table_payload("options_chain")
 
     @app.get("/api/options-payoff-scenarios")
     def options_payoff_scenarios() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_payoff_scenarios")
+        return _table_payload("options_payoff_scenarios")
 
     @app.get("/api/options-provider-capabilities")
     def options_provider_capabilities() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_provider_capabilities")
+        return _table_payload("options_provider_capabilities")
 
     @app.get("/api/options-expiry-signals")
     def options_expiry_signals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_expiry_signals")
+        return _table_payload("options_expiry_signals")
 
     @app.get("/api/options-ticker-signals")
     def options_ticker_signals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "options_ticker_signals")
+        return _table_payload("options_ticker_signals")
 
     @app.get("/api/option-strategy-versions")
     def option_strategy_versions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "option_strategy_versions")
+        return _table_payload("option_strategy_versions")
 
     @app.get("/api/option-snapshot")
     def option_snapshot() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "option_snapshot")
+        return _table_payload("option_snapshot")
 
     @app.get("/api/option-features")
     def option_features() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "option_features")
+        return _table_payload("option_features")
 
     @app.get("/api/stock-features")
     def stock_features() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "stock_features")
+        return _table_payload("stock_features")
 
     @app.get("/api/agent-thesis")
     def agent_thesis() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_thesis")
+        return _table_payload("agent_thesis")
 
     @app.post("/api/agent-thesis")
     def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -380,23 +350,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/agent-thesis-requests")
     def agent_thesis_requests() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_thesis_request")
+        return _table_payload("agent_thesis_request")
 
     @app.get("/api/agent-thesis-validations")
     def agent_thesis_validations() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_thesis_validation")
+        return _table_payload("agent_thesis_validation")
 
     @app.get("/api/agent-postmortem-requests")
     def agent_postmortem_requests() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_postmortem_request")
+        return _table_payload("agent_postmortem_request")
 
     @app.get("/api/agent-postmortems")
     def agent_postmortems() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_postmortem")
+        return _table_payload("agent_postmortem")
 
     @app.post("/api/agent-postmortems")
     def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -421,48 +387,39 @@ def create_app() -> FastAPI:
 
     @app.get("/api/candidate-events")
     def candidate_events() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "candidate_event")
+        return _table_payload("candidate_event")
 
     @app.get("/api/candidate-event-marks")
     def candidate_event_marks() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "candidate_event_mark")
+        return _table_payload("candidate_event_mark")
 
     @app.get("/api/candidate-event-attributions")
     def candidate_event_attributions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "candidate_event_attribution")
+        return _table_payload("candidate_event_attribution")
 
     @app.get("/api/shadow-trades")
     def shadow_trades() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "shadow_trade")
+        return _table_payload("shadow_trade")
 
     @app.get("/api/shadow-trade-marks")
     def shadow_trade_marks() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "shadow_trade_mark")
+        return _table_payload("shadow_trade_mark")
 
     @app.get("/api/radar-state-transitions")
     def radar_state_transitions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "radar_state_transition")
+        return _table_payload("radar_state_transition")
 
     @app.get("/api/option-attributions")
     def option_attributions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "option_attribution")
+        return _table_payload("option_attribution")
 
     @app.get("/api/missed-winner-events")
     def missed_winner_events() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "missed_winner_event")
+        return _table_payload("missed_winner_event")
 
     @app.get("/api/strategy-mutation-proposals")
     def strategy_mutation_proposals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "strategy_mutation_proposal")
+        return _table_payload("strategy_mutation_proposal")
 
     @app.post("/api/strategy-mutation-proposals/{proposal_id}/promote")
     def promote_strategy_mutation_endpoint(
@@ -490,123 +447,99 @@ def create_app() -> FastAPI:
 
     @app.get("/api/strategy-backtests")
     def strategy_backtests() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "strategy_backtest_result")
+        return _table_payload("strategy_backtest_result")
 
     @app.get("/api/strategy-forward-tests")
     def strategy_forward_tests() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "strategy_forward_test_result")
+        return _table_payload("strategy_forward_test_result")
 
     @app.get("/api/strategy-cohorts")
     def strategy_cohorts() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "strategy_cohort_result")
+        return _table_payload("strategy_cohort_result")
 
     @app.get("/api/news")
     def news() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "news")
+        return _table_payload("news")
 
     @app.get("/api/tradingview-symbol-search")
     def tradingview_symbol_search() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "tradingview_symbol_search")
+        return _table_payload("tradingview_symbol_search")
 
     @app.get("/api/tradingview-watchlists")
     def tradingview_watchlists() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "tradingview_watchlists")
+        return _table_payload("tradingview_watchlists")
 
     @app.get("/api/tradingview-alerts")
     def tradingview_alerts() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "tradingview_alerts")
+        return _table_payload("tradingview_alerts")
 
     @app.get("/api/tradingview-chart-state")
     def tradingview_chart_state() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "tradingview_chart_state")
+        return _table_payload("tradingview_chart_state")
 
     @app.get("/api/sepa")
     def sepa() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "sepa")
+        return _table_payload("sepa")
 
     @app.get("/api/liquidity")
     def liquidity() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "liquidity")
+        return _table_payload("liquidity")
 
     @app.get("/api/correlations")
     def correlations() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "correlations")
+        return _table_payload("correlations")
 
     @app.get("/api/etf-premiums")
     def etf_premiums() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "etf_premiums")
+        return _table_payload("etf_premiums")
 
     @app.get("/api/analyst-estimates")
     def analyst_estimates() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "analyst_estimates")
+        return _table_payload("analyst_estimates")
 
     @app.get("/api/earnings")
     def earnings() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "earnings")
+        return _table_payload("earnings")
 
     @app.get("/api/earnings-setups")
     def earnings_setups() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "earnings_setups")
+        return _table_payload("earnings_setups")
 
     @app.get("/api/valuations")
     def valuations() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "valuations")
+        return _table_payload("valuations")
 
     @app.get("/api/technicals")
     def technicals() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "technicals")
+        return _table_payload("technicals")
 
     @app.get("/api/research-packets")
     def research_packets() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "research_packets")
+        return _table_payload("research_packets")
 
     @app.get("/api/memos")
     def memos() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "ticker_memos")
+        return _table_payload("ticker_memos")
 
     @app.get("/api/provider-runs")
     def provider_runs() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "provider_runs")
+        return _table_payload("provider_runs")
 
     @app.get("/api/broker/status")
     def broker_status() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "broker_status")
+        return _table_payload("broker_status")
 
     @app.get("/api/broker/accounts")
     def broker_accounts() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "broker_accounts")
+        return _table_payload("broker_accounts")
 
     @app.get("/api/broker/positions")
     def broker_positions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "broker_positions")
+        return _table_payload("broker_positions")
 
     @app.get("/api/agent/recommendations")
     def agent_recommendations() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "agent_recommendations")
+        return _table_payload("agent_recommendations")
 
     @app.post("/api/agent/review")
     def run_agent_review(request: Request) -> dict[str, Any]:
@@ -620,28 +553,23 @@ def create_app() -> FastAPI:
 
     @app.get("/api/paper-orders")
     def paper_orders() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "paper_orders")
+        return _table_payload("paper_orders")
 
     @app.get("/api/daily-brief")
     def daily_brief() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "daily_brief")
+        return _table_payload("daily_brief")
 
     @app.get("/api/feed")
     def feed() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "feed_signals")
+        return _table_payload("feed_signals")
 
     @app.get("/api/watchlist-screen")
     def watchlist_screen() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "universe_screen")
+        return _table_payload("universe_screen")
 
     @app.get("/api/watchlist/symbols")
     def watchlist_symbols() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "manual_watchlist")
+        return _table_payload("manual_watchlist")
 
     @app.post("/api/watchlist/symbols")
     def save_watchlist_symbol_endpoint(item: WatchlistSymbolInput, request: Request) -> dict[str, Any]:
@@ -671,38 +599,31 @@ def create_app() -> FastAPI:
 
     @app.get("/api/source-consensus")
     def source_consensus() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_consensus")
+        return _table_payload("source_consensus")
 
     @app.get("/api/ownership-consensus")
     def ownership_consensus() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "ownership_consensus")
+        return _table_payload("ownership_consensus")
 
     @app.get("/api/market-context")
     def market_context() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "market_context")
+        return _table_payload("market_context")
 
     @app.get("/api/portfolio-risk/exposure-clusters")
     def portfolio_risk_exposure_clusters() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "exposure_clusters")
+        return _table_payload("exposure_clusters")
 
     @app.get("/api/portfolio-risk/correlation-edges")
     def portfolio_risk_correlation_edges() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "correlation_edges")
+        return _table_payload("correlation_edges")
 
     @app.get("/api/portfolio-risk/cards")
     def portfolio_risk_cards() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "portfolio_risk_cards")
+        return _table_payload("portfolio_risk_cards")
 
     @app.get("/api/portfolio-risk/review-actions")
     def portfolio_risk_review_actions() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "review_actions")
+        return _table_payload("review_actions")
 
     @app.post("/api/paper-orders")
     def stage_paper_order_endpoint(payload: PaperOrderInput, request: Request) -> dict[str, Any]:
@@ -771,6 +692,11 @@ def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | 
         if cache_key == "full":
             _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
         return value
+
+
+def _table_payload(table_name: str) -> dict[str, Any]:
+    _, panel_data = _context(cache_key=f"table:{table_name}", loader=lambda config: load_table_panel_data(config, table_name))
+    return table_payload(panel_data, table_name)
 
 
 def _invalidate_context_cache() -> None:

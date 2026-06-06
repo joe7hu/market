@@ -13,6 +13,14 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Iterable
 
+from app.panel_contracts import (
+    DECISION_REPAIR_TABLES,
+    SOURCE_REPAIR_TABLES,
+    TICKER_TABLES,
+    panel_contract_payload as contract_panel_payload,
+    tables_for_scope as contract_tables_for_scope,
+)
+
 
 SETUP_INSTRUCTIONS = (
     "No investment panel data is available yet. Configure `config.yaml`, run the "
@@ -56,335 +64,7 @@ CORE_HELPER_CANDIDATES = (
     "get_dashboard_snapshot",
 )
 
-
-PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
-    "feed": ("feed_signals",),
-    "today": (
-        "feed_signals",
-        "decision_queue",
-        "discovered_universe",
-        "quotes",
-        "portfolio",
-        "catalysts",
-        "earnings",
-        "earnings_setups",
-        "analyst_estimates",
-        "fundamentals",
-        "liquidity",
-        "correlations",
-        "technicals",
-        "sepa",
-        "valuations",
-        "options_payoff_scenarios",
-        "options_ticker_signals",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "disclosures",
-        "theses",
-        "thesis_monitor",
-        "research_packets",
-        "agent_thesis",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "ticker_memos",
-        "opportunity_sources",
-        "daily_brief",
-        "exposure_clusters",
-        "correlation_edges",
-        "portfolio_risk_cards",
-        "review_actions",
-    ),
-    "watchlist": (
-        "universe_screen",
-        "manual_watchlist",
-        "discovered_universe",
-        "decision_queue",
-        "quotes",
-        "portfolio",
-        "screener",
-        "technicals",
-        "valuations",
-        "tradingview_watchlists",
-        "options_ticker_signals",
-    ),
-    "sources": (
-        "source_ticker_rankings",
-        "ticker_source_signals",
-        "source_items",
-        "source_consensus",
-        "feed_signals",
-        "opportunity_sources",
-        "theses",
-        "news",
-        "sources",
-    ),
-    "superinvestors": ("ownership_consensus", "disclosures"),
-    "market": ("market_valuation_reference_charts", "market_environment_assets", "market_environment_model"),
-    "dashboard": (
-        "decision_queue",
-        "discovered_universe",
-        "quotes",
-        "screener",
-        "portfolio",
-        "catalysts",
-        "earnings",
-        "earnings_setups",
-        "analyst_estimates",
-        "fundamentals",
-        "etf_premiums",
-        "liquidity",
-        "correlations",
-        "technicals",
-        "sepa",
-        "valuations",
-        "options_expiries",
-        "options_payoff_scenarios",
-        "options_provider_capabilities",
-        "options_expiry_signals",
-        "options_ticker_signals",
-        "option_strategy_versions",
-        "option_snapshot",
-        "option_features",
-        "stock_features",
-        "agent_thesis",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "disclosures",
-        "theses",
-        "thesis_monitor",
-        "research_packets",
-        "tradingview_symbol_search",
-        "tradingview_watchlists",
-        "tradingview_alerts",
-        "tradingview_chart_state",
-        "opportunity_sources",
-        "ticker_source_signals",
-        "exposure_clusters",
-        "correlation_edges",
-        "portfolio_risk_cards",
-        "review_actions",
-    ),
-    "opportunities": (
-        "decision_queue",
-        "opportunities_ranked",
-        "opportunity_sources",
-        "signals",
-        "candidates",
-        "quotes",
-        "catalysts",
-        "earnings",
-        "earnings_setups",
-        "analyst_estimates",
-        "liquidity",
-        "technicals",
-        "sepa",
-        "valuations",
-        "options_expiries",
-        "options_payoff_scenarios",
-        "options_expiry_signals",
-        "options_ticker_signals",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "screener",
-        "tradingview_symbol_search",
-        "tradingview_watchlists",
-        "tradingview_alerts",
-        "tradingview_chart_state",
-        "portfolio",
-        "discovered_universe",
-        "exposure_clusters",
-        "correlation_edges",
-        "portfolio_risk_cards",
-        "review_actions",
-    ),
-    "portfolio": (
-        "portfolio",
-        "decision_queue",
-        "quotes",
-        "liquidity",
-        "correlations",
-        "valuations",
-        "technicals",
-        "sepa",
-        "earnings_setups",
-        "theses",
-        "thesis_monitor",
-        "catalysts",
-        "disclosures",
-        "exposure_clusters",
-        "correlation_edges",
-        "portfolio_risk_cards",
-        "review_actions",
-    ),
-    "research": (
-        "decision_queue",
-        "research_packets",
-        "ticker_memos",
-        "theses",
-        "thesis_monitor",
-        "news",
-        "fundamentals",
-        "signals",
-        "quotes",
-        "earnings",
-        "earnings_setups",
-        "analyst_estimates",
-        "valuations",
-        "options_payoff_scenarios",
-        "options_ticker_signals",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "agent_postmortem_request",
-        "agent_postmortem",
-        "tradingview_alerts",
-        "tradingview_chart_state",
-    ),
-    "options-radar": (
-        "option_strategy_versions",
-        "option_radar_summary",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "agent_thesis",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "agent_postmortem_request",
-        "agent_postmortem",
-        "option_snapshot",
-        "option_features",
-        "stock_features",
-    ),
-    "filings": ("ownership_consensus", "disclosures"),
-    "calendar": ("catalysts", "earnings"),
-    "health": (
-        "source_freshness",
-        "source_health",
-        "provider_runs",
-        "broker_status",
-        "broker_accounts",
-        "broker_positions",
-        "agent_recommendations",
-        "paper_orders",
-    ),
-    "settings": (),
-}
-
-WATCHLIST_SECTION_TABLES = (
-    "universe_screen",
-    "manual_watchlist",
-    "quotes",
-    "fundamentals",
-    "technicals",
-    "valuations",
-    "screener",
-    "decision_queue",
-    "portfolio",
-    "options_ticker_signals",
-)
-
-TICKER_TABLES = (
-    "candidates",
-    "decision_queue",
-    "discovered_universe",
-    "universe_screen",
-    "symbol_decision_snapshot",
-    "symbol_decision_snapshots",
-    "opportunities_ranked",
-    "opportunity_sources",
-    "feed_signals",
-    "source_consensus",
-    "ticker_source_signals",
-    "ownership_consensus",
-    "portfolio",
-    "theses",
-    "thesis_monitor",
-    "catalysts",
-    "signals",
-    "fundamentals",
-    "disclosures",
-    "quotes",
-    "options_expiries",
-    "options_chain",
-    "options_payoff_scenarios",
-    "options_provider_capabilities",
-    "options_expiry_signals",
-    "options_ticker_signals",
-    "news",
-    "tradingview_symbol_search",
-    "tradingview_watchlists",
-    "tradingview_alerts",
-    "tradingview_chart_state",
-    "sepa",
-    "liquidity",
-    "correlations",
-    "etf_premiums",
-    "analyst_estimates",
-    "earnings",
-    "earnings_setups",
-    "valuations",
-    "technicals",
-    "research_packets",
-    "exposure_clusters",
-    "correlation_edges",
-    "portfolio_risk_cards",
-    "review_actions",
-    "ticker_memos",
-)
+CORE_TICKER_HELPER_CANDIDATES = ("load_ticker_dossier_data",)
 
 
 def project_root() -> Path:
@@ -434,7 +114,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     return merged
 
 
-def load_panel_data(config: dict[str, Any] | None = None, table_names: Iterable[str] | None = None) -> PanelData:
+def load_panel_data(
+    config: dict[str, Any] | None = None,
+    table_names: Iterable[str] | None = None,
+    ensure_decision_models: bool | None = None,
+    ensure_source_models: bool | None = None,
+) -> PanelData:
     """Load panel data through future core helpers, if present."""
 
     active_config = config or load_config()
@@ -456,7 +141,12 @@ def load_panel_data(config: dict[str, Any] | None = None, table_names: Iterable[
     try:
         helper_params = signature(helper).parameters
         if "table_names" in helper_params:
-            raw_data = helper(active_config, table_names=tuple(table_names or ()))
+            kwargs: dict[str, Any] = {"table_names": tuple(table_names or ())}
+            if ensure_decision_models is not None and "ensure_decision_models" in helper_params:
+                kwargs["ensure_decision_models"] = ensure_decision_models
+            if ensure_source_models is not None and "ensure_source_models" in helper_params:
+                kwargs["ensure_source_models"] = ensure_source_models
+            raw_data = helper(active_config, **kwargs)
         else:
             raw_data = helper(active_config)
     except TypeError:
@@ -485,27 +175,48 @@ def load_panel_data(config: dict[str, Any] | None = None, table_names: Iterable[
 def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelData:
     """Load the minimum backend read models needed for one app scope."""
 
-    return load_panel_data(config, table_names=tables_for_scope(scope))
+    scope_tables = tables_for_scope(scope)
+    return load_panel_data(
+        config,
+        table_names=scope_tables,
+        ensure_decision_models=bool(set(scope_tables) & DECISION_REPAIR_TABLES),
+        ensure_source_models=bool(set(scope_tables) & SOURCE_REPAIR_TABLES),
+    )
+
+
+def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
+    """Load the minimum backend read model for one table endpoint."""
+
+    return load_panel_data(
+        config,
+        table_names=(table_name,),
+        ensure_decision_models=table_name in DECISION_REPAIR_TABLES,
+        ensure_source_models=table_name in SOURCE_REPAIR_TABLES,
+    )
 
 
 def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelData:
     """Load only ticker dossier read models before symbol filtering."""
 
-    return load_panel_data(config, table_names=TICKER_TABLES)
+    normalized = ticker.strip().upper()
+    if not normalized:
+        return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
+    helper = _resolve_core_ticker_helper()
+    if helper is not None:
+        try:
+            raw_data = helper(config or load_config(), normalized)
+            return _normalize_panel_data(raw_data)
+        except Exception:
+            pass
+    return _filter_ticker_panel_data(load_panel_data(config, table_names=TICKER_TABLES), normalized)
 
 
 def tables_for_scope(scope: str) -> tuple[str, ...]:
-    if scope in {"watchlist-watched", "watchlist-unwatched"}:
-        return WATCHLIST_SECTION_TABLES
-    return PANEL_SCOPE_TABLES.get(scope, PANEL_SCOPE_TABLES["dashboard"])
+    return contract_tables_for_scope(scope)
 
 
 def panel_contract_payload() -> dict[str, Any]:
-    return {
-        "scopes": {scope: list(tables) for scope, tables in PANEL_SCOPE_TABLES.items()},
-        "watchlist_section_tables": list(WATCHLIST_SECTION_TABLES),
-        "ticker_tables": list(TICKER_TABLES),
-    }
+    return contract_panel_payload()
 
 
 def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
@@ -813,6 +524,22 @@ def _resolve_core_helper() -> Callable[..., Any] | None:
         except ModuleNotFoundError:
             continue
         for helper_name in CORE_HELPER_CANDIDATES:
+            helper = getattr(module, helper_name, None)
+            if callable(helper):
+                return helper
+    return None
+
+
+def _resolve_core_ticker_helper() -> Callable[..., Any] | None:
+    src_path = project_root() / "src"
+    if src_path.exists() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+    for module_name in CORE_MODULE_CANDIDATES:
+        try:
+            module = import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for helper_name in CORE_TICKER_HELPER_CANDIDATES:
             helper = getattr(module, helper_name, None)
             if callable(helper):
                 return helper
@@ -1246,6 +973,24 @@ def _rows_for_symbols(rows: list[dict[str, Any]], symbols: set[str]) -> list[dic
     if not symbols:
         return []
     return [row for row in rows if _row_symbols(row) & symbols]
+
+
+def _filter_ticker_panel_data(panel_data: PanelData, ticker: str) -> PanelData:
+    normalized = ticker.upper()
+    filtered_tables: dict[str, Any] = {}
+    for table_name in TICKER_TABLES:
+        rows = panel_data.rows(table_name)
+        if table_name == "options_provider_capabilities":
+            filtered_tables[table_name] = rows
+        elif table_name == "correlation_edges":
+            filtered_tables[table_name] = [
+                row
+                for row in rows
+                if normalized in {str(row.get("symbol") or "").upper(), str(row.get("peer_symbol") or "").upper()}
+            ]
+        else:
+            filtered_tables[table_name] = _matching_ticker_rows(rows, normalized)
+    return PanelData(status=panel_data.status, tables=filtered_tables, metadata=panel_data.metadata)
 
 
 def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:

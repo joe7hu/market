@@ -6,6 +6,9 @@ from investment_panel.core.options_intelligence import clear_options_intelligenc
 from investment_panel.core.panel import load_panel_data
 
 
+REFERENCE_DATE = "2026-06-02"
+
+
 def test_tradingview_options_intelligence_uses_available_chain_fields(tmp_path) -> None:
     db_path = tmp_path / "options.duckdb"
     init_db(db_path)
@@ -29,7 +32,7 @@ def test_tradingview_options_intelligence_uses_available_chain_fields(tmp_path) 
             ],
         )
 
-        counts = refresh_options_intelligence(con, ["TSLA"])
+        counts = refresh_options_intelligence(con, ["TSLA"], reference_date=REFERENCE_DATE)
         expiry = query_rows(con, "SELECT * FROM options_expiry_signals WHERE symbol = 'TSLA'")[0]
         ticker = query_rows(con, "SELECT * FROM options_ticker_signals WHERE symbol = 'TSLA'")[0]
         capability = query_rows(con, "SELECT * FROM options_provider_capabilities WHERE provider = 'tradingview'")[0]
@@ -62,7 +65,7 @@ def test_options_signal_tables_load_through_panel_contract(tmp_path) -> None:
                 option_row("2026-06-05", 200, "call", 5.8, 6.2, 0.43, 0.5, "OPRA:NVDA260605C200.0"),
             ],
         )
-        refresh_options_intelligence(con, ["NVDA"])
+        refresh_options_intelligence(con, ["NVDA"], reference_date=REFERENCE_DATE)
 
     panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
     assert panel["tables"]["options_provider_capabilities"][0]["supports_open_interest"] is False
@@ -87,9 +90,9 @@ def test_targeted_refresh_without_chain_rows_preserves_other_symbols(tmp_path) -
                 option_row("2026-06-05", 100, "call", 4.9, 5.1, 0.34, 0.52, "OPRA:TSLA260605C100.0"),
             ],
         )
-        refresh_options_intelligence(con, ["TSLA"])
+        refresh_options_intelligence(con, ["TSLA"], reference_date=REFERENCE_DATE)
 
-        counts = refresh_options_intelligence(con, ["NOCHAIN"])
+        counts = refresh_options_intelligence(con, ["NOCHAIN"], reference_date=REFERENCE_DATE)
         remaining = query_rows(con, "SELECT symbol FROM options_ticker_signals")
 
     assert counts == {"expiry_signals": 0, "ticker_signals": 0}
@@ -113,7 +116,7 @@ def test_exchange_qualified_symbols_are_normalized_for_quote_join(tmp_path) -> N
                 option_row("2026-06-05", 200, "call", 5.8, 6.2, 0.43, 0.5, "OPRA:NVDA260605C200.0"),
             ],
         )
-        refresh_options_intelligence(con, ["NASDAQ:NVDA"])
+        refresh_options_intelligence(con, ["NASDAQ:NVDA"], reference_date=REFERENCE_DATE)
         chain_symbols = query_rows(con, "SELECT DISTINCT symbol FROM options_chain")
         signal = query_rows(con, "SELECT symbol, expected_move_pct FROM options_ticker_signals")[0]
 
@@ -180,7 +183,7 @@ def test_clear_options_intelligence_removes_only_target_symbol(tmp_path) -> None
                     option_row("2026-06-05", 100, "call", 4.9, 5.1, 0.34, 0.52, f"OPRA:{symbol}260605C100.0"),
                 ],
             )
-        refresh_options_intelligence(con, ["TSLA", "NVDA"])
+        refresh_options_intelligence(con, ["TSLA", "NVDA"], reference_date=REFERENCE_DATE)
 
         clear_options_intelligence(con, ["NASDAQ:TSLA"])
         remaining = query_rows(con, "SELECT symbol FROM options_ticker_signals ORDER BY symbol")

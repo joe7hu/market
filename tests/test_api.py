@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
-from app.data_access import ticker_decision_brief
+from app.data_access import DataStatus, PanelData, ticker_decision_brief
 import app.main as app_main
 from app.main import app, _require_local_request
 from tests.test_option_agent_postmortem import seed_missed_winner
@@ -177,6 +177,28 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
         "option_features",
         "stock_features",
     }
+
+
+def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "scoped-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    calls: list[str] = []
+
+    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
+        calls.append(table_name)
+        return PanelData(
+            status=DataStatus(True, "loaded scoped table", "test"),
+            tables={table_name: [{"id": "feed-1", "title": "Scoped feed"}]},
+        )
+
+    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
+
+    client = TestClient(app)
+    response = client.get("/api/feed")
+
+    assert response.status_code == 200
+    assert calls == ["feed_signals"]
+    assert response.json()["rows"] == [{"id": "feed-1", "title": "Scoped feed"}]
 
 
 def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:

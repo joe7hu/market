@@ -7,6 +7,8 @@ from investment_panel.core.db import db, init_db
 from investment_panel.core.panel import (
     disclosures,
     feed_signals,
+    load_panel_data,
+    load_ticker_dossier_data,
     liquidity,
     market_environment_assets,
     market_environment_model,
@@ -22,6 +24,7 @@ from investment_panel.core.panel import (
     universe_screen,
     valuations,
 )
+from investment_panel.core.source_ingestion.read_models import source_detail_payload
 from investment_panel.analysis.market_environment import parse_fred_ten_year_yield_csv, parse_fullstack_market_model_csv, parse_history_of_market_forward_pe_json, parse_multpl_valuation_table
 
 
@@ -690,6 +693,158 @@ def test_source_ticker_rankings_group_raw_signal_evidence(tmp_path) -> None:
     assert rows[0]["latest_source"] == "Birdclaw primary X/Twitter"
     assert rows[0]["latest_title"] == "NVDA follow-up source item"
     assert rows[1]["symbol"] == "MSFT"
+
+
+def test_source_detail_filters_signals_at_read_model_boundary(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for source_id, source_name in [("source-a", "Source A"), ("source-b", "Source B")]:
+            con.execute(
+                "INSERT INTO source_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    source_id,
+                    source_name,
+                    "private_graph",
+                    "tweet",
+                    "market",
+                    True,
+                    "mounted_raw",
+                    "private",
+                    None,
+                    None,
+                    "{}",
+                    "2026-06-06T00:00:00Z",
+                    "2026-06-06T00:00:00Z",
+                ],
+            )
+            con.execute(
+                "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    f"{source_id}-item",
+                    source_id,
+                    "run-1",
+                    "tweet",
+                    f"{source_name} item",
+                    f"https://example.com/{source_id}",
+                    "tester",
+                    "2026-06-06T03:00:00Z",
+                    "2026-06-06T03:00:00Z",
+                    f"{source_name} item",
+                    "[]",
+                    "[]",
+                    "{}",
+                    f"{source_id}-item",
+                    "private",
+                ],
+            )
+            con.execute(
+                "INSERT INTO ticker_source_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    f"{source_id}-signal",
+                    f"{source_id}-item",
+                    source_id,
+                    "NVDA",
+                    "2026-06-06T03:00:00Z",
+                    "tweet",
+                    "bullish",
+                    "unknown",
+                    0.5,
+                    f"{source_name} signal.",
+                    "No structured antithesis.",
+                    "[]",
+                    "[]",
+                    "Watch for follow-through.",
+                    "[]",
+                    True,
+                    "{}",
+                ],
+            )
+
+        payload = source_detail_payload(con, "source-a")
+
+    assert payload["source"]["source_id"] == "source-a"
+    assert [row["source_id"] for row in payload["signals"]] == ["source-a"]
+
+
+def test_scoped_panel_load_reports_read_only_decision_readiness(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    result = load_panel_data({"database": {"duckdb_path": str(db_path)}}, table_names=("source_health",))
+
+    assert result["metadata"]["decision_refresh"]["status"] == "read_only_not_required"
+    assert result["tables"] == {"source_health": []}
+
+
+def test_ticker_dossier_loader_filters_source_signals_to_symbol(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO source_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "source-a",
+                "Source A",
+                "private_graph",
+                "tweet",
+                "market",
+                True,
+                "mounted_raw",
+                "private",
+                None,
+                None,
+                "{}",
+                "2026-06-06T00:00:00Z",
+                "2026-06-06T00:00:00Z",
+            ],
+        )
+        for symbol in ["NVDA", "MSFT"]:
+            con.execute(
+                "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    f"item-{symbol}",
+                    "source-a",
+                    "run-1",
+                    "tweet",
+                    f"{symbol} item",
+                    f"https://example.com/{symbol}",
+                    "tester",
+                    "2026-06-06T03:00:00Z",
+                    "2026-06-06T03:00:00Z",
+                    f"{symbol} item",
+                    json.dumps([symbol]),
+                    "[]",
+                    "{}",
+                    f"item-{symbol}",
+                    "private",
+                ],
+            )
+            con.execute(
+                "INSERT INTO ticker_source_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    f"signal-{symbol}",
+                    f"item-{symbol}",
+                    "source-a",
+                    symbol,
+                    "2026-06-06T03:00:00Z",
+                    "tweet",
+                    "bullish",
+                    "unknown",
+                    0.5,
+                    f"{symbol} signal.",
+                    "No structured antithesis.",
+                    "[]",
+                    "[]",
+                    "Watch for follow-through.",
+                    "[]",
+                    True,
+                    "{}",
+                ],
+            )
+
+    result = load_ticker_dossier_data({"database": {"duckdb_path": str(db_path)}}, "NVDA", ensure_decision_models=False)
+
+    assert [row["symbol"] for row in result["tables"]["ticker_source_signals"]] == ["NVDA"]
+    assert result["metadata"]["decision_refresh"]["status"] == "read_only_missing"
 
 
 def test_feed_signals_include_source_items_with_required_decision_fields(tmp_path) -> None:

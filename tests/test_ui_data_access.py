@@ -167,6 +167,32 @@ def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:
     assert panel_data.rows("source_freshness") == []
 
 
+def test_source_table_loader_requests_source_repair_without_decision_repair(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], ensure_decision_models: bool, ensure_source_models: bool) -> dict[str, object]:
+        calls.append(
+            {
+                "table_names": table_names,
+                "ensure_decision_models": ensure_decision_models,
+                "ensure_source_models": ensure_source_models,
+            }
+        )
+        return {"ready": True, "message": "ok", "source": "test", "tables": {"source_items": []}, "metadata": {}}
+
+    monkeypatch.setattr(data_access, "_resolve_core_helper", lambda: fake_helper)
+
+    data_access.load_table_panel_data({"database": {"duckdb_path": "/tmp/test.duckdb"}}, "source_items")
+
+    assert calls == [
+        {
+            "table_names": ("source_items",),
+            "ensure_decision_models": False,
+            "ensure_source_models": True,
+        }
+    ]
+
+
 def test_scoped_panel_status_is_ready_when_requested_table_has_rows(tmp_path) -> None:
     db_path = tmp_path / "scoped-ready.duckdb"
     config = {"database": {"duckdb_path": str(db_path)}}
@@ -195,8 +221,11 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
 
     assert contract["scopes"]["feed"] == ["feed_signals"]
     assert "source_freshness" not in contract["scopes"]["watchlist"]
+    assert "broker_positions" in contract["scopes"]["health"]
     assert "universe_screen" in contract["watchlist_section_tables"]
     assert "decision_queue" in contract["ticker_tables"]
+    assert contract["endpoint_tables"]["feed"] == "feed_signals"
+    assert contract["endpoint_tables"]["watchlist/symbols"] == "manual_watchlist"
 
 
 def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
