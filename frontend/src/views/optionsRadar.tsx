@@ -1,15 +1,18 @@
-import { Activity, AlertTriangle, BrainCircuit, CheckCircle2, GitBranchPlus, Loader2, Target, TrendingUp } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { promoteStrategyMutation } from "@/api";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type { PanelData, RowRecord, TablePayload } from "@/types";
+import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
-import { WorkspacePage, type MetricSpec, type OpenTicker } from "./workspacePage";
+import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
   data: PanelData;
@@ -25,10 +28,21 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const proposals = rows(data.strategyMutationProposal);
   const backtests = rows(data.strategyBacktestResult);
   const forwardTests = rows(data.strategyForwardTestResult);
+  const thesisRequests = rows(data.agentThesisRequest);
   const thesisValidations = rows(data.agentThesisValidation);
+  const postmortemRequests = rows(data.agentPostmortemRequest);
   const postmortems = rows(data.agentPostmortem);
   const agentTheses = rows(data.agentThesis);
+  const candidateMarks = rows(data.candidateEventMark);
+  const candidateAttributions = rows(data.candidateEventAttribution);
+  const shadowTrades = rows(data.shadowTrade);
+  const shadowTradeMarks = rows(data.shadowTradeMark);
+  const radarStateTransitions = rows(data.radarStateTransition);
+  const optionAttributions = rows(data.optionAttribution);
+  const cohortResults = rows(data.strategyCohortResult);
   const optionSnapshots = rows(data.optionSnapshot);
+  const optionFeatures = rows(data.optionFeatures);
+  const stockFeatures = rows(data.stockFeatures);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
@@ -42,6 +56,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
   const latestForwardByProposal = useMemo(() => latestBy(forwardTests, "proposal_id", "evaluated_at"), [forwardTests]);
+  const eventById = useMemo(() => mapBy(candidates, "event_id"), [candidates]);
+  const latestCandidateAttributionByEvent = useMemo(() => latestBy(candidateAttributions, "event_id", "snapshot_time"), [candidateAttributions]);
+  const latestOptionAttributionByEvent = useMemo(() => latestBy(optionAttributions, "event_id", "snapshot_time"), [optionAttributions]);
+  const latestAttributionByEvent = useMemo(() => mergeRowMaps(latestCandidateAttributionByEvent, latestOptionAttributionByEvent), [latestCandidateAttributionByEvent, latestOptionAttributionByEvent]);
+  const thesisRequestByEvent = useMemo(() => mapBy(thesisRequests, "event_id"), [thesisRequests]);
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
@@ -49,14 +68,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const fireCount = numberField(radarSummary, ["fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "FIRE"));
   const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
   const watchCount = numberField(radarSummary, ["watch_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "WATCH"));
-
-  const metrics: MetricSpec[] = [
-    ["Opportunities", opportunityCount.toLocaleString(), `${opportunityTickerCount.toLocaleString()} tickers with FIRE, SETUP, or WATCH`, opportunityCount ? "good" : "muted"],
-    ["Fire", fireCount.toLocaleString(), "ready now", fireCount ? "good" : "muted"],
-    ["Setup", setupCount.toLocaleString(), "close, but not ready", setupCount ? "warn" : "muted"],
-    ["Watch", watchCount.toLocaleString(), "worth tracking", watchCount ? "info" : "muted"],
-    ["Scanned", scannedTickerCount.toLocaleString(), "tickers with option snapshots", scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
-  ];
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"], latestDate(optionSnapshots, "snapshot_time"));
   const latestStrategy = strategyVersions[0];
@@ -80,7 +91,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       eyebrow="Options Radar"
       title="10x Options Radar"
       subtitle="Daily candidate state, shadow outcomes, thesis validation, and strategy gate results."
-      metrics={metrics}
       actions={
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge tone={latestSnapshot ? "good" : "muted"}>{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
@@ -88,6 +98,16 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </div>
       }
     >
+      <RadarSummaryStrip
+        opportunityCount={opportunityCount}
+        opportunityTickerCount={opportunityTickerCount}
+        scannedTickerCount={scannedTickerCount}
+        fireCount={fireCount}
+        setupCount={setupCount}
+        watchCount={watchCount}
+        thesisRequestCount={thesisRequests.length}
+      />
+      <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
         <TabsList className="h-auto max-w-full flex-wrap justify-start">
           <TabsTrigger value="radar">Opportunities</TabsTrigger>
@@ -96,11 +116,18 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsList>
 
         <TabsContent value="radar" className="space-y-4">
-          <CandidateEventsTable rows={opportunityCandidates} onOpenTicker={onOpenTicker} />
+          <CandidateEventsTable rows={opportunityCandidates} thesisRequestByEvent={thesisRequestByEvent} onOpenTicker={onOpenTicker} />
         </TabsContent>
 
         <TabsContent value="learning" className="space-y-4">
+          <CohortResultsTable rows={cohortResults} />
+          <CandidateEventMarksTable rows={candidateMarks} onOpenTicker={onOpenTicker} />
+          <CandidateEventAttributionsTable rows={candidateAttributions} onOpenTicker={onOpenTicker} />
+          <RadarStateTransitionsTable rows={radarStateTransitions} onOpenTicker={onOpenTicker} />
+          <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
+          <ShadowTradeMarksTable rows={shadowTradeMarks} onOpenTicker={onOpenTicker} />
           <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} />
+          <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} />
           <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} />
           <StrategyProposalsTable
             rows={proposals}
@@ -113,43 +140,232 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsContent>
 
         <TabsContent value="theses" className="space-y-4">
+          <ThesisRequestsTable rows={thesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} />
           <AgentThesisTable rows={agentTheses} onOpenTicker={onOpenTicker} />
           <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} />
+          <DataSamples optionSnapshots={optionSnapshots} optionFeatures={optionFeatures} stockFeatures={stockFeatures} strategyVersions={strategyVersions} onOpenTicker={onOpenTicker} />
         </TabsContent>
       </Tabs>
     </WorkspacePage>
   );
 }
 
-function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
+function RadarSummaryStrip({
+  opportunityCount,
+  opportunityTickerCount,
+  scannedTickerCount,
+  fireCount,
+  setupCount,
+  watchCount,
+  thesisRequestCount,
+}: {
+  opportunityCount: number;
+  opportunityTickerCount: number;
+  scannedTickerCount: number;
+  fireCount: number;
+  setupCount: number;
+  watchCount: number;
+  thesisRequestCount: number;
+}) {
+  const items: Array<[string, string, Tone]> = [
+    ["Opportunities", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
+    ["Fire", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
+    ["Setup", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
+    ["Watch", watchCount.toLocaleString(), watchCount ? "info" : "muted"],
+    ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
+    ["Thesis queue", thesisRequestCount.toLocaleString(), thesisRequestCount ? "warn" : "muted"],
+  ];
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+      {items.map(([label, value, tone]) => (
+        <div key={label} className="rounded-md border border-border bg-card px-3 py-2">
+          <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+          <div className={cn("mt-1 text-sm font-semibold tabular-nums", toneText(tone))}>{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
+  const params = recordField(strategy, "parameters");
+  const strategyName = displayField(strategy, ["strategy_name"], "LEAP 10x reversal");
+  const version = displayField(strategy, ["strategy_version"], "No strategy loaded");
+  const status = textField(strategy, ["status"], "shadow");
+  const rules = [
+    ["Contract", `${titleLabel(stringFromRecord(params, "option_type", "call"))} options`],
+    ["Delta", `${formatNumber(numberFromRecord(params, "delta_min"), 2)}-${formatNumber(numberFromRecord(params, "delta_max"), 2)}`],
+    ["DTE", `${formatNumber(numberFromRecord(params, "dte_min"), 0)}-${formatNumber(numberFromRecord(params, "dte_max"), 0)} days`],
+    ["Spread", `Fire <= ${formatRatio(numberFromRecord(params, "max_spread_pct"))}; reject > ${formatRatio(numberFromRecord(params, "reject_spread_pct"))}`],
+    ["Liquidity", `OI >= ${formatNumber(numberFromRecord(params, "min_open_interest"), 0)}; volume >= ${formatNumber(numberFromRecord(params, "min_volume"), 0)}`],
+    ["IV", `Fire <= ${formatNumber(numberFromRecord(params, "max_iv_percentile"), 0)} pctile; reject > ${formatNumber(numberFromRecord(params, "reject_iv_percentile"), 0)}`],
+    ["Trend", `${boolFromRecord(params, "require_price_above_ma50") ? "Above 50D" : "50D optional"}; ${boolFromRecord(params, "require_rs_improving") ? "RS vs QQQ improving" : "RS optional"}`],
+    ["10x cap", `Underlying move <= ${formatRatio(numberFromRecord(params, "max_required_move_pct"))}`],
+  ];
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-base font-semibold">{strategyName}</h2>
+            <StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge>
+            <StatusBadge tone="info">{version}</StatusBadge>
+          </div>
+          <p className="mt-2 max-w-5xl text-sm leading-6 text-muted-foreground">
+            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. Agents can propose variants from missed-winner and postmortem evidence, but promotion requires deterministic backtest, forward shadow test, and human approval.
+          </p>
+        </div>
+        <div className="shrink-0 text-xs text-muted-foreground">
+          {displayField(strategy, ["notes"], "Strategy metadata is stored with the radar snapshot.")}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {rules.map(([label, value]) => (
+          <div key={label} className="rounded-md border border-border/70 bg-background px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+            <div className="mt-1 text-sm font-medium">{value}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+type CandidateSort = "score-desc" | "ticker-asc" | "move-asc" | "premium-asc" | "expiry-asc" | "state";
+type CandidateStateFilter = "all" | "FIRE" | "SETUP" | "WATCH";
+type ThesisFilter = "all" | "needs" | "requested" | "attached";
+type QualityFilter = "all" | "ok" | "caution" | "bad";
+
+const CANDIDATE_PAGE_SIZE = 50;
+
+function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { rows: RowRecord[]; thesisRequestByEvent: Map<string, RowRecord>; onOpenTicker: OpenTicker }) {
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
+  const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
+  const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
+  const [sort, setSort] = useState<CandidateSort>("score-desc");
+  const [page, setPage] = useState(0);
+
+  const filteredRows = useMemo(() => {
+    const normalizedQuery = query.trim().toUpperCase();
+    return rows
+      .filter((row) => {
+        if (stateFilter !== "all" && stateOf(row) !== stateFilter) return false;
+        if (qualityFilter !== "all" && qualityOf(row) !== qualityFilter) return false;
+        if (thesisFilter !== "all" && thesisState(row, thesisRequestByEvent).kind !== thesisFilter) return false;
+        if (!normalizedQuery) return true;
+        const haystack = [
+          textField(row, ["ticker"]),
+          textField(row, ["contract_id"]),
+          textField(row, ["strategy_version"]),
+          readableReasonSummary(row),
+        ].join(" ").toUpperCase();
+        return haystack.includes(normalizedQuery);
+      })
+      .sort((left, right) => compareCandidates(left, right, sort));
+  }, [query, qualityFilter, rows, sort, stateFilter, thesisFilter, thesisRequestByEvent]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [query, qualityFilter, sort, stateFilter, thesisFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / CANDIDATE_PAGE_SIZE));
+  const boundedPage = Math.min(page, pageCount - 1);
+  const visibleRows = filteredRows.slice(boundedPage * CANDIDATE_PAGE_SIZE, (boundedPage + 1) * CANDIDATE_PAGE_SIZE);
+  const tickerCount = uniqueText(filteredRows, "ticker").length;
+
   if (!rows.length) {
     return <EmptyState title="No candidate events" detail="No options radar candidates are stored yet." icon={Target} />;
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title="Candidate Events" count={rows.length} />}>
+    <DataTableFrame
+      title={<SectionTitle title="Candidate Events" count={filteredRows.length} />}
+      action={
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{tickerCount.toLocaleString()} tickers</span>
+          <span>{rows.length.toLocaleString()} loaded</span>
+        </div>
+      }
+    >
+      <div className="border-b border-border p-3">
+        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_150px_160px_160px_190px_auto]">
+          <div className="relative min-w-0">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker, contract, or reason" aria-label="Filter candidate events" />
+          </div>
+          <Select value={stateFilter} onValueChange={(value) => setStateFilter(value as CandidateStateFilter)}>
+            <SelectTrigger aria-label="State filter"><SelectValue placeholder="State" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All states</SelectItem>
+              <SelectItem value="FIRE">Fire</SelectItem>
+              <SelectItem value="SETUP">Setup</SelectItem>
+              <SelectItem value="WATCH">Watch</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={thesisFilter} onValueChange={(value) => setThesisFilter(value as ThesisFilter)}>
+            <SelectTrigger aria-label="Thesis filter"><SelectValue placeholder="Thesis" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any thesis</SelectItem>
+              <SelectItem value="needs">Needs thesis</SelectItem>
+              <SelectItem value="requested">Thesis requested</SelectItem>
+              <SelectItem value="attached">Thesis attached</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={qualityFilter} onValueChange={(value) => setQualityFilter(value as QualityFilter)}>
+            <SelectTrigger aria-label="Quality filter"><SelectValue placeholder="Quality" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any quality</SelectItem>
+              <SelectItem value="ok">Provider OK</SelectItem>
+              <SelectItem value="caution">Caution</SelectItem>
+              <SelectItem value="bad">Bad data</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sort} onValueChange={(value) => setSort(value as CandidateSort)}>
+            <SelectTrigger aria-label="Sort candidates"><SelectValue placeholder="Sort" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="score-desc">Score high to low</SelectItem>
+              <SelectItem value="move-asc">Required move low to high</SelectItem>
+              <SelectItem value="premium-asc">Option mid low to high</SelectItem>
+              <SelectItem value="expiry-asc">Expiration soonest</SelectItem>
+              <SelectItem value="state">State then score</SelectItem>
+              <SelectItem value="ticker-asc">Ticker A to Z</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button type="button" variant="outline" size="sm" className="h-9" onClick={() => {
+            setQuery("");
+            setStateFilter("all");
+            setThesisFilter("all");
+            setQualityFilter("all");
+            setSort("score-desc");
+          }}>
+            <ArrowDownUp className="size-4" />
+            <span>Reset</span>
+          </Button>
+        </div>
+      </div>
       <table className="w-full min-w-[1180px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>State</Head>
             <Head>Contract</Head>
-            <Head>Strategy</Head>
-            <Head className="text-right">Premium</Head>
-            <Head className="text-right">Buy Under</Head>
-            <Head className="text-right">10x Price</Head>
-            <Head className="text-right">Move</Head>
+            <Head className="text-right"><HelpLabel label="Option Mid" detail="Current option midpoint from the stored chain snapshot. Est fill adds the strategy slippage assumption used by shadow entries." /></Head>
+            <Head className="text-right"><HelpLabel label="Max Premium" detail="Maximum option premium allowed before the strategy's required underlying move exceeds its cap. It is not a stock buy price." /></Head>
+            <Head className="text-right"><HelpLabel label="Underlying For 10x" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs." /></Head>
+            <Head className="text-right">Stock Move</Head>
             <Head className="text-right">Score</Head>
             <Head>Thesis</Head>
-            <Head>Trigger</Head>
+            <Head>Why / Blockers</Head>
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 80).map((row) => {
+          {visibleRows.map((row) => {
             const ticker = textField(row, ["ticker"]);
             const state = stateOf(row);
             const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
             const qualityFlags = listField(row, ["quality_flags"]);
+            const thesis = thesisState(row, thesisRequestByEvent);
             return (
               <tr
                 key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)}
@@ -167,19 +383,38 @@ function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpe
                   </div>
                 </Cell>
                 <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["premium_mid"])}</Cell>
+                <Cell className="text-right tabular-nums">
+                  <div>{moneyField(row, ["premium_mid"])}</div>
+                  <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
+                </Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["buy_under"])}</Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["required_10x_price"])}</Cell>
+                <Cell className="text-right tabular-nums">
+                  <div>{moneyField(row, ["required_10x_price"])}</div>
+                  <FillTarget row={row} />
+                </Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
-                <Cell>{textField(row, ["thesis_id"]) ? <StatusBadge tone="good">Attached</StatusBadge> : <StatusBadge tone="muted">Open</StatusBadge>}</Cell>
-                <Cell className="max-w-[340px]"><Truncated>{displayField(row, ["trigger_reason"])}</Truncated></Cell>
+                <Cell><StatusBadge tone={thesis.tone}>{thesis.label}</StatusBadge></Cell>
+                <Cell className="max-w-[430px]"><ReasonChips row={row} /></Cell>
               </tr>
             );
           })}
         </tbody>
       </table>
+      <div className="flex flex-col gap-2 border-t border-border p-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          Showing {filteredRows.length ? (boundedPage * CANDIDATE_PAGE_SIZE + 1).toLocaleString() : "0"}-{Math.min((boundedPage + 1) * CANDIDATE_PAGE_SIZE, filteredRows.length).toLocaleString()} of {filteredRows.length.toLocaleString()}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={boundedPage === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} aria-label="Previous candidate page">
+            <ChevronLeft className="size-4" />
+          </Button>
+          <span className="min-w-24 text-center tabular-nums">Page {boundedPage + 1} / {pageCount}</span>
+          <Button type="button" variant="outline" size="sm" disabled={boundedPage >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))} aria-label="Next candidate page">
+            <ChevronRight className="size-4" />
+          </Button>
+        </div>
+      </div>
     </DataTableFrame>
   );
 }
@@ -197,6 +432,55 @@ function QualityIndicator({ status, flags }: { status: string; flags: string[] }
       aria-label={title}
     >
       <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+    </span>
+  );
+}
+
+function HelpLabel({ label, detail }: { label: string; detail: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex cursor-help items-center justify-end gap-1 underline decoration-dotted underline-offset-4">{label}</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-80 text-xs leading-5">{detail}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function FillTarget({ row }: { row: RowRecord }) {
+  const strike = numberFromRecord(recordField(row, "raw"), "strike");
+  const fill = numberField(row, ["premium_fill_assumption"], Number.NaN);
+  const midTarget = numberField(row, ["required_10x_price"], Number.NaN);
+  if (!Number.isFinite(strike) || !Number.isFinite(fill)) return null;
+  const fillTarget = strike + fill * 10;
+  if (!Number.isFinite(fillTarget) || Math.abs(fillTarget - midTarget) < 0.01) return null;
+  return <div className="text-xs text-muted-foreground">fill {formatMoney(fillTarget)}</div>;
+}
+
+function ReasonChips({ row }: { row: RowRecord }) {
+  const raw = recordField(row, "raw");
+  const hardRejects = listFromRecord(raw, "hard_rejects");
+  const blockers = listFromRecord(raw, "blockers");
+  const positives = listFromRecord(raw, "positives");
+  const negativeReasons = [...hardRejects, ...blockers];
+  const visibleReasons = negativeReasons.length ? negativeReasons.slice(0, 3) : positives.slice(0, 3);
+  const extraCount = (negativeReasons.length ? negativeReasons.length : positives.length) - visibleReasons.length;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {visibleReasons.length ? visibleReasons.map((reason) => (
+        <ReasonChip key={reason} reason={reason} tone={negativeReasons.includes(reason) ? "warn" : "good"} />
+      )) : <StatusBadge tone="good">Core gates passed</StatusBadge>}
+      {extraCount > 0 ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">+{extraCount}</span> : null}
+    </div>
+  );
+}
+
+function ReasonChip({ reason, tone }: { reason: string; tone: Tone }) {
+  return (
+    <span className={cn("rounded-md border px-2 py-0.5 text-xs font-medium", tone === "good" ? "border-green-500/30 bg-green-50/30 text-foreground" : "border-amber-500/30 bg-amber-50/40 text-foreground")} title={reason}>
+      {reasonLabel(reason)}
     </span>
   );
 }
@@ -1128,6 +1412,51 @@ function stateOf(row: RowRecord | undefined): string {
   return textField(row, ["state"]).toUpperCase();
 }
 
+function qualityOf(row: RowRecord | undefined): QualityFilter {
+  const quality = textField(row, ["quality_status"], "ok").toLowerCase();
+  if (quality === "bad" || quality === "caution" || quality === "ok") return quality;
+  return "ok";
+}
+
+function thesisState(row: RowRecord, requestByEvent: Map<string, RowRecord>): { kind: ThesisFilter; label: string; tone: Tone } {
+  if (textField(row, ["thesis_id"])) return { kind: "attached", label: "Attached", tone: "good" };
+  const request = requestByEvent.get(textField(row, ["event_id"]));
+  if (request) {
+    const status = textField(request, ["status"], "requested");
+    return { kind: "requested", label: status.toLowerCase() === "open" ? "Requested" : titleLabel(status), tone: toneFromText(status) };
+  }
+  return { kind: "needs", label: "Needs thesis", tone: "warn" };
+}
+
+function compareCandidates(left: RowRecord, right: RowRecord, sort: CandidateSort): number {
+  if (sort === "ticker-asc") return compareText(textField(left, ["ticker"]), textField(right, ["ticker"])) || compareScore(left, right);
+  if (sort === "move-asc") return compareNumber(numberField(left, ["required_move_pct"], Number.POSITIVE_INFINITY), numberField(right, ["required_move_pct"], Number.POSITIVE_INFINITY)) || compareScore(left, right);
+  if (sort === "premium-asc") return compareNumber(numberField(left, ["premium_mid"], Number.POSITIVE_INFINITY), numberField(right, ["premium_mid"], Number.POSITIVE_INFINITY)) || compareScore(left, right);
+  if (sort === "expiry-asc") return compareText(stringFromRecord(recordField(left, "raw"), "expiration"), stringFromRecord(recordField(right, "raw"), "expiration")) || compareScore(left, right);
+  if (sort === "state") return stateRank(stateOf(left)) - stateRank(stateOf(right)) || compareScore(left, right);
+  return compareScore(left, right);
+}
+
+function compareScore(left: RowRecord, right: RowRecord): number {
+  return compareNumber(numberField(right, ["score"], Number.NEGATIVE_INFINITY), numberField(left, ["score"], Number.NEGATIVE_INFINITY));
+}
+
+function compareNumber(left: number, right: number): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function compareText(left: string, right: string): number {
+  return left.localeCompare(right);
+}
+
+function stateRank(state: string): number {
+  if (state === "FIRE") return 0;
+  if (state === "SETUP") return 1;
+  if (state === "WATCH") return 2;
+  return 3;
+}
+
 function stateTone(state: string): Tone {
   const normalized = state.toUpperCase();
   if (normalized === "FIRE" || normalized === "HOLD") return "good";
@@ -1169,6 +1498,91 @@ function verdictTone(value: string): Tone {
   return toneFromText(normalized);
 }
 
+function toneText(tone: Tone): string {
+  if (tone === "good") return "text-green-700 dark:text-green-300";
+  if (tone === "warn") return "text-amber-700 dark:text-amber-300";
+  if (tone === "bad") return "text-destructive";
+  if (tone === "info") return "text-blue-700 dark:text-blue-300";
+  return "text-foreground";
+}
+
+const reasonLabels: Record<string, string> = {
+  "10x_math_inside_cap": "10x target inside cap",
+  delta_in_range: "Delta in range",
+  delta_outside_strategy_range: "Delta outside range",
+  dte_outside_strategy_range: "DTE outside range",
+  iv_not_overpriced: "IV acceptable",
+  iv_percentile_above_fire_threshold: "IV above fire limit",
+  iv_percentile_reject: "IV too expensive",
+  missing_50d_context: "Missing 50D context",
+  missing_delta: "Missing delta",
+  missing_dte: "Missing DTE",
+  missing_iv_percentile: "Missing IV rank",
+  missing_open_interest: "Missing open interest",
+  missing_rs_vs_qqq: "Missing RS context",
+  missing_spread: "Missing spread",
+  missing_volume: "Missing volume",
+  open_interest_below_threshold: "Open interest too low",
+  open_interest_supported: "Open interest supported",
+  premium_above_buy_under: "Option premium too high",
+  premium_inside_buy_under: "Premium inside cap",
+  required_move_too_high: "Required move too high",
+  rs_vs_qqq_20d_negative: "RS vs QQQ weak",
+  rs_vs_qqq_improving: "RS vs QQQ improving",
+  spread_above_fire_threshold: "Spread above fire limit",
+  spread_reject: "Spread too wide",
+  spread_usable: "Spread usable",
+  stock_above_50d: "Above 50D",
+  stock_below_50d: "Below 50D",
+  strategy_only_tracks_calls: "Strategy tracks calls only",
+  volume_below_threshold: "Volume too low",
+  volume_seen: "Volume seen",
+};
+
+function reasonLabel(reason: string): string {
+  return reasonLabels[reason] ?? titleLabel(reason);
+}
+
+function readableReasonSummary(row: RowRecord): string {
+  const raw = recordField(row, "raw");
+  return [...listFromRecord(raw, "hard_rejects"), ...listFromRecord(raw, "blockers"), ...listFromRecord(raw, "positives")]
+    .map(reasonLabel)
+    .join(" ");
+}
+
+function recordField(row: RowRecord | undefined, key: string): Record<string, JsonValue> | undefined {
+  const value = row?.[key];
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, JsonValue>;
+  return undefined;
+}
+
+function listFromRecord(record: Record<string, JsonValue> | undefined, key: string): string[] {
+  const value = record?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
+}
+
+function numberFromRecord(record: Record<string, JsonValue> | undefined, key: string): number {
+  const value = record?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Number.NaN;
+}
+
+function stringFromRecord(record: Record<string, JsonValue> | undefined, key: string, fallback = ""): string {
+  const value = record?.[key];
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return fallback;
+}
+
+function boolFromRecord(record: Record<string, JsonValue> | undefined, key: string): boolean {
+  return record?.[key] === true;
+}
+
 function mapBy(items: RowRecord[], key: string): Map<string, RowRecord> {
   const map = new Map<string, RowRecord>();
   for (const item of items) {
@@ -1176,6 +1590,14 @@ function mapBy(items: RowRecord[], key: string): Map<string, RowRecord> {
     if (value) map.set(value, item);
   }
   return map;
+}
+
+function mergeRowMaps(fallback: Map<string, RowRecord>, preferred: Map<string, RowRecord>): Map<string, RowRecord> {
+  const merged = new Map(fallback);
+  for (const [key, value] of preferred.entries()) {
+    merged.set(key, value);
+  }
+  return merged;
 }
 
 function latestBy(items: RowRecord[], key: string, dateKey: string): Map<string, RowRecord> {
