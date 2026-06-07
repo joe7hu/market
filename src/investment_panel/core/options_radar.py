@@ -1131,7 +1131,7 @@ def _opportunity_scores(
         cap_room_score = max(0.0, min(100.0, (buy_under - fill) / buy_under * 220.0 + 50.0))
     entry = min(100.0, liquidity * 0.45 + spread_score * 0.35 + cap_room_score * 0.20)
 
-    thesis_score = _thesis_score(validation, row)
+    thesis_score = max(_thesis_score(validation, row), _source_backed_thesis_score(source_context))
     evidence = min(100.0, thesis_score * 0.65 + float(source_context["score"]) * 0.35)
     catalyst = min(100.0, float(source_context["score"]) * 0.65 + _catalyst_validation_score(validation) * 0.35)
     regime = 85.0 if qqq_above_200d is True else 25.0 if qqq_above_200d is False else 45.0
@@ -1181,6 +1181,18 @@ def _thesis_score(validation: dict[str, Any], row: dict[str, Any]) -> float:
     return max(0.0, min(100.0, score))
 
 
+def _source_backed_thesis_score(source_context: dict[str, Any]) -> float:
+    count = int(source_context.get("count") or 0)
+    catalyst_count = int(source_context.get("catalyst_count") or 0)
+    confidence = _number(source_context.get("average_confidence")) or 0.0
+    source_score = float(source_context.get("score") or 0.0)
+    if count >= 4 and catalyst_count >= 1 and source_score >= 70.0:
+        return min(92.0, 74.0 + confidence * 18.0)
+    if count >= 2 and source_score >= 45.0:
+        return min(72.0, 52.0 + confidence * 12.0)
+    return 0.0
+
+
 def _catalyst_validation_score(validation: dict[str, Any]) -> float:
     status = str(validation.get("catalyst_status") or "")
     if status in {"scheduled", "source_confirmed", "supported"}:
@@ -1211,12 +1223,9 @@ def _extreme_opportunity_blockers(
     blockers: list[str] = []
     state = str(row.get("state") or "").upper()
     if state != "FIRE":
-        blockers.append("not_fire_state")
-    quality = str(row.get("quality_status") or "ok").lower()
-    if quality != "ok":
-        blockers.append("needs_clean_data_quality")
-    if _list_value(row.get("quality_flags")):
-        blockers.append("provider_quality_flags_present")
+        blockers.append("wait_for_fire_setup")
+    blocking_quality_flags = _blocking_quality_flags(row)
+    blockers.extend(blocking_quality_flags)
     spread = _number(row.get("spread_pct"))
     if spread is None or spread > 0.18:
         blockers.append("spread_not_exceptional")
@@ -1232,8 +1241,8 @@ def _extreme_opportunity_blockers(
     required_move = _number(row.get("required_move_pct"))
     if required_move is None or required_move > 2.0:
         blockers.append("required_move_not_exceptional")
-    if _thesis_score(validation, row) < 80.0:
-        blockers.append("needs_validated_thesis")
+    if max(_thesis_score(validation, row), _source_backed_thesis_score(source_context)) < 80.0:
+        blockers.append("needs_source_backed_thesis")
     if validation.get("invalidation_status") == "breached" or validation.get("state") == "invalidated":
         blockers.append("thesis_invalidated")
     if validation.get("red_team_status") == "hard_risk_triggered":
@@ -1264,6 +1273,8 @@ def _opportunity_top_reasons(
         reasons.append("entry_quality_supported")
     if _thesis_score(validation, row) >= 80:
         reasons.append("thesis_validated")
+    elif _source_backed_thesis_score(source_context) >= 80:
+        reasons.append("source_backed_thesis")
     if int(source_context.get("count") or 0) >= 2:
         reasons.append("source_evidence_cluster")
     if qqq_above_200d is True:
@@ -1275,6 +1286,27 @@ def _opportunity_top_reasons(
         positives = raw.get("positives") if isinstance(raw.get("positives"), list) else []
         reasons.extend([str(item) for item in positives[:3]])
     return reasons[:5]
+
+
+def _blocking_quality_flags(row: dict[str, Any]) -> list[str]:
+    quality = str(row.get("quality_status") or "ok").lower()
+    flags = set(_list_value(row.get("quality_flags")))
+    blockers: list[str] = []
+    severe_flags = {
+        "missing_delta",
+        "missing_spread",
+        "missing_open_interest",
+        "missing_volume",
+        "missing_iv_percentile",
+        "spread_reject",
+        "stale_market_data",
+        "source_mid_disagreement",
+        "source_iv_disagreement",
+        "source_delta_disagreement",
+    }
+    if quality == "bad" or flags & severe_flags:
+        blockers.append("fix_option_data_disagreement")
+    return blockers
 
 
 def _entry_zone(row: dict[str, Any]) -> str:

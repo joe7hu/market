@@ -89,9 +89,30 @@ def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without
     assert result["option_radar_opportunities"] == 1
     assert opportunity["tier"] == "Research"
     assert opportunity["primary_contract_id"] == "OPRA:TSLA270918C115"
-    assert "needs_validated_thesis" in blockers
+    assert "needs_source_backed_thesis" in blockers
     assert "needs_source_evidence" in blockers
     assert len(alternatives) == 1
+
+
+def test_option_radar_opportunity_closes_thesis_loop_from_source_evidence(tmp_path) -> None:
+    db_path = tmp_path / "radar-opportunity-source-backed.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_extreme_opportunity_candidates(con)
+        refresh_options_radar(con, ["TSLA"])
+        seed_source_signal(con, "sig-tsla-a", "source-tsla-a")
+        seed_source_signal(con, "sig-tsla-b", "source-tsla-b")
+        seed_source_signal(con, "sig-tsla-c", "source-tsla-c")
+        seed_source_signal(con, "sig-tsla-d", "source-tsla-d")
+
+        refresh_option_radar_opportunities(con, ["TSLA"])
+        opportunity = query_rows(con, "SELECT * FROM option_radar_opportunity WHERE ticker = 'TSLA'")[0]
+
+    blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
+    top_reasons = json.loads(opportunity["top_reasons"]) if isinstance(opportunity["top_reasons"], str) else opportunity["top_reasons"]
+    assert opportunity["tier"] == "Exceptional"
+    assert blockers == []
+    assert "source_backed_thesis" in top_reasons
 
 
 def test_option_radar_opportunity_requires_extreme_gates_for_exceptional_tier(tmp_path) -> None:

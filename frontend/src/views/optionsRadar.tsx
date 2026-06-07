@@ -258,7 +258,18 @@ function ExtremeOpportunityDesk({
           </div>
         </div>
       ) : null}
-      <table className="w-full min-w-[1320px] text-sm">
+      <div className="space-y-3 p-3 lg:hidden">
+        {visibleRows.map((row) => (
+          <OpportunityMobileCard
+            key={textField(row, ["opportunity_id"], `${textField(row, ["ticker"])}-${textField(row, ["primary_contract_id"])}`)}
+            row={row}
+            latestMarkByEvent={latestMarkByEvent}
+            latestAttributionByEvent={latestAttributionByEvent}
+            onOpenTicker={onOpenTicker}
+          />
+        ))}
+      </div>
+      <table className="hidden w-full min-w-[1320px] text-sm lg:table">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
@@ -267,9 +278,9 @@ function ExtremeOpportunityDesk({
             <Head className="text-right">Buy Under</Head>
             <Head className="text-right">10x Move</Head>
             <Head>Scores</Head>
-            <Head>Evidence</Head>
-            <Head>Outcome</Head>
-            <Head>Decision</Head>
+            <Head>Blocking Checks</Head>
+            <Head>Shadow P/L</Head>
+            <Head>Next Action</Head>
             <Head>Kill Switch</Head>
           </tr>
         </thead>
@@ -316,7 +327,7 @@ function ExtremeOpportunityDesk({
                 <Cell><OpportunityScoreStack row={row} /></Cell>
                 <Cell className="max-w-[260px]"><OpportunityReasonChips row={row} /></Cell>
                 <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
-                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["why_now"])}</Truncated></Cell>
+                <Cell className="max-w-[320px]"><Truncated>{opportunityActionText(row)}</Truncated></Cell>
                 <Cell className="max-w-[340px] text-muted-foreground"><Truncated>{displayField(row, ["kill_switch"])}</Truncated></Cell>
               </tr>
             );
@@ -324,6 +335,68 @@ function ExtremeOpportunityDesk({
         </tbody>
       </table>
     </DataTableFrame>
+  );
+}
+
+function OpportunityMobileCard({
+  row,
+  latestMarkByEvent,
+  latestAttributionByEvent,
+  onOpenTicker,
+}: {
+  row: RowRecord;
+  latestMarkByEvent: Map<string, RowRecord>;
+  latestAttributionByEvent: Map<string, RowRecord>;
+  onOpenTicker: OpenTicker;
+}) {
+  const eventId = textField(row, ["primary_event_id"]);
+  const mark = latestMarkByEvent.get(eventId);
+  const attribution = latestAttributionByEvent.get(eventId);
+  const tier = tierOf(row);
+  const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
+  const qualityFlags = arrayText(row, "quality_flags");
+  return (
+    <article className={cn("rounded-md border border-border bg-card p-3", tier === "Exceptional" && "border-green-500/40 bg-green-500/5")}>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
+          <div className="mt-1 truncate text-xs text-muted-foreground">{displayField(row, ["primary_contract_id"])}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <StatusBadge tone={tierTone(tier)}>{tier}</StatusBadge>
+          <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <InlineMetric label="Buy Under" value={moneyField(row, ["buy_under"])} />
+        <InlineMetric label="10x Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+        <InlineMetric label="Score" value={formatScore(numberField(row, ["conviction_score"], Number.NaN))} />
+      </div>
+      <div className="mt-3 space-y-2">
+        <MobileSection label="Next Action">{opportunityActionText(row)}</MobileSection>
+        <MobileSection label="Blocking Checks"><OpportunityReasonChips row={row} /></MobileSection>
+        <MobileSection label="Shadow P/L"><OpportunityOutcome mark={mark} attribution={attribution} /></MobileSection>
+        <MobileSection label="Kill Switch">{displayField(row, ["kill_switch"])}</MobileSection>
+      </div>
+    </article>
+  );
+}
+
+function InlineMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-muted px-2 py-1.5">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-sm font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function MobileSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="text-sm leading-5">{children}</div>
+    </div>
   );
 }
 
@@ -350,6 +423,21 @@ function OpportunityReasonChips({ row }: { row: RowRecord }) {
       {extra > 0 ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">+{extra}</span> : null}
     </div>
   );
+}
+
+function opportunityActionText(row: RowRecord): string {
+  const tier = tierOf(row);
+  const blockers = arrayText(row, "blockers");
+  const reasons = arrayText(row, "top_reasons");
+  if (tier === "Exceptional" && !blockers.length) {
+    const why = reasons.slice(0, 3).map(reasonLabel).join(", ");
+    return why ? `Review now: ${why}.` : "Review now: strict gates passed.";
+  }
+  if (blockers.length) {
+    const why = blockers.slice(0, 3).map(reasonLabel).join(", ");
+    return `Wait: ${why}.`;
+  }
+  return displayField(row, ["why_now"], "Review setup details.");
 }
 
 function AlternativeContracts({ row }: { row: RowRecord }) {
@@ -682,8 +770,8 @@ function OpportunityOutcome({ mark, attribution }: { mark: RowRecord | undefined
   if (!mark) {
     return (
       <div className="min-w-0">
-        <StatusBadge tone="muted">Not marked</StatusBadge>
-        <div className="mt-1 text-xs text-muted-foreground">No outcome snapshot yet</div>
+        <StatusBadge tone="muted">Waiting for next price</StatusBadge>
+        <div className="mt-1 text-xs text-muted-foreground">No later option snapshot yet</div>
       </div>
     );
   }
@@ -2105,7 +2193,7 @@ function outcomeMaturity(mark: RowRecord): { label: string; tone: Tone } {
   if (Number.isFinite(numberField(mark, ["return_20d"], Number.NaN))) return { label: "20D observed", tone: "good" };
   if (Number.isFinite(numberField(mark, ["return_5d"], Number.NaN))) return { label: "5D observed", tone: "good" };
   if (Number.isFinite(numberField(mark, ["return_1d"], Number.NaN))) return { label: "1D observed", tone: "info" };
-  return { label: "Pending <1D", tone: "warn" };
+  return { label: "Waiting <1D", tone: "warn" };
 }
 
 function cohortHasMatureEvidence(row: RowRecord): boolean {
@@ -2253,6 +2341,7 @@ const reasonLabels: Record<string, string> = {
   dte_outside_strategy_range: "DTE outside range",
   entry_quality_below_exceptional_bar: "Entry quality below top bar",
   entry_quality_supported: "Entry quality supported",
+  fix_option_data_disagreement: "Fix option data mismatch",
   hard_red_team_risk: "Hard red-team risk",
   iv_not_overpriced: "IV acceptable",
   iv_percentile_above_fire_threshold: "IV above fire limit",
@@ -2268,11 +2357,12 @@ const reasonLabels: Record<string, string> = {
   missing_rs_vs_qqq: "Missing RS context",
   missing_spread: "Missing spread",
   missing_volume: "Missing volume",
-  needs_clean_data_quality: "Needs clean data",
+  needs_clean_data_quality: "Data check required",
   needs_printed_volume: "Needs printed volume",
   needs_source_evidence: "Needs source evidence",
+  needs_source_backed_thesis: "Needs source-backed thesis",
   needs_validated_thesis: "Needs validated thesis",
-  not_fire_state: "Not a fire setup",
+  not_fire_state: "Wait for fire setup",
   open_interest_below_threshold: "Open interest too low",
   open_interest_not_exceptional: "Open interest not exceptional",
   open_interest_supported: "Open interest supported",
@@ -2284,6 +2374,7 @@ const reasonLabels: Record<string, string> = {
   rs_vs_qqq_20d_negative: "RS vs QQQ weak",
   rs_vs_qqq_improving: "RS vs QQQ improving",
   source_evidence_cluster: "Source evidence cluster",
+  source_backed_thesis: "Source-backed thesis",
   spread_above_fire_threshold: "Spread above fire limit",
   spread_not_exceptional: "Spread not exceptional",
   spread_reject: "Spread too wide",
@@ -2296,6 +2387,7 @@ const reasonLabels: Record<string, string> = {
   thesis_validated: "Thesis validated",
   volume_below_threshold: "Volume too low",
   volume_seen: "Volume seen",
+  wait_for_fire_setup: "Wait for fire setup",
 };
 
 function reasonLabel(reason: string): string {
