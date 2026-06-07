@@ -46,9 +46,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
   const opportunityRows = rows(data.optionRadarOpportunity);
-  const optionSnapshots = rows(data.optionSnapshot);
-  const optionFeatures = rows(data.optionFeatures);
-  const stockFeatures = rows(data.stockFeatures);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const openThesisRequests = useMemo(() => thesisRequests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), [thesisRequests]);
@@ -63,8 +60,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     () => candidates.filter((row) => isOpportunityCandidate(row) && (!latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime)),
     [candidates, latestCandidateTime],
   );
+  const currentOpportunityRows = useMemo(
+    () => opportunityRows.filter((row) => !latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime),
+    [latestCandidateTime, opportunityRows],
+  );
   const opportunityTickers = useMemo(() => uniqueText(opportunityCandidates, "ticker"), [opportunityCandidates]);
-  const scannedTickers = useMemo(() => uniqueText(optionSnapshots, "ticker"), [optionSnapshots]);
 
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
   const latestForwardByProposal = useMemo(() => latestBy(forwardTests, "proposal_id", "evaluated_at"), [forwardTests]);
@@ -76,14 +76,15 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
-  const scannedTickerCount = numberField(radarSummary, ["scanned_tickers_current"], scannedTickers.length);
+  const scannedTickerCount = numberField(radarSummary, ["scanned_tickers_current"], 0);
   const fireCount = numberField(radarSummary, ["fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "FIRE"));
   const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
-  const exceptionalCount = numberField(radarSummary, ["exceptional_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Exceptional"));
-  const researchCount = numberField(radarSummary, ["research_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Research"));
-  const repairCount = numberField(radarSummary, ["repair_opportunities_current"], countWhere(opportunityRows, (row) => isServiceRepair(row)));
+  const exceptionalCount = numberField(radarSummary, ["exceptional_opportunities_current"], countWhere(currentOpportunityRows, (row) => tierOf(row) === "Exceptional"));
+  const researchCount = numberField(radarSummary, ["research_opportunities_current"], countWhere(currentOpportunityRows, (row) => tierOf(row) === "Research"));
+  const repairCount = numberField(radarSummary, ["repair_opportunities_current"], countWhere(currentOpportunityRows, (row) => isServiceRepair(row)));
+  const groupedOpportunityCount = exceptionalCount + researchCount + repairCount || currentOpportunityRows.length;
 
-  const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"], latestDate(optionSnapshots, "snapshot_time"));
+  const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"]);
   const latestStrategy = strategyVersions[0];
 
   async function handlePromoteProposal(proposalId: string) {
@@ -121,6 +122,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         exceptionalCount={exceptionalCount}
         researchCount={researchCount}
         repairCount={repairCount}
+        groupedOpportunityCount={groupedOpportunityCount}
       />
       <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
@@ -132,7 +134,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
         <TabsContent value="radar" className="space-y-4">
           <ExtremeOpportunityDesk
-            rows={opportunityRows}
+            rows={currentOpportunityRows}
             candidates={opportunityCandidates}
             latestMarkByEvent={latestCandidateMarkByEvent}
             latestAttributionByEvent={latestCandidateAttributionByEvent}
@@ -194,6 +196,7 @@ function RadarSummaryStrip({
   exceptionalCount,
   researchCount,
   repairCount,
+  groupedOpportunityCount,
 }: {
   opportunityCount: number;
   opportunityTickerCount: number;
@@ -203,18 +206,20 @@ function RadarSummaryStrip({
   exceptionalCount: number;
   researchCount: number;
   repairCount: number;
+  groupedOpportunityCount: number;
 }) {
   const items: Array<[string, string, Tone]> = [
-    ["Exceptional", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
-    ["Service Bugs", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
-    ["Research", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
-    ["Opportunities", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
+    ["Grouped Setups", groupedOpportunityCount.toLocaleString(), groupedOpportunityCount ? "info" : "muted"],
+    ["Exceptional Setups", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
+    ["Data Bugs", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
+    ["Research Setups", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
+    ["Candidate Contracts", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
     ["Fire", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
     ["Setup", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
     ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
   ];
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
       {items.map(([label, value, tone]) => (
         <div key={label} className="rounded-md border border-border bg-card px-3 py-2">
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
@@ -242,7 +247,8 @@ function ExtremeOpportunityDesk({
 }) {
   const exceptionalRows = useMemo(() => rows.filter((row) => tierOf(row) === "Exceptional"), [rows]);
   const repairRows = useMemo(() => rows.filter((row) => isServiceRepair(row)), [rows]);
-  const researchRows = useMemo(() => rows.filter((row) => tierOf(row) === "Research"), [rows]);
+  const researchRows = useMemo(() => rows.filter((row) => tierOf(row) === "Research").sort(compareGroupedOpportunities), [rows]);
+  const primaryFireRows = useMemo(() => rows.filter((row) => textField(row, ["primary_state"]).toUpperCase() === "FIRE"), [rows]);
   const readyDecisionRows = exceptionalRows.length ? exceptionalRows : researchRows.slice(0, 8);
   const visibleRows = [...repairRows.slice(0, 4), ...readyDecisionRows.filter((row) => !isServiceRepair(row))].slice(0, 10);
   const blockerSummary = useMemo(() => commonBlockers(rows), [rows]);
@@ -260,11 +266,12 @@ function ExtremeOpportunityDesk({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title={repairRows.length ? "Service Bugs" : exceptionalRows.length ? "Exceptional Setups" : "No Exceptional Setup"} count={visibleRows.length} />}
+      title={<SectionTitle title={opportunityDeskTitle(repairRows.length, exceptionalRows.length, researchRows.length)} count={visibleRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{repairRows.length.toLocaleString()} service bugs</span>
           <span>{exceptionalRows.length.toLocaleString()} exceptional</span>
+          <span>{primaryFireRows.length.toLocaleString()} primary fire</span>
           <span>{researchRows.length.toLocaleString()} research</span>
           <span>{rows.length.toLocaleString()} grouped tickers</span>
         </div>
@@ -426,6 +433,23 @@ function OpportunityMobileCard({
         <MobileSection label="Kill Switch">{displayField(row, ["kill_switch"])}</MobileSection>
       </div>
     </article>
+  );
+}
+
+function opportunityDeskTitle(repairCount: number, exceptionalCount: number, researchCount: number): string {
+  if (repairCount) return "Service Bugs";
+  if (exceptionalCount) return "Exceptional Setups";
+  if (researchCount) return "Current Research Setups";
+  return "No Current Setups";
+}
+
+function compareGroupedOpportunities(left: RowRecord, right: RowRecord): number {
+  const leftState = textField(left, ["primary_state"]).toUpperCase();
+  const rightState = textField(right, ["primary_state"]).toUpperCase();
+  return (
+    stateRank(leftState) - stateRank(rightState) ||
+    compareNumber(numberField(right, ["conviction_score"], Number.NEGATIVE_INFINITY), numberField(left, ["conviction_score"], Number.NEGATIVE_INFINITY)) ||
+    compareText(textField(left, ["ticker"]), textField(right, ["ticker"]))
   );
 }
 
@@ -885,264 +909,6 @@ function ReasonChip({ reason, tone }: { reason: string; tone: Tone }) {
     <span className={cn("rounded-md border px-2 py-0.5 text-xs font-medium", tone === "good" ? "border-green-500/30 bg-green-50/30 text-foreground" : "border-amber-500/30 bg-amber-50/40 text-foreground")} title={reason}>
       {reasonLabel(reason)}
     </span>
-  );
-}
-
-function CandidateEventMarksTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No candidate marks" detail="No point-in-time validation marks are stored for candidate events." icon={Activity} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Candidate Outcome Marks" count={rows.length} />}>
-      <table className="w-full min-w-[1240px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Candidate</Head>
-            <Head>Alert</Head>
-            <Head>Mark</Head>
-            <Head className="text-right">Current</Head>
-            <Head className="text-right">1D</Head>
-            <Head className="text-right">5D</Head>
-            <Head className="text-right">20D</Head>
-            <Head className="text-right">60D</Head>
-            <Head className="text-right">Max</Head>
-            <Head className="text-right">Drawdown</Head>
-            <Head>Hit Times</Head>
-            <Head className="text-right">IV</Head>
-            <Head className="text-right">Spread</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
-            const state = textField(row, ["candidate_state"]);
-            return (
-              <tr key={textField(row, ["mark_id"], `${ticker}-${textField(row, ["mark_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["alert_time"]))}</Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["mark_time"]))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["current_return"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_1d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_5d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_20d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_60d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_since_alert"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["max_drawdown_since_alert"], Number.NaN))}</Cell>
-                <Cell><HitTimes row={row} /></Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["iv"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function CandidateEventAttributionsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No candidate attribution" detail="No candidate events have multiple point-in-time marks yet." icon={Activity} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Candidate Event Attribution" count={rows.length} />}>
-      <table className="w-full min-w-[1260px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Candidate</Head>
-            <Head>Window</Head>
-            <Head>Label</Head>
-            <Head className="text-right">Option</Head>
-            <Head className="text-right">Underlying</Head>
-            <Head className="text-right">IV</Head>
-            <Head className="text-right">Theta</Head>
-            <Head className="text-right">Spread</Head>
-            <Head className="text-right">Unexplained</Head>
-            <Head>Contract</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
-            const state = textField(row, ["candidate_state"]);
-            return (
-              <tr key={textField(row, ["attribution_id"], `${ticker}-${textField(row, ["snapshot_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">
-                  {formatDate(textField(row, ["prior_snapshot_time"]))} {"->"} {formatDate(textField(row, ["snapshot_time"]))}
-                </Cell>
-                <Cell><AttributionBadge row={row} /></Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["option_return"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["underlying_return"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["iv_change"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["theta_effect"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["spread_change"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["unexplained_effect"], Number.NaN))}</Cell>
-                <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function RadarStateTransitionsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No radar state transitions" detail="No deterministic candidate, hold, trim, exit, or invalidation transitions are stored." icon={Activity} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Radar State Transitions" count={rows.length} />}>
-      <table className="w-full min-w-[1180px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>State</Head>
-            <Head>Previous</Head>
-            <Head>Candidate</Head>
-            <Head>Snapshot</Head>
-            <Head>Contract</Head>
-            <Head>Evidence</Head>
-            <Head>Trigger</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
-            const state = stateOf(row);
-            const previous = textField(row, ["previous_state"]);
-            return (
-              <tr key={textField(row, ["transition_id"], `${ticker}-${textField(row, ["snapshot_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
-                <Cell>{previous ? <StatusBadge tone={stateTone(previous)}>{titleLabel(previous)}</StatusBadge> : <span className="text-muted-foreground">Initial</span>}</Cell>
-                <Cell><StatusBadge tone={stateTone(textField(row, ["candidate_state"]))}>{titleLabel(displayField(row, ["candidate_state"], "pending"))}</StatusBadge></Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["snapshot_time"]))}</Cell>
-                <Cell className="max-w-[250px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
-                <Cell className="max-w-[220px]"><Truncated>{transitionEvidence(row)}</Truncated></Cell>
-                <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["trigger_reason"])}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function ShadowTradesTable({
-  rows,
-  eventById,
-  latestAttributionByEvent,
-  onOpenTicker,
-}: {
-  rows: RowRecord[];
-  eventById: Map<string, RowRecord>;
-  latestAttributionByEvent: Map<string, RowRecord>;
-  onOpenTicker: OpenTicker;
-}) {
-  if (!rows.length) {
-    return <EmptyState title="No shadow trades" detail="No shadow entries have been created from candidate events." icon={Activity} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Shadow Trades and Attribution" count={rows.length} />}>
-      <table className="w-full min-w-[1080px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Status</Head>
-            <Head className="text-right">Entry</Head>
-            <Head className="text-right">Max Return</Head>
-            <Head className="text-right">Max Drawdown</Head>
-            <Head>Hit Times</Head>
-            <Head>Latest Attribution</Head>
-            <Head>Exit</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const eventId = textField(row, ["event_id"]);
-            const event = eventById.get(eventId);
-            const attribution = latestAttributionByEvent.get(eventId);
-            const ticker = textField(event, ["ticker"], contractTicker(textField(attribution, ["contract_id"], textField(row, ["contract_id"]))));
-            const status = textField(row, ["status"], "open");
-            return (
-              <tr key={textField(row, ["trade_id"], eventId)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["entry_price_assumption"])}</Cell>
-                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_seen"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["max_drawdown_seen"], Number.NaN))}</Cell>
-                <Cell><HitTimes row={row} /></Cell>
-                <Cell className="max-w-[300px]">
-                  {attribution ? <AttributionBadge row={attribution} /> : <span className="text-muted-foreground">No mark</span>}
-                </Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["exit_reason"], displayField(row, ["exit_time"]))}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function ShadowTradeMarksTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No shadow marks" detail="No point-in-time validation marks are stored for shadow trades." icon={Activity} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Daily Shadow Validation Marks" count={rows.length} />}>
-      <table className="w-full min-w-[1240px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Mark</Head>
-            <Head className="text-right">Current</Head>
-            <Head className="text-right">1D</Head>
-            <Head className="text-right">5D</Head>
-            <Head className="text-right">20D</Head>
-            <Head className="text-right">60D</Head>
-            <Head className="text-right">Max</Head>
-            <Head className="text-right">Drawdown</Head>
-            <Head className="text-right">IV</Head>
-            <Head className="text-right">Spread</Head>
-            <Head className="text-right">Worthless Proxy</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"], contractTicker(textField(row, ["contract_id"])));
-            return (
-              <tr key={textField(row, ["mark_id"], `${ticker}-${textField(row, ["mark_time"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["mark_time"]))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["current_return"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_1d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_5d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_20d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["return_60d"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_since_alert"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["max_drawdown_since_alert"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["iv"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["expired_worthless_probability_change"], Number.NaN))}</Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
   );
 }
 
@@ -1946,285 +1712,6 @@ function validationHistoryForThesis(thesis: RowRecord | undefined, byThesis: Map
   return legacy ? [legacy] : [];
 }
 
-function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No thesis validations" detail="No deterministic thesis checks are stored." icon={BrainCircuit} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Thesis Validation" count={rows.length} />}>
-      <table className="w-full min-w-[1220px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Date</Head>
-            <Head>Strategy</Head>
-            <Head>State</Head>
-            <Head>Candidate</Head>
-            <Head>Option</Head>
-            <Head>Stock Progress</Head>
-            <Head>IV</Head>
-            <Head>Proofs</Head>
-            <Head>Catalysts</Head>
-            <Head>Invalidation</Head>
-            <Head>Red Team</Head>
-            <Head>Evidence</Head>
-            <Head>Reason</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"]);
-            const state = textField(row, ["state"], "pending");
-            return (
-              <tr key={textField(row, ["validation_id"], `${ticker}-${textField(row, ["validated_at"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["validation_date", "validated_at"]))}</Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
-                <Cell><StatusBadge tone={thesisStateTone(state)}>{state.toLowerCase() === "pending" ? "Needs proof" : titleLabel(state)}</StatusBadge></Cell>
-                <Cell><StatusBadge tone={stateTone(textField(row, ["candidate_state"]))}>{titleLabel(displayField(row, ["candidate_state"], "pending"))}</StatusBadge></Cell>
-                <Cell>{displayField(row, ["option_still_valid"])}</Cell>
-                <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["stock_progress"])}</Truncated></Cell>
-                <Cell className="max-w-[200px]"><Truncated>{displayField(row, ["iv_status"])}</Truncated></Cell>
-                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["proof_status"]))}>{titleLabel(displayField(row, ["proof_status"], "unknown"))}</StatusBadge></Cell>
-                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["catalyst_status"]))}>{titleLabel(displayField(row, ["catalyst_status"], "unknown"))}</StatusBadge></Cell>
-                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["invalidation_status"]))}>{titleLabel(displayField(row, ["invalidation_status"], "unknown"))}</StatusBadge></Cell>
-                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{titleLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge></Cell>
-                <Cell><StatusBadge tone={validationStatusTone(textField(row, ["evidence_status"]))}>{titleLabel(displayField(row, ["evidence_status"], "unknown"))}</StatusBadge></Cell>
-                <Cell className="max-w-[420px]"><Truncated>{displayField(row, ["reason"])}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function AgentThesisTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
-  if (!rows.length) {
-    return <EmptyState title="No agent theses" detail="No structured agent hypotheses are stored." icon={BrainCircuit} />;
-  }
-
-  return (
-    <DataTableFrame title={<SectionTitle title="Structured Hypotheses" count={rows.length} />}>
-      <table className="w-full min-w-[1320px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head className="text-right">Bull Target</Head>
-            <Head>Bull Date</Head>
-            <Head className="text-right">Base Target</Head>
-            <Head className="text-right">Confidence</Head>
-            <Head>Catalysts</Head>
-            <Head>Core Thesis</Head>
-            <Head>Bear Case</Head>
-            <Head>Invalidation</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"]);
-            return (
-              <tr key={textField(row, ["thesis_id"], `${ticker}-${textField(row, ["created_at"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["bull_target_price"])}</Cell>
-                <Cell className="whitespace-nowrap text-muted-foreground">{formatShortDate(textField(row, ["bull_target_date"]))}</Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["base_target_price"])}</Cell>
-                <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["confidence"], Number.NaN))}</Cell>
-                <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["catalyst_summary"], fullField(row, ["catalysts"]))}</Truncated></Cell>
-                <Cell className="max-w-[380px]"><Truncated>{displayField(row, ["core_thesis"])}</Truncated></Cell>
-                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["bear_case"])}</Truncated></Cell>
-                <Cell className="max-w-[320px]"><Truncated>{fullField(row, ["invalidation_conditions"])}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
-  );
-}
-
-function DataSamples({
-  optionSnapshots,
-  optionFeatures,
-  stockFeatures,
-  strategyVersions,
-  onOpenTicker,
-}: {
-  optionSnapshots: RowRecord[];
-  optionFeatures: RowRecord[];
-  stockFeatures: RowRecord[];
-  strategyVersions: RowRecord[];
-  onOpenTicker: OpenTicker;
-}) {
-  if (!optionSnapshots.length && !optionFeatures.length && !stockFeatures.length && !strategyVersions.length) {
-    return <EmptyState title="No radar data" detail="No option snapshots, features, stock features, or strategy versions are stored." icon={Target} />;
-  }
-
-  return (
-    <>
-      <DataTableFrame title={<SectionTitle title="Option Snapshot Sample" count={optionSnapshots.length} />}>
-        <table className="w-full min-w-[1100px] text-sm">
-          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-            <tr>
-              <Head>Ticker</Head>
-              <Head>Expiration</Head>
-              <Head className="text-right">Strike</Head>
-              <Head>Type</Head>
-              <Head className="text-right">Mid</Head>
-              <Head className="text-right">Spread</Head>
-              <Head className="text-right">OI</Head>
-              <Head className="text-right">Volume</Head>
-              <Head className="text-right">Delta</Head>
-              <Head className="text-right">DTE</Head>
-              <Head>Snapshot</Head>
-            </tr>
-          </thead>
-          <tbody>
-            {optionSnapshots.slice(0, 80).map((row) => {
-              const ticker = textField(row, ["ticker"]);
-              return (
-                <tr key={`${textField(row, ["contract_id"])}-${textField(row, ["snapshot_time"])}`} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                  <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                  <Cell className="whitespace-nowrap">{formatShortDate(textField(row, ["expiration"]))}</Cell>
-                  <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["strike"], Number.NaN), 2)}</Cell>
-                  <Cell>{titleLabel(displayField(row, ["option_type"]))}</Cell>
-                  <Cell className="text-right tabular-nums">{moneyField(row, ["mid"])}</Cell>
-                  <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["spread_pct"], Number.NaN))}</Cell>
-                  <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["open_interest"], Number.NaN), 0)}</Cell>
-                  <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["volume"], Number.NaN), 0)}</Cell>
-                  <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["delta"], Number.NaN), 2)}</Cell>
-                  <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["dte"], Number.NaN), 0)}</Cell>
-                  <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["snapshot_time"]))}</Cell>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </DataTableFrame>
-
-      <DataTableFrame title={<SectionTitle title="Feature Sample" count={optionFeatures.length + stockFeatures.length} />}>
-        <div className="grid min-w-[1040px] gap-4 p-4 lg:grid-cols-2">
-          <FeatureList title="Option Features" rows={optionFeatures} kind="option" />
-          <FeatureList title="Stock Features" rows={stockFeatures} kind="stock" />
-        </div>
-      </DataTableFrame>
-
-      <DataTableFrame title={<SectionTitle title="Strategy Versions" count={strategyVersions.length} />}>
-        <table className="w-full min-w-[900px] text-sm">
-          <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-            <tr>
-              <Head>Version</Head>
-              <Head>Name</Head>
-              <Head>Status</Head>
-              <Head>Created</Head>
-              <Head>Parameters</Head>
-            </tr>
-          </thead>
-          <tbody>
-            {strategyVersions.slice(0, 40).map((row) => {
-              const status = textField(row, ["status"], "active");
-              return (
-                <tr key={textField(row, ["strategy_version"], textField(row, ["strategy_name"]))} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                  <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
-                  <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["strategy_name"])}</Truncated></Cell>
-                  <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
-                  <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</Cell>
-                  <Cell className="max-w-[520px]"><Truncated>{fullField(row, ["parameters"])}</Truncated></Cell>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </DataTableFrame>
-    </>
-  );
-}
-
-function FeatureList({ title, rows, kind }: { title: string; rows: RowRecord[]; kind: "option" | "stock" }) {
-  if (!rows.length) {
-    return (
-      <div className="rounded-md border border-border p-4">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="mt-2 text-sm text-muted-foreground">No rows stored.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-w-0 rounded-md border border-border">
-      <div className="border-b border-border px-3 py-2 text-sm font-semibold">{title}</div>
-      <div className="divide-y divide-border">
-        {rows.slice(0, 8).map((row) => {
-          const key = `${textField(row, ["contract_id", "ticker"])}-${textField(row, ["snapshot_time"])}`;
-          return (
-            <div key={key} className="grid grid-cols-[minmax(120px,1fr)_auto_auto] gap-3 px-3 py-2 text-sm">
-              <div className="min-w-0">
-                <div className="truncate font-medium">{displayField(row, [kind === "option" ? "contract_id" : "ticker"])}</div>
-                <div className="truncate text-xs text-muted-foreground">{formatDate(textField(row, ["snapshot_time"]))}</div>
-              </div>
-              {kind === "option" ? (
-                <>
-                  <MetricPill label="Move" value={formatRatio(numberField(row, ["required_move_10x_pct"], Number.NaN))} />
-                  <MetricPill label="Liq" value={formatScore(numberField(row, ["liquidity_score"], Number.NaN))} />
-                </>
-              ) : (
-                <>
-                  <MetricPill label="ATR" value={formatRatio(numberField(row, ["atr_pct"], Number.NaN))} />
-                  <MetricPill label="RS20" value={formatSignedRatio(numberField(row, ["rs_vs_qqq_20d"], Number.NaN))} />
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function HitTimes({ row }: { row: RowRecord }) {
-  const labels = [
-    ["2x", numberField(row, ["time_to_2x"], Number.NaN)],
-    ["5x", numberField(row, ["time_to_5x"], Number.NaN)],
-    ["10x", numberField(row, ["time_to_10x"], Number.NaN)],
-  ] as const;
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {labels.map(([label, value]) => (
-        <span key={label} className={cn("rounded-md border px-2 py-0.5 text-xs", Number.isFinite(value) ? "border-green-500/30 bg-green-50/30 text-foreground" : "border-border text-muted-foreground")}>
-          {label} {Number.isFinite(value) ? `${value}d` : "-"}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function AttributionBadge({ row }: { row: RowRecord }) {
-  const label = textField(row, ["label"], "unattributed");
-  return (
-    <div className="min-w-0">
-      <StatusBadge tone={attributionTone(label)}>{titleLabel(label)}</StatusBadge>
-      <div className="mt-1 truncate text-xs text-muted-foreground">
-        Opt {formatSignedRatio(numberField(row, ["option_return"], Number.NaN))} / Under {formatSignedRatio(numberField(row, ["underlying_return"], Number.NaN))}
-      </div>
-    </div>
-  );
-}
-
-function transitionEvidence(row: RowRecord): string {
-  const refs = row.evidence_refs;
-  if (!Array.isArray(refs)) return fullField(row, ["evidence_refs"]);
-  const labels = refs
-    .map((ref) => {
-      if (!ref || typeof ref !== "object" || Array.isArray(ref)) return "";
-      const item = ref as Record<string, unknown>;
-      return typeof item.type === "string" ? titleLabel(item.type) : "";
-    })
-    .filter(Boolean);
-  return labels.length ? labels.join(", ") : fullField(row, ["evidence_refs"]);
-}
-
 function VerdictBadge({ row, keys }: { row: RowRecord | undefined; keys: string[] }) {
   if (!row) return <StatusBadge tone="muted">Pending</StatusBadge>;
   const verdict = textField(row, keys, "pending");
@@ -2645,14 +2132,6 @@ function mapBy(items: RowRecord[], key: string): Map<string, RowRecord> {
   return map;
 }
 
-function mergeRowMaps(fallback: Map<string, RowRecord>, preferred: Map<string, RowRecord>): Map<string, RowRecord> {
-  const merged = new Map(fallback);
-  for (const [key, value] of preferred.entries()) {
-    merged.set(key, value);
-  }
-  return merged;
-}
-
 function latestBy(items: RowRecord[], key: string, dateKey: string): Map<string, RowRecord> {
   const map = new Map<string, RowRecord>();
   for (const item of items) {
@@ -2690,15 +2169,6 @@ function validationHistoryBy(items: RowRecord[], key: string): Map<string, RowRe
   return history;
 }
 
-function latestDate(items: RowRecord[], key: string): string {
-  let latest = "";
-  for (const item of items) {
-    const value = textField(item, [key]);
-    if (value && (!latest || dateMillis(value) > dateMillis(latest))) latest = value;
-  }
-  return latest;
-}
-
 function oldestDate(items: RowRecord[], key: string): string {
   let oldest = "";
   for (const item of items) {
@@ -2706,11 +2176,6 @@ function oldestDate(items: RowRecord[], key: string): string {
     if (value && (!oldest || dateMillis(value) < dateMillis(oldest))) oldest = value;
   }
   return oldest;
-}
-
-function hasValue(row: RowRecord, key: string): boolean {
-  const value = row[key];
-  return value !== undefined && value !== null && value !== "";
 }
 
 function moneyField(row: RowRecord | undefined, keys: string[]): string {
@@ -2765,9 +2230,4 @@ function dateMillis(value: string): number {
 
 function validationMillis(row: RowRecord): number {
   return dateMillis(textField(row, ["validated_at"])) || dateMillis(textField(row, ["validation_date"]));
-}
-
-function contractTicker(contractId: string): string {
-  const match = contractId.match(/^[A-Z]+:([A-Z.]+)/);
-  return match?.[1] ?? "";
 }

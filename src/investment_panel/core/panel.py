@@ -3499,6 +3499,10 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH latest_candidates AS (
+            SELECT max(snapshot_time) AS snapshot_time
+            FROM candidate_event
+        )
         SELECT opportunity_id, snapshot_time, ticker, strategy_version, tier,
                primary_event_id, primary_contract_id, primary_state,
                conviction_score, asymmetry_score, entry_quality_score,
@@ -3511,6 +3515,7 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
                why_now, kill_switch, top_reasons, blockers, quality_status,
                quality_flags, evidence_refs, alternative_contracts, raw
         FROM option_radar_opportunity
+        WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
         ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Service Bug' THEN 1 WHEN 'Research' THEN 2 ELSE 3 END,
                  conviction_score DESC NULLS LAST,
                  required_move_pct ASC NULLS LAST,
@@ -3670,13 +3675,22 @@ def candidate_event(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH latest_candidates AS (
+            SELECT max(snapshot_time) AS snapshot_time
+            FROM candidate_event
+        )
         SELECT event_id, snapshot_time, ticker, contract_id, strategy_version,
                state, premium_mid, premium_fill_assumption, required_10x_price,
                required_move_pct, buy_under, trigger_reason, thesis_id, score,
                quality_status, quality_flags, raw
         FROM candidate_event
-        ORDER BY snapshot_time DESC, score DESC, ticker
-        LIMIT 1000
+        WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+          AND state != 'REJECT'
+        ORDER BY CASE state WHEN 'FIRE' THEN 0 WHEN 'SETUP' THEN 1 WHEN 'WATCH' THEN 2 ELSE 3 END,
+                 score DESC NULLS LAST,
+                 ticker,
+                 contract_id
+        LIMIT 2000
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("quality_flags", "raw"))) for row in rows]

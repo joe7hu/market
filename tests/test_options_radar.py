@@ -858,6 +858,7 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     assert panel["tables"]["option_radar_summary"][0]["scanned_tickers_current"] == 1
     assert panel["tables"]["option_radar_summary"][0]["opportunity_tickers_current"] == 1
     assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
+    assert {row["state"] for row in panel["tables"]["candidate_event"]} == {"FIRE"}
     assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
     assert panel["tables"]["candidate_event_mark"][0]["candidate_state"] in {"FIRE", "REJECT"}
     assert "candidate_event_attribution" in panel["tables"]
