@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json as jsonlib
+import time
 
 import pytest
 
@@ -45,6 +47,9 @@ def test_openai_thesis_agent_uses_responses_structured_outputs(monkeypatch) -> N
             }
         )
 
+    monkeypatch.delenv("MARKET_OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("MARKET_OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("MARKET_OPENAI_MODEL", "gpt-test")
     monkeypatch.setattr(openai_option_agent.httpx, "post", fake_post)
@@ -120,6 +125,9 @@ def test_openai_postmortem_agent_filters_null_parameter_changes(monkeypatch) -> 
             }
         )
 
+    monkeypatch.delenv("MARKET_OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("MARKET_OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(openai_option_agent.httpx, "post", fake_post)
 
@@ -139,8 +147,157 @@ def test_openai_postmortem_agent_filters_null_parameter_changes(monkeypatch) -> 
     assert result["evidence_refs"][0] == {"type": "agent_request", "id": "req-post"}
 
 
-def test_openai_agent_requires_api_key(monkeypatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def test_openai_agent_prefers_api_key_over_ambient_access_token(monkeypatch) -> None:
+    captured: dict = {}
 
-    with pytest.raises(openai_option_agent.OpenAIOptionAgentError, match="OPENAI_API_KEY"):
+    def fake_post(url, headers, json, timeout):
+        captured["headers"] = headers
+        return FakeResponse(
+            {
+                "output_text": jsonlib.dumps(
+                    {
+                        "ticker": "TSLA",
+                        "bull_target_price": 650,
+                        "bull_target_date": "2028-01-21",
+                        "base_target_price": 520,
+                        "core_thesis": "Autonomy and storage milestones re-rate the setup.",
+                        "required_proofs": ["margins stabilize"],
+                        "catalysts": [{"type": "earnings", "expected_window": "next 2 quarters", "what_to_watch": "margins"}],
+                        "invalidation": ["stock breaks below $80 without recovery"],
+                        "bear_case": "Demand softness can keep the stock below trend.",
+                        "confidence": 55,
+                        "evidence_refs": [],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.delenv("MARKET_OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("MARKET_OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("OPENAI_ACCESS_TOKEN", "ambient-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "configured-key")
+    monkeypatch.setattr(openai_option_agent.httpx, "post", fake_post)
+
+    openai_option_agent.generate_openai_option_thesis({"request": {"request_id": "req-1", "ticker": "TSLA"}})
+
+    assert captured["headers"]["Authorization"] == "Bearer configured-key"
+
+
+def test_openai_thesis_agent_can_use_codex_oauth_token(monkeypatch, tmp_path) -> None:
+    captured: dict = {}
+    token = _fake_jwt(
+        {"aud": ["https://api.openai.com/v1"], "exp": int(time.time()) + 600, "scp": ["api.responses.write"]}
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(jsonlib.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": token}}))
+
+    def fake_post(url, headers, json, timeout):
+        captured["headers"] = headers
+        return FakeResponse(
+            {
+                "output_text": jsonlib.dumps(
+                    {
+                        "ticker": "TSLA",
+                        "bull_target_price": 650,
+                        "bull_target_date": "2028-01-21",
+                        "base_target_price": 520,
+                        "core_thesis": "Autonomy and storage milestones re-rate the setup.",
+                        "required_proofs": ["margins stabilize"],
+                        "catalysts": [{"type": "earnings", "expected_window": "next 2 quarters", "what_to_watch": "margins"}],
+                        "invalidation": ["stock breaks below $80 without recovery"],
+                        "bear_case": "Demand softness can keep the stock below trend.",
+                        "confidence": 55,
+                        "evidence_refs": [],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setenv("MARKET_OPENAI_AUTH_MODE", "oauth")
+    monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(auth_path))
+    monkeypatch.delenv("MARKET_OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(openai_option_agent.httpx, "post", fake_post)
+
+    result = openai_option_agent.generate_openai_option_thesis({"request": {"request_id": "req-1", "ticker": "TSLA"}})
+
+    assert captured["headers"]["Authorization"] == f"Bearer {token}"
+    assert result["ticker"] == "TSLA"
+
+
+def test_openai_agent_requires_configured_credential(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MARKET_OPENAI_AUTH_MODE", raising=False)
+    monkeypatch.delenv("MARKET_OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(tmp_path / "missing-auth.json"))
+
+    with pytest.raises(openai_option_agent.OpenAIOptionAgentError, match="OPENAI_API_KEY or OpenAI OAuth"):
         openai_option_agent.generate_openai_option_thesis({"request": {"ticker": "TSLA"}})
+
+
+def test_codex_oauth_file_rejects_wrong_audience_or_missing_write_scope(monkeypatch, tmp_path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        jsonlib.dumps(
+            {
+                "tokens": {
+                    "access_token": _fake_jwt(
+                        {"aud": ["https://other.example.test"], "exp": int(time.time()) + 600, "scp": ["api.responses.write"]}
+                    )
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(auth_path))
+    assert openai_option_agent._codex_oauth_access_token() == ""
+
+    auth_path.write_text(
+        jsonlib.dumps(
+            {
+                "tokens": {
+                    "access_token": _fake_jwt(
+                        {"aud": ["https://api.openai.com/v1"], "exp": int(time.time()) + 600, "scp": ["api.connectors.read"]}
+                    )
+                }
+            }
+        )
+    )
+    assert openai_option_agent._codex_oauth_access_token() == ""
+
+
+def test_codex_oauth_file_skips_malformed_access_token(monkeypatch, tmp_path) -> None:
+    valid = _fake_jwt(
+        {"aud": ["https://api.openai.com/v1"], "exp": int(time.time()) + 600, "scp": ["api.responses.write"]}
+    )
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        jsonlib.dumps(
+            {
+                "tokens": {
+                    "access_token": "not.a-valid-jwt",
+                    "fallback": {"access_token": valid},
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(auth_path))
+
+    assert openai_option_agent._codex_oauth_access_token() == valid
+
+
+def _fake_jwt(payload: dict) -> str:
+    header = {"alg": "none", "typ": "JWT"}
+    return ".".join(
+        [
+            _base64url_json(header),
+            _base64url_json(payload),
+            "signature",
+        ]
+    )
+
+
+def _base64url_json(payload: dict) -> str:
+    encoded = base64.urlsafe_b64encode(jsonlib.dumps(payload, separators=(",", ":")).encode()).decode()
+    return encoded.rstrip("=")

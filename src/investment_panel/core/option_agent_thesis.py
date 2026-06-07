@@ -246,7 +246,7 @@ def normalize_agent_thesis(payload: dict[str, Any], *, agent_version: str) -> di
     bull_target = _number(payload.get("bull_target_price"))
     base_target = _number(payload.get("base_target_price"))
     bull_target_date = _date_string(payload.get("bull_target_date"))
-    confidence = _number(payload.get("confidence"))
+    confidence = _confidence_score(payload.get("confidence"))
     missing = []
     if not ticker:
         missing.append("ticker")
@@ -284,7 +284,7 @@ def normalize_agent_thesis(payload: dict[str, Any], *, agent_version: str) -> di
         "catalysts": catalysts,
         "catalyst_summary": _catalyst_summary(catalysts),
         "bear_case": bear_case,
-        "confidence": max(0.0, min(100.0, confidence if confidence is not None else 50.0)),
+        "confidence": confidence,
         "evidence_refs": evidence_refs,
         "raw": {**payload, "authority": "hypothesis_only"},
     }
@@ -962,6 +962,15 @@ def _number(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _confidence_score(value: Any) -> float:
+    confidence = _number(value)
+    if confidence is None:
+        return 50.0
+    if 0.0 <= confidence < 1.0:
+        confidence *= 100.0
+    return max(0.0, min(100.0, confidence))
 
 
 def _metric_number(metrics: dict[str, Any], *keys: str) -> float | None:

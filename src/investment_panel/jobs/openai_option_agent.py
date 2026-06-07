@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from binascii import Error as BinasciiError
+from base64 import urlsafe_b64decode
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -193,9 +197,7 @@ def _call_openai_structured(
     schema: dict[str, Any],
     system_prompt: str,
 ) -> dict[str, Any]:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise OpenAIOptionAgentError("OPENAI_API_KEY is required")
+    bearer_token = _openai_bearer_token()
     model = os.environ.get("MARKET_OPENAI_MODEL", DEFAULT_MODEL)
     base_url = os.environ.get("MARKET_OPENAI_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     timeout = float(os.environ.get("MARKET_OPENAI_TIMEOUT_SECONDS", "90"))
@@ -220,7 +222,7 @@ def _call_openai_structured(
     response = httpx.post(
         f"{base_url}/responses",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {bearer_token}",
             "Content-Type": "application/json",
         },
         json=body,
@@ -239,6 +241,89 @@ def _call_openai_structured(
     if not isinstance(parsed, dict):
         raise OpenAIOptionAgentError("OpenAI output must be a JSON object")
     return parsed
+
+
+def _openai_bearer_token() -> str:
+    auth_mode = os.environ.get("MARKET_OPENAI_AUTH_MODE", "").strip().lower()
+    if auth_mode == "oauth":
+        access_token = os.environ.get("MARKET_OPENAI_ACCESS_TOKEN") or os.environ.get("OPENAI_ACCESS_TOKEN")
+        if access_token:
+            return access_token
+        access_token = _codex_oauth_access_token()
+        if access_token:
+            return access_token
+        raise OpenAIOptionAgentError("OpenAI OAuth access token with api.responses.write scope is required")
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if api_key:
+        return api_key
+    access_token = os.environ.get("MARKET_OPENAI_ACCESS_TOKEN")
+    if access_token:
+        return access_token
+    raise OpenAIOptionAgentError("OPENAI_API_KEY or OpenAI OAuth access token is required")
+
+
+def _codex_oauth_access_token() -> str:
+    auth_path = Path(os.environ.get("MARKET_OPENAI_OAUTH_FILE") or (Path.home() / ".codex" / "auth.json"))
+    try:
+        data = json.loads(auth_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+    candidates: list[str] = []
+    _collect_access_tokens(data, candidates)
+    if not candidates:
+        return ""
+
+    now = int(time.time())
+    for token in candidates:
+        payload = _jwt_payload(token)
+        if not payload:
+            continue
+        exp = payload.get("exp")
+        aud = payload.get("aud")
+        audiences = aud if isinstance(aud, list) else [aud]
+        is_openai_api = "https://api.openai.com/v1" in audiences
+        is_current = not isinstance(exp, (int, float)) or exp > now + 60
+        if is_openai_api and is_current and _has_responses_write_scope(payload):
+            return token
+    return ""
+
+
+def _has_responses_write_scope(payload: dict[str, Any]) -> bool:
+    scopes = payload.get("scp", payload.get("scope"))
+    if isinstance(scopes, str):
+        scope_values = scopes.split()
+    elif isinstance(scopes, list):
+        scope_values = [str(scope) for scope in scopes]
+    else:
+        scope_values = []
+    return "api.responses.write" in set(scope_values)
+
+
+def _collect_access_tokens(value: Any, candidates: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "access_token" and isinstance(child, str) and child:
+                candidates.append(child)
+            else:
+                _collect_access_tokens(child, candidates)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_access_tokens(child, candidates)
+
+
+def _jwt_payload(token: str) -> dict[str, Any]:
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = urlsafe_b64decode(payload.encode())
+        data = json.loads(decoded)
+    except (BinasciiError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _extract_output_text(data: dict[str, Any]) -> str:

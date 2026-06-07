@@ -108,7 +108,9 @@ Each command receives one request object on stdin with `request`, `prompt`,
 `context`, `output_schema`, and guardrails. It must return one JSON object on
 stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
 `MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
-for local runs. The built-in OpenAI commands require `OPENAI_API_KEY`; use
+for local runs. The built-in `market-openai-*` commands call the OpenAI API
+directly; set `MARKET_OPENAI_AUTH_MODE=oauth` for a write-scoped OAuth access
+token or use `OPENAI_API_KEY` only when explicitly intended. Use
 `MARKET_OPENAI_MODEL` to override the default model.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are

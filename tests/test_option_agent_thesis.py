@@ -147,6 +147,49 @@ def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> N
     assert validation["red_team_status"] == "source_backed"
 
 
+def test_agent_thesis_normalizes_probability_confidence(tmp_path) -> None:
+    db_path = tmp_path / "agent-confidence.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        thesis_id = upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "bull_target_price": 650,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 520,
+                "core_thesis": "Autonomy and storage milestones re-rate the setup.",
+                "required_proofs": ["margins stabilize"],
+                "catalysts": [{"type": "earnings", "expected_window": "next 2 quarters", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Demand softness can keep the stock below trend.",
+                "confidence": 0.62,
+                "evidence_refs": [{"type": "agent_request", "id": "req-1"}],
+            },
+        )
+        low_score_id = upsert_agent_thesis(
+            con,
+            {
+                "ticker": "TSLA",
+                "bull_target_price": 650,
+                "bull_target_date": "2028-01-21",
+                "base_target_price": 520,
+                "core_thesis": "A low-confidence 0-100 score stays low.",
+                "required_proofs": ["margins stabilize"],
+                "catalysts": [{"type": "earnings", "expected_window": "next 2 quarters", "what_to_watch": "margins"}],
+                "invalidation": ["stock breaks below $80 without recovery"],
+                "bear_case": "Demand softness can keep the stock below trend.",
+                "confidence": 1,
+                "evidence_refs": [{"type": "agent_request", "id": "req-2"}],
+            },
+        )
+        row = query_rows(con, "SELECT confidence FROM agent_thesis WHERE thesis_id = ?", [thesis_id])[0]
+        low_score = query_rows(con, "SELECT confidence FROM agent_thesis WHERE thesis_id = ?", [low_score_id])[0]
+
+    assert row["confidence"] == 62
+    assert low_score["confidence"] == 1
+
+
 def test_agent_thesis_validations_are_strategy_scoped_daily_rows(tmp_path) -> None:
     db_path = tmp_path / "agent-validation-strategy.duckdb"
     init_db(db_path)
