@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import time
 from typing import Any
 
 from fastapi.testclient import TestClient
 
 from app import main as api_main
-from investment_panel.core.brokers import BrokerSnapshot, ProviderStatus, build_and_persist_agent_recommendations, stage_paper_order, update_broker_sources
-from investment_panel.core.config import load_config
+from investment_panel.core.brokers import BrokerSnapshot, ProviderStatus, build_and_persist_agent_recommendations, ibkr_accept_account, ibkr_market_data_type_id, ibkr_market_snapshots, ibkr_missing_quote_symbols, ibkr_paper_account_mismatch, ibkr_position_symbol, ibkr_snapshot_status, persist_broker_snapshot, stage_paper_order, update_broker_sources
+from investment_panel.core.config import IBKRConfig, load_config
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.panel import load_panel_data
 
@@ -87,6 +88,207 @@ def test_provider_failure_statuses_are_persisted_and_block_agent_review(tmp_path
             assert row["status"] == status
             rec = query_rows(con, "SELECT blockers FROM broker_agent_recommendations WHERE symbol = 'NVDA'")[0]
             assert "broker_account_sync_unhealthy" in rec["blockers"]
+
+
+def test_quote_only_ibkr_status_blocks_account_required_recommendations(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, require_account=True)
+    config = load_config(config_path)
+    observed = datetime.now(UTC)
+    snapshot = BrokerSnapshot(
+        status=ProviderStatus("ibkr", "quote_only", "quote-only IBKR sync", checked_at=observed, last_data_at=observed),
+        market_snapshots=[{"symbol": "NVDA", "observed_at": observed, "bid": 99.9, "ask": 100.1, "last": 100, "entitlement_status": "ok", "data_status": "live"}],
+    )
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path, read_only=False) as con:
+        seed_decision_inputs(con)
+        update_broker_sources(con, config, [FakeProvider(snapshot)])
+        row = query_rows(con, "SELECT status FROM broker_provider_status WHERE provider = 'ibkr'")[0]
+        rec = query_rows(con, "SELECT status, blockers FROM broker_agent_recommendations WHERE symbol = 'NVDA'")[0]
+        broker_quotes = query_rows(con, "SELECT symbol, last FROM broker_market_snapshots WHERE provider = 'ibkr'")
+        intraday_quotes = query_rows(con, "SELECT symbol, price, source FROM quotes_intraday WHERE source = 'broker:ibkr'")
+
+    assert row["status"] == "quote_only"
+    assert broker_quotes == [{"symbol": "NVDA", "last": 100.0}]
+    assert intraday_quotes == [{"symbol": "NVDA", "price": 100.0, "source": "broker:ibkr"}]
+    assert rec["status"] == "blocked"
+    assert "broker_account_sync_unhealthy" in rec["blockers"]
+
+
+def test_ibkr_paper_only_rejects_live_account_ids() -> None:
+    class App:
+        managed_accounts = ["U1234567"]
+        account_values = {"U1234567": {"cash": 100.0}}
+        observed_accounts = set()
+        errors: list[dict[str, Any]] = []
+
+    snapshot = ibkr_paper_account_mismatch(IBKRConfig(enabled=True, paper_only=True), App(), datetime.now(UTC), time.perf_counter())
+
+    assert snapshot is not None
+    assert snapshot.status.status == "account_mode_mismatch"
+    assert snapshot.status.account_mode == "live"
+    assert snapshot.accounts == []
+    assert "U1234567" in (snapshot.status.account_id or "")
+
+
+def test_ibkr_paper_only_rejects_live_account_ids_seen_only_in_late_callbacks() -> None:
+    class App:
+        managed_accounts: list[str] = []
+        account_values: dict[str, dict[str, Any]] = {}
+        observed_accounts = {"U1234567"}
+        errors: list[dict[str, Any]] = []
+
+    snapshot = ibkr_paper_account_mismatch(IBKRConfig(enabled=True, paper_only=True), App(), datetime.now(UTC), time.perf_counter())
+
+    assert snapshot is not None
+    assert snapshot.status.status == "account_mode_mismatch"
+    assert "U1234567" in (snapshot.status.account_id or "")
+
+
+def test_ibkr_paper_only_rejects_live_account_ids_even_when_account_id_scoped() -> None:
+    class App:
+        managed_accounts = ["DU123", "U1234567"]
+        account_values = {"DU123": {"cash": 100.0}}
+        observed_accounts = {"U1234567"}
+        errors: list[dict[str, Any]] = []
+
+    snapshot = ibkr_paper_account_mismatch(IBKRConfig(enabled=True, account_id="DU123", paper_only=True), App(), datetime.now(UTC), time.perf_counter())
+
+    assert snapshot is not None
+    assert snapshot.status.status == "account_mode_mismatch"
+    assert snapshot.status.account_mode == "live"
+    assert "U1234567" in (snapshot.status.account_id or "")
+
+
+def test_account_mode_mismatch_clears_stale_account_read_models(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path, read_only=False) as con:
+        seed_decision_inputs(con)
+        update_broker_sources(con, config, [FakeProvider(ibkr_success())])
+        assert query_rows(con, "SELECT count(*) AS count FROM broker_accounts WHERE provider = 'ibkr'")[0]["count"] == 1
+        persist_broker_snapshot(
+            con,
+            BrokerSnapshot(
+                ProviderStatus(
+                    "ibkr",
+                    "account_mode_mismatch",
+                    "live account exposed while paper_only is enabled",
+                    checked_at=datetime.now(UTC),
+                    account_id="U1234567",
+                    account_mode="live",
+                )
+            ),
+        )
+
+        assert query_rows(con, "SELECT count(*) AS count FROM broker_accounts WHERE provider = 'ibkr'")[0]["count"] == 0
+        assert query_rows(con, "SELECT count(*) AS count FROM broker_positions WHERE provider = 'ibkr'")[0]["count"] == 0
+        assert query_rows(con, "SELECT count(*) AS count FROM broker_orders WHERE provider = 'ibkr'")[0]["count"] == 0
+        assert query_rows(con, "SELECT count(*) AS count FROM broker_fills WHERE provider = 'ibkr'")[0]["count"] == 0
+
+
+def test_configured_ibkr_account_id_scopes_account_callbacks() -> None:
+    config = IBKRConfig(enabled=True, account_id="DU123", paper_only=True)
+
+    assert ibkr_accept_account(config, "DU123")
+    assert not ibkr_accept_account(config, "DU999")
+    mismatch = ibkr_paper_account_mismatch(
+        config,
+        type("App", (), {"managed_accounts": ["DU123", "U1234567"], "account_values": {}, "errors": []})(),
+        datetime.now(UTC),
+        time.perf_counter(),
+    )
+    assert mismatch is not None
+    assert mismatch.status.status == "account_mode_mismatch"
+    assert "U1234567" in (mismatch.status.account_id or "")
+
+
+def test_quote_entitlement_failure_does_not_discard_valid_account_sync() -> None:
+    status, detail = ibkr_snapshot_status(
+        [{"account_id": "DU123"}],
+        [],
+        [],
+        [],
+        [],
+        [{"code": 10167, "message": "Requested market data is not subscribed."}],
+    )
+
+    assert status == "ok"
+    assert "entitlement" in detail
+
+
+def test_quote_only_status_does_not_claim_account_sync() -> None:
+    status, detail = ibkr_snapshot_status(
+        [],
+        [],
+        [],
+        [],
+        [{"symbol": "NVDA", "last": 100}],
+        [],
+    )
+
+    assert status == "quote_only"
+    assert "no account" in detail
+
+
+def test_ibkr_live_or_delayed_requests_live_market_data_type() -> None:
+    assert ibkr_market_data_type_id("live_or_delayed") == 1
+    assert ibkr_market_data_type_id("delayed") == 3
+
+
+def test_ibkr_live_or_delayed_retries_only_symbols_without_snapshots() -> None:
+    assert ibkr_missing_quote_symbols(
+        ["AAPL", "NVDA", "MSFT"],
+        [{"symbol": "AAPL", "last": 100}, {"symbol": "NVDA", "last": 200}],
+    ) == ["MSFT"]
+
+
+def test_ibkr_mark_price_only_quote_is_persistable() -> None:
+    observed = datetime.now(UTC)
+    rows = ibkr_market_snapshots(
+        {9200: {"symbol": "AAPL", "observed_at": observed, "mark_price": 123.45, "market_data_type": 1, "raw": {"tick_price_37": 123.45}}},
+        [],
+        observed,
+    )
+
+    assert rows == [
+        {
+            "symbol": "AAPL",
+            "observed_at": observed,
+            "bid": None,
+            "ask": None,
+            "last": 123.45,
+            "close": None,
+            "volume": None,
+            "entitlement_status": "ok",
+            "data_status": "live",
+            "raw": {"tick_price_37": 123.45, "market_data_status": "live"},
+        }
+    ]
+
+
+def test_ibkr_derivative_positions_keep_contract_level_symbol() -> None:
+    class StockContract:
+        secType = "STK"
+        symbol = "AAPL"
+        localSymbol = ""
+        conId = 123
+
+    class OptionContract:
+        secType = "OPT"
+        symbol = "AAPL"
+        localSymbol = "AAPL  260620C00100000"
+        conId = 456
+
+    class FutureContract:
+        secType = "FUT"
+        symbol = "ES"
+        localSymbol = ""
+        conId = 789
+
+    assert ibkr_position_symbol(StockContract()) == "AAPL"
+    assert ibkr_position_symbol(OptionContract()) == "AAPL_260620C00100000"
+    assert ibkr_position_symbol(FutureContract()) == "ES:FUT:789"
 
 
 def test_market_data_only_mode_does_not_require_broker_login(tmp_path: Path) -> None:

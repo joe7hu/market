@@ -413,6 +413,36 @@ def test_source_ingestion_audit_allows_login_gated_brokers_and_rejects_enabled_e
     assert moomoo["status"] == "expected_login_required"
 
 
+def test_source_ingestion_audit_allows_gateway_offline_broker_status(tmp_path: Path) -> None:
+    db_path = tmp_path / "audit-offline.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO broker_provider_status VALUES ('ibkr', now(), 'gateway_offline', 'degraded', 'IB Gateway is not running locally.', NULL, 'paper', NULL, NULL, NULL, '{}', '{}')"
+        )
+        audit = source_ingestion_audit(con)
+
+    ibkr = next(row for row in audit["broker_rows"] if row["provider"] == "ibkr")
+    assert ibkr["status"] == "expected_login_required"
+    assert ibkr["provider_status"] == "gateway_offline"
+    assert not any(row.get("provider") == "ibkr" for row in audit["failures"])
+
+
+def test_source_ingestion_audit_treats_broker_session_failure_as_failure(tmp_path: Path) -> None:
+    db_path = tmp_path / "audit-session-failure.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO broker_provider_status VALUES ('ibkr', now(), 'session_failure', 'degraded', 'IBKR read-only API session failed.', NULL, 'paper', NULL, NULL, NULL, '{}', '{}')"
+        )
+        audit = source_ingestion_audit(con)
+
+    ibkr = next(row for row in audit["broker_rows"] if row["provider"] == "ibkr")
+    assert ibkr["status"] == "failure"
+    assert ibkr["provider_status"] == "session_failure"
+    assert any(row.get("provider") == "ibkr" for row in audit["failures"])
+
+
 @pytest.mark.parametrize(
     ("path", "expected_key"),
     [

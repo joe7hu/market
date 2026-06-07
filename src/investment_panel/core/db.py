@@ -536,6 +536,8 @@ CREATE TABLE IF NOT EXISTS candidate_event (
     trigger_reason TEXT,
     thesis_id TEXT,
     score DOUBLE,
+    quality_status TEXT,
+    quality_flags JSON,
     raw JSON
 );
 
@@ -1355,6 +1357,10 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
         "strategy_mutation_proposal": {
             "approved_by": "TEXT",
             "approved_at": "TIMESTAMP",
+        },
+        "candidate_event": {
+            "quality_status": "TEXT",
+            "quality_flags": "JSON",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

@@ -19,6 +19,8 @@ EXPECTED_LOGIN_STATUSES = {
     "auth_required",
     "login_required",
     "degraded",
+    "gateway_offline",
+    "quote_entitlement_failure",
     "unreachable",
 }
 

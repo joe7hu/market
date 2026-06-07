@@ -3482,13 +3482,14 @@ def candidate_event(con: Any) -> list[dict[str, Any]]:
         """
         SELECT event_id, snapshot_time, ticker, contract_id, strategy_version,
                state, premium_mid, premium_fill_assumption, required_10x_price,
-               required_move_pct, buy_under, trigger_reason, thesis_id, score, raw
+               required_move_pct, buy_under, trigger_reason, thesis_id, score,
+               quality_status, quality_flags, raw
         FROM candidate_event
         ORDER BY snapshot_time DESC, score DESC, ticker
         LIMIT 1000
         """,
     )
-    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+    return [_compact_empty_fields(decode_fields(row, ("quality_flags", "raw"))) for row in rows]
 
 
 def shadow_trade(con: Any) -> list[dict[str, Any]]:

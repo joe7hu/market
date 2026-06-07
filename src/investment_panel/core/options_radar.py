@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from datetime import date, datetime
 from statistics import mean
@@ -14,6 +15,15 @@ from investment_panel.core.source_ingestion.utils import stable_id
 
 DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
 MIN_FORWARD_TEST_DAYS = 30
+DEFAULT_OPTION_RISK_FREE_RATE = 0.045
+MIN_OPTION_MODEL_DTE_DAYS = 1
+MIN_OPTION_MODEL_IV = 0.0001
+OPTION_QUALITY_MID_CAUTION_RELATIVE_DIFF = 0.10
+OPTION_QUALITY_MID_BAD_RELATIVE_DIFF = 0.20
+OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF = 0.15
+OPTION_QUALITY_IV_BAD_RELATIVE_DIFF = 0.30
+OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF = 0.07
+OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF = 0.15
 
 DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "strategy_name": "leap_10x_reversal",
@@ -148,21 +158,64 @@ def persist_option_snapshots(
             oc.observed_at,
             oc.source,
             oc.raw,
-            COALESCE(
-                (
-                    SELECT q.price
-                    FROM quotes_intraday q
-                    WHERE q.symbol = oc.symbol AND q.observed_at <= oc.observed_at
-                    ORDER BY q.observed_at DESC
-                    LIMIT 1
-                ),
-                (
-                    SELECT q.price
-                    FROM quotes_intraday q
-                    WHERE q.symbol = oc.symbol
-                    ORDER BY q.observed_at DESC
-                    LIMIT 1
-                )
+            (
+                SELECT tv.delta
+                FROM options_chain tv
+                WHERE tv.symbol = oc.symbol
+                  AND tv.expiry = oc.expiry
+                  AND tv.strike = oc.strike
+                  AND tv.option_type = oc.option_type
+                  AND tv.source = 'tradingview'
+                  AND tv.observed_at <= oc.observed_at
+                  AND tv.delta IS NOT NULL
+                ORDER BY tv.observed_at DESC
+                LIMIT 1
+            ) AS tradingview_delta,
+            (
+                SELECT tv.gamma
+                FROM options_chain tv
+                WHERE tv.symbol = oc.symbol
+                  AND tv.expiry = oc.expiry
+                  AND tv.strike = oc.strike
+                  AND tv.option_type = oc.option_type
+                  AND tv.source = 'tradingview'
+                  AND tv.observed_at <= oc.observed_at
+                  AND tv.gamma IS NOT NULL
+                ORDER BY tv.observed_at DESC
+                LIMIT 1
+            ) AS tradingview_gamma,
+            (
+                SELECT tv.theta
+                FROM options_chain tv
+                WHERE tv.symbol = oc.symbol
+                  AND tv.expiry = oc.expiry
+                  AND tv.strike = oc.strike
+                  AND tv.option_type = oc.option_type
+                  AND tv.source = 'tradingview'
+                  AND tv.observed_at <= oc.observed_at
+                  AND tv.theta IS NOT NULL
+                ORDER BY tv.observed_at DESC
+                LIMIT 1
+            ) AS tradingview_theta,
+            (
+                SELECT tv.vega
+                FROM options_chain tv
+                WHERE tv.symbol = oc.symbol
+                  AND tv.expiry = oc.expiry
+                  AND tv.strike = oc.strike
+                  AND tv.option_type = oc.option_type
+                  AND tv.source = 'tradingview'
+                  AND tv.observed_at <= oc.observed_at
+                  AND tv.vega IS NOT NULL
+                ORDER BY tv.observed_at DESC
+                LIMIT 1
+            ) AS tradingview_vega,
+            (
+                SELECT q.price
+                FROM quotes_intraday q
+                WHERE q.symbol = oc.symbol AND q.observed_at <= oc.observed_at
+                ORDER BY q.observed_at DESC
+                LIMIT 1
             ) AS underlying_price
         FROM options_chain oc
         WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]} {observed_filter}
@@ -183,6 +236,21 @@ def persist_option_snapshots(
         ask = _number(row.get("ask"))
         contract_id = _contract_id(ticker, expiration, strike, option_type, row.get("contract_symbol") or raw.get("symbol"))
         data_source = str(row.get("source") or source or "unknown")
+        underlying_price = _number(row.get("underlying_price"))
+        iv = _number(row.get("iv"))
+        dte = _integer(raw.get("dte")) or _days_to_expiration(expiration, snapshot_at)
+        greek_resolution = _resolve_option_greeks(row, option_type=option_type, underlying_price=underlying_price, strike=strike, dte=dte, iv=iv)
+        if greek_resolution["source"] != "provider":
+            raw["greeks_source"] = greek_resolution["source"]
+            if greek_resolution["source"] in {"black_scholes_model", "mixed_fallback"}:
+                raw["greeks_model"] = {
+                    "method": "black_scholes_from_iv",
+                    "risk_free_rate": DEFAULT_OPTION_RISK_FREE_RATE,
+                    "iv": iv,
+                    "dte": dte,
+                    "effective_iv": _option_model_iv(iv),
+                    "effective_dte": _option_model_dte(dte),
+                }
         con.execute(
             """
             INSERT OR REPLACE INTO option_snapshot
@@ -194,7 +262,7 @@ def persist_option_snapshots(
             [
                 snapshot_at,
                 ticker,
-                _number(row.get("underlying_price")),
+                underlying_price,
                 expiration,
                 strike,
                 option_type,
@@ -204,12 +272,12 @@ def persist_option_snapshots(
                 _coalesce_number(raw, "last", "last_price", "close"),
                 _coalesce_number(raw, "volume", "vol"),
                 _coalesce_number(raw, "open_interest", "openInterest", "oi"),
-                _number(row.get("iv")),
-                _number(row.get("delta")),
-                _number(row.get("gamma")),
-                _number(row.get("theta")),
-                _number(row.get("vega")),
-                _integer(raw.get("dte")) or _days_to_expiration(expiration, snapshot_at),
+                iv,
+                greek_resolution["delta"],
+                greek_resolution["gamma"],
+                greek_resolution["theta"],
+                greek_resolution["vega"],
+                dte,
                 _spread_pct(bid, ask, mid),
                 data_source,
                 contract_id,
@@ -441,6 +509,57 @@ def generate_candidate_events(
             sf.rs_vs_qqq_20d,
             sf.base_length_days,
             sf.breakout_level,
+            (
+                SELECT peer.data_source
+                FROM option_snapshot peer
+                WHERE peer.ticker = s.ticker
+                  AND peer.expiration = s.expiration
+                  AND peer.strike = s.strike
+                  AND peer.option_type = s.option_type
+                  AND peer.data_source != s.data_source
+                  AND peer.snapshot_time <= s.snapshot_time
+                ORDER BY peer.snapshot_time DESC
+                LIMIT 1
+            ) AS peer_data_source,
+            (
+                SELECT peer.mid
+                FROM option_snapshot peer
+                WHERE peer.ticker = s.ticker
+                  AND peer.expiration = s.expiration
+                  AND peer.strike = s.strike
+                  AND peer.option_type = s.option_type
+                  AND peer.data_source != s.data_source
+                  AND peer.snapshot_time <= s.snapshot_time
+                  AND peer.mid IS NOT NULL
+                ORDER BY peer.snapshot_time DESC
+                LIMIT 1
+            ) AS peer_mid,
+            (
+                SELECT peer.iv
+                FROM option_snapshot peer
+                WHERE peer.ticker = s.ticker
+                  AND peer.expiration = s.expiration
+                  AND peer.strike = s.strike
+                  AND peer.option_type = s.option_type
+                  AND peer.data_source != s.data_source
+                  AND peer.snapshot_time <= s.snapshot_time
+                  AND peer.iv IS NOT NULL
+                ORDER BY peer.snapshot_time DESC
+                LIMIT 1
+            ) AS peer_iv,
+            (
+                SELECT peer.delta
+                FROM option_snapshot peer
+                WHERE peer.ticker = s.ticker
+                  AND peer.expiration = s.expiration
+                  AND peer.strike = s.strike
+                  AND peer.option_type = s.option_type
+                  AND peer.data_source != s.data_source
+                  AND peer.snapshot_time <= s.snapshot_time
+                  AND peer.delta IS NOT NULL
+                ORDER BY peer.snapshot_time DESC
+                LIMIT 1
+            ) AS peer_delta,
             t.thesis_id
         FROM option_snapshot s
         JOIN option_features f ON f.contract_id = s.contract_id AND f.snapshot_time = s.snapshot_time
@@ -465,8 +584,8 @@ def generate_candidate_events(
             INSERT OR REPLACE INTO candidate_event
             (event_id, snapshot_time, ticker, contract_id, strategy_version, state, premium_mid,
              premium_fill_assumption, required_10x_price, required_move_pct, buy_under,
-             trigger_reason, thesis_id, score, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             trigger_reason, thesis_id, score, quality_status, quality_flags, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 event["event_id"],
@@ -483,6 +602,8 @@ def generate_candidate_events(
                 event["trigger_reason"],
                 event["thesis_id"],
                 event["score"],
+                event["quality_status"],
+                json_dumps(event["quality_flags"]),
                 json_dumps(event["raw"]),
             ],
         )
@@ -509,8 +630,9 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         blockers.append("missing_dte")
     elif dte < int(strategy["dte_min"]) or dte > int(strategy["dte_max"]):
         hard_rejects.append("dte_outside_strategy_range")
-    delta = abs(_number(row.get("delta")) or 0)
-    if delta:
+    delta_value = _number(row.get("delta"))
+    if delta_value is not None:
+        delta = abs(delta_value)
         if delta < float(strategy["delta_min"]) or delta > float(strategy["delta_max"]):
             hard_rejects.append("delta_outside_strategy_range")
         else:
@@ -581,6 +703,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         positives.append("premium_inside_buy_under")
 
     state = "REJECT" if hard_rejects else "WATCH" if _has_missing_data(blockers) else "SETUP" if blockers else "FIRE"
+    quality = _candidate_quality(row, state=state, blockers=blockers, hard_rejects=hard_rejects)
     reasons = [*hard_rejects, *blockers, *positives]
     snapshot_time = _iso(row.get("snapshot_time"))
     contract_id = str(row.get("contract_id"))
@@ -600,10 +723,13 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         "trigger_reason": ", ".join(reasons),
         "thesis_id": row.get("thesis_id"),
         "score": _candidate_score(row, state),
+        "quality_status": quality["status"],
+        "quality_flags": quality["flags"],
         "raw": {
             "hard_rejects": hard_rejects,
             "blockers": blockers,
             "positives": positives,
+            "quality": quality,
             "strategy_parameters": strategy,
             "expiration": str(row.get("expiration")),
             "strike": strike,
@@ -2847,6 +2973,209 @@ def _candidate_score(row: dict[str, Any], state: str) -> float:
 
 def _has_missing_data(blockers: list[str]) -> bool:
     return any(blocker.startswith("missing_") for blocker in blockers)
+
+
+def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], hard_rejects: list[str]) -> dict[str, Any]:
+    if state == "REJECT":
+        return {"status": "ok", "flags": [], "peer": {}}
+
+    flags: list[str] = []
+    bad_flags: set[str] = set()
+    raw = _json(row.get("raw"))
+    greeks_source = str(raw.get("greeks_source") or "provider")
+    data_source = str(row.get("data_source") or "unknown")
+    peer_source = row.get("peer_data_source")
+    peer: dict[str, Any] = {"source": peer_source} if peer_source else {}
+
+    missing_flags = [blocker for blocker in blockers if blocker in {"missing_delta", "missing_spread", "missing_open_interest", "missing_volume", "missing_iv_percentile"}]
+    if missing_flags:
+        flags.extend(missing_flags)
+        bad_flags.update(missing_flags)
+    if "spread_above_fire_threshold" in blockers:
+        flags.append("spread_above_threshold")
+    if any(reject in hard_rejects for reject in {"spread_reject"}):
+        flags.append("spread_reject")
+        bad_flags.add("spread_reject")
+    if state == "FIRE" and greeks_source in {"black_scholes_model", "mixed_fallback"}:
+        flags.append("modeled_greeks")
+    if state == "FIRE" and greeks_source == "mixed_fallback":
+        flags.append("mixed_greek_sources")
+
+    data_status = str(raw.get("market_data_type") or raw.get("data_status") or raw.get("entitlement_status") or "").lower()
+    if "delayed" in data_status:
+        flags.append("delayed_market_data")
+    if "stale" in data_status:
+        flags.append("stale_market_data")
+        bad_flags.add("stale_market_data")
+
+    mid = _number(row.get("mid"))
+    peer_mid = _number(row.get("peer_mid"))
+    mid_diff = _relative_diff(mid, peer_mid)
+    if mid_diff is not None:
+        peer["mid_relative_diff"] = round(mid_diff, 4)
+        if mid_diff >= OPTION_QUALITY_MID_BAD_RELATIVE_DIFF:
+            flags.append("source_mid_disagreement")
+            bad_flags.add("source_mid_disagreement")
+        elif mid_diff >= OPTION_QUALITY_MID_CAUTION_RELATIVE_DIFF:
+            flags.append("source_mid_disagreement")
+
+    iv = _number(row.get("iv"))
+    peer_iv = _number(row.get("peer_iv"))
+    iv_diff = _relative_diff(iv, peer_iv)
+    if iv_diff is not None:
+        peer["iv_relative_diff"] = round(iv_diff, 4)
+        if iv_diff >= OPTION_QUALITY_IV_BAD_RELATIVE_DIFF:
+            flags.append("source_iv_disagreement")
+            bad_flags.add("source_iv_disagreement")
+        elif iv_diff >= OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF:
+            flags.append("source_iv_disagreement")
+
+    delta = _number(row.get("delta"))
+    peer_delta = _number(row.get("peer_delta"))
+    if delta is not None and peer_delta is not None:
+        delta_diff = abs(delta - peer_delta)
+        peer["delta_absolute_diff"] = round(delta_diff, 4)
+        if delta_diff >= OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF:
+            flags.append("source_delta_disagreement")
+            bad_flags.add("source_delta_disagreement")
+        elif delta_diff >= OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF:
+            flags.append("source_delta_disagreement")
+
+    deduped_flags = list(dict.fromkeys(flags))
+    if bad_flags:
+        status = "bad"
+    elif deduped_flags:
+        status = "caution"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "flags": deduped_flags,
+        "source": data_source,
+        "greeks_source": greeks_source,
+        "peer": peer,
+    }
+
+
+def _relative_diff(left: float | None, right: float | None) -> float | None:
+    if left is None or right is None:
+        return None
+    denominator = max(abs(left), abs(right))
+    if denominator <= 0:
+        return None
+    return abs(left - right) / denominator
+
+
+def _resolve_option_greeks(
+    row: dict[str, Any],
+    *,
+    option_type: str,
+    underlying_price: float | None,
+    strike: float | None,
+    dte: int | None,
+    iv: float | None,
+) -> dict[str, Any]:
+    provider_values = {name: _number(row.get(name)) for name in ("delta", "gamma", "theta", "vega")}
+    matched_values = {name: _number(row.get(f"tradingview_{name}")) for name in ("delta", "gamma", "theta", "vega")}
+    if all(value is not None for value in provider_values.values()):
+        return {**provider_values, "source": "provider"}
+
+    resolved: dict[str, float | None] = {}
+    used_match = False
+    for name, value in provider_values.items():
+        if value is not None:
+            resolved[name] = value
+            continue
+        matched = matched_values[name]
+        if matched is not None:
+            resolved[name] = matched
+            used_match = True
+        else:
+            resolved[name] = None
+
+    used_model = False
+    if any(value is None for value in resolved.values()):
+        modeled_values = _black_scholes_greeks(option_type, underlying_price, strike, dte, iv)
+        for name, value in resolved.items():
+            if value is None and modeled_values.get(name) is not None:
+                resolved[name] = modeled_values[name]
+                used_model = True
+
+    if used_match and used_model:
+        greek_source = "mixed_fallback"
+    elif used_model:
+        greek_source = "black_scholes_model"
+    elif used_match:
+        greek_source = "tradingview_match"
+    else:
+        greek_source = "provider"
+    return {**resolved, "source": greek_source}
+
+
+def _black_scholes_greeks(
+    option_type: str,
+    spot: float | None,
+    strike: float | None,
+    dte: int | None,
+    iv: float | None,
+    *,
+    risk_free_rate: float = DEFAULT_OPTION_RISK_FREE_RATE,
+) -> dict[str, float]:
+    if not option_type or spot is None or strike is None or dte is None or iv is None:
+        return {}
+    if option_type not in {"call", "put"} or spot <= 0 or strike <= 0 or dte < 0 or iv < 0:
+        return {}
+    if not all(math.isfinite(value) for value in (spot, strike, float(dte), iv, risk_free_rate)):
+        return {}
+    model_dte = _option_model_dte(dte)
+    model_iv = _option_model_iv(iv)
+    if model_dte is None or model_iv is None:
+        return {}
+    years = model_dte / 365.0
+    sqrt_years = math.sqrt(years)
+    sigma_sqrt_t = model_iv * sqrt_years
+    if sigma_sqrt_t <= 0:
+        return {}
+
+    d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * model_iv * model_iv) * years) / sigma_sqrt_t
+    d2 = d1 - sigma_sqrt_t
+    pdf = _norm_pdf(d1)
+    discount = math.exp(-risk_free_rate * years)
+    if option_type == "call":
+        delta = _norm_cdf(d1)
+        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) - (risk_free_rate * strike * discount * _norm_cdf(d2))
+    else:
+        delta = _norm_cdf(d1) - 1.0
+        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) + (risk_free_rate * strike * discount * _norm_cdf(-d2))
+    gamma = pdf / (spot * sigma_sqrt_t)
+    theta = theta_annual / 365.0
+    vega = spot * pdf * sqrt_years
+    return {
+        "delta": round(delta, 6),
+        "gamma": round(gamma, 6),
+        "theta": round(theta, 6),
+        "vega": round(vega, 6),
+    }
+
+
+def _option_model_dte(dte: int | None) -> int | None:
+    if dte is None or dte < 0:
+        return None
+    return max(dte, MIN_OPTION_MODEL_DTE_DAYS)
+
+
+def _option_model_iv(iv: float | None) -> float | None:
+    if iv is None or iv < 0:
+        return None
+    return max(iv, MIN_OPTION_MODEL_IV)
+
+
+def _norm_cdf(value: float) -> float:
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+
+def _norm_pdf(value: float) -> float:
+    return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
 
 
 def _days_to_expiration(expiration: Any, snapshot_time: str) -> int | None:

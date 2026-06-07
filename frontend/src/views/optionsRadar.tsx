@@ -1,4 +1,4 @@
-import { Activity, BrainCircuit, CheckCircle2, GitBranchPlus, Loader2, Target, TrendingUp } from "lucide-react";
+import { Activity, AlertTriangle, BrainCircuit, CheckCircle2, GitBranchPlus, Loader2, Target, TrendingUp } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { promoteStrategyMutation } from "@/api";
@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
-import { displayField, formatMoney, fullField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
+import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { WorkspacePage, type MetricSpec, type OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
@@ -148,10 +148,24 @@ function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpe
           {rows.slice(0, 80).map((row) => {
             const ticker = textField(row, ["ticker"]);
             const state = stateOf(row);
+            const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
+            const qualityFlags = listField(row, ["quality_flags"]);
             return (
-              <tr key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
+              <tr
+                key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)}
+                className={cn(
+                  "border-b border-border align-top transition-colors hover:bg-accent/40",
+                  qualityStatus === "bad" && "bg-destructive/5",
+                  qualityStatus === "caution" && "bg-amber-500/5",
+                )}
+              >
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell><StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge></Cell>
+                <Cell>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
+                    <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+                  </div>
+                </Cell>
                 <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
                 <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["premium_mid"])}</Cell>
@@ -167,6 +181,23 @@ function CandidateEventsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpe
         </tbody>
       </table>
     </DataTableFrame>
+  );
+}
+
+function QualityIndicator({ status, flags }: { status: string; flags: string[] }) {
+  if (status === "ok" || !flags.length) return null;
+  const title = flags.map(titleLabel).join(", ");
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 w-5 items-center justify-center rounded-full",
+        status === "bad" ? "text-destructive" : "text-amber-600",
+      )}
+      title={title}
+      aria-label={title}
+    >
+      <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+    </span>
   );
 }
 

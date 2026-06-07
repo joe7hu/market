@@ -85,12 +85,14 @@ class YFinanceConfig:
 class IBKRConfig:
     enabled: bool = False
     host: str = "127.0.0.1"
-    port: int = 7497
+    port: int = 4002
     client_id: int = 77
     account_id: str | None = None
     readonly: bool = True
     paper_only: bool = True
     stale_after_minutes: int = 15
+    market_data_type: str = "live_or_delayed"
+    quote_limit: int = 50
 
 
 @dataclass(frozen=True)
@@ -273,12 +275,14 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ibkr=IBKRConfig(
                 enabled=bool(ibkr_raw.get("enabled", False)),
                 host=str(ibkr_raw.get("host", "127.0.0.1")),
-                port=int(ibkr_raw.get("port", 7497)),
+                port=int(ibkr_raw.get("port", 4002)),
                 client_id=int(ibkr_raw.get("client_id", 77)),
                 account_id=ibkr_raw.get("account_id"),
                 readonly=bool(ibkr_raw.get("readonly", True)),
                 paper_only=bool(ibkr_raw.get("paper_only", True)),
                 stale_after_minutes=int(ibkr_raw.get("stale_after_minutes", 15)),
+                market_data_type=str(ibkr_raw.get("market_data_type", "live_or_delayed")),
+                quote_limit=int(ibkr_raw.get("quote_limit", 50)),
             ),
             moomoo=MoomooConfig(
                 enabled=bool(moomoo_raw.get("enabled", False)),
@@ -416,6 +420,8 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                     "readonly": config.data_sources.brokers.ibkr.readonly,
                     "paper_only": config.data_sources.brokers.ibkr.paper_only,
                     "stale_after_minutes": config.data_sources.brokers.ibkr.stale_after_minutes,
+                    "market_data_type": config.data_sources.brokers.ibkr.market_data_type,
+                    "quote_limit": config.data_sources.brokers.ibkr.quote_limit,
                 },
                 "moomoo": {
                     "enabled": config.data_sources.brokers.moomoo.enabled,

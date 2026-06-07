@@ -137,6 +137,13 @@ products are useful only as UI/product references.
 The app uses online market data by default. Price provider failures are reported
 in job output and source health rather than filled with synthetic rows.
 
+IBKR is available as a read-only broker source through IB Gateway/TWS API. The
+default local paper Gateway config is `127.0.0.1:4002`; it syncs account
+summary, positions, orders/fills, and quote snapshots into broker read models.
+IB market-data rows record whether returned quotes are live or delayed, because
+paper access still depends on live-account subscriptions and market-data
+sharing.
+
 Free-source enrichment is handled by `market-update-free-sources`. It uses the
 local OpenCLI TradingView adapter for quotes, screeners, options, news, symbol
 search, watchlists, alerts, and chart state, plus yfinance for estimates,

@@ -191,6 +191,448 @@ def test_options_radar_reads_yfinance_chain_source_by_default(tmp_path) -> None:
     assert event["contract_id"] == "RBLX270918C00120000"
 
 
+def test_options_radar_models_missing_yfinance_greeks(tmp_path) -> None:
+    db_path = tmp_path / "radar-yfinance-modeled-greeks.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.3,
+                    4.7,
+                    0.30,
+                    None,
+                    "RBLX270918C00120000",
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=25,
+                    open_interest=250,
+                ),
+                option_row(
+                    "2027-09-18",
+                    180,
+                    "call",
+                    7.5,
+                    8.5,
+                    0.50,
+                    None,
+                    "RBLX270918C00180000",
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=25,
+                    open_interest=250,
+                ),
+            ],
+            source="yfinance",
+        )
+
+        result = refresh_options_radar(con, ["RBLX"])
+        snapshot = query_rows(
+            con,
+            """
+            SELECT data_source, delta, gamma, theta, vega, raw
+            FROM option_snapshot
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+        event = query_rows(con, "SELECT state, trigger_reason, quality_status, quality_flags FROM candidate_event WHERE contract_id = 'RBLX270918C00120000'")[0]
+
+    raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
+    quality_flags = json.loads(event["quality_flags"]) if isinstance(event["quality_flags"], str) else event["quality_flags"]
+    assert result["option_snapshots"] == 2
+    assert snapshot["data_source"] == "yfinance"
+    assert 0.20 <= snapshot["delta"] <= 0.45
+    assert snapshot["gamma"] > 0
+    assert snapshot["theta"] < 0
+    assert snapshot["vega"] > 0
+    assert raw["greeks_source"] == "black_scholes_model"
+    assert "missing_delta" not in event["trigger_reason"]
+    assert "delta_in_range" in event["trigger_reason"]
+    assert event["quality_status"] == "caution"
+    assert "modeled_greeks" in quality_flags
+
+
+def test_options_radar_models_same_day_yfinance_greeks_with_floor_inputs(tmp_path) -> None:
+    db_path = tmp_path / "radar-yfinance-same-day-greeks.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "AAPL", start_price=100, slope=0.01)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('AAPL', '2026-06-05T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "AAPL",
+            "2026-06-05T20:00:00Z",
+            [
+                option_row(
+                    "2026-06-05",
+                    100,
+                    "call",
+                    0.5,
+                    0.7,
+                    0.0,
+                    None,
+                    "AAPL260605C00100000",
+                    dte=0,
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=25,
+                    open_interest=250,
+                ),
+                option_row(
+                    "2026-06-05",
+                    1000,
+                    "call",
+                    0.01,
+                    0.02,
+                    0.0,
+                    None,
+                    "AAPL260605C01000000",
+                    dte=0,
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=25,
+                    open_interest=250,
+                ),
+            ],
+            source="yfinance",
+        )
+
+        refresh_options_radar(con, ["AAPL"])
+        snapshot = query_rows(
+            con,
+            """
+            SELECT dte, delta, gamma, theta, vega, raw
+            FROM option_snapshot
+            WHERE contract_id = 'AAPL260605C00100000'
+            """,
+        )[0]
+        zero_delta_event = query_rows(
+            con,
+            """
+            SELECT trigger_reason
+            FROM candidate_event
+            WHERE contract_id = 'AAPL260605C01000000'
+            """,
+        )[0]
+
+    raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
+    assert snapshot["dte"] == 0
+    assert snapshot["delta"] is not None
+    assert snapshot["gamma"] is not None
+    assert snapshot["theta"] is not None
+    assert snapshot["vega"] is not None
+    assert raw["greeks_source"] == "black_scholes_model"
+    assert raw["greeks_model"]["effective_dte"] == 1
+    assert raw["greeks_model"]["effective_iv"] == 0.0001
+    assert "missing_delta" not in zero_delta_event["trigger_reason"]
+    assert "delta_outside_strategy_range" in zero_delta_event["trigger_reason"]
+
+
+def test_options_radar_uses_tradingview_match_for_missing_yfinance_greeks(tmp_path) -> None:
+    db_path = tmp_path / "radar-yfinance-matched-greeks.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.3,
+                    4.7,
+                    0.30,
+                    0.24,
+                    "OPRA:RBLX270918C120",
+                    gamma=0.011,
+                    theta=-0.015,
+                    vega=0.45,
+                    volume=25,
+                    open_interest=250,
+                ),
+            ],
+            source="tradingview",
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.4,
+                    4.8,
+                    0.31,
+                    None,
+                    "RBLX270918C00120000",
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=30,
+                    open_interest=275,
+                ),
+            ],
+            source="yfinance",
+        )
+
+        result = refresh_options_radar(con, ["RBLX"], source="yfinance")
+        snapshot = query_rows(
+            con,
+            """
+            SELECT delta, gamma, theta, vega, raw
+            FROM option_snapshot
+            WHERE data_source = 'yfinance' AND contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+
+    raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
+    assert result["option_snapshots"] == 1
+    assert snapshot["delta"] == 0.24
+    assert snapshot["gamma"] == 0.011
+    assert snapshot["theta"] == -0.015
+    assert snapshot["vega"] == 0.45
+    assert raw["greeks_source"] == "tradingview_match"
+
+
+def test_options_radar_does_not_use_future_tradingview_greeks_for_yfinance_backfill(tmp_path) -> None:
+    db_path = tmp_path / "radar-no-future-greeks.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.4,
+                    4.8,
+                    0.31,
+                    None,
+                    "RBLX270918C00120000",
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=30,
+                    open_interest=275,
+                ),
+            ],
+            source="yfinance",
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-03T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.3,
+                    4.7,
+                    0.30,
+                    0.24,
+                    "OPRA:RBLX270918C120",
+                    gamma=0.011,
+                    theta=-0.015,
+                    vega=0.45,
+                    volume=25,
+                    open_interest=250,
+                ),
+            ],
+            source="tradingview",
+        )
+
+        refresh_options_radar(con, ["RBLX"], source="yfinance", snapshot_time="2026-06-02T20:00:00Z")
+        snapshot = query_rows(
+            con,
+            """
+            SELECT delta, raw
+            FROM option_snapshot
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+
+    raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
+    assert raw["greeks_source"] == "black_scholes_model"
+    assert snapshot["delta"] != 0.24
+
+
+def test_options_radar_does_not_model_yfinance_greeks_from_future_underlying_quote(tmp_path) -> None:
+    db_path = tmp_path / "radar-no-future-underlying.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-03T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    120,
+                    "call",
+                    4.4,
+                    4.8,
+                    0.31,
+                    None,
+                    "RBLX270918C00120000",
+                    gamma=None,
+                    theta=None,
+                    vega=None,
+                    volume=30,
+                    open_interest=275,
+                ),
+            ],
+            source="yfinance",
+        )
+
+        refresh_options_radar(con, ["RBLX"], source="yfinance", snapshot_time="2026-06-02T20:00:00Z")
+        snapshot = query_rows(
+            con,
+            """
+            SELECT underlying_price, delta, gamma, theta, vega, raw
+            FROM option_snapshot
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+        event_count = query_rows(con, "SELECT count(*) AS count FROM candidate_event WHERE contract_id = 'RBLX270918C00120000'")[0]["count"]
+
+    raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
+    assert snapshot["underlying_price"] is None
+    assert snapshot["delta"] is None
+    assert snapshot["gamma"] is None
+    assert snapshot["theta"] is None
+    assert snapshot["vega"] is None
+    assert "greeks_source" not in raw
+    assert event_count == 0
+
+
+def test_options_radar_marks_source_disagreement_without_noisy_clean_rows(tmp_path) -> None:
+    db_path = tmp_path / "radar-source-quality.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.30, 0.25, "OPRA:RBLX270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.50, "OPRA:RBLX270918C180", volume=25, open_interest=250),
+            ],
+            source="tradingview",
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 7.0, 7.4, 0.45, 0.25, "RBLX270918C00120000", volume=25, open_interest=250),
+            ],
+            source="yfinance",
+        )
+
+        refresh_options_radar(con, ["RBLX"])
+        tradingview_event = query_rows(
+            con,
+            """
+            SELECT quality_status, quality_flags
+            FROM candidate_event
+            WHERE contract_id = 'OPRA:RBLX270918C120'
+            """,
+        )[0]
+        yfinance_event = query_rows(
+            con,
+            """
+            SELECT quality_status, quality_flags
+            FROM candidate_event
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+
+    tradingview_flags = json.loads(tradingview_event["quality_flags"]) if isinstance(tradingview_event["quality_flags"], str) else tradingview_event["quality_flags"]
+    yfinance_flags = json.loads(yfinance_event["quality_flags"]) if isinstance(yfinance_event["quality_flags"], str) else yfinance_event["quality_flags"]
+    assert tradingview_event["quality_status"] == "bad"
+    assert yfinance_event["quality_status"] == "bad"
+    assert "source_mid_disagreement" in tradingview_flags
+    assert "source_iv_disagreement" in yfinance_flags
+    assert "modeled_greeks" not in tradingview_flags
+
+
+def test_options_radar_quality_does_not_compare_future_peer_snapshots(tmp_path) -> None:
+    db_path = tmp_path / "radar-no-future-peer-quality.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.30, 0.25, "RBLX270918C00120000", volume=25, open_interest=250),
+                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.50, "RBLX270918C00180000", volume=25, open_interest=250),
+            ],
+            source="yfinance",
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-03T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 7.0, 7.4, 0.45, 0.25, "OPRA:RBLX270918C120", volume=25, open_interest=250),
+            ],
+            source="tradingview",
+        )
+
+        refresh_options_radar(con, ["RBLX"], source="yfinance", snapshot_time="2026-06-02T20:00:00Z")
+        event = query_rows(
+            con,
+            """
+            SELECT quality_status, quality_flags
+            FROM candidate_event
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+
+    quality_flags = json.loads(event["quality_flags"]) if isinstance(event["quality_flags"], str) else event["quality_flags"]
+    assert event["quality_status"] == "ok"
+    assert "source_mid_disagreement" not in quality_flags
+    assert "source_iv_disagreement" not in quality_flags
+
+
 def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     db_path = tmp_path / "panel-radar.duckdb"
     init_db(db_path)
@@ -614,15 +1056,19 @@ def option_row(
     bid: float,
     ask: float,
     iv: float,
-    delta: float,
+    delta: float | None,
     symbol: str,
     *,
+    dte: int = 473,
+    gamma: float | None = 0.01,
+    theta: float | None = -0.01,
+    vega: float | None = 0.2,
     volume: int | None = None,
     open_interest: int | None = None,
 ) -> dict[str, object]:
     return {
         "expiry": expiry,
-        "dte": 473,
+        "dte": dte,
         "strike": strike,
         "type": option_type,
         "bid": bid,
@@ -633,8 +1079,8 @@ def option_row(
         "open_interest": open_interest,
         "iv": iv,
         "delta": delta,
-        "gamma": 0.01,
-        "theta": -0.01,
-        "vega": 0.2,
+        "gamma": gamma,
+        "theta": theta,
+        "vega": vega,
         "symbol": symbol,
     }

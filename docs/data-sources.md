@@ -95,6 +95,35 @@ Sources:
 - https://github.com/jackwener/opencli
 - https://github.com/himself65/finance-skills/tree/main/opencli-plugins/tradingview
 
+## Interactive Brokers
+
+- Market uses the official TWS API / IB Gateway socket API through `ibapi`.
+- The IBKR adapter is read-only and advisory-only: account summary, positions,
+  open orders, fills/executions, and quote snapshots are persisted into broker
+  read models, but no live order path is exposed.
+- Local IB Gateway paper defaults to `127.0.0.1:4002`; TWS paper commonly uses
+  `7497`, so override `data_sources.brokers.ibkr.port` if using TWS instead of
+  Gateway.
+- Quote requests use `market_data_type: live_or_delayed`. IB returns live data
+  when the account has the required subscriptions and falls back to delayed data
+  where delayed data is available. Market records the returned data status and
+  entitlement status on each `broker_market_snapshots` row.
+- Paper login alone is not enough for live quotes. IB requires a live funded
+  account, market-data subscriptions, and sharing those subscriptions with the
+  paper username when paper should receive live data.
+- IB quote snapshots can include underlying option-derived generic ticks such
+  as call/put open interest, call/put volume, historical volatility, implied
+  volatility, average volume, and mark price in the raw payload. Contract-level
+  option-chain ingestion is not implemented yet.
+
+Sources:
+- https://interactivebrokers.github.io/tws-api/initial_setup.html
+- https://interactivebrokers.github.io/tws-api/market_data_type.html
+- https://interactivebrokers.github.io/tws-api/top_data.html
+- https://interactivebrokers.github.io/tws-api/tick_types.html
+- https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/
+- https://www.interactivebrokers.com/en/trading/papertrader-delayed-data.php
+
 ## Decision Freshness
 
 Decision-grade read models must evaluate source freshness from source-specific
