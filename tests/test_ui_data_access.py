@@ -366,6 +366,39 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     assert payload["integration"]["birdclaw_command"] == "birdclaw export"
 
 
+def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
+    config = {
+        "agents": {
+            "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "limit": 20, "timeout_seconds": 180},
+        },
+    }
+    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+    panel_data.metadata.update(data_access._runtime_metadata(config))
+
+    payload = data_access.status_payload(panel_data)
+
+    option_thesis = payload["metadata"]["agents"]["option_thesis"]
+    assert option_thesis["active"] is True
+    assert option_thesis["configured"] is True
+    assert option_thesis["status"] == "active"
+    assert option_thesis["limit"] == 20
+    assert option_thesis["timeout_seconds"] == 180
+    assert option_thesis["request_cap"] == 12
+    assert option_thesis["queue_policy"] == "current_top_ranked_candidates_only"
+
+
+def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
+    config = {"agents": {"option_thesis": {"enabled": False, "command": ""}}}
+    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+    panel_data.metadata.update(data_access._runtime_metadata(config))
+
+    option_thesis = data_access.status_payload(panel_data)["metadata"]["agents"]["option_thesis"]
+
+    assert option_thesis["active"] is False
+    assert option_thesis["configured"] is False
+    assert option_thesis["status"] == "paused"
+
+
 def test_save_and_delete_portfolio_position(tmp_path) -> None:
     config = {"database": {"duckdb_path": str(tmp_path / "portfolio.duckdb")}}
 

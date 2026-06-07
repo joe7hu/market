@@ -20,6 +20,7 @@ from app.panel_contracts import (
     panel_contract_payload as contract_panel_payload,
     tables_for_scope as contract_tables_for_scope,
 )
+from investment_panel.core.option_agent_thesis import DEFAULT_AGENT_THESIS_REQUEST_LIMIT
 
 
 SETUP_INSTRUCTIONS = (
@@ -162,6 +163,7 @@ def load_panel_data(
         )
 
     panel_data = _normalize_panel_data(raw_data)
+    panel_data.metadata.update(_runtime_metadata(active_config))
     if _is_empty(panel_data):
         panel_data.status = DataStatus(
             ready=False,
@@ -681,6 +683,42 @@ def status_payload(panel_data: PanelData) -> dict[str, Any]:
         "source": panel_data.status.source,
         "metadata": jsonable(panel_data.metadata),
     }
+
+
+def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
+    option_thesis = agents.get("option_thesis", {}) if isinstance(agents.get("option_thesis"), dict) else {}
+    option_postmortem = agents.get("option_postmortem", {}) if isinstance(agents.get("option_postmortem"), dict) else {}
+    return {
+        "agents": {
+            "option_thesis": _agent_runtime_metadata(option_thesis, default_limit=20) | {
+                "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
+                "queue_policy": "current_top_ranked_candidates_only",
+            },
+            "option_postmortem": _agent_runtime_metadata(option_postmortem, default_limit=20),
+        },
+    }
+
+
+def _agent_runtime_metadata(config: dict[str, Any], *, default_limit: int) -> dict[str, Any]:
+    command = str(config.get("command") or "")
+    enabled = bool(config.get("enabled", bool(command)))
+    configured = bool(command.strip())
+    return {
+        "enabled": enabled,
+        "configured": configured,
+        "active": enabled and configured,
+        "status": "active" if enabled and configured else "paused",
+        "limit": _int_value(config.get("limit"), default_limit),
+        "timeout_seconds": _int_value(config.get("timeout_seconds"), 120),
+    }
+
+
+def _int_value(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def table_payload(panel_data: PanelData, table_name: str) -> dict[str, Any]:

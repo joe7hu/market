@@ -20,6 +20,15 @@ type OptionsRadarPageProps = {
   onRefresh: () => Promise<void> | void;
 };
 
+type OptionThesisAgentRuntime = {
+  active: boolean;
+  enabled: boolean;
+  configured: boolean;
+  status: string;
+  limit: number;
+  requestCap: number;
+};
+
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
@@ -48,6 +57,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     return status === "open" || status.includes("failed");
   }), [thesisRequests]);
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
+  const optionThesisAgent = optionThesisAgentState(data);
 
   const opportunityCandidates = useMemo(
     () => candidates.filter((row) => isOpportunityCandidate(row) && (!latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime)),
@@ -62,6 +72,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestCandidateMarkByEvent = useMemo(() => latestBy(candidateMarks, "event_id", "mark_time"), [candidateMarks]);
   const latestCandidateAttributionByEvent = useMemo(() => latestBy(candidateAttributions, "event_id", "snapshot_time"), [candidateAttributions]);
   const thesisRequestByEvent = useMemo(() => mapBy(openThesisRequests, "event_id"), [openThesisRequests]);
+  const latestThesisValidationByEvent = useMemo(() => latestValidationBy(thesisValidations, "candidate_event_id"), [thesisValidations]);
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
@@ -125,6 +136,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             candidates={opportunityCandidates}
             latestMarkByEvent={latestCandidateMarkByEvent}
             latestAttributionByEvent={latestCandidateAttributionByEvent}
+            latestThesisValidationByEvent={latestThesisValidationByEvent}
             onOpenTicker={onOpenTicker}
           />
         </TabsContent>
@@ -164,8 +176,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsContent>
 
         <TabsContent value="theses" className="space-y-4">
-          <ThesisPipelinePanel requests={thesisRequests} theses={agentTheses} validations={thesisValidations} />
-          <ThesisRequestsTable rows={actionableThesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} title="Actionable Thesis Queue" />
+          <ThesisPipelinePanel requests={thesisRequests} theses={agentTheses} validations={thesisValidations} agentRuntime={optionThesisAgent} />
+          <ThesisRequestsTable rows={actionableThesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} agentRuntime={optionThesisAgent} />
           <AgentThesisBrowser theses={agentTheses} validations={thesisValidations} onOpenTicker={onOpenTicker} />
         </TabsContent>
       </Tabs>
@@ -218,12 +230,14 @@ function ExtremeOpportunityDesk({
   candidates,
   latestMarkByEvent,
   latestAttributionByEvent,
+  latestThesisValidationByEvent,
   onOpenTicker,
 }: {
   rows: RowRecord[];
   candidates: RowRecord[];
   latestMarkByEvent: Map<string, RowRecord>;
   latestAttributionByEvent: Map<string, RowRecord>;
+  latestThesisValidationByEvent: Map<string, RowRecord>;
   onOpenTicker: OpenTicker;
 }) {
   const exceptionalRows = useMemo(() => rows.filter((row) => tierOf(row) === "Exceptional"), [rows]);
@@ -285,18 +299,21 @@ function ExtremeOpportunityDesk({
             row={row}
             latestMarkByEvent={latestMarkByEvent}
             latestAttributionByEvent={latestAttributionByEvent}
+            latestThesisValidationByEvent={latestThesisValidationByEvent}
             onOpenTicker={onOpenTicker}
           />
         ))}
       </div>
-      <table className="hidden w-full min-w-[1320px] text-sm lg:table">
+      <table className="hidden w-full min-w-[1540px] text-sm lg:table">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>Tier</Head>
             <Head>Primary Contract</Head>
-            <Head className="text-right">Buy Under</Head>
+            <Head className="text-right">Premium Now</Head>
+            <Head className="text-right">Premium Cap</Head>
             <Head className="text-right">10x Move</Head>
+            <Head>Thesis</Head>
             <Head>Scores</Head>
             <Head>Data Contract</Head>
             <Head>Shadow P/L</Head>
@@ -309,6 +326,7 @@ function ExtremeOpportunityDesk({
             const eventId = textField(row, ["primary_event_id"]);
             const mark = latestMarkByEvent.get(eventId);
             const attribution = latestAttributionByEvent.get(eventId);
+            const validation = latestThesisValidationByEvent.get(eventId);
             const tier = tierOf(row);
             const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
             const qualityFlags = arrayText(row, "quality_flags");
@@ -337,13 +355,18 @@ function ExtremeOpportunityDesk({
                   <AlternativeContracts row={row} />
                 </Cell>
                 <Cell className="text-right tabular-nums">
+                  <div>{moneyField(row, ["premium_mid"])}</div>
+                  <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
+                </Cell>
+                <Cell className="text-right tabular-nums">
                   <div>{moneyField(row, ["buy_under"])}</div>
-                  <div className="text-xs text-muted-foreground">{displayField(row, ["entry_zone"], "wait")}</div>
+                  <PremiumCapHint row={row} />
                 </Cell>
                 <Cell className="text-right tabular-nums">
                   <div>{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</div>
                   <div className="text-xs text-muted-foreground">{moneyField(row, ["required_10x_price"])}</div>
                 </Cell>
+                <Cell><OpportunityThesisState validation={validation} /></Cell>
                 <Cell><OpportunityScoreStack row={row} /></Cell>
                 <Cell className="max-w-[260px]"><OpportunityReasonChips row={row} /></Cell>
                 <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
@@ -362,16 +385,19 @@ function OpportunityMobileCard({
   row,
   latestMarkByEvent,
   latestAttributionByEvent,
+  latestThesisValidationByEvent,
   onOpenTicker,
 }: {
   row: RowRecord;
   latestMarkByEvent: Map<string, RowRecord>;
   latestAttributionByEvent: Map<string, RowRecord>;
+  latestThesisValidationByEvent: Map<string, RowRecord>;
   onOpenTicker: OpenTicker;
 }) {
   const eventId = textField(row, ["primary_event_id"]);
   const mark = latestMarkByEvent.get(eventId);
   const attribution = latestAttributionByEvent.get(eventId);
+  const validation = latestThesisValidationByEvent.get(eventId);
   const tier = tierOf(row);
   const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
   const qualityFlags = arrayText(row, "quality_flags");
@@ -388,11 +414,12 @@ function OpportunityMobileCard({
         </div>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <InlineMetric label="Buy Under" value={moneyField(row, ["buy_under"])} />
+        <InlineMetric label="Premium" value={moneyField(row, ["premium_mid"])} />
+        <InlineMetric label="Cap" value={moneyField(row, ["buy_under"])} />
         <InlineMetric label="10x Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
-        <InlineMetric label="Score" value={formatScore(numberField(row, ["conviction_score"], Number.NaN))} />
       </div>
       <div className="mt-3 space-y-2">
+        <MobileSection label="Thesis"><OpportunityThesisState validation={validation} /></MobileSection>
         <MobileSection label="Trade State">{opportunityActionText(row)}</MobileSection>
         <MobileSection label="Data Contract"><OpportunityReasonChips row={row} /></MobileSection>
         <MobileSection label="Shadow P/L"><OpportunityOutcome mark={mark} attribution={attribution} /></MobileSection>
@@ -448,6 +475,19 @@ function OpportunityReasonChips({ row }: { row: RowRecord }) {
     <div className="flex flex-wrap items-center gap-1.5">
       <StatusBadge tone="good">Clean</StatusBadge>
       {satisfied.length ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">{satisfied.length} checks</span> : null}
+    </div>
+  );
+}
+
+function OpportunityThesisState({ validation }: { validation: RowRecord | undefined }) {
+  if (!validation) return <StatusBadge tone="warn">Needs thesis link</StatusBadge>;
+  const reason = displayField(validation, ["reason"], "No validation reason");
+  return (
+    <div className="space-y-1">
+      <StatusBadge tone={thesisStateTone(textField(validation, ["state"]))}>{thesisValidationLabel(validation)}</StatusBadge>
+      <div className="max-w-[220px] truncate text-xs text-muted-foreground" title={reason}>
+        {reason}
+      </div>
     </div>
   );
 }
@@ -1442,18 +1482,36 @@ function StrategyProposalsTable({
   );
 }
 
-function ThesisPipelinePanel({ requests, theses, validations }: { requests: RowRecord[]; theses: RowRecord[]; validations: RowRecord[] }) {
+function ThesisPipelinePanel({
+  requests,
+  theses,
+  validations,
+  agentRuntime,
+}: {
+  requests: RowRecord[];
+  theses: RowRecord[];
+  validations: RowRecord[];
+  agentRuntime: OptionThesisAgentRuntime;
+}) {
   const open = countWhere(requests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
   const failed = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase().includes("failed"));
   const superseded = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "superseded");
   const fulfilled = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "fulfilled");
   const validated = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "validated");
+  const tracking = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "tracking");
+  const validationPending = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "pending");
+  const oldestOpen = oldestDate(requests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), "created_at");
+  const queueAtCap = open >= agentRuntime.requestCap;
   const items: Array<[string, string, string, Tone]> = [
-    ["Active queue", open.toLocaleString(), "top-ranked candidates waiting for agent thesis", open ? "warn" : "muted"],
-    ["Completed theses", theses.length.toLocaleString(), "structured hypotheses returned by agents", theses.length ? "good" : "muted"],
+    ["Open requests", open.toLocaleString(), queueAtCap ? `at current queue cap of ${agentRuntime.requestCap}` : "current top-ranked candidates awaiting a hypothesis", open ? "warn" : "muted"],
+    ["Agent worker", agentRuntime.active ? "Active" : "Paused", agentRuntime.active ? `runner limit ${agentRuntime.limit}` : "option thesis command is not enabled", agentRuntime.active ? "good" : open ? "warn" : "muted"],
+    ["Oldest open", oldestOpen ? formatDate(oldestOpen) : "-", "age of the oldest unfulfilled request", oldestOpen ? "warn" : "muted"],
+    ["Completed hypotheses", theses.length.toLocaleString(), "structured hypotheses returned by agents", theses.length ? "good" : "muted"],
+    ["Tracking", tracking.toLocaleString(), "active hypotheses being checked against price, proof, and invalidation gates", tracking ? "info" : "muted"],
+    ["Needs proof", validationPending.toLocaleString(), "hypotheses blocked by missing deterministic proof support", validationPending ? "warn" : "muted"],
     ["Validated", validated.toLocaleString(), "theses passing deterministic checks", validated ? "good" : validations.length ? "warn" : "muted"],
     ["Fulfilled requests", fulfilled.toLocaleString(), "requests matched to completed theses", fulfilled ? "good" : "muted"],
-    ["Superseded", superseded.toLocaleString(), "old requests retired from agent usage", superseded ? "muted" : "good"],
+    ["Closed requests", superseded.toLocaleString(), "older requests retired from the current queue", superseded ? "muted" : "good"],
     ["Failed", failed.toLocaleString(), "agent calls needing attention", failed ? "bad" : "good"],
   ];
   return (
@@ -1462,12 +1520,16 @@ function ThesisPipelinePanel({ requests, theses, validations }: { requests: RowR
         <div>
           <h2 className="text-base font-semibold">Thesis Pipeline</h2>
           <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
-            Agent theses are generated only for the current top-ranked queue. A request is not a thesis; decisions should wait for a completed thesis and deterministic validation.
+            Requests are capped to the current top-ranked candidates. Completed hypotheses track deterministic proof, catalyst, price, and invalidation gates until they validate or break.
           </p>
         </div>
-        <StatusBadge tone={theses.length ? "good" : open ? "warn" : "muted"}>{theses.length ? "Theses available" : open ? "Awaiting agents" : "No active queue"}</StatusBadge>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge tone={agentRuntime.active ? "good" : open ? "warn" : "muted"}>{agentRuntime.active ? "Worker active" : "Worker paused"}</StatusBadge>
+          {queueAtCap ? <StatusBadge tone="warn">At request cap</StatusBadge> : null}
+          <StatusBadge tone={theses.length ? "good" : open ? "warn" : "muted"}>{theses.length ? "Hypotheses available" : open ? "Requests open" : "No open requests"}</StatusBadge>
+        </div>
       </div>
-      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         {items.map(([label, value, detail, tone]) => (
           <div key={label} className="rounded-md border border-border/70 bg-background px-3 py-2">
             <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
@@ -1480,13 +1542,29 @@ function ThesisPipelinePanel({ requests, theses, validations }: { requests: RowR
   );
 }
 
-function ThesisRequestsTable({ rows, eventById, onOpenTicker, title = "Agent Thesis Queue" }: { rows: RowRecord[]; eventById: Map<string, RowRecord>; onOpenTicker: OpenTicker; title?: string }) {
+function ThesisRequestsTable({
+  rows,
+  eventById,
+  onOpenTicker,
+  agentRuntime,
+}: {
+  rows: RowRecord[];
+  eventById: Map<string, RowRecord>;
+  onOpenTicker: OpenTicker;
+  agentRuntime: OptionThesisAgentRuntime;
+}) {
   if (!rows.length) {
     return <EmptyState title="No active thesis requests" detail="No current top-ranked candidates are waiting for agent thesis generation." icon={BrainCircuit} />;
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title={title} count={rows.length} />}>
+    <DataTableFrame
+      title={<SectionTitle title="Open Thesis Requests" count={rows.length} />}
+      action={<StatusBadge tone={agentRuntime.active ? "good" : "warn"}>{agentRuntime.active ? "Worker active" : "Worker paused"}</StatusBadge>}
+    >
+      <div className="border-b border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+        These are requests, not completed theses. The deterministic refresh keeps at most {agentRuntime.requestCap.toLocaleString()} current top-ranked requests open; completed hypotheses appear in the browser below after the worker or a manual submit fulfills them.
+      </div>
       <table className="w-full min-w-[1120px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
@@ -1554,6 +1632,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
       const validation = history[0];
       const validationState = textField(validation, ["state"], "pending").toLowerCase();
       const redTeam = textField(validation, ["red_team_status"]).toLowerCase();
+      if (stateFilter === "tracking" && validationState !== "tracking") return false;
       if (stateFilter === "validated" && validationState !== "validated") return false;
       if (stateFilter === "pending" && validationState !== "pending") return false;
       if (stateFilter === "invalidated" && !validationState.includes("invalidated")) return false;
@@ -1574,6 +1653,8 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
   const selectedValidation = selected ? validationForThesis(selected, latestValidationByThesis, legacyValidationByTicker) : undefined;
   const selectedValidationHistory = selected ? validationHistoryForThesis(selected, validationHistoryByThesis, legacyValidationByTicker) : [];
   const validated = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase() === "validated");
+  const tracking = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase() === "tracking");
+  const validationPending = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase() === "pending");
   const invalidated = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase().includes("invalidated"));
   const hardRisk = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["red_team_status"]).toLowerCase().includes("hard_risk"));
 
@@ -1587,15 +1668,17 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold">Completed Thesis Browser</h2>
-              <StatusBadge tone={thesisRows.length ? "good" : "muted"}>{thesisRows.length.toLocaleString()} theses</StatusBadge>
+              <h2 className="text-base font-semibold">Completed Hypotheses</h2>
+              <StatusBadge tone={thesisRows.length ? "good" : "muted"}>{thesisRows.length.toLocaleString()} completed</StatusBadge>
             </div>
             <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
-              Browse one completed hypothesis at a time with its deterministic validation, proof requirements, catalysts, invalidation, and bear case in the same view.
+              Browse returned hypotheses with deterministic validation, proof requirements, catalysts, invalidation, and bear case in the same view.
             </p>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[360px]">
+          <div className="grid grid-cols-2 gap-2 text-right sm:min-w-[540px] sm:grid-cols-5">
             <BrowserStat label="Validated" value={validated} tone={validated ? "good" : "muted"} />
+            <BrowserStat label="Tracking" value={tracking} tone={tracking ? "info" : "muted"} />
+            <BrowserStat label="Needs Proof" value={validationPending} tone={validationPending ? "warn" : "muted"} />
             <BrowserStat label="Invalidated" value={invalidated} tone={invalidated ? "bad" : "muted"} />
             <BrowserStat label="Hard Risk" value={hardRisk} tone={hardRisk ? "warn" : "muted"} />
           </div>
@@ -1611,7 +1694,8 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All states</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="tracking">Tracking</SelectItem>
+              <SelectItem value="pending">Needs proof</SelectItem>
               <SelectItem value="validated">Validated</SelectItem>
               <SelectItem value="invalidated">Invalidated</SelectItem>
               <SelectItem value="hard-risk">Hard risk</SelectItem>
@@ -1624,7 +1708,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
         <div className="border-b border-border xl:border-b-0 xl:border-r">
           <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs text-muted-foreground">
             <span>{filtered.length.toLocaleString()} shown</span>
-            <span>{stateFilter === "all" ? "Latest first" : titleLabel(stateFilter)}</span>
+            <span>{stateFilter === "all" ? "Latest first" : stateFilter === "pending" ? "Needs proof" : titleLabel(stateFilter)}</span>
           </div>
           <div className="max-h-[640px] overflow-y-auto">
             {filtered.length ? (
@@ -1646,7 +1730,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-semibold">{displayField(row, ["ticker"], "Unknown")}</span>
-                            <StatusBadge tone={thesisStateTone(textField(validation, ["state"], "pending"))}>{titleLabel(textField(validation, ["state"], "pending"))}</StatusBadge>
+                            <StatusBadge tone={thesisStateTone(textField(validation, ["state"]))}>{thesisValidationLabel(validation)}</StatusBadge>
                             {history.length > 1 ? <span className="text-xs text-muted-foreground">{history.length} checks</span> : null}
                           </div>
                           <p className="mt-2 line-clamp-3 text-sm leading-5 text-muted-foreground">{displayField(row, ["core_thesis"], "No core thesis")}</p>
@@ -1690,7 +1774,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
 
 function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker }: { thesis: RowRecord; validation: RowRecord | undefined; validationHistory: RowRecord[]; onOpenTicker: OpenTicker }) {
   const ticker = textField(thesis, ["ticker"]);
-  const state = textField(validation, ["state"], "pending");
+  const state = textField(validation, ["state"]);
   const redTeam = textField(validation, ["red_team_status"], "not_checked");
   return (
     <div className="min-w-0">
@@ -1699,7 +1783,7 @@ function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               {ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : <span className="text-lg font-semibold">Unknown ticker</span>}
-              <StatusBadge tone={thesisStateTone(state)}>{titleLabel(state)}</StatusBadge>
+              <StatusBadge tone={thesisStateTone(state)}>{thesisValidationLabel(validation)}</StatusBadge>
               <StatusBadge tone={validationStatusTone(redTeam)}>{titleLabel(redTeam)}</StatusBadge>
             </div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -1757,7 +1841,7 @@ function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker 
                     <div>{formatDate(textField(row, ["validated_at"]))}</div>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <StatusBadge tone={thesisStateTone(textField(row, ["state"], "pending"))}>{titleLabel(textField(row, ["state"], "pending"))}</StatusBadge>
+                    <StatusBadge tone={thesisStateTone(textField(row, ["state"]))}>{thesisValidationLabel(row)}</StatusBadge>
                     <StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{titleLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge>
                   </div>
                   <div className="min-w-0">
@@ -1897,7 +1981,7 @@ function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onO
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
                 <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["validation_date", "validated_at"]))}</Cell>
                 <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
-                <Cell><StatusBadge tone={thesisStateTone(state)}>{titleLabel(state)}</StatusBadge></Cell>
+                <Cell><StatusBadge tone={thesisStateTone(state)}>{state.toLowerCase() === "pending" ? "Needs proof" : titleLabel(state)}</StatusBadge></Cell>
                 <Cell><StatusBadge tone={stateTone(textField(row, ["candidate_state"]))}>{titleLabel(displayField(row, ["candidate_state"], "pending"))}</StatusBadge></Cell>
                 <Cell>{displayField(row, ["option_still_valid"])}</Cell>
                 <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["stock_progress"])}</Truncated></Cell>
@@ -2205,6 +2289,22 @@ function countWhere(items: RowRecord[], predicate: (row: RowRecord) => boolean):
   return items.reduce((count, row) => count + (predicate(row) ? 1 : 0), 0);
 }
 
+function optionThesisAgentState(data: PanelData): OptionThesisAgentRuntime {
+  const metadata = data.dashboard.status?.metadata;
+  const agents = jsonRecord(metadata?.agents);
+  const optionThesis = jsonRecord(agents?.option_thesis);
+  const requestCap = numberFromRecord(optionThesis, "request_cap");
+  const limit = numberFromRecord(optionThesis, "limit");
+  return {
+    active: boolFromRecord(optionThesis, "active"),
+    enabled: boolFromRecord(optionThesis, "enabled"),
+    configured: boolFromRecord(optionThesis, "configured"),
+    status: stringFromRecord(optionThesis, "status", "paused"),
+    limit: Number.isFinite(limit) ? limit : 20,
+    requestCap: Number.isFinite(requestCap) ? requestCap : 12,
+  };
+}
+
 function stateOf(row: RowRecord | undefined): string {
   return textField(row, ["state"]).toUpperCase();
 }
@@ -2326,8 +2426,17 @@ function thesisStateTone(state: string): Tone {
   const normalized = state.toLowerCase();
   if (normalized.includes("invalidated")) return "bad";
   if (normalized.includes("validated")) return "good";
+  if (normalized.includes("tracking")) return "info";
   if (normalized.includes("weakening")) return "warn";
+  if (!normalized) return "muted";
   return "info";
+}
+
+function thesisValidationLabel(validation: RowRecord | undefined): string {
+  const state = textField(validation, ["state"]);
+  if (!state) return "No validation";
+  if (state.toLowerCase() === "pending") return "Needs proof";
+  return titleLabel(state);
 }
 
 function validationStatusTone(status: string): Tone {
@@ -2387,6 +2496,9 @@ const reasonLabels: Record<string, string> = {
   missing_rs_vs_qqq: "Missing RS context",
   missing_spread: "Missing spread",
   missing_volume: "Missing volume",
+  bank_move_implausible_without_validated_catalyst: "Bank move needs validated catalyst",
+  regulated_healthcare_move_implausible_without_validated_catalyst: "Regulated healthcare move needs validated catalyst",
+  mega_cap_move_implausible_without_validated_catalyst: "Mega-cap move needs validated catalyst",
   no_printed_volume: "No volume print",
   option_chain_terms_sync_gap: "Option terms sync gap",
   option_contract_quote_sync_gap: "Option quote sync gap",
@@ -2585,6 +2697,15 @@ function latestDate(items: RowRecord[], key: string): string {
     if (value && (!latest || dateMillis(value) > dateMillis(latest))) latest = value;
   }
   return latest;
+}
+
+function oldestDate(items: RowRecord[], key: string): string {
+  let oldest = "";
+  for (const item of items) {
+    const value = textField(item, [key]);
+    if (value && (!oldest || dateMillis(value) < dateMillis(oldest))) oldest = value;
+  }
+  return oldest;
 }
 
 function hasValue(row: RowRecord, key: string): boolean {

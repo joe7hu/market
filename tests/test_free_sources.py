@@ -250,6 +250,43 @@ def test_default_option_symbols_use_ranked_decision_queue_limit(tmp_path: Path) 
     assert "EQ00" not in symbols
 
 
+def test_default_option_symbols_include_manual_watchlist_before_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(tradingview=SimpleNamespace(options_symbols=[], option_scan_limit=3)),
+        watchlist=[{"symbol": "KEEP", "asset_class": "equity"}],
+    )
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO manual_watchlist (symbol, name, asset_class, notes, created_at, updated_at, watch_state)
+            VALUES ('MANUAL', 'Manual', 'equity', NULL, current_timestamp, current_timestamp, 'watched')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO manual_watchlist (symbol, name, asset_class, notes, created_at, updated_at, watch_state)
+            VALUES ('DROP', 'Drop', 'equity', NULL, current_timestamp, current_timestamp, 'excluded')
+            """
+        )
+        for index in range(6):
+            con.execute(
+                """
+                INSERT INTO decision_queue
+                (symbol, as_of, rank, action_grade, score, decision_score, action_score)
+                VALUES (?, current_timestamp, ?, 'Watch', ?, ?, ?)
+                """,
+                [f"DQ{index:02d}", index + 1, 100 - index, 90 - index, 80 - index],
+            )
+
+        symbols = option_symbols(con, config)
+
+    assert symbols[:2] == ["KEEP", "MANUAL"]
+    assert "DROP" not in symbols
+    assert len(symbols) == 3
+
+
 def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)

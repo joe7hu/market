@@ -97,13 +97,13 @@ allowlisted `run_option_agents` refresh job. Configure commands under:
 agents:
   option_thesis:
     enabled: true
-    command: "market-openai-option-thesis-agent"
-    timeout_seconds: 120
+    command: "market-codex-option-thesis-agent"
+    timeout_seconds: 180
     limit: 20
   option_postmortem:
     enabled: true
-    command: "market-openai-option-postmortem-agent"
-    timeout_seconds: 120
+    command: "market-codex-option-postmortem-agent"
+    timeout_seconds: 180
     limit: 20
 ```
 

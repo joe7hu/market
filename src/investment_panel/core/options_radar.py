@@ -807,6 +807,15 @@ def refresh_option_radar_opportunities(
                 PARTITION BY coalesce(candidate_event_id, ticker)
                 ORDER BY validated_at DESC, validation_date DESC
             ) = 1
+        ),
+        latest_market_context AS (
+            SELECT symbol, metrics
+            FROM market_screener_rows
+            QUALIFY row_number() OVER (
+                PARTITION BY symbol
+                ORDER BY CASE source WHEN 'yfinance_info' THEN 0 WHEN 'tradingview' THEN 1 ELSE 2 END,
+                         observed_at DESC
+            ) = 1
         )
         SELECT
             ce.*,
@@ -844,6 +853,9 @@ def refresh_option_radar_opportunities(
             sf.base_length_days,
             sf.breakout_level,
             i.asset_class,
+            i.sector,
+            i.industry,
+            mc.metrics AS market_metrics,
             v.validation_id,
             v.state AS thesis_validation_state,
             v.reason AS thesis_validation_reason,
@@ -859,6 +871,7 @@ def refresh_option_radar_opportunities(
         LEFT JOIN option_features f ON f.contract_id = ce.contract_id AND f.snapshot_time = ce.snapshot_time
         LEFT JOIN stock_features sf ON sf.ticker = ce.ticker AND sf.snapshot_time = ce.snapshot_time
         LEFT JOIN instruments i ON i.symbol = ce.ticker
+        LEFT JOIN latest_market_context mc ON mc.symbol = ce.ticker
         LEFT JOIN latest_validation v
           ON (v.candidate_event_id = ce.event_id OR (v.candidate_event_id IS NULL AND v.ticker = ce.ticker))
         WHERE ce.strategy_version = ?
@@ -1091,6 +1104,10 @@ def _opportunity_candidate_detail(
             "qqq_above_200d": qqq_above_200d,
             "data_source": row.get("data_source"),
             "asset_class": row.get("asset_class"),
+            "sector": row.get("sector"),
+            "industry": row.get("industry"),
+            "market_cap": _market_cap(row),
+            "revenue_growth": _revenue_growth(row),
             "expiration": str(row.get("expiration") or ""),
             "strike": _number(row.get("strike")),
             "option_type": row.get("option_type"),
@@ -1384,7 +1401,74 @@ def _extreme_opportunity_blockers(
         blockers.append("entry_quality_below_exceptional_bar")
     if scores["asymmetry_score"] < 65.0:
         blockers.append("asymmetry_below_exceptional_bar")
+    blockers.extend(_business_plausibility_blockers(row, validation=validation))
     return list(dict.fromkeys(blockers))
+
+
+def _business_plausibility_blockers(row: dict[str, Any], *, validation: dict[str, Any]) -> list[str]:
+    """Keep Exceptional reserved for moves that fit the business context."""
+
+    if validation.get("state") in {"validated", "strengthening"}:
+        return []
+    required_move = _number(row.get("required_move_pct"))
+    if required_move is None:
+        return []
+    annualized_move = _annualized_required_move(row, required_move)
+    sector = _business_context_text(row.get("sector"))
+    industry = _business_context_text(row.get("industry"))
+    market_cap = _market_cap(row)
+    revenue_growth = _revenue_growth(row)
+
+    blockers: list[str] = []
+    if _is_bank_or_financial(sector, industry) and annualized_move > 0.30:
+        blockers.append("bank_move_implausible_without_validated_catalyst")
+    if _is_regulated_healthcare_plan(sector, industry) and annualized_move > 0.45:
+        blockers.append("regulated_healthcare_move_implausible_without_validated_catalyst")
+    mega_cap_ceiling = _mega_cap_annual_move_ceiling(market_cap, revenue_growth)
+    if mega_cap_ceiling is not None and annualized_move > mega_cap_ceiling:
+        blockers.append("mega_cap_move_implausible_without_validated_catalyst")
+    return blockers
+
+
+def _annualized_required_move(row: dict[str, Any], required_move: float) -> float:
+    dte = _integer(row.get("dte"))
+    if dte is None or dte <= 0:
+        return required_move
+    years = max(float(dte) / 365.0, 0.25)
+    return (1.0 + required_move) ** (1.0 / years) - 1.0
+
+
+def _business_context_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_bank_or_financial(sector: str, industry: str) -> bool:
+    text = f"{sector} {industry}"
+    return "financial" in text or "bank" in text or "capital markets" in text or "insurance" in text
+
+
+def _is_regulated_healthcare_plan(sector: str, industry: str) -> bool:
+    text = f"{sector} {industry}"
+    return "healthcare plans" in text or "managed care" in text
+
+
+def _mega_cap_annual_move_ceiling(market_cap: float | None, revenue_growth: float | None) -> float | None:
+    if market_cap is None:
+        return None
+    if market_cap >= 1_000_000_000_000:
+        ceiling = 0.50
+    elif market_cap >= 500_000_000_000:
+        ceiling = 0.55
+    elif market_cap >= 200_000_000_000:
+        ceiling = 0.75
+    else:
+        return None
+    if revenue_growth is not None:
+        if revenue_growth >= 0.40:
+            ceiling += 0.20
+        elif revenue_growth >= 0.25:
+            ceiling += 0.10
+    return ceiling
 
 
 def _opportunity_top_reasons(
@@ -1443,6 +1527,29 @@ def _entry_zone(row: dict[str, Any]) -> str:
     if fill is not None and fill <= buy_under:
         return f"at_or_below_{buy_under:.2f}"
     return f"wait_below_{buy_under:.2f}"
+
+
+def _market_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = _json(row.get("market_metrics"))
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def _market_cap(row: dict[str, Any]) -> float | None:
+    metrics = _market_metrics(row)
+    return _first_number(metrics, ("market_cap", "marketCap", "market_cap_basic", "market_capitalization"))
+
+
+def _revenue_growth(row: dict[str, Any]) -> float | None:
+    metrics = _market_metrics(row)
+    return _first_number(metrics, ("revenue_growth", "revenueGrowth"))
+
+
+def _first_number(values: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _number(values.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _position_sizing_band(tier: str) -> str:

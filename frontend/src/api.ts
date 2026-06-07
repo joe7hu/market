@@ -389,6 +389,8 @@ function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, opti
   const next: PanelData = { ...existing, errors: { ...existing.errors } };
   if (snapshot.dashboard) {
     next.dashboard = snapshot.dashboard;
+  } else if (snapshot.status) {
+    next.dashboard = { ...next.dashboard, status: snapshot.status };
   }
   for (const [apiKey, table] of Object.entries(snapshot.tables ?? {})) {
     const dataKey = TABLE_KEYS[apiKey];

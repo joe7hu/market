@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.free_sources import store_options_chain, store_yfinance_options_liquidity
+from investment_panel.core.free_sources import store_options_chain, store_yfinance_market_snapshot, store_yfinance_options_liquidity
 from investment_panel.core.option_agent_thesis import upsert_agent_thesis
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
@@ -183,6 +183,53 @@ def test_option_radar_opportunity_requires_extreme_gates_for_exceptional_tier(tm
     assert blockers == []
     assert "thesis_validated" in top_reasons
     assert "source_evidence_cluster" in top_reasons
+
+
+def test_option_radar_opportunity_demotes_large_bank_without_validated_catalyst(tmp_path) -> None:
+    db_path = tmp_path / "radar-opportunity-bank-plausibility.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        upsert_instrument(
+            con,
+            {
+                "symbol": "JPM",
+                "name": "JPMorgan Chase & Co.",
+                "asset_class": "equity",
+                "sector": "Financial Services",
+                "industry": "Banks - Diversified",
+            },
+        )
+        seed_prices(con, "JPM", start_price=290, slope=0.10)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('JPM', '2026-06-02T20:00:00Z', 312, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_yfinance_market_snapshot(
+            con,
+            "test-run",
+            "JPM",
+            "2026-06-02T19:50:00Z",
+            {"marketCap": 802_000_000_000, "revenueGrowth": 0.127},
+        )
+        store_options_chain(
+            con,
+            "JPM",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2028-01-21", 420, "call", 12.5, 13.0, 0.20, 0.30, "OPRA:JPM280121C420", volume=25, open_interest=600),
+                option_row("2028-01-21", 520, "call", 17.5, 18.0, 0.50, 0.50, "OPRA:JPM280121C520", volume=25, open_interest=600),
+            ],
+        )
+        for index in range(4):
+            seed_source_signal_for_symbol(con, "JPM", f"sig-jpm-{index}", f"source-jpm-{index}")
+
+        refresh_options_radar(con, ["JPM"])
+        refresh_option_radar_opportunities(con, ["JPM"])
+        opportunity = query_rows(con, "SELECT * FROM option_radar_opportunity WHERE ticker = 'JPM'")[0]
+
+    blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
+    assert opportunity["tier"] == "Research"
+    assert "bank_move_implausible_without_validated_catalyst" in blockers
 
 
 def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_path) -> None:
@@ -1222,13 +1269,17 @@ def seed_extreme_opportunity_candidates(con) -> None:
 
 
 def seed_source_signal(con, signal_id: str, source_item_id: str) -> None:
+    seed_source_signal_for_symbol(con, "TSLA", signal_id, source_item_id)
+
+
+def seed_source_signal_for_symbol(con, symbol: str, signal_id: str, source_item_id: str) -> None:
     con.execute(
         """
         INSERT INTO ticker_source_signals
         (id, source_item_id, source_id, symbol, observed_at, signal_type,
          sentiment, direction, confidence, thesis, antithesis, catalysts,
          risks, invalidation, evidence_refs, needs_market_context, raw)
-        VALUES (?, ?, 'test_research', 'TSLA', '2026-06-02T19:00:00Z',
+        VALUES (?, ?, 'test_research', ?, '2026-06-02T19:00:00Z',
          'catalyst', 'positive', 'bullish', 0.92,
          'delivery recovery and margin stabilization create a path to a sharp repricing',
          'pricing pressure remains the bear case',
@@ -1239,7 +1290,7 @@ def seed_source_signal(con, signal_id: str, source_item_id: str) -> None:
          false,
          '{}')
         """,
-        [signal_id, source_item_id],
+        [signal_id, source_item_id, symbol],
     )
 
 

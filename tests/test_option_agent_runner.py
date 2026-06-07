@@ -92,6 +92,71 @@ print(json.dumps({
     assert validation["candidate_event_id"]
 
 
+def test_external_agent_thesis_runner_does_not_repopulate_queue_after_batch(tmp_path) -> None:
+    script = tmp_path / "fake_thesis_agent.py"
+    script.write_text(
+        """
+import json
+import sys
+
+request = json.load(sys.stdin)["request"]
+print(json.dumps({
+    "ticker": request["ticker"],
+    "bull_target_price": 120,
+    "bull_target_date": "2028-01-21",
+    "base_target_price": 95,
+    "core_thesis": "The setup can work if price and source evidence confirm.",
+    "required_proofs": ["price confirms trend"],
+    "catalysts": [{"type": "technical", "expected_window": "next 2 quarters", "what_to_watch": "breakout confirmation"}],
+    "invalidation": ["stock breaks below $80 without recovery"],
+    "bear_case": "The move can fail if trend confirmation never arrives.",
+    "confidence": 55,
+    "evidence_refs": [{"type": "agent_context", "id": request["request_id"]}]
+}))
+""",
+        encoding="utf-8",
+    )
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    db_path = tmp_path / "agent-runner-no-repopulate.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for ticker, score in [("AAA", 90), ("BBB", 80)]:
+            con.execute(
+                """
+                INSERT INTO candidate_event
+                (event_id, snapshot_time, ticker, contract_id, strategy_version,
+                 state, premium_mid, premium_fill_assumption, required_10x_price,
+                 required_move_pct, buy_under, trigger_reason, thesis_id, score,
+                 quality_status, quality_flags, raw)
+                VALUES (?, '2026-06-02T20:00:00Z', ?, ?, 'leap_10x_reversal_v1',
+                        'FIRE', 1, 1.03, 100, 1.0, 10, 'test', NULL, ?, 'ok', '[]', '{}')
+                """,
+                [f"event-{ticker}", ticker, f"OPRA:{ticker}", score],
+            )
+        con.execute(
+            """
+            INSERT INTO agent_thesis_request
+            (request_id, created_at, ticker, event_id, strategy_version,
+             priority_score, status, prompt, context, raw)
+            VALUES ('request-aaa', '2026-06-02T20:00:00Z', 'AAA', 'event-AAA',
+                    'leap_10x_reversal_v1', 90, 'open', 'test', '{}', '{}')
+            """
+        )
+
+        result = run_external_agent_thesis_requests(
+            con,
+            strategy_version=DEFAULT_STRATEGY_VERSION,
+            command=command,
+            limit=5,
+            timeout_seconds=10,
+        )
+        requests = query_rows(con, "SELECT ticker, status FROM agent_thesis_request ORDER BY ticker")
+
+    assert result["accepted"] == 1
+    assert result["agent_work"]["agent_thesis_requests"] == 0
+    assert requests == [{"ticker": "AAA", "status": "fulfilled"}]
+
+
 def test_external_agent_postmortem_runner_creates_gated_strategy_proposal(tmp_path) -> None:
     script = tmp_path / "fake_postmortem_agent.py"
     script.write_text(

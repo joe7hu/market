@@ -10,6 +10,7 @@ from typing import Any
 
 from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps, query_rows
+from investment_panel.core.decision import effective_watchlist
 from investment_panel.core.options_intelligence import clear_options_intelligence, record_tradingview_options_capabilities, refresh_options_intelligence
 from investment_panel.providers import OpenCliError, OpenCliRunner, TradingViewProvider
 from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
@@ -705,7 +706,7 @@ def option_symbols(con: Any, config: AppConfig) -> list[str]:
     scan_limit = option_scan_limit(config)
     watchlist = [
         str(item.get("symbol") or "").upper()
-        for item in config.watchlist
+        for item in effective_watchlist(con, getattr(config, "watchlist", []) or [])
         if item.get("symbol") and str(item.get("asset_class") or "").lower() in {"equity", "etf"}
     ]
     decision_rows = query_rows(

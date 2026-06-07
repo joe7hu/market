@@ -508,8 +508,8 @@ def build_agent_thesis_validation(
         stock_progress = "base_target_reached"
         invalidation_status = "clear" if invalidation_price is not None else "missing"
     elif option_still_valid:
-        state = "pending"
-        reason = "Thesis remains pending; deterministic option gates have not invalidated it."
+        state = "tracking"
+        reason = "Thesis is tracking; deterministic option gates have not validated or invalidated it yet."
         stock_progress = "tracking"
         invalidation_status = "clear" if invalidation_price is not None else "missing"
     else:

@@ -8,8 +8,13 @@ import subprocess
 from typing import Any
 
 from investment_panel.core.db import json_dumps, query_rows
-from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work, upsert_agent_postmortem
-from investment_panel.core.option_agent_thesis import decode_json_fields, refresh_option_agent_work, upsert_agent_thesis
+from investment_panel.core.option_agent_postmortem import materialize_agent_postmortem_strategy_proposals, upsert_agent_postmortem
+from investment_panel.core.option_agent_thesis import (
+    attach_agent_theses_to_candidates,
+    decode_json_fields,
+    refresh_agent_thesis_validations,
+    upsert_agent_thesis,
+)
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     apply_shadow_trade_exits,
@@ -296,12 +301,18 @@ def _mark_request_failed(con: Any, table_name: str, request_id: str, exc: Except
 
 
 def _refresh_after_agent_theses(con: Any, *, strategy_version: str) -> dict[str, Any]:
-    agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
+    attached_rows = attach_agent_theses_to_candidates(con, strategy_version=strategy_version)
+    validation_rows = refresh_agent_thesis_validations(con, strategy_version=strategy_version)
     shadow_trades = create_shadow_trades(con, strategy_version=strategy_version)
     transitions = refresh_radar_state_transitions(con, strategy_version=strategy_version)
     exits = apply_shadow_trade_exits(con, strategy_version=strategy_version)
     return {
-        "agent_work": agent_work,
+        "agent_work": {
+            "agent_thesis_requests": 0,
+            "agent_thesis_requests_superseded": 0,
+            "agent_theses_attached": attached_rows,
+            "agent_thesis_validations": validation_rows,
+        },
         "shadow_trades": shadow_trades,
         "radar_state_transitions": transitions,
         "shadow_trades_exited": exits,
@@ -309,10 +320,13 @@ def _refresh_after_agent_theses(con: Any, *, strategy_version: str) -> dict[str,
 
 
 def _refresh_after_agent_postmortems(con: Any, *, strategy_version: str) -> dict[str, Any]:
-    postmortem_work = refresh_option_agent_postmortem_work(con, strategy_version=strategy_version)
+    proposals = materialize_agent_postmortem_strategy_proposals(con, strategy_version=strategy_version)
     evaluations = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
     return {
-        "postmortem_work": postmortem_work,
+        "postmortem_work": {
+            "agent_postmortem_requests": 0,
+            "agent_postmortem_strategy_proposals": proposals,
+        },
         **evaluations,
     }
 
