@@ -155,8 +155,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         <TabsContent value="theses" className="space-y-4">
           <ThesisPipelinePanel requests={thesisRequests} theses={agentTheses} validations={thesisValidations} />
           <ThesisRequestsTable rows={actionableThesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} title="Actionable Thesis Queue" />
-          {agentTheses.length ? <AgentThesisTable rows={agentTheses} onOpenTicker={onOpenTicker} /> : null}
-          {thesisValidations.length ? <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} /> : null}
+          <AgentThesisBrowser theses={agentTheses} validations={thesisValidations} onOpenTicker={onOpenTicker} />
         </TabsContent>
       </Tabs>
     </WorkspacePage>
@@ -1249,6 +1248,343 @@ function ThesisRequestsTable({ rows, eventById, onOpenTicker, title = "Agent The
   );
 }
 
+function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: RowRecord[]; validations: RowRecord[]; onOpenTicker: OpenTicker }) {
+  const [selectedId, setSelectedId] = useState("");
+  const [query, setQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState("all");
+  const validationHistoryByThesis = useMemo(() => validationHistoryBy(validations, "thesis_id"), [validations]);
+  const latestValidationByThesis = useMemo(() => latestValidationBy(validations, "thesis_id"), [validations]);
+  const legacyValidationByTicker = useMemo(() => latestValidationBy(validations.filter((row) => !textField(row, ["thesis_id"])), "ticker"), [validations]);
+  const thesisRows = useMemo(
+    () => [...theses].sort((left, right) => dateMillis(textField(right, ["created_at"])) - dateMillis(textField(left, ["created_at"]))),
+    [theses],
+  );
+
+  useEffect(() => {
+    if (!thesisRows.length) {
+      if (selectedId) setSelectedId("");
+      return;
+    }
+    if (!selectedId || !thesisRows.some((row) => thesisId(row) === selectedId)) {
+      setSelectedId(thesisId(thesisRows[0]));
+    }
+  }, [selectedId, thesisRows]);
+
+  const filtered = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return thesisRows.filter((row) => {
+      const history = validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker);
+      const validation = history[0];
+      const validationState = textField(validation, ["state"], "pending").toLowerCase();
+      const redTeam = textField(validation, ["red_team_status"]).toLowerCase();
+      if (stateFilter === "validated" && validationState !== "validated") return false;
+      if (stateFilter === "pending" && validationState !== "pending") return false;
+      if (stateFilter === "invalidated" && !validationState.includes("invalidated")) return false;
+      if (stateFilter === "hard-risk" && !redTeam.includes("hard_risk")) return false;
+      if (!normalizedQuery) return true;
+      return [
+        textField(row, ["ticker"]),
+        fullField(row, ["core_thesis"], ""),
+        fullField(row, ["bear_case"], ""),
+        fullField(row, ["catalyst_summary", "catalysts"], ""),
+        fullField(row, ["invalidation_conditions"], ""),
+        fullField(validation, ["reason"], ""),
+      ].join(" ").toLowerCase().includes(normalizedQuery);
+    });
+  }, [legacyValidationByTicker, query, stateFilter, thesisRows, validationHistoryByThesis]);
+
+  const selected = filtered.find((row) => thesisId(row) === selectedId) ?? filtered[0];
+  const selectedValidation = selected ? validationForThesis(selected, latestValidationByThesis, legacyValidationByTicker) : undefined;
+  const selectedValidationHistory = selected ? validationHistoryForThesis(selected, validationHistoryByThesis, legacyValidationByTicker) : [];
+  const validated = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase() === "validated");
+  const invalidated = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["state"]).toLowerCase().includes("invalidated"));
+  const hardRisk = countWhere(thesisRows, (row) => textField(validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker)[0], ["red_team_status"]).toLowerCase().includes("hard_risk"));
+
+  if (!thesisRows.length) {
+    return <EmptyState title="No completed theses" detail="No structured agent hypotheses are stored yet." icon={BrainCircuit} />;
+  }
+
+  return (
+    <section className="overflow-hidden rounded-md border border-border bg-card">
+      <div className="border-b border-border p-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-semibold">Completed Thesis Browser</h2>
+              <StatusBadge tone={thesisRows.length ? "good" : "muted"}>{thesisRows.length.toLocaleString()} theses</StatusBadge>
+            </div>
+            <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+              Browse one completed hypothesis at a time with its deterministic validation, proof requirements, catalysts, invalidation, and bear case in the same view.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-right sm:min-w-[360px]">
+            <BrowserStat label="Validated" value={validated} tone={validated ? "good" : "muted"} />
+            <BrowserStat label="Invalidated" value={invalidated} tone={invalidated ? "bad" : "muted"} />
+            <BrowserStat label="Hard Risk" value={hardRisk} tone={hardRisk ? "warn" : "muted"} />
+          </div>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search theses, catalysts, bear cases..." className="pl-9" />
+          </div>
+          <Select value={stateFilter} onValueChange={setStateFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Validation state" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All states</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="validated">Validated</SelectItem>
+              <SelectItem value="invalidated">Invalidated</SelectItem>
+              <SelectItem value="hard-risk">Hard risk</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid min-h-[640px] xl:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="border-b border-border xl:border-b-0 xl:border-r">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs text-muted-foreground">
+            <span>{filtered.length.toLocaleString()} shown</span>
+            <span>{stateFilter === "all" ? "Latest first" : titleLabel(stateFilter)}</span>
+          </div>
+          <div className="max-h-[640px] overflow-y-auto">
+            {filtered.length ? (
+              filtered.map((row) => {
+                const id = thesisId(row);
+                const history = validationHistoryForThesis(row, validationHistoryByThesis, legacyValidationByTicker);
+                const validation = history[0];
+                return (
+                  <div key={id}>
+                    <button
+                      type="button"
+                      className={cn(
+                        "block w-full border-b border-border px-4 py-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        selected && id === thesisId(selected) ? "bg-accent/70" : "bg-transparent",
+                      )}
+                      onClick={() => setSelectedId(id)}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold">{displayField(row, ["ticker"], "Unknown")}</span>
+                            <StatusBadge tone={thesisStateTone(textField(validation, ["state"], "pending"))}>{titleLabel(textField(validation, ["state"], "pending"))}</StatusBadge>
+                            {history.length > 1 ? <span className="text-xs text-muted-foreground">{history.length} checks</span> : null}
+                          </div>
+                          <p className="mt-2 line-clamp-3 text-sm leading-5 text-muted-foreground">{displayField(row, ["core_thesis"], "No core thesis")}</p>
+                        </div>
+                        <div className="shrink-0 text-right text-xs tabular-nums">
+                          <div className="font-semibold">{formatScore(numberField(row, ["confidence"], Number.NaN))}</div>
+                          <div className="text-muted-foreground">conf</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                        <span>{moneyField(row, ["bull_target_price"])} bull</span>
+                        <span>{moneyField(row, ["base_target_price"])} base</span>
+                        <span>{formatShortDate(textField(row, ["bull_target_date"]))}</span>
+                      </div>
+                    </button>
+                    {selected && id === thesisId(selected) ? (
+                      <div className="border-b border-border bg-background xl:hidden">
+                        <ThesisDetailPane thesis={selected} validation={selectedValidation} validationHistory={selectedValidationHistory} onOpenTicker={onOpenTicker} />
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            ) : (
+              <div className="px-4 py-10 text-sm text-muted-foreground">No theses match the current filter.</div>
+            )}
+          </div>
+        </div>
+
+        {selected ? (
+          <div className="hidden xl:block">
+          <ThesisDetailPane thesis={selected} validation={selectedValidation} validationHistory={selectedValidationHistory} onOpenTicker={onOpenTicker} />
+          </div>
+        ) : (
+          <div className="p-8 text-sm text-muted-foreground">No thesis matches the current filter. Clear search or choose another validation state.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker }: { thesis: RowRecord; validation: RowRecord | undefined; validationHistory: RowRecord[]; onOpenTicker: OpenTicker }) {
+  const ticker = textField(thesis, ["ticker"]);
+  const state = textField(validation, ["state"], "pending");
+  const redTeam = textField(validation, ["red_team_status"], "not_checked");
+  return (
+    <div className="min-w-0">
+      <div className="border-b border-border p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              {ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : <span className="text-lg font-semibold">Unknown ticker</span>}
+              <StatusBadge tone={thesisStateTone(state)}>{titleLabel(state)}</StatusBadge>
+              <StatusBadge tone={validationStatusTone(redTeam)}>{titleLabel(redTeam)}</StatusBadge>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>Created {formatDate(textField(thesis, ["created_at"]))}</span>
+              <span>Validation {formatShortDate(textField(validation, ["validation_date"]))}</span>
+              <span>{displayField(thesis, ["agent_version"], "Agent version unknown")}</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[520px]">
+            <MetricBox label="Bull Target" value={moneyField(thesis, ["bull_target_price"])} />
+            <MetricBox label="Base Target" value={moneyField(thesis, ["base_target_price"])} />
+            <MetricBox label="Bull Date" value={formatShortDate(textField(thesis, ["bull_target_date"]))} />
+            <MetricBox label="Confidence" value={formatScore(numberField(thesis, ["confidence"], Number.NaN))} />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-6 p-5">
+        <ReadableSection title="Core Thesis">
+          <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">{displayField(thesis, ["core_thesis"], "No core thesis text.")}</p>
+        </ReadableSection>
+
+        <div className="grid gap-5 xl:grid-cols-2">
+          <ReadableSection title="Required Proofs">
+            <ReadableList items={listField(thesis, ["required_proofs"])} empty="No proof points stored." />
+          </ReadableSection>
+          <ReadableSection title="Catalysts">
+            <CatalystList thesis={thesis} />
+          </ReadableSection>
+          <ReadableSection title="Invalidation">
+            <ReadableList items={listField(thesis, ["invalidation_conditions", "invalidation"])} empty="No invalidation conditions stored." />
+          </ReadableSection>
+          <ReadableSection title="Bear Case">
+            <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">{displayField(thesis, ["bear_case"], "No bear case stored.")}</p>
+          </ReadableSection>
+        </div>
+
+        <ReadableSection title="Validation">
+          <div className="flex flex-wrap gap-2">
+            <StatusBadge tone={validationStatusTone(textField(validation, ["proof_status"]))}>Proofs {titleLabel(displayField(validation, ["proof_status"], "unknown"))}</StatusBadge>
+            <StatusBadge tone={validationStatusTone(textField(validation, ["catalyst_status"]))}>Catalysts {titleLabel(displayField(validation, ["catalyst_status"], "unknown"))}</StatusBadge>
+            <StatusBadge tone={validationStatusTone(textField(validation, ["invalidation_status"]))}>Invalidation {titleLabel(displayField(validation, ["invalidation_status"], "unknown"))}</StatusBadge>
+            <StatusBadge tone={validationStatusTone(textField(validation, ["evidence_status"]))}>Evidence {titleLabel(displayField(validation, ["evidence_status"], "unknown"))}</StatusBadge>
+          </div>
+          <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground">{displayField(validation, ["reason"], "No validation reason stored.")}</p>
+        </ReadableSection>
+
+        <ReadableSection title="Validation History">
+          {validationHistory.length ? (
+            <div className="divide-y divide-border rounded-md border border-border">
+              {validationHistory.map((row) => (
+                <div key={textField(row, ["validation_id"], `${textField(row, ["strategy_version"])}-${textField(row, ["validation_date"])}`)} className="grid gap-3 px-3 py-3 text-sm lg:grid-cols-[150px_190px_minmax(0,1fr)]">
+                  <div className="text-xs text-muted-foreground">
+                    <div>{formatShortDate(textField(row, ["validation_date"]))}</div>
+                    <div>{formatDate(textField(row, ["validated_at"]))}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <StatusBadge tone={thesisStateTone(textField(row, ["state"], "pending"))}>{titleLabel(textField(row, ["state"], "pending"))}</StatusBadge>
+                    <StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{titleLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-xs text-muted-foreground">{displayField(row, ["strategy_version"], "Strategy unknown")}</div>
+                    <p className="mt-1 whitespace-pre-wrap leading-6">{displayField(row, ["reason"], "No validation reason stored.")}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No validation checks are stored for this thesis.</p>
+          )}
+        </ReadableSection>
+
+        <ReadableSection title="Evidence References">
+          <ReadableList items={listField(thesis, ["evidence_refs"])} empty="No evidence references stored." />
+        </ReadableSection>
+      </div>
+    </div>
+  );
+}
+
+function BrowserStat({ label, value, tone }: { label: string; value: number; tone: Tone }) {
+  return (
+    <div className="border-l border-border pl-3">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 text-sm font-semibold tabular-nums", toneText(tone))}>{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+function MetricBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/70 bg-background px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate text-sm font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function ReadableSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="min-w-0">
+      <h3 className="text-xs font-semibold uppercase text-muted-foreground">{title}</h3>
+      <div className="mt-2">{children}</div>
+    </section>
+  );
+}
+
+function ReadableList({ items, empty }: { items: string[]; empty: string }) {
+  if (!items.length) return <p className="text-sm text-muted-foreground">{empty}</p>;
+  return (
+    <ul className="space-y-2">
+      {items.map((item, index) => (
+        <li key={`${index}-${item.slice(0, 32)}`} className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-sm leading-6">
+          <span className="mt-2 size-1.5 rounded-full bg-muted-foreground" />
+          <span className="whitespace-pre-wrap">{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function CatalystList({ thesis }: { thesis: RowRecord }) {
+  const catalysts = jsonArrayField(thesis, "catalysts");
+  if (!catalysts.length) return <p className="text-sm text-muted-foreground">No catalysts stored.</p>;
+  return (
+    <div className="space-y-3">
+      {catalysts.map((item, index) => {
+        const record = jsonRecord(item);
+        if (!record) {
+          return <p key={index} className="text-sm leading-6">{String(item)}</p>;
+        }
+        return (
+          <div key={`${index}-${stringFromRecord(record, "type", "catalyst")}`} className="border-l-2 border-border pl-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge tone="info">{titleLabel(stringFromRecord(record, "type", "Catalyst"))}</StatusBadge>
+              <span className="text-xs text-muted-foreground">{stringFromRecord(record, "expected_window", "Window unknown")}</span>
+            </div>
+            <p className="mt-2 text-sm leading-6">{stringFromRecord(record, "what_to_watch", fullField({ value: item } as RowRecord, ["value"]))}</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function thesisId(row: RowRecord | undefined): string {
+  return textField(row, ["thesis_id"], `${textField(row, ["ticker"])}-${textField(row, ["created_at"])}`);
+}
+
+function validationForThesis(thesis: RowRecord | undefined, byThesis: Map<string, RowRecord>, byTicker: Map<string, RowRecord>): RowRecord | undefined {
+  const id = thesisId(thesis);
+  return byThesis.get(id) ?? byTicker.get(textField(thesis, ["ticker"]));
+}
+
+function validationHistoryForThesis(thesis: RowRecord | undefined, byThesis: Map<string, RowRecord[]>, legacyByTicker: Map<string, RowRecord>): RowRecord[] {
+  const id = thesisId(thesis);
+  const rows = byThesis.get(id);
+  if (rows?.length) return rows;
+  const legacy = legacyByTicker.get(textField(thesis, ["ticker"]));
+  return legacy ? [legacy] : [];
+}
+
 function ThesisValidationsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
   if (!rows.length) {
     return <EmptyState title="No thesis validations" detail="No deterministic thesis checks are stored." icon={BrainCircuit} />;
@@ -1793,6 +2129,20 @@ function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> | u
   return undefined;
 }
 
+function jsonArrayField(row: RowRecord | undefined, key: string): JsonValue[] {
+  const value = row?.[key];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(value) as JsonValue;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function listFromRecord(record: Record<string, JsonValue> | undefined, key: string): string[] {
   const value = record?.[key];
   if (!Array.isArray(value)) return [];
@@ -1848,6 +2198,30 @@ function latestBy(items: RowRecord[], key: string, dateKey: string): Map<string,
     }
   }
   return map;
+}
+
+function latestValidationBy(items: RowRecord[], key: string): Map<string, RowRecord> {
+  const history = validationHistoryBy(items, key);
+  const latest = new Map<string, RowRecord>();
+  for (const [value, rows] of history.entries()) {
+    if (rows[0]) latest.set(value, rows[0]);
+  }
+  return latest;
+}
+
+function validationHistoryBy(items: RowRecord[], key: string): Map<string, RowRecord[]> {
+  const history = new Map<string, RowRecord[]>();
+  for (const item of items) {
+    const value = textField(item, [key]);
+    if (!value) continue;
+    const rows = history.get(value) ?? [];
+    rows.push(item);
+    history.set(value, rows);
+  }
+  for (const rows of history.values()) {
+    rows.sort((left, right) => validationMillis(right) - validationMillis(left));
+  }
+  return history;
 }
 
 function latestDate(items: RowRecord[], key: string): string {
@@ -1912,6 +2286,10 @@ function dateMillis(value: string): number {
   if (!value) return 0;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function validationMillis(row: RowRecord): number {
+  return dateMillis(textField(row, ["validated_at"])) || dateMillis(textField(row, ["validation_date"]));
 }
 
 function contractTicker(contractId: string): string {
