@@ -70,6 +70,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
   const exceptionalCount = numberField(radarSummary, ["exceptional_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Exceptional"));
   const researchCount = numberField(radarSummary, ["research_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Research"));
+  const repairCount = numberField(radarSummary, ["repair_opportunities_current"], countWhere(opportunityRows, (row) => isServiceRepair(row)));
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"], latestDate(optionSnapshots, "snapshot_time"));
   const latestStrategy = strategyVersions[0];
@@ -108,6 +109,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         setupCount={setupCount}
         exceptionalCount={exceptionalCount}
         researchCount={researchCount}
+        repairCount={repairCount}
       />
       <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
@@ -179,6 +181,7 @@ function RadarSummaryStrip({
   setupCount,
   exceptionalCount,
   researchCount,
+  repairCount,
 }: {
   opportunityCount: number;
   opportunityTickerCount: number;
@@ -187,9 +190,11 @@ function RadarSummaryStrip({
   setupCount: number;
   exceptionalCount: number;
   researchCount: number;
+  repairCount: number;
 }) {
   const items: Array<[string, string, Tone]> = [
     ["Exceptional", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
+    ["Service Bugs", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
     ["Research", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
     ["Opportunities", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
     ["Fire", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
@@ -197,7 +202,7 @@ function RadarSummaryStrip({
     ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
   ];
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
       {items.map(([label, value, tone]) => (
         <div key={label} className="rounded-md border border-border bg-card px-3 py-2">
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
@@ -222,9 +227,12 @@ function ExtremeOpportunityDesk({
   onOpenTicker: OpenTicker;
 }) {
   const exceptionalRows = useMemo(() => rows.filter((row) => tierOf(row) === "Exceptional"), [rows]);
+  const repairRows = useMemo(() => rows.filter((row) => isServiceRepair(row)), [rows]);
   const researchRows = useMemo(() => rows.filter((row) => tierOf(row) === "Research"), [rows]);
-  const visibleRows = exceptionalRows.length ? exceptionalRows : researchRows.slice(0, 8);
+  const readyDecisionRows = exceptionalRows.length ? exceptionalRows : researchRows.slice(0, 8);
+  const visibleRows = [...repairRows.slice(0, 4), ...readyDecisionRows.filter((row) => !isServiceRepair(row))].slice(0, 10);
   const blockerSummary = useMemo(() => commonBlockers(rows), [rows]);
+  const serviceSummary = useMemo(() => commonDataContractFailures(repairRows), [repairRows]);
 
   if (!rows.length) {
     return (
@@ -238,15 +246,27 @@ function ExtremeOpportunityDesk({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title={exceptionalRows.length ? "Exceptional Setups" : "No Exceptional Setup"} count={visibleRows.length} />}
+      title={<SectionTitle title={repairRows.length ? "Service Bugs" : exceptionalRows.length ? "Exceptional Setups" : "No Exceptional Setup"} count={visibleRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{repairRows.length.toLocaleString()} service bugs</span>
           <span>{exceptionalRows.length.toLocaleString()} exceptional</span>
           <span>{researchRows.length.toLocaleString()} research</span>
           <span>{rows.length.toLocaleString()} grouped tickers</span>
         </div>
       }
     >
+      {repairRows.length ? (
+        <div className="border-b border-border px-3 py-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {serviceSummary.map(([reason, count]) => (
+              <span key={reason} className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs font-medium text-destructive">
+                {reasonLabel(reason)} {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {!exceptionalRows.length ? (
         <div className="border-b border-border px-3 py-3">
           <div className="flex flex-wrap gap-1.5">
@@ -278,9 +298,9 @@ function ExtremeOpportunityDesk({
             <Head className="text-right">Buy Under</Head>
             <Head className="text-right">10x Move</Head>
             <Head>Scores</Head>
-            <Head>Blocking Checks</Head>
+            <Head>Data Contract</Head>
             <Head>Shadow P/L</Head>
-            <Head>Next Action</Head>
+            <Head>Trade State</Head>
             <Head>Kill Switch</Head>
           </tr>
         </thead>
@@ -373,8 +393,8 @@ function OpportunityMobileCard({
         <InlineMetric label="Score" value={formatScore(numberField(row, ["conviction_score"], Number.NaN))} />
       </div>
       <div className="mt-3 space-y-2">
-        <MobileSection label="Next Action">{opportunityActionText(row)}</MobileSection>
-        <MobileSection label="Blocking Checks"><OpportunityReasonChips row={row} /></MobileSection>
+        <MobileSection label="Trade State">{opportunityActionText(row)}</MobileSection>
+        <MobileSection label="Data Contract"><OpportunityReasonChips row={row} /></MobileSection>
         <MobileSection label="Shadow P/L"><OpportunityOutcome mark={mark} attribution={attribution} /></MobileSection>
         <MobileSection label="Kill Switch">{displayField(row, ["kill_switch"])}</MobileSection>
       </div>
@@ -412,30 +432,40 @@ function OpportunityScoreStack({ row }: { row: RowRecord }) {
 }
 
 function OpportunityReasonChips({ row }: { row: RowRecord }) {
-  const blockers = arrayText(row, "blockers");
-  const reasons = blockers.length ? blockers.slice(0, 4) : arrayText(row, "top_reasons").slice(0, 4);
-  const extra = (blockers.length ? blockers.length : arrayText(row, "top_reasons").length) - reasons.length;
+  const failures = dataContractFailures(row);
+  if (failures.length) {
+    const reasons = failures.slice(0, 4);
+    const extra = failures.length - reasons.length;
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {reasons.map((reason) => <ReasonChip key={reason} reason={reason} tone="bad" />)}
+        {extra > 0 ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">+{extra}</span> : null}
+      </div>
+    );
+  }
+  const satisfied = arrayText(row, "data_contract_satisfied");
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {reasons.length ? reasons.map((reason) => (
-        <ReasonChip key={reason} reason={reason} tone={blockers.length ? "warn" : "good"} />
-      )) : <StatusBadge tone="good">Strict gates passed</StatusBadge>}
-      {extra > 0 ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">+{extra}</span> : null}
+    <div className="flex flex-wrap items-center gap-1.5">
+      <StatusBadge tone="good">Clean</StatusBadge>
+      {satisfied.length ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">{satisfied.length} checks</span> : null}
     </div>
   );
 }
 
 function opportunityActionText(row: RowRecord): string {
   const tier = tierOf(row);
+  if (isServiceRepair(row)) {
+    return displayField(row, ["service_repair_summary"], "Service bug blocks trade-state computation.");
+  }
   const blockers = arrayText(row, "blockers");
   const reasons = arrayText(row, "top_reasons");
   if (tier === "Exceptional" && !blockers.length) {
     const why = reasons.slice(0, 3).map(reasonLabel).join(", ");
-    return why ? `Review now: ${why}.` : "Review now: strict gates passed.";
+    return why ? `Trade-ready candidate: ${why}.` : "Trade-ready candidate: strict gates passed.";
   }
   if (blockers.length) {
     const why = blockers.slice(0, 3).map(reasonLabel).join(", ");
-    return `Wait: ${why}.`;
+    return `Current state is not trade-ready: ${why}.`;
   }
   return displayField(row, ["why_now"], "Review setup details.");
 }
@@ -2287,6 +2317,7 @@ function stateTone(state: string): Tone {
 
 function tierTone(tier: string): Tone {
   if (tier === "Exceptional") return "good";
+  if (tier === "Service Bug") return "bad";
   if (tier === "Research") return "info";
   return "muted";
 }
@@ -2341,7 +2372,6 @@ const reasonLabels: Record<string, string> = {
   dte_outside_strategy_range: "DTE outside range",
   entry_quality_below_exceptional_bar: "Entry quality below top bar",
   entry_quality_supported: "Entry quality supported",
-  fix_option_data_disagreement: "Fix option data mismatch",
   hard_red_team_risk: "Hard red-team risk",
   iv_not_overpriced: "IV acceptable",
   iv_percentile_above_fire_threshold: "IV above fire limit",
@@ -2357,11 +2387,12 @@ const reasonLabels: Record<string, string> = {
   missing_rs_vs_qqq: "Missing RS context",
   missing_spread: "Missing spread",
   missing_volume: "Missing volume",
-  needs_clean_data_quality: "Data check required",
-  needs_printed_volume: "Needs printed volume",
-  needs_source_evidence: "Needs source evidence",
-  needs_source_backed_thesis: "Needs source-backed thesis",
-  needs_validated_thesis: "Needs validated thesis",
+  no_printed_volume: "No volume print",
+  option_chain_terms_sync_gap: "Option terms sync gap",
+  option_contract_quote_sync_gap: "Option quote sync gap",
+  option_data_conflict: "Option data conflict",
+  option_iv_and_delta_sync_gap: "Option IV/Greek sync gap",
+  option_liquidity_sync_gap: "Option liquidity sync gap",
   not_fire_state: "Wait for fire setup",
   open_interest_below_threshold: "Open interest too low",
   open_interest_not_exceptional: "Open interest not exceptional",
@@ -2373,7 +2404,9 @@ const reasonLabels: Record<string, string> = {
   required_move_not_exceptional: "Required move not exceptional",
   rs_vs_qqq_20d_negative: "RS vs QQQ weak",
   rs_vs_qqq_improving: "RS vs QQQ improving",
+  market_regime_sync_gap: "Market regime sync gap",
   source_evidence_cluster: "Source evidence cluster",
+  source_evidence_sync_gap: "Source evidence sync gap",
   source_backed_thesis: "Source-backed thesis",
   spread_above_fire_threshold: "Spread above fire limit",
   spread_not_exceptional: "Spread not exceptional",
@@ -2383,6 +2416,8 @@ const reasonLabels: Record<string, string> = {
   stock_below_50d: "Below 50D",
   supportive_market_regime: "Supportive market regime",
   strategy_only_tracks_calls: "Strategy tracks calls only",
+  stock_context_sync_gap: "Stock context sync gap",
+  thesis_synthesis_sync_gap: "Thesis synthesis sync gap",
   thesis_invalidated: "Thesis invalidated",
   thesis_validated: "Thesis validated",
   volume_below_threshold: "Volume too low",
@@ -2392,6 +2427,18 @@ const reasonLabels: Record<string, string> = {
 
 function reasonLabel(reason: string): string {
   return reasonLabels[reason] ?? titleLabel(reason);
+}
+
+function dataContractStatus(row: RowRecord | undefined): string {
+  return textField(row, ["data_contract_status"], "").toLowerCase();
+}
+
+function isServiceRepair(row: RowRecord | undefined): boolean {
+  return dataContractStatus(row) === "repair_required" || tierOf(row) === "Service Bug";
+}
+
+function dataContractFailures(row: RowRecord | undefined): string[] {
+  return arrayText(row, "data_contract_failures");
 }
 
 function readableReasonSummary(row: RowRecord): string {
@@ -2441,6 +2488,16 @@ function commonBlockers(rows: RowRecord[]): Array<[string, number]> {
   for (const row of rows) {
     for (const blocker of arrayText(row, "blockers")) {
       counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
+}
+
+function commonDataContractFailures(rows: RowRecord[]): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const failure of dataContractFailures(row)) {
+      counts.set(failure, (counts.get(failure) ?? 0) + 1);
     }
   }
   return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);

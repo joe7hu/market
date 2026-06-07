@@ -436,6 +436,11 @@ CREATE TABLE IF NOT EXISTS option_radar_opportunity (
     entry_zone TEXT,
     max_loss_assumption DOUBLE,
     position_sizing_band TEXT,
+    data_contract_status TEXT,
+    data_contract_failures JSON,
+    data_contract_satisfied JSON,
+    service_repair_jobs JSON,
+    service_repair_summary TEXT,
     why_now TEXT,
     kill_switch TEXT,
     top_reasons JSON,
@@ -1397,6 +1402,13 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
         "candidate_event": {
             "quality_status": "TEXT",
             "quality_flags": "JSON",
+        },
+        "option_radar_opportunity": {
+            "data_contract_status": "TEXT",
+            "data_contract_failures": "JSON",
+            "data_contract_satisfied": "JSON",
+            "service_repair_jobs": "JSON",
+            "service_repair_summary": "TEXT",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

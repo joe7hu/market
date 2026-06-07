@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.free_sources import store_options_chain, store_yfinance_options_liquidity
 from investment_panel.core.option_agent_thesis import upsert_agent_thesis
 from investment_panel.core.options_radar import (
@@ -87,10 +87,16 @@ def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without
     blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
     alternatives = json.loads(opportunity["alternative_contracts"]) if isinstance(opportunity["alternative_contracts"], str) else opportunity["alternative_contracts"]
     assert result["option_radar_opportunities"] == 1
-    assert opportunity["tier"] == "Research"
+    assert opportunity["tier"] == "Service Bug"
+    assert opportunity["data_contract_status"] == "repair_required"
     assert opportunity["primary_contract_id"] == "OPRA:TSLA270918C115"
-    assert "needs_source_backed_thesis" in blockers
-    assert "needs_source_evidence" in blockers
+    failures = json.loads(opportunity["data_contract_failures"]) if isinstance(opportunity["data_contract_failures"], str) else opportunity["data_contract_failures"]
+    repair_jobs = json.loads(opportunity["service_repair_jobs"]) if isinstance(opportunity["service_repair_jobs"], str) else opportunity["service_repair_jobs"]
+    assert "needs_source_backed_thesis" not in blockers
+    assert "needs_source_evidence" not in blockers
+    assert "source_evidence_sync_gap" in failures
+    assert "thesis_synthesis_sync_gap" in failures
+    assert repair_jobs == ["update_free_sources", "update_arco_data", "run_option_agents", "refresh_options_radar"]
     assert len(alternatives) == 1
 
 
@@ -111,8 +117,41 @@ def test_option_radar_opportunity_closes_thesis_loop_from_source_evidence(tmp_pa
     blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
     top_reasons = json.loads(opportunity["top_reasons"]) if isinstance(opportunity["top_reasons"], str) else opportunity["top_reasons"]
     assert opportunity["tier"] == "Exceptional"
+    assert opportunity["data_contract_status"] == "ready"
     assert blockers == []
     assert "source_backed_thesis" in top_reasons
+
+
+def test_option_radar_opportunity_treats_etf_contract_as_systematic_context(tmp_path) -> None:
+    db_path = tmp_path / "radar-opportunity-etf.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "QQQ", "name": "Nasdaq 100 ETF", "asset_class": "etf"})
+        seed_prices(con, "QQQ", start_price=100, slope=0.20)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('QQQ', '2026-06-02T20:00:00Z', 140, 1, 1, 'USD', 'yfinance', '{}')"
+        )
+        store_options_chain(
+            con,
+            "QQQ",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 170, "call", 3.95, 4.05, 0.28, 0.20, "QQQ270918C00170000", volume=500, open_interest=1500),
+                option_row("2027-09-18", 230, "call", 6.95, 7.05, 0.80, 0.50, "QQQ270918C00230000", volume=500, open_interest=1500),
+            ],
+            source="yfinance",
+        )
+
+        refresh_options_radar(con, ["QQQ"])
+        opportunity = query_rows(con, "SELECT * FROM option_radar_opportunity WHERE ticker = 'QQQ'")[0]
+
+    failures = json.loads(opportunity["data_contract_failures"]) if isinstance(opportunity["data_contract_failures"], str) else opportunity["data_contract_failures"]
+    satisfied = json.loads(opportunity["data_contract_satisfied"]) if isinstance(opportunity["data_contract_satisfied"], str) else opportunity["data_contract_satisfied"]
+    assert opportunity["data_contract_status"] == "ready"
+    assert "source_evidence_sync_gap" not in failures
+    assert "thesis_synthesis_sync_gap" not in failures
+    assert "etf_macro_contract" in satisfied
+    assert "etf_systematic_thesis" in satisfied
 
 
 def test_option_radar_opportunity_requires_extreme_gates_for_exceptional_tier(tmp_path) -> None:
@@ -703,6 +742,49 @@ def test_options_radar_quality_does_not_compare_future_peer_snapshots(tmp_path) 
     assert event["quality_status"] == "ok"
     assert "source_mid_disagreement" not in quality_flags
     assert "source_iv_disagreement" not in quality_flags
+
+
+def test_options_radar_quality_does_not_compare_stale_peer_snapshots(tmp_path) -> None:
+    db_path = tmp_path / "radar-no-stale-peer-quality.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "RBLX", start_price=75, slope=0.11)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-03T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-02T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 7.0, 7.4, 0.45, 0.25, "OPRA:RBLX270918C120", volume=25, open_interest=250),
+            ],
+            source="tradingview",
+        )
+        store_options_chain(
+            con,
+            "RBLX",
+            "2026-06-03T20:00:00Z",
+            [
+                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.30, 0.25, "RBLX270918C00120000", volume=25, open_interest=250),
+            ],
+            source="yfinance",
+        )
+
+        refresh_options_radar(con, ["RBLX"])
+        event = query_rows(
+            con,
+            """
+            SELECT quality_status, quality_flags, raw
+            FROM candidate_event
+            WHERE contract_id = 'RBLX270918C00120000'
+            """,
+        )[0]
+
+    quality_flags = json.loads(event["quality_flags"]) if isinstance(event["quality_flags"], str) else event["quality_flags"]
+    raw = json.loads(event["raw"]) if isinstance(event["raw"], str) else event["raw"]
+    assert event["quality_status"] == "ok"
+    assert "source_mid_disagreement" not in quality_flags
+    assert raw["quality"]["peer"]["crosscheck_skipped"] == "stale_peer_snapshot"
 
 
 def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:

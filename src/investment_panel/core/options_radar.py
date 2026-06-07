@@ -24,6 +24,16 @@ OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF = 0.15
 OPTION_QUALITY_IV_BAD_RELATIVE_DIFF = 0.30
 OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF = 0.07
 OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF = 0.15
+OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS = 2.0
+DATA_CONTRACT_READY = "ready"
+DATA_CONTRACT_REPAIR_REQUIRED = "repair_required"
+SERVICE_BUG_TIER = "Service Bug"
+SERVICE_REPAIR_JOB_ORDER = [
+    "update_free_sources",
+    "update_arco_data",
+    "run_option_agents",
+    "refresh_options_radar",
+]
 
 DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "strategy_name": "leap_10x_reversal",
@@ -511,6 +521,7 @@ def generate_candidate_events(
             sf.rs_vs_qqq_20d,
             sf.base_length_days,
             sf.breakout_level,
+            i.asset_class,
             (
                 SELECT peer.data_source
                 FROM option_snapshot peer
@@ -523,6 +534,18 @@ def generate_candidate_events(
                 ORDER BY peer.snapshot_time DESC
                 LIMIT 1
             ) AS peer_data_source,
+            (
+                SELECT peer.snapshot_time
+                FROM option_snapshot peer
+                WHERE peer.ticker = s.ticker
+                  AND peer.expiration = s.expiration
+                  AND peer.strike = s.strike
+                  AND peer.option_type = s.option_type
+                  AND peer.data_source != s.data_source
+                  AND peer.snapshot_time <= s.snapshot_time
+                ORDER BY peer.snapshot_time DESC
+                LIMIT 1
+            ) AS peer_snapshot_time,
             (
                 SELECT peer.mid
                 FROM option_snapshot peer
@@ -571,6 +594,7 @@ def generate_candidate_events(
             FROM agent_thesis
             QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY created_at DESC) = 1
         ) t ON t.ticker = s.ticker
+        LEFT JOIN instruments i ON i.symbol = s.ticker
         WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
         ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
         """,
@@ -819,6 +843,7 @@ def refresh_option_radar_opportunities(
             sf.distance_from_52w_high,
             sf.base_length_days,
             sf.breakout_level,
+            i.asset_class,
             v.validation_id,
             v.state AS thesis_validation_state,
             v.reason AS thesis_validation_reason,
@@ -833,6 +858,7 @@ def refresh_option_radar_opportunities(
         LEFT JOIN option_snapshot_one s ON s.contract_id = ce.contract_id AND s.snapshot_time = ce.snapshot_time
         LEFT JOIN option_features f ON f.contract_id = ce.contract_id AND f.snapshot_time = ce.snapshot_time
         LEFT JOIN stock_features sf ON sf.ticker = ce.ticker AND sf.snapshot_time = ce.snapshot_time
+        LEFT JOIN instruments i ON i.symbol = ce.ticker
         LEFT JOIN latest_validation v
           ON (v.candidate_event_id = ce.event_id OR (v.candidate_event_id IS NULL AND v.ticker = ce.ticker))
         WHERE ce.strategy_version = ?
@@ -866,9 +892,11 @@ def refresh_option_radar_opportunities(
              learning_score, required_move_pct, premium_mid,
              premium_fill_assumption, required_10x_price, buy_under,
              entry_zone, max_loss_assumption, position_sizing_band,
+             data_contract_status, data_contract_failures, data_contract_satisfied,
+             service_repair_jobs, service_repair_summary,
              why_now, kill_switch, top_reasons, blockers, quality_status,
              quality_flags, evidence_refs, alternative_contracts, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 opportunity["opportunity_id"],
@@ -895,6 +923,11 @@ def refresh_option_radar_opportunities(
                 opportunity["entry_zone"],
                 opportunity["max_loss_assumption"],
                 opportunity["position_sizing_band"],
+                opportunity["data_contract_status"],
+                json_dumps(opportunity["data_contract_failures"]),
+                json_dumps(opportunity["data_contract_satisfied"]),
+                json_dumps(opportunity["service_repair_jobs"]),
+                opportunity["service_repair_summary"],
                 opportunity["why_now"],
                 opportunity["kill_switch"],
                 json_dumps(opportunity["top_reasons"]),
@@ -952,6 +985,11 @@ def build_option_radar_opportunity(
         "entry_zone": primary["entry_zone"],
         "max_loss_assumption": primary["max_loss_assumption"],
         "position_sizing_band": primary["position_sizing_band"],
+        "data_contract_status": primary["data_contract_status"],
+        "data_contract_failures": primary["data_contract_failures"],
+        "data_contract_satisfied": primary["data_contract_satisfied"],
+        "service_repair_jobs": primary["service_repair_jobs"],
+        "service_repair_summary": primary["service_repair_summary"],
         "why_now": primary["why_now"],
         "kill_switch": primary["kill_switch"],
         "top_reasons": primary["top_reasons"],
@@ -963,9 +1001,12 @@ def build_option_radar_opportunity(
         "raw": {
             "authority": "deterministic_extreme_options_radar",
             "queue_policy": "one_primary_contract_per_ticker",
-            "exceptional_policy": "missing_evidence_blocks_top_tier",
+            "exceptional_policy": "data_contract_must_be_ready_before_trade_decision",
             "candidate_count": len(details),
             "tier_counts": _value_counts([str(detail["tier"]) for detail in details]),
+            "data_contract_status": primary["data_contract_status"],
+            "data_contract_failures": primary["data_contract_failures"],
+            "service_repair_jobs": primary["service_repair_jobs"],
             "primary_detail": _compact_opportunity_contract(primary),
         },
     }
@@ -985,11 +1026,14 @@ def _opportunity_candidate_detail(
     validation = _opportunity_validation(row)
     scores = _opportunity_scores(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
     blockers = _extreme_opportunity_blockers(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, scores=scores)
+    data_contract = _opportunity_data_contract(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
     conviction = scores["conviction_score"]
     if conviction < 78.0 and "conviction_below_exceptional_bar" not in blockers:
         blockers.append("conviction_below_exceptional_bar")
     state = str(row.get("state") or "").upper()
-    if not blockers and state == "FIRE":
+    if data_contract["status"] != DATA_CONTRACT_READY:
+        tier = SERVICE_BUG_TIER
+    elif not blockers and state == "FIRE":
         tier = "Exceptional"
     elif state in {"FIRE", "SETUP"}:
         tier = "Research"
@@ -1024,8 +1068,13 @@ def _opportunity_candidate_detail(
         "entry_zone": _entry_zone(row),
         "max_loss_assumption": premium_fill,
         "position_sizing_band": _position_sizing_band(tier),
-        "why_now": _why_now(top_reasons, blockers),
-        "kill_switch": _kill_switch(row, validation),
+        "data_contract_status": data_contract["status"],
+        "data_contract_failures": data_contract["failures"],
+        "data_contract_satisfied": data_contract["satisfied"],
+        "service_repair_jobs": data_contract["repair_jobs"],
+        "service_repair_summary": data_contract["summary"],
+        "why_now": _why_now(top_reasons, blockers, data_contract=data_contract),
+        "kill_switch": "Fix the data contract bug before computing a trade decision." if data_contract["status"] != DATA_CONTRACT_READY else _kill_switch(row, validation),
         "top_reasons": top_reasons,
         "blockers": blockers,
         "quality_status": str(row.get("quality_status") or "ok").lower(),
@@ -1037,9 +1086,11 @@ def _opportunity_candidate_detail(
             "positives": positives,
             "source_signal_count": source_context["count"],
             "source_signal_confidence": source_context["average_confidence"],
+            "source_signal_score": source_context["score"],
             "thesis_validation_state": validation.get("state"),
             "qqq_above_200d": qqq_above_200d,
             "data_source": row.get("data_source"),
+            "asset_class": row.get("asset_class"),
             "expiration": str(row.get("expiration") or ""),
             "strike": _number(row.get("strike")),
             "option_type": row.get("option_type"),
@@ -1212,6 +1263,90 @@ def _learning_score(row: dict[str, Any]) -> float:
     return 50.0
 
 
+def _opportunity_data_contract(
+    row: dict[str, Any],
+    *,
+    validation: dict[str, Any],
+    source_context: dict[str, Any],
+    qqq_above_200d: bool | None,
+) -> dict[str, Any]:
+    failures: list[str] = []
+    satisfied: list[str] = []
+    repair_jobs: list[str] = []
+
+    def fail(reason: str, jobs: list[str]) -> None:
+        failures.append(reason)
+        repair_jobs.extend(jobs)
+
+    def ok(reason: str) -> None:
+        satisfied.append(reason)
+
+    option_required = {
+        "option_contract_quote": [_number(row.get("premium_mid")), _number(row.get("required_10x_price")), _number(row.get("buy_under"))],
+        "option_chain_terms": [_integer(row.get("dte")), _number(row.get("spread_pct"))],
+        "option_liquidity": [_number(row.get("open_interest")), _number(row.get("volume"))],
+        "option_iv_and_delta": [_number(row.get("iv_percentile")), _number(row.get("delta"))],
+    }
+    for label, values in option_required.items():
+        if any(value is None for value in values):
+            fail(f"{label}_sync_gap", ["update_free_sources", "refresh_options_radar"])
+        else:
+            ok(label)
+
+    if _blocking_quality_flags(row):
+        fail("option_data_conflict", ["update_free_sources", "refresh_options_radar"])
+    else:
+        ok("option_provider_crosscheck")
+
+    stock_required = [_number(row.get("price")), _number(row.get("ma_50")), _number(row.get("rs_vs_qqq_20d"))]
+    if any(value is None for value in stock_required):
+        fail("stock_context_sync_gap", ["update_free_sources", "refresh_options_radar"])
+    else:
+        ok("stock_context")
+
+    if qqq_above_200d is None:
+        fail("market_regime_sync_gap", ["update_free_sources", "refresh_options_radar"])
+    else:
+        ok("market_regime_context")
+
+    asset_class = str(row.get("asset_class") or "").lower()
+    is_index_like_etf = asset_class == "etf"
+    if is_index_like_etf:
+        ok("etf_macro_contract")
+    elif int(source_context.get("count") or 0) < 2 or float(source_context.get("score") or 0.0) < 45.0:
+        fail("source_evidence_sync_gap", ["update_arco_data", "update_free_sources", "refresh_options_radar"])
+    else:
+        ok("source_evidence_cluster")
+
+    if is_index_like_etf:
+        ok("etf_systematic_thesis")
+    elif max(_thesis_score(validation, row), _source_backed_thesis_score(source_context)) < 80.0:
+        fail("thesis_synthesis_sync_gap", ["run_option_agents", "refresh_options_radar"])
+    else:
+        ok("source_backed_thesis")
+
+    repair_jobs = [job for job in SERVICE_REPAIR_JOB_ORDER if job in set(repair_jobs)]
+    failures = list(dict.fromkeys(failures))
+    satisfied = list(dict.fromkeys(satisfied))
+    status = DATA_CONTRACT_READY if not failures else DATA_CONTRACT_REPAIR_REQUIRED
+    return {
+        "status": status,
+        "failures": failures,
+        "satisfied": satisfied,
+        "repair_jobs": repair_jobs,
+        "summary": _data_contract_summary(failures, repair_jobs),
+    }
+
+
+def _data_contract_summary(failures: list[str], repair_jobs: list[str]) -> str:
+    if not failures:
+        return "Data contract clean: option chain, liquidity, stock context, source evidence, and thesis synthesis are loaded."
+    labels = ", ".join(failures[:3])
+    if len(failures) > 3:
+        labels = f"{labels}, +{len(failures) - 3}"
+    return f"Service bug: {labels}. Trade state is withheld until the data contract is clean."
+
+
 def _extreme_opportunity_blockers(
     row: dict[str, Any],
     *,
@@ -1224,31 +1359,25 @@ def _extreme_opportunity_blockers(
     state = str(row.get("state") or "").upper()
     if state != "FIRE":
         blockers.append("wait_for_fire_setup")
-    blocking_quality_flags = _blocking_quality_flags(row)
-    blockers.extend(blocking_quality_flags)
     spread = _number(row.get("spread_pct"))
-    if spread is None or spread > 0.18:
+    if spread is not None and spread > 0.18:
         blockers.append("spread_not_exceptional")
     open_interest = _number(row.get("open_interest"))
-    if open_interest is None or open_interest < 250:
+    if open_interest is not None and open_interest < 250:
         blockers.append("open_interest_not_exceptional")
     volume = _number(row.get("volume"))
-    if volume is None or volume < 1:
-        blockers.append("needs_printed_volume")
+    if volume is not None and volume < 1:
+        blockers.append("no_printed_volume")
     dte = _integer(row.get("dte"))
-    if dte is None or dte < 365 or dte > 900:
+    if dte is not None and (dte < 365 or dte > 900):
         blockers.append("leap_survivability_not_exceptional")
     required_move = _number(row.get("required_move_pct"))
-    if required_move is None or required_move > 2.0:
+    if required_move is not None and required_move > 2.0:
         blockers.append("required_move_not_exceptional")
-    if max(_thesis_score(validation, row), _source_backed_thesis_score(source_context)) < 80.0:
-        blockers.append("needs_source_backed_thesis")
     if validation.get("invalidation_status") == "breached" or validation.get("state") == "invalidated":
         blockers.append("thesis_invalidated")
     if validation.get("red_team_status") == "hard_risk_triggered":
         blockers.append("hard_red_team_risk")
-    if int(source_context.get("count") or 0) < 2 or float(source_context.get("score") or 0.0) < 45.0:
-        blockers.append("needs_source_evidence")
     if qqq_above_200d is False:
         blockers.append("market_regime_hostile_to_long_premium")
     if scores["entry_quality_score"] < 70.0:
@@ -1300,9 +1429,6 @@ def _blocking_quality_flags(row: dict[str, Any]) -> list[str]:
         "missing_iv_percentile",
         "spread_reject",
         "stale_market_data",
-        "source_mid_disagreement",
-        "source_iv_disagreement",
-        "source_delta_disagreement",
     }
     if quality == "bad" or flags & severe_flags:
         blockers.append("fix_option_data_disagreement")
@@ -1322,14 +1448,18 @@ def _entry_zone(row: dict[str, Any]) -> str:
 def _position_sizing_band(tier: str) -> str:
     if tier == "Exceptional":
         return "0.25%-1.00% max premium risk"
+    if tier == SERVICE_BUG_TIER:
+        return "service bug before decision"
     if tier == "Research":
         return "research only"
     return "no position"
 
 
-def _why_now(top_reasons: list[str], blockers: list[str]) -> str:
+def _why_now(top_reasons: list[str], blockers: list[str], *, data_contract: dict[str, Any] | None = None) -> str:
+    if data_contract and data_contract.get("status") != DATA_CONTRACT_READY:
+        return str(data_contract.get("summary") or "Service bug blocks trade-state computation.")
     if blockers:
-        return f"Not exceptional yet: {', '.join(blockers[:3])}."
+        return f"Trade gate failed now: {', '.join(blockers[:3])}."
     return f"Exceptional setup because {', '.join(top_reasons[:3])}."
 
 
@@ -1356,6 +1486,9 @@ def _compact_opportunity_contract(detail: dict[str, Any]) -> dict[str, Any]:
         "required_move_pct": detail.get("required_move_pct"),
         "premium_mid": detail.get("premium_mid"),
         "buy_under": detail.get("buy_under"),
+        "data_contract_status": detail.get("data_contract_status"),
+        "data_contract_failures": detail.get("data_contract_failures"),
+        "service_repair_jobs": detail.get("service_repair_jobs"),
         "expiration": raw.get("expiration"),
         "strike": raw.get("strike"),
         "dte": raw.get("dte"),
@@ -3635,6 +3768,12 @@ def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], 
     data_source = str(row.get("data_source") or "unknown")
     peer_source = row.get("peer_data_source")
     peer: dict[str, Any] = {"source": peer_source} if peer_source else {}
+    peer_age_hours = _elapsed_hours(row.get("peer_snapshot_time"), row.get("snapshot_time"))
+    peer_fresh = peer_age_hours is None or peer_age_hours <= OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS
+    if peer_source and peer_age_hours is not None:
+        peer["age_hours"] = round(peer_age_hours, 2)
+    if peer_source and not peer_fresh:
+        peer["crosscheck_skipped"] = "stale_peer_snapshot"
 
     missing_flags = [blocker for blocker in blockers if blocker in {"missing_delta", "missing_spread", "missing_open_interest", "missing_volume", "missing_iv_percentile"}]
     if missing_flags:
@@ -3659,7 +3798,7 @@ def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], 
 
     mid = _number(row.get("mid"))
     peer_mid = _number(row.get("peer_mid"))
-    mid_diff = _relative_diff(mid, peer_mid)
+    mid_diff = _relative_diff(mid, peer_mid) if peer_fresh else None
     if mid_diff is not None:
         peer["mid_relative_diff"] = round(mid_diff, 4)
         if mid_diff >= OPTION_QUALITY_MID_BAD_RELATIVE_DIFF:
@@ -3670,7 +3809,7 @@ def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], 
 
     iv = _number(row.get("iv"))
     peer_iv = _number(row.get("peer_iv"))
-    iv_diff = _relative_diff(iv, peer_iv)
+    iv_diff = _relative_diff(iv, peer_iv) if peer_fresh else None
     if iv_diff is not None:
         peer["iv_relative_diff"] = round(iv_diff, 4)
         if iv_diff >= OPTION_QUALITY_IV_BAD_RELATIVE_DIFF:
@@ -3681,7 +3820,7 @@ def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], 
 
     delta = _number(row.get("delta"))
     peer_delta = _number(row.get("peer_delta"))
-    if delta is not None and peer_delta is not None:
+    if peer_fresh and delta is not None and peer_delta is not None:
         delta_diff = abs(delta - peer_delta)
         peer["delta_absolute_diff"] = round(delta_diff, 4)
         if delta_diff >= OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF:

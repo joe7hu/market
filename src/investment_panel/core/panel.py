@@ -3482,6 +3482,12 @@ def option_radar_summary(con: Any) -> list[dict[str, Any]]:
                 SELECT count(*)
                 FROM option_radar_opportunity
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND tier = 'Service Bug'
+            ) AS repair_opportunities_current,
+            (
+                SELECT count(*)
+                FROM option_radar_opportunity
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
                   AND tier = 'Research'
             ) AS research_opportunities_current
         """,
@@ -3500,17 +3506,37 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
                learning_score, required_move_pct, premium_mid,
                premium_fill_assumption, required_10x_price, buy_under,
                entry_zone, max_loss_assumption, position_sizing_band,
+               data_contract_status, data_contract_failures, data_contract_satisfied,
+               service_repair_jobs, service_repair_summary,
                why_now, kill_switch, top_reasons, blockers, quality_status,
                quality_flags, evidence_refs, alternative_contracts, raw
         FROM option_radar_opportunity
-        ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Research' THEN 1 ELSE 2 END,
+        ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Service Bug' THEN 1 WHEN 'Research' THEN 2 ELSE 3 END,
                  conviction_score DESC NULLS LAST,
                  required_move_pct ASC NULLS LAST,
                  ticker
         LIMIT 500
         """,
     )
-    return [_compact_empty_fields(decode_fields(row, ("top_reasons", "blockers", "quality_flags", "evidence_refs", "alternative_contracts", "raw"))) for row in rows]
+    return [
+        _compact_empty_fields(
+            decode_fields(
+                row,
+                (
+                    "data_contract_failures",
+                    "data_contract_satisfied",
+                    "service_repair_jobs",
+                    "top_reasons",
+                    "blockers",
+                    "quality_flags",
+                    "evidence_refs",
+                    "alternative_contracts",
+                    "raw",
+                ),
+            )
+        )
+        for row in rows
+    ]
 
 
 def option_snapshot(con: Any) -> list[dict[str, Any]]:
