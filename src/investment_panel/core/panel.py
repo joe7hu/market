@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -338,14 +339,12 @@ def feed_signals(con: Any, config_watchlist: list[dict[str, Any]] | None = None)
     decision_rows = decision_queue(con)
     thesis_rows = {str(row.get("symbol") or "").upper(): row for row in thesis_monitor_rows(con, config_watchlist or [])}
     decision_by_symbol = {str(row.get("symbol") or "").upper(): row for row in decision_rows}
-    seen: set[str] = set()
-    output: list[dict[str, Any]] = []
-
-    for signal in _source_feed_events(con, portfolio_rows, watchlist, decision_by_symbol, thesis_rows):
-        key = signal["id"]
-        if key not in seen:
-            seen.add(key)
-            output.append(signal)
+    output = _group_feed_events(
+        _source_feed_events(con, portfolio_rows, watchlist, decision_by_symbol, thesis_rows),
+        portfolio_rows,
+        watchlist,
+        decision_by_symbol,
+    )
 
     return sorted(output, key=lambda item: (item.get("date") or "", item.get("score") or 0), reverse=True)[:48]
 
@@ -710,16 +709,19 @@ def _source_feed_events(
         evidence = claims.get("evidence") if isinstance(claims.get("evidence"), list) else []
         first_evidence = next((item for item in evidence if isinstance(item, dict)), {})
         decision = decision_by_symbol.get(symbol, {})
+        thesis_text = _plain_text(claims.get("text")) or str(row.get("thesis_summary") or "Arco/Birdclaw evidence raised this ticker.")
+        title = str(row.get("thesis_summary") or f"{symbol} thesis evidence")
         events.append(
             {
                 "id": f"thesis:{row.get('id')}",
+                "feed_group_key": _feed_group_key_from_parts("socials", row.get("created_at") or first_evidence.get("date"), title, thesis_text or first_evidence.get("text")),
                 "date": _date_text(row.get("created_at") or first_evidence.get("date")),
                 "source": str(row.get("author") or "Arco / Birdclaw"),
                 "source_type": "socials",
-                "title": str(row.get("thesis_summary") or f"{symbol} thesis evidence"),
+                "title": title,
                 "symbols": [symbol],
                 "primary_symbol": symbol,
-                "thesis": _plain_text(claims.get("text")) or str(row.get("thesis_summary") or "Arco/Birdclaw evidence raised this ticker."),
+                "thesis": thesis_text,
                 "antithesis": _countercase(symbol, decision, thesis_rows.get(symbol, {}), {}),
                 "evidence": [str(first_evidence.get("text") or row.get("source_url") or "")],
                 "portfolio_relevance": _portfolio_relevance([symbol], portfolio_rows, watchlist, decision),
@@ -744,10 +746,12 @@ def _source_feed_events(
         events.append(
             {
                 "id": f"filing:{investor}:{symbol}:{row.get('filed_date')}:{action}",
+                "feed_group_key": _feed_group_key_from_parts("filing", row.get("filed_date") or row.get("event_date"), investor, action, row.get("source_url") or row.get("id")),
                 "date": _date_text(row.get("filed_date") or row.get("event_date")),
                 "source": investor,
                 "source_type": "filing",
-                "title": f"{investor} {action.lower()} {symbol}",
+                "title": f"{investor} {action.lower()} disclosed positions",
+                "action": action,
                 "symbols": [symbol],
                 "primary_symbol": symbol,
                 "thesis": f"{investor} disclosure adds ownership evidence for {symbol}.",
@@ -809,6 +813,8 @@ def _source_feed_events(
         events.append(
             {
                 "id": f"source_signal:{row.get('id')}",
+                "feed_group_key": _feed_group_key_from_parts("source_signal", row.get("source_item_id") or row.get("id"), row.get("source_id")),
+                "source_item_id": row.get("source_item_id"),
                 "date": _date_text(row.get("observed_at")),
                 "source": str(row.get("source_name") or row.get("source_id") or "Source signal"),
                 "source_type": str(row.get("signal_type") or "source_signal"),
@@ -826,6 +832,124 @@ def _source_feed_events(
             }
         )
     return events
+
+
+def _group_feed_events(
+    events: list[dict[str, Any]],
+    portfolio_rows: dict[str, Any],
+    watchlist: set[str],
+    decision_by_symbol: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        symbols = _symbols_from_value(event.get("symbols"))
+        primary_symbol = _normalize_symbol_token(event.get("primary_symbol"))
+        if primary_symbol and primary_symbol not in symbols:
+            symbols.insert(0, primary_symbol)
+        if not symbols:
+            continue
+
+        key = _feed_event_group_key(event)
+        group = grouped.setdefault(
+            key,
+            {
+                **event,
+                "symbols": [],
+                "ticker_contexts": [],
+                "feed_item_count": 0,
+                "source_count": 0,
+                "_sources": [],
+                "_evidence": [],
+                "_context_keys": set(),
+            },
+        )
+        group["feed_item_count"] = int(group.get("feed_item_count") or 0) + 1
+        group["score"] = max(float(group.get("score") or 0), float(event.get("score") or 0))
+        group["date"] = max(str(group.get("date") or ""), str(event.get("date") or ""))
+        group["severity"] = _feed_more_severe(str(group.get("severity") or ""), str(event.get("severity") or ""))
+        _append_unique(group["_sources"], str(event.get("source") or "Source"))
+        for item in _string_list(event.get("evidence")):
+            _append_unique(group["_evidence"], item)
+        for symbol in symbols:
+            _append_unique(group["symbols"], symbol)
+            context = {
+                "symbol": symbol,
+                "source": event.get("source"),
+                "thesis": event.get("thesis"),
+                "antithesis": event.get("antithesis"),
+                "portfolio_relevance": event.get("portfolio_relevance"),
+                "next_action": event.get("next_action"),
+                "freshness": event.get("freshness"),
+                "severity": event.get("severity"),
+            }
+            context_key = json.dumps(context, sort_keys=True, default=str)
+            if context_key not in group["_context_keys"]:
+                group["_context_keys"].add(context_key)
+                group["ticker_contexts"].append(_compact_empty_fields(context))
+
+    output: list[dict[str, Any]] = []
+    for key, group in grouped.items():
+        symbols = list(group.get("symbols") or [])
+        primary_symbol = _primary_symbol(symbols, portfolio_rows, watchlist)
+        sources = list(group.get("_sources") or [])
+        evidence = list(group.get("_evidence") or [])
+        source_type = str(group.get("source_type") or "")
+        if sources:
+            group["source"] = sources[0] if len(sources) == 1 else f"{sources[0]} +{len(sources) - 1}"
+        group["sources"] = sources
+        group["source_count"] = len(sources)
+        group["evidence"] = evidence[:6]
+        group["symbols"] = symbols
+        group["ticker_count"] = len(symbols)
+        group["primary_symbol"] = primary_symbol
+        if int(group.get("feed_item_count") or 0) > 1:
+            group["id"] = f"feed_group:{hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]}"
+        if len(symbols) > 1:
+            group["portfolio_relevance"] = _portfolio_relevance(symbols, portfolio_rows, watchlist, decision_by_symbol.get(primary_symbol, {}))
+            group["next_action"] = _source_event_next_action(symbols, portfolio_rows, watchlist)
+            if source_type == "filing":
+                action = str(group.get("action") or "disclosed").lower()
+                group["title"] = f"{group.get('source') or 'Tracked investor'} {action} {len(symbols)} positions"
+                group["thesis"] = f"{group.get('source') or 'Tracked investor'} disclosure adds ownership evidence across {len(symbols)} tickers."
+            elif source_type not in {"socials", "news"} and int(group.get("feed_item_count") or 0) > 1:
+                group["thesis"] = f"This source item maps to {len(symbols)} tickers: {', '.join(symbols[:8])}{'...' if len(symbols) > 8 else ''}."
+        group.pop("feed_group_key", None)
+        group.pop("_sources", None)
+        group.pop("_evidence", None)
+        group.pop("_context_keys", None)
+        output.append(_compact_empty_fields(group))
+    return output
+
+
+def _feed_event_group_key(event: dict[str, Any]) -> str:
+    explicit = str(event.get("feed_group_key") or "")
+    if explicit:
+        return explicit
+    source_item_id = str(event.get("source_item_id") or "")
+    if source_item_id:
+        return _feed_group_key_from_parts("source_item", source_item_id)
+    return _feed_group_key_from_parts(
+        event.get("source_type"),
+        event.get("date"),
+        event.get("title"),
+        event.get("source"),
+        event.get("thesis"),
+    )
+
+
+def _feed_group_key_from_parts(*parts: Any) -> str:
+    normalized = [_plain_text(part).lower() for part in parts if _plain_text(part)]
+    return "feed:" + "|".join(normalized)
+
+
+def _feed_more_severe(left: str, right: str) -> str:
+    ranks = {"bad": 4, "bearish": 4, "sell": 4, "warn": 3, "watch": 3, "good": 2, "bullish": 2, "info": 1, "neutral": 1}
+    return left if ranks.get(left, 0) >= ranks.get(right, 0) else right
+
+
+def _append_unique(values: list[Any], value: Any) -> None:
+    if value not in values:
+        values.append(value)
 
 
 def market_context(con: Any) -> list[dict[str, Any]]:
@@ -1672,7 +1796,8 @@ def _normalize_symbol_token(value: Any) -> str:
         text = text.split(":")[-1]
     if text.startswith("$") or text.startswith("#"):
         text = text[1:]
-    return "".join(char for char in text if char.isalnum() or char in {".", "-"})
+    normalized = "".join(char for char in text if char.isalnum() or char in {".", "-"})
+    return normalized.strip(".-")
 
 
 def _string_list(value: Any) -> list[str]:

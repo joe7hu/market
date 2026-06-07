@@ -867,6 +867,111 @@ def test_feed_signals_include_source_items_with_required_decision_fields(tmp_pat
     assert source_card["next_action"]
 
 
+def test_feed_signals_group_duplicate_birdclaw_theses_by_feed_item(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    claims = {
+        "text": "Physical AI plumbing demand is underpriced.",
+        "evidence": [{"text": "Original source thread covered multiple optical and substrate tickers."}],
+    }
+    with db(db_path) as con:
+        for thesis_id, symbol, author in [
+            ("t1", "AAOI", "Source A"),
+            ("t2", "COHR", "Source A"),
+            ("t3", "SIVE.", "Source B"),
+        ]:
+            con.execute(
+                "INSERT INTO birdclaw_theses VALUES (?, ?, ?, '2026-06-05T12:00:00Z', 'Physical AI Plumbing Is Underpriced', ?, '{}', 'https://example.com/thread')",
+                [thesis_id, symbol, author, json.dumps(claims)],
+            )
+
+        rows = feed_signals(con, [{"symbol": "COHR"}])
+
+    grouped = [row for row in rows if row["title"] == "Physical AI Plumbing Is Underpriced"]
+    assert len(grouped) == 1
+    assert grouped[0]["symbols"] == ["AAOI", "COHR", "SIVE"]
+    assert grouped[0]["ticker_count"] == 3
+    assert grouped[0]["source_count"] == 2
+    assert grouped[0]["primary_symbol"] == "COHR"
+    assert all(symbol != "SIVE." for symbol in grouped[0]["symbols"])
+
+
+def test_feed_signals_group_canonical_source_signals_by_source_item(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO source_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "birdclaw_primary_tweets",
+                "Birdclaw primary X/Twitter",
+                "private_graph",
+                "tweet",
+                "market",
+                True,
+                "mounted_raw",
+                "private",
+                None,
+                None,
+                "{}",
+                "2026-06-06T00:00:00Z",
+                "2026-06-06T00:00:00Z",
+            ],
+        )
+        con.execute(
+            "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "tweet-1",
+                "birdclaw_primary_tweets",
+                "run-1",
+                "tweet",
+                "NVDA and MSFT source item",
+                "https://x.com/example/status/tweet-1",
+                "tester",
+                "2026-06-06T02:00:00Z",
+                "2026-06-06T02:00:00Z",
+                "NVDA and MSFT source item",
+                "[]",
+                "[]",
+                "{}",
+                "tweet-1",
+                "private",
+            ],
+        )
+        for signal_id, symbol in [("sig-1", "NVDA"), ("sig-2", "MSFT")]:
+            con.execute(
+                "INSERT INTO ticker_source_signals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    signal_id,
+                    "tweet-1",
+                    "birdclaw_primary_tweets",
+                    symbol,
+                    "2026-06-06T02:00:00Z",
+                    "tweet",
+                    "bullish",
+                    "unknown",
+                    0.5,
+                    f"{symbol} appeared in source evidence.",
+                    "No structured antithesis.",
+                    "[]",
+                    "[]",
+                    "Watch for follow-through.",
+                    "[]",
+                    True,
+                    "{}",
+                ],
+            )
+
+        rows = feed_signals(con, [{"symbol": "MSFT"}])
+
+    grouped = [row for row in rows if row["title"] == "NVDA and MSFT source item"]
+    assert len(grouped) == 1
+    assert grouped[0]["symbols"] == ["NVDA", "MSFT"]
+    assert grouped[0]["source_item_id"] == "tweet-1"
+    assert grouped[0]["feed_item_count"] == 2
+    assert {context["symbol"] for context in grouped[0]["ticker_contexts"]} == {"NVDA", "MSFT"}
+
+
 def test_ownership_consensus_expands_13f_holdings_into_weighted_ticker_rows(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
