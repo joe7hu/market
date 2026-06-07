@@ -108,10 +108,20 @@ Each command receives one request object on stdin with `request`, `prompt`,
 `context`, `output_schema`, and guardrails. It must return one JSON object on
 stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
 `MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
-for local runs. The built-in `market-openai-*` commands call the OpenAI API
-directly; set `MARKET_OPENAI_AUTH_MODE=oauth` for a write-scoped OAuth access
-token or use `OPENAI_API_KEY` only when explicitly intended. Use
-`MARKET_OPENAI_MODEL` to override the default model.
+for local runs. Use `market-codex-option-thesis-agent` or
+`market-codex-option-postmortem-agent` to run through the signed-in Codex
+OpenAI OAuth session without an API key. These commands run Codex with shell,
+app, browser, plugin, computer-use, multi-agent, image generation, and
+web-search tools disabled, ignore user config/rules, and pass only an
+allowlisted environment to the child process. The Codex adapter timeout defaults
+to `90` seconds so it
+exits before the option-agent runner's default `120` second command timeout;
+keep `MARKET_CODEX_TIMEOUT_SECONDS` lower than the configured runner timeout
+when overriding either value. The direct `market-openai-*` commands call the
+OpenAI API directly; set `MARKET_OPENAI_AUTH_MODE=oauth` for a write-scoped
+OAuth access token or use `OPENAI_API_KEY` only when explicitly intended. Use
+`MARKET_OPENAI_MODEL` or `MARKET_CODEX_MODEL` to override the default model for
+the selected path.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
