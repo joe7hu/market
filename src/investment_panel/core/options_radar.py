@@ -2047,6 +2047,8 @@ def build_strategy_cohort_result(
     labels = [str(row.get("latest_attribution_label") or "") for row in records]
     qqq_above = [row for row in records if row.get("qqq_above_200d") is True]
     early_entries = [row for row in records if row.get("timing_label") in {"early_but_worked", "false_positive_drawdown"}]
+    mature_records = [row for row in records if (_number(row.get("observation_hours")) or 0) >= 20]
+    pending_records = count - len(mature_records)
     return {
         "cohort_id": stable_id("strategy_cohort_result", strategy_version, cohort_type, cohort_value),
         "evaluated_at": evaluated_at,
@@ -2068,6 +2070,12 @@ def build_strategy_cohort_result(
         "raw": {
             "promotion_policy": "cohort_analysis_is_diagnostic_only",
             "sample_outcomes": metrics["outcomes"][:20],
+            "maturity": {
+                "mature_count": len(mature_records),
+                "pending_count": pending_records,
+                "min_mature_hours": 20,
+                "rates_use_full_cohort_denominator": True,
+            },
             "timing_labels": _value_counts([str(row.get("timing_label") or "unknown") for row in records]),
             "attribution_labels": _value_counts([label or "none" for label in labels]),
             "cohort_definition": _cohort_definition(cohort_type, cohort_value),
@@ -2484,6 +2492,8 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
     returns = [(snapshot_time, (mid or 0) / entry - 1) for snapshot_time, mid in marks]
     max_time, max_return = max(returns, key=lambda item: item[1])
     _min_time, max_drawdown = min(returns, key=lambda item: item[1])
+    last_observation_time = marks[-1][0]
+    observation_hours = _elapsed_hours(event["snapshot_time"], last_observation_time)
     time_to_2x = _first_hit_days(event["snapshot_time"], returns, 1.0)
     time_to_5x = _first_hit_days(event["snapshot_time"], returns, 4.0)
     time_to_10x = _first_hit_days(event["snapshot_time"], returns, 9.0)
@@ -2501,6 +2511,9 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
         "drawdown_before_2x": drawdown_before_2x,
         "timing_label": _timing_label(time_to_2x, max_drawdown, drawdown_before_2x),
         "max_return_time": max_time,
+        "last_observation_time": last_observation_time,
+        "observation_hours": observation_hours,
+        "observation_days": None if observation_hours is None else observation_hours / 24,
     }
 
 
@@ -3192,6 +3205,28 @@ def _elapsed_days(start: Any, end: Any) -> int | None:
     if start_date is None or end_date is None:
         return None
     return (end_date - start_date).days
+
+
+def _elapsed_hours(start: Any, end: Any) -> float | None:
+    start_dt = _datetime(start)
+    end_dt = _datetime(end)
+    if start_dt is None or end_dt is None:
+        return None
+    return max(0.0, (end_dt - start_dt).total_seconds() / 3600)
+
+
+def _datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    text = str(value or "")
+    if not text:
+        return None
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
 
 
 def _date(value: Any) -> date | None:

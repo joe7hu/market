@@ -35,10 +35,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const agentTheses = rows(data.agentThesis);
   const candidateMarks = rows(data.candidateEventMark);
   const candidateAttributions = rows(data.candidateEventAttribution);
-  const shadowTrades = rows(data.shadowTrade);
-  const shadowTradeMarks = rows(data.shadowTradeMark);
-  const radarStateTransitions = rows(data.radarStateTransition);
-  const optionAttributions = rows(data.optionAttribution);
   const cohortResults = rows(data.strategyCohortResult);
   const optionSnapshots = rows(data.optionSnapshot);
   const optionFeatures = rows(data.optionFeatures);
@@ -46,6 +42,10 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const openThesisRequests = useMemo(() => thesisRequests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), [thesisRequests]);
+  const actionableThesisRequests = useMemo(() => thesisRequests.filter((row) => {
+    const status = textField(row, ["status"], "open").toLowerCase();
+    return status === "open" || status.includes("failed");
+  }), [thesisRequests]);
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
 
   const opportunityCandidates = useMemo(
@@ -58,9 +58,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
   const latestForwardByProposal = useMemo(() => latestBy(forwardTests, "proposal_id", "evaluated_at"), [forwardTests]);
   const eventById = useMemo(() => mapBy(candidates, "event_id"), [candidates]);
+  const latestCandidateMarkByEvent = useMemo(() => latestBy(candidateMarks, "event_id", "mark_time"), [candidateMarks]);
   const latestCandidateAttributionByEvent = useMemo(() => latestBy(candidateAttributions, "event_id", "snapshot_time"), [candidateAttributions]);
-  const latestOptionAttributionByEvent = useMemo(() => latestBy(optionAttributions, "event_id", "snapshot_time"), [optionAttributions]);
-  const latestAttributionByEvent = useMemo(() => mergeRowMaps(latestCandidateAttributionByEvent, latestOptionAttributionByEvent), [latestCandidateAttributionByEvent, latestOptionAttributionByEvent]);
   const thesisRequestByEvent = useMemo(() => mapBy(openThesisRequests, "event_id"), [openThesisRequests]);
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
@@ -117,34 +116,47 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsList>
 
         <TabsContent value="radar" className="space-y-4">
-          <CandidateEventsTable rows={opportunityCandidates} thesisRequestByEvent={thesisRequestByEvent} onOpenTicker={onOpenTicker} />
-        </TabsContent>
-
-        <TabsContent value="learning" className="space-y-4">
-          <CohortResultsTable rows={cohortResults} />
-          <CandidateEventMarksTable rows={candidateMarks} onOpenTicker={onOpenTicker} />
-          <CandidateEventAttributionsTable rows={candidateAttributions} onOpenTicker={onOpenTicker} />
-          <RadarStateTransitionsTable rows={radarStateTransitions} onOpenTicker={onOpenTicker} />
-          <ShadowTradesTable rows={shadowTrades} eventById={eventById} latestAttributionByEvent={latestAttributionByEvent} onOpenTicker={onOpenTicker} />
-          <ShadowTradeMarksTable rows={shadowTradeMarks} onOpenTicker={onOpenTicker} />
-          <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} />
-          <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} />
-          <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} />
-          <StrategyProposalsTable
-            rows={proposals}
-            backtestByProposal={latestBacktestByProposal}
-            forwardByProposal={latestForwardByProposal}
-            promotingProposal={promotingProposal}
-            promotionError={promotionError}
-            onPromote={handlePromoteProposal}
+          <CandidateEventsTable
+            rows={opportunityCandidates}
+            thesisRequestByEvent={thesisRequestByEvent}
+            latestMarkByEvent={latestCandidateMarkByEvent}
+            latestAttributionByEvent={latestCandidateAttributionByEvent}
+            onOpenTicker={onOpenTicker}
           />
         </TabsContent>
 
+        <TabsContent value="learning" className="space-y-4">
+          <LearningProgressPanel
+            opportunities={opportunityCandidates}
+            latestMarkByEvent={latestCandidateMarkByEvent}
+            latestAttributionByEvent={latestCandidateAttributionByEvent}
+            cohorts={cohortResults}
+            proposals={proposals}
+            missedWinners={missedWinners}
+            postmortemRequests={postmortemRequests}
+            postmortems={postmortems}
+          />
+          <CohortResultsTable rows={cohortResults} />
+          {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
+          {postmortems.length ? <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} /> : null}
+          {postmortemRequests.length ? <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} /> : null}
+          {proposals.length ? (
+            <StrategyProposalsTable
+              rows={proposals}
+              backtestByProposal={latestBacktestByProposal}
+              forwardByProposal={latestForwardByProposal}
+              promotingProposal={promotingProposal}
+              promotionError={promotionError}
+              onPromote={handlePromoteProposal}
+            />
+          ) : null}
+        </TabsContent>
+
         <TabsContent value="theses" className="space-y-4">
-          <ThesisRequestsTable rows={thesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} />
-          <AgentThesisTable rows={agentTheses} onOpenTicker={onOpenTicker} />
-          <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} />
-          <DataSamples optionSnapshots={optionSnapshots} optionFeatures={optionFeatures} stockFeatures={stockFeatures} strategyVersions={strategyVersions} onOpenTicker={onOpenTicker} />
+          <ThesisPipelinePanel requests={thesisRequests} theses={agentTheses} validations={thesisValidations} />
+          <ThesisRequestsTable rows={actionableThesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} title="Actionable Thesis Queue" />
+          {agentTheses.length ? <AgentThesisTable rows={agentTheses} onOpenTicker={onOpenTicker} /> : null}
+          {thesisValidations.length ? <ThesisValidationsTable rows={thesisValidations} onOpenTicker={onOpenTicker} /> : null}
         </TabsContent>
       </Tabs>
     </WorkspacePage>
@@ -240,7 +252,19 @@ type QualityFilter = "all" | "ok" | "caution" | "bad";
 
 const CANDIDATE_PAGE_SIZE = 50;
 
-function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { rows: RowRecord[]; thesisRequestByEvent: Map<string, RowRecord>; onOpenTicker: OpenTicker }) {
+function CandidateEventsTable({
+  rows,
+  thesisRequestByEvent,
+  latestMarkByEvent,
+  latestAttributionByEvent,
+  onOpenTicker,
+}: {
+  rows: RowRecord[];
+  thesisRequestByEvent: Map<string, RowRecord>;
+  latestMarkByEvent: Map<string, RowRecord>;
+  latestAttributionByEvent: Map<string, RowRecord>;
+  onOpenTicker: OpenTicker;
+}) {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
   const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
@@ -364,7 +388,7 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
           Default view shows the strongest ranked contracts, not every contract row. Use all contracts only when auditing the full scan.
         </p>
       </div>
-      <table className="w-full min-w-[1080px] text-sm">
+      <table className="w-full min-w-[1240px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
@@ -375,6 +399,7 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
             <Head className="text-right">Stock Move</Head>
             <Head className="text-right">Score</Head>
             <Head>Thesis</Head>
+            <Head>Outcome</Head>
             <Head>Why / Blockers</Head>
           </tr>
         </thead>
@@ -385,6 +410,9 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
             const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
             const qualityFlags = listField(row, ["quality_flags"]);
             const thesis = thesisState(row, thesisRequestByEvent);
+            const eventId = textField(row, ["event_id"]);
+            const mark = latestMarkByEvent.get(eventId);
+            const attribution = latestAttributionByEvent.get(eventId);
             return (
               <tr
                 key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)}
@@ -414,6 +442,7 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
                 <Cell><StatusBadge tone={thesis.tone}>{thesis.label}</StatusBadge></Cell>
+                <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
                 <Cell className="max-w-[430px]"><ReasonChips row={row} /></Cell>
               </tr>
             );
@@ -487,6 +516,32 @@ function PremiumCapHint({ row }: { row: RowRecord }) {
   return (
     <div className={cn("text-xs", room >= 0 ? "text-muted-foreground" : "text-destructive")}>
       {room >= 0 ? `cap room ${formatMoney(room)}` : `over cap ${formatMoney(Math.abs(room))}`}
+    </div>
+  );
+}
+
+function OpportunityOutcome({ mark, attribution }: { mark: RowRecord | undefined; attribution: RowRecord | undefined }) {
+  if (!mark) {
+    return (
+      <div className="min-w-0">
+        <StatusBadge tone="muted">Not marked</StatusBadge>
+        <div className="mt-1 text-xs text-muted-foreground">No outcome snapshot yet</div>
+      </div>
+    );
+  }
+  const maturity = outcomeMaturity(mark);
+  const currentReturn = numberField(mark, ["current_return"], Number.NaN);
+  const maxReturn = numberField(mark, ["max_return_since_alert"], Number.NaN);
+  const label = textField(attribution, ["label"]);
+  return (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge tone={maturity.tone}>{maturity.label}</StatusBadge>
+        {label ? <StatusBadge tone={attributionTone(label)}>{titleLabel(label)}</StatusBadge> : null}
+      </div>
+      <div className="mt-1 truncate text-xs text-muted-foreground">
+        Now {formatSignedRatio(currentReturn)} / max {formatMultiple(maxReturn)}
+      </div>
     </div>
   );
 }
@@ -815,6 +870,65 @@ function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenT
   );
 }
 
+function LearningProgressPanel({
+  opportunities,
+  latestMarkByEvent,
+  latestAttributionByEvent,
+  cohorts,
+  proposals,
+  missedWinners,
+  postmortemRequests,
+  postmortems,
+}: {
+  opportunities: RowRecord[];
+  latestMarkByEvent: Map<string, RowRecord>;
+  latestAttributionByEvent: Map<string, RowRecord>;
+  cohorts: RowRecord[];
+  proposals: RowRecord[];
+  missedWinners: RowRecord[];
+  postmortemRequests: RowRecord[];
+  postmortems: RowRecord[];
+}) {
+  const currentMarks = opportunities.map((row) => latestMarkByEvent.get(textField(row, ["event_id"]))).filter(Boolean) as RowRecord[];
+  const oneDay = countWhere(currentMarks, (row) => Number.isFinite(numberField(row, ["return_1d"], Number.NaN)));
+  const fiveDay = countWhere(currentMarks, (row) => Number.isFinite(numberField(row, ["return_5d"], Number.NaN)));
+  const attributed = countWhere(opportunities, (row) => latestAttributionByEvent.has(textField(row, ["event_id"])));
+  const matureCohorts = cohorts.filter(cohortHasMatureEvidence).length;
+  const openPostmortems = countWhere(postmortemRequests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
+  const readyProposals = countWhere(proposals, (row) => textField(row, ["status"]).toLowerCase() === "ready_for_human_review");
+  const items: Array<[string, string, string, Tone]> = [
+    ["Current outcomes", `${oneDay}/${opportunities.length}`, "current opportunities with at least 1D observed", oneDay ? "good" : "warn"],
+    ["5D outcomes", `${fiveDay}/${opportunities.length}`, "current opportunities with a 5D read", fiveDay ? "good" : "muted"],
+    ["Attribution", `${attributed}/${opportunities.length}`, "current opportunities with an explained move", attributed ? "good" : "muted"],
+    ["Cohorts ready", `${matureCohorts}/${cohorts.length}`, "cohorts with enough post-entry evidence to interpret", matureCohorts ? "good" : "warn"],
+    ["Missed winners", missedWinners.length.toLocaleString(), "unalerted 5x/10x contracts found", missedWinners.length ? "warn" : "muted"],
+    ["Strategy changes", readyProposals.toLocaleString(), "proposals through deterministic gates", readyProposals ? "good" : proposals.length ? "warn" : "muted"],
+    ["Postmortems", postmortems.length.toLocaleString(), "completed agent reviews of important outcomes", postmortems.length ? "good" : openPostmortems ? "warn" : "muted"],
+  ];
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Learning Progress</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Learning becomes actionable only after candidates have post-entry outcome windows. Current cohort hit rates are withheld until the cohort has mature evidence, so pending contracts are not shown as failures.
+          </p>
+        </div>
+        <StatusBadge tone={matureCohorts ? "good" : "warn"}>{matureCohorts ? "Evidence available" : "Collecting outcomes"}</StatusBadge>
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {items.map(([label, value, detail, tone]) => (
+          <div key={label} className="rounded-md border border-border/70 bg-background px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+            <div className={cn("mt-1 text-sm font-semibold tabular-nums", toneText(tone))}>{value}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
   if (!rows.length) {
     return <EmptyState title="No cohort results" detail="No deterministic setup cohorts have enough shadow outcomes yet." icon={Activity} />;
@@ -822,25 +936,24 @@ function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
 
   return (
     <DataTableFrame title={<SectionTitle title="Cohort Learning" count={rows.length} />}>
-      <table className="w-full min-w-[1180px] text-sm">
+      <table className="w-full min-w-[1020px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Cohort</Head>
             <Head className="text-right">Candidates</Head>
+            <Head>Readiness</Head>
             <Head className="text-right">2x</Head>
             <Head className="text-right">5x</Head>
             <Head className="text-right">10x</Head>
             <Head className="text-right">Median Max</Head>
             <Head className="text-right">Median DD</Head>
-            <Head className="text-right">Early</Head>
-            <Head className="text-right">Bleed</Head>
-            <Head className="text-right">Convexity</Head>
-            <Head className="text-right">QQQ 200D</Head>
+            <Head>What It Means</Head>
           </tr>
         </thead>
         <tbody>
           {rows.slice(0, 80).map((row) => {
             const key = textField(row, ["cohort_id"], `${textField(row, ["cohort_type"])}-${textField(row, ["cohort_value"])}`);
+            const mature = cohortHasMatureEvidence(row);
             return (
               <tr key={key} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell className="max-w-[260px]">
@@ -850,15 +963,13 @@ function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
                   </div>
                 </Cell>
                 <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["candidate_count"], Number.NaN), 0)}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["hit_rate_10x"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["median_max_return"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatSignedRatio(numberField(row, ["median_max_drawdown"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["early_entry_rate"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["theta_iv_bleed_rate"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["good_convexity_rate"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["qqq_above_200d_rate"], Number.NaN))}</Cell>
+                <Cell><StatusBadge tone={mature ? "good" : "warn"}>{mature ? "Readable" : "Collecting"}</StatusBadge></Cell>
+                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN)) : "-"}</Cell>
+                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN)) : "-"}</Cell>
+                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_10x"], Number.NaN)) : "-"}</Cell>
+                <Cell className="text-right tabular-nums">{mature ? formatMultiple(numberField(row, ["median_max_return"], Number.NaN)) : "-"}</Cell>
+                <Cell className="text-right tabular-nums">{mature ? formatSignedRatio(numberField(row, ["median_max_drawdown"], Number.NaN)) : "-"}</Cell>
+                <Cell className="max-w-[360px]"><Truncated>{mature ? cohortDefinition(row) : "Outcome window is still pending; do not treat zero hit rates as failure."}</Truncated></Cell>
               </tr>
             );
           })}
@@ -1055,23 +1166,62 @@ function StrategyProposalsTable({
   );
 }
 
-function ThesisRequestsTable({ rows, eventById, onOpenTicker }: { rows: RowRecord[]; eventById: Map<string, RowRecord>; onOpenTicker: OpenTicker }) {
+function ThesisPipelinePanel({ requests, theses, validations }: { requests: RowRecord[]; theses: RowRecord[]; validations: RowRecord[] }) {
+  const open = countWhere(requests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
+  const failed = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase().includes("failed"));
+  const superseded = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "superseded");
+  const fulfilled = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "fulfilled");
+  const validated = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "validated");
+  const items: Array<[string, string, string, Tone]> = [
+    ["Active queue", open.toLocaleString(), "top-ranked candidates waiting for agent thesis", open ? "warn" : "muted"],
+    ["Completed theses", theses.length.toLocaleString(), "structured hypotheses returned by agents", theses.length ? "good" : "muted"],
+    ["Validated", validated.toLocaleString(), "theses passing deterministic checks", validated ? "good" : validations.length ? "warn" : "muted"],
+    ["Fulfilled requests", fulfilled.toLocaleString(), "requests matched to completed theses", fulfilled ? "good" : "muted"],
+    ["Superseded", superseded.toLocaleString(), "old requests retired from agent usage", superseded ? "muted" : "good"],
+    ["Failed", failed.toLocaleString(), "agent calls needing attention", failed ? "bad" : "good"],
+  ];
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Thesis Pipeline</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Agent theses are generated only for the current top-ranked queue. A request is not a thesis; decisions should wait for a completed thesis and deterministic validation.
+          </p>
+        </div>
+        <StatusBadge tone={theses.length ? "good" : open ? "warn" : "muted"}>{theses.length ? "Theses available" : open ? "Awaiting agents" : "No active queue"}</StatusBadge>
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {items.map(([label, value, detail, tone]) => (
+          <div key={label} className="rounded-md border border-border/70 bg-background px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+            <div className={cn("mt-1 text-sm font-semibold tabular-nums", toneText(tone))}>{value}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ThesisRequestsTable({ rows, eventById, onOpenTicker, title = "Agent Thesis Queue" }: { rows: RowRecord[]; eventById: Map<string, RowRecord>; onOpenTicker: OpenTicker; title?: string }) {
   if (!rows.length) {
-    return <EmptyState title="No thesis requests" detail="No agent thesis handoffs are open." icon={BrainCircuit} />;
+    return <EmptyState title="No active thesis requests" detail="No current top-ranked candidates are waiting for agent thesis generation." icon={BrainCircuit} />;
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title="Agent Thesis Queue" count={rows.length} />}>
-      <table className="w-full min-w-[1040px] text-sm">
+    <DataTableFrame title={<SectionTitle title={title} count={rows.length} />}>
+      <table className="w-full min-w-[1120px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>Status</Head>
             <Head className="text-right">Priority</Head>
             <Head>Candidate State</Head>
-            <Head>Strategy</Head>
             <Head>Created</Head>
-            <Head>Prompt</Head>
+            <Head>Candidate</Head>
+            <Head>Next Step</Head>
+            <Head>Request Detail</Head>
           </tr>
         </thead>
         <tbody>
@@ -1079,14 +1229,16 @@ function ThesisRequestsTable({ rows, eventById, onOpenTicker }: { rows: RowRecor
             const ticker = textField(row, ["ticker"]);
             const event = eventById.get(textField(row, ["event_id"]));
             const status = textField(row, ["status"], "open");
+            const contract = displayField(event, ["contract_id"], textField(row, ["event_id"]));
             return (
               <tr key={textField(row, ["request_id"], `${ticker}-${textField(row, ["created_at"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
                 <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["priority_score"], Number.NaN))}</Cell>
                 <Cell><StatusBadge tone={stateTone(stateOf(event))}>{titleLabel(stateOf(event) || "pending")}</StatusBadge></Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
                 <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</Cell>
+                <Cell className="max-w-[260px]"><Truncated>{contract}</Truncated></Cell>
+                <Cell className="max-w-[280px]"><Truncated>{status.toLowerCase() === "open" ? "Generate structured thesis and validation inputs" : titleLabel(status)}</Truncated></Cell>
                 <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["prompt"])}</Truncated></Cell>
               </tr>
             );
@@ -1450,6 +1602,38 @@ function qualityOf(row: RowRecord | undefined): QualityFilter {
   return "ok";
 }
 
+function outcomeMaturity(mark: RowRecord): { label: string; tone: Tone } {
+  if (Number.isFinite(numberField(mark, ["return_20d"], Number.NaN))) return { label: "20D observed", tone: "good" };
+  if (Number.isFinite(numberField(mark, ["return_5d"], Number.NaN))) return { label: "5D observed", tone: "good" };
+  if (Number.isFinite(numberField(mark, ["return_1d"], Number.NaN))) return { label: "1D observed", tone: "info" };
+  return { label: "Pending <1D", tone: "warn" };
+}
+
+function cohortHasMatureEvidence(row: RowRecord): boolean {
+  const candidateCount = numberField(row, ["candidate_count"], Number.NaN);
+  const raw = recordField(row, "raw");
+  const maturity = jsonRecord(raw?.maturity);
+  const matureCount = numberFromRecord(maturity, "mature_count");
+  if (Number.isFinite(candidateCount) && Number.isFinite(matureCount)) return matureCount >= candidateCount;
+  const outcomes = raw?.sample_outcomes;
+  if (!Array.isArray(outcomes) || !outcomes.length) return false;
+  return outcomes.every((outcome) => {
+    if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) return false;
+    const record = outcome as Record<string, JsonValue>;
+    const observedHours = typeof record.observation_hours === "number" ? record.observation_hours : Number.NaN;
+    if (Number.isFinite(observedHours)) return observedHours >= 20;
+    const entryTime = typeof record.entry_time === "string" ? record.entry_time : "";
+    const lastObservationTime = typeof record.last_observation_time === "string" ? record.last_observation_time : "";
+    return Boolean(entryTime && lastObservationTime && dateMillis(lastObservationTime) - dateMillis(entryTime) >= 20 * 60 * 60 * 1000);
+  });
+}
+
+function cohortDefinition(row: RowRecord): string {
+  const raw = recordField(row, "raw");
+  const definition = raw?.cohort_definition;
+  return typeof definition === "string" && definition.trim() ? definition.trim() : `${displayField(row, ["cohort_type"])}=${displayField(row, ["cohort_value"])}`;
+}
+
 function thesisState(row: RowRecord, requestByEvent: Map<string, RowRecord>): { kind: ThesisFilter; label: string; tone: Tone } {
   if (textField(row, ["thesis_id"])) return { kind: "attached", label: "Attached", tone: "good" };
   const request = requestByEvent.get(textField(row, ["event_id"]));
@@ -1600,6 +1784,11 @@ function readableReasonSummary(row: RowRecord): string {
 
 function recordField(row: RowRecord | undefined, key: string): Record<string, JsonValue> | undefined {
   const value = row?.[key];
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, JsonValue>;
+  return undefined;
+}
+
+function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, JsonValue>;
   return undefined;
 }
