@@ -95,6 +95,7 @@ def load_panel_data(
             "options_ticker_signals": lambda: options_ticker_signals(con),
             "option_strategy_versions": lambda: option_strategy_versions(con),
             "option_radar_summary": lambda: option_radar_summary(con),
+            "option_radar_opportunity": lambda: option_radar_opportunity(con),
             "option_snapshot": lambda: option_snapshot(con),
             "option_features": lambda: option_features(con),
             "stock_features": lambda: stock_features(con),
@@ -3470,10 +3471,46 @@ def option_radar_summary(con: Any) -> list[dict[str, Any]]:
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
                   AND state = 'REJECT'
-            ) AS reject_rows_current
+            ) AS reject_rows_current,
+            (
+                SELECT count(*)
+                FROM option_radar_opportunity
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND tier = 'Exceptional'
+            ) AS exceptional_opportunities_current,
+            (
+                SELECT count(*)
+                FROM option_radar_opportunity
+                WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND tier = 'Research'
+            ) AS research_opportunities_current
         """,
     )
     return [_compact_empty_fields(row) for row in rows]
+
+
+def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT opportunity_id, snapshot_time, ticker, strategy_version, tier,
+               primary_event_id, primary_contract_id, primary_state,
+               conviction_score, asymmetry_score, entry_quality_score,
+               catalyst_score, evidence_score, regime_score, survivability_score,
+               learning_score, required_move_pct, premium_mid,
+               premium_fill_assumption, required_10x_price, buy_under,
+               entry_zone, max_loss_assumption, position_sizing_band,
+               why_now, kill_switch, top_reasons, blockers, quality_status,
+               quality_flags, evidence_refs, alternative_contracts, raw
+        FROM option_radar_opportunity
+        ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Research' THEN 1 ELSE 2 END,
+                 conviction_score DESC NULLS LAST,
+                 required_move_pct ASC NULLS LAST,
+                 ticker
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("top_reasons", "blockers", "quality_flags", "evidence_refs", "alternative_contracts", "raw"))) for row in rows]
 
 
 def option_snapshot(con: Any) -> list[dict[str, Any]]:

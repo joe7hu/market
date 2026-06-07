@@ -48,7 +48,10 @@ http://192.168.50.197:8000/api/status
 4. `options_radar`: materialize the deterministic 10x options radar from the
    refreshed option/stock rows: point-in-time snapshots, 10x math, feature
    scores, candidate events, shadow-trade marks, attribution, state
-   transitions, missed-winner events, cohort results, and agent work queues.
+   transitions, missed-winner events, cohort results, the grouped
+   `option_radar_opportunity` read model, and agent work queues. The grouped
+   model is intentionally strict: most days can produce no `Exceptional` setup,
+   with blocked rows retained as `Research` for audit and learning.
    This is also exposed as the standalone `refresh_options_radar` refresh job
    for local reruns after option-source changes.
 5. `run_option_agents`: optionally run configured local external agent commands
@@ -158,9 +161,9 @@ After a successful refresh:
   invalidation.
 - `/api/panel-snapshot?scope=options-radar` includes nonempty radar tables when
   option chains exist: `option_snapshot`, `option_features`, `stock_features`,
-  `candidate_event`, `candidate_event_mark`, `candidate_event_attribution`,
-  `shadow_trade`, `radar_state_transition`, `missed_winner_event`, and
-  strategy validation/proposal tables.
+  `option_radar_opportunity`, `candidate_event`, `candidate_event_mark`,
+  `candidate_event_attribution`, `shadow_trade`, `radar_state_transition`,
+  `missed_winner_event`, and strategy validation/proposal tables.
 
 ## Suggested Daily Schedule
 

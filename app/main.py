@@ -323,6 +323,10 @@ def create_app() -> FastAPI:
     def stock_features() -> dict[str, Any]:
         return _table_payload("stock_features")
 
+    @app.get("/api/option-radar-opportunities")
+    def option_radar_opportunities() -> dict[str, Any]:
+        return _table_payload("option_radar_opportunity")
+
     @app.get("/api/agent-thesis")
     def agent_thesis() -> dict[str, Any]:
         return _table_payload("agent_thesis")

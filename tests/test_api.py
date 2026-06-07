@@ -63,6 +63,7 @@ def test_api_routes_return_json() -> None:
         "/api/options-expiry-signals",
         "/api/options-ticker-signals",
         "/api/option-strategy-versions",
+        "/api/option-radar-opportunities",
         "/api/option-snapshot",
         "/api/option-features",
         "/api/stock-features",
@@ -155,6 +156,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
     payload = response.json()
     assert set(payload["tables"]) == {
         "option_strategy_versions",
+        "option_radar_opportunity",
         "candidate_event",
         "candidate_event_mark",
         "candidate_event_attribution",

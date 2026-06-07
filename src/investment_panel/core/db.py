@@ -411,6 +411,42 @@ CREATE TABLE IF NOT EXISTS option_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS option_radar_opportunity (
+    opportunity_id TEXT PRIMARY KEY,
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    strategy_version TEXT,
+    tier TEXT,
+    primary_event_id TEXT,
+    primary_contract_id TEXT,
+    primary_state TEXT,
+    conviction_score DOUBLE,
+    asymmetry_score DOUBLE,
+    entry_quality_score DOUBLE,
+    catalyst_score DOUBLE,
+    evidence_score DOUBLE,
+    regime_score DOUBLE,
+    survivability_score DOUBLE,
+    learning_score DOUBLE,
+    required_move_pct DOUBLE,
+    premium_mid DOUBLE,
+    premium_fill_assumption DOUBLE,
+    required_10x_price DOUBLE,
+    buy_under DOUBLE,
+    entry_zone TEXT,
+    max_loss_assumption DOUBLE,
+    position_sizing_band TEXT,
+    why_now TEXT,
+    kill_switch TEXT,
+    top_reasons JSON,
+    blockers JSON,
+    quality_status TEXT,
+    quality_flags JSON,
+    evidence_refs JSON,
+    alternative_contracts JSON,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS stock_features (
     snapshot_time TIMESTAMP,
     ticker TEXT,

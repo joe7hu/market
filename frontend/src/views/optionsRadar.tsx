@@ -36,6 +36,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateMarks = rows(data.candidateEventMark);
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
+  const opportunityRows = rows(data.optionRadarOpportunity);
   const optionSnapshots = rows(data.optionSnapshot);
   const optionFeatures = rows(data.optionFeatures);
   const stockFeatures = rows(data.stockFeatures);
@@ -67,7 +68,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const scannedTickerCount = numberField(radarSummary, ["scanned_tickers_current"], scannedTickers.length);
   const fireCount = numberField(radarSummary, ["fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "FIRE"));
   const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
-  const watchCount = numberField(radarSummary, ["watch_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "WATCH"));
+  const exceptionalCount = numberField(radarSummary, ["exceptional_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Exceptional"));
+  const researchCount = numberField(radarSummary, ["research_opportunities_current"], countWhere(opportunityRows, (row) => tierOf(row) === "Research"));
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"], latestDate(optionSnapshots, "snapshot_time"));
   const latestStrategy = strategyVersions[0];
@@ -104,8 +106,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         scannedTickerCount={scannedTickerCount}
         fireCount={fireCount}
         setupCount={setupCount}
-        watchCount={watchCount}
-        thesisRequestCount={openThesisRequests.length}
+        exceptionalCount={exceptionalCount}
+        researchCount={researchCount}
       />
       <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
@@ -116,9 +118,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </TabsList>
 
         <TabsContent value="radar" className="space-y-4">
-          <CandidateEventsTable
-            rows={opportunityCandidates}
-            thesisRequestByEvent={thesisRequestByEvent}
+          <ExtremeOpportunityDesk
+            rows={opportunityRows}
+            candidates={opportunityCandidates}
             latestMarkByEvent={latestCandidateMarkByEvent}
             latestAttributionByEvent={latestCandidateAttributionByEvent}
             onOpenTicker={onOpenTicker}
@@ -135,6 +137,13 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             missedWinners={missedWinners}
             postmortemRequests={postmortemRequests}
             postmortems={postmortems}
+          />
+          <CandidateEventsTable
+            rows={opportunityCandidates}
+            thesisRequestByEvent={thesisRequestByEvent}
+            latestMarkByEvent={latestCandidateMarkByEvent}
+            latestAttributionByEvent={latestCandidateAttributionByEvent}
+            onOpenTicker={onOpenTicker}
           />
           <CohortResultsTable rows={cohortResults} />
           {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
@@ -168,24 +177,24 @@ function RadarSummaryStrip({
   scannedTickerCount,
   fireCount,
   setupCount,
-  watchCount,
-  thesisRequestCount,
+  exceptionalCount,
+  researchCount,
 }: {
   opportunityCount: number;
   opportunityTickerCount: number;
   scannedTickerCount: number;
   fireCount: number;
   setupCount: number;
-  watchCount: number;
-  thesisRequestCount: number;
+  exceptionalCount: number;
+  researchCount: number;
 }) {
   const items: Array<[string, string, Tone]> = [
+    ["Exceptional", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
+    ["Research", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
     ["Opportunities", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
     ["Fire", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
     ["Setup", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
-    ["Watch", watchCount.toLocaleString(), watchCount ? "info" : "muted"],
     ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
-    ["Open thesis queue", thesisRequestCount.toLocaleString(), thesisRequestCount ? "warn" : "muted"],
   ];
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
@@ -197,6 +206,156 @@ function RadarSummaryStrip({
       ))}
     </div>
   );
+}
+
+function ExtremeOpportunityDesk({
+  rows,
+  candidates,
+  latestMarkByEvent,
+  latestAttributionByEvent,
+  onOpenTicker,
+}: {
+  rows: RowRecord[];
+  candidates: RowRecord[];
+  latestMarkByEvent: Map<string, RowRecord>;
+  latestAttributionByEvent: Map<string, RowRecord>;
+  onOpenTicker: OpenTicker;
+}) {
+  const exceptionalRows = useMemo(() => rows.filter((row) => tierOf(row) === "Exceptional"), [rows]);
+  const researchRows = useMemo(() => rows.filter((row) => tierOf(row) === "Research"), [rows]);
+  const visibleRows = exceptionalRows.length ? exceptionalRows : researchRows.slice(0, 8);
+  const blockerSummary = useMemo(() => commonBlockers(rows), [rows]);
+
+  if (!rows.length) {
+    return (
+      <EmptyState
+        title="No opportunity read model"
+        detail={candidates.length ? "Candidate events exist, but the extreme opportunity layer has not been refreshed yet." : "No current options radar candidates are stored yet."}
+        icon={Target}
+      />
+    );
+  }
+
+  return (
+    <DataTableFrame
+      title={<SectionTitle title={exceptionalRows.length ? "Exceptional Setups" : "No Exceptional Setup"} count={visibleRows.length} />}
+      action={
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span>{exceptionalRows.length.toLocaleString()} exceptional</span>
+          <span>{researchRows.length.toLocaleString()} research</span>
+          <span>{rows.length.toLocaleString()} grouped tickers</span>
+        </div>
+      }
+    >
+      {!exceptionalRows.length ? (
+        <div className="border-b border-border px-3 py-3">
+          <div className="flex flex-wrap gap-1.5">
+            {blockerSummary.length ? blockerSummary.map(([reason, count]) => (
+              <span key={reason} className="rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">
+                {reasonLabel(reason)} {count}
+              </span>
+            )) : <StatusBadge tone="muted">No blocker summary</StatusBadge>}
+          </div>
+        </div>
+      ) : null}
+      <table className="w-full min-w-[1320px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <Head>Ticker</Head>
+            <Head>Tier</Head>
+            <Head>Primary Contract</Head>
+            <Head className="text-right">Buy Under</Head>
+            <Head className="text-right">10x Move</Head>
+            <Head>Scores</Head>
+            <Head>Evidence</Head>
+            <Head>Outcome</Head>
+            <Head>Decision</Head>
+            <Head>Kill Switch</Head>
+          </tr>
+        </thead>
+        <tbody>
+          {visibleRows.map((row) => {
+            const eventId = textField(row, ["primary_event_id"]);
+            const mark = latestMarkByEvent.get(eventId);
+            const attribution = latestAttributionByEvent.get(eventId);
+            const tier = tierOf(row);
+            const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
+            const qualityFlags = arrayText(row, "quality_flags");
+            return (
+              <tr
+                key={textField(row, ["opportunity_id"], `${textField(row, ["ticker"])}-${textField(row, ["primary_contract_id"])}`)}
+                className={cn(
+                  "border-b border-border align-top transition-colors hover:bg-accent/40",
+                  tier === "Exceptional" && "bg-green-500/5",
+                  qualityStatus === "bad" && "bg-destructive/5",
+                  qualityStatus === "caution" && "bg-amber-500/5",
+                )}
+              >
+                <Cell>
+                  <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
+                </Cell>
+                <Cell>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge tone={tierTone(tier)}>{tier}</StatusBadge>
+                    <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{displayField(row, ["position_sizing_band"], "no position")}</div>
+                </Cell>
+                <Cell className="max-w-[260px]">
+                  <Truncated>{displayField(row, ["primary_contract_id"])}</Truncated>
+                  <AlternativeContracts row={row} />
+                </Cell>
+                <Cell className="text-right tabular-nums">
+                  <div>{moneyField(row, ["buy_under"])}</div>
+                  <div className="text-xs text-muted-foreground">{displayField(row, ["entry_zone"], "wait")}</div>
+                </Cell>
+                <Cell className="text-right tabular-nums">
+                  <div>{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</div>
+                  <div className="text-xs text-muted-foreground">{moneyField(row, ["required_10x_price"])}</div>
+                </Cell>
+                <Cell><OpportunityScoreStack row={row} /></Cell>
+                <Cell className="max-w-[260px]"><OpportunityReasonChips row={row} /></Cell>
+                <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
+                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["why_now"])}</Truncated></Cell>
+                <Cell className="max-w-[340px] text-muted-foreground"><Truncated>{displayField(row, ["kill_switch"])}</Truncated></Cell>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </DataTableFrame>
+  );
+}
+
+function OpportunityScoreStack({ row }: { row: RowRecord }) {
+  return (
+    <div className="grid min-w-52 grid-cols-2 gap-1.5">
+      <MetricPill label="Conviction" value={formatScore(numberField(row, ["conviction_score"], Number.NaN))} />
+      <MetricPill label="Asymmetry" value={formatScore(numberField(row, ["asymmetry_score"], Number.NaN))} />
+      <MetricPill label="Entry" value={formatScore(numberField(row, ["entry_quality_score"], Number.NaN))} />
+      <MetricPill label="Evidence" value={formatScore(numberField(row, ["evidence_score"], Number.NaN))} />
+    </div>
+  );
+}
+
+function OpportunityReasonChips({ row }: { row: RowRecord }) {
+  const blockers = arrayText(row, "blockers");
+  const reasons = blockers.length ? blockers.slice(0, 4) : arrayText(row, "top_reasons").slice(0, 4);
+  const extra = (blockers.length ? blockers.length : arrayText(row, "top_reasons").length) - reasons.length;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {reasons.length ? reasons.map((reason) => (
+        <ReasonChip key={reason} reason={reason} tone={blockers.length ? "warn" : "good"} />
+      )) : <StatusBadge tone="good">Strict gates passed</StatusBadge>}
+      {extra > 0 ? <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">+{extra}</span> : null}
+    </div>
+  );
+}
+
+function AlternativeContracts({ row }: { row: RowRecord }) {
+  const alternatives = jsonArrayField(row, "alternative_contracts");
+  if (!alternatives.length) return <div className="mt-1 text-xs text-muted-foreground">No alternatives</div>;
+  return <div className="mt-1 text-xs text-muted-foreground">{alternatives.length} alternative{alternatives.length === 1 ? "" : "s"}</div>;
 }
 
 function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
@@ -1932,6 +2091,10 @@ function stateOf(row: RowRecord | undefined): string {
   return textField(row, ["state"]).toUpperCase();
 }
 
+function tierOf(row: RowRecord | undefined): string {
+  return textField(row, ["tier"], "Watch");
+}
+
 function qualityOf(row: RowRecord | undefined): QualityFilter {
   const quality = textField(row, ["quality_status"], "ok").toLowerCase();
   if (quality === "bad" || quality === "caution" || quality === "ok") return quality;
@@ -2034,6 +2197,12 @@ function stateTone(state: string): Tone {
   return "muted";
 }
 
+function tierTone(tier: string): Tone {
+  if (tier === "Exceptional") return "good";
+  if (tier === "Research") return "info";
+  return "muted";
+}
+
 function thesisStateTone(state: string): Tone {
   const normalized = state.toLowerCase();
   if (normalized.includes("invalidated")) return "bad";
@@ -2076,12 +2245,21 @@ function toneText(tone: Tone): string {
 
 const reasonLabels: Record<string, string> = {
   "10x_math_inside_cap": "10x target inside cap",
+  asymmetry_below_exceptional_bar: "Asymmetry below top bar",
+  conviction_below_exceptional_bar: "Conviction below top bar",
+  convexity_inside_extreme_bar: "Convexity inside extreme bar",
   delta_in_range: "Delta in range",
   delta_outside_strategy_range: "Delta outside range",
   dte_outside_strategy_range: "DTE outside range",
+  entry_quality_below_exceptional_bar: "Entry quality below top bar",
+  entry_quality_supported: "Entry quality supported",
+  hard_red_team_risk: "Hard red-team risk",
   iv_not_overpriced: "IV acceptable",
   iv_percentile_above_fire_threshold: "IV above fire limit",
   iv_percentile_reject: "IV too expensive",
+  leap_survivability_not_exceptional: "LEAP survivability weak",
+  leap_survivability_supported: "LEAP survivability supported",
+  market_regime_hostile_to_long_premium: "Market regime hostile",
   missing_50d_context: "Missing 50D context",
   missing_delta: "Missing delta",
   missing_dte: "Missing DTE",
@@ -2090,19 +2268,32 @@ const reasonLabels: Record<string, string> = {
   missing_rs_vs_qqq: "Missing RS context",
   missing_spread: "Missing spread",
   missing_volume: "Missing volume",
+  needs_clean_data_quality: "Needs clean data",
+  needs_printed_volume: "Needs printed volume",
+  needs_source_evidence: "Needs source evidence",
+  needs_validated_thesis: "Needs validated thesis",
+  not_fire_state: "Not a fire setup",
   open_interest_below_threshold: "Open interest too low",
+  open_interest_not_exceptional: "Open interest not exceptional",
   open_interest_supported: "Open interest supported",
   premium_above_buy_under: "Option premium too high",
   premium_inside_buy_under: "Premium inside cap",
+  provider_quality_flags_present: "Provider quality flags",
   required_move_too_high: "Required move too high",
+  required_move_not_exceptional: "Required move not exceptional",
   rs_vs_qqq_20d_negative: "RS vs QQQ weak",
   rs_vs_qqq_improving: "RS vs QQQ improving",
+  source_evidence_cluster: "Source evidence cluster",
   spread_above_fire_threshold: "Spread above fire limit",
+  spread_not_exceptional: "Spread not exceptional",
   spread_reject: "Spread too wide",
   spread_usable: "Spread usable",
   stock_above_50d: "Above 50D",
   stock_below_50d: "Below 50D",
+  supportive_market_regime: "Supportive market regime",
   strategy_only_tracks_calls: "Strategy tracks calls only",
+  thesis_invalidated: "Thesis invalidated",
+  thesis_validated: "Thesis validated",
   volume_below_threshold: "Volume too low",
   volume_seen: "Volume seen",
 };
@@ -2143,10 +2334,24 @@ function jsonArrayField(row: RowRecord | undefined, key: string): JsonValue[] {
   return [];
 }
 
+function arrayText(row: RowRecord | undefined, key: string): string[] {
+  return jsonArrayField(row, key).map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
+}
+
 function listFromRecord(record: Record<string, JsonValue> | undefined, key: string): string[] {
   const value = record?.[key];
   if (!Array.isArray(value)) return [];
   return value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
+}
+
+function commonBlockers(rows: RowRecord[]): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const blocker of arrayText(row, "blockers")) {
+      counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
 }
 
 function numberFromRecord(record: Record<string, JsonValue> | undefined, key: string): number {

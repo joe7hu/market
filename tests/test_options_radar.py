@@ -12,6 +12,7 @@ from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     StrategyPromotionError,
     promote_strategy_mutation,
+    refresh_option_radar_opportunities,
     refresh_options_radar,
 )
 from investment_panel.core.panel import load_panel_data
@@ -72,6 +73,56 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
         {"contract_id": "OPRA:TSLA270918C120", "state": "FIRE", "candidate_state": "FIRE"},
         {"contract_id": "OPRA:TSLA270918C180", "state": "REJECT", "candidate_state": "REJECT"},
     ]
+
+
+def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without_evidence(tmp_path) -> None:
+    db_path = tmp_path / "radar-opportunity-blocked.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_extreme_opportunity_candidates(con)
+
+        result = refresh_options_radar(con, ["TSLA"])
+        opportunity = query_rows(con, "SELECT * FROM option_radar_opportunity WHERE ticker = 'TSLA'")[0]
+
+    blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
+    alternatives = json.loads(opportunity["alternative_contracts"]) if isinstance(opportunity["alternative_contracts"], str) else opportunity["alternative_contracts"]
+    assert result["option_radar_opportunities"] == 1
+    assert opportunity["tier"] == "Research"
+    assert opportunity["primary_contract_id"] == "OPRA:TSLA270918C115"
+    assert "needs_validated_thesis" in blockers
+    assert "needs_source_evidence" in blockers
+    assert len(alternatives) == 1
+
+
+def test_option_radar_opportunity_requires_extreme_gates_for_exceptional_tier(tmp_path) -> None:
+    db_path = tmp_path / "radar-opportunity-exceptional.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_extreme_opportunity_candidates(con)
+        refresh_options_radar(con, ["TSLA"])
+        event = query_rows(
+            con,
+            """
+            SELECT event_id, snapshot_time
+            FROM candidate_event
+            WHERE contract_id = 'OPRA:TSLA270918C115'
+            """,
+        )[0]
+        seed_source_signal(con, "sig-tsla-a", "source-tsla-a")
+        seed_source_signal(con, "sig-tsla-b", "source-tsla-b")
+        seed_validated_option_thesis(con, event["event_id"], event["snapshot_time"])
+
+        refresh_option_radar_opportunities(con, ["TSLA"])
+        opportunity = query_rows(con, "SELECT * FROM option_radar_opportunity WHERE ticker = 'TSLA'")[0]
+
+    blockers = json.loads(opportunity["blockers"]) if isinstance(opportunity["blockers"], str) else opportunity["blockers"]
+    top_reasons = json.loads(opportunity["top_reasons"]) if isinstance(opportunity["top_reasons"], str) else opportunity["top_reasons"]
+    assert opportunity["tier"] == "Exceptional"
+    assert opportunity["primary_event_id"] == event["event_id"]
+    assert opportunity["conviction_score"] >= 78
+    assert blockers == []
+    assert "thesis_validated" in top_reasons
+    assert "source_evidence_cluster" in top_reasons
 
 
 def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_path) -> None:
@@ -1047,6 +1098,68 @@ def seed_prices(con, symbol: str, start_price: float = 80.0, slope: float = 0.10
             """,
             [symbol, day.isoformat(), close * 0.995, close * 1.01, close * 0.99, close, 1_000_000 + index * 1000, "test"],
         )
+
+
+def seed_extreme_opportunity_candidates(con) -> None:
+    seed_prices(con, "TSLA", slope=0.12)
+    seed_prices(con, "QQQ", start_price=100, slope=0.02)
+    con.execute(
+        "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+    )
+    store_options_chain(
+        con,
+        "TSLA",
+        "2026-06-02T20:00:00Z",
+        [
+            option_row("2027-09-18", 115, "call", 2.95, 3.05, 0.20, 0.30, "OPRA:TSLA270918C115", volume=300, open_interest=1200),
+            option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=120, open_interest=800),
+            option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.50, "OPRA:TSLA270918C180", volume=120, open_interest=800),
+        ],
+    )
+
+
+def seed_source_signal(con, signal_id: str, source_item_id: str) -> None:
+    con.execute(
+        """
+        INSERT INTO ticker_source_signals
+        (id, source_item_id, source_id, symbol, observed_at, signal_type,
+         sentiment, direction, confidence, thesis, antithesis, catalysts,
+         risks, invalidation, evidence_refs, needs_market_context, raw)
+        VALUES (?, ?, 'test_research', 'TSLA', '2026-06-02T19:00:00Z',
+         'catalyst', 'positive', 'bullish', 0.92,
+         'delivery recovery and margin stabilization create a path to a sharp repricing',
+         'pricing pressure remains the bear case',
+         '[{"type":"earnings","what_to_watch":"margin recovery"}]',
+         '["pricing pressure"]',
+         'stock loses 50D reclaim and source thesis fails',
+         '[{"type":"source_item","id":"source-tsla"}]',
+         false,
+         '{}')
+        """,
+        [signal_id, source_item_id],
+    )
+
+
+def seed_validated_option_thesis(con, event_id: str, snapshot_time: str) -> None:
+    con.execute(
+        """
+        INSERT INTO agent_thesis_validation
+        (validation_id, thesis_id, ticker, strategy_version, validation_date,
+         candidate_event_id, candidate_snapshot_time, validated_at, state,
+         reason, option_still_valid, stock_progress, iv_status, candidate_state,
+         proof_status, catalyst_status, invalidation_status, evidence_status,
+         red_team_status, red_team_flags, evidence_refs, raw)
+        VALUES (
+         'validation-tsla-exceptional', 'thesis-tsla-exceptional', 'TSLA', ?,
+         '2026-06-02', ?, TRY_CAST(? AS TIMESTAMP), '2026-06-02T20:10:00Z',
+         'validated', 'source-backed catalyst and option math remain aligned',
+         true, 'progressing', 'acceptable', 'FIRE',
+         'supported', 'scheduled', 'clear', 'source_backed',
+         'clear', '[]', '[{"type":"source_item","id":"source-tsla"}]', '{}'
+        )
+        """,
+        [DEFAULT_STRATEGY_VERSION, event_id, snapshot_time],
+    )
 
 
 def option_row(
