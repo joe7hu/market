@@ -3545,7 +3545,9 @@ def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
         SELECT request_id, created_at, ticker, event_id, strategy_version,
                priority_score, status, prompt, context, raw
         FROM agent_thesis_request
-        ORDER BY created_at DESC, priority_score DESC NULLS LAST
+        ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'failed' THEN 1 WHEN 'agent_failed' THEN 1 WHEN 'superseded' THEN 2 ELSE 3 END,
+                 priority_score DESC NULLS LAST,
+                 created_at DESC
         LIMIT 500
         """,
     )

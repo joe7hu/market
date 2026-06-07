@@ -45,6 +45,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const stockFeatures = rows(data.stockFeatures);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
+  const openThesisRequests = useMemo(() => thesisRequests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), [thesisRequests]);
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
 
   const opportunityCandidates = useMemo(
@@ -60,7 +61,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestCandidateAttributionByEvent = useMemo(() => latestBy(candidateAttributions, "event_id", "snapshot_time"), [candidateAttributions]);
   const latestOptionAttributionByEvent = useMemo(() => latestBy(optionAttributions, "event_id", "snapshot_time"), [optionAttributions]);
   const latestAttributionByEvent = useMemo(() => mergeRowMaps(latestCandidateAttributionByEvent, latestOptionAttributionByEvent), [latestCandidateAttributionByEvent, latestOptionAttributionByEvent]);
-  const thesisRequestByEvent = useMemo(() => mapBy(thesisRequests, "event_id"), [thesisRequests]);
+  const thesisRequestByEvent = useMemo(() => mapBy(openThesisRequests, "event_id"), [openThesisRequests]);
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
@@ -105,7 +106,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         fireCount={fireCount}
         setupCount={setupCount}
         watchCount={watchCount}
-        thesisRequestCount={thesisRequests.length}
+        thesisRequestCount={openThesisRequests.length}
       />
       <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
@@ -173,7 +174,7 @@ function RadarSummaryStrip({
     ["Setup", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
     ["Watch", watchCount.toLocaleString(), watchCount ? "info" : "muted"],
     ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
-    ["Thesis queue", thesisRequestCount.toLocaleString(), thesisRequestCount ? "warn" : "muted"],
+    ["Open thesis queue", thesisRequestCount.toLocaleString(), thesisRequestCount ? "warn" : "muted"],
   ];
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
@@ -212,7 +213,7 @@ function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
             <StatusBadge tone="info">{version}</StatusBadge>
           </div>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-muted-foreground">
-            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. Agents can propose variants from missed-winner and postmortem evidence, but promotion requires deterministic backtest, forward shadow test, and human approval.
+            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. Candidate rank is deterministic: FIRE beats SETUP beats WATCH, then score favors lower required stock move, stronger liquidity, better convexity, trend, and relative strength. Agents only receive the current top-ranked queue, and promotion requires deterministic backtest, forward shadow test, and human approval.
           </p>
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">
@@ -233,6 +234,7 @@ function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
 
 type CandidateSort = "score-desc" | "ticker-asc" | "move-asc" | "premium-asc" | "expiry-asc" | "state";
 type CandidateStateFilter = "all" | "FIRE" | "SETUP" | "WATCH";
+type CandidateFocus = "top25" | "top-per-ticker" | "all";
 type ThesisFilter = "all" | "needs" | "requested" | "attached";
 type QualityFilter = "all" | "ok" | "caution" | "bad";
 
@@ -243,7 +245,8 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
   const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
-  const [sort, setSort] = useState<CandidateSort>("score-desc");
+  const [focus, setFocus] = useState<CandidateFocus>("top25");
+  const [sort, setSort] = useState<CandidateSort>("state");
   const [page, setPage] = useState(0);
 
   const filteredRows = useMemo(() => {
@@ -261,18 +264,22 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
           readableReasonSummary(row),
         ].join(" ").toUpperCase();
         return haystack.includes(normalizedQuery);
-      })
-      .sort((left, right) => compareCandidates(left, right, sort));
-  }, [query, qualityFilter, rows, sort, stateFilter, thesisFilter, thesisRequestByEvent]);
+      });
+  }, [query, qualityFilter, rows, stateFilter, thesisFilter, thesisRequestByEvent]);
+
+  const focusedRows = useMemo(
+    () => focusCandidateRows(filteredRows, focus).sort((left, right) => compareCandidates(left, right, sort)),
+    [filteredRows, focus, sort],
+  );
 
   useEffect(() => {
     setPage(0);
-  }, [query, qualityFilter, sort, stateFilter, thesisFilter]);
+  }, [focus, query, qualityFilter, sort, stateFilter, thesisFilter]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / CANDIDATE_PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(focusedRows.length / CANDIDATE_PAGE_SIZE));
   const boundedPage = Math.min(page, pageCount - 1);
-  const visibleRows = filteredRows.slice(boundedPage * CANDIDATE_PAGE_SIZE, (boundedPage + 1) * CANDIDATE_PAGE_SIZE);
-  const tickerCount = uniqueText(filteredRows, "ticker").length;
+  const visibleRows = focusedRows.slice(boundedPage * CANDIDATE_PAGE_SIZE, (boundedPage + 1) * CANDIDATE_PAGE_SIZE);
+  const tickerCount = uniqueText(focusedRows, "ticker").length;
 
   if (!rows.length) {
     return <EmptyState title="No candidate events" detail="No options radar candidates are stored yet." icon={Target} />;
@@ -280,20 +287,29 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
 
   return (
     <DataTableFrame
-      title={<SectionTitle title="Candidate Events" count={filteredRows.length} />}
+      title={<SectionTitle title="Ranked Candidate Events" count={focusedRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{tickerCount.toLocaleString()} tickers</span>
+          <span>{filteredRows.length.toLocaleString()} matched</span>
           <span>{rows.length.toLocaleString()} loaded</span>
         </div>
       }
     >
       <div className="border-b border-border p-3">
-        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_150px_160px_160px_190px_auto]">
+        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_155px_150px_160px_160px_190px_auto]">
           <div className="relative min-w-0">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker, contract, or reason" aria-label="Filter candidate events" />
           </div>
+          <Select value={focus} onValueChange={(value) => setFocus(value as CandidateFocus)}>
+            <SelectTrigger aria-label="Candidate focus"><SelectValue placeholder="Focus" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="top25">Top 25</SelectItem>
+              <SelectItem value="top-per-ticker">Top per ticker</SelectItem>
+              <SelectItem value="all">All contracts</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={stateFilter} onValueChange={(value) => setStateFilter(value as CandidateStateFilter)}>
             <SelectTrigger aria-label="State filter"><SelectValue placeholder="State" /></SelectTrigger>
             <SelectContent>
@@ -328,7 +344,7 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
               <SelectItem value="move-asc">Required move low to high</SelectItem>
               <SelectItem value="premium-asc">Option mid low to high</SelectItem>
               <SelectItem value="expiry-asc">Expiration soonest</SelectItem>
-              <SelectItem value="state">State then score</SelectItem>
+              <SelectItem value="state">Queue rank</SelectItem>
               <SelectItem value="ticker-asc">Ticker A to Z</SelectItem>
             </SelectContent>
           </Select>
@@ -337,22 +353,25 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
             setStateFilter("all");
             setThesisFilter("all");
             setQualityFilter("all");
-            setSort("score-desc");
+            setFocus("top25");
+            setSort("state");
           }}>
             <ArrowDownUp className="size-4" />
             <span>Reset</span>
           </Button>
         </div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          Default view shows the strongest ranked contracts, not every contract row. Use all contracts only when auditing the full scan.
+        </p>
       </div>
-      <table className="w-full min-w-[1180px] text-sm">
+      <table className="w-full min-w-[1080px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>State</Head>
             <Head>Contract</Head>
             <Head className="text-right"><HelpLabel label="Option Mid" detail="Current option midpoint from the stored chain snapshot. Est fill adds the strategy slippage assumption used by shadow entries." /></Head>
-            <Head className="text-right"><HelpLabel label="Max Premium" detail="Maximum option premium allowed before the strategy's required underlying move exceeds its cap. It is not a stock buy price." /></Head>
-            <Head className="text-right"><HelpLabel label="Underlying For 10x" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs." /></Head>
+            <Head className="text-right"><HelpLabel label="Underlying For 10x" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs. Cap room is how far the estimated fill is below the strategy premium ceiling." /></Head>
             <Head className="text-right">Stock Move</Head>
             <Head className="text-right">Score</Head>
             <Head>Thesis</Head>
@@ -387,10 +406,10 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
                   <div>{moneyField(row, ["premium_mid"])}</div>
                   <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
                 </Cell>
-                <Cell className="text-right tabular-nums">{moneyField(row, ["buy_under"])}</Cell>
                 <Cell className="text-right tabular-nums">
                   <div>{moneyField(row, ["required_10x_price"])}</div>
                   <FillTarget row={row} />
+                  <PremiumCapHint row={row} />
                 </Cell>
                 <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
@@ -403,7 +422,7 @@ function CandidateEventsTable({ rows, thesisRequestByEvent, onOpenTicker }: { ro
       </table>
       <div className="flex flex-col gap-2 border-t border-border p-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
         <div>
-          Showing {filteredRows.length ? (boundedPage * CANDIDATE_PAGE_SIZE + 1).toLocaleString() : "0"}-{Math.min((boundedPage + 1) * CANDIDATE_PAGE_SIZE, filteredRows.length).toLocaleString()} of {filteredRows.length.toLocaleString()}
+          Showing {focusedRows.length ? (boundedPage * CANDIDATE_PAGE_SIZE + 1).toLocaleString() : "0"}-{Math.min((boundedPage + 1) * CANDIDATE_PAGE_SIZE, focusedRows.length).toLocaleString()} of {focusedRows.length.toLocaleString()}
         </div>
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" size="sm" disabled={boundedPage === 0} onClick={() => setPage((current) => Math.max(0, current - 1))} aria-label="Previous candidate page">
@@ -457,6 +476,19 @@ function FillTarget({ row }: { row: RowRecord }) {
   const fillTarget = strike + fill * 10;
   if (!Number.isFinite(fillTarget) || Math.abs(fillTarget - midTarget) < 0.01) return null;
   return <div className="text-xs text-muted-foreground">fill {formatMoney(fillTarget)}</div>;
+}
+
+function PremiumCapHint({ row }: { row: RowRecord }) {
+  const cap = numberField(row, ["buy_under"], Number.NaN);
+  const fill = numberField(row, ["premium_fill_assumption"], Number.NaN);
+  if (!Number.isFinite(cap) || !Number.isFinite(fill)) return null;
+  const room = cap - fill;
+  if (!Number.isFinite(room)) return null;
+  return (
+    <div className={cn("text-xs", room >= 0 ? "text-muted-foreground" : "text-destructive")}>
+      {room >= 0 ? `cap room ${formatMoney(room)}` : `over cap ${formatMoney(Math.abs(room))}`}
+    </div>
+  );
 }
 
 function ReasonChips({ row }: { row: RowRecord }) {
@@ -1426,6 +1458,22 @@ function thesisState(row: RowRecord, requestByEvent: Map<string, RowRecord>): { 
     return { kind: "requested", label: status.toLowerCase() === "open" ? "Requested" : titleLabel(status), tone: toneFromText(status) };
   }
   return { kind: "needs", label: "Needs thesis", tone: "warn" };
+}
+
+function focusCandidateRows(rows: RowRecord[], focus: CandidateFocus): RowRecord[] {
+  if (focus === "all") return rows;
+  const bestByTicker = new Map<string, RowRecord>();
+  for (const row of rows) {
+    const ticker = textField(row, ["ticker"]);
+    const key = ticker || textField(row, ["event_id"]);
+    const current = bestByTicker.get(key);
+    if (!current || compareCandidates(row, current, "state") < 0) {
+      bestByTicker.set(key, row);
+    }
+  }
+  const focused = [...bestByTicker.values()].sort((left, right) => compareCandidates(left, right, "state"));
+  if (focus === "top25") return focused.slice(0, 25);
+  return focused;
 }
 
 function compareCandidates(left: RowRecord, right: RowRecord, sort: CandidateSort): number {

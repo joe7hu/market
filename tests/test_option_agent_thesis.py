@@ -6,7 +6,7 @@ import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.free_sources import store_options_chain
-from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_option_agent_work, upsert_agent_thesis
+from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_agent_thesis_requests, refresh_option_agent_work, upsert_agent_thesis
 from investment_panel.core.options_radar import refresh_options_radar
 from tests.test_options_radar import option_row, seed_prices
 
@@ -25,6 +25,52 @@ def test_options_radar_opens_agent_thesis_request_for_top_candidate(tmp_path) ->
     assert request["status"] == "open"
     assert "Return JSON only" in request["prompt"]
     assert "Do not recommend or execute trades" in request["prompt"]
+
+
+def test_agent_thesis_queue_keeps_only_current_top_ranked_candidates_open(tmp_path) -> None:
+    db_path = tmp_path / "agent-request-cap.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for ticker, state, score in [
+            ("AAA", "FIRE", 80),
+            ("BBB", "SETUP", 99),
+            ("CCC", "SETUP", 98),
+        ]:
+            con.execute(
+                """
+                INSERT INTO candidate_event
+                (event_id, snapshot_time, ticker, contract_id, strategy_version,
+                 state, premium_mid, premium_fill_assumption, required_10x_price,
+                 required_move_pct, buy_under, trigger_reason, thesis_id, score,
+                 quality_status, quality_flags, raw)
+                VALUES (?, '2026-06-02T20:00:00Z', ?, ?, 'leap_10x_reversal_v1',
+                        ?, 1, 1.03, 100, 1.0, 10, 'test', NULL, ?, 'ok', '[]', '{}')
+                """,
+                [f"event-{ticker}", ticker, f"OPRA:{ticker}", state, score],
+            )
+        con.execute(
+            """
+            INSERT INTO agent_thesis_request
+            (request_id, created_at, ticker, event_id, strategy_version,
+             priority_score, status, prompt, context, raw)
+            VALUES ('stale-ccc', '2026-06-01T20:00:00Z', 'CCC', 'event-CCC',
+                    'leap_10x_reversal_v1', 98, 'open', 'old', '{}', '{}')
+            """
+        )
+
+        result = refresh_agent_thesis_requests(con, strategy_version="leap_10x_reversal_v1", limit=2)
+        requests = query_rows(
+            con,
+            """
+            SELECT ticker, event_id, status
+            FROM agent_thesis_request
+            ORDER BY ticker
+            """,
+        )
+
+    assert result == {"requested": 2, "superseded": 1}
+    assert {row["ticker"] for row in requests if row["status"] == "open"} == {"AAA", "BBB"}
+    assert [row for row in requests if row["ticker"] == "CCC"][0]["status"] == "superseded"
 
 
 def test_agent_thesis_upsert_attaches_to_candidates_and_validates(tmp_path) -> None:

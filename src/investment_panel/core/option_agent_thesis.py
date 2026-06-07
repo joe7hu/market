@@ -12,6 +12,7 @@ from investment_panel.core.source_ingestion.utils import stable_id
 
 
 AGENT_THESIS_VERSION = "option-thesis-agent-v1"
+DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 PRICE_RE = re.compile(r"(?:below|under|breaks below|stop(?: at)?|invalidation(?: at)?|\$)\s*\$?([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 
 
@@ -19,18 +20,19 @@ class AgentThesisValidationError(ValueError):
     """Raised when an agent thesis does not satisfy the structured contract."""
 
 
-def refresh_option_agent_work(con: Any, *, strategy_version: str, limit: int = 20) -> dict[str, int]:
-    request_rows = refresh_agent_thesis_requests(con, strategy_version=strategy_version, limit=limit)
+def refresh_option_agent_work(con: Any, *, strategy_version: str, limit: int = DEFAULT_AGENT_THESIS_REQUEST_LIMIT) -> dict[str, int]:
     attached_rows = attach_agent_theses_to_candidates(con, strategy_version=strategy_version)
+    request_result = refresh_agent_thesis_requests(con, strategy_version=strategy_version, limit=limit)
     validation_rows = refresh_agent_thesis_validations(con, strategy_version=strategy_version)
     return {
-        "agent_thesis_requests": request_rows,
+        "agent_thesis_requests": request_result["requested"],
+        "agent_thesis_requests_superseded": request_result["superseded"],
         "agent_theses_attached": attached_rows,
         "agent_thesis_validations": validation_rows,
     }
 
 
-def refresh_agent_thesis_requests(con: Any, *, strategy_version: str, limit: int = 20) -> int:
+def refresh_agent_thesis_requests(con: Any, *, strategy_version: str, limit: int = DEFAULT_AGENT_THESIS_REQUEST_LIMIT) -> dict[str, int]:
     rows = query_rows(
         con,
         """
@@ -50,6 +52,8 @@ def refresh_agent_thesis_requests(con: Any, *, strategy_version: str, limit: int
         """,
         [strategy_version, limit],
     )
+    selected_event_ids = [str(row.get("event_id")) for row in rows if row.get("event_id")]
+    superseded = retire_superseded_agent_thesis_requests(con, strategy_version=strategy_version, selected_event_ids=selected_event_ids)
     count = 0
     for row in rows:
         request = build_agent_thesis_request(con, row)
@@ -74,7 +78,55 @@ def refresh_agent_thesis_requests(con: Any, *, strategy_version: str, limit: int
             ],
         )
         count += 1
-    return count
+    return {"requested": count, "superseded": superseded}
+
+
+def retire_superseded_agent_thesis_requests(con: Any, *, strategy_version: str, selected_event_ids: list[str]) -> int:
+    """Keep agent usage bounded to the current top-ranked candidate set."""
+
+    if selected_event_ids:
+        placeholders = ", ".join("?" for _ in selected_event_ids)
+        before = query_rows(
+            con,
+            f"""
+            SELECT count(*) AS count
+            FROM agent_thesis_request
+            WHERE strategy_version = ?
+                  AND status = 'open'
+                  AND event_id NOT IN ({placeholders})
+            """,
+            [strategy_version, *selected_event_ids],
+        )[0]["count"]
+        con.execute(
+            f"""
+            UPDATE agent_thesis_request
+            SET status = 'superseded'
+            WHERE strategy_version = ?
+                  AND status = 'open'
+                  AND event_id NOT IN ({placeholders})
+            """,
+            [strategy_version, *selected_event_ids],
+        )
+        return int(before or 0)
+
+    before = query_rows(
+        con,
+        """
+        SELECT count(*) AS count
+        FROM agent_thesis_request
+        WHERE strategy_version = ? AND status = 'open'
+        """,
+        [strategy_version],
+    )[0]["count"]
+    con.execute(
+        """
+        UPDATE agent_thesis_request
+        SET status = 'superseded'
+        WHERE strategy_version = ? AND status = 'open'
+        """,
+        [strategy_version],
+    )
+    return int(before or 0)
 
 
 def build_agent_thesis_request(con: Any, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -131,7 +183,11 @@ def build_agent_thesis_request(con: Any, candidate: dict[str, Any]) -> dict[str,
         "status": "open",
         "prompt": prompt,
         "context": context,
-        "raw": {"authority": "hypothesis_only", "required_output": "agent_thesis"},
+        "raw": {
+            "authority": "hypothesis_only",
+            "required_output": "agent_thesis",
+            "queue_policy": "current_top_ranked_candidates_only",
+        },
     }
 
 
