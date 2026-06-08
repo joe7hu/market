@@ -1,5 +1,5 @@
-import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { promoteStrategyMutation } from "@/api";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
@@ -48,11 +47,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const opportunityRows = rows(data.optionRadarOpportunity);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
-  const openThesisRequests = useMemo(() => thesisRequests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), [thesisRequests]);
-  const actionableThesisRequests = useMemo(() => thesisRequests.filter((row) => {
-    const status = textField(row, ["status"], "open").toLowerCase();
-    return status === "open" || status.includes("failed");
-  }), [thesisRequests]);
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
   const optionThesisAgent = optionThesisAgentState(data);
 
@@ -68,11 +62,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
   const latestForwardByProposal = useMemo(() => latestBy(forwardTests, "proposal_id", "evaluated_at"), [forwardTests]);
-  const eventById = useMemo(() => mapBy(candidates, "event_id"), [candidates]);
   const latestCandidateMarkByEvent = useMemo(() => latestBy(candidateMarks, "event_id", "mark_time"), [candidateMarks]);
   const latestCandidateAttributionByEvent = useMemo(() => latestBy(candidateAttributions, "event_id", "snapshot_time"), [candidateAttributions]);
-  const thesisRequestByEvent = useMemo(() => mapBy(openThesisRequests, "event_id"), [openThesisRequests]);
+  const latestThesisRequestByEvent = useMemo(() => latestBy(thesisRequests, "event_id", "created_at"), [thesisRequests]);
   const latestThesisValidationByEvent = useMemo(() => latestValidationBy(thesisValidations, "candidate_event_id"), [thesisValidations]);
+  const latestAgentThesisByTicker = useMemo(() => latestBy(agentTheses, "ticker", "created_at"), [agentTheses]);
 
   const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
@@ -134,65 +128,43 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         optionThesisAgent={optionThesisAgent}
         onOpenTicker={onOpenTicker}
       />
-      <Tabs defaultValue="radar" className="min-w-0">
-        <TabsList className="h-auto max-w-full flex-wrap justify-start">
-          <TabsTrigger value="radar">Strong Signals</TabsTrigger>
-          <TabsTrigger value="learning">Learning Impact</TabsTrigger>
-          <TabsTrigger value="theses">Thesis Checks</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="radar" className="space-y-4">
-          <ExtremeOpportunityDesk
-            rows={currentOpportunityRows}
-            candidates={opportunityCandidates}
-            latestMarkByEvent={latestCandidateMarkByEvent}
-            latestAttributionByEvent={latestCandidateAttributionByEvent}
-            latestThesisValidationByEvent={latestThesisValidationByEvent}
-            onOpenTicker={onOpenTicker}
+      <div className="space-y-4">
+        <CandidateEventsTable
+          rows={opportunityCandidates}
+          thesisRequestByEvent={latestThesisRequestByEvent}
+          latestMarkByEvent={latestCandidateMarkByEvent}
+          latestAttributionByEvent={latestCandidateAttributionByEvent}
+          latestThesisValidationByEvent={latestThesisValidationByEvent}
+          latestAgentThesisByTicker={latestAgentThesisByTicker}
+          agentRuntime={optionThesisAgent}
+          onOpenTicker={onOpenTicker}
+        />
+        <LearningProgressPanel
+          opportunities={opportunityCandidates}
+          latestMarkByEvent={latestCandidateMarkByEvent}
+          latestAttributionByEvent={latestCandidateAttributionByEvent}
+          cohorts={cohortResults}
+          proposals={proposals}
+          missedWinners={missedWinners}
+          postmortemRequests={postmortemRequests}
+          postmortems={postmortems}
+        />
+        <StrategyExplainer strategy={latestStrategy} />
+        <CohortResultsTable rows={cohortResults} />
+        {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
+        {postmortems.length ? <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} /> : null}
+        {postmortemRequests.length ? <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} /> : null}
+        {proposals.length ? (
+          <StrategyProposalsTable
+            rows={proposals}
+            backtestByProposal={latestBacktestByProposal}
+            forwardByProposal={latestForwardByProposal}
+            promotingProposal={promotingProposal}
+            promotionError={promotionError}
+            onPromote={handlePromoteProposal}
           />
-        </TabsContent>
-
-        <TabsContent value="learning" className="space-y-4">
-          <LearningProgressPanel
-            opportunities={opportunityCandidates}
-            latestMarkByEvent={latestCandidateMarkByEvent}
-            latestAttributionByEvent={latestCandidateAttributionByEvent}
-            cohorts={cohortResults}
-            proposals={proposals}
-            missedWinners={missedWinners}
-            postmortemRequests={postmortemRequests}
-            postmortems={postmortems}
-          />
-          <StrategyExplainer strategy={latestStrategy} />
-          <CandidateEventsTable
-            rows={opportunityCandidates}
-            thesisRequestByEvent={thesisRequestByEvent}
-            latestMarkByEvent={latestCandidateMarkByEvent}
-            latestAttributionByEvent={latestCandidateAttributionByEvent}
-            onOpenTicker={onOpenTicker}
-          />
-          <CohortResultsTable rows={cohortResults} />
-          {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
-          {postmortems.length ? <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} /> : null}
-          {postmortemRequests.length ? <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} /> : null}
-          {proposals.length ? (
-            <StrategyProposalsTable
-              rows={proposals}
-              backtestByProposal={latestBacktestByProposal}
-              forwardByProposal={latestForwardByProposal}
-              promotingProposal={promotingProposal}
-              promotionError={promotionError}
-              onPromote={handlePromoteProposal}
-            />
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="theses" className="space-y-4">
-          <ThesisPipelinePanel requests={thesisRequests} theses={agentTheses} validations={thesisValidations} agentRuntime={optionThesisAgent} />
-          <ThesisRequestsTable rows={actionableThesisRequests} eventById={eventById} onOpenTicker={onOpenTicker} agentRuntime={optionThesisAgent} />
-          <AgentThesisBrowser theses={agentTheses} validations={thesisValidations} onOpenTicker={onOpenTicker} />
-        </TabsContent>
-      </Tabs>
+        ) : null}
+      </div>
     </WorkspacePage>
   );
 }
@@ -353,22 +325,27 @@ function ExtremeOpportunityDesk({
   candidates,
   latestMarkByEvent,
   latestAttributionByEvent,
+  latestThesisRequestByEvent,
   latestThesisValidationByEvent,
+  latestAgentThesisByTicker,
+  agentRuntime,
   onOpenTicker,
 }: {
   rows: RowRecord[];
   candidates: RowRecord[];
   latestMarkByEvent: Map<string, RowRecord>;
   latestAttributionByEvent: Map<string, RowRecord>;
+  latestThesisRequestByEvent: Map<string, RowRecord>;
   latestThesisValidationByEvent: Map<string, RowRecord>;
+  latestAgentThesisByTicker: Map<string, RowRecord>;
+  agentRuntime: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
 }) {
-  const exceptionalRows = useMemo(() => rows.filter((row) => tierOf(row) === "Exceptional"), [rows]);
-  const repairRows = useMemo(() => rows.filter((row) => isServiceRepair(row)), [rows]);
-  const researchRows = useMemo(() => rows.filter((row) => tierOf(row) === "Research").sort(compareGroupedOpportunities), [rows]);
-  const primaryFireRows = useMemo(() => rows.filter((row) => textField(row, ["primary_state"]).toUpperCase() === "FIRE"), [rows]);
-  const readyDecisionRows = exceptionalRows.length ? exceptionalRows : researchRows.slice(0, 8);
-  const visibleRows = [...repairRows.slice(0, 4), ...readyDecisionRows.filter((row) => !isServiceRepair(row))].slice(0, 10);
+  const sortedRows = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
+  const exceptionalRows = useMemo(() => sortedRows.filter((row) => tierOf(row) === "Exceptional"), [sortedRows]);
+  const repairRows = useMemo(() => sortedRows.filter((row) => isServiceRepair(row)), [sortedRows]);
+  const researchRows = useMemo(() => sortedRows.filter((row) => tierOf(row) === "Research"), [sortedRows]);
+  const primaryFireRows = useMemo(() => sortedRows.filter((row) => textField(row, ["primary_state"]).toUpperCase() === "FIRE"), [sortedRows]);
   const blockerSummary = useMemo(() => commonBlockers(rows), [rows]);
   const serviceSummary = useMemo(() => commonDataContractFailures(repairRows), [repairRows]);
 
@@ -384,7 +361,7 @@ function ExtremeOpportunityDesk({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title={opportunityDeskTitle(repairRows.length, exceptionalRows.length, researchRows.length)} count={visibleRows.length} />}
+      title={<SectionTitle title="Radar Workbench" count={sortedRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{repairRows.length.toLocaleString()} service bugs</span>
@@ -418,40 +395,55 @@ function ExtremeOpportunityDesk({
         </div>
       ) : null}
       <div className="space-y-3 p-3 lg:hidden">
-        {visibleRows.map((row) => (
+        {sortedRows.map((row) => (
           <OpportunityMobileCard
             key={textField(row, ["opportunity_id"], `${textField(row, ["ticker"])}-${textField(row, ["primary_contract_id"])}`)}
             row={row}
             latestMarkByEvent={latestMarkByEvent}
             latestAttributionByEvent={latestAttributionByEvent}
+            latestThesisRequestByEvent={latestThesisRequestByEvent}
             latestThesisValidationByEvent={latestThesisValidationByEvent}
+            latestAgentThesisByTicker={latestAgentThesisByTicker}
+            agentRuntime={agentRuntime}
             onOpenTicker={onOpenTicker}
           />
         ))}
       </div>
-      <table className="hidden w-full min-w-[1540px] text-sm lg:table">
+      <table className="hidden w-full min-w-[1720px] table-fixed text-sm lg:table">
+        <colgroup>
+          <col className="w-[9rem]" />
+          <col className="w-[11rem]" />
+          <col className="w-[15rem]" />
+          <col className="w-[10rem]" />
+          <col className="w-[10rem]" />
+          <col className="w-[20rem]" />
+          <col className="w-[24rem]" />
+          <col className="w-[14rem]" />
+          <col className="w-[24rem]" />
+          <col className="w-[20rem]" />
+        </colgroup>
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
-            <Head>Tier</Head>
+            <Head>Investment State</Head>
             <Head>Primary Contract</Head>
             <Head className="text-right">Premium Now</Head>
-            <Head className="text-right">Premium Cap</Head>
-            <Head className="text-right">10x Move</Head>
+            <Head className="text-right">10x Math</Head>
+            <Head>Signal Evidence</Head>
             <Head>Thesis</Head>
-            <Head>Scores</Head>
-            <Head>Data Contract</Head>
             <Head>Shadow P/L</Head>
-            <Head>Trade State</Head>
+            <Head>Next Action</Head>
             <Head>Kill Switch</Head>
           </tr>
         </thead>
         <tbody>
-          {visibleRows.map((row) => {
+          {sortedRows.map((row) => {
             const eventId = textField(row, ["primary_event_id"]);
             const mark = latestMarkByEvent.get(eventId);
             const attribution = latestAttributionByEvent.get(eventId);
+            const request = latestThesisRequestByEvent.get(eventId);
             const validation = latestThesisValidationByEvent.get(eventId);
+            const thesis = latestAgentThesisByTicker.get(textField(row, ["ticker"]));
             const tier = tierOf(row);
             const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
             const qualityFlags = arrayText(row, "quality_flags");
@@ -469,14 +461,10 @@ function ExtremeOpportunityDesk({
                   <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
                 </Cell>
                 <Cell>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge tone={tierTone(tier)}>{tier}</StatusBadge>
-                    <QualityIndicator status={qualityStatus} flags={qualityFlags} />
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{displayField(row, ["position_sizing_band"], "no position")}</div>
+                  <OpportunityInvestmentState row={row} qualityStatus={qualityStatus} qualityFlags={qualityFlags} />
                 </Cell>
-                <Cell className="max-w-[260px]">
-                  <Truncated>{displayField(row, ["primary_contract_id"])}</Truncated>
+                <Cell>
+                  <FullText>{displayField(row, ["primary_contract_id"])}</FullText>
                   <AlternativeContracts row={row} />
                 </Cell>
                 <Cell className="text-right tabular-nums">
@@ -484,19 +472,15 @@ function ExtremeOpportunityDesk({
                   <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
                 </Cell>
                 <Cell className="text-right tabular-nums">
-                  <div>{moneyField(row, ["buy_under"])}</div>
+                  <div>{moneyField(row, ["required_10x_price"])}</div>
+                  <div className="text-xs text-muted-foreground">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} move</div>
                   <PremiumCapHint row={row} />
                 </Cell>
-                <Cell className="text-right tabular-nums">
-                  <div>{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</div>
-                  <div className="text-xs text-muted-foreground">{moneyField(row, ["required_10x_price"])}</div>
-                </Cell>
-                <Cell><OpportunityThesisState validation={validation} /></Cell>
-                <Cell><OpportunityScoreStack row={row} /></Cell>
-                <Cell className="max-w-[260px]"><OpportunityReasonChips row={row} /></Cell>
-                <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
-                <Cell className="max-w-[320px]"><Truncated>{opportunityActionText(row)}</Truncated></Cell>
-                <Cell className="max-w-[340px] text-muted-foreground"><Truncated>{displayField(row, ["kill_switch"])}</Truncated></Cell>
+                <Cell><OpportunityEvidenceSummary row={row} /></Cell>
+                <Cell><OpportunityThesisSummary row={row} request={request} validation={validation} thesis={thesis} agentRuntime={agentRuntime} /></Cell>
+                <Cell><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
+                <Cell><FullText>{opportunityActionText(row)}</FullText></Cell>
+                <Cell className="text-muted-foreground"><FullText>{displayField(row, ["kill_switch"])}</FullText></Cell>
               </tr>
             );
           })}
@@ -510,19 +494,27 @@ function OpportunityMobileCard({
   row,
   latestMarkByEvent,
   latestAttributionByEvent,
+  latestThesisRequestByEvent,
   latestThesisValidationByEvent,
+  latestAgentThesisByTicker,
+  agentRuntime,
   onOpenTicker,
 }: {
   row: RowRecord;
   latestMarkByEvent: Map<string, RowRecord>;
   latestAttributionByEvent: Map<string, RowRecord>;
+  latestThesisRequestByEvent: Map<string, RowRecord>;
   latestThesisValidationByEvent: Map<string, RowRecord>;
+  latestAgentThesisByTicker: Map<string, RowRecord>;
+  agentRuntime: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
 }) {
   const eventId = textField(row, ["primary_event_id"]);
   const mark = latestMarkByEvent.get(eventId);
   const attribution = latestAttributionByEvent.get(eventId);
+  const request = latestThesisRequestByEvent.get(eventId);
   const validation = latestThesisValidationByEvent.get(eventId);
+  const thesis = latestAgentThesisByTicker.get(textField(row, ["ticker"]));
   const tier = tierOf(row);
   const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
   const qualityFlags = arrayText(row, "quality_flags");
@@ -531,10 +523,10 @@ function OpportunityMobileCard({
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
-          <div className="mt-1 truncate text-xs text-muted-foreground">{displayField(row, ["primary_contract_id"])}</div>
+          <div className="mt-1 break-words text-xs text-muted-foreground">{displayField(row, ["primary_contract_id"])}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <StatusBadge tone={tierTone(tier)}>{tier}</StatusBadge>
+          <StatusBadge tone={investmentStateTone(row)}>{investmentStateLabel(row)}</StatusBadge>
           <QualityIndicator status={qualityStatus} flags={qualityFlags} />
         </div>
       </div>
@@ -544,10 +536,10 @@ function OpportunityMobileCard({
         <InlineMetric label="10x Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
       </div>
       <div className="mt-3 space-y-2">
-        <MobileSection label="Thesis"><OpportunityThesisState validation={validation} /></MobileSection>
-        <MobileSection label="Trade State">{opportunityActionText(row)}</MobileSection>
-        <MobileSection label="Data Contract"><OpportunityReasonChips row={row} /></MobileSection>
+        <MobileSection label="Signal Evidence"><OpportunityEvidenceSummary row={row} /></MobileSection>
+        <MobileSection label="Thesis"><OpportunityThesisSummary row={row} request={request} validation={validation} thesis={thesis} agentRuntime={agentRuntime} /></MobileSection>
         <MobileSection label="Shadow P/L"><OpportunityOutcome mark={mark} attribution={attribution} /></MobileSection>
+        <MobileSection label="Next Action">{opportunityActionText(row)}</MobileSection>
         <MobileSection label="Kill Switch">{displayField(row, ["kill_switch"])}</MobileSection>
       </div>
     </article>
@@ -559,6 +551,98 @@ function opportunityDeskTitle(repairCount: number, exceptionalCount: number, res
   if (exceptionalCount) return "Trade-Ready Opportunities";
   if (researchCount) return "Research Opportunities";
   return "No Grouped Opportunities";
+}
+
+function OpportunityInvestmentState({ row, qualityStatus, qualityFlags }: { row: RowRecord; qualityStatus: string; qualityFlags: string[] }) {
+  const state = displayField(row, ["primary_state"], "watch");
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge tone={investmentStateTone(row)}>{investmentStateLabel(row)}</StatusBadge>
+        <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+      </div>
+      <div className="text-xs leading-5 text-muted-foreground">
+        Primary contract: {titleLabel(state)}
+      </div>
+      <div className="text-xs leading-5 text-muted-foreground">
+        {displayField(row, ["position_sizing_band"], "No position sizing band")}
+      </div>
+    </div>
+  );
+}
+
+function OpportunityEvidenceSummary({ row }: { row: RowRecord }) {
+  const failures = dataContractFailures(row);
+  const blockers = arrayText(row, "blockers");
+  const positives = arrayText(row, "top_reasons");
+  return (
+    <div className="space-y-2">
+      <OpportunityScoreStack row={row} />
+      {failures.length ? <ReadableReasonGroup label="Data contract" reasons={failures} tone="bad" /> : null}
+      {blockers.length ? <ReadableReasonGroup label="Blockers" reasons={blockers} tone="warn" /> : null}
+      {positives.length ? <ReadableReasonGroup label="Supports" reasons={positives} tone="good" /> : null}
+      {!failures.length && !blockers.length && !positives.length ? <StatusBadge tone="muted">No stored evidence summary</StatusBadge> : null}
+    </div>
+  );
+}
+
+function ReadableReasonGroup({ label, reasons, tone }: { label: string; reasons: string[]; tone: Tone }) {
+  return (
+    <div>
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {reasons.map((reason) => <ReasonChip key={`${label}-${reason}`} reason={reason} tone={tone} />)}
+      </div>
+    </div>
+  );
+}
+
+function OpportunityThesisSummary({
+  row,
+  request,
+  validation,
+  thesis,
+  agentRuntime,
+}: {
+  row: RowRecord;
+  request: RowRecord | undefined;
+  validation: RowRecord | undefined;
+  thesis: RowRecord | undefined;
+  agentRuntime: OptionThesisAgentRuntime;
+}) {
+  const validationReason = displayField(validation, ["reason"]);
+  const coreThesis = displayField(thesis, ["core_thesis"]);
+  const requestStatus = textField(request, ["status"]);
+  const requestCreated = textField(request, ["created_at"]);
+  const summary = validationReason || coreThesis || thesisFallbackText(row, request, agentRuntime);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1.5">
+        <StatusBadge tone={thesisStateTone(textField(validation, ["state"]))}>{thesisValidationLabel(validation)}</StatusBadge>
+        {requestStatus ? <StatusBadge tone={toneFromText(requestStatus)}>{titleLabel(requestStatus)}</StatusBadge> : null}
+        {textField(validation, ["red_team_status"]) ? (
+          <StatusBadge tone={validationStatusTone(textField(validation, ["red_team_status"]))}>{titleLabel(textField(validation, ["red_team_status"]))}</StatusBadge>
+        ) : null}
+      </div>
+      <FullText>{summary}</FullText>
+      {coreThesis && validationReason && coreThesis !== validationReason ? (
+        <InsightLine label="Core thesis" value={coreThesis} />
+      ) : null}
+      {requestCreated ? <div className="text-xs text-muted-foreground">Request {formatDate(requestCreated)}</div> : null}
+    </div>
+  );
+}
+
+function thesisFallbackText(row: RowRecord, request: RowRecord | undefined, agentRuntime: OptionThesisAgentRuntime): string {
+  const requestStatus = textField(request, ["status"]);
+  if (requestStatus.toLowerCase() === "open") {
+    return agentRuntime.active
+      ? `Premarket synthesis is queued for this ${titleLabel(displayField(row, ["primary_state"], "signal"))} contract.`
+      : "Premarket synthesis is queued, but the thesis worker is paused.";
+  }
+  if (requestStatus) return `Latest thesis request is ${titleLabel(requestStatus)}.`;
+  if (isServiceRepair(row)) return "Thesis is blocked until the data contract is repaired.";
+  return "No linked thesis validation is stored for this grouped opportunity.";
 }
 
 function compareGroupedOpportunities(left: RowRecord, right: RowRecord): number {
@@ -715,21 +799,28 @@ function CandidateEventsTable({
   thesisRequestByEvent,
   latestMarkByEvent,
   latestAttributionByEvent,
+  latestThesisValidationByEvent,
+  latestAgentThesisByTicker,
+  agentRuntime,
   onOpenTicker,
 }: {
   rows: RowRecord[];
   thesisRequestByEvent: Map<string, RowRecord>;
   latestMarkByEvent: Map<string, RowRecord>;
   latestAttributionByEvent: Map<string, RowRecord>;
+  latestThesisValidationByEvent: Map<string, RowRecord>;
+  latestAgentThesisByTicker: Map<string, RowRecord>;
+  agentRuntime: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
 }) {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
   const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
-  const [focus, setFocus] = useState<CandidateFocus>("top25");
+  const [focus, setFocus] = useState<CandidateFocus>("top-per-ticker");
   const [sort, setSort] = useState<CandidateSort>("state");
   const [page, setPage] = useState(0);
+  const [expandedThesisEvent, setExpandedThesisEvent] = useState<string | null>(null);
 
   const filteredRows = useMemo(() => {
     const normalizedQuery = query.trim().toUpperCase();
@@ -756,6 +847,7 @@ function CandidateEventsTable({
 
   useEffect(() => {
     setPage(0);
+    setExpandedThesisEvent(null);
   }, [focus, query, qualityFilter, sort, stateFilter, thesisFilter]);
 
   const pageCount = Math.max(1, Math.ceil(focusedRows.length / CANDIDATE_PAGE_SIZE));
@@ -769,7 +861,7 @@ function CandidateEventsTable({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title="Signal Evidence" count={focusedRows.length} />}
+      title={<SectionTitle title="Top Ranked Signals" count={focusedRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{tickerCount.toLocaleString()} tickers</span>
@@ -786,8 +878,9 @@ function CandidateEventsTable({
           <Select value={focus} onValueChange={(value) => setFocus(value as CandidateFocus)}>
             <SelectTrigger aria-label="Candidate focus"><SelectValue placeholder="Focus" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="top25">Top signals</SelectItem>
               <SelectItem value="top-per-ticker">Top per ticker</SelectItem>
+              <SelectItem value="top25">Top 25 contracts</SelectItem>
+              <SelectItem value="all">All ranked contracts</SelectItem>
             </SelectContent>
           </Select>
           <Select value={stateFilter} onValueChange={(value) => setStateFilter(value as CandidateStateFilter)}>
@@ -833,7 +926,7 @@ function CandidateEventsTable({
             setStateFilter("all");
             setThesisFilter("all");
             setQualityFilter("all");
-            setFocus("top25");
+            setFocus("top-per-ticker");
             setSort("state");
           }}>
             <ArrowDownUp className="size-4" />
@@ -841,22 +934,32 @@ function CandidateEventsTable({
           </Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          This view shows current ranked contracts that affect signal strength, outcome learning, or thesis validation.
+          One primary surface for current ranked contracts. Each row combines the contract signal, evidence, thesis validation, observed outcome, and next action.
         </p>
       </div>
-      <table className="w-full min-w-[1240px] text-sm">
+      <table className="w-full min-w-[1780px] table-fixed text-sm">
+        <colgroup>
+          <col className="w-[8rem]" />
+          <col className="w-[9rem]" />
+          <col className="w-[16rem]" />
+          <col className="w-[10rem]" />
+          <col className="w-[11rem]" />
+          <col className="w-[24rem]" />
+          <col className="w-[28rem]" />
+          <col className="w-[15rem]" />
+          <col className="w-[22rem]" />
+        </colgroup>
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
-            <Head>State</Head>
+            <Head>Signal State</Head>
             <Head>Contract</Head>
             <Head className="text-right"><HelpLabel label="Option Mid" detail="Current option midpoint from the stored chain snapshot. Est fill adds the strategy slippage assumption used by shadow entries." /></Head>
-            <Head className="text-right"><HelpLabel label="Underlying For 10x" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs. Cap room is how far the estimated fill is below the strategy premium ceiling." /></Head>
-            <Head className="text-right">Stock Move</Head>
-            <Head className="text-right">Score</Head>
+            <Head className="text-right"><HelpLabel label="10x Math" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs. Cap room is how far the estimated fill is below the strategy premium ceiling." /></Head>
+            <Head>Signal Evidence</Head>
             <Head>Thesis</Head>
             <Head>Impact So Far</Head>
-            <Head>Decision Drivers</Head>
+            <Head>Next Action</Head>
           </tr>
         </thead>
         <tbody>
@@ -865,42 +968,69 @@ function CandidateEventsTable({
             const state = stateOf(row);
             const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
             const qualityFlags = listField(row, ["quality_flags"]);
-            const thesis = thesisState(row, thesisRequestByEvent);
             const eventId = textField(row, ["event_id"]);
             const mark = latestMarkByEvent.get(eventId);
             const attribution = latestAttributionByEvent.get(eventId);
+            const request = thesisRequestByEvent.get(eventId);
+            const validation = latestThesisValidationByEvent.get(eventId);
+            const thesis = latestAgentThesisByTicker.get(ticker);
+            const thesisExpanded = expandedThesisEvent === eventId;
+            const rowKey = textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`);
             return (
-              <tr
-                key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)}
-                className={cn(
-                  "border-b border-border align-top transition-colors hover:bg-accent/40",
-                  qualityStatus === "bad" && "bg-destructive/5",
-                  qualityStatus === "caution" && "bg-amber-500/5",
-                )}
-              >
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
-                    <QualityIndicator status={qualityStatus} flags={qualityFlags} />
-                  </div>
-                </Cell>
-                <Cell className="max-w-[260px]"><Truncated>{displayField(row, ["contract_id"])}</Truncated></Cell>
-                <Cell className="text-right tabular-nums">
-                  <div>{moneyField(row, ["premium_mid"])}</div>
-                  <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
-                </Cell>
-                <Cell className="text-right tabular-nums">
-                  <div>{moneyField(row, ["required_10x_price"])}</div>
-                  <FillTarget row={row} />
-                  <PremiumCapHint row={row} />
-                </Cell>
-                <Cell className="text-right tabular-nums">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</Cell>
-                <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["score"], Number.NaN))}</Cell>
-                <Cell><StatusBadge tone={thesis.tone}>{thesis.label}</StatusBadge></Cell>
-                <Cell className="max-w-[230px]"><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
-                <Cell className="max-w-[430px]"><ReasonChips row={row} /></Cell>
-              </tr>
+              <Fragment key={rowKey}>
+                <tr
+                  className={cn(
+                    "border-b border-border align-top transition-colors hover:bg-accent/40",
+                    qualityStatus === "bad" && "bg-destructive/5",
+                    qualityStatus === "caution" && "bg-amber-500/5",
+                  )}
+                >
+                  <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                  <Cell>
+                    <div className="space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
+                        <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+                      </div>
+                      <div className="text-xs text-muted-foreground">rank {formatScore(numberField(row, ["score"], Number.NaN))}</div>
+                    </div>
+                  </Cell>
+                  <Cell>
+                    <FullText>{displayField(row, ["contract_id"])}</FullText>
+                    <div className="mt-1 text-xs text-muted-foreground">{titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}</div>
+                  </Cell>
+                  <Cell className="text-right tabular-nums">
+                    <div>{moneyField(row, ["premium_mid"])}</div>
+                    <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
+                  </Cell>
+                  <Cell className="text-right tabular-nums">
+                    <div>{moneyField(row, ["required_10x_price"])}</div>
+                    <FillTarget row={row} />
+                    <PremiumCapHint row={row} />
+                  </Cell>
+                  <Cell><CandidateSignalEvidence row={row} /></Cell>
+                  <Cell>
+                    <ThesisCompactSummary
+                      request={request}
+                      validation={validation}
+                      thesis={thesis}
+                      expanded={thesisExpanded}
+                      onToggle={() => setExpandedThesisEvent(thesisExpanded ? null : eventId)}
+                    />
+                  </Cell>
+                  <Cell><OpportunityOutcome mark={mark} attribution={attribution} /></Cell>
+                  <Cell><FullText>{candidateActionText(row, validation)}</FullText></Cell>
+                </tr>
+                {thesisExpanded ? (
+                  <tr className="border-b border-border bg-muted/20">
+                    <td colSpan={9} className="px-3 py-4">
+                      <div className="max-w-5xl rounded-md border border-border bg-card p-4">
+                        <OpportunityThesisSummary row={row} request={request} validation={validation} thesis={thesis} agentRuntime={agentRuntime} />
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             );
           })}
         </tbody>
@@ -921,6 +1051,77 @@ function CandidateEventsTable({
       </div>
     </DataTableFrame>
   );
+}
+
+function ThesisCompactSummary({
+  request,
+  validation,
+  thesis,
+  expanded,
+  onToggle,
+}: {
+  request: RowRecord | undefined;
+  validation: RowRecord | undefined;
+  thesis: RowRecord | undefined;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const requestStatus = textField(request, ["status"]);
+  const hasDetail = Boolean(validation || thesis || request);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1.5">
+        <StatusBadge tone={thesisStateTone(textField(validation, ["state"]))}>{thesisValidationLabel(validation)}</StatusBadge>
+        {requestStatus ? <StatusBadge tone={toneFromText(requestStatus)}>{titleLabel(requestStatus)}</StatusBadge> : null}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-8"
+        onClick={onToggle}
+        disabled={!hasDetail}
+        aria-expanded={expanded}
+      >
+        <ChevronDown className={cn("size-4 transition-transform", expanded && "rotate-180")} />
+        <span>{expanded ? "Hide thesis" : hasDetail ? "Expand thesis" : "No thesis detail"}</span>
+      </Button>
+    </div>
+  );
+}
+
+function CandidateSignalEvidence({ row }: { row: RowRecord }) {
+  const raw = recordField(row, "raw");
+  const hardRejects = listFromRecord(raw, "hard_rejects");
+  const blockers = listFromRecord(raw, "blockers");
+  const positives = listFromRecord(raw, "positives");
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-1.5">
+        <MetricPill label="Rank" value={formatScore(numberField(row, ["score"], Number.NaN))} />
+        <MetricPill label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+      </div>
+      {hardRejects.length ? <ReadableReasonGroup label="Hard rejects" reasons={hardRejects} tone="bad" /> : null}
+      {blockers.length ? <ReadableReasonGroup label="Blockers" reasons={blockers} tone="warn" /> : null}
+      {positives.length ? <ReadableReasonGroup label="Supports" reasons={positives} tone="good" /> : null}
+      {!hardRejects.length && !blockers.length && !positives.length ? <StatusBadge tone="muted">No stored evidence</StatusBadge> : null}
+    </div>
+  );
+}
+
+function candidateActionText(row: RowRecord, validation: RowRecord | undefined): string {
+  const state = stateOf(row);
+  const validationState = textField(validation, ["state"]).toLowerCase();
+  const redTeam = textField(validation, ["red_team_status"]).toLowerCase();
+  const raw = recordField(row, "raw");
+  const hardRejects = listFromRecord(raw, "hard_rejects");
+  const blockers = listFromRecord(raw, "blockers");
+  if (hardRejects.length) return `Do not advance: ${hardRejects.slice(0, 3).map(reasonLabel).join(", ")}.`;
+  if (validationState.includes("invalidated") || redTeam.includes("hard_risk")) return "Do not advance until thesis invalidation or hard red-team risk is resolved.";
+  if (state === "FIRE" && blockers.length) return `Research, not trade-ready: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.`;
+  if (state === "FIRE") return "Top signal: review thesis expansion, fill discipline, and kill switch before any trade review.";
+  if (state === "SETUP") return blockers.length ? `Monitor setup: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.` : "Monitor setup until it clears FIRE gates.";
+  return "Watch only until ranking, data quality, and thesis gates improve.";
 }
 
 function QualityIndicator({ status, flags }: { status: string; flags: string[] }) {
@@ -1022,7 +1223,15 @@ function ReasonChips({ row }: { row: RowRecord }) {
 
 function ReasonChip({ reason, tone }: { reason: string; tone: Tone }) {
   return (
-    <span className={cn("rounded-md border px-2 py-0.5 text-xs font-medium", tone === "good" ? "border-green-500/30 bg-green-50/30 text-foreground" : "border-amber-500/30 bg-amber-50/40 text-foreground")} title={reason}>
+    <span
+      className={cn(
+        "rounded-md border px-2 py-0.5 text-xs font-medium",
+        tone === "good" && "border-green-500/30 bg-green-50/30 text-foreground dark:bg-green-950/20",
+        tone === "bad" && "border-destructive/30 bg-destructive/5 text-destructive",
+        tone !== "good" && tone !== "bad" && "border-amber-500/30 bg-amber-50/40 text-foreground dark:bg-amber-950/20",
+      )}
+      title={reason}
+    >
       {reasonLabel(reason)}
     </span>
   );
@@ -2077,6 +2286,10 @@ function Truncated({ children }: { children: ReactNode }) {
   return <div className="min-w-0 truncate" title={typeof children === "string" ? children : undefined}>{children}</div>;
 }
 
+function FullText({ children }: { children: ReactNode }) {
+  return <div className="min-w-0 whitespace-pre-wrap break-words leading-6">{children}</div>;
+}
+
 function MetricPill({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-20 rounded-md bg-muted px-2 py-1 text-right">
@@ -2235,6 +2448,25 @@ function tierTone(tier: string): Tone {
   if (tier === "Service Bug") return "bad";
   if (tier === "Research") return "info";
   return "muted";
+}
+
+function investmentStateLabel(row: RowRecord): string {
+  const tier = tierOf(row);
+  const primaryState = textField(row, ["primary_state"], "watch").toUpperCase();
+  if (isServiceRepair(row)) return "Data Blocked";
+  if (tier === "Exceptional") return "Trade Ready";
+  if (tier === "Research") return `${titleLabel(primaryState)} Research`;
+  if (primaryState === "FIRE") return "Fire Watch";
+  if (primaryState === "SETUP") return "Setup Watch";
+  return titleLabel(primaryState || tier || "Watch");
+}
+
+function investmentStateTone(row: RowRecord): Tone {
+  if (isServiceRepair(row)) return "bad";
+  const tier = tierOf(row);
+  if (tier === "Exceptional") return "good";
+  if (tier === "Research") return "info";
+  return stateTone(textField(row, ["primary_state"]));
 }
 
 function thesisStateTone(state: string): Tone {
