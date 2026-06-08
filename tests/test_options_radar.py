@@ -286,8 +286,19 @@ def test_options_radar_prioritizes_10x_watch_themes_without_bypassing_gates(tmp_
                 "industry": "Specialty Industrial Machinery",
             },
         )
+        upsert_instrument(
+            con,
+            {
+                "symbol": "BOTZ",
+                "name": "Botz Robotics",
+                "asset_class": "equity",
+                "sector": "Industrials",
+                "industry": "Robotics and Factory Automation",
+                "category": "physical AI robotics",
+            },
+        )
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
-        for symbol in ["NVDA", "ACME"]:
+        for symbol in ["NVDA", "BOTZ", "ACME"]:
             seed_prices(con, symbol, start_price=100, slope=0.12)
             con.execute(
                 "INSERT INTO quotes_intraday VALUES (?, '2026-06-02T20:00:00Z', 120, 1, 1, 'USD', 'tradingview', '{}')",
@@ -303,17 +314,23 @@ def test_options_radar_prioritizes_10x_watch_themes_without_bypassing_gates(tmp_
                 ],
             )
 
-        refresh_options_radar(con, ["NVDA", "ACME"])
+        refresh_options_radar(con, ["NVDA", "BOTZ", "ACME"])
         rows = query_rows(con, "SELECT ticker, state, score, trigger_reason, raw FROM candidate_event WHERE contract_id LIKE '%C145' ORDER BY ticker")
 
     by_ticker = {row["ticker"]: row for row in rows}
     nvda_raw = json.loads(by_ticker["NVDA"]["raw"]) if isinstance(by_ticker["NVDA"]["raw"], str) else by_ticker["NVDA"]["raw"]
     acme_raw = json.loads(by_ticker["ACME"]["raw"]) if isinstance(by_ticker["ACME"]["raw"], str) else by_ticker["ACME"]["raw"]
     assert by_ticker["NVDA"]["state"] == by_ticker["ACME"]["state"] == "FIRE"
+    assert by_ticker["BOTZ"]["state"] == "FIRE"
     assert "theme_ai_infrastructure" in by_ticker["NVDA"]["trigger_reason"]
+    assert "theme_robotics_physical_ai" in by_ticker["BOTZ"]["trigger_reason"]
     assert "theme_ai_infrastructure" in nvda_raw["watch_themes"]
+    botz_raw = json.loads(by_ticker["BOTZ"]["raw"]) if isinstance(by_ticker["BOTZ"]["raw"], str) else by_ticker["BOTZ"]["raw"]
+    assert "theme_robotics_physical_ai" in botz_raw["watch_themes"]
     assert "theme_ai_infrastructure" not in acme_raw.get("watch_themes", [])
+    assert "theme_robotics_physical_ai" not in acme_raw.get("watch_themes", [])
     assert by_ticker["NVDA"]["score"] > by_ticker["ACME"]["score"]
+    assert by_ticker["BOTZ"]["score"] > by_ticker["ACME"]["score"]
 
 
 def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp_path) -> None:

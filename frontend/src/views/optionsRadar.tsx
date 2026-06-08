@@ -2665,6 +2665,7 @@ const reasonLabels: Record<string, string> = {
   theme_ai_biotech: "AI biotech watch",
   theme_ai_infrastructure: "AI infrastructure watch",
   theme_crypto_infrastructure: "Crypto infrastructure watch",
+  theme_robotics_physical_ai: "Robotics / physical AI watch",
   theme_space_tech: "Space tech watch",
   stock_above_50d: "Above 50D",
   stock_below_50d: "Below 50D",
