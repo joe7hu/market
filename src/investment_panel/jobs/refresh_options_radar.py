@@ -19,6 +19,23 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, strate
     return {"database": str(config.database.duckdb_path), "strategy_version": strategy_version, **result}
 
 
+def run_deterministic_only(
+    config_path: str | None = None,
+    symbols: list[str] | None = None,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+) -> dict[str, Any]:
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path) as con:
+        result = refresh_options_radar(
+            con,
+            symbols=symbols,
+            strategy_version=strategy_version,
+            include_agent_work=False,
+        )
+    return {"database": str(config.database.duckdb_path), "strategy_version": strategy_version, "agent_work": "skipped", **result}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")

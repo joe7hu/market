@@ -18,12 +18,31 @@ DEFAULT_WATCHLIST = [
 ]
 
 CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$([A-Z][A-Z0-9.]{0,9})(?![A-Z0-9])")
+CRYPTO_ALIASES = {
+    "BTC": "BTC-USD",
+    "BTCUSD": "BTC-USD",
+    "ETH": "ETH-USD",
+    "ETHUSD": "ETH-USD",
+    "SOL": "SOL-USD",
+    "SOLUSD": "SOL-USD",
+    "BNBUSD": "BNB-USD",
+    "HYPEUSD": "HYPE-USD",
+    "XLMUSD": "XLM-USD",
+    "XRPUSD": "XRP-USD",
+}
+ETF_SYMBOLS = {
+    "AGGY", "ARKK", "ARGT", "BITO", "BOTT", "DBC", "DGRO", "DIAL", "EWZ", "FBND",
+    "FCOM", "FDIS", "FEMS", "FQAL", "FREL", "FUTY", "GDX", "GLTR", "IGV", "JEPI",
+    "NVD", "NOWL", "NUMG", "PDBC", "SMH", "SOXL", "SOXS", "SPDN", "SPY", "SQQQ",
+    "TIP", "TLT", "TQQQ", "TSLG", "TSLL", "TZA", "UVIX",
+}
+INDEX_SYMBOLS = {"DJI", "HSI", "IXIC", "KOSPI", "NIFTY", "NI225", "SPX", "TASI", "TOPIX"}
+FX_SYMBOLS = {"USDJPY", "USDKRW", "USDMYR", "USDPHP", "USDSGD", "USDTHB"}
 
 
 def normalize_symbol(symbol: str) -> str:
     normalized = symbol.strip().upper()
-    aliases = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD"}
-    return aliases.get(normalized, normalized)
+    return CRYPTO_ALIASES.get(normalized, normalized)
 
 
 def universe_from_config_and_arco(config_watchlist: list[dict[str, Any]], arco_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -66,8 +85,22 @@ def symbols_from_text(text: str) -> list[str]:
 
 
 def infer_asset_class(symbol: str) -> str:
-    if symbol.endswith("-USD"):
+    normalized = normalize_symbol(symbol)
+    if normalized.endswith("-USD"):
         return "crypto"
-    if symbol in {"SPY", "QQQ", "IWM"}:
+    if normalized in ETF_SYMBOLS:
         return "etf"
+    if normalized in INDEX_SYMBOLS:
+        return "index"
+    if normalized in FX_SYMBOLS:
+        return "fx"
+    if normalized.isdigit():
+        return "foreign_equity"
     return "equity"
+
+
+def resolved_asset_class(symbol: str, supplied: str | None = None) -> str:
+    inferred = infer_asset_class(symbol)
+    if inferred != "equity":
+        return inferred
+    return supplied or inferred

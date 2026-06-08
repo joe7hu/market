@@ -19,6 +19,7 @@ from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     apply_shadow_trade_exits,
     create_shadow_trades,
+    refresh_option_radar_opportunities,
     refresh_radar_state_transitions,
     refresh_strategy_proposal_evaluations,
 )
@@ -305,6 +306,7 @@ def _refresh_after_agent_theses(con: Any, *, strategy_version: str) -> dict[str,
     validation_rows = refresh_agent_thesis_validations(con, strategy_version=strategy_version)
     shadow_trades = create_shadow_trades(con, strategy_version=strategy_version)
     transitions = refresh_radar_state_transitions(con, strategy_version=strategy_version)
+    opportunities = refresh_option_radar_opportunities(con, strategy_version=strategy_version)
     exits = apply_shadow_trade_exits(con, strategy_version=strategy_version)
     return {
         "agent_work": {
@@ -315,6 +317,7 @@ def _refresh_after_agent_theses(con: Any, *, strategy_version: str) -> dict[str,
         },
         "shadow_trades": shadow_trades,
         "radar_state_transitions": transitions,
+        "option_radar_opportunities": opportunities,
         "shadow_trades_exited": exits,
     }
 

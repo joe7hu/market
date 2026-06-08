@@ -15,7 +15,8 @@ from investment_panel.analysis.options_payoff import OptionLeg, evaluate_strateg
 from investment_panel.analysis.valuation import metrics_pass_sanity_checks, store_valuation_models
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.fundamentals import metrics_from_company_facts
+from investment_panel.core import fundamentals as fundamentals_core
+from investment_panel.core.fundamentals import cik_from_sec_filing_url, metrics_from_company_facts
 from investment_panel.core.free_sources import (
     infer_event_date,
     option_chain_strikes_around_spot,
@@ -134,6 +135,136 @@ def test_company_facts_uses_latest_revenue_across_fallback_tags() -> None:
     assert metrics["net_margin"] == 0.25
     assert metrics["free_cash_flow"] == 60
     assert metrics["fcf_margin"] == 0.3
+
+
+def test_equity_fundamentals_resolves_cik_for_unconfigured_equity(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(
+        fundamentals_core,
+        "company_tickers",
+        lambda _user_agent: {"0": {"ticker": "MSFT", "cik_str": 789019}},
+    )
+    monkeypatch.setattr(fundamentals_core, "company_facts", lambda cik, _user_agent: {"cik": cik})
+    monkeypatch.setattr(
+        fundamentals_core,
+        "metrics_from_company_facts",
+        lambda _payload: {
+            "status": "ok",
+            "period_end": "2025-06-30",
+            "filing_date": "2025-07-30",
+            "form_type": "10-K",
+            "revenue": 281_724_000_000,
+            "revenue_growth": 0.1493,
+        },
+    )
+
+    with db(db_path) as con:
+        rows = fundamentals_core.update_equity_fundamentals(
+            con,
+            [{"symbol": "MSFT", "asset_class": "equity"}],
+            "market-test@example.com",
+        )
+        stored = query_rows(con, "SELECT symbol, form_type, metrics, source_url FROM equity_fundamentals WHERE symbol = 'MSFT'")
+
+    assert rows == 1
+    assert stored[0]["form_type"] == "10-K"
+    assert json.loads(stored[0]["metrics"])["revenue_growth"] == 0.1493
+    assert stored[0]["source_url"].endswith("CIK0000789019.json")
+
+
+def test_equity_fundamentals_uses_default_cik_when_sec_ticker_map_is_blocked(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(fundamentals_core, "company_tickers", lambda _user_agent: (_ for _ in ()).throw(RuntimeError("403 Forbidden")))
+    monkeypatch.setattr(fundamentals_core, "company_facts", lambda cik, _user_agent: {"cik": cik})
+    monkeypatch.setattr(
+        fundamentals_core,
+        "metrics_from_company_facts",
+        lambda _payload: {
+            "status": "ok",
+            "period_end": "2025-06-30",
+            "filing_date": "2025-07-30",
+            "form_type": "10-K",
+            "revenue": 281_724_000_000,
+        },
+    )
+
+    with db(db_path) as con:
+        rows = fundamentals_core.update_equity_fundamentals(
+            con,
+            [{"symbol": "MSFT", "asset_class": "equity"}],
+            "market-test@example.com",
+        )
+        stored = query_rows(con, "SELECT source_url FROM equity_fundamentals WHERE symbol = 'MSFT'")
+
+    assert rows == 1
+    assert stored[0]["source_url"].endswith("CIK0000789019.json")
+
+
+def test_equity_fundamentals_does_not_store_error_rows(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(fundamentals_core, "company_tickers", lambda _user_agent: (_ for _ in ()).throw(RuntimeError("403 Forbidden")))
+    monkeypatch.setattr(fundamentals_core, "company_facts", lambda _cik, _user_agent: (_ for _ in ()).throw(RuntimeError("provider down")))
+
+    with db(db_path) as con:
+        rows = fundamentals_core.update_equity_fundamentals(
+            con,
+            [{"symbol": "MSFT", "asset_class": "equity"}],
+            "market-test@example.com",
+        )
+        stored = query_rows(con, "SELECT symbol, metrics FROM equity_fundamentals WHERE symbol = 'MSFT'")
+
+    assert rows == 0
+    assert stored == []
+
+
+def test_equity_fundamentals_resolves_cik_from_yfinance_sec_filings(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+
+    class FakeYFinanceProvider:
+        def sec_filings(self, _symbol: str) -> list[dict[str, object]]:
+            return [
+                {
+                    "edgarUrl": "https://finance.yahoo.com/sec-filing/AAPL/0001140361-26-023149_320193",
+                    "exhibits": {
+                        "10-K": "https://cdn.yahoofinance.com/prod/sec-filings/0000320193/000032019325000079/aapl-20250927.htm"
+                    },
+                }
+            ]
+
+    monkeypatch.setattr(fundamentals_core, "company_tickers", lambda _user_agent: (_ for _ in ()).throw(RuntimeError("403 Forbidden")))
+    monkeypatch.setattr(fundamentals_core, "YFinanceProvider", FakeYFinanceProvider)
+    monkeypatch.setattr(fundamentals_core, "company_facts", lambda cik, _user_agent: {"cik": cik})
+    monkeypatch.setattr(
+        fundamentals_core,
+        "metrics_from_company_facts",
+        lambda _payload: {
+            "status": "ok",
+            "period_end": "2025-09-27",
+            "filing_date": "2025-10-31",
+            "form_type": "10-K",
+            "revenue": 416_161_000_000,
+        },
+    )
+
+    with db(db_path) as con:
+        rows = fundamentals_core.update_equity_fundamentals(
+            con,
+            [{"symbol": "AAPL", "asset_class": "equity"}],
+            "market-test@example.com",
+        )
+        stored = query_rows(con, "SELECT symbol, source_url FROM equity_fundamentals WHERE symbol = 'AAPL'")
+
+    assert rows == 1
+    assert stored[0]["source_url"].endswith("CIK0000320193.json")
+
+
+def test_cik_from_sec_filing_url_supports_yahoo_url_formats() -> None:
+    assert cik_from_sec_filing_url("https://finance.yahoo.com/sec-filing/MSFT/0001193125-26-258667_789019") == "0000789019"
+    assert cik_from_sec_filing_url("https://cdn.yahoofinance.com/prod/sec-filings/0001780312/000149315226023915/forms-8.htm") == "0001780312"
 
 
 def test_yfinance_market_snapshot_persists_market_cap_for_valuation(tmp_path: Path) -> None:

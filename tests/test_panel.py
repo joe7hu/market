@@ -847,6 +847,27 @@ def test_ticker_dossier_loader_filters_source_signals_to_symbol(tmp_path) -> Non
     assert result["metadata"]["decision_refresh"]["status"] == "read_only_missing"
 
 
+def test_ticker_dossier_loads_exact_symbol_estimates_beyond_global_limit(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO analyst_estimates VALUES ('MSFT', DATE '2026-01-01', ?, 'yfinance')",
+            [json.dumps({"revenue_estimate": [{"period": "0y", "avg": 329_000_000_000, "growth": 0.17}]})],
+        )
+        for index in range(210):
+            con.execute(
+                "INSERT INTO analyst_estimates VALUES (?, DATE '2026-06-01', ?, 'yfinance')",
+                [f"ZZ{index}", json.dumps({"revenue_estimate": [{"period": "0y", "avg": index + 1}]})],
+            )
+
+    result = load_ticker_dossier_data({"database": {"duckdb_path": str(db_path)}}, "MSFT", ensure_decision_models=False)
+
+    assert result["tables"]["analyst_estimates"][0]["symbol"] == "MSFT"
+    estimates = result["tables"]["analyst_estimates"][0]["estimates"]
+    assert estimates["revenue_estimate"][0]["growth"] == 0.17
+
+
 def test_feed_signals_include_source_items_with_required_decision_fields(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)

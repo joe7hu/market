@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 from typing import Any
 
 from investment_panel.core.db import json_dumps
-from investment_panel.core.sec import company_facts
+from investment_panel.core.sec import company_facts, company_tickers
+from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
 
 
 US_GAAP = "us-gaap"
@@ -17,20 +19,42 @@ LIABILITY_TAGS = ["Liabilities"]
 CASH_TAGS = ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]
 OPERATING_CASH_FLOW_TAGS = ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]
 CAPEX_TAGS = ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpenditures"]
+DEFAULT_CIK_BY_SYMBOL = {
+    "AAPL": "0000320193",
+    "AMZN": "0001018724",
+    "GOOG": "0001652044",
+    "GOOGL": "0001652044",
+    "META": "0001326801",
+    "MSFT": "0000789019",
+    "NFLX": "0001065280",
+    "NVDA": "0001045810",
+    "TSLA": "0001318605",
+}
 
 
 def update_equity_fundamentals(con: Any, instruments: list[dict[str, Any]], user_agent: str) -> int:
+    cik_by_symbol = company_cik_map(user_agent)
+    yfinance_provider: YFinanceProvider | None = None
     count = 0
     for instrument in instruments:
-        cik = instrument.get("cik")
+        symbol = str(instrument.get("symbol") or "").upper()
+        cik = instrument.get("cik") or cik_by_symbol.get(symbol)
         if not cik or instrument.get("asset_class") not in {"equity", "etf"}:
-            continue
+            if instrument.get("asset_class") not in {"equity", "etf"}:
+                continue
+            if yfinance_provider is None:
+                try:
+                    yfinance_provider = YFinanceProvider()
+                except YFinanceUnavailable:
+                    continue
+            cik = cik_from_yfinance_filings(symbol, yfinance_provider)
+            if not cik:
+                continue
         try:
             facts = company_facts(str(cik), user_agent)
             metrics = metrics_from_company_facts(facts)
-        except Exception as exc:
-            metrics = {"status": "error", "error": str(exc)}
-        symbol = instrument["symbol"]
+        except Exception:
+            continue
         period_end = metrics.get("period_end") or date.today().isoformat()
         filing_date = metrics.get("filing_date") or date.today().isoformat()
         con.execute(
@@ -50,6 +74,54 @@ def update_equity_fundamentals(con: Any, instruments: list[dict[str, Any]], user
         )
         count += 1
     return count
+
+
+def company_cik_map(user_agent: str) -> dict[str, str]:
+    output: dict[str, str] = dict(DEFAULT_CIK_BY_SYMBOL)
+    try:
+        rows = company_tickers(user_agent)
+    except Exception:
+        return output
+    for row in rows.values() if isinstance(rows, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper()
+        cik = row.get("cik_str")
+        if ticker and cik:
+            output[ticker] = str(cik).zfill(10)
+    return output
+
+
+def cik_from_yfinance_filings(symbol: str, provider: YFinanceProvider | None = None) -> str | None:
+    provider = provider or YFinanceProvider()
+    try:
+        filings = provider.sec_filings(symbol)
+    except Exception:
+        return None
+    return cik_from_sec_filings(filings)
+
+
+def cik_from_sec_filings(filings: Any) -> str | None:
+    rows = filings if isinstance(filings, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        candidates = [row.get("edgarUrl")]
+        exhibits = row.get("exhibits")
+        if isinstance(exhibits, dict):
+            candidates.extend(exhibits.values())
+        for value in candidates:
+            cik = cik_from_sec_filing_url(str(value or ""))
+            if cik:
+                return cik
+    return None
+
+
+def cik_from_sec_filing_url(url: str) -> str | None:
+    match = re.search(r"/sec-filings/0*(\d{1,10})(?:/|$)", url)
+    if not match:
+        match = re.search(r"_(\d{1,10})(?:[/?#]|$)", url)
+    return match.group(1).zfill(10) if match else None
 
 
 def metrics_from_company_facts(payload: dict[str, Any]) -> dict[str, Any]:

@@ -73,6 +73,25 @@ def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None
     assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
 
 
+def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.hourly_options_radar,
+        "run",
+        lambda config_path: {"job": "hourly_options_radar", "config_path": config_path, "agent_workers": "daily_premarket_only"},
+    )
+
+    result = refresh_jobs.run_refresh_job("hourly_options_radar", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {
+        "job": "hourly_options_radar",
+        "config_path": "config.yaml",
+        "agent_workers": "daily_premarket_only",
+    }
+
+
 def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 
@@ -86,6 +105,25 @@ def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
 
     assert result["status"] == "succeeded"
     assert result["summary"] == {"job": "run_option_agents", "config_path": "config.yaml"}
+
+
+def test_premarket_options_intelligence_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.premarket_options_intelligence,
+        "run",
+        lambda config_path: {"job": "premarket_options_intelligence", "config_path": config_path, "agent_workers": "enabled_once_per_day"},
+    )
+
+    result = refresh_jobs.run_refresh_job("premarket_options_intelligence", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {
+        "job": "premarket_options_intelligence",
+        "config_path": "config.yaml",
+        "agent_workers": "enabled_once_per_day",
+    }
 
 
 def test_start_refresh_job_returns_existing_running_job(tmp_path, monkeypatch) -> None:

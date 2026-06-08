@@ -217,7 +217,7 @@ def load_ticker_dossier_data(
             "thesis_monitor": _rows_matching_symbol(thesis_monitor_rows(con, active_watchlist), symbol),
             "catalysts": _rows_matching_symbol(catalysts(con), symbol),
             "signals": _rows_matching_symbol(signal_rows(con), symbol),
-            "fundamentals": _rows_matching_symbol(fundamentals(con), symbol),
+            "fundamentals": fundamentals(con, symbols=[symbol]),
             "disclosures": _rows_matching_symbol(disclosures(con), symbol),
             "quotes": _rows_matching_symbol(quotes(con), symbol),
             "options_expiries": _rows_matching_symbol(options_expiries(con), symbol),
@@ -235,7 +235,7 @@ def load_ticker_dossier_data(
             "liquidity": _rows_matching_symbol(liquidity(con), symbol),
             "correlations": _rows_matching_symbol(correlations(con), symbol),
             "etf_premiums": _rows_matching_symbol(etf_premiums(con), symbol),
-            "analyst_estimates": _rows_matching_symbol(analyst_estimates(con), symbol),
+            "analyst_estimates": analyst_estimates(con, symbols=[symbol]),
             "earnings": _rows_matching_symbol(earnings(con), symbol),
             "earnings_setups": _rows_matching_symbol(earnings_setups(con), symbol),
             "valuations": _rows_matching_symbol(valuations(con), symbol),
@@ -3236,20 +3236,31 @@ def catalysts(con: Any) -> list[dict[str, Any]]:
     return [_compact_empty_fields(row) for row in decoded]
 
 
-def fundamentals(con: Any) -> list[dict[str, Any]]:
+def fundamentals(con: Any, symbols: list[str] | set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    normalized_symbols = sorted({str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+    where_clause = ""
+    params: list[Any] = []
+    if normalized_symbols:
+        where_clause = f"WHERE upper(symbol) IN ({', '.join(['?'] * len(normalized_symbols))})"
+        params.extend(normalized_symbols)
     rows = query_rows(
         con,
-        """
-        SELECT symbol, period_end, filing_date, form_type, metrics, source_url,
-               'equity' AS asset_class, 'sec_companyfacts' AS source
-        FROM equity_fundamentals
-        UNION ALL
-        SELECT symbol, date AS period_end, date AS filing_date, 'coingecko_market' AS form_type,
-               metrics, source AS source_url, 'crypto' AS asset_class, source
-        FROM crypto_fundamentals
+        f"""
+        SELECT *
+        FROM (
+            SELECT symbol, period_end, filing_date, form_type, metrics, source_url,
+                   'equity' AS asset_class, 'sec_companyfacts' AS source
+            FROM equity_fundamentals
+            UNION ALL
+            SELECT symbol, date AS period_end, date AS filing_date, 'coingecko_market' AS form_type,
+                   metrics, source AS source_url, 'crypto' AS asset_class, source
+            FROM crypto_fundamentals
+        )
+        {where_clause}
         ORDER BY filing_date DESC, symbol
         LIMIT 200
         """,
+        params,
     )
     return [_compact_empty_fields(decode_fields(row, ("metrics",))) for row in rows]
 
@@ -3594,11 +3605,18 @@ def agent_thesis(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH current_tickers AS (
+            SELECT DISTINCT ticker
+            FROM candidate_event
+            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+              AND state != 'REJECT'
+        )
         SELECT thesis_id, ticker, created_at, agent_version, bull_target_price,
                bull_target_date, base_target_price, core_thesis, required_proofs,
                invalidation_conditions, catalysts, catalyst_summary, bear_case,
                confidence, evidence_refs, raw
         FROM agent_thesis
+        WHERE ticker IN (SELECT ticker FROM current_tickers)
         ORDER BY created_at DESC, ticker
         LIMIT 500
         """,
@@ -3610,9 +3628,17 @@ def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH current_events AS (
+            SELECT event_id
+            FROM candidate_event
+            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+              AND state != 'REJECT'
+        )
         SELECT request_id, created_at, ticker, event_id, strategy_version,
                priority_score, status, prompt, context, raw
         FROM agent_thesis_request
+        WHERE event_id IN (SELECT event_id FROM current_events)
+          AND status IN ('open', 'failed', 'agent_failed')
         ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'failed' THEN 1 WHEN 'agent_failed' THEN 1 WHEN 'superseded' THEN 2 ELSE 3 END,
                  priority_score DESC NULLS LAST,
                  created_at DESC
@@ -3626,6 +3652,12 @@ def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH current_events AS (
+            SELECT event_id
+            FROM candidate_event
+            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+              AND state != 'REJECT'
+        )
         SELECT validation_id, thesis_id, ticker, strategy_version,
                validation_date, candidate_event_id, candidate_snapshot_time,
                validated_at, state, reason, option_still_valid, stock_progress,
@@ -3633,6 +3665,7 @@ def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
                proof_status, catalyst_status, invalidation_status, evidence_status,
                red_team_status, red_team_flags, evidence_refs, raw
         FROM agent_thesis_validation
+        WHERE candidate_event_id IN (SELECT event_id FROM current_events)
         ORDER BY validation_date DESC NULLS LAST, validated_at DESC, ticker
         LIMIT 500
         """,
@@ -3647,6 +3680,7 @@ def agent_postmortem_request(con: Any) -> list[dict[str, Any]]:
         SELECT request_id, created_at, source_type, source_id, ticker,
                strategy_version, priority_score, status, prompt, context, raw
         FROM agent_postmortem_request
+        WHERE status IN ('open', 'failed', 'agent_failed')
         ORDER BY created_at DESC, priority_score DESC NULLS LAST
         LIMIT 500
         """,
@@ -3715,6 +3749,12 @@ def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH current_events AS (
+            SELECT event_id
+            FROM candidate_event
+            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+              AND state != 'REJECT'
+        )
         SELECT mark_id, event_id, contract_id, ticker, strategy_version,
                candidate_state, mark_time, alert_time, premium_fill_assumption,
                mark_price, current_return, return_1d, return_5d, return_20d,
@@ -3722,6 +3762,7 @@ def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
                time_to_2x, time_to_5x, time_to_10x, dte, spread_pct, iv,
                underlying_price, raw
         FROM candidate_event_mark
+        WHERE event_id IN (SELECT event_id FROM current_events)
         ORDER BY mark_time DESC, ticker, contract_id
         LIMIT 1000
         """,
@@ -3733,12 +3774,19 @@ def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
+        WITH current_events AS (
+            SELECT event_id
+            FROM candidate_event
+            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+              AND state != 'REJECT'
+        )
         SELECT attribution_id, event_id, contract_id, ticker, strategy_version,
                candidate_state, snapshot_time, prior_snapshot_time,
                option_return, underlying_return, iv_change, theta_decay,
                spread_change, stock_move_effect, iv_effect, theta_effect,
                spread_effect, unexplained_effect, label, raw
         FROM candidate_event_attribution
+        WHERE event_id IN (SELECT event_id FROM current_events)
         ORDER BY snapshot_time DESC, ticker, contract_id
         LIMIT 1000
         """,
@@ -4021,16 +4069,24 @@ def etf_premiums(con: Any) -> list[dict[str, Any]]:
     return [decode_fields(row, ("metrics",)) for row in rows]
 
 
-def analyst_estimates(con: Any) -> list[dict[str, Any]]:
+def analyst_estimates(con: Any, symbols: list[str] | set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    normalized_symbols = sorted({str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+    where_clause = ""
+    params: list[Any] = []
+    if normalized_symbols:
+        where_clause = f"WHERE upper(symbol) IN ({', '.join(['?'] * len(normalized_symbols))})"
+        params.extend(normalized_symbols)
     rows = query_rows(
         con,
-        """
+        f"""
         SELECT symbol, as_of, estimates, source
         FROM analyst_estimates
+        {where_clause}
         QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, symbol
         LIMIT 200
         """,
+        params,
     )
     return [decode_fields(row, ("estimates",)) for row in rows]
 

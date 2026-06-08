@@ -34,6 +34,10 @@ def company_facts(cik: str, user_agent: str) -> dict[str, Any]:
     return sec_get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{padded}.json", user_agent)
 
 
+def company_tickers(user_agent: str) -> dict[str, Any]:
+    return sec_get_json("https://www.sec.gov/files/company_tickers.json", user_agent)
+
+
 def archive_accession_path(cik: str, accession_number: str) -> str:
     cik_path = str(int(str(cik).strip().lstrip("0") or "0"))
     accession_path = str(accession_number).replace("-", "")

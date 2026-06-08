@@ -169,7 +169,8 @@ def create_app() -> FastAPI:
     @app.get("/api/tickers/{ticker}")
     def ticker_detail(ticker: str) -> dict[str, Any]:
         config = load_config()
-        panel_data = load_ticker_panel_data(config, ticker)
+        with _CONTEXT_LOCK:
+            panel_data = load_ticker_panel_data(config, ticker)
         return ticker_payload(panel_data, ticker)
 
     @app.get("/api/tickers/{ticker}/decision-snapshot")

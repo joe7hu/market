@@ -115,12 +115,12 @@ agents:
     enabled: true
     command: "market-codex-option-thesis-agent"
     timeout_seconds: 180
-    limit: 20
+    limit: 8
   option_postmortem:
     enabled: true
     command: "market-codex-option-postmortem-agent"
     timeout_seconds: 180
-    limit: 20
+    limit: 4
 
 disclosures:
   # Add normalized public disclosure CSVs here to build scalable trader

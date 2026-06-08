@@ -15,7 +15,6 @@ from investment_panel.core.options_radar import (
     refresh_option_radar_opportunities,
     refresh_options_radar,
 )
-from investment_panel.core.panel import load_panel_data
 
 
 def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> None:
@@ -854,16 +853,21 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
         )
         refresh_options_radar(con, ["TSLA"])
 
-    panel = load_panel_data({"database": {"duckdb_path": str(db_path)}})
-    assert panel["tables"]["option_radar_summary"][0]["scanned_tickers_current"] == 1
-    assert panel["tables"]["option_radar_summary"][0]["opportunity_tickers_current"] == 1
-    assert panel["tables"]["option_snapshot"][0]["ticker"] == "TSLA"
-    assert {row["state"] for row in panel["tables"]["candidate_event"]} == {"FIRE"}
-    assert panel["tables"]["candidate_event"][0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
-    assert panel["tables"]["candidate_event_mark"][0]["candidate_state"] in {"FIRE", "REJECT"}
-    assert "candidate_event_attribution" in panel["tables"]
-    assert panel["tables"]["shadow_trade"][0]["status"] == "open"
-    assert panel["tables"]["radar_state_transition"][0]["state"] in {"FIRE", "REJECT"}
+    from app.data_access import load_panel_scope_data
+
+    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+    tables = panel.tables
+    assert panel.rows("option_radar_summary")[0]["scanned_tickers_current"] == 1
+    assert panel.rows("option_radar_summary")[0]["opportunity_tickers_current"] == 1
+    assert "option_snapshot" not in tables
+    assert "option_features" not in tables
+    assert "stock_features" not in tables
+    assert {row["state"] for row in panel.rows("candidate_event")} == {"FIRE"}
+    assert panel.rows("candidate_event")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
+    assert panel.rows("candidate_event_mark")[0]["candidate_state"] in {"FIRE", "REJECT"}
+    assert "candidate_event_attribution" in tables
+    assert "shadow_trade" not in tables
+    assert "radar_state_transition" not in tables
 
 
 def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:

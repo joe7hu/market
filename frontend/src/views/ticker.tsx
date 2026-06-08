@@ -1,11 +1,11 @@
 import { ExternalLink } from "lucide-react";
 
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
-import { DataTableFrame, EvidenceList, StatusBadge } from "@/components/market/workstation";
+import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import type { JsonValue, PanelData, RowRecord, TickerPayload } from "@/types";
 import { rows } from "@/utils";
-import { displayField, formatPct, fullField, listField, symbolList, textField, toneFromText } from "./rowFormat";
+import { displayField, formatPct, listField, symbolList, textField, toneFromText } from "./rowFormat";
 import { WorkspacePage, type MetricSpec, type OpenTicker } from "./workspacePage";
 
 export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; data: PanelData; onOpenTicker: OpenTicker }) {
@@ -16,12 +16,7 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
   return (
     <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Authoritative fundamentals, source-backed evidence, thesis state, and decision context." metrics={metrics}>
       <FundamentalsPanel ticker={ticker} />
-      {ticker?.decision_brief || ticker?.decision_snapshot ? (
-        <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-2 [&>*]:min-w-0">
-          {ticker.decision_brief && <DossierCard title="Decision Brief" row={ticker.decision_brief} />}
-          {ticker.decision_snapshot && <DossierCard title="Decision Snapshot" row={ticker.decision_snapshot} />}
-        </div>
-      ) : null}
+      {ticker?.decision_brief ? <DecisionPanel brief={ticker.decision_brief} /> : null}
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.7fr)]">
         <TradingViewChart symbol={symbol} ticker={ticker} />
         <AnalystEstimatePanel rows={compactRows(tables.analyst_estimates)} />
@@ -43,6 +38,81 @@ export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: str
         ]}
       />
     </WorkspacePage>
+  );
+}
+
+function DecisionPanel({ brief }: { brief: RowRecord }) {
+  const verdict = objectField(brief, "verdict");
+  const setup = objectField(brief, "setup");
+  const riskPlan = objectField(brief, "risk_plan");
+  const quote = objectField(brief, "canonical_quote");
+  const action = displayField(verdict, ["action"], "Watch");
+  const supports = listField(brief, ["evidence_for"]).slice(0, 4);
+  const concerns = listField(brief, ["evidence_against"]).slice(0, 4);
+  const unknowns = listField(brief, ["unknowns"]).slice(0, 3);
+  const setupRows = [
+    { label: "Entry", value: displayField(setup, ["entry_zone"], "No entry plan loaded") },
+    { label: "Invalidation", value: displayField(riskPlan, ["invalidation"], displayField(setup, ["invalidation_level"], "No invalidation loaded")) },
+    { label: "Target", value: displayField(setup, ["target_range"], "No target loaded") },
+    { label: "Review", value: displayField(setup, ["review_date"], "No review date loaded") },
+  ];
+  return (
+    <DataTableFrame
+      title="Decision"
+      action={<StatusBadge tone={toneFromText(action)}>{action}</StatusBadge>}
+    >
+      <div className="grid gap-0 xl:grid-cols-[minmax(0,0.85fr)_minmax(360px,0.65fr)]">
+        <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
+          <div className="mb-4 grid gap-2 sm:grid-cols-3">
+            <DecisionStat label="Confidence" value={displayField(verdict, ["confidence"], "-")} detail={displayField(verdict, ["freshness"], "freshness not loaded")} />
+            <DecisionStat label="Price" value={moneyMetric(quote, "price")} detail={displayField(quote, ["observed_at"], "quote timestamp missing")} />
+            <DecisionStat label="Timeframe" value={displayField(setup, ["timeframe"], "-")} detail={displayField(setup, ["catalyst"], "no catalyst loaded")} />
+          </div>
+          <p className="mb-3 text-base font-medium leading-7">{displayField(verdict, ["summary"], "No decision summary loaded.")}</p>
+          <p className="text-sm leading-6 text-muted-foreground">{displayField(verdict, ["next_action"], "No next action loaded.")}</p>
+          <div className="mt-4 overflow-x-auto">
+            <SimpleTable
+              rows={setupRows}
+              empty="No decision setup is loaded."
+              columns={[
+                ["label", "Plan"],
+                ["value", "Value"],
+              ]}
+            />
+          </div>
+        </div>
+        <div className="grid gap-4 p-4">
+          <ReasonList title="Why It Could Work" rows={supports} empty="No positive evidence loaded." />
+          <ReasonList title="Why It Is Gated" rows={concerns} empty="No risk evidence loaded." />
+          {unknowns.length ? <ReasonList title="Still Unknown" rows={unknowns} empty="" /> : null}
+        </div>
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function DecisionStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background px-3 py-2">
+      <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+      <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function ReasonList({ title, rows, empty }: { title: string; rows: string[]; empty: string }) {
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
+      {rows.length ? (
+        <ul className="space-y-2 text-sm leading-6">
+          {rows.map((row, index) => <li key={`${title}-${index}`}>{row}</li>)}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      )}
+    </section>
   );
 }
 
@@ -70,21 +140,6 @@ function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPa
         />
       </div>
     </DataTableFrame>
-  );
-}
-
-function DossierCard({ title, row }: { title: string; row: RowRecord }) {
-  const evidence = listField(row, ["evidence", "evidence_links", "sources"]);
-  const status = displayField(row, ["status", "decision", "action_grade", "grade"], "Loaded");
-  return (
-    <div className="min-w-0 rounded-lg border border-border bg-card p-4">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <h2 className="text-base font-semibold">{title}</h2>
-        <StatusBadge tone={toneFromText(status)}>{status}</StatusBadge>
-      </div>
-      <p className="break-words text-sm leading-6">{dossierSummary(row)}</p>
-      <div className="mt-3 text-sm text-muted-foreground"><EvidenceList items={evidence.slice(0, 4)} /></div>
-    </div>
   );
 }
 
@@ -378,45 +433,6 @@ function SimpleTable({ rows, columns, empty }: { rows: Array<Record<string, stri
       </tbody>
     </table>
   );
-}
-
-function dossierSummary(row: RowRecord): string {
-  const verdict = objectField(row, "verdict");
-  if (Object.keys(verdict).length) {
-    const parts = [
-      textField(verdict, ["summary"]),
-      textField(verdict, ["action"]),
-      textField(verdict, ["next_action"]),
-    ].filter(Boolean);
-    return truncateText(parts.join(" | ") || "Decision brief loaded.", 280);
-  }
-
-  const raw = fullField(row, ["summary", "thesis", "reason", "decision_basis"], "No summary");
-  const parsed = parseJsonObject(raw);
-  if (parsed) {
-    const parts = [
-      textField(parsed, ["summary", "decision_basis", "reason"]),
-      textField(parsed, ["action_grade", "decision", "status"]),
-      displayField(parsed, ["score", "decision_score"]),
-      textField(parsed, ["next_action", "nextAction"]),
-    ].filter((part) => part && part !== "-");
-    return truncateText(parts.join(" | ") || JSON.stringify(parsed as Record<string, unknown>), 280);
-  }
-  return truncateText(raw, 280);
-}
-
-function parseJsonObject(value: string): RowRecord | null {
-  if (!value.trim().startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as RowRecord : null;
-  } catch {
-    return null;
-  }
-}
-
-function truncateText(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
 }
 
 function compactRows(sectionRows: RowRecord[] | undefined): RowRecord[] {

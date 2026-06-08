@@ -105,10 +105,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     <WorkspacePage
       eyebrow="Options Radar"
       title="10x Options Radar"
-      subtitle="Daily candidate state, shadow outcomes, thesis validation, and strategy gate results."
+      subtitle="Layered signal brief for extreme options setups: strength, blockers, learning impact, and thesis validation."
       actions={
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge tone={latestSnapshot ? "good" : "muted"}>{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
+          <StatusBadge tone="info">Hourly deterministic</StatusBadge>
           <StatusBadge tone="info">{displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy")}</StatusBadge>
         </div>
       }
@@ -123,13 +124,21 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         researchCount={researchCount}
         repairCount={repairCount}
         groupedOpportunityCount={groupedOpportunityCount}
+        />
+      <SignalBriefPanel
+        rows={currentOpportunityRows}
+        fireCount={fireCount}
+        setupCount={setupCount}
+        latestSnapshot={latestSnapshot}
+        latestCandidateTime={latestCandidateTime}
+        optionThesisAgent={optionThesisAgent}
+        onOpenTicker={onOpenTicker}
       />
-      <StrategyExplainer strategy={latestStrategy} />
       <Tabs defaultValue="radar" className="min-w-0">
         <TabsList className="h-auto max-w-full flex-wrap justify-start">
-          <TabsTrigger value="radar">Opportunities</TabsTrigger>
-          <TabsTrigger value="learning">Learning</TabsTrigger>
-          <TabsTrigger value="theses">Theses</TabsTrigger>
+          <TabsTrigger value="radar">Strong Signals</TabsTrigger>
+          <TabsTrigger value="learning">Learning Impact</TabsTrigger>
+          <TabsTrigger value="theses">Thesis Checks</TabsTrigger>
         </TabsList>
 
         <TabsContent value="radar" className="space-y-4">
@@ -154,6 +163,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             postmortemRequests={postmortemRequests}
             postmortems={postmortems}
           />
+          <StrategyExplainer strategy={latestStrategy} />
           <CandidateEventsTable
             rows={opportunityCandidates}
             thesisRequestByEvent={thesisRequestByEvent}
@@ -209,14 +219,14 @@ function RadarSummaryStrip({
   groupedOpportunityCount: number;
 }) {
   const items: Array<[string, string, Tone]> = [
-    ["Grouped Setups", groupedOpportunityCount.toLocaleString(), groupedOpportunityCount ? "info" : "muted"],
-    ["Exceptional Setups", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
-    ["Data Bugs", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
-    ["Research Setups", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
-    ["Candidate Contracts", `${opportunityCount.toLocaleString()} rows / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
-    ["Fire", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
-    ["Setup", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
-    ["Scanned", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
+    ["Grouped Opportunities", groupedOpportunityCount.toLocaleString(), groupedOpportunityCount ? "info" : "muted"],
+    ["Trade-Ready", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
+    ["Research Opportunities", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
+    ["Data Blocked", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
+    ["Candidate Contracts", `${opportunityCount.toLocaleString()} / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
+    ["Fire Contracts", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
+    ["Setup Contracts", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
+    ["Coverage", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
   ];
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
@@ -228,6 +238,114 @@ function RadarSummaryStrip({
       ))}
     </div>
   );
+}
+
+function SignalBriefPanel({
+  rows,
+  fireCount,
+  setupCount,
+  latestSnapshot,
+  latestCandidateTime,
+  optionThesisAgent,
+  onOpenTicker,
+}: {
+  rows: RowRecord[];
+  fireCount: number;
+  setupCount: number;
+  latestSnapshot: string;
+  latestCandidateTime: string;
+  optionThesisAgent: OptionThesisAgentRuntime;
+  onOpenTicker: OpenTicker;
+}) {
+  const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
+  const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
+  const repairRows = rows.filter(isServiceRepair);
+  const exceptionalRows = rows.filter((row) => tierOf(row) === "Exceptional");
+  const researchRows = rows.filter((row) => tierOf(row) === "Research");
+  const topBlockers = commonBlockers(rows).slice(0, 3);
+  const dataFailures = commonDataContractFailures(repairRows).slice(0, 3);
+  const decisionTone: Tone = exceptionalRows.length ? "good" : repairRows.length ? "bad" : researchRows.length ? "info" : "muted";
+  const decisionLabel = exceptionalRows.length
+    ? `${exceptionalRows.length} trade-ready opportunit${exceptionalRows.length === 1 ? "y" : "ies"}`
+    : repairRows.length
+      ? `${repairRows.length} data contract issue${repairRows.length === 1 ? "" : "s"}`
+      : researchRows.length
+        ? `${researchRows.length} research opportunit${researchRows.length === 1 ? "y" : "ies"}`
+        : "No grouped opportunities";
+  const fireGap = fireCount > 0 && exceptionalRows.length === 0;
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
+            {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
+            <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
+            <StatusBadge tone="muted">{latestSnapshot ? `Option data ${formatDate(latestSnapshot)}` : "No option data"}</StatusBadge>
+          </div>
+          {strongest ? (
+            <div className="mt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <TickerButton ticker={textField(strongest, ["ticker"])} onOpenTicker={onOpenTicker} />
+                <StatusBadge tone={tierTone(tierOf(strongest))}>{tierOf(strongest)}</StatusBadge>
+                <StatusBadge tone={stateTone(textField(strongest, ["primary_state"]).toUpperCase())}>{titleLabel(displayField(strongest, ["primary_state"], "watch"))}</StatusBadge>
+              </div>
+              <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <MetricBox label="Conviction" value={formatScore(numberField(strongest, ["conviction_score"], Number.NaN))} />
+                <MetricBox label="Required Move" value={formatRatio(numberField(strongest, ["required_move_pct"], Number.NaN))} />
+                <MetricBox label="Premium" value={moneyField(strongest, ["premium_mid"])} />
+                <MetricBox label="Buy Under" value={moneyField(strongest, ["buy_under"])} />
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
+          )}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
+          <BriefCallout
+            label="Decision Impact"
+            tone={decisionTone}
+            value={strongest ? impactSummary(strongest, fireCount, setupCount) : "Wait for the next radar run."}
+          />
+          <BriefCallout
+            label={repairRows.length ? "Data Blocker" : "Main Blocker"}
+            tone={repairRows.length ? "bad" : topBlockers.length ? "warn" : "good"}
+            value={repairRows.length ? summarizeReasons(dataFailures, "Data contract is clean.") : summarizeReasons(topBlockers, "Strict gates are clean.")}
+          />
+          <BriefCallout
+            label="Agent Cadence"
+            tone={optionThesisAgent.active ? "info" : "muted"}
+            value={`Runs once premarket; batch limit ${optionThesisAgent.limit}. Hourly refresh stays deterministic.`}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function BriefCallout({ label, value, tone }: { label: string; value: string; tone: Tone }) {
+  return (
+    <div className="rounded-md border border-border/70 bg-background px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 text-sm leading-5", toneText(tone))}>{value}</div>
+    </div>
+  );
+}
+
+function summarizeReasons(reasons: Array<[string, number]>, empty: string): string {
+  if (!reasons.length) return empty;
+  return reasons.map(([reason, count]) => `${reasonLabel(reason)} (${count})`).join("; ");
+}
+
+function impactSummary(row: RowRecord, fireCount = 0, setupCount = 0): string {
+  if (isServiceRepair(row)) return "Do not interpret as a trade setup until the data contract is fixed.";
+  if (tierOf(row) === "Exceptional") return "Candidate is allowed into trade review because data, asymmetry, entry, and evidence gates are aligned.";
+  if (tierOf(row) === "Research") {
+    const contractMix = fireCount ? `${fireCount.toLocaleString()} FIRE contract${fireCount === 1 ? "" : "s"}` : `${setupCount.toLocaleString()} setup contract${setupCount === 1 ? "" : "s"}`;
+    return `${contractMix} exist, but the grouped ticker is still Research because strict evidence, thesis, regime, or blocker gates are not all clean.`;
+  }
+  return "Watch only; signal is not yet strong enough for research priority.";
 }
 
 function ExtremeOpportunityDesk({
@@ -437,10 +555,10 @@ function OpportunityMobileCard({
 }
 
 function opportunityDeskTitle(repairCount: number, exceptionalCount: number, researchCount: number): string {
-  if (repairCount) return "Service Bugs";
-  if (exceptionalCount) return "Exceptional Setups";
-  if (researchCount) return "Current Research Setups";
-  return "No Current Setups";
+  if (repairCount) return "Data-Blocked Opportunities";
+  if (exceptionalCount) return "Trade-Ready Opportunities";
+  if (researchCount) return "Research Opportunities";
+  return "No Grouped Opportunities";
 }
 
 function compareGroupedOpportunities(left: RowRecord, right: RowRecord): number {
@@ -590,7 +708,7 @@ type CandidateFocus = "top25" | "top-per-ticker" | "all";
 type ThesisFilter = "all" | "needs" | "requested" | "attached";
 type QualityFilter = "all" | "ok" | "caution" | "bad";
 
-const CANDIDATE_PAGE_SIZE = 50;
+const CANDIDATE_PAGE_SIZE = 25;
 
 function CandidateEventsTable({
   rows,
@@ -651,12 +769,11 @@ function CandidateEventsTable({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title="Ranked Candidate Events" count={focusedRows.length} />}
+      title={<SectionTitle title="Signal Evidence" count={focusedRows.length} />}
       action={
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span>{tickerCount.toLocaleString()} tickers</span>
           <span>{filteredRows.length.toLocaleString()} matched</span>
-          <span>{rows.length.toLocaleString()} loaded</span>
         </div>
       }
     >
@@ -664,14 +781,13 @@ function CandidateEventsTable({
         <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_155px_150px_160px_160px_190px_auto]">
           <div className="relative min-w-0">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker, contract, or reason" aria-label="Filter candidate events" />
+            <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker, contract, or thesis blocker" aria-label="Filter signal evidence" />
           </div>
           <Select value={focus} onValueChange={(value) => setFocus(value as CandidateFocus)}>
             <SelectTrigger aria-label="Candidate focus"><SelectValue placeholder="Focus" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="top25">Top 25</SelectItem>
+              <SelectItem value="top25">Top signals</SelectItem>
               <SelectItem value="top-per-ticker">Top per ticker</SelectItem>
-              <SelectItem value="all">All contracts</SelectItem>
             </SelectContent>
           </Select>
           <Select value={stateFilter} onValueChange={(value) => setStateFilter(value as CandidateStateFilter)}>
@@ -687,7 +803,7 @@ function CandidateEventsTable({
             <SelectTrigger aria-label="Thesis filter"><SelectValue placeholder="Thesis" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Any thesis</SelectItem>
-              <SelectItem value="needs">Needs thesis</SelectItem>
+              <SelectItem value="needs">Needs evidence</SelectItem>
               <SelectItem value="requested">Thesis requested</SelectItem>
               <SelectItem value="attached">Thesis attached</SelectItem>
             </SelectContent>
@@ -725,7 +841,7 @@ function CandidateEventsTable({
           </Button>
         </div>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          Default view shows the strongest ranked contracts, not every contract row. Use all contracts only when auditing the full scan.
+          This view shows current ranked contracts that affect signal strength, outcome learning, or thesis validation.
         </p>
       </div>
       <table className="w-full min-w-[1240px] text-sm">
@@ -739,8 +855,8 @@ function CandidateEventsTable({
             <Head className="text-right">Stock Move</Head>
             <Head className="text-right">Score</Head>
             <Head>Thesis</Head>
-            <Head>Outcome</Head>
-            <Head>Why / Blockers</Head>
+            <Head>Impact So Far</Head>
+            <Head>Decision Drivers</Head>
           </tr>
         </thead>
         <tbody>
@@ -1016,48 +1132,79 @@ function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
     return <EmptyState title="No cohort results" detail="No deterministic setup cohorts have enough shadow outcomes yet." icon={Activity} />;
   }
 
+  const matureRows = rows.filter(cohortHasMatureEvidence);
+  const collectingRows = rows.filter((row) => !cohortHasMatureEvidence(row));
+  const topCollectingRows = collectingRows
+    .slice()
+    .sort((left, right) => numberField(right, ["candidate_count"], 0) - numberField(left, ["candidate_count"], 0))
+    .slice(0, 6);
+
   return (
-    <DataTableFrame title={<SectionTitle title="Cohort Learning" count={rows.length} />}>
-      <table className="w-full min-w-[1020px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Cohort</Head>
-            <Head className="text-right">Candidates</Head>
-            <Head>Readiness</Head>
-            <Head className="text-right">2x</Head>
-            <Head className="text-right">5x</Head>
-            <Head className="text-right">10x</Head>
-            <Head className="text-right">Median Max</Head>
-            <Head className="text-right">Median DD</Head>
-            <Head>What It Means</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const key = textField(row, ["cohort_id"], `${textField(row, ["cohort_type"])}-${textField(row, ["cohort_value"])}`);
-            const mature = cohortHasMatureEvidence(row);
-            return (
-              <tr key={key} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell className="max-w-[260px]">
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{titleLabel(displayField(row, ["cohort_value"]))}</div>
-                    <div className="truncate text-xs text-muted-foreground">{displayField(row, ["cohort_type"])}</div>
-                  </div>
-                </Cell>
-                <Cell className="text-right tabular-nums">{formatNumber(numberField(row, ["candidate_count"], Number.NaN), 0)}</Cell>
-                <Cell><StatusBadge tone={mature ? "good" : "warn"}>{mature ? "Readable" : "Collecting"}</StatusBadge></Cell>
-                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN)) : "-"}</Cell>
-                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN)) : "-"}</Cell>
-                <Cell className="text-right tabular-nums">{mature ? formatRatio(numberField(row, ["hit_rate_10x"], Number.NaN)) : "-"}</Cell>
-                <Cell className="text-right tabular-nums">{mature ? formatMultiple(numberField(row, ["median_max_return"], Number.NaN)) : "-"}</Cell>
-                <Cell className="text-right tabular-nums">{mature ? formatSignedRatio(numberField(row, ["median_max_drawdown"], Number.NaN)) : "-"}</Cell>
-                <Cell className="max-w-[360px]"><Truncated>{mature ? cohortDefinition(row) : "Outcome window is still pending; do not treat zero hit rates as failure."}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Cohort Learning</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Cohorts are grouped by setup, IV, liquidity, move burden, and market regime. Hit-rate and drawdown numbers are shown only after the outcome window is mature.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge tone={matureRows.length ? "good" : "warn"}>{matureRows.length ? `${matureRows.length} readable` : "Collecting outcomes"}</StatusBadge>
+          <StatusBadge tone="muted">{rows.length.toLocaleString()} cohorts</StatusBadge>
+        </div>
+      </div>
+
+      {!matureRows.length ? (
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-6 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
+          No cohort has a mature post-entry window yet. Current rows are useful for coverage only; zero hit rates here mean "not observed long enough," not "strategy failed."
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          {matureRows.slice(0, 6).map((row) => (
+            <CohortInsightCard key={cohortKey(row)} row={row} mature />
+          ))}
+        </div>
+      )}
+
+      {topCollectingRows.length ? (
+        <div className="mt-4">
+          <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Largest Collecting Cohorts</div>
+          <div className="grid gap-2 lg:grid-cols-3">
+            {topCollectingRows.map((row) => (
+              <CohortInsightCard key={cohortKey(row)} row={row} mature={false} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function CohortInsightCard({ row, mature }: { row: RowRecord; mature: boolean }) {
+  const stats = cohortObservationStats(row);
+  return (
+    <article className="rounded-md border border-border/70 bg-background p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold">{titleLabel(displayField(row, ["cohort_value"]))}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">{titleLabel(displayField(row, ["cohort_type"]))}</div>
+        </div>
+        <StatusBadge tone={mature ? "good" : "warn"}>{mature ? "Readable" : "Collecting"}</StatusBadge>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <MetricPill label="Signals" value={formatNumber(numberField(row, ["candidate_count"], Number.NaN), 0)} />
+        <MetricPill label="Observed" value={formatObservedWindow(stats.maxObservationDays)} />
+        <MetricPill label="Sample" value={stats.sampleCount ? stats.sampleCount.toLocaleString() : "-"} />
+      </div>
+      {mature ? (
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <MetricPill label="2x" value={formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN))} />
+          <MetricPill label="5x" value={formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN))} />
+          <MetricPill label="Max" value={formatMultiple(numberField(row, ["median_max_return"], Number.NaN))} />
+        </div>
+      ) : null}
+      <p className="mt-3 text-sm leading-6 text-muted-foreground">{mature ? cohortDefinition(row) : "Waiting for at least one trading-day outcome before judging hit rate or drawdown."}</p>
+    </article>
   );
 }
 
@@ -1067,17 +1214,16 @@ function PostmortemRequestsTable({ rows, onOpenTicker }: { rows: RowRecord[]; on
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title="Agent Postmortem Queue" count={rows.length} />}>
-      <table className="w-full min-w-[1040px] text-sm">
+    <DataTableFrame title={<SectionTitle title="Premarket Review Queue" count={rows.length} />}>
+      <table className="w-full min-w-[880px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>Status</Head>
             <Head>Outcome</Head>
             <Head className="text-right">Priority</Head>
-            <Head>Strategy</Head>
             <Head>Created</Head>
-            <Head>Prompt</Head>
+            <Head>Decision Impact</Head>
           </tr>
         </thead>
         <tbody>
@@ -1090,9 +1236,8 @@ function PostmortemRequestsTable({ rows, onOpenTicker }: { rows: RowRecord[]; on
                 <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
                 <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["source_type"])}</Truncated></Cell>
                 <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["priority_score"], Number.NaN))}</Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["strategy_version"])}</Truncated></Cell>
                 <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</Cell>
-                <Cell className="max-w-[380px]"><Truncated>{displayField(row, ["prompt"])}</Truncated></Cell>
+                <Cell className="max-w-[360px]"><Truncated>{postmortemImpact(row)}</Truncated></Cell>
               </tr>
             );
           })}
@@ -1102,43 +1247,74 @@ function PostmortemRequestsTable({ rows, onOpenTicker }: { rows: RowRecord[]; on
   );
 }
 
+function postmortemImpact(row: RowRecord): string {
+  const sourceType = textField(row, ["source_type"]);
+  if (sourceType.includes("winner")) return "Explain what made the move work before changing strategy gates.";
+  if (sourceType.includes("loser")) return "Explain whether the setup failed, aged out, or exposed a bad gate.";
+  return "Summarize only if it changes ranking, risk, or strategy rules.";
+}
+
 function PostmortemsTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
   if (!rows.length) {
     return <EmptyState title="No postmortems" detail="No structured agent postmortems are stored." icon={BrainCircuit} />;
   }
 
   return (
-    <DataTableFrame title={<SectionTitle title="Structured Postmortems" count={rows.length} />}>
-      <table className="w-full min-w-[1180px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Ticker</Head>
-            <Head>Outcome</Head>
-            <Head>Failure</Head>
-            <Head className="text-right">Confidence</Head>
-            <Head>Rule Change</Head>
-            <Head>Expected Effect</Head>
-            <Head>Risk</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const ticker = textField(row, ["ticker"]);
-            return (
-              <tr key={textField(row, ["postmortem_id"], `${ticker}-${textField(row, ["source_id"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
-                <Cell className="max-w-[220px]"><Truncated>{displayField(row, ["outcome_type"])}</Truncated></Cell>
-                <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["failure_type"])}</Truncated></Cell>
-                <Cell className="text-right tabular-nums">{formatScore(numberField(row, ["confidence"], Number.NaN))}</Cell>
-                <Cell className="max-w-[320px]"><Truncated>{displayField(row, ["proposed_rule_change"])}</Truncated></Cell>
-                <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["expected_effect"])}</Truncated></Cell>
-                <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["risk"])}</Truncated></Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Structured Postmortems</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Completed reviews are summarized as decision takeaways: why the setup failed, what rule would change, and what tradeoff that introduces.
+          </p>
+        </div>
+        <StatusBadge tone="good">{rows.length.toLocaleString()} completed</StatusBadge>
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        {rows.slice(0, 8).map((row) => (
+          <PostmortemInsightCard key={textField(row, ["postmortem_id"], `${textField(row, ["ticker"])}-${textField(row, ["source_id"])}`)} row={row} onOpenTicker={onOpenTicker} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PostmortemInsightCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: OpenTicker }) {
+  const ticker = textField(row, ["ticker"]);
+  const evidence = jsonArrayField(row, "evidence").filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const failure = displayField(row, ["failure_type"], "Unclassified failure");
+  const confidence = numberField(row, ["confidence"], Number.NaN);
+  const ruleChange = displayField(row, ["proposed_rule_change"]);
+  const expectedEffect = displayField(row, ["expected_effect"]);
+  const risk = displayField(row, ["risk"]);
+  return (
+    <article className="rounded-md border border-border/70 bg-background p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            {ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : <span className="font-semibold">Unknown</span>}
+            <StatusBadge tone="bad">{titleLabel(displayField(row, ["outcome_type"], "Outcome"))}</StatusBadge>
+            <StatusBadge tone={Number.isFinite(confidence) && confidence >= 0.8 ? "good" : "warn"}>{Number.isFinite(confidence) ? `${Math.round(confidence * 100)}% confidence` : "Confidence pending"}</StatusBadge>
+          </div>
+          <h3 className="mt-2 text-sm font-semibold leading-6">{titleLabel(failure)}</h3>
+        </div>
+        <div className="text-xs text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</div>
+      </div>
+
+      {evidence.length ? (
+        <ul className="mt-3 space-y-1 text-sm leading-6 text-muted-foreground">
+          {evidence.slice(0, 2).map((item) => (
+            <li key={item}>- {item}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="mt-3 space-y-2 text-sm leading-6">
+        {ruleChange ? <InsightLine label="Rule change" value={ruleChange} /> : null}
+        {expectedEffect ? <InsightLine label="Decision impact" value={expectedEffect} /> : null}
+        {risk ? <InsightLine label="Tradeoff" value={risk} /> : null}
+      </div>
+    </article>
   );
 }
 
@@ -1162,90 +1338,248 @@ function StrategyProposalsTable({
   }
 
   return (
-    <DataTableFrame
-      title={
-        <div className="flex flex-wrap items-center gap-2">
-          <SectionTitle title="Strategy Mutation Gates" count={rows.length} />
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Strategy Mutation Gates</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Agent proposals are advisory until deterministic backtest, forward shadow test, and human approval all clear. Failed gates are shown as blockers, not action items.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge tone="muted">{rows.length.toLocaleString()} proposals</StatusBadge>
           {promotionError ? <StatusBadge tone="bad">{promotionError}</StatusBadge> : null}
         </div>
-      }
-    >
-      <table className="w-full min-w-[1260px] text-sm">
-        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-          <tr>
-            <Head>Proposal</Head>
-            <Head>Status</Head>
-            <Head>Backtest</Head>
-            <Head>Forward</Head>
-            <Head>Human</Head>
-            <Head>Change</Head>
-            <Head>Rationale</Head>
-            <Head>Risk</Head>
-            <Head className="text-right">Action</Head>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 80).map((row) => {
-            const proposalId = textField(row, ["proposal_id"]);
-            const backtest = backtestByProposal.get(proposalId);
-            const forward = forwardByProposal.get(proposalId);
-            const status = textField(row, ["status"], "pending");
-            const human = textField(row, ["human_approval_status"], "pending");
-            const backtestVerdict = textField(backtest, ["verdict"]).toLowerCase();
-            const forwardVerdict = textField(forward, ["verdict", "status"]).toLowerCase();
-            const isPromoting = promotingProposal === proposalId;
-            const approvedBy = textField(row, ["approved_by"]);
-            const approvedAt = textField(row, ["approved_at"]);
-            const canPromote =
-              Boolean(proposalId) &&
-              status === "ready_for_human_review" &&
-              human !== "approved" &&
-              backtestVerdict === "pass" &&
-              forwardVerdict === "pass";
-            return (
-              <tr key={proposalId || textField(row, ["proposed_strategy_version"])} className="border-b border-border align-top transition-colors hover:bg-accent/40">
-                <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["proposed_strategy_version"])}</Truncated></Cell>
-                <Cell><StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge></Cell>
-                <Cell><VerdictBadge row={backtest} keys={["verdict"]} /></Cell>
-                <Cell><VerdictBadge row={forward} keys={["verdict", "status"]} /></Cell>
-                <Cell>
-                  <div className="min-w-0">
-                    <StatusBadge tone={human === "approved" ? "good" : human === "rejected" ? "bad" : "warn"}>{titleLabel(human)}</StatusBadge>
-                    {approvedBy || approvedAt ? (
-                      <div className="mt-1 max-w-[180px] truncate text-xs text-muted-foreground">
-                        {approvedBy ? `by ${approvedBy}` : "approved"}{approvedAt ? ` ${formatDate(approvedAt)}` : ""}
-                      </div>
-                    ) : null}
-                  </div>
-                </Cell>
-                <Cell className="max-w-[260px]"><Truncated>{fullField(row, ["proposed_parameter_changes"])}</Truncated></Cell>
-                <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["rationale"])}</Truncated></Cell>
-                <Cell className="max-w-[300px]"><Truncated>{displayField(row, ["risk"])}</Truncated></Cell>
-                <Cell className="text-right">
-                  {human === "approved" ? (
-                    <StatusBadge tone="good">Promoted</StatusBadge>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-9 min-h-9"
-                      disabled={!canPromote || isPromoting}
-                      title={canPromote ? "Promote strategy" : "Promotion requires passing gates"}
-                      onClick={() => void onPromote(proposalId)}
-                    >
-                      {isPromoting ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
-                      <span>Promote</span>
-                    </Button>
-                  )}
-                </Cell>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </DataTableFrame>
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        {rows.slice(0, 8).map((row) => {
+          const proposalId = textField(row, ["proposal_id"]);
+          return (
+            <StrategyProposalCard
+              key={proposalId || textField(row, ["proposed_strategy_version"])}
+              row={row}
+              backtest={backtestByProposal.get(proposalId)}
+              forward={forwardByProposal.get(proposalId)}
+              isPromoting={promotingProposal === proposalId}
+              onPromote={onPromote}
+            />
+          );
+        })}
+      </div>
+    </section>
   );
+}
+
+function StrategyProposalCard({
+  row,
+  backtest,
+  forward,
+  isPromoting,
+  onPromote,
+}: {
+  row: RowRecord;
+  backtest: RowRecord | undefined;
+  forward: RowRecord | undefined;
+  isPromoting: boolean;
+  onPromote: (proposalId: string) => Promise<void> | void;
+}) {
+  const proposalId = textField(row, ["proposal_id"]);
+  const status = textField(row, ["status"], "pending");
+  const human = textField(row, ["human_approval_status"], "pending");
+  const backtestVerdict = textField(backtest, ["verdict"]).toLowerCase();
+  const forwardVerdict = textField(forward, ["verdict", "status"]).toLowerCase();
+  const approvedBy = textField(row, ["approved_by"]);
+  const approvedAt = textField(row, ["approved_at"]);
+  const canPromote =
+    Boolean(proposalId) &&
+    status === "ready_for_human_review" &&
+    human !== "approved" &&
+    backtestVerdict === "pass" &&
+    forwardVerdict === "pass";
+  const gate = proposalGateSummary(row, backtest, forward);
+  const changes = proposalChangeItems(row);
+  const note = proposalChangeNote(row);
+
+  return (
+    <article className="rounded-md border border-border/70 bg-background p-3">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge tone={gate.tone}>{gate.label}</StatusBadge>
+            <StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge>
+            <StatusBadge tone={human === "approved" ? "good" : human === "rejected" ? "bad" : "warn"}>{titleLabel(human)}</StatusBadge>
+          </div>
+          <h3 className="mt-2 text-sm font-semibold leading-6">{compactStrategyVersion(displayField(row, ["proposed_strategy_version"]))}</h3>
+          {approvedBy || approvedAt ? (
+            <div className="mt-1 text-xs text-muted-foreground">{approvedBy ? `approved by ${approvedBy}` : "approved"}{approvedAt ? ` ${formatDate(approvedAt)}` : ""}</div>
+          ) : null}
+        </div>
+        {human === "approved" ? (
+          <StatusBadge tone="good">Promoted</StatusBadge>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 min-h-9 w-fit"
+            disabled={!canPromote || isPromoting}
+            title={canPromote ? "Promote strategy" : gate.detail}
+            onClick={() => void onPromote(proposalId)}
+          >
+            {isPromoting ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+            <span>Promote</span>
+          </Button>
+        )}
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-3">
+        <GatePill label="Backtest" row={backtest} keys={["verdict"]} detail={backtestDetail(backtest)} />
+        <GatePill label="Forward" row={forward} keys={["verdict", "status"]} detail={forwardDetail(forward)} />
+        <div className="rounded-md bg-muted px-2 py-2">
+          <div className="text-[10px] font-semibold uppercase text-muted-foreground">Gate Meaning</div>
+          <div className={cn("mt-1 text-xs font-semibold", toneText(gate.tone))}>{gate.detail}</div>
+        </div>
+      </div>
+
+      {note ? <InsightLine className="mt-3" label="Agent hypothesis" value={note} /> : null}
+      {changes.length ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {changes.slice(0, 6).map((change) => (
+            <span key={change} className="rounded-md border border-border/70 bg-card px-2 py-1 text-xs text-muted-foreground">{change}</span>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3 space-y-2 text-sm leading-6">
+        <InsightLine label="Why proposed" value={displayField(row, ["rationale"])} />
+        <InsightLine label="Risk" value={displayField(row, ["risk"])} />
+      </div>
+    </article>
+  );
+}
+
+function GatePill({ label, row, keys, detail }: { label: string; row: RowRecord | undefined; keys: string[]; detail: string }) {
+  const verdict = row ? textField(row, keys, "pending") : "pending";
+  return (
+    <div className="rounded-md bg-muted px-2 py-2">
+      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 text-sm font-semibold", toneText(verdictTone(verdict)))}>{titleLabel(verdict)}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function InsightLine({ label, value, className }: { label: string; value: string; className?: string }) {
+  if (!value) return null;
+  return (
+    <div className={cn("text-sm leading-6", className)}>
+      <span className="font-semibold text-foreground">{label}: </span>
+      <span className="text-muted-foreground">{value}</span>
+    </div>
+  );
+}
+
+function cohortKey(row: RowRecord): string {
+  return textField(row, ["cohort_id"], `${textField(row, ["cohort_type"])}-${textField(row, ["cohort_value"])}`);
+}
+
+function cohortObservationStats(row: RowRecord): { sampleCount: number; maxObservationDays: number; matureCount: number } {
+  const raw = recordField(row, "raw");
+  const outcomes = Array.isArray(raw?.sample_outcomes) ? raw.sample_outcomes : [];
+  let maxObservationDays = Number.NaN;
+  for (const outcome of outcomes) {
+    if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) continue;
+    const record = outcome as Record<string, JsonValue>;
+    const days = typeof record.observation_days === "number" ? record.observation_days : Number.NaN;
+    const hours = typeof record.observation_hours === "number" ? record.observation_hours : Number.NaN;
+    const normalizedDays = Number.isFinite(days) ? days : Number.isFinite(hours) ? hours / 24 : Number.NaN;
+    if (Number.isFinite(normalizedDays) && (!Number.isFinite(maxObservationDays) || normalizedDays > maxObservationDays)) {
+      maxObservationDays = normalizedDays;
+    }
+  }
+  const maturity = jsonRecord(raw?.maturity);
+  return {
+    sampleCount: outcomes.length,
+    maxObservationDays,
+    matureCount: numberFromRecord(maturity, "mature_count"),
+  };
+}
+
+function formatObservedWindow(days: number): string {
+  if (!Number.isFinite(days)) return "-";
+  if (days <= 0) return "<1d";
+  if (days < 1) return `${Math.max(1, Math.round(days * 24))}h`;
+  return `${days.toFixed(days >= 10 ? 0 : 1)}d`;
+}
+
+function proposalGateSummary(row: RowRecord, backtest: RowRecord | undefined, forward: RowRecord | undefined): { label: string; detail: string; tone: Tone } {
+  const human = textField(row, ["human_approval_status"], "pending").toLowerCase();
+  if (human === "approved") return { label: "Approved", detail: "Human approval is recorded.", tone: "good" };
+  const backtestVerdict = textField(backtest, ["verdict"]).toLowerCase();
+  const forwardVerdict = textField(forward, ["verdict", "status"]).toLowerCase();
+  if (!backtest) return { label: "Waiting backtest", detail: "No deterministic backtest result yet.", tone: "warn" };
+  if (backtestVerdict === "fail") return { label: "Blocked", detail: "Backtest failed; do not promote.", tone: "bad" };
+  if (backtestVerdict !== "pass") return { label: "Backtest pending", detail: "Needs a passing deterministic backtest.", tone: "warn" };
+  if (!forward) return { label: "Waiting forward test", detail: "No forward shadow test result yet.", tone: "warn" };
+  if (forwardVerdict === "pass") return { label: "Human review", detail: "Deterministic gates passed; needs approval.", tone: "good" };
+  if (forwardVerdict.includes("collecting") || forwardVerdict === "active") return { label: "Collecting", detail: forwardDetail(forward), tone: "warn" };
+  if (forwardVerdict === "fail") return { label: "Blocked", detail: "Forward shadow test failed.", tone: "bad" };
+  return { label: "Pending", detail: "Gate state is still unresolved.", tone: "warn" };
+}
+
+function proposalChangeItems(row: RowRecord): string[] {
+  const changes = recordField(row, "proposed_parameter_changes");
+  if (!changes) return [];
+  return Object.entries(changes)
+    .filter(([key, value]) => !["candidate_note", "filter_reason", "setup_type"].includes(key) && valueIsPresent(value))
+    .map(([key, value]) => `${titleLabel(key)}: ${formatConfigValue(value)}`);
+}
+
+function proposalChangeNote(row: RowRecord): string {
+  const changes = recordField(row, "proposed_parameter_changes");
+  return stringFromRecord(changes, "candidate_note") || stringFromRecord(changes, "filter_reason") || stringFromRecord(changes, "setup_type");
+}
+
+function compactStrategyVersion(value: string): string {
+  if (!value) return "Proposed strategy change";
+  return titleLabel(value.replace(/^leap_10x_reversal_v1_?/, "").replace(/_agent_proposed_v\d+$/, "") || value);
+}
+
+function backtestDetail(row: RowRecord | undefined): string {
+  if (!row) return "Waiting for deterministic replay.";
+  const baseline = numberField(row, ["baseline_candidate_count"], Number.NaN);
+  const proposed = numberField(row, ["proposed_candidate_count"], Number.NaN);
+  const verdict = textField(row, ["verdict"]).toLowerCase();
+  const countDetail = Number.isFinite(baseline) && Number.isFinite(proposed) ? `${formatNumber(baseline, 0)} -> ${formatNumber(proposed, 0)} candidates` : "Candidate impact unavailable";
+  if (verdict === "fail") return `${countDetail}; no proven improvement.`;
+  if (verdict === "pass") return `${countDetail}; passed replay.`;
+  return countDetail;
+}
+
+function forwardDetail(row: RowRecord | undefined): string {
+  if (!row) return "Waiting for shadow comparison.";
+  const days = numberField(row, ["days_observed"], Number.NaN);
+  const raw = recordField(row, "raw");
+  const minimumDays = numberFromRecord(raw, "min_forward_test_days");
+  if (Number.isFinite(days) && Number.isFinite(minimumDays)) return `${formatNumber(days, 0)}/${formatNumber(minimumDays, 0)} days observed`;
+  if (Number.isFinite(days)) return `${formatNumber(days, 0)} days observed`;
+  return "Observation window pending.";
+}
+
+function valueIsPresent(value: JsonValue | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function formatConfigValue(value: JsonValue): string {
+  if (typeof value === "boolean") return value ? "required" : "off";
+  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(2);
+  if (typeof value === "string") return titleLabel(value);
+  if (Array.isArray(value)) return `${value.length} items`;
+  if (value && typeof value === "object") return "configured";
+  return "-";
 }
 
 function ThesisPipelinePanel({
@@ -1261,32 +1595,28 @@ function ThesisPipelinePanel({
 }) {
   const open = countWhere(requests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
   const failed = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase().includes("failed"));
-  const superseded = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "superseded");
-  const fulfilled = countWhere(requests, (row) => textField(row, ["status"]).toLowerCase() === "fulfilled");
   const validated = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "validated");
   const tracking = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "tracking");
   const validationPending = countWhere(validations, (row) => textField(row, ["state"]).toLowerCase() === "pending");
   const oldestOpen = oldestDate(requests.filter((row) => textField(row, ["status"], "open").toLowerCase() === "open"), "created_at");
   const queueAtCap = open >= agentRuntime.requestCap;
   const items: Array<[string, string, string, Tone]> = [
-    ["Open requests", open.toLocaleString(), queueAtCap ? `at current queue cap of ${agentRuntime.requestCap}` : "current top-ranked candidates awaiting a hypothesis", open ? "warn" : "muted"],
-    ["Agent worker", agentRuntime.active ? "Active" : "Paused", agentRuntime.active ? `runner limit ${agentRuntime.limit}` : "option thesis command is not enabled", agentRuntime.active ? "good" : open ? "warn" : "muted"],
+    ["Premarket queue", open.toLocaleString(), queueAtCap ? `at current queue cap of ${agentRuntime.requestCap}` : "top-ranked signals awaiting synthesis", open ? "warn" : "muted"],
+    ["Agent cadence", agentRuntime.active ? "Daily" : "Paused", agentRuntime.active ? `premarket batch limit ${agentRuntime.limit}` : "option thesis command is not enabled", agentRuntime.active ? "good" : open ? "warn" : "muted"],
     ["Oldest open", oldestOpen ? formatDate(oldestOpen) : "-", "age of the oldest unfulfilled request", oldestOpen ? "warn" : "muted"],
     ["Completed hypotheses", theses.length.toLocaleString(), "structured hypotheses returned by agents", theses.length ? "good" : "muted"],
     ["Tracking", tracking.toLocaleString(), "active hypotheses being checked against price, proof, and invalidation gates", tracking ? "info" : "muted"],
     ["Needs proof", validationPending.toLocaleString(), "hypotheses blocked by missing deterministic proof support", validationPending ? "warn" : "muted"],
     ["Validated", validated.toLocaleString(), "theses passing deterministic checks", validated ? "good" : validations.length ? "warn" : "muted"],
-    ["Fulfilled requests", fulfilled.toLocaleString(), "requests matched to completed theses", fulfilled ? "good" : "muted"],
-    ["Closed requests", superseded.toLocaleString(), "older requests retired from the current queue", superseded ? "muted" : "good"],
     ["Failed", failed.toLocaleString(), "agent calls needing attention", failed ? "bad" : "good"],
   ];
   return (
     <section className="rounded-md border border-border bg-card p-4">
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 className="text-base font-semibold">Thesis Pipeline</h2>
+          <h2 className="text-base font-semibold">Thesis Checks</h2>
           <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
-            Requests are capped to the current top-ranked candidates. Completed hypotheses track deterministic proof, catalyst, price, and invalidation gates until they validate or break.
+            Agent synthesis runs once before the market review window. Deterministic validation decides whether each thesis actually supports the option signal.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1325,13 +1655,13 @@ function ThesisRequestsTable({
 
   return (
     <DataTableFrame
-      title={<SectionTitle title="Open Thesis Requests" count={rows.length} />}
+      title={<SectionTitle title="Premarket Thesis Queue" count={rows.length} />}
       action={<StatusBadge tone={agentRuntime.active ? "good" : "warn"}>{agentRuntime.active ? "Worker active" : "Worker paused"}</StatusBadge>}
     >
       <div className="border-b border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-        These are requests, not completed theses. The deterministic refresh keeps at most {agentRuntime.requestCap.toLocaleString()} current top-ranked requests open; completed hypotheses appear in the browser below after the worker or a manual submit fulfills them.
+        Current top-ranked signals waiting for daily premarket synthesis. Completed hypotheses appear below only after deterministic validation links them back to a current candidate.
       </div>
-      <table className="w-full min-w-[1120px] text-sm">
+      <table className="w-full min-w-[960px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
@@ -1341,7 +1671,6 @@ function ThesisRequestsTable({
             <Head>Created</Head>
             <Head>Candidate</Head>
             <Head>Next Step</Head>
-            <Head>Request Detail</Head>
           </tr>
         </thead>
         <tbody>
@@ -1358,8 +1687,7 @@ function ThesisRequestsTable({
                 <Cell><StatusBadge tone={stateTone(stateOf(event))}>{titleLabel(stateOf(event) || "pending")}</StatusBadge></Cell>
                 <Cell className="whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["created_at"]))}</Cell>
                 <Cell className="max-w-[260px]"><Truncated>{contract}</Truncated></Cell>
-                <Cell className="max-w-[280px]"><Truncated>{status.toLowerCase() === "open" ? "Generate structured thesis and validation inputs" : titleLabel(status)}</Truncated></Cell>
-                <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["prompt"])}</Truncated></Cell>
+                <Cell className="max-w-[320px]"><Truncated>{status.toLowerCase() === "open" ? "Wait for daily premarket thesis worker" : titleLabel(status)}</Truncated></Cell>
               </tr>
             );
           })}

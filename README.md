@@ -44,6 +44,8 @@ uv run python -m investment_panel.jobs.update_crypto_data --config config.yaml
 uv run python -m investment_panel.jobs.update_arco_data --config config.yaml
 uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --online-check
 uv run python -m investment_panel.jobs.update_free_sources --config config.yaml
+uv run python -m investment_panel.jobs.hourly_options_radar --config config.yaml
+uv run python -m investment_panel.jobs.premarket_options_intelligence --config config.yaml
 uv run python -m investment_panel.jobs.refresh_options_radar --config config.yaml
 uv run python -m investment_panel.jobs.update_event_calendar --config config.yaml
 uv run python -m investment_panel.jobs.snapshot_database --config config.yaml

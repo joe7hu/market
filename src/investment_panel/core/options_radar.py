@@ -63,6 +63,7 @@ def refresh_options_radar(
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
     source: str | None = None,
     snapshot_time: str | None = None,
+    include_agent_work: bool = True,
 ) -> dict[str, int]:
     """Refresh the deterministic radar tables from already-ingested market data."""
 
@@ -71,9 +72,17 @@ def refresh_options_radar(
     feature_rows = refresh_option_features(con, symbols=symbols, source=source)
     stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
     candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source)
-    from investment_panel.core.option_agent_thesis import refresh_option_agent_work
+    if include_agent_work:
+        from investment_panel.core.option_agent_thesis import refresh_option_agent_work
 
-    agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
+        agent_work = refresh_option_agent_work(con, strategy_version=strategy_version)
+    else:
+        agent_work = {
+            "agent_thesis_requests": 0,
+            "agent_thesis_requests_superseded": 0,
+            "agent_theses_attached": 0,
+            "agent_thesis_validations": 0,
+        }
     shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
     marked_rows = mark_shadow_trades(con)
     mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
@@ -84,9 +93,15 @@ def refresh_options_radar(
     attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
     missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
     proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
-    from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work
+    if include_agent_work:
+        from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work
 
-    postmortem_work = refresh_option_agent_postmortem_work(con, strategy_version=strategy_version)
+        postmortem_work = refresh_option_agent_postmortem_work(con, strategy_version=strategy_version)
+    else:
+        postmortem_work = {
+            "agent_postmortem_requests": 0,
+            "agent_postmortem_strategy_proposals": 0,
+        }
     evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
     cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
     opportunity_rows = refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=strategy_version)

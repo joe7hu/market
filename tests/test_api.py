@@ -160,10 +160,6 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
         "candidate_event",
         "candidate_event_mark",
         "candidate_event_attribution",
-        "shadow_trade",
-        "shadow_trade_mark",
-        "radar_state_transition",
-        "option_attribution",
         "missed_winner_event",
         "strategy_mutation_proposal",
         "strategy_backtest_result",
@@ -175,9 +171,6 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
         "agent_postmortem_request",
         "agent_postmortem",
         "option_radar_summary",
-        "option_snapshot",
-        "option_features",
-        "stock_features",
     }
 
 

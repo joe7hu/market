@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app import data_access
 
 
@@ -88,6 +90,17 @@ def test_ticker_payload_guarantees_dossier_tab_coverage_from_read_models() -> No
     assert tables["ownership_consensus"][0]["source_type"] == "coverage_gap"
     assert tables["feed_signals"][0]["source"] == "ticker_dossier_coverage"
     assert tables["thesis_monitor"][0]["needs_review"] is True
+    diagnostic_rows = data_access.ticker_data_source_rows("CRWV", tables)
+    assert diagnostic_rows
+    assert {row["family"] for row in diagnostic_rows} >= {"decision", "quote", "fundamentals", "source_evidence"}
+    for row in diagnostic_rows:
+        assert row["symbol"] == "CRWV"
+        assert row["label"]
+        assert row["status"]
+        assert row["source_tables"]
+        assert row["shared_surfaces"]
+        assert row["latest_at"]
+        assert row["fields_loaded"]
 
 
 def test_new_ia_panel_scopes_are_backend_owned() -> None:
@@ -224,6 +237,7 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
     assert "broker_positions" in contract["scopes"]["health"]
     assert "universe_screen" in contract["watchlist_section_tables"]
     assert "decision_queue" in contract["ticker_tables"]
+    assert "ticker_data_sources" not in contract["ticker_tables"]
     assert contract["endpoint_tables"]["feed"] == "feed_signals"
     assert contract["endpoint_tables"]["watchlist/symbols"] == "manual_watchlist"
 
@@ -347,6 +361,16 @@ def test_ticker_payload_excludes_health_only_operational_tables() -> None:
     assert "broker_status" not in payload["tables"]
     assert "broker_accounts" not in payload["tables"]
     assert "paper_orders" not in payload["tables"]
+    assert "ticker_data_sources" not in payload["tables"]
+
+
+def test_ticker_page_does_not_render_operational_data_coverage_panel() -> None:
+    source = Path("frontend/src/views/ticker.tsx").read_text(encoding="utf-8")
+
+    assert "Data Source Coverage" not in source
+    assert "Shared Surfaces" not in source
+    assert "Loaded Fields" not in source
+    assert "Decision Snapshot" not in source
 
 
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:

@@ -53,12 +53,16 @@ http://192.168.50.197:8000/api/status
    model is intentionally strict: most days can produce no `Exceptional` setup,
    with blocked rows retained as `Research` for audit and learning.
    This is also exposed as the standalone `refresh_options_radar` refresh job
-   for local reruns after option-source changes.
+   for local reruns after option-source changes. For intraday operation, use
+   `hourly_options_radar`; it recomputes the deterministic radar from existing
+   option/quote rows without refreshing providers or generating agent work, so
+   it does not hold the app database lock across network calls.
 5. `run_option_agents`: optionally run configured local external agent commands
    for open options-radar thesis and postmortem handoffs. This step is
-   default-disabled; when enabled, Market passes one request JSON over stdin,
-   accepts only structured JSON over stdout, then persists and validates it
-   through the deterministic backend.
+   the daily premarket interpretation boundary; hourly refreshes must not call
+   it. When enabled, Market passes one request JSON over stdin, accepts only
+   structured JSON over stdout, then persists and validates it through the
+   deterministic backend.
 6. `update_broker_sources`: refresh read-only broker account, position, and
    recommendation context.
 7. `update_disclosures`: refresh public disclosures, official House filings,
@@ -129,6 +133,8 @@ the selected path.
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
 candidate state, validation, backtests, forward tests, and human-approval gates.
+Agents should run once per day before the market review window; the hourly
+options loop is deterministic-only to avoid duplicate prompts and token churn.
 
 ## Freshness Contracts
 
@@ -167,13 +173,64 @@ After a successful refresh:
 
 ## Suggested Daily Schedule
 
-Use the existing automation runner or launchd to run once before the local
-investment review window, for example:
+Use the existing automation runner or launchd to run deterministic options radar
+refreshes during market hours, for example:
 
 ```bash
 cd /Users/joehu/proj/market
-uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
+uv run python -m investment_panel.jobs.hourly_options_radar --config config.yaml
 ```
+
+The checked-in launchd definition is:
+
+```text
+ops/launchd/com.joehu.market.hourly-options-radar.plist
+```
+
+Install or refresh it on the machine that owns the local Market app with:
+
+```bash
+cp ops/launchd/com.joehu.market.hourly-options-radar.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.hourly-options-radar.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.hourly-options-radar.plist
+launchctl print gui/$(id -u)/com.joehu.market.hourly-options-radar
+```
+
+The job uses `/tmp/market-hourly-options-radar.lock`, so a slow deterministic
+run skips the next hourly tick instead of starting overlapping radar
+recomputes. It writes
+`/Volumes/agent/data-sources/status/mini-market-hourly-options-radar.json`.
+Do not add provider refreshes back to this hourly job; long provider phases can
+hold the DuckDB writer lock and make the app look empty while API requests wait
+on the database. Provider ingestion belongs in `full_market_refresh`,
+`update_free_sources`, or the premarket options workflow.
+
+Run the broader agent-bearing workflow once before the local investment review
+window, for example:
+
+```bash
+cd /Users/joehu/proj/market
+uv run python -m investment_panel.jobs.premarket_options_intelligence --config config.yaml
+```
+
+The checked-in weekday premarket launchd definition is:
+
+```text
+ops/launchd/com.joehu.market.premarket-options-intelligence.plist
+```
+
+Install or refresh it with:
+
+```bash
+cp ops/launchd/com.joehu.market.premarket-options-intelligence.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.premarket-options-intelligence.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.premarket-options-intelligence.plist
+launchctl print gui/$(id -u)/com.joehu.market.premarket-options-intelligence
+```
+
+This job runs `options_radar -> run_option_agents -> deterministic options_radar`
+once, so agent hypotheses affect the grouped opportunity read model without
+starting a second agent queue.
 
 Keep the separate disclosure automation if it already exists; this full refresh
 is the missing broad-market workflow that ensures the decision desk has current

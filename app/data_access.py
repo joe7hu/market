@@ -694,8 +694,17 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
             "option_thesis": _agent_runtime_metadata(option_thesis, default_limit=20) | {
                 "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
                 "queue_policy": "current_top_ranked_candidates_only",
+                "cadence": "daily_premarket",
+                "max_runs_per_day": 1,
             },
-            "option_postmortem": _agent_runtime_metadata(option_postmortem, default_limit=20),
+            "option_postmortem": _agent_runtime_metadata(option_postmortem, default_limit=20) | {
+                "cadence": "daily_premarket",
+                "max_runs_per_day": 1,
+            },
+        },
+        "options_radar": {
+            "deterministic_cadence": "hourly",
+            "agent_cadence": "daily_premarket",
         },
     }
 
@@ -1109,6 +1118,140 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "decision_brief": ticker_decision_brief(normalized_ticker, tables),
         "found": any(tables.values()),
     }
+
+
+TICKER_DATA_SOURCE_FAMILIES: tuple[dict[str, Any], ...] = (
+    {
+        "family": "decision",
+        "label": "Decision",
+        "tables": ("symbol_decision_snapshot", "decision_queue", "opportunities_ranked", "discovered_universe"),
+        "surfaces": ("today", "watchlist", "research", "ticker"),
+        "expected_fields": ("action_grade", "freshness_status", "decision_basis", "invalidation"),
+    },
+    {
+        "family": "quote",
+        "label": "Quote",
+        "tables": ("quotes", "universe_screen"),
+        "surfaces": ("today", "watchlist", "portfolio", "ticker"),
+        "expected_fields": ("price", "change_pct", "observed_at", "freshness_status"),
+    },
+    {
+        "family": "fundamentals",
+        "label": "Fundamentals",
+        "tables": ("fundamentals", "universe_screen", "analyst_estimates", "valuations"),
+        "surfaces": ("today", "watchlist", "research", "ticker"),
+        "expected_fields": ("market_cap", "forward_pe", "fcf_yield", "roic", "metrics"),
+    },
+    {
+        "family": "technical",
+        "label": "Technical",
+        "tables": ("technicals", "sepa", "liquidity"),
+        "surfaces": ("watchlist", "research", "ticker"),
+        "expected_fields": ("technical_score", "return_3m", "rel_volume_1m", "atr_pct_1m"),
+    },
+    {
+        "family": "source_evidence",
+        "label": "Source Evidence",
+        "tables": ("source_consensus", "ticker_source_signals", "feed_signals", "news", "opportunity_sources"),
+        "surfaces": ("feed", "sources", "research", "ticker"),
+        "expected_fields": ("source_name", "source_id", "title", "sentiment", "observed_at"),
+    },
+    {
+        "family": "thesis",
+        "label": "Thesis",
+        "tables": ("thesis_monitor", "theses", "research_packets", "memos"),
+        "surfaces": ("today", "thesis-monitor", "portfolio", "ticker"),
+        "expected_fields": ("thesis", "needs_review", "review_reason", "invalidation"),
+    },
+    {
+        "family": "options",
+        "label": "Options",
+        "tables": ("options_ticker_signals", "options_expiry_signals", "options_payoff_scenarios", "options_chain", "options_expiries"),
+        "surfaces": ("options-radar", "research", "ticker"),
+        "expected_fields": ("status", "atm_iv", "expected_move_pct", "nearest_expiry"),
+    },
+    {
+        "family": "ownership",
+        "label": "Ownership",
+        "tables": ("ownership_consensus", "disclosures"),
+        "surfaces": ("superinvestors", "filings", "ticker"),
+        "expected_fields": ("holders", "investors", "net_activity", "latest_filed"),
+    },
+    {
+        "family": "portfolio",
+        "label": "Portfolio",
+        "tables": ("portfolio", "portfolio_risk_cards", "exposure_clusters", "correlation_edges", "review_actions"),
+        "surfaces": ("today", "portfolio", "ticker"),
+        "expected_fields": ("market_value", "portfolio_weight", "risk_level", "action"),
+    },
+    {
+        "family": "catalysts",
+        "label": "Catalysts",
+        "tables": ("catalysts", "earnings", "earnings_setups"),
+        "surfaces": ("today", "calendar", "ticker"),
+        "expected_fields": ("event_date", "event", "event_type", "score", "verdict"),
+    },
+)
+
+
+def ticker_data_source_rows(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Summarize ticker data coverage across backend-owned shared surfaces."""
+
+    rows: list[dict[str, Any]] = []
+    for spec in TICKER_DATA_SOURCE_FAMILIES:
+        table_names = tuple(spec["tables"])
+        populated = {name: tables.get(name) or [] for name in table_names if tables.get(name)}
+        loaded_rows = [row for table_rows in populated.values() for row in table_rows]
+        row_count = len(loaded_rows)
+        fields_loaded = _loaded_field_names(loaded_rows)
+        expected_fields = tuple(spec["expected_fields"])
+        missing_fields = [field for field in expected_fields if field not in fields_loaded]
+        status = "loaded" if row_count else "coverage_gap"
+        if spec["family"] == "options" and row_count:
+            payoff_rows = tables.get("options_payoff_scenarios") or []
+            if payoff_rows and all(_is_option_expired(row) for row in payoff_rows):
+                status = "expired"
+        rows.append(
+            {
+                "symbol": symbol,
+                "family": spec["family"],
+                "label": spec["label"],
+                "status": status,
+                "row_count": row_count,
+                "source_tables": list(populated) or list(table_names),
+                "shared_surfaces": list(spec["surfaces"]),
+                "latest_at": _latest_source_timestamp(loaded_rows) or "not_loaded",
+                "fields_loaded": fields_loaded or ["coverage_gap"],
+                "missing_fields": missing_fields or ["none"],
+                "detail": (
+                    f"{row_count} ticker-specific rows loaded from shared read models."
+                    if row_count
+                    else "No ticker-specific row is loaded for this family; the ticker page uses an explicit coverage-gap row."
+                ),
+            }
+        )
+    return rows
+
+
+def _loaded_field_names(rows: list[dict[str, Any]]) -> list[str]:
+    fields: set[str] = set()
+    for row in rows:
+        for key, value in row.items():
+            if key in {"raw", "snapshot", "features", "metrics", "estimates", "decision_basis"}:
+                if value not in (None, "", [], {}):
+                    fields.add(key)
+                continue
+            if value not in (None, "", [], {}):
+                fields.add(key)
+    return sorted(fields)[:16]
+
+
+def _latest_source_timestamp(rows: list[dict[str, Any]]) -> Any:
+    latest = _latest_row(rows, ("observed_at", "as_of", "date", "event_date", "updated_at", "created_at", "latest_at", "filing_date", "period_end"))
+    for key in ("observed_at", "as_of", "date", "event_date", "updated_at", "created_at", "latest_at", "filing_date", "period_end"):
+        if latest.get(key):
+            return latest[key]
+    return None
 
 
 def _ensure_ticker_dossier_tables(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> None:

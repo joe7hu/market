@@ -41,6 +41,10 @@ class YFinanceProvider:
             "earnings_history": frame_to_records(getattr(ticker, "earnings_history", None)),
         }
 
+    def sec_filings(self, symbol: str) -> Any:
+        getter = getattr(self.ticker(symbol), "get_sec_filings", None)
+        return getter() if callable(getter) else {}
+
     def options_expiries(self, symbol: str) -> list[dict[str, Any]]:
         ticker = self.ticker(symbol)
         expiries = getattr(ticker, "options", None) or []
