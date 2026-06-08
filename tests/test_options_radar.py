@@ -261,6 +261,61 @@ def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_p
     assert trades == []
 
 
+def test_options_radar_prioritizes_10x_watch_themes_without_bypassing_gates(tmp_path) -> None:
+    db_path = tmp_path / "radar-theme-watch.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        upsert_instrument(
+            con,
+            {
+                "symbol": "NVDA",
+                "name": "NVIDIA Corporation",
+                "asset_class": "equity",
+                "sector": "Technology",
+                "industry": "Semiconductors",
+                "category": "AI accelerator infrastructure",
+            },
+        )
+        upsert_instrument(
+            con,
+            {
+                "symbol": "ACME",
+                "name": "Acme Industrials",
+                "asset_class": "equity",
+                "sector": "Industrials",
+                "industry": "Specialty Industrial Machinery",
+            },
+        )
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        for symbol in ["NVDA", "ACME"]:
+            seed_prices(con, symbol, start_price=100, slope=0.12)
+            con.execute(
+                "INSERT INTO quotes_intraday VALUES (?, '2026-06-02T20:00:00Z', 120, 1, 1, 'USD', 'tradingview', '{}')",
+                [symbol],
+            )
+            store_options_chain(
+                con,
+                symbol,
+                "2026-06-02T20:00:00Z",
+                [
+                    option_row("2027-09-18", 145, "call", 4.3, 4.7, 0.25, 0.30, f"OPRA:{symbol}270918C145", volume=25, open_interest=250),
+                    option_row("2027-09-18", 210, "call", 7.5, 8.5, 0.50, 0.50, f"OPRA:{symbol}270918C210", volume=25, open_interest=250),
+                ],
+            )
+
+        refresh_options_radar(con, ["NVDA", "ACME"])
+        rows = query_rows(con, "SELECT ticker, state, score, trigger_reason, raw FROM candidate_event WHERE contract_id LIKE '%C145' ORDER BY ticker")
+
+    by_ticker = {row["ticker"]: row for row in rows}
+    nvda_raw = json.loads(by_ticker["NVDA"]["raw"]) if isinstance(by_ticker["NVDA"]["raw"], str) else by_ticker["NVDA"]["raw"]
+    acme_raw = json.loads(by_ticker["ACME"]["raw"]) if isinstance(by_ticker["ACME"]["raw"], str) else by_ticker["ACME"]["raw"]
+    assert by_ticker["NVDA"]["state"] == by_ticker["ACME"]["state"] == "FIRE"
+    assert "theme_ai_infrastructure" in by_ticker["NVDA"]["trigger_reason"]
+    assert "theme_ai_infrastructure" in nvda_raw["watch_themes"]
+    assert "theme_ai_infrastructure" not in acme_raw.get("watch_themes", [])
+    assert by_ticker["NVDA"]["score"] > by_ticker["ACME"]["score"]
+
+
 def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp_path) -> None:
     db_path = tmp_path / "radar-yfinance-liquidity.duckdb"
     init_db(db_path)

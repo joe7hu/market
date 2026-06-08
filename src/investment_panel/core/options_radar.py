@@ -55,6 +55,61 @@ DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "fill_slippage_pct": 0.03,
 }
 
+THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "theme_ai_infrastructure": (
+        "artificial intelligence",
+        " ai ",
+        "semiconductor",
+        "gpu",
+        "accelerator",
+        "data center",
+        "datacenter",
+        "cloud infrastructure",
+        "networking",
+        "memory",
+        "foundry",
+        "fabless",
+        "electronic components",
+    ),
+    "theme_ai_applications": (
+        "software",
+        "application software",
+        "cloud",
+        "automation",
+        "analytics",
+        "cybersecurity",
+        "digital advertising",
+        "internet content",
+    ),
+    "theme_space_tech": (
+        "space",
+        "aerospace",
+        "satellite",
+        "rocket",
+        "defense",
+        "orbital",
+    ),
+    "theme_ai_biotech": (
+        "biotech",
+        "biotechnology",
+        "bioinformatics",
+        "genomics",
+        "life sciences",
+        "drug discovery",
+        "computational biology",
+        "precision medicine",
+    ),
+    "theme_crypto_infrastructure": (
+        "crypto",
+        "cryptocurrency",
+        "bitcoin",
+        "blockchain",
+        "digital assets",
+        "coinbase",
+        "mining",
+    ),
+}
+
 
 def refresh_options_radar(
     con: Any,
@@ -537,6 +592,10 @@ def generate_candidate_events(
             sf.base_length_days,
             sf.breakout_level,
             i.asset_class,
+            i.name AS instrument_name,
+            i.sector,
+            i.industry,
+            i.category,
             (
                 SELECT peer.data_source
                 FROM option_snapshot peer
@@ -743,6 +802,9 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     else:
         positives.append("premium_inside_buy_under")
 
+    watch_themes = _theme_watch_matches(row)
+    positives.extend(watch_themes)
+
     state = "REJECT" if hard_rejects else "WATCH" if _has_missing_data(blockers) else "SETUP" if blockers else "FIRE"
     quality = _candidate_quality(row, state=state, blockers=blockers, hard_rejects=hard_rejects)
     reasons = [*hard_rejects, *blockers, *positives]
@@ -763,7 +825,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         "buy_under": buy_under,
         "trigger_reason": ", ".join(reasons),
         "thesis_id": row.get("thesis_id"),
-        "score": _candidate_score(row, state),
+        "score": _candidate_score(row, state, watch_themes=watch_themes),
         "quality_status": quality["status"],
         "quality_flags": quality["flags"],
         "raw": {
@@ -772,6 +834,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             "positives": positives,
             "quality": quality,
             "strategy_parameters": strategy,
+            "watch_themes": watch_themes,
             "expiration": str(row.get("expiration")),
             "strike": strike,
             "option_type": option_type,
@@ -868,8 +931,10 @@ def refresh_option_radar_opportunities(
             sf.base_length_days,
             sf.breakout_level,
             i.asset_class,
+            i.name AS instrument_name,
             i.sector,
             i.industry,
+            i.category,
             mc.metrics AS market_metrics,
             v.validation_id,
             v.state AS thesis_validation_state,
@@ -1073,6 +1138,7 @@ def _opportunity_candidate_detail(
         evidence_refs.append({"type": "agent_thesis_validation", "id": validation["validation_id"]})
     evidence_refs.extend(source_context["evidence_refs"][:5])
     premium_fill = _number(row.get("premium_fill_assumption"))
+    watch_themes = _theme_watch_matches(row)
     return {
         "event_id": row.get("event_id"),
         "snapshot_time": snapshot_time,
@@ -1116,11 +1182,14 @@ def _opportunity_candidate_detail(
             "source_signal_confidence": source_context["average_confidence"],
             "source_signal_score": source_context["score"],
             "thesis_validation_state": validation.get("state"),
+            "watch_themes": watch_themes,
             "qqq_above_200d": qqq_above_200d,
             "data_source": row.get("data_source"),
             "asset_class": row.get("asset_class"),
+            "instrument_name": row.get("instrument_name"),
             "sector": row.get("sector"),
             "industry": row.get("industry"),
+            "category": row.get("category"),
             "market_cap": _market_cap(row),
             "revenue_growth": _revenue_growth(row),
             "expiration": str(row.get("expiration") or ""),
@@ -1222,6 +1291,7 @@ def _opportunity_scores(
     quality_score = 100.0 if quality_status == "ok" else 55.0 if quality_status == "caution" else 10.0
     survivability = min(100.0, dte_score * 0.40 + liquidity * 0.30 + quality_score * 0.30)
     learning = _learning_score(row)
+    theme_bonus = _theme_watch_score(_theme_watch_matches(row)) * 0.60
     conviction = (
         asymmetry * 0.24
         + entry * 0.20
@@ -1230,6 +1300,7 @@ def _opportunity_scores(
         + regime * 0.10
         + survivability * 0.10
         + learning * 0.04
+        + theme_bonus
     )
     return {
         "conviction_score": round(max(0.0, min(100.0, conviction)), 2),
@@ -1495,6 +1566,7 @@ def _opportunity_top_reasons(
     scores: dict[str, float],
 ) -> list[str]:
     reasons: list[str] = []
+    reasons.extend(_theme_watch_matches(row))
     if scores["asymmetry_score"] >= 70:
         reasons.append("convexity_inside_extreme_bar")
     if scores["entry_quality_score"] >= 70:
@@ -1513,7 +1585,7 @@ def _opportunity_top_reasons(
         raw = _json(row.get("raw"))
         positives = raw.get("positives") if isinstance(raw.get("positives"), list) else []
         reasons.extend([str(item) for item in positives[:3]])
-    return reasons[:5]
+    return list(dict.fromkeys(reasons))[:5]
 
 
 def _blocking_quality_flags(row: dict[str, Any]) -> list[str]:
@@ -3859,7 +3931,7 @@ def _buy_under(row: dict[str, Any], strategy: dict[str, Any]) -> float | None:
     return max(0.0, (underlying * (1 + max_move) - strike) / 10)
 
 
-def _candidate_score(row: dict[str, Any], state: str) -> float:
+def _candidate_score(row: dict[str, Any], state: str, watch_themes: list[str] | None = None) -> float:
     if state == "REJECT":
         return 0.0
     required_move = _number(row.get("required_move_10x_pct")) or 10
@@ -3868,11 +3940,41 @@ def _candidate_score(row: dict[str, Any], state: str) -> float:
     rs = _number(row.get("rs_vs_qqq_20d")) or 0
     technical = 100.0 if (_number(row.get("price")) or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
     score = (max(0.0, 100.0 - required_move * 20.0) * 0.35) + (liquidity * 0.20) + (convexity * 0.30) + (technical * 0.10) + (max(-20.0, min(20.0, rs * 100)) + 20) * 0.05
+    score += _theme_watch_score(watch_themes or _theme_watch_matches(row))
     if state == "WATCH":
         score *= 0.70
     if state == "SETUP":
         score *= 0.88
     return round(max(0.0, min(100.0, score)), 2)
+
+
+def _theme_watch_score(themes: list[str]) -> float:
+    if not themes:
+        return 0.0
+    return min(8.0, 4.0 + max(0, len(themes) - 1) * 2.0)
+
+
+def _theme_watch_matches(row: dict[str, Any]) -> list[str]:
+    text = _theme_context_text(row)
+    if not text:
+        return []
+    matches: list[str] = []
+    for theme, keywords in THEME_WATCH_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            matches.append(theme)
+    return matches
+
+
+def _theme_context_text(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("ticker"),
+        row.get("instrument_name"),
+        row.get("asset_class"),
+        row.get("sector"),
+        row.get("industry"),
+        row.get("category"),
+    ]
+    return f" {' '.join(str(part or '').lower() for part in parts)} "
 
 
 def _has_missing_data(blockers: list[str]) -> bool:
