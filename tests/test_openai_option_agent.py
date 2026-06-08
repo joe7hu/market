@@ -67,6 +67,10 @@ def test_openai_thesis_agent_uses_responses_structured_outputs(monkeypatch) -> N
     assert captured["body"]["text"]["format"]["strict"] is True
     assert captured["body"]["text"]["format"]["schema"]["additionalProperties"] is False
     assert "tools" not in captured["body"]
+    system_prompt = captured["body"]["input"][0]["content"]
+    assert "not technical analysis" in system_prompt
+    assert "12-24 month business prediction" in system_prompt
+    assert "not price action, moving averages, IV" in system_prompt
     assert result["ticker"] == "TSLA"
     assert result["evidence_refs"][0] == {"type": "agent_request", "id": "req-1"}
 

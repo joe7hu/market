@@ -621,7 +621,7 @@ function OpportunityThesisSummary({
         <StatusBadge tone={thesisStateTone(textField(validation, ["state"]))}>{thesisValidationLabel(validation)}</StatusBadge>
         {requestStatus ? <StatusBadge tone={toneFromText(requestStatus)}>{titleLabel(requestStatus)}</StatusBadge> : null}
         {textField(validation, ["red_team_status"]) ? (
-          <StatusBadge tone={validationStatusTone(textField(validation, ["red_team_status"]))}>{titleLabel(textField(validation, ["red_team_status"]))}</StatusBadge>
+          <StatusBadge tone={validationStatusTone(textField(validation, ["red_team_status"]))}>{validationStatusLabel(textField(validation, ["red_team_status"]))}</StatusBadge>
         ) : null}
       </div>
       <FullText>{summary}</FullText>
@@ -2029,7 +2029,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
       if (stateFilter === "validated" && validationState !== "validated") return false;
       if (stateFilter === "pending" && validationState !== "pending") return false;
       if (stateFilter === "invalidated" && !validationState.includes("invalidated")) return false;
-      if (stateFilter === "hard-risk" && !redTeam.includes("hard_risk")) return false;
+      if (stateFilter === "fundamental-risk" && !redTeam.includes("hard_risk")) return false;
       if (!normalizedQuery) return true;
       return [
         textField(row, ["ticker"]),
@@ -2091,7 +2091,7 @@ function AgentThesisBrowser({ theses, validations, onOpenTicker }: { theses: Row
               <SelectItem value="pending">Needs proof</SelectItem>
               <SelectItem value="validated">Validated</SelectItem>
               <SelectItem value="invalidated">Invalidated</SelectItem>
-              <SelectItem value="hard-risk">Hard risk</SelectItem>
+              <SelectItem value="fundamental-risk">Fundamental risk</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -2177,7 +2177,7 @@ function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker 
             <div className="flex flex-wrap items-center gap-2">
               {ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : <span className="text-lg font-semibold">Unknown ticker</span>}
               <StatusBadge tone={thesisStateTone(state)}>{thesisValidationLabel(validation)}</StatusBadge>
-              <StatusBadge tone={validationStatusTone(redTeam)}>{titleLabel(redTeam)}</StatusBadge>
+              <StatusBadge tone={validationStatusTone(redTeam)}>{validationStatusLabel(redTeam)}</StatusBadge>
             </div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>Created {formatDate(textField(thesis, ["created_at"]))}</span>
@@ -2235,7 +2235,7 @@ function ThesisDetailPane({ thesis, validation, validationHistory, onOpenTicker 
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <StatusBadge tone={thesisStateTone(textField(row, ["state"]))}>{thesisValidationLabel(row)}</StatusBadge>
-                    <StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{titleLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge>
+                    <StatusBadge tone={validationStatusTone(textField(row, ["red_team_status"]))}>{validationStatusLabel(displayField(row, ["red_team_status"], "unknown"))}</StatusBadge>
                   </div>
                   <div className="min-w-0">
                     <div className="truncate text-xs text-muted-foreground">{displayField(row, ["strategy_version"], "Strategy unknown")}</div>
@@ -2576,6 +2576,12 @@ function thesisValidationLabel(validation: RowRecord | undefined): string {
   return titleLabel(state);
 }
 
+function validationStatusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "hard_risk_triggered") return "Fundamental risk flagged";
+  return titleLabel(status);
+}
+
 function validationStatusTone(status: string): Tone {
   const normalized = status.toLowerCase();
   if (["supported", "scheduled", "source_confirmed", "clear", "source_backed"].includes(normalized)) return "good";
@@ -2618,7 +2624,7 @@ const reasonLabels: Record<string, string> = {
   dte_outside_strategy_range: "DTE outside range",
   entry_quality_below_exceptional_bar: "Entry quality below top bar",
   entry_quality_supported: "Entry quality supported",
-  hard_red_team_risk: "Hard red-team risk",
+  hard_red_team_risk: "Fundamental risk flagged",
   iv_not_overpriced: "IV acceptable",
   iv_percentile_above_fire_threshold: "IV above fire limit",
   iv_percentile_reject: "IV too expensive",

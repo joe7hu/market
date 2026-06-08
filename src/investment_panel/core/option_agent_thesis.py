@@ -133,6 +133,16 @@ def build_agent_thesis_request(con: Any, candidate: dict[str, Any]) -> dict[str,
     ticker = str(candidate.get("ticker") or "").upper()
     context = {
         "candidate_event": decode_json_fields(candidate, ("raw",)),
+        "instrument": first_row(
+            con,
+            """
+            SELECT symbol, name, asset_class, sector, industry, category, source
+            FROM instruments
+            WHERE symbol = ?
+            LIMIT 1
+            """,
+            [ticker],
+        ),
         "stock_features": first_row(
             con,
             "SELECT * FROM stock_features WHERE ticker = ? ORDER BY snapshot_time DESC LIMIT 1",
@@ -144,6 +154,18 @@ def build_agent_thesis_request(con: Any, candidate: dict[str, Any]) -> dict[str,
             "SELECT * FROM option_features WHERE contract_id = ? ORDER BY snapshot_time DESC LIMIT 1",
             [candidate.get("contract_id")],
             ("raw",),
+        ),
+        "fundamentals": first_row(
+            con,
+            """
+            SELECT symbol, period_end, filing_date, form_type, metrics, source_url
+            FROM equity_fundamentals
+            WHERE symbol = ?
+            ORDER BY filing_date DESC NULLS LAST, period_end DESC NULLS LAST
+            LIMIT 1
+            """,
+            [ticker],
+            ("metrics",),
         ),
         "source_signals": query_decoded(
             con,
@@ -198,6 +220,12 @@ def agent_thesis_prompt(ticker: str) -> str:
         "base_target_price, core_thesis, required_proofs, catalysts, invalidation, "
         "bear_case, confidence, evidence_refs. Agents create hypotheses only; "
         "deterministic code validates proofs, catalysts, invalidation, options math, and state. "
+        "The core_thesis must be product-and-technology grounded, not chart-only: explain the "
+        "business or protocol mechanism, the technology adoption trend, and a falsifiable 12-24 "
+        "month prediction that can drive the stock toward the bull target. Required proofs should "
+        "be product, customer, revenue, margin, adoption, regulatory, or ecosystem evidence; do not "
+        "use price action or option Greeks as proof. Use supplied source/news/fundamental evidence "
+        "refs where available and state missing evidence as a risk in bear_case or invalidation. "
         "Do not recommend or execute trades."
     )
 

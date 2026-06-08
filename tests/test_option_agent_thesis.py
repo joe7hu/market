@@ -5,6 +5,7 @@ import json
 import pytest
 
 from investment_panel.core.db import db, init_db, query_rows
+from investment_panel.core.db import upsert_instrument
 from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_agent_thesis_requests, refresh_option_agent_work, upsert_agent_thesis
 from investment_panel.core.options_radar import refresh_options_radar
@@ -24,7 +25,43 @@ def test_options_radar_opens_agent_thesis_request_for_top_candidate(tmp_path) ->
     assert request["ticker"] == "TSLA"
     assert request["status"] == "open"
     assert "Return JSON only" in request["prompt"]
+    assert "product-and-technology grounded" in request["prompt"]
+    assert "12-24 month prediction" in request["prompt"]
+    assert "do not use price action or option Greeks as proof" in request["prompt"]
     assert "Do not recommend or execute trades" in request["prompt"]
+
+
+def test_agent_thesis_request_includes_business_and_fundamental_context(tmp_path) -> None:
+    db_path = tmp_path / "agent-request-context.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        upsert_instrument(
+            con,
+            {
+                "symbol": "TSLA",
+                "name": "Tesla",
+                "asset_class": "equity",
+                "sector": "Consumer Cyclical",
+                "industry": "Auto Manufacturers",
+                "category": "physical AI robotics",
+            },
+        )
+        seed_fire_candidate(con)
+        con.execute(
+            """
+            INSERT INTO equity_fundamentals
+            VALUES ('TSLA', '2026-03-31', '2026-05-01', '10-Q', ?, 'https://example.com/tsla')
+            """,
+            [json.dumps({"revenue_growth": 0.08, "gross_margin": 0.19})],
+        )
+
+        refresh_options_radar(con, ["TSLA"])
+        request = query_rows(con, "SELECT context FROM agent_thesis_request WHERE ticker = 'TSLA'")[0]
+
+    context = json.loads(request["context"])
+    assert context["instrument"]["category"] == "physical AI robotics"
+    assert context["fundamentals"]["form_type"] == "10-Q"
+    assert context["fundamentals"]["metrics"]["gross_margin"] == 0.19
 
 
 def test_agent_thesis_queue_keeps_only_current_top_ranked_candidates_open(tmp_path) -> None:

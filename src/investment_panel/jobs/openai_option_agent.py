@@ -537,6 +537,11 @@ def _thesis_system_prompt() -> str:
         "Use the supplied candidate, stock, option, source-signal, and news context. "
         "Do not recommend or execute trades. Do not change deterministic scores. "
         "Create falsifiable thesis, proof, catalyst, invalidation, and red-team material. "
+        "A valid core_thesis is not technical analysis: it must connect product or protocol "
+        "positioning, technology adoption trends, and a grounded 12-24 month business prediction "
+        "to the bull/base targets. Required proofs must be product, customer, revenue, margin, "
+        "adoption, regulatory, or ecosystem evidence, not price action, moving averages, IV, "
+        "delta, or chart pattern claims. "
         "Use stored evidence references from context whenever possible."
     )
 
