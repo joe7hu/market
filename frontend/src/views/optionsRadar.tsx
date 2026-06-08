@@ -610,8 +610,8 @@ function OpportunityThesisSummary({
   thesis: RowRecord | undefined;
   agentRuntime: OptionThesisAgentRuntime;
 }) {
-  const validationReason = displayField(validation, ["reason"]);
-  const coreThesis = displayField(thesis, ["core_thesis"]);
+  const validationReason = fullField(validation, ["reason"], "");
+  const coreThesis = fullField(thesis, ["core_thesis"], "");
   const requestStatus = textField(request, ["status"]);
   const requestCreated = textField(request, ["created_at"]);
   const summary = validationReason || coreThesis || thesisFallbackText(row, request, agentRuntime);
@@ -937,7 +937,29 @@ function CandidateEventsTable({
           One primary surface for current ranked contracts. Each row combines the contract signal, evidence, thesis validation, observed outcome, and next action.
         </p>
       </div>
-      <table className="w-full min-w-[1780px] table-fixed text-sm">
+      <div className="space-y-3 p-3 lg:hidden">
+        {visibleRows.map((row) => {
+          const ticker = textField(row, ["ticker"]);
+          const eventId = textField(row, ["event_id"]);
+          const thesisExpanded = expandedThesisEvent === eventId;
+          return (
+            <CandidateMobileCard
+              key={textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`)}
+              row={row}
+              request={thesisRequestByEvent.get(eventId)}
+              validation={latestThesisValidationByEvent.get(eventId)}
+              thesis={latestAgentThesisByTicker.get(ticker)}
+              mark={latestMarkByEvent.get(eventId)}
+              attribution={latestAttributionByEvent.get(eventId)}
+              agentRuntime={agentRuntime}
+              expanded={thesisExpanded}
+              onToggleThesis={() => setExpandedThesisEvent(thesisExpanded ? null : eventId)}
+              onOpenTicker={onOpenTicker}
+            />
+          );
+        })}
+      </div>
+      <table className="hidden w-full min-w-[1780px] table-fixed text-sm lg:table">
         <colgroup>
           <col className="w-[8rem]" />
           <col className="w-[9rem]" />
@@ -1050,6 +1072,74 @@ function CandidateEventsTable({
         </div>
       </div>
     </DataTableFrame>
+  );
+}
+
+function CandidateMobileCard({
+  row,
+  request,
+  validation,
+  thesis,
+  mark,
+  attribution,
+  agentRuntime,
+  expanded,
+  onToggleThesis,
+  onOpenTicker,
+}: {
+  row: RowRecord;
+  request: RowRecord | undefined;
+  validation: RowRecord | undefined;
+  thesis: RowRecord | undefined;
+  mark: RowRecord | undefined;
+  attribution: RowRecord | undefined;
+  agentRuntime: OptionThesisAgentRuntime;
+  expanded: boolean;
+  onToggleThesis: () => void;
+  onOpenTicker: OpenTicker;
+}) {
+  const state = stateOf(row);
+  const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
+  const qualityFlags = listField(row, ["quality_flags"]);
+  return (
+    <article className={cn("rounded-md border border-border bg-card p-3", qualityStatus === "bad" && "border-destructive/40 bg-destructive/5", qualityStatus === "caution" && "border-amber-500/30 bg-amber-50/30 dark:bg-amber-950/10")}>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
+          <FullText>{displayField(row, ["contract_id"])}</FullText>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <div className="flex items-center gap-1.5">
+            <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
+            <QualityIndicator status={qualityStatus} flags={qualityFlags} />
+          </div>
+          <div className="text-xs text-muted-foreground">rank {formatScore(numberField(row, ["score"], Number.NaN))}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <InlineMetric label="Premium" value={moneyField(row, ["premium_mid"])} />
+        <InlineMetric label="10x Price" value={moneyField(row, ["required_10x_price"])} />
+        <InlineMetric label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+      </div>
+
+      <div className="mt-3 space-y-3">
+        <MobileSection label="Signal Evidence"><CandidateSignalEvidence row={row} /></MobileSection>
+        <MobileSection label="Thesis">
+          <ThesisCompactSummary request={request} validation={validation} thesis={thesis} expanded={expanded} onToggle={onToggleThesis} />
+          {expanded ? (
+            <div className="mt-3 rounded-md border border-border bg-background p-3">
+              <OpportunityThesisSummary row={row} request={request} validation={validation} thesis={thesis} agentRuntime={agentRuntime} />
+            </div>
+          ) : null}
+        </MobileSection>
+        <MobileSection label="Impact So Far"><OpportunityOutcome mark={mark} attribution={attribution} /></MobileSection>
+        <MobileSection label="Next Action"><FullText>{candidateActionText(row, validation)}</FullText></MobileSection>
+      </div>
+    </article>
   );
 }
 
