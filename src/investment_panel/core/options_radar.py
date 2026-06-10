@@ -3365,6 +3365,51 @@ def refresh_radar_alerts(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
     return len(new_alerts)
 
 
+def record_trade_journal_entry(
+    con: Any,
+    *,
+    ticker: str,
+    contract_id: str,
+    event_id: str | None = None,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    opportunity: dict[str, Any] | None = None,
+    notes: str = "",
+) -> str:
+    """Capture the full opportunity JSON at click into the trade journal — the
+    real-money set the calibration dashboard grades predicted-vs-realized against.
+    Returns the journal_id."""
+
+    opportunity = opportunity or {}
+    ev = _json(opportunity.get("raw")).get("primary_detail", {}) if isinstance(opportunity.get("raw"), (str, dict)) else {}
+    created_at = datetime.now(timezone.utc).isoformat()
+    journal_id = stable_id("trade_journal", strategy_version, contract_id, created_at)
+    con.execute(
+        """
+        INSERT OR REPLACE INTO trade_journal
+        (journal_id, created_at, strategy_version, ticker, contract_id, event_id,
+         entry_premium, predicted_ev_multiple, predicted_p2x, conviction_score,
+         opportunity_snapshot, realized_return, realized_status, closed_at, notes, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'open', NULL, ?, ?)
+        """,
+        [
+            journal_id,
+            created_at,
+            strategy_version,
+            _normalize_symbol(ticker),
+            str(contract_id),
+            event_id,
+            _number(opportunity.get("premium_mid")),
+            _number((ev or {}).get("ev_multiple")),
+            _number((ev or {}).get("calibrated_p2x") or (ev or {}).get("p_2x")),
+            _number(opportunity.get("conviction_score")),
+            json_dumps(opportunity),
+            notes,
+            json_dumps({}),
+        ],
+    )
+    return journal_id
+
+
 def acknowledge_radar_alert(con: Any, alert_id: str) -> int:
     """Mark an alert acknowledged. Returns rows updated (0 if unknown id)."""
 

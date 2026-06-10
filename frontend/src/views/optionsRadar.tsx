@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
+import { AlertBell } from "./AlertBell";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
@@ -110,6 +111,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           })()}
           <StatusBadge tone="muted">{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
           <StatusBadge tone="info">{displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy")}</StatusBadge>
+          <AlertBell alerts={rows(data.radarAlert)} onAcknowledged={onRefresh} />
         </div>
       }
     >

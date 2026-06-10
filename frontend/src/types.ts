@@ -85,6 +85,10 @@ export type PanelData = {
   shadowTrade: TablePayload;
   shadowTradeMark: TablePayload;
   radarStateTransition: TablePayload;
+  radarAlert: TablePayload;
+  convictionCalibration: TablePayload;
+  volSurfaceFeatures: TablePayload;
+  tradeJournal: TablePayload;
   optionAttribution: TablePayload;
   missedWinnerEvent: TablePayload;
   strategyMutationProposal: TablePayload;
@@ -201,6 +205,10 @@ export type PanelEndpoint =
   | "shadowTrade"
   | "shadowTradeMark"
   | "radarStateTransition"
+  | "radarAlert"
+  | "convictionCalibration"
+  | "volSurfaceFeatures"
+  | "tradeJournal"
   | "optionAttribution"
   | "missedWinnerEvent"
   | "strategyMutationProposal"

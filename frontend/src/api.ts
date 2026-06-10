@@ -98,6 +98,10 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   shadow_trade: "shadowTrade",
   shadow_trade_mark: "shadowTradeMark",
   radar_state_transition: "radarStateTransition",
+  radar_alert: "radarAlert",
+  conviction_calibration: "convictionCalibration",
+  vol_surface_features: "volSurfaceFeatures",
+  trade_journal: "tradeJournal",
   option_attribution: "optionAttribution",
   missed_winner_event: "missedWinnerEvent",
   strategy_mutation_proposal: "strategyMutationProposal",
@@ -267,6 +271,25 @@ export async function promoteStrategyMutation(proposalId: string, approvedBy = "
   );
 }
 
+export async function acknowledgeRadarAlert(alertId: string): Promise<{ status: string; alert_id: string }> {
+  return sendJson(`/api/radar-alerts/${encodeURIComponent(alertId)}/ack`, "POST");
+}
+
+export interface TradeJournalEntryInput {
+  ticker: string;
+  contract_id: string;
+  event_id?: string | null;
+  strategy_version?: string;
+  opportunity?: Record<string, unknown>;
+  notes?: string;
+}
+
+export async function recordTradeJournalEntry(
+  entry: TradeJournalEntryInput,
+): Promise<{ status: string; journal_id: string }> {
+  return sendJson("/api/trade-journal", "POST", entry);
+}
+
 export function emptyPanelData(): PanelData {
   return {
     dashboard: {},
@@ -311,6 +334,10 @@ export function emptyPanelData(): PanelData {
     shadowTrade: EMPTY_TABLE,
     shadowTradeMark: EMPTY_TABLE,
     radarStateTransition: EMPTY_TABLE,
+    radarAlert: EMPTY_TABLE,
+    convictionCalibration: EMPTY_TABLE,
+    volSurfaceFeatures: EMPTY_TABLE,
+    tradeJournal: EMPTY_TABLE,
     optionAttribution: EMPTY_TABLE,
     missedWinnerEvent: EMPTY_TABLE,
     strategyMutationProposal: EMPTY_TABLE,
@@ -546,6 +573,10 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     shadowTrade: EMPTY_TABLE,
     shadowTradeMark: EMPTY_TABLE,
     radarStateTransition: EMPTY_TABLE,
+    radarAlert: EMPTY_TABLE,
+    convictionCalibration: EMPTY_TABLE,
+    volSurfaceFeatures: EMPTY_TABLE,
+    tradeJournal: EMPTY_TABLE,
     optionAttribution: EMPTY_TABLE,
     missedWinnerEvent: EMPTY_TABLE,
     strategyMutationProposal: EMPTY_TABLE,

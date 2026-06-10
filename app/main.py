@@ -51,6 +51,7 @@ from investment_panel.core.options_radar import (
     StrategyPromotionError,
     acknowledge_radar_alert,
     promote_strategy_mutation,
+    record_trade_journal_entry,
     refresh_strategy_proposal_evaluations,
 )
 from investment_panel.core.sources import source_detail_payload, source_ingestion_audit
@@ -80,6 +81,15 @@ class PaperOrderInput(BaseModel):
 
 class StrategyPromotionInput(BaseModel):
     approved_by: str = "joe"
+
+
+class TradeJournalInput(BaseModel):
+    ticker: str
+    contract_id: str
+    event_id: str | None = None
+    strategy_version: str = DEFAULT_STRATEGY_VERSION
+    opportunity: dict[str, Any] = {}
+    notes: str = ""
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
@@ -448,6 +458,37 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="unknown or already-acknowledged alert")
         _invalidate_context_cache()
         return {"status": "acknowledged", "alert_id": alert_id}
+
+    @app.get("/api/conviction-calibration")
+    def conviction_calibration() -> dict[str, Any]:
+        return _table_payload("conviction_calibration")
+
+    @app.get("/api/vol-surface-features")
+    def vol_surface_features() -> dict[str, Any]:
+        return _table_payload("vol_surface_features")
+
+    @app.get("/api/trade-journal")
+    def trade_journal() -> dict[str, Any]:
+        return _table_payload("trade_journal")
+
+    @app.post("/api/trade-journal")
+    def create_trade_journal_entry(payload: TradeJournalInput, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        init_db(db_path)
+        with db(db_path, read_only=False) as con:
+            journal_id = record_trade_journal_entry(
+                con,
+                ticker=payload.ticker,
+                contract_id=payload.contract_id,
+                event_id=payload.event_id,
+                strategy_version=payload.strategy_version,
+                opportunity=payload.opportunity,
+                notes=payload.notes,
+            )
+        _invalidate_context_cache()
+        return {"status": "recorded", "journal_id": journal_id}
 
     @app.get("/api/option-attributions")
     def option_attributions() -> dict[str, Any]:
