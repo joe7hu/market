@@ -111,7 +111,29 @@ STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
         "require_price_below_ma50": True,
         "require_rs_deteriorating": True,
     },
+    # Two-leg vertical (long lower-strike call + short higher-strike call). It is threaded
+    # through the pipeline as a synthetic single contract priced at the *net debit*
+    # (see persist_spread_snapshots / build_spread_snapshot_row): the feature/EV math
+    # treats it as a long call at the long strike, so its net delta is lower than a single
+    # call and its tracked option_type is the synthetic marker "call_spread".
+    "call_debit_spread_v1": {
+        **DEFAULT_STRATEGY_PARAMETERS,
+        "strategy_name": "call_debit_spread",
+        "strategy_family": "call_debit_spread",
+        "option_type": "call_spread",
+        "delta_min": 0.10,
+        "delta_max": 0.45,
+        "dte_min": 60,
+        "dte_max": 365,
+        "max_required_move_pct": 3.50,
+        "require_price_above_ma50": True,
+        "require_rs_improving": False,
+    },
 }
+
+# option_type markers that the radar treats as call-like (direction = +1) when building
+# features and pricing — the real "call" plus the synthetic "call_spread" debit vertical.
+CALL_LIKE_OPTION_TYPES = {"call", "call_spread"}
 
 THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
     "theme_ai_infrastructure": (
@@ -251,6 +273,7 @@ def refresh_options_radar(
     register_default_strategy(con, strategy_version)
     register_strategy_families(con)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
+    spread_snapshot_rows = persist_spread_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
     feature_rows = refresh_option_features(con, symbols=symbols, source=source)
     flow_rows = refresh_option_flow_features(con, symbols=symbols, source=source)
     stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
@@ -307,6 +330,7 @@ def refresh_options_radar(
     alert_rows = refresh_radar_alerts(con, strategy_version=strategy_version)
     return {
         "option_snapshots": snapshot_rows,
+        "spread_snapshots": spread_snapshot_rows,
         "option_features": feature_rows,
         "option_flow_features": flow_rows,
         "vol_surface_features": vol_surface_rows,
@@ -564,6 +588,170 @@ def persist_option_snapshots(
     return count
 
 
+def _spread_contract_id(ticker: str, expiration: Any, long_strike: float, short_strike: float) -> str:
+    """Deterministic id for a synthetic call debit spread. Stable across refreshes so the
+    mark/shadow-trade pipeline (which re-reads option_snapshot by contract_id over later
+    snapshot_times) re-prices the same structure from its legs."""
+
+    return f"{ticker}:{expiration}:{long_strike:g}-{short_strike:g}:call_spread"
+
+
+def _net_leg(long_value: Any, short_value: Any) -> float | None:
+    """Net of a long-minus-short leg attribute (premium or greek). ``None`` if either
+    side is missing so we never fabricate a half-known net."""
+
+    long_num = _number(long_value)
+    short_num = _number(short_value)
+    if long_num is None or short_num is None:
+        return None
+    return long_num - short_num
+
+
+def build_spread_snapshot_row(long_leg: dict[str, Any], short_leg: dict[str, Any]) -> dict[str, Any] | None:
+    """Synthesize a call debit spread as a single option_snapshot row priced at the net
+    debit (long_mid - short_mid). Greeks are netted (long - short); the synthetic strike is
+    the long strike and the synthetic option_type is ``call_spread``. Returns ``None`` when
+    the structure is not a real debit (mid <= 0) or the net mid is unpriceable."""
+
+    long_mid = _number(long_leg.get("mid"))
+    short_mid = _number(short_leg.get("mid"))
+    if long_mid is None or short_mid is None:
+        return None
+    net_debit = long_mid - short_mid
+    if net_debit <= 0:
+        return None
+    long_strike = _number(long_leg.get("strike"))
+    short_strike = _number(short_leg.get("strike"))
+    if long_strike is None or short_strike is None or short_strike <= long_strike:
+        return None
+    ticker = _normalize_symbol(long_leg.get("ticker"))
+    expiration = long_leg.get("expiration")
+    snapshot_time = _iso(long_leg.get("snapshot_time"))
+    net_bid = _net_leg(long_leg.get("bid"), short_leg.get("ask"))
+    if net_bid is not None:
+        net_bid = max(0.0, net_bid)
+    net_ask = _net_leg(long_leg.get("ask"), short_leg.get("bid"))
+    long_volume = _number(long_leg.get("volume"))
+    short_volume = _number(short_leg.get("volume"))
+    net_volume = min(long_volume, short_volume) if long_volume is not None and short_volume is not None else None
+    long_oi = _number(long_leg.get("open_interest"))
+    short_oi = _number(short_leg.get("open_interest"))
+    net_oi = min(long_oi, short_oi) if long_oi is not None and short_oi is not None else None
+    contract_id = _spread_contract_id(ticker, expiration, long_strike, short_strike)
+    raw = {
+        "structure": "call_debit_spread",
+        "long_strike": long_strike,
+        "short_strike": short_strike,
+        "width": short_strike - long_strike,
+        "long_mid": long_mid,
+        "short_mid": short_mid,
+        "net_debit": net_debit,
+        "long_contract_id": str(long_leg.get("contract_id")),
+        "short_contract_id": str(short_leg.get("contract_id")),
+    }
+    return {
+        "snapshot_time": snapshot_time,
+        "ticker": ticker,
+        "underlying_price": _number(long_leg.get("underlying_price")),
+        "expiration": expiration,
+        "strike": long_strike,
+        "option_type": "call_spread",
+        "bid": net_bid,
+        "ask": net_ask,
+        "mid": net_debit,
+        "last": _net_leg(long_leg.get("last"), short_leg.get("last")),
+        "volume": net_volume,
+        "open_interest": net_oi,
+        "iv": _number(long_leg.get("iv")),
+        "delta": _net_leg(long_leg.get("delta"), short_leg.get("delta")),
+        "gamma": _net_leg(long_leg.get("gamma"), short_leg.get("gamma")),
+        "theta": _net_leg(long_leg.get("theta"), short_leg.get("theta")),
+        "vega": _net_leg(long_leg.get("vega"), short_leg.get("vega")),
+        "dte": _integer(long_leg.get("dte")),
+        "spread_pct": _spread_pct(net_bid, net_ask, net_debit),
+        "data_source": str(long_leg.get("data_source") or "unknown"),
+        "contract_id": contract_id,
+        "raw": raw,
+    }
+
+
+def persist_spread_snapshots(
+    con: Any,
+    symbols: list[str] | None = None,
+    *,
+    source: str | None = None,
+    snapshot_time: str | None = None,
+) -> int:
+    """Synthesize call debit spread rows into option_snapshot from the single-leg call
+    snapshots persist_option_snapshots just wrote. For each (snapshot_time, ticker,
+    data_source, expiration) cohort of calls, pairs consecutive strikes into a long-lower /
+    short-higher debit vertical. Idempotent (INSERT OR REPLACE on the deterministic
+    contract_id) — re-running a snapshot re-prices the same spreads."""
+
+    symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
+    observed_filter = "AND s.snapshot_time = TRY_CAST(? AS TIMESTAMP)" if snapshot_time else ""
+    params: list[Any] = [*source_filter["params"], *symbol_filter["params"]]
+    if snapshot_time:
+        params.append(snapshot_time)
+    rows = query_rows(
+        con,
+        f"""
+        SELECT *
+        FROM option_snapshot s
+        WHERE s.option_type = 'call' {source_filter["sql"]} {symbol_filter["sql"]} {observed_filter}
+        ORDER BY s.snapshot_time, s.ticker, s.data_source, s.expiration, s.strike
+        """,
+        params,
+    )
+    cohorts: dict[tuple[Any, Any, Any, Any], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (row.get("snapshot_time"), row.get("ticker"), row.get("data_source"), row.get("expiration"))
+        cohorts.setdefault(key, []).append(row)
+    count = 0
+    for legs in cohorts.values():
+        legs.sort(key=lambda r: _number(r.get("strike")) if _number(r.get("strike")) is not None else math.inf)
+        for long_leg, short_leg in zip(legs, legs[1:]):
+            spread = build_spread_snapshot_row(long_leg, short_leg)
+            if spread is None:
+                continue
+            con.execute(
+                """
+                INSERT OR REPLACE INTO option_snapshot
+                (snapshot_time, ticker, underlying_price, expiration, strike, option_type, bid, ask, mid,
+                 last, volume, open_interest, iv, delta, gamma, theta, vega, dte, spread_pct,
+                 data_source, contract_id, raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    spread["snapshot_time"],
+                    spread["ticker"],
+                    spread["underlying_price"],
+                    spread["expiration"],
+                    spread["strike"],
+                    spread["option_type"],
+                    spread["bid"],
+                    spread["ask"],
+                    spread["mid"],
+                    spread["last"],
+                    spread["volume"],
+                    spread["open_interest"],
+                    spread["iv"],
+                    spread["delta"],
+                    spread["gamma"],
+                    spread["theta"],
+                    spread["vega"],
+                    spread["dte"],
+                    spread["spread_pct"],
+                    spread["data_source"],
+                    spread["contract_id"],
+                    json_dumps(spread["raw"]),
+                ],
+            )
+            count += 1
+    return count
+
+
 def refresh_option_features(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
@@ -616,9 +804,9 @@ def build_option_feature(snapshot: dict[str, Any], iv_history: list[float]) -> d
     strike = _number(snapshot.get("strike"))
     underlying = _number(snapshot.get("underlying_price"))
     option_type = str(snapshot.get("option_type") or "").lower()
-    if premium is None or premium <= 0 or strike is None or option_type not in {"call", "put"}:
+    if premium is None or premium <= 0 or strike is None or option_type not in (CALL_LIKE_OPTION_TYPES | {"put"}):
         return None
-    direction = 1 if option_type == "call" else -1
+    direction = 1 if option_type in CALL_LIKE_OPTION_TYPES else -1
     required_2x = max(0.0, strike + direction * premium * 2)
     required_5x = max(0.0, strike + direction * premium * 5)
     required_10x = max(0.0, strike + direction * premium * 10)
