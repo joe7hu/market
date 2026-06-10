@@ -16,6 +16,12 @@ from investment_panel.analysis.option_ev import (
     ev_inverse_buy_under,
     ev_score,
 )
+from investment_panel.analysis.stats import (
+    apply_calibration_map,
+    brier_score,
+    isotonic_increasing,
+    wilson_interval,
+)
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.decision import is_market_open
 from investment_panel.core.options_intelligence import (
@@ -225,6 +231,7 @@ def refresh_options_radar(
         marked_rows = mark_shadow_trades(con)
         mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
         candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
+        calibration_bins = refresh_conviction_calibration(con, strategy_version=strategy_version)
         candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
         transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
         exited_rows = apply_shadow_trade_exits(con, strategy_version=strategy_version)
@@ -234,6 +241,7 @@ def refresh_options_radar(
     else:
         shadow_rows = marked_rows = mark_rows = candidate_mark_rows = candidate_attribution_rows = 0
         transition_rows = exited_rows = attribution_rows = missed_rows = proposal_rows = 0
+        calibration_bins = 0
     if include_agent_work:
         from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work
 
@@ -262,6 +270,7 @@ def refresh_options_radar(
         "shadow_trades_marked": marked_rows,
         "shadow_trade_marks": mark_rows,
         "candidate_event_marks": candidate_mark_rows,
+        "conviction_calibration_bins": calibration_bins,
         "candidate_event_attributions": candidate_attribution_rows,
         "radar_state_transitions": transition_rows,
         "shadow_trades_exited": exited_rows,
@@ -1600,7 +1609,8 @@ def build_option_radar_opportunity(
     snapshot_time = _iso(candidate_rows[0].get("snapshot_time")) if candidate_rows else ""
     source_context = _source_signal_context(con, ticker, snapshot_time)
     qqq_above = _qqq_above_200d(con, snapshot_time, {})
-    details = [_opportunity_candidate_detail(row, source_context=source_context, qqq_above_200d=qqq_above) for row in candidate_rows]
+    calibration = load_conviction_calibration(con, strategy_version)
+    details = [_opportunity_candidate_detail(row, source_context=source_context, qqq_above_200d=qqq_above, calibration=calibration) for row in candidate_rows]
     details = [detail for detail in details if detail]
     if not details:
         return None
@@ -1665,6 +1675,7 @@ def _opportunity_candidate_detail(
     *,
     source_context: dict[str, Any],
     qqq_above_200d: bool | None,
+    calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_time = _iso(row.get("snapshot_time"))
     raw = _json(row.get("raw"))
@@ -1672,7 +1683,7 @@ def _opportunity_candidate_detail(
     hard_rejects = [str(item) for item in raw.get("hard_rejects", []) if item] if isinstance(raw.get("hard_rejects"), list) else []
     positives = [str(item) for item in raw.get("positives", []) if item] if isinstance(raw.get("positives"), list) else []
     validation = _opportunity_validation(row)
-    scores = _opportunity_scores(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
+    scores = _opportunity_scores(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, calibration=calibration)
     blockers = _extreme_opportunity_blockers(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, scores=scores)
     data_contract = _opportunity_data_contract(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
     conviction = scores["conviction_score"]
@@ -1819,7 +1830,8 @@ def _opportunity_scores(
     validation: dict[str, Any],
     source_context: dict[str, Any],
     qqq_above_200d: bool | None,
-) -> dict[str, float]:
+    calibration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     required_move = _number(row.get("required_move_pct"))
     convexity = _number(row.get("convexity_score")) or 0.0
     liquidity = _number(row.get("liquidity_score")) or 0.0
@@ -1830,7 +1842,13 @@ def _opportunity_scores(
     quality_status = str(row.get("quality_status") or "ok").lower()
 
     move_score = 0.0 if required_move is None else max(0.0, min(100.0, 100.0 - required_move * 32.0))
-    asymmetry = min(100.0, convexity * 0.55 + move_score * 0.45)
+    # EV asymmetry (probability/theta-aware) supersedes the linear convexity+move proxy
+    # when the contract was priceable; otherwise fall back to the legacy proxy.
+    ev = _json(row.get("raw")).get("ev") or {}
+    ev_multiple = _number(ev.get("ev_multiple"))
+    ev_p2x = _number(ev.get("p_2x"))
+    ev_asymmetry = ev_score(ev_multiple, spread) if ev_multiple is not None else None
+    asymmetry = ev_asymmetry if ev_asymmetry is not None else min(100.0, convexity * 0.55 + move_score * 0.45)
 
     spread_score = 45.0 if spread is None else max(0.0, min(100.0, 100.0 - spread * 360.0))
     cap_room_score = 45.0
@@ -1847,7 +1865,7 @@ def _opportunity_scores(
     survivability = min(100.0, dte_score * 0.40 + liquidity * 0.30 + quality_score * 0.30)
     learning = _learning_score(row)
     theme_bonus = _theme_watch_score(_theme_watch_matches(row)) * 0.60
-    conviction = (
+    base_conviction = (
         asymmetry * 0.24
         + entry * 0.20
         + evidence * 0.20
@@ -1857,6 +1875,17 @@ def _opportunity_scores(
         + learning * 0.04
         + theme_bonus
     )
+    # Probability-grounded conviction: calibrated P(2x) scaled by EV headroom. The
+    # multi-factor base score becomes context (evidence/regime/survivability) blended
+    # behind the EV signal rather than the primary driver. Identity P(2x) until the
+    # calibration map has >=30 mature observations.
+    cal_p2x = calibrated_p2x(ev_p2x, calibration) if ev_p2x is not None else None
+    ev_conviction = (
+        100.0 * cal_p2x * min(1.0, (ev_multiple or 0.0) / 2.0)
+        if cal_p2x is not None and ev_multiple is not None
+        else None
+    )
+    conviction = (0.55 * ev_conviction + 0.45 * base_conviction) if ev_conviction is not None else base_conviction
     return {
         "conviction_score": round(max(0.0, min(100.0, conviction)), 2),
         "asymmetry_score": round(asymmetry, 2),
@@ -1866,6 +1895,9 @@ def _opportunity_scores(
         "regime_score": round(regime, 2),
         "survivability_score": round(survivability, 2),
         "learning_score": round(learning, 2),
+        "calibrated_p2x": round(cal_p2x, 4) if cal_p2x is not None else None,
+        "ev_conviction": round(ev_conviction, 2) if ev_conviction is not None else None,
+        "ev_multiple": round(ev_multiple, 4) if ev_multiple is not None else None,
     }
 
 
@@ -2941,6 +2973,176 @@ def _mark_for_snapshot(marks: list[dict[str, Any]], snapshot_time: str) -> dict[
     if not active:
         return None
     return active[-1]
+
+
+MIN_CALIBRATION_MATURE_DAYS = 60
+MIN_CALIBRATION_MATURE_OBS = 30
+CALIBRATION_SUMMARY_BIN = -1
+
+
+def build_conviction_calibration(
+    samples: list[tuple[float, int, int]],
+    *,
+    bins: int = 10,
+    min_mature: int = MIN_CALIBRATION_MATURE_OBS,
+) -> tuple[list[dict[str, Any]], list[tuple[float, float]], bool]:
+    """Bin predicted P(2x) against realized outcomes and fit a monotone calibration map.
+
+    ``samples`` are ``(predicted_p2x, outcome_2x, outcome_5x)`` over mature events.
+    Returns ``(bin_rows, calibration_map, calibrated)``. ``calibrated`` is False (=>
+    identity map, UI labels "uncalibrated") until ``min_mature`` observations exist.
+    """
+
+    clean = [(p, o2, o5) for p, o2, o5 in samples if p is not None and o2 is not None]
+    mature_n = len(clean)
+    calibrated = mature_n >= min_mature
+    if not clean:
+        return [], [], False
+    buckets: dict[int, list[tuple[float, int, int]]] = defaultdict(list)
+    for p, o2, o5 in clean:
+        buckets[min(bins - 1, max(0, int(p * bins)))].append((p, o2, o5))
+    bin_rows: list[dict[str, Any]] = []
+    map_points: list[tuple[float, float, float]] = []
+    for idx in range(bins):
+        members = buckets.get(idx, [])
+        if not members:
+            continue
+        n = len(members)
+        predicted = sum(m[0] for m in members) / n
+        succ2 = sum(m[1] for m in members)
+        realized2 = succ2 / n
+        realized5 = sum(m[2] for m in members) / n
+        lo, hi = wilson_interval(succ2, n)
+        bin_rows.append(
+            {
+                "bin_index": idx,
+                "bin_lo": idx / bins,
+                "bin_hi": (idx + 1) / bins,
+                "n": n,
+                "predicted_p2x": round(predicted, 6),
+                "realized_p2x": round(realized2, 6),
+                "realized_p5x": round(realized5, 6),
+                "wilson_lo": round(lo, 6),
+                "wilson_hi": round(hi, 6),
+                "brier": brier_score([(m[0], m[1]) for m in members]),
+            }
+        )
+        map_points.append((predicted, realized2, n))
+    calibration_map = [(x, y) for x, y, _w in isotonic_increasing(map_points)]
+    return bin_rows, calibration_map, calibrated
+
+
+def refresh_conviction_calibration(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    """Join predicted P(2x) (from candidate_event.raw.ev) to realized mark outcomes for
+    mature events and persist calibration bins + the monotone map for ``strategy_version``."""
+
+    rows = query_rows(
+        con,
+        """
+        WITH latest_mark AS (
+            SELECT *
+            FROM candidate_event_mark
+            QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY mark_time DESC) = 1
+        )
+        SELECT ce.event_id, ce.snapshot_time, ce.raw AS event_raw,
+               m.mark_time, m.time_to_2x, m.time_to_5x, m.max_return_since_alert
+        FROM candidate_event ce
+        JOIN latest_mark m ON m.event_id = ce.event_id
+        WHERE ce.strategy_version = ?
+        """,
+        [strategy_version],
+    )
+    samples: list[tuple[float, int, int]] = []
+    for row in rows:
+        observed_days = _elapsed_days(row.get("snapshot_time"), row.get("mark_time"))
+        if observed_days is None or observed_days < MIN_CALIBRATION_MATURE_DAYS:
+            continue
+        ev = _json(row.get("event_raw")).get("ev") or {}
+        predicted = _number(ev.get("p_2x"))
+        if predicted is None:
+            continue
+        peak = _number(row.get("max_return_since_alert")) or 0.0
+        outcome_2x = 1 if (row.get("time_to_2x") is not None or peak >= 1.0) else 0
+        outcome_5x = 1 if (row.get("time_to_5x") is not None or peak >= 4.0) else 0
+        samples.append((predicted, outcome_2x, outcome_5x))
+
+    bin_rows, calibration_map, calibrated = build_conviction_calibration(samples)
+    as_of = datetime.now(timezone.utc).isoformat()
+    con.execute("DELETE FROM conviction_calibration WHERE strategy_version = ?", [strategy_version])
+    written = 0
+    for bin_row in bin_rows:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO conviction_calibration
+            (strategy_version, bin_index, bin_lo, bin_hi, n, predicted_p2x,
+             realized_p2x, realized_p5x, wilson_lo, wilson_hi, brier, mature_n,
+             calibrated, as_of, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                strategy_version,
+                bin_row["bin_index"],
+                bin_row["bin_lo"],
+                bin_row["bin_hi"],
+                bin_row["n"],
+                bin_row["predicted_p2x"],
+                bin_row["realized_p2x"],
+                bin_row["realized_p5x"],
+                bin_row["wilson_lo"],
+                bin_row["wilson_hi"],
+                bin_row["brier"],
+                len(samples),
+                calibrated,
+                as_of,
+                json_dumps({}),
+            ],
+        )
+        written += 1
+    # Summary row carries the monotone map and the calibrated flag for the loader.
+    con.execute(
+        """
+        INSERT OR REPLACE INTO conviction_calibration
+        (strategy_version, bin_index, mature_n, calibrated, as_of, raw)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            strategy_version,
+            CALIBRATION_SUMMARY_BIN,
+            len(samples),
+            calibrated,
+            as_of,
+            json_dumps({"calibration_map": calibration_map, "calibrated": calibrated, "mature_n": len(samples)}),
+        ],
+    )
+    return written
+
+
+def load_conviction_calibration(con: Any, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
+    """Load the stored calibration map + calibrated flag. Empty/identity until enough
+    mature observations have accrued."""
+
+    rows = query_rows(
+        con,
+        "SELECT raw, calibrated FROM conviction_calibration WHERE strategy_version = ? AND bin_index = ?",
+        [strategy_version, CALIBRATION_SUMMARY_BIN],
+    )
+    if not rows:
+        return {"calibration_map": [], "calibrated": False}
+    raw = _json(rows[0].get("raw"))
+    calibrated = bool(raw.get("calibrated"))
+    mapping = raw.get("calibration_map") or []
+    pairs = [(float(x), float(y)) for x, y in mapping] if calibrated else []
+    return {"calibration_map": pairs, "calibrated": calibrated}
+
+
+def calibrated_p2x(predicted: float | None, calibration: dict[str, Any] | None) -> float | None:
+    """Apply a loaded calibration map to a predicted P(2x); identity when uncalibrated."""
+
+    if predicted is None:
+        return None
+    if not calibration or not calibration.get("calibrated"):
+        return max(0.0, min(1.0, predicted))
+    return apply_calibration_map(predicted, calibration.get("calibration_map") or [])
 
 
 def refresh_radar_state_transitions(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:

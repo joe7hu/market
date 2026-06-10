@@ -427,6 +427,25 @@ CREATE TABLE IF NOT EXISTS option_flow_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS conviction_calibration (
+    strategy_version TEXT,
+    bin_index INTEGER,
+    bin_lo DOUBLE,
+    bin_hi DOUBLE,
+    n INTEGER,
+    predicted_p2x DOUBLE,
+    realized_p2x DOUBLE,
+    realized_p5x DOUBLE,
+    wilson_lo DOUBLE,
+    wilson_hi DOUBLE,
+    brier DOUBLE,
+    mature_n INTEGER,
+    calibrated BOOLEAN,
+    as_of TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(strategy_version, bin_index)
+);
+
 CREATE TABLE IF NOT EXISTS vol_surface_features (
     snapshot_time TIMESTAMP,
     ticker TEXT,
