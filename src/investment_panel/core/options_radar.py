@@ -9,6 +9,13 @@ from datetime import date, datetime, timezone
 from statistics import mean
 from typing import Any
 
+from investment_panel.analysis.option_ev import (
+    EVInputs,
+    compute_ev,
+    conviction_from_ev,
+    ev_inverse_buy_under,
+    ev_score,
+)
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.decision import is_market_open
 from investment_panel.core.source_ingestion.utils import stable_id
@@ -609,6 +616,10 @@ def compute_stock_feature(con: Any, ticker: str, snapshot_time: str) -> dict[str
             "price_rows": len(prices),
             "qqq_rows": len(qqq_prices),
             "source": "prices_daily",
+            # Realized vol carried in raw (no schema migration): the EV engine and the
+            # iv_rv cheap-convexity test read rv_60d from here.
+            "rv_20d": _realized_vol(close_values, 20),
+            "rv_60d": _realized_vol(close_values, 60),
         },
     }
     con.execute(
@@ -668,6 +679,7 @@ def generate_candidate_events(
             sf.rs_vs_qqq_20d,
             sf.base_length_days,
             sf.breakout_level,
+            sf.raw AS stock_features_raw,
             i.asset_class,
             i.name AS instrument_name,
             i.sector,
@@ -892,7 +904,15 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         else:
             positives.append("rs_vs_qqq_improving")
 
-    buy_under = _buy_under(row, strategy)
+    ev_pair = _candidate_ev(row, option_type=option_type, dte=dte)
+    ev_inputs = ev_pair[0] if ev_pair else None
+    ev_result = ev_pair[1] if ev_pair else None
+    ev_asymmetry = ev_score(ev_result.ev_multiple, spread_pct) if ev_result else None
+    if ev_result is not None and ev_result.ev_multiple >= 2.0:
+        positives.append("ev_asymmetry_2x")
+
+    ev_buy_under = ev_inverse_buy_under(ev_inputs) if ev_inputs is not None else None
+    buy_under = ev_buy_under if ev_buy_under is not None else _buy_under(row, strategy)
     fill = premium * (1 + float(strategy["fill_slippage_pct"]))
     if buy_under is None:
         blockers.append("buy_under_unavailable")
@@ -924,7 +944,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
         "buy_under": buy_under,
         "trigger_reason": ", ".join(reasons),
         "thesis_id": row.get("thesis_id"),
-        "score": _candidate_score(row, state, watch_themes=watch_themes),
+        "score": _candidate_score(row, state, watch_themes=watch_themes, ev_asymmetry=ev_asymmetry),
         "quality_status": quality["status"],
         "quality_flags": quality["flags"],
         "raw": {
@@ -937,7 +957,28 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             "expiration": str(row.get("expiration")),
             "strike": strike,
             "option_type": option_type,
+            "ev": _ev_raw(ev_result),
         },
+    }
+
+
+def _ev_raw(ev_result: Any) -> dict[str, Any] | None:
+    """Serializable EV summary stashed on the candidate event for scoring,
+    calibration (Phase 2) and the trader UI (Phase 4). ``None`` when unpriceable."""
+
+    if ev_result is None:
+        return None
+    return {
+        "ev_multiple": ev_result.ev_multiple,
+        "p_2x": ev_result.p_2x,
+        "p_5x": ev_result.p_5x,
+        "p_10x": ev_result.p_10x,
+        "ev_per_theta": ev_result.ev_per_theta,
+        "sigma_eff": ev_result.sigma_eff,
+        "conviction_ev": conviction_from_ev(ev_result.p_2x, ev_result.ev_multiple),
+        "horizons": ev_result.horizons,
+        "scenario_curve": ev_result.scenario_curve,
+        "basis": ev_result.basis,
     }
 
 
@@ -4004,6 +4045,25 @@ def _atr_pct(rows: list[dict[str, Any]], period: int = 14) -> float | None:
     return mean(true_ranges) / close
 
 
+def _realized_vol(closes: list[float], window: int) -> float | None:
+    """Annualized close-to-close realized volatility over the trailing ``window`` days.
+
+    Used as the cheap-convexity reference: ``iv_rv_ratio = atm_iv / rv_60d`` flags when
+    option IV is cheap relative to how much the stock actually moves, and as the floor
+    for the EV engine's scenario width when realized vol exceeds implied.
+    """
+
+    clean = [c for c in closes if c is not None and c > 0]
+    if len(clean) < window + 1:
+        return None
+    rets = [math.log(clean[i] / clean[i - 1]) for i in range(len(clean) - window, len(clean))]
+    if len(rets) < 2:
+        return None
+    avg = sum(rets) / len(rets)
+    variance = sum((r - avg) ** 2 for r in rets) / (len(rets) - 1)
+    return round(math.sqrt(variance) * math.sqrt(252), 6)
+
+
 def _volume_ratio(volumes: list[float]) -> float | None:
     if len(volumes) < 20:
         return None
@@ -4038,7 +4098,42 @@ def _buy_under(row: dict[str, Any], strategy: dict[str, Any]) -> float | None:
     return max(0.0, (underlying * (1 + max_move) - strike) / 10)
 
 
-def _candidate_score(row: dict[str, Any], state: str, watch_themes: list[str] | None = None) -> float:
+def _candidate_ev(row: dict[str, Any], *, option_type: str, dte: int | None) -> tuple[EVInputs, Any] | None:
+    """Build EV-engine inputs from a candidate row and price it. Returns ``(inputs,
+    EVResult)`` or ``None`` when the required fields (spot/strike/dte/premium/iv)
+    are missing. ``rv_60d`` comes from the stock_features raw blob threaded through
+    the candidate query."""
+
+    premium = _number(row.get("mid"))
+    spot = _number(row.get("underlying_price"))
+    strike = _number(row.get("strike"))
+    iv = _number(row.get("iv"))
+    if premium is None or premium <= 0 or spot is None or strike is None or dte is None or iv is None:
+        return None
+    stock_raw = _json(row.get("stock_features_raw"))
+    rv_60d = _number(stock_raw.get("rv_60d"))
+    inputs = EVInputs(
+        option_type=option_type if option_type in {"call", "put"} else "call",
+        spot=spot,
+        strike=strike,
+        dte=int(dte),
+        premium=premium,
+        iv=iv,
+        rv_60d=rv_60d,
+    )
+    result = compute_ev(inputs)
+    if result is None:
+        return None
+    return inputs, result
+
+
+def _candidate_score(
+    row: dict[str, Any],
+    state: str,
+    watch_themes: list[str] | None = None,
+    *,
+    ev_asymmetry: float | None = None,
+) -> float:
     if state == "REJECT":
         return 0.0
     required_move = _number(row.get("required_move_10x_pct")) or 10
@@ -4046,7 +4141,13 @@ def _candidate_score(row: dict[str, Any], state: str, watch_themes: list[str] | 
     convexity = _number(row.get("convexity_score")) or 0
     rs = _number(row.get("rs_vs_qqq_20d")) or 0
     technical = 100.0 if (_number(row.get("price")) or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
-    score = (max(0.0, 100.0 - required_move * 20.0) * 0.35) + (liquidity * 0.20) + (convexity * 0.30) + (technical * 0.10) + (max(-20.0, min(20.0, rs * 100)) + 20) * 0.05
+    rs_term = (max(-20.0, min(20.0, rs * 100)) + 20) * 0.05
+    if ev_asymmetry is not None:
+        # EV-derived asymmetry (probability- and theta-aware) replaces the linear
+        # required-move and convexity proxies; liquidity/technical/RS keep their weight.
+        score = (ev_asymmetry * 0.65) + (liquidity * 0.20) + (technical * 0.10) + rs_term
+    else:
+        score = (max(0.0, 100.0 - required_move * 20.0) * 0.35) + (liquidity * 0.20) + (convexity * 0.30) + (technical * 0.10) + rs_term
     score += _theme_watch_score(watch_themes or _theme_watch_matches(row))
     if state == "WATCH":
         score *= 0.70
