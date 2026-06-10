@@ -646,6 +646,127 @@ def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, m
     assert rows == [{"symbol": "TSLA"}]
 
 
+def test_screener_rate_limit_does_not_abort_option_ingestion(tmp_path: Path, monkeypatch) -> None:
+    """A scanner 429 on the discovery screener must not stop option chains.
+
+    The screener is a discovery surface; option chains are the only source of
+    fresh radar snapshots. A rate limit on the former should be recorded but
+    leave the latter intact.
+    """
+
+    class ScreenerRateLimitedProvider:
+        def __init__(self, _runner: object) -> None:
+            pass
+
+        def status(self) -> list[dict[str, object]]:
+            return [{"connected": False}]
+
+        def quote(self, _symbol: str) -> dict[str, object]:
+            return {"symbol": "NASDAQ:TSLA", "close": 100, "currency": "USD"}
+
+        def screener(self, limit: int = 50) -> list[dict[str, object]]:
+            raise OpenCliError("scanner 429: rate limited")
+
+        def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+            raise OpenCliError("scanner 429: rate limited")
+
+        def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
+            return [{"expiry": "2027-06-02", "dte": 365, "contracts_count": 180}]
+
+        def options_chain(self, _symbol: str, expiry: str | None = None, strikes_around_spot: int = 6) -> list[dict[str, object]]:
+            return [{"expiry": expiry, "strike": 120, "type": "call", "bid": 4.8, "ask": 5.2, "mid": 5.0, "iv": 0.42, "delta": 0.31}]
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(
+            opencli=SimpleNamespace(enabled=True, command="opencli", timeout_seconds=1),
+            tradingview=SimpleNamespace(
+                enabled=True,
+                options_symbols=["TSLA"],
+                screener_limit=50,
+                news_limit=50,
+                strikes_around_spot=6,
+                personal_surfaces_enabled=False,
+            ),
+        ),
+        watchlist=[{"symbol": "TSLA", "asset_class": "equity"}],
+    )
+    monkeypatch.setattr(free_sources_core, "TradingViewProvider", ScreenerRateLimitedProvider)
+    with db(db_path) as con:
+        upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
+        result = free_sources_core.update_tradingview_sources(con, config)
+        chain_rows = query_rows(con, "SELECT count(*) AS count FROM options_chain")
+
+    assert result["status"] == "ok"  # refresh survived the screener rate limit
+    assert "screener_error" in result
+    assert "news_error" in result
+    assert result["chains"] == 1  # option chains still ingested
+    assert chain_rows == [{"count": 1}]
+
+
+def test_sustained_rate_limit_trips_option_scan_circuit_breaker(tmp_path: Path, monkeypatch) -> None:
+    """A saturated upstream limiter must stop the scan early, not crawl the universe."""
+
+    from investment_panel.providers import OpenCliRateLimitError
+
+    attempted: list[str] = []
+
+    class AlwaysRateLimitedProvider:
+        def __init__(self, _runner: object) -> None:
+            pass
+
+        def status(self) -> list[dict[str, object]]:
+            return [{"connected": False}]
+
+        def quote(self, _symbol: str) -> dict[str, object]:
+            return {}
+
+        def screener(self, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+            return []
+
+        def options_expiries(self, symbol: str) -> list[dict[str, object]]:
+            attempted.append(symbol)
+            raise OpenCliRateLimitError("scanner 429: rate limited")
+
+        def options_chain(self, *_args: object, **_kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    universe = [f"SYM{i}" for i in range(20)]
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(
+            opencli=SimpleNamespace(enabled=True, command="opencli", timeout_seconds=1),
+            tradingview=SimpleNamespace(
+                enabled=True,
+                options_symbols=universe,
+                screener_limit=0,
+                news_limit=0,
+                strikes_around_spot=6,
+                personal_surfaces_enabled=False,
+            ),
+        ),
+        watchlist=[],
+    )
+    monkeypatch.setattr(free_sources_core, "TradingViewProvider", AlwaysRateLimitedProvider)
+    with db(db_path) as con:
+        for symbol in universe:
+            upsert_instrument(con, {"symbol": symbol, "name": symbol, "asset_class": "equity"})
+        result = free_sources_core.update_tradingview_sources(con, config)
+
+    # The breaker stops after 4 consecutive rate-limited symbols rather than
+    # attempting all 20. Each symbol is tried under a few exchange-prefixed
+    # candidates, so count distinct base symbols reached.
+    base_symbols = {entry.split(":")[-1] for entry in attempted}
+    assert "options_circuit_breaker" in result
+    assert len(base_symbols) <= 5
+    assert len(base_symbols) < len(universe)
+
+
 def test_infer_event_date_prioritizes_earnings_over_dividends() -> None:
     assert (
         infer_event_date(

@@ -48,6 +48,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
+  const marketSession = textField(radarSummary, ["market_session"]);
+  const frozenToRth = textField(radarSummary, ["frozen_to_last_rth"]) === "Yes";
   const optionThesisAgent = optionThesisAgentState(data);
 
   const opportunityCandidates = useMemo(
@@ -102,8 +104,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       subtitle="Layered signal brief for extreme options setups: strength, blockers, learning impact, and thesis validation."
       actions={
         <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge tone={latestSnapshot ? "good" : "muted"}>{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
-          <StatusBadge tone="info">Hourly deterministic</StatusBadge>
+          {(() => {
+            const badge = sessionBadge(marketSession, frozenToRth, latestSnapshot);
+            return <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>;
+          })()}
+          <StatusBadge tone="muted">{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
           <StatusBadge tone="info">{displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy")}</StatusBadge>
         </div>
       }
@@ -2875,6 +2880,52 @@ function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+// The backend writes naive UTC ISO timestamps (datetime.utcnow().isoformat()),
+// so append a Z when no timezone is present before measuring age.
+function parseUtcMillis(value: string): number {
+  if (!value) return 0;
+  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value);
+  const date = new Date(hasZone ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function formatAge(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+// Honest freshness state for the snapshot. Replaces a static "Hourly
+// deterministic" badge that implied freshness even when data was days stale.
+function freshnessBadge(snapshotIso: string): { label: string; tone: Tone } {
+  const ms = parseUtcMillis(snapshotIso);
+  if (!ms) return { label: "No data", tone: "muted" };
+  const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (minutes < 90) return { label: `Live · ${formatAge(minutes)} ago`, tone: "good" };
+  if (minutes < 24 * 60) return { label: `${formatAge(minutes)} old`, tone: "warn" };
+  return { label: `Stale · ${formatAge(minutes)} old`, tone: "bad" };
+}
+
+// Session-aware header badge. During RTH the freshness/age is what matters; when
+// the market is closed we say so (and that we're frozen on the last regular-hours
+// snapshot) instead of showing a misleading "Live"/"Stale" age.
+function sessionBadge(
+  marketSession: string,
+  frozen: boolean,
+  snapshotIso: string,
+): { label: string; tone: Tone } {
+  if (marketSession === "closed") {
+    const suffix = frozen && snapshotIso ? ` · last RTH ${formatDate(snapshotIso)}` : "";
+    return { label: `Market closed${suffix}`, tone: "info" };
+  }
+  if (marketSession === "rth") {
+    const fresh = freshnessBadge(snapshotIso);
+    return { label: `RTH · ${fresh.label}`, tone: fresh.tone };
+  }
+  return freshnessBadge(snapshotIso); // session unknown — fall back to freshness
 }
 
 function formatShortDate(value: string): string {

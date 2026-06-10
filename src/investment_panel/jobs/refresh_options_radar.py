@@ -36,6 +36,30 @@ def run_deterministic_only(
     return {"database": str(config.database.duckdb_path), "strategy_version": strategy_version, "agent_work": "skipped", **result}
 
 
+def run_signal_only(
+    config_path: str | None = None,
+    symbols: list[str] | None = None,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Fast fresh-signal rematerialization for the continuous scheduler: skips the
+    agent work AND the heavy learning/backtest machinery so it stays cheap.
+    ``source`` scopes it to one option provider (e.g. 'ibkr')."""
+
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    with db(config.database.duckdb_path) as con:
+        result = refresh_options_radar(
+            con,
+            symbols=symbols,
+            strategy_version=strategy_version,
+            source=source,
+            include_agent_work=False,
+            include_learning=False,
+        )
+    return {"database": str(config.database.duckdb_path), "strategy_version": strategy_version, "mode": "signal_only", "source": source or "all", **result}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")

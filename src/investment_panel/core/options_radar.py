@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from statistics import mean
 from typing import Any
 
 from investment_panel.core.db import json_dumps, query_rows
+from investment_panel.core.decision import is_market_open
 from investment_panel.core.source_ingestion.utils import stable_id
 
 
@@ -127,6 +128,49 @@ THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _parse_utc(value: Any) -> datetime | None:
+    """Parse a snapshot timestamp into a tz-aware UTC datetime (naive == UTC)."""
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def market_session(now: datetime | None = None) -> str:
+    """Current US equity-options session: 'rth' (regular trading) or 'closed'."""
+
+    reference = now or datetime.now(timezone.utc)
+    return "rth" if is_market_open(reference) else "closed"
+
+
+def snapshot_is_rth(snapshot_time: Any) -> bool:
+    """Whether a snapshot's data was captured during regular trading hours."""
+
+    parsed = _parse_utc(snapshot_time)
+    return bool(parsed and is_market_open(parsed))
+
+
+def display_snapshot_time(snapshot_times: list[str], now: datetime | None = None) -> str | None:
+    """Snapshot to present. During RTH: the newest. When closed: freeze on the
+    newest regular-hours snapshot so the radar shows the last tradeable state
+    instead of an off-hours volume=0 capture."""
+
+    times = sorted({str(t) for t in snapshot_times if t})
+    if not times:
+        return None
+    if market_session(now) == "rth":
+        return times[-1]
+    rth = [t for t in times if snapshot_is_rth(t)]
+    return rth[-1] if rth else times[-1]
+
+
 def refresh_options_radar(
     con: Any,
     symbols: list[str] | None = None,
@@ -135,8 +179,17 @@ def refresh_options_radar(
     source: str | None = None,
     snapshot_time: str | None = None,
     include_agent_work: bool = True,
+    include_learning: bool = True,
 ) -> dict[str, int]:
-    """Refresh the deterministic radar tables from already-ingested market data."""
+    """Refresh the deterministic radar tables from already-ingested market data.
+
+    ``include_learning`` controls the heavy backtest/attribution machinery
+    (shadow trades, marks, attributions, transitions, mutation proposals,
+    cohorts) that reprocesses the full event-sourced history each run. The
+    continuous scheduler runs with it OFF so the fast fresh-signal path
+    (snapshots -> features -> candidates -> opportunities) stays cheap; the
+    learning pass runs on a slower cadence.
+    """
 
     register_default_strategy(con, strategy_version)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
@@ -154,16 +207,20 @@ def refresh_options_radar(
             "agent_theses_attached": 0,
             "agent_thesis_validations": 0,
         }
-    shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
-    marked_rows = mark_shadow_trades(con)
-    mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
-    candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
-    candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
-    transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
-    exited_rows = apply_shadow_trade_exits(con, strategy_version=strategy_version)
-    attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
-    missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
-    proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
+    if include_learning:
+        shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
+        marked_rows = mark_shadow_trades(con)
+        mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
+        candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
+        candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
+        transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
+        exited_rows = apply_shadow_trade_exits(con, strategy_version=strategy_version)
+        attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
+        missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
+        proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
+    else:
+        shadow_rows = marked_rows = mark_rows = candidate_mark_rows = candidate_attribution_rows = 0
+        transition_rows = exited_rows = attribution_rows = missed_rows = proposal_rows = 0
     if include_agent_work:
         from investment_panel.core.option_agent_postmortem import refresh_option_agent_postmortem_work
 
@@ -173,8 +230,12 @@ def refresh_options_radar(
             "agent_postmortem_requests": 0,
             "agent_postmortem_strategy_proposals": 0,
         }
-    evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
-    cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
+    if include_learning:
+        evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
+        cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
+    else:
+        evaluation_rows = {}
+        cohort_rows = 0
     opportunity_rows = refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=strategy_version)
     return {
         "option_snapshots": snapshot_rows,
@@ -776,12 +837,34 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     else:
         positives.append("open_interest_supported")
     volume = _number(row.get("volume"))
-    if volume is None:
-        blockers.append("missing_volume")
-    elif volume < float(strategy["min_volume"]):
-        blockers.append("volume_below_threshold")
-    else:
+    off_hours = not snapshot_is_rth(row.get("snapshot_time"))
+    if off_hours:
+        # Volume is a regular-hours metric; off-hours it is ~0 and not meaningful.
+        # Lean on open interest for liquidity and mark the candidate indicative so
+        # it never presents as trade-ready until RTH volume confirms it.
+        if open_interest is not None and open_interest >= float(strategy["min_open_interest"]):
+            positives.append("off_hours_oi_liquidity")
+        else:
+            blockers.append("off_hours_low_open_interest")
+        blockers.append("off_hours_indicative")
+    elif volume is not None and volume >= float(strategy["min_volume"]):
         positives.append("volume_seen")
+    elif _is_delayed_feed(row):
+        # A delayed feed (e.g. IBKR delayed OPRA) does not carry reliable real-time
+        # option volume — it prints 0 or nothing even when the contract is liquid.
+        # Volume is not a usable liquidity gate here, so lean on open interest like
+        # the off-hours path and mark the candidate indicative rather than failing it
+        # on a volume the feed can never supply. Delayed rows where volume actually
+        # printed (>= min_volume, handled above) keep their volume_seen credit.
+        if open_interest is not None and open_interest >= float(strategy["min_open_interest"]):
+            positives.append("delayed_oi_liquidity")
+        else:
+            blockers.append("delayed_low_open_interest")
+        blockers.append("delayed_indicative")
+    elif volume is None:
+        blockers.append("missing_volume")
+    else:
+        blockers.append("volume_below_threshold")
     iv_percentile = _number(row.get("iv_percentile"))
     if iv_percentile is None:
         blockers.append("missing_iv_percentile")
@@ -867,16 +950,6 @@ def refresh_option_radar_opportunities(
     """Materialize the brutally selective first-screen opportunity read model."""
 
     symbol_filter = _symbol_filter(symbols, table_alias="ce", column="ticker")
-    if symbols:
-        clean_symbols = [_normalize_symbol(symbol) for symbol in symbols if symbol]
-        placeholders = ", ".join("?" for _ in clean_symbols)
-        con.execute(
-            f"DELETE FROM option_radar_opportunity WHERE strategy_version = ? AND ticker IN ({placeholders})",
-            [strategy_version, *clean_symbols],
-        )
-    else:
-        con.execute("DELETE FROM option_radar_opportunity WHERE strategy_version = ?", [strategy_version])
-
     rows = query_rows(
         con,
         f"""
@@ -986,11 +1059,29 @@ def refresh_option_radar_opportunities(
     for row in rows:
         grouped[_normalize_symbol(row.get("ticker"))].append(row)
 
+    built = [
+        opportunity
+        for ticker, candidate_rows in grouped.items()
+        if (opportunity := build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version))
+    ]
+    # Preserve the last-good opportunities if the latest snapshot built none — a
+    # single bad snapshot (e.g. an off-hours pull of all near-term/REJECT
+    # contracts) must not blank the radar. Only replace when there is a fresh set.
+    if not built:
+        return 0
+
+    if symbols:
+        clean_symbols = [_normalize_symbol(symbol) for symbol in symbols if symbol]
+        placeholders = ", ".join("?" for _ in clean_symbols)
+        con.execute(
+            f"DELETE FROM option_radar_opportunity WHERE strategy_version = ? AND ticker IN ({placeholders})",
+            [strategy_version, *clean_symbols],
+        )
+    else:
+        con.execute("DELETE FROM option_radar_opportunity WHERE strategy_version = ?", [strategy_version])
+
     count = 0
-    for ticker, candidate_rows in grouped.items():
-        opportunity = build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version)
-        if not opportunity:
-            continue
+    for opportunity in built:
         con.execute(
             """
             INSERT OR REPLACE INTO option_radar_opportunity
@@ -3997,6 +4088,25 @@ def _has_missing_data(blockers: list[str]) -> bool:
     return any(blocker.startswith("missing_") for blocker in blockers)
 
 
+def _is_delayed_feed(row: dict[str, Any]) -> bool:
+    """Whether a candidate's quotes came from a delayed (non-real-time) feed.
+
+    IBKR delayed OPRA chains stamp the chain row ``market_data='delayed'``; other
+    providers expose it via ``market_data_type``/``data_status``. Such feeds do not
+    carry usable real-time option volume, so the volume gate is not applied to them.
+    """
+
+    raw = _json(row.get("raw"))
+    marker = str(
+        raw.get("market_data")
+        or raw.get("market_data_type")
+        or raw.get("data_status")
+        or row.get("data_status")
+        or ""
+    ).lower()
+    return "delayed" in marker
+
+
 def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], hard_rejects: list[str]) -> dict[str, Any]:
     if state == "REJECT":
         return {"status": "ok", "flags": [], "peer": {}}
@@ -4029,7 +4139,7 @@ def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], 
     if state == "FIRE" and greeks_source == "mixed_fallback":
         flags.append("mixed_greek_sources")
 
-    data_status = str(raw.get("market_data_type") or raw.get("data_status") or raw.get("entitlement_status") or "").lower()
+    data_status = str(raw.get("market_data") or raw.get("market_data_type") or raw.get("data_status") or raw.get("entitlement_status") or "").lower()
     if "delayed" in data_status:
         flags.append("delayed_market_data")
     if "stale" in data_status:

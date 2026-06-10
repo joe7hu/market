@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from ipaddress import ip_address, ip_network
 import json
+import logging
 from threading import RLock
 import time
 from typing import Any, Callable
@@ -37,6 +39,7 @@ from app.data_access import (
     table_payload,
     ticker_payload,
 )
+from app.scheduler import run_scheduler, scheduler_enabled
 from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, fail_running_jobs, refresh_job_rows, run_refresh_job, start_refresh_job
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import load_config as load_core_config
@@ -87,8 +90,22 @@ _CONTEXT_LOCK = RLock()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     config = load_config()
-    fail_running_jobs(database_path(config), "Server restarted before refresh job completed.")
-    yield
+    db_path = database_path(config)
+    fail_running_jobs(db_path, "Server restarted before refresh job completed.")
+    scheduler_task: asyncio.Task | None = None
+    if scheduler_enabled():
+        scheduler_task = asyncio.create_task(run_scheduler(db_path))
+    else:
+        logging.getLogger("market.scheduler").info("market scheduler disabled via MARKET_SCHEDULER_ENABLED")
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
 
 
 def create_app() -> FastAPI:

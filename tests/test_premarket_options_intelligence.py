@@ -34,6 +34,9 @@ nas:
     monkeypatch.setattr(premarket_options_intelligence.refresh_options_radar, "run", fake_refresh)
     monkeypatch.setattr(premarket_options_intelligence.run_option_agents, "run", fake_agents)
     monkeypatch.setattr(premarket_options_intelligence.refresh_options_radar, "run_deterministic_only", fake_deterministic)
+    # The job now skips when the live app owns the DB; force the not-serving path so
+    # the agent pipeline runs deterministically regardless of any local app on :8000.
+    monkeypatch.setattr(premarket_options_intelligence, "app_is_serving_database", lambda _db_path: False)
 
     result = premarket_options_intelligence.run(str(config_path), strategy_version="test_strategy")
 

@@ -12,7 +12,7 @@ from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.decision import effective_watchlist
 from investment_panel.core.options_intelligence import clear_options_intelligence, record_tradingview_options_capabilities, refresh_options_intelligence
-from investment_panel.providers import OpenCliError, OpenCliRunner, TradingViewProvider
+from investment_panel.providers import OpenCliError, OpenCliRateLimitError, OpenCliRunner, TradingViewProvider
 from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
 
 RADAR_MIN_DTE = 365
@@ -20,6 +20,10 @@ RADAR_MAX_DTE = 900
 RADAR_MAX_EXPIRIES_PER_SYMBOL = 2
 RADAR_STRIKES_AROUND_SPOT = 24
 OPTION_SCAN_LIMIT = 80
+# Stop the option scan after this many consecutive symbols fail with upstream
+# rate limits, so a saturated limiter cannot stretch the run across the whole
+# universe.
+OPTION_RATE_LIMIT_CIRCUIT_BREAKER = 4
 
 
 def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
@@ -71,11 +75,21 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
             result["screener_rows"] = 0
             result["news_items"] = 0
         else:
-            screener_rows = provider.screener(limit=config.data_sources.tradingview.screener_limit)
-            store_screener_rows(con, run_id, observed_at, screener_rows)
-            result["screener_rows"] = len(screener_rows)
-            news_rows = provider.news(limit=config.data_sources.tradingview.news_limit)
-            result["news_items"] = store_news_rows(con, news_rows, "tradingview")
+            # Screener/news are discovery surfaces, not the radar's lifeblood.
+            # Isolate their failures (notably scanner 429s) so a rate-limited
+            # discovery call can never abort the option-chain ingestion below,
+            # which is the only source of fresh radar snapshots.
+            try:
+                screener_rows = provider.screener(limit=config.data_sources.tradingview.screener_limit)
+                store_screener_rows(con, run_id, observed_at, screener_rows)
+                result["screener_rows"] = len(screener_rows)
+            except OpenCliError as exc:
+                result["screener_error"] = str(exc)
+            try:
+                news_rows = provider.news(limit=config.data_sources.tradingview.news_limit)
+                result["news_items"] = store_news_rows(con, news_rows, "tradingview")
+            except OpenCliError as exc:
+                result["news_error"] = str(exc)
         if tradingview_ready:
             personal_result = update_tradingview_personal_surfaces(con, config, provider, run_id, observed_at)
             result.update(personal_result)
@@ -84,18 +98,38 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
         requested_options_symbols = target_symbols or option_symbols(con, config)
         refreshed_option_symbols: list[str] = []
         option_errors: list[str] = []
+        # Circuit breaker: if a run of consecutive symbols all fail with upstream
+        # rate limits, the limiter is saturated and continuing only prolongs the
+        # job (each call still pays its bounded backoff). Stop early and report a
+        # partial refresh instead of dragging through the full universe.
+        rate_limited_streak = 0
         for symbol in requested_options_symbols:
+            if rate_limited_streak >= OPTION_RATE_LIMIT_CIRCUIT_BREAKER:
+                result["options_circuit_breaker"] = (
+                    f"stopped_after_{rate_limited_streak}_consecutive_rate_limited_symbols"
+                )
+                break
             expiries = []
             expiry_error = False
+            expiry_rate_limited = False
             for candidate in tradingview_symbol_candidates(symbol):
                 try:
                     expiries = provider.options_expiries(candidate)
+                except OpenCliRateLimitError as exc:
+                    expiry_error = True
+                    expiry_rate_limited = True
+                    option_errors.append(f"{symbol}:expiries:{candidate}:{exc}")
+                    continue
                 except OpenCliError as exc:
                     expiry_error = True
                     option_errors.append(f"{symbol}:expiries:{candidate}:{exc}")
                     continue
                 if expiries:
                     break
+            if expiries:
+                rate_limited_streak = 0
+            elif expiry_rate_limited:
+                rate_limited_streak += 1
             result["expiries"] += store_expiries(con, symbol, observed_at, expiries)
             selected_expiries = selected_option_expiries(expiries, observed_at)
             if selected_expiries:

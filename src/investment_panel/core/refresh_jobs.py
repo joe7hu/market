@@ -22,6 +22,7 @@ from investment_panel.jobs import (
     update_broker_sources,
     update_event_calendar,
     update_free_sources,
+    update_ibkr_options,
 )
 
 
@@ -36,7 +37,29 @@ ALLOWLIST: dict[str, JobRunner] = {
     "premarket_options_intelligence": lambda config_path: premarket_options_intelligence.run(config_path),
     "update_arco_data": lambda config_path: update_arco_data.run(config_path),
     "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
+    # Radar-focused source pull for the continuous scheduler: TradingView option
+    # chains/quotes plus yfinance option liquidity (open interest / volume), which
+    # the radar data contract requires for trade-readiness. The equity-price
+    # refresh and run_all_analyses pass are skipped — they are not needed for
+    # radar option freshness and run in the daily full_market_refresh.
+    "update_free_sources_radar": lambda config_path: update_free_sources.run(
+        config_path, equity_data=False, tradingview=True, yfinance=True, analyses=False
+    ),
+    # IBKR option chains (price/greeks/OI/volume) persisted as source='ibkr' — the
+    # reliable option source replacing the rate-limited TradingView+yfinance combo.
+    "update_ibkr_options": lambda config_path: update_ibkr_options.run(config_path),
     "refresh_options_radar": lambda config_path: refresh_options_radar.run(config_path),
+    # Agent-free rematerialization for the in-process continuous scheduler. Codex
+    # thesis/postmortem workers stay on the daily premarket cadence; this path
+    # only recomputes deterministic option math, gates, and ranking.
+    "refresh_options_radar_deterministic": lambda config_path: refresh_options_radar.run_deterministic_only(config_path),
+    # Fast fresh-signal rematerialization (no agents, no heavy learning pass) for
+    # the continuous 15-min loop; the full deterministic refresh (with learning)
+    # runs on a slower cadence.
+    "refresh_options_radar_signal": lambda config_path: refresh_options_radar.run_signal_only(config_path),
+    # IBKR-scoped fast signal refresh for the cutover: rematerializes from the
+    # reliable source='ibkr' chains only (clean OI/volume/greeks, no peer conflict).
+    "refresh_options_radar_signal_ibkr": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="ibkr"),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     "update_disclosures": lambda config_path: update_disclosures.run(config_path, online_check=False, max_filings=3, fetch_holdings=False),

@@ -14,6 +14,7 @@ from investment_panel.core import brokers
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.daily_brief import daily_brief
 from investment_panel.core.decision import canonical_quote_rows, decision_readiness_rows, effective_watchlist, manual_watchlist_rows, refresh_decision_read_models
+from investment_panel.core.options_radar import display_snapshot_time, market_session
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
 from investment_panel.core.research import build_research_packet, generate_deterministic_memo
 from investment_panel.core.signals import signal_rows
@@ -3427,17 +3428,39 @@ def option_strategy_versions(con: Any) -> list[dict[str, Any]]:
     return [_compact_empty_fields(decode_fields(row, ("parameters",))) for row in rows]
 
 
+def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
+    """Session-aware 'current' snapshot + candidate times for the radar views.
+
+    During RTH this is the newest data; when the market is closed it freezes on
+    the last regular-hours snapshot so the radar shows the last tradeable state
+    instead of an off-hours volume=0 capture.
+    """
+
+    def iso(value: Any) -> str:
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+    snaps = [iso(r["snapshot_time"]) for r in query_rows(con, "SELECT DISTINCT snapshot_time FROM option_snapshot WHERE snapshot_time IS NOT NULL")]
+    # Key the candidate/opportunity view off the OPPORTUNITY table — that is the
+    # grain the UI renders, and opportunities only exist for the snapshots that
+    # were latest at refresh time. Freezing to a candidate-only snapshot would
+    # show zero opportunities. display_snapshot_time falls back to the newest when
+    # no regular-hours snapshot exists yet (e.g. the market has been closed since
+    # the last refresh).
+    opps = [iso(r["snapshot_time"]) for r in query_rows(con, "SELECT DISTINCT snapshot_time FROM option_radar_opportunity WHERE snapshot_time IS NOT NULL")]
+    return display_snapshot_time(snaps), display_snapshot_time(opps)
+
+
 def option_radar_summary(con: Any) -> list[dict[str, Any]]:
+    display_snap, display_candidate = _radar_display_times(con)
+    session = market_session()
     rows = query_rows(
         con,
         """
         WITH latest_snapshot AS (
-            SELECT max(snapshot_time) AS snapshot_time
-            FROM option_snapshot
+            SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
         ),
         latest_candidates AS (
-            SELECT max(snapshot_time) AS snapshot_time
-            FROM candidate_event
+            SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
         )
         SELECT
             (SELECT snapshot_time FROM latest_snapshot) AS latest_snapshot_time,
@@ -3502,17 +3525,30 @@ def option_radar_summary(con: Any) -> list[dict[str, Any]]:
                   AND tier = 'Research'
             ) AS research_opportunities_current
         """,
+        [display_snap, display_candidate],
     )
+    newest = query_rows(con, "SELECT max(snapshot_time) AS t FROM candidate_event")
+    newest_time = newest[0]["t"] if newest else None
+    frozen = bool(session == "closed" and display_candidate and newest_time and str(display_candidate) != _iso_or_none(newest_time))
+    for row in rows:
+        row["market_session"] = session
+        row["frozen_to_last_rth"] = frozen
     return [_compact_empty_fields(row) for row in rows]
 
 
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
+    _display_snap, display_candidate = _radar_display_times(con)
     rows = query_rows(
         con,
         """
         WITH latest_candidates AS (
-            SELECT max(snapshot_time) AS snapshot_time
-            FROM candidate_event
+            SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
         )
         SELECT opportunity_id, snapshot_time, ticker, strategy_version, tier,
                primary_event_id, primary_contract_id, primary_state,
@@ -3533,6 +3569,7 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
                  ticker
         LIMIT 500
         """,
+        [display_candidate],
     )
     return [
         _compact_empty_fields(

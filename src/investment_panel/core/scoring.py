@@ -145,8 +145,14 @@ def fundamental_score(con: Any, symbol: str) -> float:
     metrics = parse_json((equity or crypto)[0]["metrics"])
     score = 45.0
     for key in ("revenue_growth", "fees_growth", "tvl_growth", "gross_margin_trend", "fcf_margin"):
-        if key in metrics:
-            score += max(-15, min(18, float(metrics[key]) * 50))
+        value = metrics.get(key)
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        score += max(-15, min(18, numeric * 50))
     return max(0.0, min(100.0, score))
 
 
