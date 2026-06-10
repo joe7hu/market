@@ -427,6 +427,20 @@ CREATE TABLE IF NOT EXISTS option_flow_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS radar_alert (
+    alert_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    strategy_version TEXT,
+    alert_type TEXT,
+    ticker TEXT,
+    contract_id TEXT,
+    event_id TEXT,
+    severity TEXT,
+    message TEXT,
+    acknowledged_at TIMESTAMP,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS conviction_calibration (
     strategy_version TEXT,
     bin_index INTEGER,

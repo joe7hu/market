@@ -49,6 +49,7 @@ from investment_panel.core.option_agent_thesis import AgentThesisValidationError
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     StrategyPromotionError,
+    acknowledge_radar_alert,
     promote_strategy_mutation,
     refresh_strategy_proposal_evaluations,
 )
@@ -430,6 +431,23 @@ def create_app() -> FastAPI:
     @app.get("/api/radar-state-transitions")
     def radar_state_transitions() -> dict[str, Any]:
         return _table_payload("radar_state_transition")
+
+    @app.get("/api/radar-alerts")
+    def radar_alerts() -> dict[str, Any]:
+        return _table_payload("radar_alert")
+
+    @app.post("/api/radar-alerts/{alert_id}/ack")
+    def acknowledge_radar_alert_endpoint(alert_id: str, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        config = load_config()
+        db_path = database_path(config)
+        init_db(db_path)
+        with db(db_path, read_only=False) as con:
+            updated = acknowledge_radar_alert(con, alert_id)
+        if not updated:
+            raise HTTPException(status_code=404, detail="unknown or already-acknowledged alert")
+        _invalidate_context_cache()
+        return {"status": "acknowledged", "alert_id": alert_id}
 
     @app.get("/api/option-attributions")
     def option_attributions() -> dict[str, Any]:
