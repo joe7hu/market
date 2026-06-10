@@ -427,6 +427,24 @@ CREATE TABLE IF NOT EXISTS option_flow_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS vol_surface_features (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    atm_iv_30d DOUBLE,
+    atm_iv_90d DOUBLE,
+    atm_iv_leap DOUBLE,
+    term_slope DOUBLE,
+    put_call_skew_25d DOUBLE,
+    skew_change_5d DOUBLE,
+    rv_20d DOUBLE,
+    rv_60d DOUBLE,
+    iv_rv_ratio DOUBLE,
+    iv_percentile_252d DOUBLE,
+    iv_percentile_basis TEXT,
+    raw JSON,
+    PRIMARY KEY(ticker, snapshot_time)
+);
+
 CREATE TABLE IF NOT EXISTS option_radar_opportunity (
     opportunity_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,
