@@ -201,6 +201,7 @@ def refresh_options_radar(
     register_default_strategy(con, strategy_version)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
     feature_rows = refresh_option_features(con, symbols=symbols, source=source)
+    flow_rows = refresh_option_flow_features(con, symbols=symbols, source=source)
     stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
     candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source)
     if include_agent_work:
@@ -247,6 +248,7 @@ def refresh_options_radar(
     return {
         "option_snapshots": snapshot_rows,
         "option_features": feature_rows,
+        "option_flow_features": flow_rows,
         "stock_features": stock_rows,
         "candidate_events": candidate_rows,
         **agent_work,
@@ -544,6 +546,163 @@ def build_option_feature(snapshot: dict[str, Any], iv_history: list[float]) -> d
     }
 
 
+SETTLED_OBSERVATION_MIN_HOURS = 18.0
+
+
+def _zscore(value: float | None, sample: list[float | None]) -> float | None:
+    clean = [v for v in sample if v is not None]
+    if value is None or len(clean) < 3:
+        return None
+    avg = sum(clean) / len(clean)
+    variance = sum((v - avg) ** 2 for v in clean) / (len(clean) - 1)
+    sd = math.sqrt(variance)
+    if sd <= 0:
+        # Flat baseline: any deviation is, by definition, an extreme; cap at +/-4 sigma.
+        if value == avg:
+            return 0.0
+        return 4.0 if value > avg else -4.0
+    return round(max(-4.0, min(4.0, (value - avg) / sd)), 4)
+
+
+def _settled_oi_deltas(history: list[dict[str, Any]]) -> list[float]:
+    """Open-interest changes between snapshots at least ~18h apart.
+
+    OI settles overnight, so a >=18h gap keeps one delta per trading day and avoids
+    double-counting intraday snapshots — OI deltas are the trustworthy free flow
+    signal on delayed feeds (volume is best-effort there)."""
+
+    deltas: list[float] = []
+    prev_oi: float | None = None
+    prev_t: datetime | None = None
+    for snap in history:
+        oi = _number(snap.get("open_interest"))
+        t = _datetime(snap.get("snapshot_time"))
+        if oi is None or t is None:
+            continue
+        if prev_oi is None:
+            prev_oi, prev_t = oi, t
+            continue
+        if prev_t is not None and (t - prev_t).total_seconds() >= SETTLED_OBSERVATION_MIN_HOURS * 3600:
+            deltas.append(oi - prev_oi)
+            prev_oi, prev_t = oi, t
+    return deltas
+
+
+def _flow_score(oi_zscore: float | None, volume_oi_ratio: float | None, oi_change_1d: float | None) -> float | None:
+    if oi_zscore is None and volume_oi_ratio is None:
+        return None
+    score = 0.0
+    if oi_zscore is not None:
+        score += max(0.0, min(60.0, oi_zscore * 20.0))  # +2 sigma OI expansion -> +40
+    if volume_oi_ratio is not None and volume_oi_ratio >= 1.0 and (oi_change_1d or 0) > 0:
+        score += min(40.0, volume_oi_ratio * 20.0)  # heavy volume into rising OI
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+def build_option_flow_feature(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Flow-anomaly features for the latest snapshot of one contract.
+
+    ``history`` is that contract's snapshots ascending by time. ``flow_score`` is the
+    abstraction point a future paid flow feed plugs into without any scoring rewrite.
+    """
+
+    history = [snap for snap in history if snap]
+    if not history:
+        return None
+    latest = history[-1]
+    current_oi = _number(latest.get("open_interest"))
+    current_vol = _number(latest.get("volume"))
+    oi_deltas = _settled_oi_deltas(history)
+    oi_change_1d = oi_deltas[-1] if oi_deltas else None
+    oi_change_5d = sum(oi_deltas[-5:]) if oi_deltas else None
+    oi_zscore_20d = _zscore(oi_change_1d, oi_deltas[:-1][-20:]) if oi_change_1d is not None else None
+    volume_oi_ratio = (current_vol / current_oi) if current_vol is not None and current_oi and current_oi > 0 else None
+    volume_history = [_number(snap.get("volume")) for snap in history[:-1]]
+    volume_zscore_20d = _zscore(current_vol, volume_history[-20:]) if current_vol is not None else None
+    flow_score = _flow_score(oi_zscore_20d, volume_oi_ratio, oi_change_1d)
+    return {
+        "snapshot_time": _iso(latest.get("snapshot_time")),
+        "contract_id": str(latest.get("contract_id")),
+        "ticker": _normalize_symbol(latest.get("ticker")),
+        "oi_change_1d": oi_change_1d,
+        "oi_change_5d": oi_change_5d,
+        "oi_zscore_20d": oi_zscore_20d,
+        "volume_oi_ratio": round(volume_oi_ratio, 4) if volume_oi_ratio is not None else None,
+        "volume_zscore_20d": volume_zscore_20d,
+        "option_type": str(latest.get("option_type") or "").lower(),
+        "flow_score": flow_score,
+        "raw": {"observations": len(history), "settled_deltas": len(oi_deltas)},
+    }
+
+
+def refresh_option_flow_features(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
+    """Materialize ``option_flow_features`` (OI expansion + volume anomalies) for the
+    latest snapshot of every contract, plus per-ticker call-OI aggregates."""
+
+    symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
+    rows = query_rows(
+        con,
+        f"""
+        SELECT s.snapshot_time, s.ticker, s.contract_id, s.option_type,
+               s.open_interest, s.volume, s.mid
+        FROM option_snapshot s
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
+        ORDER BY s.contract_id, s.snapshot_time
+        """,
+        [*source_filter["params"], *symbol_filter["params"]],
+    )
+    by_contract: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_contract[str(row.get("contract_id"))].append(row)
+
+    features = [feature for history in by_contract.values() if (feature := build_option_flow_feature(history))]
+
+    # Per-ticker call-side aggregates: total 1d call-OI expansion and the dollar
+    # premium that traded into calls today (a coarse free directional-flow read).
+    ticker_call_oi: dict[str, float] = defaultdict(float)
+    ticker_call_premium: dict[str, float] = defaultdict(float)
+    latest_premium = {str(row.get("contract_id")): _number(row.get("mid")) for row in rows}
+    latest_volume = {str(row.get("contract_id")): _number(row.get("volume")) for row in rows}
+    for feature in features:
+        if feature["option_type"] != "call":
+            continue
+        if feature["oi_change_1d"]:
+            ticker_call_oi[feature["ticker"]] += feature["oi_change_1d"]
+        mid = latest_premium.get(feature["contract_id"])
+        vol = latest_volume.get(feature["contract_id"])
+        if mid and vol:
+            ticker_call_premium[feature["ticker"]] += mid * vol * 100.0
+
+    count = 0
+    for feature in features:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO option_flow_features
+            (snapshot_time, contract_id, ticker, oi_change_1d, oi_change_5d,
+             oi_zscore_20d, volume_oi_ratio, volume_zscore_20d,
+             ticker_call_oi_delta_1d, ticker_call_volume_premium_usd, flow_score, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                feature["snapshot_time"],
+                feature["contract_id"],
+                feature["ticker"],
+                feature["oi_change_1d"],
+                feature["oi_change_5d"],
+                feature["oi_zscore_20d"],
+                feature["volume_oi_ratio"],
+                feature["volume_zscore_20d"],
+                ticker_call_oi.get(feature["ticker"]),
+                ticker_call_premium.get(feature["ticker"]),
+                feature["flow_score"],
+                json_dumps(feature["raw"]),
+            ],
+        )
+        count += 1
+    return count
+
+
 def refresh_stock_features_for_option_snapshots(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
@@ -674,6 +833,10 @@ def generate_candidate_events(
             f.iv_rank,
             f.liquidity_score,
             f.convexity_score,
+            fl.flow_score,
+            fl.oi_zscore_20d,
+            fl.volume_oi_ratio,
+            fl.oi_change_1d,
             sf.price,
             sf.ma_50,
             sf.rs_vs_qqq_20d,
@@ -751,6 +914,7 @@ def generate_candidate_events(
             t.thesis_id
         FROM option_snapshot s
         JOIN option_features f ON f.contract_id = s.contract_id AND f.snapshot_time = s.snapshot_time
+        LEFT JOIN option_flow_features fl ON fl.contract_id = s.contract_id AND fl.snapshot_time = s.snapshot_time
         LEFT JOIN stock_features sf ON sf.ticker = s.ticker AND sf.snapshot_time = s.snapshot_time
         LEFT JOIN (
             SELECT ticker, thesis_id
@@ -910,6 +1074,16 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     ev_asymmetry = ev_score(ev_result.ev_multiple, spread_pct) if ev_result else None
     if ev_result is not None and ev_result.ev_multiple >= 2.0:
         positives.append("ev_asymmetry_2x")
+
+    # Free flow expansion is a positive precursor signal: >=2 sigma OI expansion, or
+    # heavy volume into rising OI.
+    flow_zscore = _number(row.get("oi_zscore_20d"))
+    volume_oi_ratio = _number(row.get("volume_oi_ratio"))
+    oi_change_1d = _number(row.get("oi_change_1d"))
+    if (flow_zscore is not None and flow_zscore >= 2.0) or (
+        volume_oi_ratio is not None and volume_oi_ratio >= 1.0 and (oi_change_1d or 0) > 0
+    ):
+        positives.append("flow_expansion_detected")
 
     ev_buy_under = ev_inverse_buy_under(ev_inputs) if ev_inputs is not None else None
     buy_under = ev_buy_under if ev_buy_under is not None else _buy_under(row, strategy)
@@ -4112,6 +4286,11 @@ def _candidate_ev(row: dict[str, Any], *, option_type: str, dte: int | None) -> 
         return None
     stock_raw = _json(row.get("stock_features_raw"))
     rv_60d = _number(stock_raw.get("rv_60d"))
+    # Free flow proxy widens the EV scenario tail: strong OI/volume expansion is the
+    # best free precursor of an outlier move, so a high flow_score lifts tail width up
+    # to +60%. This is the single point a future paid flow feed plugs into.
+    flow_score = _number(row.get("flow_score"))
+    tail_multiplier = 1.0 + (min(100.0, max(0.0, flow_score)) / 100.0) * 0.6 if flow_score is not None else 1.0
     inputs = EVInputs(
         option_type=option_type if option_type in {"call", "put"} else "call",
         spot=spot,
@@ -4120,6 +4299,7 @@ def _candidate_ev(row: dict[str, Any], *, option_type: str, dte: int | None) -> 
         premium=premium,
         iv=iv,
         rv_60d=rv_60d,
+        tail_multiplier=tail_multiplier,
     )
     result = compute_ev(inputs)
     if result is None:

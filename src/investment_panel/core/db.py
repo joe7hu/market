@@ -411,6 +411,22 @@ CREATE TABLE IF NOT EXISTS option_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS option_flow_features (
+    snapshot_time TIMESTAMP,
+    contract_id TEXT,
+    ticker TEXT,
+    oi_change_1d DOUBLE,
+    oi_change_5d DOUBLE,
+    oi_zscore_20d DOUBLE,
+    volume_oi_ratio DOUBLE,
+    volume_zscore_20d DOUBLE,
+    ticker_call_oi_delta_1d DOUBLE,
+    ticker_call_volume_premium_usd DOUBLE,
+    flow_score DOUBLE,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time)
+);
+
 CREATE TABLE IF NOT EXISTS option_radar_opportunity (
     opportunity_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,
