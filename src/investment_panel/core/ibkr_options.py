@@ -104,6 +104,66 @@ def select_leap_call_strikes(
     return picked
 
 
+def select_term_structure_expiries(
+    expirations: list[str],
+    *,
+    today: date,
+    buckets: tuple[tuple[int, int], ...] = ((30, 60), (90, 180), (365, 900)),
+) -> list[str]:
+    """Pick one expiry per DTE bucket to span the volatility term structure.
+
+    The LEAP radar reads a single far-dated expiry; term-structure signals (an
+    inverted/flattening front, event anticipation) need short, mid and long tenors.
+    Picks the expiry nearest each bucket's lower edge, de-duplicated, sorted ascending.
+    """
+
+    dated: list[tuple[int, str]] = []
+    for raw in expirations:
+        try:
+            exp = datetime.strptime(raw, "%Y%m%d").date()
+        except (TypeError, ValueError):
+            continue
+        dated.append(((exp - today).days, raw))
+    chosen: list[str] = []
+    for lo, hi in buckets:
+        in_bucket = [(dte, raw) for dte, raw in dated if lo <= dte <= hi]
+        if not in_bucket:
+            continue
+        in_bucket.sort(key=lambda item: (abs(item[0] - lo), item[0]))
+        chosen.append(in_bucket[0][1])
+    seen: set[str] = set()
+    ordered = [raw for raw in sorted(chosen, key=lambda r: datetime.strptime(r, "%Y%m%d")) if not (raw in seen or seen.add(raw))]
+    return ordered
+
+
+def select_leap_put_strikes(
+    strikes: list[float],
+    spot: float | None,
+    count: int,
+    *,
+    otm_lo: float = 0.75,
+    otm_hi: float = 0.95,
+) -> list[float]:
+    """Pick OTM put strikes in the 0.75-0.95x spot band for breakdown/hedge archetypes.
+
+    Mirrors :func:`select_leap_call_strikes` on the downside. Falls back to nearest-spot
+    when spot is unknown or the band is empty.
+    """
+
+    valid = sorted(s for s in strikes if s and s > 0)
+    if not valid:
+        return []
+    if spot is None or spot <= 0:
+        return select_strikes_around_spot(valid, spot, count)
+    band = [s for s in valid if otm_lo * spot <= s <= otm_hi * spot]
+    if not band:
+        return select_strikes_around_spot(valid, spot, count)
+    if len(band) <= count:
+        return band
+    step = (len(band) - 1) / (count - 1) if count > 1 else 0
+    return sorted({band[round(i * step)] for i in range(count)})
+
+
 def pick_chain_param_set(param_sets: list[dict[str, Any]], symbol: str) -> dict[str, Any] | None:
     """Choose the real option chain among ``reqSecDefOptParams`` results.
 
@@ -245,6 +305,8 @@ def collect_ibkr_option_chains(
     market_data_type: int = MARKET_DATA_DELAYED,
     batch_size: int = DEFAULT_BATCH_SIZE,
     connect_timeout: float = 6.0,
+    collect_puts: bool = False,
+    include_term_structure: bool = False,
 ) -> dict[str, Any]:
     """Collect LEAP call-option chains (price+greeks+OI+volume) from IBKR.
 
@@ -323,7 +385,7 @@ def collect_ibkr_option_chains(
         rid = 100
         for symbol in symbols:
             try:
-                rid = _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, max_expiries, strikes_around_spot, batch_size, result)
+                rid = _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, max_expiries, strikes_around_spot, batch_size, result, collect_puts=collect_puts, include_term_structure=include_term_structure)
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not abort the run
                 result["errors"].append(f"{symbol}:{exc}")
     finally:
@@ -341,7 +403,7 @@ def collect_ibkr_option_chains(
     return result
 
 
-def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, max_expiries, strikes_around_spot, batch_size, result) -> int:
+def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, max_expiries, strikes_around_spot, batch_size, result, *, collect_puts: bool = False, include_term_structure: bool = False) -> int:
     today = datetime.now().date()
     # 1. underlying conId + spot
     stk = Contract()
@@ -373,39 +435,48 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
         result["errors"].append(f"{symbol}:no_option_params")
         return rid
     expiries = select_leap_expiries(chain["expirations"], today=today, min_dte=min_dte, max_dte=max_dte, max_per_symbol=max_expiries)
+    if include_term_structure:
+        # Add short/mid tenors so the vol surface (term slope, skew change) is observable.
+        term = select_term_structure_expiries(chain["expirations"], today=today)
+        expiries = sorted({*expiries, *term})
     if not expiries:
         result["errors"].append(f"{symbol}:no_leap_expiries")
         return rid
 
-    # 3. For each LEAP expiry, qualify the actually-listed strikes (the param-set
-    # strike union is a superset; LEAP expiries list far fewer), then request the
-    # near-spot ones. Avoids error-200 spam and gives real coverage.
-    plan: list[tuple[int, str, float]] = []  # (reqId, expiry, strike)
+    # 3. For each expiry and right, qualify the actually-listed strikes (the param-set
+    # strike union is a superset; specific expiries list far fewer), then request the
+    # near-spot ones. Avoids error-200 spam and gives real coverage. Calls scan the OTM
+    # upside band (10x LEAP delta ~0.20-0.45); puts the 0.75-0.95x downside band.
+    rights = ["C", "P"] if collect_puts else ["C"]
+    plan: list[tuple[int, str, float, str]] = []  # (reqId, expiry, strike, right)
     contracts: dict[int, Any] = {}
     for expiry in expiries:
-        enum = Contract()
-        enum.symbol, enum.secType, enum.exchange, enum.currency = symbol, "OPT", "SMART", "USD"
-        enum.lastTradeDateOrContractMonth = expiry
-        enum.right = "C"
-        enum.tradingClass = chain["tradingClass"]
-        enum_rid = rid
-        rid += 1
-        app.reqContractDetails(enum_rid, enum)
-        app.wait(enum_rid, 10)
-        valid_strikes = sorted({d.contract.strike for d in (app.details.get(enum_rid) or []) if getattr(d.contract, "strike", 0)})
-        # 10x LEAP calls live OTM (delta ~0.20-0.45), so scan the OTM band, not ATM.
-        chosen = select_leap_call_strikes(valid_strikes, spot, strikes_around_spot)
-        for strike in chosen:
-            opt = Contract()
-            opt.symbol, opt.secType, opt.exchange, opt.currency = symbol, "OPT", "SMART", "USD"
-            opt.lastTradeDateOrContractMonth = expiry
-            opt.strike = float(strike)
-            opt.right = "C"
-            opt.multiplier = "100"
-            opt.tradingClass = chain["tradingClass"]
-            plan.append((rid, expiry, strike))
-            contracts[rid] = opt
+        for right in rights:
+            enum = Contract()
+            enum.symbol, enum.secType, enum.exchange, enum.currency = symbol, "OPT", "SMART", "USD"
+            enum.lastTradeDateOrContractMonth = expiry
+            enum.right = right
+            enum.tradingClass = chain["tradingClass"]
+            enum_rid = rid
             rid += 1
+            app.reqContractDetails(enum_rid, enum)
+            app.wait(enum_rid, 10)
+            valid_strikes = sorted({d.contract.strike for d in (app.details.get(enum_rid) or []) if getattr(d.contract, "strike", 0)})
+            if right == "P":
+                chosen = select_leap_put_strikes(valid_strikes, spot, strikes_around_spot)
+            else:
+                chosen = select_leap_call_strikes(valid_strikes, spot, strikes_around_spot)
+            for strike in chosen:
+                opt = Contract()
+                opt.symbol, opt.secType, opt.exchange, opt.currency = symbol, "OPT", "SMART", "USD"
+                opt.lastTradeDateOrContractMonth = expiry
+                opt.strike = float(strike)
+                opt.right = right
+                opt.multiplier = "100"
+                opt.tradingClass = chain["tradingClass"]
+                plan.append((rid, expiry, strike, right))
+                contracts[rid] = opt
+                rid += 1
     if not plan:
         result["errors"].append(f"{symbol}:no_valid_strikes")
         return rid
@@ -413,12 +484,13 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
     rows: list[dict[str, Any]] = []
     for start in range(0, len(plan), batch_size):
         batch = plan[start : start + batch_size]
-        for req_id, _expiry, _strike in batch:
+        for req_id, _expiry, _strike, _right in batch:
             app.reqMktData(req_id, contracts[req_id], GENERIC_TICKS, False, False, [])
         time.sleep(DEFAULT_LINES_SETTLE_SECONDS)
-        for req_id, expiry, strike in batch:
+        for req_id, expiry, strike, right in batch:
             app.cancelMktData(req_id)
-            parsed = parse_option_ticks(app.ticks.get(req_id, {}), app.greeks.get(req_id, {}), option_type="call")
+            option_type = "put" if right == "P" else "call"
+            parsed = parse_option_ticks(app.ticks.get(req_id, {}), app.greeks.get(req_id, {}), option_type=option_type)
             if parsed["delta"] is None and parsed["mid"] is None and parsed["open_interest"] is None:
                 continue  # no data arrived for this contract
             rows.append(chain_row(symbol, expiry, strike, parsed, delayed=True))
