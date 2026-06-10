@@ -20,6 +20,7 @@ from investment_panel.analysis.stats import (
     apply_calibration_map,
     brier_score,
     isotonic_increasing,
+    two_proportion_significant,
     wilson_interval,
 )
 from investment_panel.core.db import json_dumps, query_rows
@@ -3882,6 +3883,11 @@ def build_strategy_cohort_result(
 ) -> dict[str, Any]:
     metrics = _outcome_metrics(records)
     count = int(metrics["candidate_count"])
+    # Honest sampling: Wilson interval on the 2x hit rate, and a significance flag that
+    # the cohort's edge clears a 10% base rate with enough observations.
+    succ_2x = round(float(metrics["hit_rate_2x"]) * count)
+    wilson_lo, wilson_hi = wilson_interval(succ_2x, count)
+    cohort_significant = count >= 20 and wilson_lo >= 0.10
     labels = [str(row.get("latest_attribution_label") or "") for row in records]
     qqq_above = [row for row in records if row.get("qqq_above_200d") is True]
     early_entries = [row for row in records if row.get("timing_label") in {"early_but_worked", "false_positive_drawdown"}]
@@ -3907,6 +3913,12 @@ def build_strategy_cohort_result(
         "qqq_above_200d_rate": len(qqq_above) / count if count else 0.0,
         "raw": {
             "promotion_policy": "cohort_analysis_is_diagnostic_only",
+            "significance": {
+                "hit_2x_wilson_lo": round(wilson_lo, 4),
+                "hit_2x_wilson_hi": round(wilson_hi, 4),
+                "n": count,
+                "significant": cohort_significant,
+            },
             "sample_outcomes": metrics["outcomes"][:20],
             "maturity": {
                 "mature_count": len(mature_records),
@@ -3931,7 +3943,14 @@ def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[s
     proposed = _strategy_outcomes(con, rows, proposal["proposed_strategy_version"], proposed_params)
     lookback_start = min(_iso(row["snapshot_time"]) for row in rows)
     lookback_end = max(_iso(row["snapshot_time"]) for row in rows)
-    verdict = _backtest_verdict(baseline, proposed)
+    significance = _strategy_arm_significance(baseline, proposed, key="2x")
+    ordered_rows = sorted(rows, key=lambda r: _iso(r.get("snapshot_time")))
+    walk_forward = _walk_forward_folds(
+        ordered_rows,
+        lambda slice_rows: _strategy_outcomes(con, slice_rows, proposal["strategy_version"], base_params),
+        lambda slice_rows: _strategy_outcomes(con, slice_rows, proposal["proposed_strategy_version"], proposed_params),
+    )
+    verdict = _backtest_verdict(baseline, proposed, significance=significance, walk_forward=walk_forward)
     return {
         "backtest_id": stable_id("strategy_backtest_result", proposal["proposal_id"], lookback_start, lookback_end),
         "proposal_id": proposal["proposal_id"],
@@ -3950,10 +3969,11 @@ def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[s
         "proposed_hit_rate_10x": proposed["hit_rate_10x"],
         "proposed_false_positive_rate": proposed["false_positive_rate"],
         "verdict": verdict,
-        "metrics": {"baseline": baseline, "proposed": proposed},
+        "metrics": {"baseline": baseline, "proposed": proposed, "significance": significance, "walk_forward": walk_forward},
         "raw": {
             "proposal_changes": _json_or_list(proposal.get("proposed_parameter_changes")),
             "promotion_gate": "backtest_only_never_promotes",
+            "validation": "walk_forward_oos_in_time + two_proportion_significance",
         },
     }
 
@@ -4386,17 +4406,97 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _backtest_verdict(baseline: dict[str, Any], proposed: dict[str, Any]) -> str:
+def _hit_success_count(outcomes: dict[str, Any], key: str) -> int:
+    n = int(outcomes.get("candidate_count") or 0)
+    return round(float(outcomes.get(f"hit_rate_{key}") or 0) * n)
+
+
+def _strategy_arm_significance(baseline: dict[str, Any], proposed: dict[str, Any], *, key: str = "2x", min_per_arm: int = 20) -> dict[str, Any]:
+    """Two-proportion significance + Wilson intervals for proposed vs baseline hit rate."""
+
+    bn = int(baseline.get("candidate_count") or 0)
+    pn = int(proposed.get("candidate_count") or 0)
+    bs = _hit_success_count(baseline, key)
+    ps = _hit_success_count(proposed, key)
+    blo, bhi = wilson_interval(bs, bn)
+    plo, phi = wilson_interval(ps, pn)
+    return {
+        "key": key,
+        "baseline_n": bn,
+        "proposed_n": pn,
+        "insufficient_sample": bn < min_per_arm or pn < min_per_arm,
+        "significant": two_proportion_significant(ps, pn, bs, bn, min_per_arm=min_per_arm),
+        "baseline_wilson_lo": round(blo, 4),
+        "baseline_wilson_hi": round(bhi, 4),
+        "proposed_wilson_lo": round(plo, 4),
+        "proposed_wilson_hi": round(phi, 4),
+    }
+
+
+def _walk_forward_folds(
+    ordered_rows: list[dict[str, Any]],
+    baseline_fn,
+    proposed_fn,
+    *,
+    folds: int = 3,
+) -> dict[str, Any]:
+    """Split rows into ``folds`` sequential time slices and require the proposed params
+    to beat baseline out-of-sample-in-time in a majority of folds. ``baseline_fn`` /
+    ``proposed_fn`` map a row subset to an outcomes dict (hit_rate_5x/10x)."""
+
+    n = len(ordered_rows)
+    if n < folds:
+        return {"folds": [], "folds_improved": 0, "pass": False, "evaluable": False}
+    size = n // folds
+    results: list[dict[str, Any]] = []
+    improved = 0
+    for i in range(folds):
+        lo = i * size
+        hi = n if i == folds - 1 else (i + 1) * size
+        slice_rows = ordered_rows[lo:hi]
+        base = baseline_fn(slice_rows)
+        prop = proposed_fn(slice_rows)
+        beats = (float(prop.get("hit_rate_5x") or 0) > float(base.get("hit_rate_5x") or 0)) or (
+            float(prop.get("hit_rate_10x") or 0) > float(base.get("hit_rate_10x") or 0)
+        )
+        improved += 1 if beats else 0
+        results.append(
+            {
+                "fold": i,
+                "n": len(slice_rows),
+                "baseline_hit_rate_5x": base.get("hit_rate_5x"),
+                "proposed_hit_rate_5x": prop.get("hit_rate_5x"),
+                "beats": beats,
+            }
+        )
+    return {"folds": results, "folds_improved": improved, "pass": improved >= 2, "evaluable": True}
+
+
+def _backtest_verdict(
+    baseline: dict[str, Any],
+    proposed: dict[str, Any],
+    *,
+    significance: dict[str, Any] | None = None,
+    walk_forward: dict[str, Any] | None = None,
+) -> str:
     if int(proposed.get("candidate_count") or 0) == 0:
         return "fail"
+    # Honest validation: not enough observations to claim anything -> block, don't pass.
+    if significance is not None and significance.get("insufficient_sample"):
+        return "insufficient_sample"
     improves_10x = float(proposed.get("hit_rate_10x") or 0) > float(baseline.get("hit_rate_10x") or 0)
     improves_5x = float(proposed.get("hit_rate_5x") or 0) > float(baseline.get("hit_rate_5x") or 0)
     baseline_false = float(baseline.get("false_positive_rate") or 0)
     proposed_false = float(proposed.get("false_positive_rate") or 0)
     allowed_false_positive = 1.0 if int(baseline.get("candidate_count") or 0) == 0 else min(1.0, baseline_false + 0.25)
-    if (improves_10x or improves_5x) and proposed_false <= allowed_false_positive:
-        return "pass"
-    return "fail"
+    if not ((improves_10x or improves_5x) and proposed_false <= allowed_false_positive):
+        return "fail"
+    # The improvement must be statistically significant and hold out-of-sample-in-time.
+    if significance is not None and not significance.get("significant"):
+        return "fail"
+    if walk_forward is not None and walk_forward.get("evaluable") and not walk_forward.get("pass"):
+        return "fail"
+    return "pass"
 
 
 def _forward_test_verdict(baseline: dict[str, Any], proposed: dict[str, Any], days_observed: int) -> str:
@@ -4499,6 +4599,52 @@ def _qqq_above_200d(con: Any, snapshot_time: str, cache: dict[str, bool | None])
     else:
         cache[key] = clean[-1] >= (_average(clean[-200:]) or 10**9)
     return cache[key]
+
+
+def _market_regime(con: Any, snapshot_time: str, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Two-dimensional market regime: {risk_on/neutral/risk_off} x {vol_low/vol_high}.
+
+    Risk dimension from QQQ vs its 200d MA (distance buckets); vol dimension from the
+    QQQ 20d realized-vol percentile over the trailing year. Replaces the binary
+    QQQ-above-200d read for conditioning tail width and cohort base rates."""
+
+    snapshot_date = _date(snapshot_time)
+    if snapshot_date is None:
+        return {"regime": "unknown", "risk": "unknown", "vol": "unknown"}
+    key = snapshot_date.isoformat()
+    if key in cache:
+        return cache[key]
+    rows = query_rows(
+        con,
+        "SELECT close FROM prices_daily WHERE symbol = 'QQQ' AND date <= TRY_CAST(? AS DATE) ORDER BY date DESC LIMIT 252",
+        [key],
+    )
+    closes = [_number(r.get("close")) for r in reversed(rows)]
+    clean = [c for c in closes if c is not None]
+    if len(clean) < 200:
+        result = {"regime": "unknown", "risk": "unknown", "vol": "unknown"}
+        cache[key] = result
+        return result
+    ma200 = _average(clean[-200:]) or clean[-1]
+    distance = clean[-1] / ma200 - 1.0 if ma200 else 0.0
+    risk = "risk_on" if distance >= 0.02 else "risk_off" if distance <= -0.02 else "neutral"
+    # Rolling 20d realized vol series -> current vol's percentile over the last ~year.
+    rv_series: list[float] = []
+    for end in range(21, len(clean) + 1):
+        window = clean[end - 21 : end]
+        rets = [math.log(window[i] / window[i - 1]) for i in range(1, len(window)) if window[i - 1] > 0]
+        if len(rets) >= 2:
+            avg = sum(rets) / len(rets)
+            var = sum((r - avg) ** 2 for r in rets) / (len(rets) - 1)
+            rv_series.append(math.sqrt(var) * math.sqrt(252))
+    vol = "unknown"
+    if rv_series:
+        current = rv_series[-1]
+        pct = sum(1 for v in rv_series if v <= current) / len(rv_series)
+        vol = "vol_high" if pct >= 0.5 else "vol_low"
+    result = {"regime": f"{risk}/{vol}", "risk": risk, "vol": vol, "qqq_distance_200d": round(distance, 4)}
+    cache[key] = result
+    return result
 
 
 def _setup_type(row: dict[str, Any], event: dict[str, Any]) -> str:
