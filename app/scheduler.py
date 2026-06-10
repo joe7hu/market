@@ -87,11 +87,13 @@ def job_intervals() -> dict[str, int]:
     learning_seconds = _env_int("MARKET_LEARNING_REFRESH_SECONDS", 21600, allow_zero=True)
     if learning_seconds > 0:
         intervals["refresh_options_radar_deterministic"] = learning_seconds
-    # Daily agent thesis/postmortem pass (Codex workers, LLM-backed). Off by default
-    # so the always-on app process never makes surprise LLM runs. Set to 86400 to
-    # keep theses fresh in-process while the app stays up 24/7 (the launchd premarket
-    # job only runs when the app is down). 0 disables.
-    agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 0, allow_zero=True)
+    # Daily agent thesis/postmortem pass (Codex workers, LLM-backed). Default daily
+    # (86400) so theses/postmortems stay fresh and the calibration loop has graded
+    # outcomes feeding it; the runner's per-run request cap bounds spend, and it skips
+    # when there are no new FIRE/SETUP candidates since the last run. Set 0 to disable
+    # (e.g. to rely solely on the launchd premarket job, which only runs when the app
+    # is down).
+    agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 86400, allow_zero=True)
     if agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
     return intervals

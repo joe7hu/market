@@ -61,6 +61,20 @@ def test_signal_loop_always_scheduled(monkeypatch) -> None:
     assert intervals["refresh_options_radar_deterministic"] == 21600  # heavy learning, slow cadence
 
 
+def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
+    for var in ("MARKET_RADAR_OPTION_SOURCE", "MARKET_AGENT_REFRESH_SECONDS"):
+        monkeypatch.delenv(var, raising=False)
+    intervals = scheduler.job_intervals()
+    assert intervals["run_option_agents"] == 86400  # daily by default (Phase 2c)
+
+
+def test_agent_pass_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.setenv("MARKET_AGENT_REFRESH_SECONDS", "0")
+    intervals = scheduler.job_intervals()
+    assert "run_option_agents" not in intervals
+
+
 def test_learning_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_LEARNING_REFRESH_SECONDS", "0")
