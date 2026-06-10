@@ -7,6 +7,7 @@ import json
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_PARAMETERS,
     DEFAULT_STRATEGY_VERSION,
+    _setup_score,
     build_candidate_event,
 )
 
@@ -68,3 +69,37 @@ def test_missing_iv_skips_ev_but_still_builds_event():
     # Falls back gracefully: no EV block, linear buy_under still set.
     assert event["raw"]["ev"] is None
     assert event["buy_under"] is not None
+
+
+def test_catalyst_within_dte_sets_days_to_earnings_and_positive():
+    # Earnings 40 days out, contract has 580 DTE -> catalyst is inside the window.
+    event = build_candidate_event(
+        _fire_row(next_earnings_date="2026-07-20"), DEFAULT_STRATEGY_VERSION, DEFAULT_STRATEGY_PARAMETERS
+    )
+    assert event is not None
+    assert event["raw"]["days_to_earnings"] == 40
+    assert "catalyst_within_dte" in event["trigger_reason"]
+
+
+def test_no_earnings_date_leaves_days_to_earnings_none():
+    event = build_candidate_event(_fire_row(), DEFAULT_STRATEGY_VERSION, DEFAULT_STRATEGY_PARAMETERS)
+    assert event is not None
+    assert event["raw"]["days_to_earnings"] is None
+    assert "catalyst_within_dte" not in event["trigger_reason"]
+
+
+def test_setup_score_is_continuous_and_ranks_setups():
+    strong = {"price": 99.0, "breakout_level": 100.0, "base_length_days": 100.0,
+              "volume_ratio": 0.7, "rs_vs_qqq_20d": 0.08, "rs_vs_qqq_60d": 0.06, "atr_pct": 0.02}
+    weak = {"price": 80.0, "breakout_level": 100.0, "base_length_days": 5.0,
+            "volume_ratio": 1.3, "rs_vs_qqq_20d": -0.05, "rs_vs_qqq_60d": -0.04, "atr_pct": 0.08}
+    s_strong, s_weak = _setup_score(strong), _setup_score(weak)
+    assert s_strong > s_weak
+    assert 0.0 <= s_weak < s_strong <= 100.0
+    # Not the old binary 100/45: a near-breakout setup lands between.
+    assert s_strong not in (45.0, 100.0)
+
+
+def test_setup_score_falls_back_to_binary_without_features():
+    assert _setup_score({"price": 100.0, "ma_50": 90.0}) == 100.0  # above MA50
+    assert _setup_score({"price": 80.0, "ma_50": 90.0}) == 45.0    # below MA50

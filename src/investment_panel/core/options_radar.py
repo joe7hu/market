@@ -1042,6 +1042,9 @@ def generate_candidate_events(
             sf.price,
             sf.ma_50,
             sf.rs_vs_qqq_20d,
+            sf.rs_vs_qqq_60d,
+            sf.atr_pct,
+            sf.volume_ratio,
             sf.base_length_days,
             sf.breakout_level,
             sf.raw AS stock_features_raw,
@@ -1113,6 +1116,12 @@ def generate_candidate_events(
                 ORDER BY peer.snapshot_time DESC
                 LIMIT 1
             ) AS peer_delta,
+            (
+                SELECT min(TRY_CAST(e.event_date AS DATE))
+                FROM earnings_events e
+                WHERE e.symbol = s.ticker
+                  AND TRY_CAST(e.event_date AS DATE) >= TRY_CAST(s.snapshot_time AS DATE)
+            ) AS next_earnings_date,
             t.thesis_id
         FROM option_snapshot s
         JOIN option_features f ON f.contract_id = s.contract_id AND f.snapshot_time = s.snapshot_time
@@ -1301,6 +1310,13 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     if iv_rv_ratio is not None and iv_rv_ratio <= 1.1:
         positives.append("cheap_convexity_iv_rv")
 
+    # Catalyst calendar: days to the next earnings event. Informational for LEAPs; a
+    # hard input for Phase 3's short-dated catalyst_call archetype (IV-crush modeling).
+    days_to_earnings = _elapsed_days(row.get("snapshot_time"), row.get("next_earnings_date"))
+    if days_to_earnings is not None and days_to_earnings >= 0:
+        if dte is not None and days_to_earnings <= dte:
+            positives.append("catalyst_within_dte")
+
     ev_buy_under = ev_inverse_buy_under(ev_inputs) if ev_inputs is not None else None
     buy_under = ev_buy_under if ev_buy_under is not None else _buy_under(row, strategy)
     fill = premium * (1 + float(strategy["fill_slippage_pct"]))
@@ -1347,6 +1363,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             "expiration": str(row.get("expiration")),
             "strike": strike,
             "option_type": option_type,
+            "days_to_earnings": days_to_earnings,
             "ev": _ev_raw(ev_result),
         },
     }
@@ -4523,6 +4540,40 @@ def _candidate_ev(row: dict[str, Any], *, option_type: str, dte: int | None) -> 
     return inputs, result
 
 
+def _setup_score(row: dict[str, Any]) -> float:
+    """Continuous 0-100 entry-setup quality from features compute_stock_feature already
+    produces but the old binary MA50 gate ignored: proximity to the breakout level, base
+    length, volume contraction, RS slope, and ATR compression. Falls back to the binary
+    above/below-MA50 read when the richer features are absent."""
+
+    price = _number(row.get("price"))
+    breakout = _number(row.get("breakout_level"))
+    base_len = _number(row.get("base_length_days"))
+    volume_ratio = _number(row.get("volume_ratio"))
+    rs20 = _number(row.get("rs_vs_qqq_20d"))
+    rs60 = _number(row.get("rs_vs_qqq_60d"))
+    atr_pct = _number(row.get("atr_pct"))
+
+    components: list[float] = []
+    if price is not None and breakout and breakout > 0:
+        # 1.0 = at the breakout; reward proximity from ~0.85x upward, cap above.
+        components.append(max(0.0, min(100.0, (price / breakout - 0.85) / 0.15 * 100.0)))
+    if base_len is not None:
+        components.append(max(0.0, min(100.0, base_len / 120.0 * 100.0)))
+    if volume_ratio is not None:
+        # Contraction (ratio < 1) is constructive; 0.6x -> 100, 1.2x -> 0.
+        components.append(max(0.0, min(100.0, (1.2 - volume_ratio) / 0.6 * 100.0)))
+    if rs20 is not None or rs60 is not None:
+        rs = max(rs20 or 0.0, rs60 or 0.0)
+        components.append(max(0.0, min(100.0, (rs * 100.0 + 10.0) / 0.2)))
+    if atr_pct is not None:
+        components.append(max(0.0, min(100.0, (0.06 - atr_pct) / 0.06 * 100.0)))
+
+    if not components:
+        return 100.0 if (price or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
+    return round(sum(components) / len(components), 2)
+
+
 def _candidate_score(
     row: dict[str, Any],
     state: str,
@@ -4536,7 +4587,7 @@ def _candidate_score(
     liquidity = _number(row.get("liquidity_score")) or 0
     convexity = _number(row.get("convexity_score")) or 0
     rs = _number(row.get("rs_vs_qqq_20d")) or 0
-    technical = 100.0 if (_number(row.get("price")) or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
+    technical = _setup_score(row)
     rs_term = (max(-20.0, min(20.0, rs * 100)) + 20) * 0.05
     if ev_asymmetry is not None:
         # EV-derived asymmetry (probability- and theta-aware) replaces the linear
