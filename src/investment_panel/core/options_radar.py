@@ -56,6 +56,7 @@ SERVICE_REPAIR_JOB_ORDER = [
 
 DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "strategy_name": "leap_10x_reversal",
+    "strategy_family": "leap_10x_reversal",
     "version": 1,
     "option_type": "call",
     "delta_min": 0.20,
@@ -72,6 +73,44 @@ DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "require_price_above_ma50": True,
     "require_rs_improving": True,
     "fill_slippage_pct": 0.03,
+}
+
+# Additional archetype families (Phase 3). Each is a full parameter set layered over
+# the defaults; they register as 'forward_test' so they shadow-trade before earning UI
+# prominence. Gate flags absent from the defaults (requires_catalyst,
+# require_price_below_ma50, require_rs_deteriorating, max_iv_rv_ratio) keep the legacy
+# LEAP behavior unchanged while making each family selective in its own way.
+STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
+    "catalyst_call_v1": {
+        **DEFAULT_STRATEGY_PARAMETERS,
+        "strategy_name": "catalyst_call",
+        "strategy_family": "catalyst_call",
+        "option_type": "call",
+        "delta_min": 0.25,
+        "delta_max": 0.50,
+        "dte_min": 45,
+        "dte_max": 180,
+        "max_required_move_pct": 1.20,
+        "requires_catalyst": True,
+        "max_iv_rv_ratio": 1.6,  # IV-crush guard: don't overpay for vol vs realized
+        "require_price_above_ma50": True,
+        "require_rs_improving": False,
+    },
+    "breakdown_put_v1": {
+        **DEFAULT_STRATEGY_PARAMETERS,
+        "strategy_name": "breakdown_put",
+        "strategy_family": "breakdown_put",
+        "option_type": "put",
+        "delta_min": 0.25,
+        "delta_max": 0.45,
+        "dte_min": 90,
+        "dte_max": 365,
+        "max_required_move_pct": 3.50,
+        "require_price_above_ma50": False,
+        "require_rs_improving": False,
+        "require_price_below_ma50": True,
+        "require_rs_deteriorating": True,
+    },
 }
 
 THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -210,12 +249,18 @@ def refresh_options_radar(
     """
 
     register_default_strategy(con, strategy_version)
+    register_strategy_families(con)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
     feature_rows = refresh_option_features(con, symbols=symbols, source=source)
     flow_rows = refresh_option_flow_features(con, symbols=symbols, source=source)
     stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
     vol_surface_rows = refresh_vol_surface_features(con, symbols=symbols, source=source)
-    candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source)
+    # Generate candidates for the primary strategy and every registered archetype family
+    # (each shadow-traded on its own strategy_version).
+    candidate_rows = sum(
+        generate_candidate_events(con, symbols=symbols, strategy_version=version, source=source)
+        for version in candidate_strategy_versions(con, strategy_version)
+    )
     if include_agent_work:
         from investment_panel.core.option_agent_thesis import refresh_option_agent_work
 
@@ -307,6 +352,51 @@ def register_default_strategy(con: Any, strategy_version: str = DEFAULT_STRATEGY
             "Deterministic 10x LEAP reversal baseline. Agents may propose changes, but code/backtests promote versions.",
         ],
     )
+
+
+def register_strategy_families(con: Any) -> int:
+    """Register the additional archetype families as forward_test (shadow) strategies.
+    Idempotent — INSERT OR IGNORE never disturbs a promoted/edited version."""
+
+    now = datetime.utcnow().isoformat()
+    written = 0
+    for version, params in STRATEGY_FAMILY_PRESETS.items():
+        con.execute(
+            """
+            INSERT OR IGNORE INTO option_strategy_versions
+            (strategy_version, strategy_name, version, created_at, status, parameters, promoted_at, supersedes, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                version,
+                params["strategy_name"],
+                params.get("version", 1),
+                now,
+                "forward_test",
+                json_dumps(params),
+                None,
+                None,
+                f"{params['strategy_family']} archetype — shadow-traded until backtest/forward-test promote it.",
+            ],
+        )
+        written += 1
+    return written
+
+
+def candidate_strategy_versions(con: Any, primary: str = DEFAULT_STRATEGY_VERSION) -> list[str]:
+    """Strategy versions that should generate candidates: the primary plus every
+    registered active/shadow/forward_test family, deduped with the primary first."""
+
+    rows = query_rows(
+        con,
+        "SELECT strategy_version FROM option_strategy_versions WHERE status IN ('active', 'shadow', 'forward_test')",
+    )
+    versions = [primary]
+    for row in rows:
+        version = str(row.get("strategy_version"))
+        if version and version not in versions:
+            versions.append(version)
+    return versions
 
 
 def persist_option_snapshots(
@@ -1201,7 +1291,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     positives: list[str] = []
 
     if option_type != strategy["option_type"]:
-        hard_rejects.append("strategy_only_tracks_calls")
+        hard_rejects.append(f"strategy_only_tracks_{strategy['option_type']}s")
     dte = _integer(row.get("dte"))
     if dte is None:
         blockers.append("missing_dte")
@@ -1283,6 +1373,14 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             blockers.append("stock_below_50d")
         else:
             positives.append("stock_above_50d")
+    # Breakdown-put family mirrors the long gates: it wants the stock *under* its 50d.
+    if strategy.get("require_price_below_ma50"):
+        if price is None or ma50 is None:
+            blockers.append("missing_50d_context")
+        elif price > ma50:
+            blockers.append("stock_above_50d")
+        else:
+            positives.append("stock_below_50d")
     rs20 = _number(row.get("rs_vs_qqq_20d"))
     if strategy.get("require_rs_improving"):
         if rs20 is None:
@@ -1291,6 +1389,13 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             blockers.append("rs_vs_qqq_20d_negative")
         else:
             positives.append("rs_vs_qqq_improving")
+    if strategy.get("require_rs_deteriorating"):
+        if rs20 is None:
+            blockers.append("missing_rs_vs_qqq")
+        elif rs20 > 0:
+            blockers.append("rs_vs_qqq_20d_positive")
+        else:
+            positives.append("rs_vs_qqq_deteriorating")
 
     ev_pair = _candidate_ev(row, option_type=option_type, dte=dte)
     ev_inputs = ev_pair[0] if ev_pair else None
@@ -1325,9 +1430,17 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     # Catalyst calendar: days to the next earnings event. Informational for LEAPs; a
     # hard input for Phase 3's short-dated catalyst_call archetype (IV-crush modeling).
     days_to_earnings = _elapsed_days(row.get("snapshot_time"), row.get("next_earnings_date"))
-    if days_to_earnings is not None and days_to_earnings >= 0:
-        if dte is not None and days_to_earnings <= dte:
-            positives.append("catalyst_within_dte")
+    catalyst_in_window = days_to_earnings is not None and days_to_earnings >= 0 and dte is not None and days_to_earnings <= dte
+    if catalyst_in_window:
+        positives.append("catalyst_within_dte")
+
+    # Catalyst-call family requires a known catalyst inside the contract's life and
+    # guards against overpaying for vol that will crush after the event (IV/RV cap).
+    if strategy.get("requires_catalyst") and not catalyst_in_window:
+        blockers.append("no_catalyst_in_window")
+    max_iv_rv = strategy.get("max_iv_rv_ratio")
+    if max_iv_rv is not None and iv_rv_ratio is not None and iv_rv_ratio > float(max_iv_rv):
+        blockers.append("iv_rich_vs_rv")
 
     ev_buy_under = ev_inverse_buy_under(ev_inputs) if ev_inputs is not None else None
     buy_under = ev_buy_under if ev_buy_under is not None else _buy_under(row, strategy)
@@ -1375,6 +1488,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             "expiration": str(row.get("expiration")),
             "strike": strike,
             "option_type": option_type,
+            "strategy_family": strategy.get("strategy_family"),
             "days_to_earnings": days_to_earnings,
             "ev": _ev_raw(ev_result),
         },
