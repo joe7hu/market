@@ -1,7 +1,8 @@
-import { ArrowUpRight, Target } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { ArrowUpRight, Loader2, NotebookPen, Target } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { StatusBadge } from "@/components/market/workstation";
+import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type { JsonValue, RowRecord } from "@/types";
@@ -19,6 +20,7 @@ type OpportunityDetailDrawerProps = {
   volSurface?: RowRecord;
   onClose: () => void;
   onOpenTicker: OpenTicker;
+  onLogTrade?: (opportunity: RowRecord, notes: string) => Promise<void>;
 };
 
 const SCORE_FIELDS: Array<{ label: string; key: string }> = [
@@ -32,17 +34,17 @@ const SCORE_FIELDS: Array<{ label: string; key: string }> = [
   { label: "Learning", key: "learning_score" },
 ];
 
-export function OpportunityDetailDrawer({ opportunity, volSurface, onClose, onOpenTicker }: OpportunityDetailDrawerProps) {
+export function OpportunityDetailDrawer({ opportunity, volSurface, onClose, onOpenTicker, onLogTrade }: OpportunityDetailDrawerProps) {
   return (
     <Sheet open={Boolean(opportunity)} onOpenChange={(open) => (open ? undefined : onClose())}>
       <SheetContent side="right" className="flex w-full flex-col gap-0 overflow-y-auto p-0 sm:max-w-xl">
-        {opportunity ? <DrawerBody opportunity={opportunity} volSurface={volSurface} onOpenTicker={onOpenTicker} /> : null}
+        {opportunity ? <DrawerBody opportunity={opportunity} volSurface={volSurface} onOpenTicker={onOpenTicker} onLogTrade={onLogTrade} /> : null}
       </SheetContent>
     </Sheet>
   );
 }
 
-function DrawerBody({ opportunity, volSurface, onOpenTicker }: { opportunity: RowRecord; volSurface?: RowRecord; onOpenTicker: OpenTicker }) {
+function DrawerBody({ opportunity, volSurface, onOpenTicker, onLogTrade }: { opportunity: RowRecord; volSurface?: RowRecord; onOpenTicker: OpenTicker; onLogTrade?: (opportunity: RowRecord, notes: string) => Promise<void> }) {
   const ticker = textField(opportunity, ["ticker"]);
   const tier = textField(opportunity, ["tier"], "Watch");
   const state = textField(opportunity, ["primary_state"]).toUpperCase();
@@ -148,7 +150,59 @@ function DrawerBody({ opportunity, volSurface, onOpenTicker }: { opportunity: Ro
           </Section>
         ) : null}
       </div>
+
+      {onLogTrade ? <LogTradeFooter opportunity={opportunity} onLogTrade={onLogTrade} /> : null}
     </>
+  );
+}
+
+function LogTradeFooter({ opportunity, onLogTrade }: { opportunity: RowRecord; onLogTrade: (opportunity: RowRecord, notes: string) => Promise<void> }) {
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [logged, setLogged] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset the form whenever the drawer switches to a different opportunity.
+  const key = textField(opportunity, ["opportunity_id"], textField(opportunity, ["primary_contract_id"]));
+  useEffect(() => {
+    setNotes("");
+    setLogged(false);
+    setError(null);
+  }, [key]);
+
+  async function submit() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onLogTrade(opportunity, notes.trim());
+      setLogged(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to log trade.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="sticky bottom-0 z-10 mt-auto border-t border-border bg-card px-5 py-3">
+      <textarea
+        value={notes}
+        onChange={(event) => setNotes(event.target.value)}
+        placeholder="Entry notes (thesis, sizing, trigger)…"
+        rows={2}
+        disabled={submitting || logged}
+        className="mb-2 w-full resize-none rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={submit} disabled={submitting || logged}>
+          {submitting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <NotebookPen className="mr-1.5 h-3.5 w-3.5" />}
+          {logged ? "Logged" : "Log trade"}
+        </Button>
+        {logged ? <span className="text-xs text-emerald-600 dark:text-emerald-400">Snapshot saved to the journal.</span> : null}
+        {error ? <span className="text-xs text-rose-600 dark:text-rose-400">{error}</span> : null}
+      </div>
+    </div>
   );
 }
 

@@ -1,7 +1,7 @@
 import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { promoteStrategyMutation } from "@/api";
+import { promoteStrategyMutation, recordTradeJournalEntry } from "@/api";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import type { Tone } from "@/ui/tone";
 import { AlertBell } from "./AlertBell";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { OpportunityDetailDrawer } from "./OpportunityDetailDrawer";
+import { TradeJournalPanel } from "./TradeJournalPanel";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
@@ -50,6 +51,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const cohortResults = rows(data.strategyCohortResult);
   const opportunityRows = rows(data.optionRadarOpportunity);
   const calibrationRows = rows(data.convictionCalibration);
+  const tradeJournalRows = rows(data.tradeJournal);
   const volSurfaceByTicker = useMemo(() => latestBy(rows(data.volSurfaceFeatures), "ticker", "snapshot_time"), [data.volSurfaceFeatures]);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
@@ -88,6 +90,18 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"]);
   const latestStrategy = strategyVersions[0];
+
+  async function handleLogTrade(opportunity: RowRecord, notes: string) {
+    await recordTradeJournalEntry({
+      ticker: textField(opportunity, ["ticker"]),
+      contract_id: textField(opportunity, ["primary_contract_id"]),
+      event_id: textField(opportunity, ["primary_event_id"]) || null,
+      strategy_version: textField(opportunity, ["strategy_version"]) || undefined,
+      opportunity: opportunity as Record<string, unknown>,
+      notes,
+    });
+    await onRefresh();
+  }
 
   async function handlePromoteProposal(proposalId: string) {
     if (!proposalId || promotingProposal) return;
@@ -163,6 +177,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           postmortems={postmortems}
         />
         <CalibrationPanel rows={calibrationRows} strategyVersion={textField(latestStrategy, ["strategy_version"]) || undefined} />
+        <TradeJournalPanel rows={tradeJournalRows} onOpenTicker={onOpenTicker} />
         <StrategyExplainer strategy={latestStrategy} />
         <CohortResultsTable rows={cohortResults} />
         {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
@@ -184,6 +199,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         volSurface={selectedOpportunity ? volSurfaceByTicker.get(textField(selectedOpportunity, ["ticker"])) : undefined}
         onClose={() => setSelectedOpportunity(null)}
         onOpenTicker={onOpenTicker}
+        onLogTrade={handleLogTrade}
       />
     </WorkspacePage>
   );
