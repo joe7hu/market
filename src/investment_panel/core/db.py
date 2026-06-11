@@ -1426,8 +1426,17 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             "service_repair_summary": "TEXT",
         },
         "radar_alert": {
+            "created_at": "TIMESTAMP",
+            "alert_type": "TEXT",
+            "ticker": "TEXT",
+            "contract_id": "TEXT",
+            "event_id": "TEXT",
+            "severity": "TEXT",
+            "title": "TEXT",
+            "detail": "TEXT",
             "acknowledged_at": "TIMESTAMP",
             "resolution_reason": "TEXT",
+            "raw": "JSON",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
