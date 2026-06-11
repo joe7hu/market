@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any
 
@@ -26,6 +26,9 @@ OPTION_QUALITY_IV_BAD_RELATIVE_DIFF = 0.30
 OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF = 0.07
 OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF = 0.15
 OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS = 2.0
+EXCEPTIONAL_CONVICTION_BAR = 78.0
+RADAR_ALERT_DEDUP_HOURS = 72
+RADAR_ALERT_TYPES = ("data_contract", "exceptional_conviction", "buy_under_hit")
 DATA_CONTRACT_READY = "ready"
 DATA_CONTRACT_REPAIR_REQUIRED = "repair_required"
 SERVICE_BUG_TIER = "Service Bug"
@@ -154,7 +157,7 @@ def snapshot_is_rth(snapshot_time: Any) -> bool:
     """Whether a snapshot's data was captured during regular trading hours."""
 
     parsed = _parse_utc(snapshot_time)
-    return bool(parsed and is_market_open(parsed))
+    return bool(parsed and (is_market_open(parsed) or is_market_open(parsed - timedelta(microseconds=1))))
 
 
 def display_snapshot_time(snapshot_times: list[str], now: datetime | None = None) -> str | None:
@@ -193,9 +196,10 @@ def refresh_options_radar(
 
     register_default_strategy(con, strategy_version)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
-    feature_rows = refresh_option_features(con, symbols=symbols, source=source)
-    stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source)
-    candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source)
+    fast_snapshot_time = None if include_learning else snapshot_time or _latest_option_snapshot_time(con, symbols=symbols, source=source)
+    feature_rows = refresh_option_features(con, symbols=symbols, source=source, snapshot_time=fast_snapshot_time)
+    stock_rows = refresh_stock_features_for_option_snapshots(con, symbols=symbols, source=source, snapshot_time=fast_snapshot_time)
+    candidate_rows = generate_candidate_events(con, symbols=symbols, strategy_version=strategy_version, source=source, snapshot_time=fast_snapshot_time)
     if include_agent_work:
         from investment_panel.core.option_agent_thesis import refresh_option_agent_work
 
@@ -237,6 +241,7 @@ def refresh_options_radar(
         evaluation_rows = {}
         cohort_rows = 0
     opportunity_rows = refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=strategy_version)
+    alert_rows = refresh_radar_alerts(con, strategy_version=strategy_version, symbols=symbols, resolve_all=symbols is None)
     return {
         "option_snapshots": snapshot_rows,
         "option_features": feature_rows,
@@ -257,6 +262,7 @@ def refresh_options_radar(
         **evaluation_rows,
         "strategy_cohorts": cohort_rows,
         "option_radar_opportunities": opportunity_rows,
+        "radar_alerts": alert_rows,
     }
 
 
@@ -447,20 +453,54 @@ def persist_option_snapshots(
     return count
 
 
-def refresh_option_features(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
+def _latest_option_snapshot_time(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> str | None:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
     rows = query_rows(
         con,
         f"""
-        SELECT *
+        SELECT max(s.snapshot_time) AS snapshot_time
         FROM option_snapshot s
         WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
-        ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
         """,
         [*source_filter["params"], *symbol_filter["params"]],
     )
-    iv_history = _iv_history_by_ticker(rows)
+    value = rows[0].get("snapshot_time") if rows else None
+    return _iso(value) if value else None
+
+
+def refresh_option_features(
+    con: Any,
+    symbols: list[str] | None = None,
+    *,
+    source: str | None = None,
+    snapshot_time: str | None = None,
+) -> int:
+    symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    source_filter = _source_filter(source, table_alias="s", column="data_source")
+    snapshot_filter = "AND s.snapshot_time = TRY_CAST(? AS TIMESTAMP)" if snapshot_time else ""
+    rows = query_rows(
+        con,
+        f"""
+        SELECT *
+        FROM option_snapshot s
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]} {snapshot_filter}
+        ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
+        """,
+        [*source_filter["params"], *symbol_filter["params"], *([snapshot_time] if snapshot_time else [])],
+    )
+    history_rows = rows
+    if snapshot_time:
+        history_rows = query_rows(
+            con,
+            f"""
+            SELECT ticker, iv
+            FROM option_snapshot s
+            WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
+            """,
+            [*source_filter["params"], *symbol_filter["params"]],
+        )
+    iv_history = _iv_history_by_ticker(history_rows)
     count = 0
     for row in rows:
         feature = build_option_feature(row, iv_history.get(str(row.get("ticker") or "").upper(), []))
@@ -537,18 +577,25 @@ def build_option_feature(snapshot: dict[str, Any], iv_history: list[float]) -> d
     }
 
 
-def refresh_stock_features_for_option_snapshots(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> int:
+def refresh_stock_features_for_option_snapshots(
+    con: Any,
+    symbols: list[str] | None = None,
+    *,
+    source: str | None = None,
+    snapshot_time: str | None = None,
+) -> int:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
+    snapshot_filter = "AND s.snapshot_time = TRY_CAST(? AS TIMESTAMP)" if snapshot_time else ""
     rows = query_rows(
         con,
         f"""
         SELECT DISTINCT s.ticker, s.snapshot_time
         FROM option_snapshot s
-        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]} {snapshot_filter}
         ORDER BY s.snapshot_time, s.ticker
         """,
-        [*source_filter["params"], *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"], *([snapshot_time] if snapshot_time else [])],
     )
     count = 0
     for row in rows:
@@ -645,10 +692,12 @@ def generate_candidate_events(
     *,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
     source: str | None = None,
+    snapshot_time: str | None = None,
 ) -> int:
     strategy = _strategy_parameters(con, strategy_version)
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
+    snapshot_filter = "AND s.snapshot_time = TRY_CAST(? AS TIMESTAMP)" if snapshot_time else ""
     rows = query_rows(
         con,
         f"""
@@ -746,10 +795,10 @@ def generate_candidate_events(
             QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY created_at DESC) = 1
         ) t ON t.ticker = s.ticker
         LEFT JOIN instruments i ON i.symbol = s.ticker
-        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]}
+        WHERE 1 = 1 {source_filter["sql"]} {symbol_filter["sql"]} {snapshot_filter}
         ORDER BY s.snapshot_time, s.ticker, s.expiration, s.strike, s.option_type
         """,
-        [*source_filter["params"], *symbol_filter["params"]],
+        [*source_filter["params"], *symbol_filter["params"], *([snapshot_time] if snapshot_time else [])],
     )
     count = 0
     for row in rows:
@@ -932,7 +981,7 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
             "blockers": blockers,
             "positives": positives,
             "quality": quality,
-            "strategy_parameters": strategy,
+            "strategy_version": strategy_version,
             "watch_themes": watch_themes,
             "expiration": str(row.get("expiration")),
             "strike": strike,
@@ -1059,10 +1108,11 @@ def refresh_option_radar_opportunities(
     for row in rows:
         grouped[_normalize_symbol(row.get("ticker"))].append(row)
 
+    qqq_cache: dict[str, bool | None] = {}
     built = [
         opportunity
         for ticker, candidate_rows in grouped.items()
-        if (opportunity := build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version))
+        if (opportunity := build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version, qqq_cache=qqq_cache))
     ]
     # Preserve the last-good opportunities if the latest snapshot built none — a
     # single bad snapshot (e.g. an off-hours pull of all near-term/REJECT
@@ -1143,17 +1193,199 @@ def refresh_option_radar_opportunities(
     return count
 
 
+def refresh_radar_alerts(
+    con: Any,
+    *,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    symbols: list[str] | None = None,
+    resolve_all: bool = True,
+) -> int:
+    """Materialize actionable radar alerts from the current opportunity read model."""
+
+    symbol_filter = _symbol_filter(symbols, table_alias="oro", column="ticker")
+    rows = query_rows(
+        con,
+        f"""
+        WITH latest AS (
+            SELECT max(snapshot_time) AS snapshot_time
+            FROM option_radar_opportunity oro
+            WHERE oro.strategy_version = ? {symbol_filter["sql"]}
+        )
+        SELECT oro.opportunity_id, oro.snapshot_time, oro.ticker, oro.strategy_version, oro.tier,
+               oro.primary_event_id, oro.primary_contract_id, oro.primary_state,
+               oro.conviction_score, oro.premium_mid, oro.premium_fill_assumption,
+               oro.buy_under, oro.required_move_pct, oro.data_contract_status,
+               oro.service_repair_summary, oro.quality_status, oro.quality_flags, oro.raw
+        FROM option_radar_opportunity oro
+        WHERE oro.strategy_version = ?
+          AND snapshot_time = (SELECT snapshot_time FROM latest)
+          {symbol_filter["sql"]}
+        """,
+        [strategy_version, *symbol_filter["params"], strategy_version, *symbol_filter["params"]],
+    )
+    recent = query_rows(
+        con,
+        f"""
+        SELECT alert_type, coalesce(event_id, '') AS event_id, coalesce(contract_id, '') AS contract_id
+        FROM radar_alert
+        WHERE created_at >= current_timestamp - INTERVAL '{RADAR_ALERT_DEDUP_HOURS} hours'
+          AND (acknowledged_at IS NULL OR resolution_reason = 'manual_ack')
+        """,
+    )
+    created_at = datetime.utcnow().isoformat()
+    alerts = [alert for opportunity in rows for alert in _radar_alerts_for_opportunity(opportunity, created_at)]
+    current_identities = {(alert["alert_type"], alert["event_id"] or "", alert["contract_id"] or "") for alert in alerts}
+    resolve_symbols = None if resolve_all else {_normalize_symbol(symbol) for symbol in symbols or [] if symbol}
+    _resolve_stale_radar_alerts(con, current_identities, resolved_at=created_at, symbols=resolve_symbols)
+
+    seen = {(str(row.get("alert_type") or ""), str(row.get("event_id") or ""), str(row.get("contract_id") or "")) for row in recent}
+    count = 0
+    for alert in alerts:
+        identity = (alert["alert_type"], alert["event_id"] or "", alert["contract_id"] or "")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        con.execute(
+            """
+            INSERT OR REPLACE INTO radar_alert
+            (alert_id, created_at, alert_type, ticker, contract_id, event_id,
+             severity, title, detail, acknowledged_at, resolution_reason, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                alert["alert_id"],
+                alert["created_at"],
+                alert["alert_type"],
+                alert["ticker"],
+                alert["contract_id"],
+                alert["event_id"],
+                alert["severity"],
+                alert["title"],
+                alert["detail"],
+                None,
+                None,
+                json_dumps(alert["raw"]),
+            ],
+        )
+        count += 1
+    return count
+
+
+def _resolve_stale_radar_alerts(
+    con: Any,
+    current_identities: set[tuple[str, str, str]],
+    *,
+    resolved_at: str,
+    symbols: set[str] | None,
+) -> None:
+    symbol_filter = ""
+    params: list[Any] = []
+    if symbols is not None:
+        if not symbols:
+            return
+        placeholders = ", ".join("?" for _ in symbols)
+        symbol_filter = f"AND ticker IN ({placeholders})"
+        params.extend(sorted(symbols))
+    active = query_rows(
+        con,
+        f"""
+        SELECT alert_id, alert_type, coalesce(event_id, '') AS event_id, coalesce(contract_id, '') AS contract_id
+        FROM radar_alert
+        WHERE acknowledged_at IS NULL
+        {symbol_filter}
+        """,
+        params,
+    )
+    for alert in active:
+        alert_type = str(alert.get("alert_type") or "")
+        identity = (alert_type, str(alert.get("event_id") or ""), str(alert.get("contract_id") or ""))
+        if alert_type in RADAR_ALERT_TYPES and identity not in current_identities:
+            con.execute(
+                """
+                UPDATE radar_alert
+                SET acknowledged_at = TRY_CAST(? AS TIMESTAMP),
+                    resolution_reason = 'auto_resolved'
+                WHERE alert_id = ?
+                """,
+                [resolved_at, alert.get("alert_id")],
+            )
+
+
+def acknowledge_radar_alert(con: Any, alert_id: str, *, acknowledged_at: str | None = None) -> bool:
+    timestamp = acknowledged_at or datetime.utcnow().isoformat()
+    existing = query_rows(con, "SELECT alert_id FROM radar_alert WHERE alert_id = ? LIMIT 1", [alert_id])
+    if not existing:
+        return False
+    con.execute(
+        """
+        UPDATE radar_alert
+        SET acknowledged_at = TRY_CAST(? AS TIMESTAMP),
+            resolution_reason = 'manual_ack'
+        WHERE alert_id = ?
+        """,
+        [timestamp, alert_id],
+    )
+    return True
+
+
+def _radar_alerts_for_opportunity(row: dict[str, Any], created_at: str) -> list[dict[str, Any]]:
+    ticker = _normalize_symbol(row.get("ticker"))
+    contract_id = str(row.get("primary_contract_id") or "")
+    event_id = str(row.get("primary_event_id") or "")
+    tier = str(row.get("tier") or "")
+    primary_state = str(row.get("primary_state") or "").upper()
+    buy_under = _number(row.get("buy_under"))
+    premium = _number(row.get("premium_mid"))
+    conviction = _number(row.get("conviction_score"))
+    quality = str(row.get("quality_status") or "ok").lower()
+    data_status = str(row.get("data_contract_status") or DATA_CONTRACT_READY).lower()
+    output: list[dict[str, Any]] = []
+
+    def add(alert_type: str, severity: str, title: str, detail: str) -> None:
+        output.append(
+            {
+                "alert_id": stable_id("radar_alert", alert_type, event_id or contract_id, created_at[:13]),
+                "created_at": created_at,
+                "alert_type": alert_type,
+                "ticker": ticker,
+                "contract_id": contract_id,
+                "event_id": event_id,
+                "severity": severity,
+                "title": title,
+                "detail": detail,
+                "raw": {
+                    "tier": tier,
+                    "primary_state": primary_state,
+                    "conviction_score": conviction,
+                    "premium_mid": premium,
+                    "buy_under": buy_under,
+                    "quality_status": quality,
+                    "data_contract_status": data_status,
+                },
+            }
+        )
+
+    if data_status != DATA_CONTRACT_READY or quality == "bad" or tier == SERVICE_BUG_TIER:
+        add("data_contract", "critical", f"{ticker} data contract blocked", str(row.get("service_repair_summary") or "Fix radar data contract before trade review."))
+    if tier == "Exceptional" and conviction is not None and conviction >= EXCEPTIONAL_CONVICTION_BAR:
+        add("exceptional_conviction", "critical", f"{ticker} trade-ready signal", f"Conviction {conviction:.0f}; {contract_id} is the current primary contract.")
+    if primary_state in {"FIRE", "SETUP"} and buy_under is not None and premium is not None and premium <= buy_under:
+        add("buy_under_hit", "warning", f"{ticker} premium inside cap", f"Premium {premium:.2f} is at or below buy-under {buy_under:.2f}.")
+    return output
+
+
 def build_option_radar_opportunity(
     con: Any,
     ticker: str,
     candidate_rows: list[dict[str, Any]],
     strategy_version: str,
+    *,
+    qqq_cache: dict[str, bool | None] | None = None,
 ) -> dict[str, Any] | None:
     snapshot_time = _iso(candidate_rows[0].get("snapshot_time")) if candidate_rows else ""
     source_context = _source_signal_context(con, ticker, snapshot_time)
-    qqq_above = _qqq_above_200d(con, snapshot_time, {})
+    qqq_above = _qqq_above_200d(con, snapshot_time, qqq_cache if qqq_cache is not None else {})
     details = [_opportunity_candidate_detail(row, source_context=source_context, qqq_above_200d=qqq_above) for row in candidate_rows]
-    details = [detail for detail in details if detail]
     if not details:
         return None
     details.sort(key=lambda item: (tier_rank(str(item["tier"])), -float(item["conviction_score"]), _number(item.get("required_move_pct")) or 99.0))
@@ -1228,7 +1460,7 @@ def _opportunity_candidate_detail(
     blockers = _extreme_opportunity_blockers(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, scores=scores)
     data_contract = _opportunity_data_contract(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
     conviction = scores["conviction_score"]
-    if conviction < 78.0 and "conviction_below_exceptional_bar" not in blockers:
+    if conviction < EXCEPTIONAL_CONVICTION_BAR and "conviction_below_exceptional_bar" not in blockers:
         blockers.append("conviction_below_exceptional_bar")
     state = str(row.get("state") or "").upper()
     if data_contract["status"] != DATA_CONTRACT_READY:
@@ -1805,7 +2037,11 @@ def tier_rank(tier: str) -> int:
         return 0
     if tier == "Research":
         return 1
-    return 2
+    if tier == "Watch":
+        return 2
+    if tier == SERVICE_BUG_TIER:
+        return 3
+    return 4
 
 
 def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:

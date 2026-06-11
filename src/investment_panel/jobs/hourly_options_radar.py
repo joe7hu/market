@@ -45,7 +45,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, loc
             status_path = write_hourly_status(config, result)
             return {**result, "status_path": str(status_path)}
 
-        radar = refresh_options_radar.run_deterministic_only(config_path, symbols=symbols)
+        radar = refresh_options_radar.run_signal_only(config_path, symbols=symbols)
         result = {
             "database": str(config.database.duckdb_path),
             "cadence": "hourly_deterministic",

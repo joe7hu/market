@@ -105,6 +105,7 @@ def load_panel_data(
             "agent_thesis_validation": lambda: agent_thesis_validation(con),
             "agent_postmortem_request": lambda: agent_postmortem_request(con),
             "agent_postmortem": lambda: agent_postmortem(con),
+            "radar_alert": lambda: radar_alert(con),
             "candidate_event": lambda: candidate_event(con),
             "candidate_event_mark": lambda: candidate_event_mark(con),
             "candidate_event_attribution": lambda: candidate_event_attribution(con),
@@ -3563,7 +3564,7 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
                quality_flags, evidence_refs, alternative_contracts, raw
         FROM option_radar_opportunity
         WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
-        ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Service Bug' THEN 1 WHEN 'Research' THEN 2 ELSE 3 END,
+        ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Research' THEN 1 WHEN 'Watch' THEN 2 WHEN 'Service Bug' THEN 3 ELSE 4 END,
                  conviction_score DESC NULLS LAST,
                  required_move_pct ASC NULLS LAST,
                  ticker
@@ -3765,6 +3766,24 @@ def candidate_event(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("quality_flags", "raw"))) for row in rows]
+
+
+def radar_alert(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT alert_id, created_at, alert_type, ticker, contract_id, event_id,
+               severity, title, detail, acknowledged_at, resolution_reason, raw
+        FROM radar_alert
+        WHERE acknowledged_at IS NULL
+        ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                 created_at DESC,
+                 ticker,
+                 alert_type
+        LIMIT 200
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def shadow_trade(con: Any) -> list[dict[str, Any]]:

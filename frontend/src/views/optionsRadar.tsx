@@ -1,7 +1,7 @@
 import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { promoteStrategyMutation } from "@/api";
+import { acknowledgeRadarAlert, promoteStrategyMutation } from "@/api";
 import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,9 +29,12 @@ type OptionThesisAgentRuntime = {
 };
 
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
+  const [activeTab, setActiveTab] = useState<"signals" | "learning">("signals");
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [acknowledgingAlert, setAcknowledgingAlert] = useState<string | null>(null);
   const candidates = rows(data.candidateEvent);
+  const radarAlerts = rows(data.radarAlert);
   const missedWinners = rows(data.missedWinnerEvent);
   const proposals = rows(data.strategyMutationProposal);
   const backtests = rows(data.strategyBacktestResult);
@@ -59,6 +62,14 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const currentOpportunityRows = useMemo(
     () => opportunityRows.filter((row) => !latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime),
     [latestCandidateTime, opportunityRows],
+  );
+  const opportunityByEvent = useMemo(
+    () => new Map(currentOpportunityRows.map((row) => [textField(row, ["primary_event_id"]), row]).filter(([eventId]) => Boolean(eventId)) as Array<[string, RowRecord]>),
+    [currentOpportunityRows],
+  );
+  const enrichedOpportunityCandidates = useMemo(
+    () => opportunityCandidates.map((row) => ({ ...row, ...candidateOpportunityFields(opportunityByEvent.get(textField(row, ["event_id"]))) })),
+    [opportunityByEvent, opportunityCandidates],
   );
   const opportunityTickers = useMemo(() => uniqueText(opportunityCandidates, "ticker"), [opportunityCandidates]);
 
@@ -97,6 +108,17 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     }
   }
 
+  async function handleAcknowledgeAlert(alertId: string) {
+    if (!alertId || acknowledgingAlert) return;
+    setAcknowledgingAlert(alertId);
+    try {
+      await acknowledgeRadarAlert(alertId);
+      await onRefresh();
+    } finally {
+      setAcknowledgingAlert(null);
+    }
+  }
+
   return (
     <WorkspacePage
       eyebrow="Options Radar"
@@ -113,6 +135,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </div>
       }
     >
+      <RadarAlertPanel alerts={radarAlerts} acknowledgingAlert={acknowledgingAlert} onAcknowledge={handleAcknowledgeAlert} />
       <RadarSummaryStrip
         opportunityCount={opportunityCount}
         opportunityTickerCount={opportunityTickerCount}
@@ -133,9 +156,13 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         optionThesisAgent={optionThesisAgent}
         onOpenTicker={onOpenTicker}
       />
-      <div className="space-y-4">
+      <div className="flex w-fit rounded-md border border-border bg-muted p-1">
+        <button type="button" className={tabButtonClass(activeTab === "signals")} onClick={() => setActiveTab("signals")}>Signals</button>
+        <button type="button" className={tabButtonClass(activeTab === "learning")} onClick={() => setActiveTab("learning")}>Learning</button>
+      </div>
+      {activeTab === "signals" ? (
         <CandidateEventsTable
-          rows={opportunityCandidates}
+          rows={enrichedOpportunityCandidates}
           thesisRequestByEvent={latestThesisRequestByEvent}
           latestMarkByEvent={latestCandidateMarkByEvent}
           latestAttributionByEvent={latestCandidateAttributionByEvent}
@@ -144,8 +171,10 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           agentRuntime={optionThesisAgent}
           onOpenTicker={onOpenTicker}
         />
+      ) : (
+        <div className="space-y-4">
         <LearningProgressPanel
-          opportunities={opportunityCandidates}
+          opportunities={enrichedOpportunityCandidates}
           latestMarkByEvent={latestCandidateMarkByEvent}
           latestAttributionByEvent={latestCandidateAttributionByEvent}
           cohorts={cohortResults}
@@ -170,6 +199,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           />
         ) : null}
       </div>
+      )}
     </WorkspacePage>
   );
 }
@@ -196,17 +226,13 @@ function RadarSummaryStrip({
   groupedOpportunityCount: number;
 }) {
   const items: Array<[string, string, Tone]> = [
-    ["Grouped Opportunities", groupedOpportunityCount.toLocaleString(), groupedOpportunityCount ? "info" : "muted"],
     ["Trade-Ready", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
-    ["Research Opportunities", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
+    ["Research", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
     ["Data Blocked", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
-    ["Candidate Contracts", `${opportunityCount.toLocaleString()} / ${opportunityTickerCount.toLocaleString()} tickers`, opportunityCount ? "good" : "muted"],
-    ["Fire Contracts", fireCount.toLocaleString(), fireCount ? "good" : "muted"],
-    ["Setup Contracts", setupCount.toLocaleString(), setupCount ? "warn" : "muted"],
-    ["Coverage", scannedTickerCount.toLocaleString(), scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
+    ["Coverage", `${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} tickers`, scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
   ];
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
       {items.map(([label, value, tone]) => (
         <div key={label} className="rounded-md border border-border bg-card px-3 py-2">
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
@@ -214,6 +240,58 @@ function RadarSummaryStrip({
         </div>
       ))}
     </div>
+  );
+}
+
+function RadarAlertPanel({
+  alerts,
+  acknowledgingAlert,
+  onAcknowledge,
+}: {
+  alerts: RowRecord[];
+  acknowledgingAlert: string | null;
+  onAcknowledge: (alertId: string) => void;
+}) {
+  if (!alerts.length) return null;
+  return (
+    <section className="rounded-md border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="size-4 text-amber-600" />
+          <h2 className="text-sm font-semibold">Active Radar Alerts</h2>
+          <StatusBadge tone="warn">{alerts.length.toLocaleString()}</StatusBadge>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        {alerts.slice(0, 6).map((alert) => {
+          const alertId = textField(alert, ["alert_id"]);
+          const severity = textField(alert, ["severity"], "info").toLowerCase();
+          const tone: Tone = severity === "critical" ? "bad" : severity === "warning" ? "warn" : "info";
+          return (
+            <div key={alertId || `${textField(alert, ["ticker"])}-${textField(alert, ["alert_type"])}`} className="flex min-w-0 items-start justify-between gap-3 rounded-md border border-border/70 bg-background px-3 py-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <StatusBadge tone={tone}>{titleLabel(textField(alert, ["alert_type"], "alert"))}</StatusBadge>
+                  <span className="text-sm font-semibold">{displayField(alert, ["title"])}</span>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{displayField(alert, ["detail"])}</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="h-8 shrink-0" disabled={!alertId || acknowledgingAlert === alertId} onClick={() => onAcknowledge(alertId)}>
+                {acknowledgingAlert === alertId ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                <span>Ack</span>
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function tabButtonClass(active: boolean): string {
+  return cn(
+    "rounded-sm px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
   );
 }
 
@@ -772,7 +850,7 @@ function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
             <StatusBadge tone="info">{version}</StatusBadge>
           </div>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-muted-foreground">
-            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. Candidate rank is deterministic: FIRE beats SETUP beats WATCH, then score favors lower required stock move, stronger liquidity, better convexity, trend, and relative strength. Agents only receive the current top-ranked queue, and promotion requires deterministic backtest, forward shadow test, and human approval.
+            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. The visible signal rank uses opportunity conviction when the read model has it; queue state still separates FIRE, SETUP, and WATCH. Agents only receive the current top-ranked queue, and promotion requires deterministic backtest, forward shadow test, and human approval.
           </p>
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">
@@ -791,11 +869,12 @@ function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
   );
 }
 
-type CandidateSort = "score-desc" | "ticker-asc" | "move-asc" | "premium-asc" | "expiry-asc" | "state";
+type CandidateSort = "conviction-desc" | "ticker-asc" | "move-asc" | "premium-asc" | "expiry-asc" | "state";
 type CandidateStateFilter = "all" | "FIRE" | "SETUP" | "WATCH";
 type CandidateFocus = "top25" | "top-per-ticker" | "all";
 type ThesisFilter = "all" | "needs" | "requested" | "attached";
 type QualityFilter = "all" | "ok" | "caution" | "bad";
+type FamilyFilter = "all" | string;
 
 const CANDIDATE_PAGE_SIZE = 25;
 
@@ -822,6 +901,7 @@ function CandidateEventsTable({
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
   const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
+  const [familyFilter, setFamilyFilter] = useState<FamilyFilter>("all");
   const [focus, setFocus] = useState<CandidateFocus>("top-per-ticker");
   const [sort, setSort] = useState<CandidateSort>("state");
   const [page, setPage] = useState(0);
@@ -833,6 +913,7 @@ function CandidateEventsTable({
       .filter((row) => {
         if (stateFilter !== "all" && stateOf(row) !== stateFilter) return false;
         if (qualityFilter !== "all" && qualityOf(row) !== qualityFilter) return false;
+        if (familyFilter !== "all" && candidateFamily(row) !== familyFilter) return false;
         if (thesisFilter !== "all" && thesisState(row, thesisRequestByEvent).kind !== thesisFilter) return false;
         if (!normalizedQuery) return true;
         const haystack = [
@@ -843,7 +924,7 @@ function CandidateEventsTable({
         ].join(" ").toUpperCase();
         return haystack.includes(normalizedQuery);
       });
-  }, [query, qualityFilter, rows, stateFilter, thesisFilter, thesisRequestByEvent]);
+  }, [familyFilter, query, qualityFilter, rows, stateFilter, thesisFilter, thesisRequestByEvent]);
 
   const focusedRows = useMemo(
     () => focusCandidateRows(filteredRows, focus).sort((left, right) => compareCandidates(left, right, sort)),
@@ -859,6 +940,7 @@ function CandidateEventsTable({
   const boundedPage = Math.min(page, pageCount - 1);
   const visibleRows = focusedRows.slice(boundedPage * CANDIDATE_PAGE_SIZE, (boundedPage + 1) * CANDIDATE_PAGE_SIZE);
   const tickerCount = uniqueText(focusedRows, "ticker").length;
+  const familyOptions = useMemo(() => uniqueValues(rows.map(candidateFamily)).filter(Boolean), [rows]);
 
   if (!rows.length) {
     return <EmptyState title="No candidate events" detail="No options radar candidates are stored yet." icon={Target} />;
@@ -875,7 +957,7 @@ function CandidateEventsTable({
       }
     >
       <div className="border-b border-border p-3">
-        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_155px_150px_160px_160px_190px_auto]">
+        <div className="grid gap-2 lg:grid-cols-[minmax(220px,1fr)_155px_150px_150px_160px_160px_190px_auto]">
           <div className="relative min-w-0">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Ticker, contract, or thesis blocker" aria-label="Filter signal evidence" />
@@ -915,10 +997,17 @@ function CandidateEventsTable({
               <SelectItem value="bad">Bad data</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={familyFilter} onValueChange={(value) => setFamilyFilter(value)}>
+            <SelectTrigger aria-label="Family filter"><SelectValue placeholder="Family" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All families</SelectItem>
+              {familyOptions.map((family) => <SelectItem key={family} value={family}>{family}</SelectItem>)}
+            </SelectContent>
+          </Select>
           <Select value={sort} onValueChange={(value) => setSort(value as CandidateSort)}>
             <SelectTrigger aria-label="Sort candidates"><SelectValue placeholder="Sort" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="score-desc">Score high to low</SelectItem>
+              <SelectItem value="conviction-desc">Conviction high to low</SelectItem>
               <SelectItem value="move-asc">Required move low to high</SelectItem>
               <SelectItem value="premium-asc">Option mid low to high</SelectItem>
               <SelectItem value="expiry-asc">Expiration soonest</SelectItem>
@@ -931,6 +1020,7 @@ function CandidateEventsTable({
             setStateFilter("all");
             setThesisFilter("all");
             setQualityFilter("all");
+            setFamilyFilter("all");
             setFocus("top-per-ticker");
             setSort("state");
           }}>
@@ -1019,12 +1109,12 @@ function CandidateEventsTable({
                         <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
                         <QualityIndicator status={qualityStatus} flags={qualityFlags} />
                       </div>
-                      <div className="text-xs text-muted-foreground">rank {formatScore(numberField(row, ["score"], Number.NaN))}</div>
+                      <div className="text-xs text-muted-foreground">conviction {formatScore(candidateConviction(row))}</div>
                     </div>
                   </Cell>
                   <Cell>
                     <FullText>{displayField(row, ["contract_id"])}</FullText>
-                    <div className="mt-1 text-xs text-muted-foreground">{titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{candidateFamily(row)} | {titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}</div>
                   </Cell>
                   <Cell className="text-right tabular-nums">
                     <div>{moneyField(row, ["premium_mid"])}</div>
@@ -1121,7 +1211,7 @@ function CandidateMobileCard({
             <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
             <QualityIndicator status={qualityStatus} flags={qualityFlags} />
           </div>
-          <div className="text-xs text-muted-foreground">rank {formatScore(numberField(row, ["score"], Number.NaN))}</div>
+          <div className="text-xs text-muted-foreground">conviction {formatScore(candidateConviction(row))}</div>
         </div>
       </div>
 
@@ -1193,7 +1283,7 @@ function CandidateSignalEvidence({ row }: { row: RowRecord }) {
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-1.5">
-        <MetricPill label="Rank" value={formatScore(numberField(row, ["score"], Number.NaN))} />
+        <MetricPill label="Conviction" value={formatScore(candidateConviction(row))} />
         <MetricPill label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
       </div>
       {hardRejects.length ? <ReadableReasonGroup label="Hard rejects" reasons={hardRejects} tone="bad" /> : null}
@@ -2408,6 +2498,32 @@ function uniqueText(items: RowRecord[], key: string): string[] {
   return Array.from(new Set(items.map((row) => textField(row, [key])).filter(Boolean)));
 }
 
+function uniqueValues(items: string[]): string[] {
+  return Array.from(new Set(items.filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
+function candidateOpportunityFields(opportunity: RowRecord | undefined): RowRecord {
+  if (!opportunity) return {};
+  return {
+    opportunity_tier: opportunity.tier,
+    opportunity_conviction_score: opportunity.conviction_score,
+    opportunity_data_contract_status: opportunity.data_contract_status,
+    opportunity_id: opportunity.opportunity_id,
+  };
+}
+
+function candidateConviction(row: RowRecord): number {
+  return numberField(row, ["opportunity_conviction_score", "conviction_score", "score"], Number.NEGATIVE_INFINITY);
+}
+
+function candidateFamily(row: RowRecord): string {
+  const raw = recordField(row, "raw");
+  const rawFamily = stringFromRecord(raw, "strategy_family");
+  if (rawFamily) return rawFamily;
+  const version = textField(row, ["strategy_version"], "leap_10x_reversal_v1");
+  return version.replace(/_v\d+$/, "");
+}
+
 function countWhere(items: RowRecord[], predicate: (row: RowRecord) => boolean): number {
   return items.reduce((count, row) => count + (predicate(row) ? 1 : 0), 0);
 }
@@ -2510,7 +2626,7 @@ function compareCandidates(left: RowRecord, right: RowRecord, sort: CandidateSor
 }
 
 function compareScore(left: RowRecord, right: RowRecord): number {
-  return compareNumber(numberField(right, ["score"], Number.NEGATIVE_INFINITY), numberField(left, ["score"], Number.NEGATIVE_INFINITY));
+  return compareNumber(candidateConviction(right), candidateConviction(left));
 }
 
 function compareNumber(left: number, right: number): number {

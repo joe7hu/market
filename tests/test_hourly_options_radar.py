@@ -23,7 +23,7 @@ nas:
         calls.append(("radar", kwargs))
         return {"job": "refresh_options_radar", "config_path": config_path_arg, "agent_work": "skipped", **kwargs}
 
-    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_deterministic_only", fake_refresh_options_radar)
+    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_signal_only", fake_refresh_options_radar)
     monkeypatch.setattr(hourly_options_radar, "app_is_serving_database", lambda _db_path: False)
 
     result = hourly_options_radar.run(str(config_path), symbols=["TSLA"], lock_path=tmp_path / "hourly.lock")
@@ -51,7 +51,7 @@ nas:
         encoding="utf-8",
     )
     calls: list[str] = []
-    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_deterministic_only", lambda *_args, **_kwargs: calls.append("radar") or {})
+    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_signal_only", lambda *_args, **_kwargs: calls.append("radar") or {})
     monkeypatch.setattr(hourly_options_radar, "app_is_serving_database", lambda _db_path: False)
 
     lock_path = tmp_path / "hourly.lock"
@@ -78,7 +78,7 @@ nas:
         encoding="utf-8",
     )
     calls: list[str] = []
-    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_deterministic_only", lambda *_args, **_kwargs: calls.append("radar") or {})
+    monkeypatch.setattr(hourly_options_radar.refresh_options_radar, "run_signal_only", lambda *_args, **_kwargs: calls.append("radar") or {})
     monkeypatch.setattr(hourly_options_radar, "app_is_serving_database", lambda _db_path: True)
 
     result = hourly_options_radar.run(str(config_path), lock_path=tmp_path / "hourly.lock")

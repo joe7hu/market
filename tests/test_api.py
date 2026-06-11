@@ -157,6 +157,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
     assert set(payload["tables"]) == {
         "option_strategy_versions",
         "option_radar_opportunity",
+        "radar_alert",
         "candidate_event",
         "candidate_event_mark",
         "candidate_event_attribution",

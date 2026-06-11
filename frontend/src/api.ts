@@ -84,6 +84,7 @@ const TABLE_KEYS: Record<string, keyof PanelData> = {
   option_strategy_versions: "optionStrategyVersions",
   option_radar_summary: "optionRadarSummary",
   option_radar_opportunity: "optionRadarOpportunity",
+  radar_alert: "radarAlert",
   option_snapshot: "optionSnapshot",
   option_features: "optionFeatures",
   stock_features: "stockFeatures",
@@ -267,6 +268,10 @@ export async function promoteStrategyMutation(proposalId: string, approvedBy = "
   );
 }
 
+export async function acknowledgeRadarAlert(alertId: string): Promise<{ status: string; alert_id: string }> {
+  return sendJson<{ status: string; alert_id: string }>(`/api/radar-alerts/${encodeURIComponent(alertId)}/ack`, "POST");
+}
+
 export function emptyPanelData(): PanelData {
   return {
     dashboard: {},
@@ -297,6 +302,7 @@ export function emptyPanelData(): PanelData {
     optionStrategyVersions: EMPTY_TABLE,
     optionRadarSummary: EMPTY_TABLE,
     optionRadarOpportunity: EMPTY_TABLE,
+    radarAlert: EMPTY_TABLE,
     optionSnapshot: EMPTY_TABLE,
     optionFeatures: EMPTY_TABLE,
     stockFeatures: EMPTY_TABLE,
@@ -532,6 +538,7 @@ export async function loadLegacyPanelData(): Promise<PanelData> {
     optionStrategyVersions: EMPTY_TABLE,
     optionRadarSummary: EMPTY_TABLE,
     optionRadarOpportunity: EMPTY_TABLE,
+    radarAlert: EMPTY_TABLE,
     optionSnapshot: EMPTY_TABLE,
     optionFeatures: EMPTY_TABLE,
     stockFeatures: EMPTY_TABLE,

@@ -5,10 +5,16 @@ from datetime import datetime, timezone
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_PARAMETERS,
     DEFAULT_STRATEGY_VERSION,
+    EXCEPTIONAL_CONVICTION_BAR,
+    acknowledge_radar_alert,
     build_candidate_event,
     display_snapshot_time,
     market_session,
+    refresh_option_features,
+    refresh_options_radar,
+    refresh_radar_alerts,
     snapshot_is_rth,
+    tier_rank,
 )
 
 # 2026-06-09 is a Tuesday. EDT = UTC-4, so RTH (09:30-16:00 ET) is 13:30-20:00 UTC.
@@ -104,6 +110,176 @@ def test_delayed_feed_with_printed_volume_keeps_volume_credit() -> None:
     positives = event["raw"]["positives"]
     assert "volume_seen" in positives
     assert "delayed_indicative" not in blockers
+
+
+def test_service_bug_tier_ranks_after_clean_watch() -> None:
+    assert tier_rank("Exceptional") < tier_rank("Research") < tier_rank("Watch") < tier_rank("Service Bug")
+
+
+def test_radar_alerts_load_and_do_not_refire_after_ack(tmp_path) -> None:
+    from investment_panel.core.db import db, init_db, query_rows
+
+    db_path = tmp_path / "radar-alerts.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state,
+                 conviction_score, premium_mid, buy_under, data_contract_status)
+            VALUES
+                ('opp-1', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', ?, 'Exceptional',
+                 'event-1', 'OPRA:NVDA270918C150', 'FIRE',
+                 ?, 4.5, 5.0, 'ready')
+            """,
+            [DEFAULT_STRATEGY_VERSION, EXCEPTIONAL_CONVICTION_BAR],
+        )
+
+        first_count = refresh_radar_alerts(con)
+        alerts = query_rows(con, "SELECT alert_id, alert_type, acknowledged_at FROM radar_alert ORDER BY alert_type")
+        assert first_count == 2
+        assert {row["alert_type"] for row in alerts} == {"buy_under_hit", "exceptional_conviction"}
+
+        assert acknowledge_radar_alert(con, alerts[0]["alert_id"]) is True
+        second_count = refresh_radar_alerts(con)
+        acknowledged = query_rows(con, "SELECT count(*) AS count FROM radar_alert WHERE acknowledged_at IS NOT NULL")[0]
+        assert second_count == 0
+        assert acknowledged["count"] == 1
+
+
+def test_radar_alerts_auto_resolve_when_condition_clears(tmp_path) -> None:
+    from investment_panel.core.db import db, init_db, query_rows
+
+    db_path = tmp_path / "radar-alerts-resolve.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state,
+                 conviction_score, premium_mid, buy_under, data_contract_status)
+            VALUES
+                ('opp-1', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', ?, 'Exceptional',
+                 'event-1', 'OPRA:NVDA270918C150', 'FIRE',
+                 ?, 4.5, 5.0, 'ready')
+            """,
+            [DEFAULT_STRATEGY_VERSION, EXCEPTIONAL_CONVICTION_BAR],
+        )
+        assert refresh_radar_alerts(con) == 2
+
+        con.execute(
+            """
+            UPDATE option_radar_opportunity
+            SET tier = 'Watch', primary_state = 'WATCH', conviction_score = 40, premium_mid = 6.0
+            WHERE opportunity_id = 'opp-1'
+            """
+        )
+        assert refresh_radar_alerts(con) == 0
+        active = query_rows(con, "SELECT count(*) AS count FROM radar_alert WHERE acknowledged_at IS NULL")[0]
+        assert active["count"] == 0
+
+        con.execute(
+            """
+            UPDATE option_radar_opportunity
+            SET tier = 'Exceptional', primary_state = 'FIRE', conviction_score = ?, premium_mid = 4.5
+            WHERE opportunity_id = 'opp-1'
+            """,
+            [EXCEPTIONAL_CONVICTION_BAR],
+        )
+        assert refresh_radar_alerts(con) == 2
+        reactivated = query_rows(con, "SELECT count(*) AS count FROM radar_alert WHERE acknowledged_at IS NULL")[0]
+        assert reactivated["count"] == 2
+
+
+def test_fast_feature_refresh_keeps_historical_iv_rank(tmp_path) -> None:
+    from investment_panel.core.db import db, init_db, query_rows
+
+    db_path = tmp_path / "radar-fast-iv.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for snapshot_time, iv in [("2026-06-02T15:00:00Z", 0.1), ("2026-06-03T15:00:00Z", 0.3)]:
+            con.execute(
+                """
+                INSERT INTO option_snapshot
+                    (snapshot_time, ticker, underlying_price, expiration, strike, option_type,
+                     mid, iv, dte, data_source, contract_id, raw)
+                VALUES (TRY_CAST(? AS TIMESTAMP), 'NVDA', 100, '2027-09-18', 150, 'call',
+                        5, ?, 540, 'ibkr', 'OPRA:NVDA270918C150', '{}')
+                """,
+                [snapshot_time, iv],
+            )
+
+        assert refresh_option_features(con, symbols=["NVDA"], source="ibkr", snapshot_time="2026-06-03T15:00:00Z") == 1
+        feature = query_rows(con, "SELECT iv_percentile, iv_rank FROM option_features WHERE snapshot_time = TRY_CAST('2026-06-03T15:00:00Z' AS TIMESTAMP)")[0]
+        assert feature["iv_percentile"] == 100.0
+        assert feature["iv_rank"] == 100.0
+
+
+def test_targeted_radar_alert_refresh_does_not_resolve_other_tickers(tmp_path) -> None:
+    from investment_panel.core.db import db, init_db, query_rows
+
+    db_path = tmp_path / "radar-alerts-scoped.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state,
+                 conviction_score, premium_mid, buy_under, data_contract_status)
+            VALUES
+                ('opp-nvda', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', ?, 'Exceptional',
+                 'event-nvda', 'OPRA:NVDA270918C150', 'FIRE', ?, 4.5, 5.0, 'ready'),
+                ('opp-amd', TIMESTAMP '2026-06-09 15:00:00', 'AMD', ?, 'Exceptional',
+                 'event-amd', 'OPRA:AMD270918C150', 'FIRE', ?, 4.5, 5.0, 'ready')
+            """,
+            [DEFAULT_STRATEGY_VERSION, EXCEPTIONAL_CONVICTION_BAR, DEFAULT_STRATEGY_VERSION, EXCEPTIONAL_CONVICTION_BAR],
+        )
+        assert refresh_radar_alerts(con) == 4
+
+        con.execute(
+            """
+            UPDATE option_radar_opportunity
+            SET tier = 'Watch', primary_state = 'WATCH', conviction_score = 40, premium_mid = 6.0
+            WHERE ticker = 'NVDA'
+            """
+        )
+        assert refresh_radar_alerts(con, symbols=["NVDA"], resolve_all=False) == 0
+        active = query_rows(con, "SELECT ticker, count(*) AS count FROM radar_alert WHERE acknowledged_at IS NULL GROUP BY ticker ORDER BY ticker")
+        assert active == [{"ticker": "AMD", "count": 2}]
+
+
+def test_source_scoped_full_universe_refresh_resolves_stale_alerts(tmp_path) -> None:
+    from investment_panel.core.db import db, init_db, query_rows
+
+    db_path = tmp_path / "radar-alerts-source-scope.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state,
+                 conviction_score, premium_mid, buy_under, data_contract_status)
+            VALUES
+                ('opp-nvda', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', ?, 'Exceptional',
+                 'event-nvda', 'OPRA:NVDA270918C150', 'FIRE', ?, 4.5, 5.0, 'ready')
+            """,
+            [DEFAULT_STRATEGY_VERSION, EXCEPTIONAL_CONVICTION_BAR],
+        )
+        assert refresh_radar_alerts(con) == 2
+        con.execute(
+            """
+            UPDATE option_radar_opportunity
+            SET tier = 'Watch', primary_state = 'WATCH', conviction_score = 40, premium_mid = 6.0
+            WHERE ticker = 'NVDA'
+            """
+        )
+        assert refresh_options_radar(con, symbols=None, source="ibkr", include_agent_work=False, include_learning=False)["radar_alerts"] == 0
+        active = query_rows(con, "SELECT count(*) AS count FROM radar_alert WHERE acknowledged_at IS NULL")[0]
+        assert active["count"] == 0
 
 
 def test_opportunity_refresh_preserves_last_good_when_latest_builds_none(tmp_path) -> None:

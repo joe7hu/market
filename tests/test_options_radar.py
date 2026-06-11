@@ -934,6 +934,8 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
     assert "option_snapshot" not in tables
     assert "option_features" not in tables
     assert "stock_features" not in tables
+    assert "radar_alert" in tables
+    assert panel.rows("radar_alert")
     assert {row["state"] for row in panel.rows("candidate_event")} == {"FIRE"}
     assert panel.rows("candidate_event")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
     assert panel.rows("candidate_event_mark")[0]["candidate_state"] in {"FIRE", "REJECT"}

@@ -582,6 +582,21 @@ CREATE TABLE IF NOT EXISTS candidate_event (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS radar_alert (
+    alert_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    alert_type TEXT,
+    ticker TEXT,
+    contract_id TEXT,
+    event_id TEXT,
+    severity TEXT,
+    title TEXT,
+    detail TEXT,
+    acknowledged_at TIMESTAMP,
+    resolution_reason TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS candidate_event_mark (
     mark_id TEXT PRIMARY KEY,
     event_id TEXT,
@@ -1409,6 +1424,10 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
             "data_contract_satisfied": "JSON",
             "service_repair_jobs": "JSON",
             "service_repair_summary": "TEXT",
+        },
+        "radar_alert": {
+            "acknowledged_at": "TIMESTAMP",
+            "resolution_reason": "TEXT",
         },
     }.items():
         existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}

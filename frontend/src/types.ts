@@ -71,6 +71,7 @@ export type PanelData = {
   optionStrategyVersions: TablePayload;
   optionRadarSummary: TablePayload;
   optionRadarOpportunity: TablePayload;
+  radarAlert: TablePayload;
   optionSnapshot: TablePayload;
   optionFeatures: TablePayload;
   stockFeatures: TablePayload;
@@ -187,6 +188,7 @@ export type PanelEndpoint =
   | "optionStrategyVersions"
   | "optionRadarSummary"
   | "optionRadarOpportunity"
+  | "radarAlert"
   | "optionSnapshot"
   | "optionFeatures"
   | "stockFeatures"
