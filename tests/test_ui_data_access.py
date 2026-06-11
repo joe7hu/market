@@ -423,6 +423,16 @@ def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
     assert option_thesis["status"] == "paused"
 
 
+def test_fastapi_config_reports_runtime_duckdb_override(tmp_path, monkeypatch) -> None:
+    runtime_path = tmp_path / "runtime.duckdb"
+    monkeypatch.setenv("MARKET_DUCKDB_PATH", str(runtime_path))
+
+    config = data_access.load_config(tmp_path / "missing.yaml")
+
+    assert config["database"]["duckdb_path"] == str(runtime_path)
+    assert config["runtime_overrides"]["MARKET_DUCKDB_PATH"] == str(runtime_path)
+
+
 def test_save_and_delete_portfolio_position(tmp_path) -> None:
     config = {"database": {"duckdb_path": str(tmp_path / "portfolio.duckdb")}}
 

@@ -623,6 +623,11 @@ def create_app() -> FastAPI:
     def source_consensus() -> dict[str, Any]:
         return _table_payload("source_consensus")
 
+    @app.get("/api/source-ticker-rankings")
+    def source_ticker_rankings() -> dict[str, Any]:
+        _, panel_data = _context()
+        return table_payload(panel_data, "source_ticker_rankings")
+
     @app.get("/api/ownership-consensus")
     def ownership_consensus() -> dict[str, Any]:
         return _table_payload("ownership_consensus")

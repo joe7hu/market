@@ -1064,3 +1064,21 @@ nas:
     config = load_config(path)
     assert config.database.duckdb_path.name == "test.duckdb"
     assert config.nas.status_dir == tmp_path / "nas" / "status"
+
+
+def test_config_allows_runtime_duckdb_override(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        f"""
+database:
+  duckdb_path: {tmp_path / "configured.duckdb"}
+""",
+        encoding="utf-8",
+    )
+    runtime_path = tmp_path / "runtime.duckdb"
+
+    monkeypatch.setenv("MARKET_DUCKDB_PATH", str(runtime_path))
+
+    config = load_config(path)
+
+    assert config.database.duckdb_path == runtime_path
