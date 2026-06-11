@@ -31,180 +31,34 @@ from investment_panel.core.options_intelligence import (
 )
 from investment_panel.core.source_ingestion.utils import stable_id
 
+from investment_panel.core.options_radar.constants import *  # noqa: F401,F403
+from investment_panel.core.options_radar.coerce import (
+    _average,
+    _coalesce_number,
+    _date,
+    _datetime,
+    _days_to_expiration,
+    _elapsed_days,
+    _elapsed_hours,
+    _integer,
+    _iso,
+    _json,
+    _json_or_list,
+    _list_value,
+    _median,
+    _normalize_symbol,
+    _number,
+)
+from investment_panel.core.options_radar.greeks import (
+    _black_scholes_greeks,
+    _norm_cdf,
+    _norm_pdf,
+    _option_model_dte,
+    _option_model_iv,
+    _resolve_option_greeks,
+)
+from investment_panel.core.options_radar.gates import CandidateContext, run_gates
 
-DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
-MIN_FORWARD_TEST_DAYS = 30
-DEFAULT_OPTION_RISK_FREE_RATE = 0.045
-MIN_OPTION_MODEL_DTE_DAYS = 1
-MIN_OPTION_MODEL_IV = 0.0001
-OPTION_QUALITY_MID_CAUTION_RELATIVE_DIFF = 0.10
-OPTION_QUALITY_MID_BAD_RELATIVE_DIFF = 0.20
-OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF = 0.15
-OPTION_QUALITY_IV_BAD_RELATIVE_DIFF = 0.30
-OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF = 0.07
-OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF = 0.15
-OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS = 2.0
-DATA_CONTRACT_READY = "ready"
-DATA_CONTRACT_REPAIR_REQUIRED = "repair_required"
-SERVICE_BUG_TIER = "Service Bug"
-SERVICE_REPAIR_JOB_ORDER = [
-    "update_free_sources",
-    "update_arco_data",
-    "run_option_agents",
-    "refresh_options_radar",
-]
-
-DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
-    "strategy_name": "leap_10x_reversal",
-    "strategy_family": "leap_10x_reversal",
-    "version": 1,
-    "option_type": "call",
-    "delta_min": 0.20,
-    "delta_max": 0.45,
-    "dte_min": 365,
-    "dte_max": 900,
-    "max_spread_pct": 0.25,
-    "reject_spread_pct": 0.40,
-    "min_open_interest": 100,
-    "min_volume": 1,
-    "max_required_move_pct": 3.50,
-    "max_iv_percentile": 70.0,
-    "reject_iv_percentile": 85.0,
-    "require_price_above_ma50": True,
-    "require_rs_improving": True,
-    "fill_slippage_pct": 0.03,
-}
-
-# Additional archetype families (Phase 3). Each is a full parameter set layered over
-# the defaults; they register as 'forward_test' so they shadow-trade before earning UI
-# prominence. Gate flags absent from the defaults (requires_catalyst,
-# require_price_below_ma50, require_rs_deteriorating, max_iv_rv_ratio) keep the legacy
-# LEAP behavior unchanged while making each family selective in its own way.
-STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
-    "catalyst_call_v1": {
-        **DEFAULT_STRATEGY_PARAMETERS,
-        "strategy_name": "catalyst_call",
-        "strategy_family": "catalyst_call",
-        "option_type": "call",
-        "delta_min": 0.25,
-        "delta_max": 0.50,
-        "dte_min": 45,
-        "dte_max": 180,
-        "max_required_move_pct": 1.20,
-        "requires_catalyst": True,
-        "max_iv_rv_ratio": 1.6,  # IV-crush guard: don't overpay for vol vs realized
-        "require_price_above_ma50": True,
-        "require_rs_improving": False,
-    },
-    "breakdown_put_v1": {
-        **DEFAULT_STRATEGY_PARAMETERS,
-        "strategy_name": "breakdown_put",
-        "strategy_family": "breakdown_put",
-        "option_type": "put",
-        "delta_min": 0.25,
-        "delta_max": 0.45,
-        "dte_min": 90,
-        "dte_max": 365,
-        "max_required_move_pct": 3.50,
-        "require_price_above_ma50": False,
-        "require_rs_improving": False,
-        "require_price_below_ma50": True,
-        "require_rs_deteriorating": True,
-    },
-    # Two-leg vertical (long lower-strike call + short higher-strike call). It is threaded
-    # through the pipeline as a synthetic single contract priced at the *net debit*
-    # (see persist_spread_snapshots / build_spread_snapshot_row): the feature/EV math
-    # treats it as a long call at the long strike, so its net delta is lower than a single
-    # call and its tracked option_type is the synthetic marker "call_spread".
-    "call_debit_spread_v1": {
-        **DEFAULT_STRATEGY_PARAMETERS,
-        "strategy_name": "call_debit_spread",
-        "strategy_family": "call_debit_spread",
-        "option_type": "call_spread",
-        "delta_min": 0.10,
-        "delta_max": 0.45,
-        "dte_min": 60,
-        "dte_max": 365,
-        "max_required_move_pct": 3.50,
-        "require_price_above_ma50": True,
-        "require_rs_improving": False,
-    },
-}
-
-# option_type markers that the radar treats as call-like (direction = +1) when building
-# features and pricing — the real "call" plus the synthetic "call_spread" debit vertical.
-CALL_LIKE_OPTION_TYPES = {"call", "call_spread"}
-
-THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "theme_ai_infrastructure": (
-        "artificial intelligence",
-        " ai ",
-        "semiconductor",
-        "gpu",
-        "accelerator",
-        "data center",
-        "datacenter",
-        "cloud infrastructure",
-        "networking",
-        "memory",
-        "foundry",
-        "fabless",
-        "electronic components",
-    ),
-    "theme_ai_applications": (
-        "software",
-        "application software",
-        "cloud",
-        "automation",
-        "analytics",
-        "cybersecurity",
-        "digital advertising",
-        "internet content",
-    ),
-    "theme_robotics_physical_ai": (
-        "robotics",
-        "robot",
-        "humanoid",
-        "autonomous",
-        "autonomy",
-        "physical ai",
-        "industrial automation",
-        "factory automation",
-        "machine vision",
-        "sensors",
-        "actuator",
-        "drones",
-        "unmanned",
-        "advanced manufacturing",
-    ),
-    "theme_space_tech": (
-        "space",
-        "aerospace",
-        "satellite",
-        "rocket",
-        "defense",
-        "orbital",
-    ),
-    "theme_ai_biotech": (
-        "biotech",
-        "biotechnology",
-        "bioinformatics",
-        "genomics",
-        "life sciences",
-        "drug discovery",
-        "computational biology",
-        "precision medicine",
-    ),
-    "theme_crypto_infrastructure": (
-        "crypto",
-        "cryptocurrency",
-        "bitcoin",
-        "blockchain",
-        "digital assets",
-        "coinbase",
-        "mining",
-    ),
-}
 
 
 def _parse_utc(value: Any) -> datetime | None:
@@ -1474,174 +1328,58 @@ def build_candidate_event(row: dict[str, Any], strategy_version: str, strategy: 
     if premium is None or premium <= 0 or underlying is None or underlying <= 0 or strike is None or required_move is None:
         return None
     option_type = str(row.get("option_type") or "").lower()
-    hard_rejects: list[str] = []
-    blockers: list[str] = []
-    positives: list[str] = []
-
-    if option_type != strategy["option_type"]:
-        hard_rejects.append(f"strategy_only_tracks_{strategy['option_type']}s")
     dte = _integer(row.get("dte"))
-    if dte is None:
-        blockers.append("missing_dte")
-    elif dte < int(strategy["dte_min"]) or dte > int(strategy["dte_max"]):
-        hard_rejects.append("dte_outside_strategy_range")
-    delta_value = _number(row.get("delta"))
-    if delta_value is not None:
-        delta = abs(delta_value)
-        if delta < float(strategy["delta_min"]) or delta > float(strategy["delta_max"]):
-            hard_rejects.append("delta_outside_strategy_range")
-        else:
-            positives.append("delta_in_range")
-    else:
-        blockers.append("missing_delta")
-    if required_move > float(strategy["max_required_move_pct"]):
-        hard_rejects.append("required_move_too_high")
-    else:
-        positives.append("10x_math_inside_cap")
     spread_pct = _number(row.get("spread_pct"))
-    if spread_pct is None:
-        blockers.append("missing_spread")
-    elif spread_pct > float(strategy["reject_spread_pct"]):
-        hard_rejects.append("spread_reject")
-    elif spread_pct > float(strategy["max_spread_pct"]):
-        blockers.append("spread_above_fire_threshold")
-    else:
-        positives.append("spread_usable")
-    open_interest = _number(row.get("open_interest"))
-    if open_interest is None:
-        blockers.append("missing_open_interest")
-    elif open_interest < float(strategy["min_open_interest"]):
-        blockers.append("open_interest_below_threshold")
-    else:
-        positives.append("open_interest_supported")
-    volume = _number(row.get("volume"))
-    off_hours = not snapshot_is_rth(row.get("snapshot_time"))
-    if off_hours:
-        # Volume is a regular-hours metric; off-hours it is ~0 and not meaningful.
-        # Lean on open interest for liquidity and mark the candidate indicative so
-        # it never presents as trade-ready until RTH volume confirms it.
-        if open_interest is not None and open_interest >= float(strategy["min_open_interest"]):
-            positives.append("off_hours_oi_liquidity")
-        else:
-            blockers.append("off_hours_low_open_interest")
-        blockers.append("off_hours_indicative")
-    elif volume is not None and volume >= float(strategy["min_volume"]):
-        positives.append("volume_seen")
-    elif _is_delayed_feed(row):
-        # A delayed feed (e.g. IBKR delayed OPRA) does not carry reliable real-time
-        # option volume — it prints 0 or nothing even when the contract is liquid.
-        # Volume is not a usable liquidity gate here, so lean on open interest like
-        # the off-hours path and mark the candidate indicative rather than failing it
-        # on a volume the feed can never supply. Delayed rows where volume actually
-        # printed (>= min_volume, handled above) keep their volume_seen credit.
-        if open_interest is not None and open_interest >= float(strategy["min_open_interest"]):
-            positives.append("delayed_oi_liquidity")
-        else:
-            blockers.append("delayed_low_open_interest")
-        blockers.append("delayed_indicative")
-    elif volume is None:
-        blockers.append("missing_volume")
-    else:
-        blockers.append("volume_below_threshold")
-    iv_percentile = _number(row.get("iv_percentile"))
-    if iv_percentile is None:
-        blockers.append("missing_iv_percentile")
-    elif iv_percentile > float(strategy["reject_iv_percentile"]):
-        hard_rejects.append("iv_percentile_reject")
-    elif iv_percentile > float(strategy["max_iv_percentile"]):
-        blockers.append("iv_percentile_above_fire_threshold")
-    else:
-        positives.append("iv_not_overpriced")
-    price = _number(row.get("price"))
-    ma50 = _number(row.get("ma_50"))
-    if strategy.get("require_price_above_ma50"):
-        if price is None or ma50 is None:
-            blockers.append("missing_50d_context")
-        elif price < ma50:
-            blockers.append("stock_below_50d")
-        else:
-            positives.append("stock_above_50d")
-    # Breakdown-put family mirrors the long gates: it wants the stock *under* its 50d.
-    if strategy.get("require_price_below_ma50"):
-        if price is None or ma50 is None:
-            blockers.append("missing_50d_context")
-        elif price > ma50:
-            blockers.append("stock_above_50d")
-        else:
-            positives.append("stock_below_50d")
-    rs20 = _number(row.get("rs_vs_qqq_20d"))
-    if strategy.get("require_rs_improving"):
-        if rs20 is None:
-            blockers.append("missing_rs_vs_qqq")
-        elif rs20 < 0:
-            blockers.append("rs_vs_qqq_20d_negative")
-        else:
-            positives.append("rs_vs_qqq_improving")
-    if strategy.get("require_rs_deteriorating"):
-        if rs20 is None:
-            blockers.append("missing_rs_vs_qqq")
-        elif rs20 > 0:
-            blockers.append("rs_vs_qqq_20d_positive")
-        else:
-            positives.append("rs_vs_qqq_deteriorating")
 
+    # EV (probability/theta-aware) drives both the asymmetry positive and the
+    # buy-under cap. Computed here because it needs the wider pipeline; the gates
+    # only see the resulting multiple and buy-under price.
     ev_pair = _candidate_ev(row, option_type=option_type, dte=dte)
     ev_inputs = ev_pair[0] if ev_pair else None
     ev_result = ev_pair[1] if ev_pair else None
     ev_asymmetry = ev_score(ev_result.ev_multiple, spread_pct) if ev_result else None
-    if ev_result is not None and ev_result.ev_multiple >= 2.0:
-        positives.append("ev_asymmetry_2x")
-
-    # Free flow expansion is a positive precursor signal: >=2 sigma OI expansion, or
-    # heavy volume into rising OI.
-    flow_zscore = _number(row.get("oi_zscore_20d"))
-    volume_oi_ratio = _number(row.get("volume_oi_ratio"))
-    oi_change_1d = _number(row.get("oi_change_1d"))
-    if (flow_zscore is not None and flow_zscore >= 2.0) or (
-        volume_oi_ratio is not None and volume_oi_ratio >= 1.0 and (oi_change_1d or 0) > 0
-    ):
-        positives.append("flow_expansion_detected")
-
-    # Vol-surface tail signals (additive, reasons-only): an inverted/flattening term
-    # structure anticipates an event; negative 25d skew is upside (call) demand; a
-    # cheap IV/RV ratio means convexity is underpriced relative to realized movement.
-    term_slope = _number(row.get("term_slope"))
-    put_call_skew_25d = _number(row.get("put_call_skew_25d"))
-    iv_rv_ratio = _number(row.get("iv_rv_ratio"))
-    if term_slope is not None and term_slope < -0.02:
-        positives.append("term_structure_inverted")
-    if put_call_skew_25d is not None and put_call_skew_25d <= -0.03:
-        positives.append("call_skew_demand")
-    if iv_rv_ratio is not None and iv_rv_ratio <= 1.1:
-        positives.append("cheap_convexity_iv_rv")
+    ev_multiple = ev_result.ev_multiple if ev_result is not None else None
 
     # Catalyst calendar: days to the next earnings event. Informational for LEAPs; a
     # hard input for Phase 3's short-dated catalyst_call archetype (IV-crush modeling).
     days_to_earnings = _elapsed_days(row.get("snapshot_time"), row.get("next_earnings_date"))
     catalyst_in_window = days_to_earnings is not None and days_to_earnings >= 0 and dte is not None and days_to_earnings <= dte
-    if catalyst_in_window:
-        positives.append("catalyst_within_dte")
-
-    # Catalyst-call family requires a known catalyst inside the contract's life and
-    # guards against overpaying for vol that will crush after the event (IV/RV cap).
-    if strategy.get("requires_catalyst") and not catalyst_in_window:
-        blockers.append("no_catalyst_in_window")
-    max_iv_rv = strategy.get("max_iv_rv_ratio")
-    if max_iv_rv is not None and iv_rv_ratio is not None and iv_rv_ratio > float(max_iv_rv):
-        blockers.append("iv_rich_vs_rv")
 
     ev_buy_under = ev_inverse_buy_under(ev_inputs) if ev_inputs is not None else None
     buy_under = ev_buy_under if ev_buy_under is not None else _buy_under(row, strategy)
     fill = premium * (1 + float(strategy["fill_slippage_pct"]))
-    if buy_under is None:
-        blockers.append("buy_under_unavailable")
-    elif premium > buy_under:
-        blockers.append("premium_above_buy_under")
-    else:
-        positives.append("premium_inside_buy_under")
-
     watch_themes = _theme_watch_matches(row)
-    positives.extend(watch_themes)
+
+    context = CandidateContext(
+        row=row,
+        strategy=strategy,
+        option_type=option_type,
+        required_move=required_move,
+        premium=premium,
+        dte=dte,
+        delta_value=_number(row.get("delta")),
+        spread_pct=spread_pct,
+        open_interest=_number(row.get("open_interest")),
+        volume=_number(row.get("volume")),
+        off_hours=not snapshot_is_rth(row.get("snapshot_time")),
+        delayed_feed=_is_delayed_feed(row),
+        iv_percentile=_number(row.get("iv_percentile")),
+        price=_number(row.get("price")),
+        ma50=_number(row.get("ma_50")),
+        rs20=_number(row.get("rs_vs_qqq_20d")),
+        ev_multiple=ev_multiple,
+        flow_zscore=_number(row.get("oi_zscore_20d")),
+        volume_oi_ratio=_number(row.get("volume_oi_ratio")),
+        oi_change_1d=_number(row.get("oi_change_1d")),
+        term_slope=_number(row.get("term_slope")),
+        put_call_skew_25d=_number(row.get("put_call_skew_25d")),
+        iv_rv_ratio=_number(row.get("iv_rv_ratio")),
+        catalyst_in_window=catalyst_in_window,
+        buy_under=buy_under,
+        watch_themes=watch_themes,
+    )
+    verdict = run_gates(context)
+    hard_rejects, blockers, positives = verdict.hard_rejects, verdict.blockers, verdict.positives
 
     state = "REJECT" if hard_rejects else "WATCH" if _has_missing_data(blockers) else "SETUP" if blockers else "FIRE"
     quality = _candidate_quality(row, state=state, blockers=blockers, hard_rejects=hard_rejects)
@@ -5574,253 +5312,3 @@ def _relative_diff(left: float | None, right: float | None) -> float | None:
     if denominator <= 0:
         return None
     return abs(left - right) / denominator
-
-
-def _resolve_option_greeks(
-    row: dict[str, Any],
-    *,
-    option_type: str,
-    underlying_price: float | None,
-    strike: float | None,
-    dte: int | None,
-    iv: float | None,
-) -> dict[str, Any]:
-    provider_values = {name: _number(row.get(name)) for name in ("delta", "gamma", "theta", "vega")}
-    matched_values = {name: _number(row.get(f"tradingview_{name}")) for name in ("delta", "gamma", "theta", "vega")}
-    if all(value is not None for value in provider_values.values()):
-        return {**provider_values, "source": "provider"}
-
-    resolved: dict[str, float | None] = {}
-    used_match = False
-    for name, value in provider_values.items():
-        if value is not None:
-            resolved[name] = value
-            continue
-        matched = matched_values[name]
-        if matched is not None:
-            resolved[name] = matched
-            used_match = True
-        else:
-            resolved[name] = None
-
-    used_model = False
-    if any(value is None for value in resolved.values()):
-        modeled_values = _black_scholes_greeks(option_type, underlying_price, strike, dte, iv)
-        for name, value in resolved.items():
-            if value is None and modeled_values.get(name) is not None:
-                resolved[name] = modeled_values[name]
-                used_model = True
-
-    if used_match and used_model:
-        greek_source = "mixed_fallback"
-    elif used_model:
-        greek_source = "black_scholes_model"
-    elif used_match:
-        greek_source = "tradingview_match"
-    else:
-        greek_source = "provider"
-    return {**resolved, "source": greek_source}
-
-
-def _black_scholes_greeks(
-    option_type: str,
-    spot: float | None,
-    strike: float | None,
-    dte: int | None,
-    iv: float | None,
-    *,
-    risk_free_rate: float = DEFAULT_OPTION_RISK_FREE_RATE,
-) -> dict[str, float]:
-    if not option_type or spot is None or strike is None or dte is None or iv is None:
-        return {}
-    if option_type not in {"call", "put"} or spot <= 0 or strike <= 0 or dte < 0 or iv < 0:
-        return {}
-    if not all(math.isfinite(value) for value in (spot, strike, float(dte), iv, risk_free_rate)):
-        return {}
-    model_dte = _option_model_dte(dte)
-    model_iv = _option_model_iv(iv)
-    if model_dte is None or model_iv is None:
-        return {}
-    years = model_dte / 365.0
-    sqrt_years = math.sqrt(years)
-    sigma_sqrt_t = model_iv * sqrt_years
-    if sigma_sqrt_t <= 0:
-        return {}
-
-    d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * model_iv * model_iv) * years) / sigma_sqrt_t
-    d2 = d1 - sigma_sqrt_t
-    pdf = _norm_pdf(d1)
-    discount = math.exp(-risk_free_rate * years)
-    if option_type == "call":
-        delta = _norm_cdf(d1)
-        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) - (risk_free_rate * strike * discount * _norm_cdf(d2))
-    else:
-        delta = _norm_cdf(d1) - 1.0
-        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) + (risk_free_rate * strike * discount * _norm_cdf(-d2))
-    gamma = pdf / (spot * sigma_sqrt_t)
-    theta = theta_annual / 365.0
-    vega = spot * pdf * sqrt_years
-    return {
-        "delta": round(delta, 6),
-        "gamma": round(gamma, 6),
-        "theta": round(theta, 6),
-        "vega": round(vega, 6),
-    }
-
-
-def _option_model_dte(dte: int | None) -> int | None:
-    if dte is None or dte < 0:
-        return None
-    return max(dte, MIN_OPTION_MODEL_DTE_DAYS)
-
-
-def _option_model_iv(iv: float | None) -> float | None:
-    if iv is None or iv < 0:
-        return None
-    return max(iv, MIN_OPTION_MODEL_IV)
-
-
-def _norm_cdf(value: float) -> float:
-    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
-
-
-def _norm_pdf(value: float) -> float:
-    return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
-
-
-def _days_to_expiration(expiration: Any, snapshot_time: str) -> int | None:
-    expiry_date = _date(expiration)
-    snapshot_date = _date(snapshot_time)
-    if expiry_date is None or snapshot_date is None:
-        return None
-    return (expiry_date - snapshot_date).days
-
-
-def _elapsed_days(start: Any, end: Any) -> int | None:
-    start_date = _date(start)
-    end_date = _date(end)
-    if start_date is None or end_date is None:
-        return None
-    return (end_date - start_date).days
-
-
-def _elapsed_hours(start: Any, end: Any) -> float | None:
-    start_dt = _datetime(start)
-    end_dt = _datetime(end)
-    if start_dt is None or end_dt is None:
-        return None
-    return max(0.0, (end_dt - start_dt).total_seconds() / 3600)
-
-
-def _datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    text = str(value or "")
-    if not text:
-        return None
-    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    if parsed.tzinfo is not None:
-        parsed = parsed.replace(tzinfo=None)
-    return parsed
-
-
-def _date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "")
-    if not text:
-        return None
-    return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-
-
-def _iso(value: Any) -> str:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)
-
-
-def _json(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        decoded = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
-
-
-def _json_or_list(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return {}
-    try:
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-
-
-def _list_value(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value if item]
-    if isinstance(value, tuple):
-        return [str(item) for item in value if item]
-    if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-        except ValueError:
-            return [value] if value else []
-        if isinstance(decoded, list):
-            return [str(item) for item in decoded if item]
-    return []
-
-
-def _coalesce_number(row: dict[str, Any], *keys: str) -> float | None:
-    for key in keys:
-        value = _number(row.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _average(values: list[float]) -> float | None:
-    clean = [value for value in values if value is not None]
-    if not clean:
-        return None
-    return mean(clean)
-
-
-def _median(values: list[float]) -> float | None:
-    clean = sorted(value for value in values if value is not None)
-    if not clean:
-        return None
-    midpoint = len(clean) // 2
-    if len(clean) % 2:
-        return clean[midpoint]
-    return (clean[midpoint - 1] + clean[midpoint]) / 2
-
-
-def _number(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _integer(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalize_symbol(value: Any) -> str:
-    return str(value or "").upper().split(":")[-1]
