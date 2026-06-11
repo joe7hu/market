@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { AlertBell } from "./AlertBell";
+import { CalibrationPanel } from "./CalibrationPanel";
 import { OpportunityDetailDrawer } from "./OpportunityDetailDrawer";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
@@ -48,6 +49,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
   const opportunityRows = rows(data.optionRadarOpportunity);
+  const calibrationRows = rows(data.convictionCalibration);
   const volSurfaceByTicker = useMemo(() => latestBy(rows(data.volSurfaceFeatures), "ticker", "snapshot_time"), [data.volSurfaceFeatures]);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
@@ -160,6 +162,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           postmortemRequests={postmortemRequests}
           postmortems={postmortems}
         />
+        <CalibrationPanel rows={calibrationRows} strategyVersion={textField(latestStrategy, ["strategy_version"]) || undefined} />
         <StrategyExplainer strategy={latestStrategy} />
         <CohortResultsTable rows={cohortResults} />
         {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}

@@ -108,6 +108,9 @@ def load_panel_data(
             "candidate_event": lambda: candidate_event(con),
             "candidate_event_mark": lambda: candidate_event_mark(con),
             "candidate_event_attribution": lambda: candidate_event_attribution(con),
+            "conviction_calibration": lambda: conviction_calibration(con),
+            "vol_surface_features": lambda: vol_surface_features(con),
+            "trade_journal": lambda: trade_journal(con),
             "shadow_trade": lambda: shadow_trade(con),
             "shadow_trade_mark": lambda: shadow_trade_mark(con),
             "radar_state_transition": lambda: radar_state_transition(con),
@@ -3829,6 +3832,58 @@ def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
         """,
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def conviction_calibration(con: Any) -> list[dict[str, Any]]:
+    """Probability-calibration bins (predicted vs realized P(2x) with Wilson intervals)
+    for the Phase 4 calibration dashboard. Read model = the stored bins as-is."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT strategy_version, bin_index, bin_lo, bin_hi, n, predicted_p2x,
+               realized_p2x, realized_p5x, wilson_lo, wilson_hi, brier, mature_n,
+               calibrated, as_of, raw
+        FROM conviction_calibration
+        ORDER BY strategy_version, bin_index
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def vol_surface_features(con: Any) -> list[dict[str, Any]]:
+    """Latest vol-surface row per ticker (ATM IV term structure, skew, IV/RV) feeding the
+    opportunity drawer's IV term sparkline."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT snapshot_time, ticker, atm_iv_30d, atm_iv_90d, atm_iv_leap, term_slope,
+               put_call_skew_25d, skew_change_5d, rv_20d, rv_60d, iv_rv_ratio,
+               iv_percentile_252d, iv_percentile_basis, raw
+        FROM vol_surface_features
+        QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY snapshot_time DESC) = 1
+        ORDER BY ticker
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+
+
+def trade_journal(con: Any) -> list[dict[str, Any]]:
+    """Recorded trade-journal entries (Phase 4 data layer), newest first."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT journal_id, created_at, strategy_version, ticker, contract_id, event_id,
+               entry_premium, predicted_ev_multiple, predicted_p2x, conviction_score,
+               opportunity_snapshot, realized_return, realized_status, closed_at, notes, raw
+        FROM trade_journal
+        ORDER BY created_at DESC
+        LIMIT 500
+        """,
+    )
+    return [_compact_empty_fields(decode_fields(row, ("opportunity_snapshot", "raw"))) for row in rows]
 
 
 def shadow_trade_mark(con: Any) -> list[dict[str, Any]]:
