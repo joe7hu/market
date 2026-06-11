@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { AlertBell } from "./AlertBell";
+import { OpportunityDetailDrawer } from "./OpportunityDetailDrawer";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
@@ -32,6 +33,7 @@ type OptionThesisAgentRuntime = {
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [selectedOpportunity, setSelectedOpportunity] = useState<RowRecord | null>(null);
   const candidates = rows(data.candidateEvent);
   const missedWinners = rows(data.missedWinnerEvent);
   const proposals = rows(data.strategyMutationProposal);
@@ -46,6 +48,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
   const opportunityRows = rows(data.optionRadarOpportunity);
+  const volSurfaceByTicker = useMemo(() => latestBy(rows(data.volSurfaceFeatures), "ticker", "snapshot_time"), [data.volSurfaceFeatures]);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const latestCandidateTime = textField(radarSummary, ["latest_candidate_time"]);
@@ -134,6 +137,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         latestCandidateTime={latestCandidateTime}
         optionThesisAgent={optionThesisAgent}
         onOpenTicker={onOpenTicker}
+        onOpenOpportunity={setSelectedOpportunity}
       />
       <div className="space-y-4">
         <CandidateEventsTable
@@ -172,6 +176,12 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           />
         ) : null}
       </div>
+      <OpportunityDetailDrawer
+        opportunity={selectedOpportunity}
+        volSurface={selectedOpportunity ? volSurfaceByTicker.get(textField(selectedOpportunity, ["ticker"])) : undefined}
+        onClose={() => setSelectedOpportunity(null)}
+        onOpenTicker={onOpenTicker}
+      />
     </WorkspacePage>
   );
 }
@@ -227,6 +237,7 @@ function SignalBriefPanel({
   latestCandidateTime,
   optionThesisAgent,
   onOpenTicker,
+  onOpenOpportunity,
 }: {
   rows: RowRecord[];
   fireCount: number;
@@ -235,6 +246,7 @@ function SignalBriefPanel({
   latestCandidateTime: string;
   optionThesisAgent: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
+  onOpenOpportunity: (row: RowRecord) => void;
 }) {
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
@@ -276,6 +288,29 @@ function SignalBriefPanel({
                 <MetricBox label="Premium" value={moneyField(strongest, ["premium_mid"])} />
                 <MetricBox label="Buy Under" value={moneyField(strongest, ["buy_under"])} />
               </div>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => onOpenOpportunity(strongest)}>
+                <Target className="mr-1.5 h-3.5 w-3.5" />
+                View payoff &amp; detail
+              </Button>
+              {ranked.length > 1 ? (
+                <div className="mt-4">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase text-muted-foreground">All opportunities ({ranked.length})</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {ranked.map((row) => (
+                      <button
+                        key={textField(row, ["opportunity_id"], textField(row, ["primary_contract_id"]))}
+                        type="button"
+                        onClick={() => onOpenOpportunity(row)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs hover:border-primary hover:bg-accent"
+                      >
+                        <span className="font-medium text-foreground">{textField(row, ["ticker"])}</span>
+                        <span className={cn("h-1.5 w-1.5 rounded-full", tierDotClass(tierOf(row)))} />
+                        <span className="tabular-nums text-muted-foreground">{formatScore(numberField(row, ["conviction_score"], Number.NaN))}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : (
             <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
@@ -2545,6 +2580,13 @@ function tierTone(tier: string): Tone {
   if (tier === "Service Bug") return "bad";
   if (tier === "Research") return "info";
   return "muted";
+}
+
+function tierDotClass(tier: string): string {
+  if (tier === "Exceptional") return "bg-emerald-500";
+  if (tier === "Service Bug") return "bg-rose-500";
+  if (tier === "Research") return "bg-sky-500";
+  return "bg-muted-foreground";
 }
 
 function investmentStateLabel(row: RowRecord): string {
