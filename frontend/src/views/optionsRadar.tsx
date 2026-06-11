@@ -52,6 +52,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const opportunityRows = rows(data.optionRadarOpportunity);
   const calibrationRows = rows(data.convictionCalibration);
   const tradeJournalRows = rows(data.tradeJournal);
+  const opportunityByTicker = useMemo(() => latestBy(opportunityRows, "ticker", "snapshot_time"), [opportunityRows]);
   const volSurfaceByTicker = useMemo(() => latestBy(rows(data.volSurfaceFeatures), "ticker", "snapshot_time"), [data.volSurfaceFeatures]);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
@@ -150,8 +151,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         fireCount={fireCount}
         latestSnapshot={latestSnapshot}
         latestCandidateTime={latestCandidateTime}
-        onOpenTicker={onOpenTicker}
-        onOpenOpportunity={setSelectedOpportunity}
       />
       <div className="space-y-4">
         <CandidateEventsTable
@@ -163,6 +162,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           latestAgentThesisByTicker={latestAgentThesisByTicker}
           agentRuntime={optionThesisAgent}
           onOpenTicker={onOpenTicker}
+          opportunityByTicker={opportunityByTicker}
+          onOpenOpportunity={setSelectedOpportunity}
         />
         <LearningProgressPanel
           opportunities={opportunityCandidates}
@@ -251,17 +252,12 @@ function SignalBriefPanel({
   fireCount,
   latestSnapshot,
   latestCandidateTime,
-  onOpenTicker,
-  onOpenOpportunity,
 }: {
   rows: RowRecord[];
   fireCount: number;
   latestSnapshot: string;
   latestCandidateTime: string;
-  onOpenTicker: OpenTicker;
-  onOpenOpportunity: (row: RowRecord) => void;
 }) {
-  const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const repairRows = rows.filter(isServiceRepair);
   const exceptionalRows = rows.filter((row) => tierOf(row) === "Exceptional");
   const researchRows = rows.filter((row) => tierOf(row) === "Research");
@@ -280,71 +276,16 @@ function SignalBriefPanel({
     ? `Data blocker: ${summarizeReasons(dataFailures, "Data contract is clean.")}`
     : `Main blocker: ${summarizeReasons(topBlockers, "Strict gates are clean.")}`;
   return (
-    <section className="rounded-md border border-border bg-card p-4">
+    <section className="rounded-md border border-border bg-card px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
         {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
         <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
         <StatusBadge tone="muted">{latestSnapshot ? `Option data ${formatDate(latestSnapshot)}` : "No option data"}</StatusBadge>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">{blockerLine}</p>
-      {ranked.length ? (
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-[10px] uppercase text-muted-foreground">
-                <th className="py-1 pr-3 font-medium">Ticker</th>
-                <th className="py-1 pr-3 font-medium">Tier / State</th>
-                <th className="py-1 pr-3 text-right font-medium">Conviction</th>
-                <th className="py-1 pr-3 text-right font-medium">Req. move</th>
-                <th className="py-1 pr-3 text-right font-medium">EV / P(2x)</th>
-                <th className="py-1 font-medium">Why now</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ranked.map((row) => {
-                const detail = opportunityPrimaryDetail(row);
-                const ev = numberField(detail, ["ev_multiple"], Number.NaN);
-                const p2x = numberField(detail, ["p_2x"], Number.NaN);
-                const state = textField(row, ["primary_state"]).toUpperCase();
-                const why = opportunityActionText(row);
-                return (
-                  <tr
-                    key={textField(row, ["opportunity_id"], textField(row, ["primary_contract_id"]))}
-                    onClick={() => onOpenOpportunity(row)}
-                    className="cursor-pointer border-b border-border/50 align-top last:border-0 hover:bg-accent/40"
-                  >
-                    <td className="py-1.5 pr-3 font-medium text-foreground">{textField(row, ["ticker"])}</td>
-                    <td className="py-1.5 pr-3">
-                      <span className="flex items-center gap-1.5">
-                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tierDotClass(tierOf(row)))} />
-                        <StatusBadge tone={stateTone(state)}>{titleLabel(state || "watch")}</StatusBadge>
-                      </span>
-                    </td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums text-foreground">{formatScore(numberField(row, ["conviction_score"], Number.NaN))}</td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
-                      {Number.isFinite(ev) ? `${ev.toFixed(2)}x` : "—"} / {Number.isFinite(p2x) ? `${(p2x * 100).toFixed(0)}%` : "—"}
-                    </td>
-                    <td className="py-1.5 max-w-[26rem] truncate text-muted-foreground" title={why}>{why}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
-      )}
+      <p className="mt-1.5 text-xs text-muted-foreground">{blockerLine}</p>
     </section>
   );
-}
-
-function opportunityPrimaryDetail(row: RowRecord): RowRecord | undefined {
-  const raw = row["raw"];
-  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as RowRecord) : undefined;
-  const detail = obj?.["primary_detail"];
-  return detail && typeof detail === "object" && !Array.isArray(detail) ? (detail as RowRecord) : undefined;
 }
 
 function summarizeReasons(reasons: Array<[string, number]>, empty: string): string {
@@ -835,6 +776,8 @@ function CandidateEventsTable({
   latestAgentThesisByTicker,
   agentRuntime,
   onOpenTicker,
+  opportunityByTicker,
+  onOpenOpportunity,
 }: {
   rows: RowRecord[];
   thesisRequestByEvent: Map<string, RowRecord>;
@@ -844,6 +787,8 @@ function CandidateEventsTable({
   latestAgentThesisByTicker: Map<string, RowRecord>;
   agentRuntime: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
+  opportunityByTicker: Map<string, RowRecord>;
+  onOpenOpportunity: (row: RowRecord) => void;
 }) {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
@@ -1030,6 +975,7 @@ function CandidateEventsTable({
             const thesis = latestAgentThesisByTicker.get(ticker);
             const thesisExpanded = expandedThesisEvent === eventId;
             const rowKey = textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`);
+            const opportunity = opportunityByTicker.get(ticker);
             return (
               <Fragment key={rowKey}>
                 <tr
@@ -1050,7 +996,13 @@ function CandidateEventsTable({
                     </div>
                   </Cell>
                   <Cell>
-                    <FullText>{displayField(row, ["contract_id"])}</FullText>
+                    {opportunity ? (
+                      <button type="button" onClick={() => onOpenOpportunity(opportunity)} className="text-left font-medium text-foreground hover:text-primary hover:underline" title="Open opportunity detail">
+                        <FullText>{displayField(row, ["contract_id"])}</FullText>
+                      </button>
+                    ) : (
+                      <FullText>{displayField(row, ["contract_id"])}</FullText>
+                    )}
                     <div className="mt-1 text-xs text-muted-foreground">{titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}</div>
                   </Cell>
                   <Cell className="text-right tabular-nums">
@@ -1061,6 +1013,7 @@ function CandidateEventsTable({
                     <div>{moneyField(row, ["required_10x_price"])}</div>
                     <FillTarget row={row} />
                     <PremiumCapHint row={row} />
+                    <EvAsymmetry row={row} />
                   </Cell>
                   <Cell><CandidateSignalEvidence row={row} /></Cell>
                   <Cell>
@@ -1223,6 +1176,7 @@ function CandidateSignalEvidence({ row }: { row: RowRecord }) {
         <MetricPill label="Rank" value={formatScore(numberField(row, ["score"], Number.NaN))} />
         <MetricPill label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
       </div>
+      <div className="mt-1.5"><EvAsymmetry row={row} /></div>
       {hardRejects.length ? <ReadableReasonGroup label="Hard rejects" reasons={hardRejects} tone="bad" /> : null}
       {blockers.length ? <ReadableReasonGroup label="Blockers" reasons={blockers} tone="warn" /> : null}
       {positives.length ? <ReadableReasonGroup label="Supports" reasons={positives} tone="good" /> : null}
@@ -1295,6 +1249,23 @@ function PremiumCapHint({ row }: { row: RowRecord }) {
   return (
     <div className={cn("text-xs", room >= 0 ? "text-muted-foreground" : "text-destructive")}>
       {room >= 0 ? `cap room ${formatMoney(room)}` : `over cap ${formatMoney(Math.abs(room))}`}
+    </div>
+  );
+}
+
+// EV-engine asymmetry for this contract (per-ticker, the genuinely differentiating signal):
+// expected value as a multiple of premium and the modeled probability of a 2x. Reads the
+// candidate's own raw.ev; renders nothing until the radar reprices it.
+function EvAsymmetry({ row }: { row: RowRecord }) {
+  const ev = jsonRecord(recordField(row, "raw")?.["ev"]);
+  const multiple = numberFromRecord(ev, "ev_multiple");
+  const p2x = numberFromRecord(ev, "p_2x");
+  if (!Number.isFinite(multiple) && !Number.isFinite(p2x)) return null;
+  return (
+    <div className="text-xs text-muted-foreground" title="EV-engine read: expected value as a multiple of premium, and modeled P(2x)">
+      EV <span className={cn("tabular-nums font-medium", Number.isFinite(multiple) && multiple >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-foreground")}>{Number.isFinite(multiple) ? `${multiple.toFixed(2)}x` : "—"}</span>
+      {" · P(2x) "}
+      <span className="tabular-nums text-foreground">{Number.isFinite(p2x) ? `${(p2x * 100).toFixed(0)}%` : "—"}</span>
     </div>
   );
 }
