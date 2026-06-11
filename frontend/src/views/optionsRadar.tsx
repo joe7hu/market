@@ -148,10 +148,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       <SignalBriefPanel
         rows={currentOpportunityRows}
         fireCount={fireCount}
-        setupCount={setupCount}
         latestSnapshot={latestSnapshot}
         latestCandidateTime={latestCandidateTime}
-        optionThesisAgent={optionThesisAgent}
         onOpenTicker={onOpenTicker}
         onOpenOpportunity={setSelectedOpportunity}
       />
@@ -251,24 +249,19 @@ function RadarSummaryStrip({
 function SignalBriefPanel({
   rows,
   fireCount,
-  setupCount,
   latestSnapshot,
   latestCandidateTime,
-  optionThesisAgent,
   onOpenTicker,
   onOpenOpportunity,
 }: {
   rows: RowRecord[];
   fireCount: number;
-  setupCount: number;
   latestSnapshot: string;
   latestCandidateTime: string;
-  optionThesisAgent: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
   onOpenOpportunity: (row: RowRecord) => void;
 }) {
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
-  const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
   const repairRows = rows.filter(isServiceRepair);
   const exceptionalRows = rows.filter((row) => tierOf(row) === "Exceptional");
   const researchRows = rows.filter((row) => tierOf(row) === "Research");
@@ -283,102 +276,80 @@ function SignalBriefPanel({
         ? `${researchRows.length} research opportunit${researchRows.length === 1 ? "y" : "ies"}`
         : "No grouped opportunities";
   const fireGap = fireCount > 0 && exceptionalRows.length === 0;
+  const blockerLine = repairRows.length
+    ? `Data blocker: ${summarizeReasons(dataFailures, "Data contract is clean.")}`
+    : `Main blocker: ${summarizeReasons(topBlockers, "Strict gates are clean.")}`;
   return (
     <section className="rounded-md border border-border bg-card p-4">
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
-            {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
-            <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
-            <StatusBadge tone="muted">{latestSnapshot ? `Option data ${formatDate(latestSnapshot)}` : "No option data"}</StatusBadge>
-          </div>
-          {strongest ? (
-            <div className="mt-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <TickerButton ticker={textField(strongest, ["ticker"])} onOpenTicker={onOpenTicker} />
-                <StatusBadge tone={tierTone(tierOf(strongest))}>{tierOf(strongest)}</StatusBadge>
-                <StatusBadge tone={stateTone(textField(strongest, ["primary_state"]).toUpperCase())}>{titleLabel(displayField(strongest, ["primary_state"], "watch"))}</StatusBadge>
-              </div>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricBox label="Conviction" value={formatScore(numberField(strongest, ["conviction_score"], Number.NaN))} />
-                <MetricBox label="Required Move" value={formatRatio(numberField(strongest, ["required_move_pct"], Number.NaN))} />
-                <MetricBox label="Premium" value={moneyField(strongest, ["premium_mid"])} />
-                <MetricBox label="Buy Under" value={moneyField(strongest, ["buy_under"])} />
-              </div>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => onOpenOpportunity(strongest)}>
-                <Target className="mr-1.5 h-3.5 w-3.5" />
-                View payoff &amp; detail
-              </Button>
-              {ranked.length > 1 ? (
-                <div className="mt-4">
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase text-muted-foreground">All opportunities ({ranked.length})</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {ranked.map((row) => (
-                      <button
-                        key={textField(row, ["opportunity_id"], textField(row, ["primary_contract_id"]))}
-                        type="button"
-                        onClick={() => onOpenOpportunity(row)}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs hover:border-primary hover:bg-accent"
-                      >
-                        <span className="font-medium text-foreground">{textField(row, ["ticker"])}</span>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", tierDotClass(tierOf(row)))} />
-                        <span className="tabular-nums text-muted-foreground">{formatScore(numberField(row, ["conviction_score"], Number.NaN))}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
-          )}
-        </div>
-        <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
-          <BriefCallout
-            label="Decision Impact"
-            tone={decisionTone}
-            value={strongest ? impactSummary(strongest, fireCount, setupCount) : "Wait for the next radar run."}
-          />
-          <BriefCallout
-            label={repairRows.length ? "Data Blocker" : "Main Blocker"}
-            tone={repairRows.length ? "bad" : topBlockers.length ? "warn" : "good"}
-            value={repairRows.length ? summarizeReasons(dataFailures, "Data contract is clean.") : summarizeReasons(topBlockers, "Strict gates are clean.")}
-          />
-          <BriefCallout
-            label="Agent Cadence"
-            tone={optionThesisAgent.active ? "info" : "muted"}
-            value={`Runs once premarket; batch limit ${optionThesisAgent.limit}. Hourly refresh stays deterministic.`}
-          />
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
+        {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
+        <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
+        <StatusBadge tone="muted">{latestSnapshot ? `Option data ${formatDate(latestSnapshot)}` : "No option data"}</StatusBadge>
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">{blockerLine}</p>
+      {ranked.length ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-[10px] uppercase text-muted-foreground">
+                <th className="py-1 pr-3 font-medium">Ticker</th>
+                <th className="py-1 pr-3 font-medium">Tier / State</th>
+                <th className="py-1 pr-3 text-right font-medium">Conviction</th>
+                <th className="py-1 pr-3 text-right font-medium">Req. move</th>
+                <th className="py-1 pr-3 text-right font-medium">EV / P(2x)</th>
+                <th className="py-1 font-medium">Why now</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((row) => {
+                const detail = opportunityPrimaryDetail(row);
+                const ev = numberField(detail, ["ev_multiple"], Number.NaN);
+                const p2x = numberField(detail, ["p_2x"], Number.NaN);
+                const state = textField(row, ["primary_state"]).toUpperCase();
+                const why = opportunityActionText(row);
+                return (
+                  <tr
+                    key={textField(row, ["opportunity_id"], textField(row, ["primary_contract_id"]))}
+                    onClick={() => onOpenOpportunity(row)}
+                    className="cursor-pointer border-b border-border/50 align-top last:border-0 hover:bg-accent/40"
+                  >
+                    <td className="py-1.5 pr-3 font-medium text-foreground">{textField(row, ["ticker"])}</td>
+                    <td className="py-1.5 pr-3">
+                      <span className="flex items-center gap-1.5">
+                        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", tierDotClass(tierOf(row)))} />
+                        <StatusBadge tone={stateTone(state)}>{titleLabel(state || "watch")}</StatusBadge>
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-foreground">{formatScore(numberField(row, ["conviction_score"], Number.NaN))}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">{formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-muted-foreground">
+                      {Number.isFinite(ev) ? `${ev.toFixed(2)}x` : "—"} / {Number.isFinite(p2x) ? `${(p2x * 100).toFixed(0)}%` : "—"}
+                    </td>
+                    <td className="py-1.5 max-w-[26rem] truncate text-muted-foreground" title={why}>{why}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
+      )}
     </section>
   );
 }
 
-function BriefCallout({ label, value, tone }: { label: string; value: string; tone: Tone }) {
-  return (
-    <div className="rounded-md border border-border/70 bg-background px-3 py-2">
-      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
-      <div className={cn("mt-1 text-sm leading-5", toneText(tone))}>{value}</div>
-    </div>
-  );
+function opportunityPrimaryDetail(row: RowRecord): RowRecord | undefined {
+  const raw = row["raw"];
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as RowRecord) : undefined;
+  const detail = obj?.["primary_detail"];
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? (detail as RowRecord) : undefined;
 }
 
 function summarizeReasons(reasons: Array<[string, number]>, empty: string): string {
   if (!reasons.length) return empty;
   return reasons.map(([reason, count]) => `${reasonLabel(reason)} (${count})`).join("; ");
-}
-
-function impactSummary(row: RowRecord, fireCount = 0, setupCount = 0): string {
-  if (isServiceRepair(row)) return "Do not interpret as a trade setup until the data contract is fixed.";
-  if (tierOf(row) === "Exceptional") return "Candidate is allowed into trade review because data, asymmetry, entry, and evidence gates are aligned.";
-  if (tierOf(row) === "Research") {
-    const contractMix = fireCount ? `${fireCount.toLocaleString()} FIRE contract${fireCount === 1 ? "" : "s"}` : `${setupCount.toLocaleString()} setup contract${setupCount === 1 ? "" : "s"}`;
-    return `${contractMix} exist, but the grouped ticker is still Research because strict evidence, thesis, regime, or blocker gates are not all clean.`;
-  }
-  return "Watch only; signal is not yet strong enough for research priority.";
 }
 
 function ExtremeOpportunityDesk({

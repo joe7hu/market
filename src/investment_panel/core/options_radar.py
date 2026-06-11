@@ -2071,6 +2071,10 @@ def _opportunity_candidate_detail(
             "open_interest": _number(row.get("open_interest")),
             "volume": _number(row.get("volume")),
             "iv_percentile": _number(row.get("iv_percentile")),
+            # The differentiating signals the trader actually decides on — EV asymmetry
+            # (per-ticker, unlike the generic payoff shape) and catalyst proximity.
+            "ev": raw.get("ev") if isinstance(raw.get("ev"), dict) else None,
+            "days_to_earnings": raw.get("days_to_earnings"),
         },
     }
 
@@ -2563,6 +2567,7 @@ def _kill_switch(row: dict[str, Any], validation: dict[str, Any]) -> str:
 
 def _compact_opportunity_contract(detail: dict[str, Any]) -> dict[str, Any]:
     raw = detail.get("raw") if isinstance(detail.get("raw"), dict) else {}
+    ev = raw.get("ev") if isinstance(raw.get("ev"), dict) else {}
     return {
         "event_id": detail.get("event_id"),
         "contract_id": detail.get("contract_id"),
@@ -2581,6 +2586,12 @@ def _compact_opportunity_contract(detail: dict[str, Any]) -> dict[str, Any]:
         "spread_pct": raw.get("spread_pct"),
         "open_interest": raw.get("open_interest"),
         "volume": raw.get("volume"),
+        # EV asymmetry + catalyst proximity: the per-ticker signals the UI ranks/reads on.
+        "ev_multiple": ev.get("ev_multiple"),
+        "p_2x": ev.get("p_2x"),
+        "p_5x": ev.get("p_5x"),
+        "conviction_ev": ev.get("conviction_ev"),
+        "days_to_earnings": raw.get("days_to_earnings"),
         "blockers": detail.get("blockers"),
     }
 
