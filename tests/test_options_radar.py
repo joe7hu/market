@@ -240,12 +240,12 @@ def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_p
         seed_prices(con, "RBLX", start_price=75, slope=0.11)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T19:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "RBLX",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
                 option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:RBLX270918C120"),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:RBLX270918C180"),
@@ -915,14 +915,14 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -952,21 +952,21 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T20:00:00Z', 112, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T19:00:00Z', 112, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
-            [option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
+            "2026-06-02T19:00:00Z",
+            [option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-03T20:00:00Z",
+            "2026-06-03T19:00:00Z",
             [option_row("2027-09-18", 120, "call", 9.0, 10.0, 0.28, 0.38, "OPRA:TSLA270918C120", volume=45, open_interest=275)],
         )
 
@@ -1027,14 +1027,14 @@ def test_hard_red_team_validation_invalidates_and_closes_shadow_trade(tmp_path) 
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -1124,15 +1124,15 @@ def test_candidate_scoped_thesis_validation_does_not_block_other_fire_events(tmp
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
-                option_row("2027-09-18", 130, "call", 4.0, 4.4, 0.25, 0.30, "OPRA:TSLA270918C130", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 1.95, 2.05, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 130, "call", 1.95, 2.05, 0.25, 0.30, "OPRA:TSLA270918C130", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -1242,14 +1242,19 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
     assert candidate_attribution["option_return"] >= 9.0
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
-    assert proposal["status"] == "forward_test_required"
+    # Honest validation: a single synthetic missed winner gives the walk-forward
+    # backtest no historical candidate base, so the proposal correctly fails the
+    # backtest gate rather than advancing. The gating metadata still records that a
+    # backtest, a forward shadow test and human approval are all required, and the
+    # forward shadow test still spins up to collect real out-of-sample data.
+    assert proposal["status"] == "backtest_failed"
     assert proposal["requires_backtest"] is True
     assert proposal["requires_forward_test"] is True
     assert proposal["human_approval_status"] == "required"
     assert "lower-delta" in proposal["proposed_parameter_changes"]
-    assert backtest["verdict"] == "pass"
-    assert backtest["proposed_candidate_count"] > backtest["baseline_candidate_count"]
-    assert backtest["proposed_hit_rate_10x"] > backtest["baseline_hit_rate_10x"]
+    assert backtest["verdict"] == "fail"
+    assert backtest["baseline_candidate_count"] == 0
+    assert backtest["proposed_candidate_count"] == 0
     assert forward["status"] == "active"
     assert forward["verdict"] == "collecting_data"
 
@@ -1281,9 +1286,20 @@ def test_strategy_promotion_requires_backtest_forward_test_and_human_approval(tm
         refresh_options_radar(con, ["RBLX"])
         proposal_id = query_rows(con, "SELECT proposal_id FROM strategy_mutation_proposal")[0]["proposal_id"]
 
+        # Honest validation fails the backtest on this synthetic single-winner
+        # fixture, so promotion is blocked at the backtest gate first.
+        with pytest.raises(StrategyPromotionError, match="backtest"):
+            promote_strategy_mutation(con, proposal_id, approved_by="joe")
+
+        # Force the backtest to pass; the forward shadow test gate now blocks.
+        con.execute(
+            "UPDATE strategy_backtest_result SET verdict = 'pass' WHERE proposal_id = ?",
+            [proposal_id],
+        )
         with pytest.raises(StrategyPromotionError, match="forward shadow test"):
             promote_strategy_mutation(con, proposal_id, approved_by="joe")
 
+        # Force the forward test to pass; human approval is the final gate.
         con.execute(
             """
             UPDATE strategy_forward_test_result
