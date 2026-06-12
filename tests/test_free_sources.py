@@ -28,8 +28,10 @@ from investment_panel.core.free_sources import (
     store_screener_rows,
     store_yfinance_market_snapshot,
     update_yfinance_options_chains,
+    update_yfinance_options_liquidity,
     upsert_quote,
 )
+from investment_panel.core.free_sources import OPTION_RATE_LIMIT_CIRCUIT_BREAKER
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import upsert_prices
 from investment_panel.core.scoring import score_and_store
@@ -472,6 +474,67 @@ def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> Non
     assert result["options_chains"] == 19
     assert expiries == [{"symbol": "RBLX", "source": "yfinance", "rows": 3}]
     assert chains == [{"symbol": "RBLX", "source": "yfinance", "rows": 19, "min_strike": 70.0, "max_strike": 130.0}]
+
+
+def _liquidity_chain_rows(expiry: str) -> list[dict[str, object]]:
+    return [
+        {"expiry": expiry, "type": "call", "strike": 100.0, "bid": 4.0, "ask": 4.5, "mid": 4.25, "last": 4.2,
+         "iv": 0.35, "symbol": f"X{expiry.replace('-', '')}C100", "contract_symbol": f"X{expiry.replace('-', '')}C100"}
+    ]
+
+
+def test_yfinance_options_liquidity_skips_expired_expiries(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS", 0)
+    today = date.today()
+    past = (today - timedelta(days=5)).isoformat()
+    future = (today + timedelta(days=400)).isoformat()
+
+    class RecordingLiquidityProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def options_chain_liquidity(self, symbol: str, expiry: str) -> list[dict[str, object]]:
+            self.calls.append((symbol, expiry))
+            return _liquidity_chain_rows(expiry)
+
+    provider = RecordingLiquidityProvider()
+    with db(db_path) as con:
+        store_options_chain(con, "AAPL", "2026-06-11T20:00:00Z", _liquidity_chain_rows(past))
+        store_options_chain(con, "AAPL", "2026-06-11T20:00:00Z", _liquidity_chain_rows(future))
+        update_yfinance_options_liquidity(con, provider, ["AAPL"], "2026-06-11T20:05:00Z", "run1")  # type: ignore[arg-type]
+
+    # The expired expiry must never reach the upstream provider.
+    assert (("AAPL", past)) not in provider.calls
+    assert (("AAPL", future)) in provider.calls
+
+
+def test_yfinance_options_liquidity_circuit_breaks_on_rate_limit(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS", 0)
+    future = (date.today() + timedelta(days=400)).isoformat()
+    symbols = [f"SYM{i}" for i in range(OPTION_RATE_LIMIT_CIRCUIT_BREAKER + 4)]
+
+    class RateLimitedProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def options_chain_liquidity(self, symbol: str, expiry: str) -> list[dict[str, object]]:
+            self.calls.append((symbol, expiry))
+            raise RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+
+    provider = RateLimitedProvider()
+    with db(db_path) as con:
+        for symbol in symbols:
+            store_options_chain(con, symbol, "2026-06-11T20:00:00Z", _liquidity_chain_rows(future))
+        result = update_yfinance_options_liquidity(con, provider, symbols, "2026-06-11T20:05:00Z", "run1")  # type: ignore[arg-type]
+
+    # The breaker stops after N consecutive rate-limited calls instead of grinding
+    # the whole universe and deepening the throttle.
+    assert len(provider.calls) == OPTION_RATE_LIMIT_CIRCUIT_BREAKER
+    assert "options_liquidity_circuit_breaker" in result
 
 
 def test_selected_option_expiries_includes_near_term_and_radar_leaps() -> None:

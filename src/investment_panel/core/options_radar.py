@@ -31,6 +31,12 @@ RADAR_ALERT_DEDUP_HOURS = 72
 RADAR_ALERT_TYPES = ("data_contract", "exceptional_conviction", "buy_under_hit")
 DATA_CONTRACT_READY = "ready"
 DATA_CONTRACT_REPAIR_REQUIRED = "repair_required"
+# An off-hours/pre-market chain pull can return strikes with zero bid/ask/mid for
+# nearly every contract. Such a snapshot only yields option_features/candidates for
+# the few contracts that carried a premium, collapsing a full radar to 1-2 names.
+# We refuse to let a snapshot below this premium-coverage floor overwrite a
+# healthier existing radar.
+MIN_SNAPSHOT_PREMIUM_COVERAGE = 0.5
 SERVICE_BUG_TIER = "Service Bug"
 SERVICE_REPAIR_JOB_ORDER = [
     "update_free_sources",
@@ -999,13 +1005,20 @@ def refresh_option_radar_opportunities(
     """Materialize the brutally selective first-screen opportunity read model."""
 
     symbol_filter = _symbol_filter(symbols, table_alias="ce", column="ticker")
+    # Build from the most recent snapshot with healthy premium coverage rather than
+    # the absolute latest. A pre-market/off-hours pull returns zero bid/ask/mid for
+    # ~all contracts, so it produces candidates for only the few priced names and
+    # would otherwise collapse the radar to 1-2 tickers. Skipping it lets the read
+    # model fall back to the last healthy snapshot (and self-heal once a clean pull
+    # lands).
+    read_snapshot = _radar_read_snapshot_time(con, strategy_version, symbols)
+    if read_snapshot is None:
+        return 0
     rows = query_rows(
         con,
         f"""
         WITH latest AS (
-            SELECT max(snapshot_time) AS snapshot_time
-            FROM candidate_event ce
-            WHERE ce.strategy_version = ? {symbol_filter["sql"]}
+            SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
         ),
         option_snapshot_one AS (
             SELECT *
@@ -1102,7 +1115,7 @@ def refresh_option_radar_opportunities(
         ) = 1
         ORDER BY ce.ticker, ce.score DESC, ce.contract_id
         """,
-        [strategy_version, *symbol_filter["params"], strategy_version, strategy_version, *symbol_filter["params"]],
+        [read_snapshot, strategy_version, strategy_version, *symbol_filter["params"]],
     )
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -1119,6 +1132,18 @@ def refresh_option_radar_opportunities(
     # contracts) must not blank the radar. Only replace when there is a fresh set.
     if not built:
         return 0
+
+    # Preserve the last-good opportunities when the snapshot behind this set has
+    # collapsed premium coverage (e.g. a pre-market pull with zero bid/ask/mid on
+    # ~all contracts). Such a pull starves option_features -> candidates so only
+    # the handful of priced contracts survive, shrinking a full N-ticker radar to
+    # 1-2 names. Refuse to overwrite a healthier existing set with the degraded one.
+    snapshot_time = max((opportunity["snapshot_time"] for opportunity in built), default=None)
+    coverage = _snapshot_premium_coverage(con, snapshot_time, symbols=symbols) if snapshot_time else None
+    if coverage is not None and coverage < MIN_SNAPSHOT_PREMIUM_COVERAGE:
+        new_tickers = len({opportunity["ticker"] for opportunity in built})
+        if new_tickers < _existing_opportunity_ticker_count(con, strategy_version, symbols=symbols):
+            return 0
 
     if symbols:
         clean_symbols = [_normalize_symbol(symbol) for symbol in symbols if symbol]
@@ -4093,6 +4118,78 @@ def _strategy_parameters(con: Any, strategy_version: str) -> dict[str, Any]:
         register_default_strategy(con, strategy_version)
         return dict(DEFAULT_STRATEGY_PARAMETERS)
     return {**DEFAULT_STRATEGY_PARAMETERS, **_json(rows[0].get("parameters"))}
+
+
+def _snapshot_premium_coverage(con: Any, snapshot_time: str, *, symbols: list[str] | None = None) -> float | None:
+    """Fraction of a snapshot's contracts that carry a usable premium (mid > 0).
+
+    Returns ``None`` when the snapshot has no rows. A low value means the pull
+    came back without live premiums (e.g. an off-hours/pre-market chain), which
+    silently starves option_features and candidate generation downstream.
+    """
+
+    symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
+    rows = query_rows(
+        con,
+        f"""
+        SELECT
+            count(*) AS total,
+            count(*) FILTER (WHERE s.mid IS NOT NULL AND s.mid > 0) AS with_premium
+        FROM option_snapshot s
+        WHERE s.snapshot_time = TRY_CAST(? AS TIMESTAMP) {symbol_filter["sql"]}
+        """,
+        [snapshot_time, *symbol_filter["params"]],
+    )
+    total = _number(rows[0].get("total")) if rows else None
+    if not total:
+        return None
+    with_premium = _number(rows[0].get("with_premium")) or 0.0
+    return with_premium / total
+
+
+def _radar_read_snapshot_time(con: Any, strategy_version: str, symbols: list[str] | None = None) -> str | None:
+    """Snapshot the opportunity read model should build from.
+
+    The most recent candidate snapshot whose option chain has healthy premium
+    coverage. A degraded pull (off-hours/pre-market, zero bid/ask/mid on ~all
+    contracts) is skipped so it can't collapse the radar; we fall back to the
+    latest snapshot if none in the recent window clear the floor.
+    """
+
+    symbol_filter = _symbol_filter(symbols, table_alias="ce", column="ticker")
+    rows = query_rows(
+        con,
+        f"""
+        SELECT DISTINCT ce.snapshot_time
+        FROM candidate_event ce
+        WHERE ce.strategy_version = ? {symbol_filter["sql"]}
+        ORDER BY ce.snapshot_time DESC
+        LIMIT 20
+        """,
+        [strategy_version, *symbol_filter["params"]],
+    )
+    snapshots = [_iso(row.get("snapshot_time")) for row in rows if row.get("snapshot_time")]
+    for snapshot in snapshots:
+        coverage = _snapshot_premium_coverage(con, snapshot, symbols=symbols)
+        if coverage is None or coverage >= MIN_SNAPSHOT_PREMIUM_COVERAGE:
+            return snapshot
+    return snapshots[0] if snapshots else None
+
+
+def _existing_opportunity_ticker_count(con: Any, strategy_version: str, *, symbols: list[str] | None = None) -> int:
+    """Distinct tickers in the current materialized radar for this strategy."""
+
+    symbol_filter = _symbol_filter(symbols, table_alias="oro", column="ticker")
+    rows = query_rows(
+        con,
+        f"""
+        SELECT count(DISTINCT oro.ticker) AS tickers
+        FROM option_radar_opportunity oro
+        WHERE oro.strategy_version = ? {symbol_filter["sql"]}
+        """,
+        [strategy_version, *symbol_filter["params"]],
+    )
+    return int(_number(rows[0].get("tickers")) or 0) if rows else 0
 
 
 def _symbol_filter(symbols: list[str] | None, *, table_alias: str, column: str = "symbol") -> dict[str, Any]:
