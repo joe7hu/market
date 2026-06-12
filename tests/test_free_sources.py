@@ -31,7 +31,8 @@ from investment_panel.core.free_sources import (
     update_yfinance_options_liquidity,
     upsert_quote,
 )
-from investment_panel.core.free_sources import OPTION_RATE_LIMIT_CIRCUIT_BREAKER
+from investment_panel.core.free_sources import OPTION_RATE_LIMIT_CIRCUIT_BREAKER, _yfinance_enrichment_status
+from investment_panel.core.status import write_source_status
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.prices import upsert_prices
 from investment_panel.core.scoring import score_and_store
@@ -486,7 +487,7 @@ def _liquidity_chain_rows(expiry: str) -> list[dict[str, object]]:
 def test_yfinance_options_liquidity_skips_expired_expiries(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS", 0)
+    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
     today = date.today()
     past = (today - timedelta(days=5)).isoformat()
     future = (today + timedelta(days=400)).isoformat()
@@ -513,7 +514,7 @@ def test_yfinance_options_liquidity_skips_expired_expiries(tmp_path: Path, monke
 def test_yfinance_options_liquidity_circuit_breaks_on_rate_limit(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS", 0)
+    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
     future = (date.today() + timedelta(days=400)).isoformat()
     symbols = [f"SYM{i}" for i in range(OPTION_RATE_LIMIT_CIRCUIT_BREAKER + 4)]
 
@@ -535,6 +536,52 @@ def test_yfinance_options_liquidity_circuit_breaks_on_rate_limit(tmp_path: Path,
     # the whole universe and deepening the throttle.
     assert len(provider.calls) == OPTION_RATE_LIMIT_CIRCUIT_BREAKER
     assert "options_liquidity_circuit_breaker" in result
+
+
+def test_yfinance_options_chains_circuit_breaks_on_rate_limit(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
+    config = SimpleNamespace(data_sources=SimpleNamespace(tradingview=SimpleNamespace(strikes_around_spot=2)))
+    symbols = [f"SYM{i}" for i in range(OPTION_RATE_LIMIT_CIRCUIT_BREAKER + 4)]
+
+    class RateLimitedChainsProvider:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def options_expiries(self, symbol: str) -> list[dict[str, object]]:
+            self.calls.append(symbol)
+            raise RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+
+        def options_chain(self, *args: object, **kwargs: object) -> list[dict[str, object]]:
+            return []
+
+    provider = RateLimitedChainsProvider()
+    with db(db_path) as con:
+        result = update_yfinance_options_chains(con, provider, symbols, "2026-06-02T20:00:00Z", "run1", config)  # type: ignore[arg-type]
+
+    # The chains loop shares Yahoo's limiter with the liquidity job, so it must also
+    # stop once saturated rather than bursting the whole universe.
+    assert len(provider.calls) == OPTION_RATE_LIMIT_CIRCUIT_BREAKER
+    assert "options_chain_circuit_breaker" in result
+
+
+def test_yfinance_enrichment_status_reflects_real_health() -> None:
+    assert _yfinance_enrichment_status({"options_chains": 10, "options_liquidity": 5}) == "ok"
+    # Errors with nothing produced -> error (not a green "ok").
+    assert _yfinance_enrichment_status({"options_chains": 0, "options_liquidity": 0, "options_liquidity_error_count": 80}) == "error"
+    # Errors but some data produced -> partial.
+    assert _yfinance_enrichment_status({"options_chains": 10, "options_liquidity_error_count": 3}) == "partial"
+    # A tripped circuit breaker is never "ok".
+    assert _yfinance_enrichment_status({"market_snapshots": 5, "options_chain_circuit_breaker": "stopped"}) == "partial"
+
+
+def test_write_source_status_ok_reflects_job_status(tmp_path: Path) -> None:
+    config = SimpleNamespace(nas=SimpleNamespace(status_dir=tmp_path))
+    ok_path = write_source_status(config, "job-ok", {"status": "ok", "rows": 5})  # type: ignore[arg-type]
+    bad_path = write_source_status(config, "job-bad", {"status": "gateway_offline", "errors": ["ibkr_connect_failed"]})  # type: ignore[arg-type]
+    assert json.loads(Path(ok_path).read_text())["ok"] is True
+    assert json.loads(Path(bad_path).read_text())["ok"] is False
 
 
 def test_selected_option_expiries_includes_near_term_and_radar_leaps() -> None:
