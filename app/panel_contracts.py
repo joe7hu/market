@@ -263,6 +263,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),
     "health": (
+        "sources",
         "source_freshness",
         "source_health",
         "provider_runs",

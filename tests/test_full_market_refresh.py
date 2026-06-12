@@ -42,6 +42,7 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
     monkeypatch.setattr(full_market_refresh.update_broker_sources, "run", fake_run("broker_sources"))
     monkeypatch.setattr(full_market_refresh.update_disclosures, "run", fake_run("disclosures"))
     monkeypatch.setattr(full_market_refresh.update_event_calendar, "run", fake_run("event_calendar"))
+    monkeypatch.setattr(full_market_refresh, "prune_operational_tables", lambda *_args, **_kwargs: calls.append("retention_prune") or {"provider_runs": 0, "source_runs": 0, "refresh_jobs": 0})
     monkeypatch.setattr(full_market_refresh.snapshot_database, "run", fake_run("database_snapshot"))
 
     result = full_market_refresh.run(str(config_path), online_check=True, max_filings=2, fetch_holdings=False)
@@ -55,6 +56,7 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
         "broker_sources",
         "disclosures",
         "event_calendar",
+        "retention_prune",
         "database_snapshot",
     ]
     assert result["ok"] is True

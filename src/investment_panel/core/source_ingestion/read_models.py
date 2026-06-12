@@ -184,8 +184,9 @@ def source_ticker_ranking_rows(con: Any, limit: int = 250) -> list[dict[str, Any
     return rankings
 
 
-def source_detail_payload(con: Any, source_id: str) -> dict[str, Any]:
-    ensure_canonical_sources(con)
+def source_detail_payload(con: Any, source_id: str, ensure_sources: bool = True) -> dict[str, Any]:
+    if ensure_sources:
+        ensure_canonical_sources(con)
     source = next((row for row in source_registry_rows(con) if row.get("source_id") == source_id), None)
     if not source:
         return {"source_id": source_id, "found": False, "items": [], "signals": []}

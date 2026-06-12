@@ -25,14 +25,15 @@ EXPECTED_LOGIN_STATUSES = {
 }
 
 
-def source_ingestion_audit(con: Any) -> dict[str, Any]:
+def source_ingestion_audit(con: Any, sync_sources: bool = True) -> dict[str, Any]:
     """Return a strict audit of active source ingestion.
 
     Disabled registry candidates are informational, not failures. IBKR and
     moomoo are allowed to be empty when login/session prerequisites are absent.
     """
 
-    sync_canonical_sources(con)
+    if sync_sources:
+        sync_canonical_sources(con)
     source_rows = source_registry_rows(con)
     source_failures = []
     for row in source_rows:

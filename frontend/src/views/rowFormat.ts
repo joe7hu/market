@@ -1,5 +1,5 @@
 import type { JsonValue, RowRecord } from "@/types";
-import type { Tone } from "@/ui/tone";
+import { toneFromOperationalStatus, type Tone } from "@/ui/tone";
 import { displayValue, fullDisplayValue, tickerSymbol } from "@/utils";
 
 export type { Tone };
@@ -82,11 +82,15 @@ export function titleLabel(value: string): string {
 }
 
 export function toneFromText(value: string): Tone {
-  const normalized = value.toLowerCase();
-  if (normalized.includes("breach") || normalized.includes("critical") || normalized.includes("bad") || normalized.includes("sell") || normalized.includes("avoid")) return "bad";
-  if (normalized.includes("warn") || normalized.includes("stale") || normalized.includes("blocked") || normalized.includes("review") || normalized.includes("risk") || /\blow\b/.test(normalized)) return "warn";
-  if (normalized.includes("good") || normalized.includes("ready") || normalized.includes("clear") || normalized.includes("ok") || /\bhigh\b/.test(normalized) || normalized.includes("strong")) return "good";
-  if (normalized.includes("none") || normalized.includes("missing")) return "muted";
+  const operationalTone = toneFromOperationalStatus(value);
+  if (operationalTone) return operationalTone;
+
+  const normalized = value.toLowerCase().replace(/[_-]+/g, " ");
+  const tokens = new Set(normalized.match(/[a-z0-9]+/g) ?? []);
+  if (hasAny(tokens, ["breach", "critical", "bad", "sell", "avoid"])) return "bad";
+  if (hasAny(tokens, ["warn", "warning", "stale", "blocked", "review", "risk", "low"])) return "warn";
+  if (hasAny(tokens, ["good", "ready", "clear", "ok", "high", "strong"])) return "good";
+  if (hasAny(tokens, ["none"])) return "muted";
   return "info";
 }
 
@@ -120,4 +124,8 @@ function toList(value: JsonValue | undefined): string[] {
   }
   if (typeof value === "number" || typeof value === "boolean") return [String(value)];
   return [displayValue(value)];
+}
+
+function hasAny(tokens: Set<string>, values: string[]): boolean {
+  return values.some((value) => tokens.has(value));
 }

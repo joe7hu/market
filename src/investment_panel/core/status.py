@@ -11,6 +11,7 @@ import socket
 from typing import Any
 
 from investment_panel.core.config import AppConfig
+from investment_panel.core.db import db
 
 logger = logging.getLogger("market.status")
 
@@ -54,5 +55,7 @@ def snapshot_duckdb(config: AppConfig, label: str = "market") -> Path | None:
     config.nas.duckdb_snapshot_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     snapshot_path = config.nas.duckdb_snapshot_dir / f"{label}-{stamp}.duckdb"
+    with db(db_path, read_only=False) as con:
+        con.execute("CHECKPOINT")
     shutil.copy2(db_path, snapshot_path)
     return snapshot_path

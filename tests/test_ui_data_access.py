@@ -234,6 +234,7 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
 
     assert contract["scopes"]["feed"] == ["feed_signals"]
     assert "source_freshness" not in contract["scopes"]["watchlist"]
+    assert "sources" in contract["scopes"]["health"]
     assert "broker_positions" in contract["scopes"]["health"]
     assert "universe_screen" in contract["watchlist_section_tables"]
     assert "decision_queue" in contract["ticker_tables"]

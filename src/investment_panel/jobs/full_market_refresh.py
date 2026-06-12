@@ -13,6 +13,7 @@ import traceback
 from typing import Any, Callable
 
 from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.retention import prune_operational_tables
 from investment_panel.jobs import (
     daily_screen,
     snapshot_database,
@@ -50,7 +51,7 @@ def run(
     step_results: list[dict[str, Any]] = []
     failed_step: str | None = None
 
-    for step in refresh_steps(config_path, online_check=online_check, max_filings=max_filings, fetch_holdings=fetch_holdings):
+    for step in refresh_steps(config, config_path, online_check=online_check, max_filings=max_filings, fetch_holdings=fetch_holdings):
         step_started = time.perf_counter()
         try:
             result = step.runner()
@@ -84,6 +85,7 @@ def run(
 
 
 def refresh_steps(
+    config: AppConfig,
     config_path: str | None,
     *,
     online_check: bool,
@@ -107,6 +109,7 @@ def refresh_steps(
             ),
         ),
         RefreshStep("event_calendar", lambda: update_event_calendar.run(config_path)),
+        RefreshStep("retention_prune", lambda: prune_operational_tables(config.database.duckdb_path)),
         RefreshStep("database_snapshot", lambda: snapshot_database.run(config_path)),
     ]
 

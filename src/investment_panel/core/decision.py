@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from investment_panel.core.db import json_dumps, query_rows, upsert_instrument
 from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+from investment_panel.core.source_status import normalize_source_status
 from investment_panel.core.sources import promote_source_signal_instruments, sync_canonical_sources
 
 
@@ -339,7 +340,7 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
                 "provider": provider,
                 "last_observed_at": observed,
                 "freshness_status": freshness,
-                "provider_status": "failed" if str(status).lower() in {"error", "failed"} else str(status or "ok"),
+                "provider_status": normalize_source_status(status),
                 "stale_after": stale_after_label(source_type),
                 "status": freshness,
                 "detail": detail,
@@ -354,20 +355,24 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
         symbol = str(row.get("symbol") or "").upper()
         source_type = "crypto_quote" if symbol.endswith("-USD") else "closing_quote"
         add(f"previous_close:{symbol}", source_type, row.get("source") or "daily_price", row.get("date"))
-    for row in query_rows(con, "SELECT symbol, expiry, observed_at, source FROM options_expiries"):
-        add(f"{row.get('source') or 'options'}:options:{row.get('expiry')}:{row.get('symbol')}", "options", row.get("source") or "options", row.get("observed_at"))
-    for row in query_rows(con, "SELECT symbol, expiry, as_of, source FROM options_payoff_scenarios"):
-        add(f"{row.get('source') or 'options_payoff'}:options-payoff:{row.get('expiry')}:{row.get('symbol')}", "options", row.get("source") or "options_payoff", row.get("as_of"))
-    for row in query_rows(con, "SELECT id, published_at, provider, source FROM news_items"):
-        add(f"{row.get('source') or row.get('provider') or 'news'}:{row.get('id')}", "news", row.get("provider") or "news", row.get("published_at"))
-    for row in query_rows(con, "SELECT id, observed_at, symbol, source FROM tradingview_symbol_search"):
-        add(f"{row.get('source') or 'tradingview'}:search:{row.get('id')}:{row.get('symbol')}", "provider_run", row.get("source") or "tradingview", row.get("observed_at"))
-    for row in query_rows(con, "SELECT id, observed_at, name, source FROM tradingview_watchlists"):
-        add(f"{row.get('source') or 'tradingview'}:watchlist:{row.get('id')}", "provider_run", row.get("source") or "tradingview", row.get("observed_at"), detail=str(row.get("name") or ""))
-    for row in query_rows(con, "SELECT id, observed_at, symbol, source FROM tradingview_alerts"):
-        add(f"{row.get('source') or 'tradingview'}:alert:{row.get('id')}:{row.get('symbol')}", "provider_run", row.get("source") or "tradingview", row.get("observed_at"))
-    for row in query_rows(con, "SELECT id, observed_at, symbol, source FROM tradingview_chart_state"):
-        add(f"{row.get('source') or 'tradingview'}:chart-state:{row.get('id')}:{row.get('symbol')}", "provider_run", row.get("source") or "tradingview", row.get("observed_at"))
+    for row in query_rows(con, "SELECT source, symbol, max(observed_at) AS observed_at, count(*) AS row_count FROM options_expiries GROUP BY source, symbol"):
+        provider = row.get("source") or "options"
+        add(f"{provider}:options:{row.get('symbol')}", "options", provider, row.get("observed_at"), detail=f"{row.get('row_count') or 0} expiries")
+    for row in query_rows(con, "SELECT source, symbol, max(as_of) AS as_of, count(*) AS row_count FROM options_payoff_scenarios GROUP BY source, symbol"):
+        provider = row.get("source") or "options_payoff"
+        add(f"{provider}:options-payoff:{row.get('symbol')}", "options", provider, row.get("as_of"), detail=f"{row.get('row_count') or 0} payoff rows")
+    for row in query_rows(con, "SELECT COALESCE(source, provider, 'news') AS source, provider, max(published_at) AS published_at, count(*) AS row_count FROM news_items GROUP BY COALESCE(source, provider, 'news'), provider"):
+        provider = row.get("provider") or row.get("source") or "news"
+        add(f"{row.get('source') or provider}:news", "news", provider, row.get("published_at"), detail=f"{row.get('row_count') or 0} news items")
+    for table, capability, time_col in [
+        ("tradingview_symbol_search", "search", "observed_at"),
+        ("tradingview_watchlists", "watchlist", "observed_at"),
+        ("tradingview_alerts", "alert", "observed_at"),
+        ("tradingview_chart_state", "chart-state", "observed_at"),
+    ]:
+        for row in query_rows(con, f"SELECT COALESCE(source, 'tradingview') AS source, max({time_col}) AS observed_at, count(*) AS row_count FROM {table} GROUP BY COALESCE(source, 'tradingview')"):
+            provider = row.get("source") or "tradingview"
+            add(f"{provider}:{capability}:provider-run", "provider_run", provider, row.get("observed_at"), detail=f"{row.get('row_count') or 0} rows")
     for row in query_rows(con, "SELECT symbol, date, features FROM technical_features QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1"):
         add(f"technicals:{row.get('symbol')}", "daily", "technicals", row.get("date"))
     for table, provider in [("sepa_analyses", "sepa"), ("liquidity_metrics", "liquidity"), ("correlation_runs", "correlation"), ("valuation_models", "valuation"), ("earnings_setups", "earnings_setup"), ("analyst_estimates", "estimates")]:
@@ -387,8 +392,8 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
         add(f"arco_thesis:{row.get('symbol')}", "arco_thesis", "arco", row.get("created_at"))
     for row in query_rows(con, "SELECT source, checked_at, status, detail FROM source_health"):
         source = str(row.get("source") or "")
-        status = str(row.get("status") or "").lower()
-        docs_only = status in {"verified_docs", "documentation", "docs_only"} or source.endswith(".md") or source.startswith("docs/")
+        status = normalize_source_status(row.get("status"))
+        docs_only = status == "documentation" or source.startswith("docs:") or source.endswith(".md") or source.startswith("docs/")
         source_type = "documentation" if docs_only else "provider_health"
         source_key = source if docs_only or source.endswith(":provider-run") else f"source_health:{source}"
         add(source_key, source_type, source.split(":")[0] or source, row.get("checked_at"), row.get("status") or "ok", row.get("detail") or "", docs_only)
@@ -397,8 +402,8 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
     for row in query_rows(con, "SELECT provider, checked_at, status, detail, last_data_at FROM broker_provider_status"):
         add(f"broker:{row.get('provider')}", "provider_health", row.get("provider") or "broker", row.get("last_data_at") or row.get("checked_at"), row.get("status") or "missing", row.get("detail") or "")
     for row in query_rows(con, "SELECT source_id, run_id, capability, finished_at, status, failure_detail FROM source_runs"):
-        status = str(row.get("status") or "unknown").lower()
-        source_type = "documentation" if status in {"verified_docs", "documentation", "docs_only"} else "provider_run"
+        status = normalize_source_status(row.get("status") or "unknown")
+        source_type = "documentation" if status == "documentation" else "provider_run"
         add(
             f"{row.get('source_id')}:{row.get('capability') or 'source'}:source-run",
             source_type,
@@ -408,12 +413,14 @@ def build_source_freshness(con: Any) -> list[dict[str, Any]]:
             row.get("failure_detail") or "",
             docs_only=source_type == "documentation",
         )
-    for row in query_rows(con, "SELECT id, source_id, source_kind, observed_at FROM source_items"):
+    for row in query_rows(con, "SELECT source_id, source_kind, max(observed_at) AS observed_at, count(*) AS row_count FROM source_items WHERE source_kind IN ('news', 'arco_thesis') GROUP BY source_id, source_kind"):
+        source_kind = str(row.get("source_kind") or "item")
         add(
-            f"{row.get('source_id')}:{row.get('source_kind') or 'item'}:{row.get('id')}",
-            "news" if row.get("source_kind") in {"news", "arco_thesis"} else "filing" if str(row.get("source_kind") or "").startswith("13f") else "provider_run",
+            f"{row.get('source_id')}:{source_kind}:source-items",
+            "news" if source_kind == "news" else "arco_thesis",
             row.get("source_id") or "source_item",
             row.get("observed_at"),
+            detail=f"{row.get('row_count') or 0} source items",
         )
     return dedupe_freshness(rows)
 
@@ -662,15 +669,17 @@ def persist_symbol_decision_snapshots(con: Any, rows: list[dict[str, Any]]) -> N
 
 
 def classify_freshness(source_type: str, observed: datetime | None, status: str, docs_only: bool, now: datetime | None = None) -> str:
-    normalized_status = str(status or "").lower()
+    normalized_status = normalize_source_status(status)
     if docs_only or source_type == "documentation":
         return "documentation"
-    if normalized_status in {"disabled", "not_configured", "docs_only", "verified_docs", "documentation"}:
+    if normalized_status in {"disabled", "documentation"}:
         return "not_applicable"
-    if normalized_status in {"not_loaded", "configured"}:
+    if normalized_status == "unknown":
         return "unknown"
-    if normalized_status in {"error", "failed", "missing_dependency"}:
+    if normalized_status == "failed":
         return "failed"
+    if normalized_status == "degraded":
+        return "stale"
     if observed is None:
         return "unknown"
     checked_at = normalized_utc(now or datetime.now(UTC))
@@ -815,10 +824,10 @@ def easter_date(year: int) -> date:
     h = (19 * a + b - d - g + 15) % 30
     i = c // 4
     k = c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    month = (h + l - 7 * m + 114) // 31
-    day = ((h + l - 7 * m + 114) % 31) + 1
+    weekday_offset = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * weekday_offset) // 451
+    month = (h + weekday_offset - 7 * m + 114) // 31
+    day = ((h + weekday_offset - 7 * m + 114) % 31) + 1
     return date(year, month, day)
 
 

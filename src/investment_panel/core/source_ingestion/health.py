@@ -20,7 +20,7 @@ def record_verified_sources(con: Any) -> None:
             (source, checked_at, status, detail, source_url)
             VALUES (?, ?, ?, ?, ?)
             """,
-            [source["source"], datetime.utcnow().isoformat(), "verified_docs", source["detail"], source["source_url"]],
+            [f"docs:{source['source']}", datetime.utcnow().isoformat(), "verified_docs", source["detail"], source["source_url"]],
         )
     sync_canonical_sources(con)
 

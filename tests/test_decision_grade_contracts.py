@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 
 from app import main as api_main
 from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.decision import classify_freshness, symbol_freshness_detail
+from investment_panel.core.decision import build_source_freshness, classify_freshness, symbol_freshness_detail
 from investment_panel.core.panel import load_panel_data
+from investment_panel.core.source_ingestion.health import record_verified_sources
 from investment_panel.core.sources import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, source_ingestion_audit
 
 
@@ -92,6 +93,62 @@ def test_source_freshness_contracts_degrade_stale_and_docs_only_rows(tmp_path: P
     assert fresh_quote.get("freshness_status") in {"fresh", "healthy"}
 
 
+def test_source_freshness_aggregates_historical_provider_items(tmp_path: Path) -> None:
+    db_path = tmp_path / "freshness.duckdb"
+    init_db(db_path)
+    observed = datetime.now(UTC)
+    with db(db_path, read_only=False) as con:
+        for index in range(100):
+            con.execute(
+                """
+                INSERT INTO source_items (id, source_id, source_kind, observed_at)
+                VALUES (?, 'legacy_feed', 'news', ?)
+                """,
+                [f"item-{index}", observed - timedelta(minutes=index)],
+            )
+        for index in range(50):
+            expiry = (observed + timedelta(days=index + 1)).date().isoformat()
+            con.execute(
+                """
+                INSERT INTO options_expiries (symbol, expiry, observed_at, source)
+                VALUES ('NVDA', ?, ?, 'ibkr')
+                """,
+                [expiry, observed - timedelta(minutes=index)],
+            )
+
+        rows = build_source_freshness(con)
+
+    source_item_rows = [row for row in rows if str(row.get("source_key", "")).startswith("legacy_feed:news")]
+    option_rows = [row for row in rows if str(row.get("source_key", "")).startswith("ibkr:options:NVDA")]
+    stale_provider_item_rows = [row for row in rows if row.get("provider") == "legacy_feed" and row.get("source_type") == "provider_run"]
+
+    assert len(source_item_rows) == 1
+    assert source_item_rows[0]["detail"] == "100 source items"
+    assert len(option_rows) == 1
+    assert option_rows[0]["detail"] == "50 expiries"
+    assert stale_provider_item_rows == []
+
+
+def test_verified_docs_and_live_source_health_do_not_collide(tmp_path: Path) -> None:
+    db_path = tmp_path / "health.duckdb"
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        record_verified_sources(con)
+        con.execute(
+            """
+            INSERT OR REPLACE INTO source_health (source, checked_at, status, detail, source_url)
+            VALUES ('sec_edgar', ?, 'ok', 'HTTP 200', 'https://data.sec.gov/')
+            """,
+            [datetime.now(UTC)],
+        )
+        rows = query_rows(con, "SELECT source, status FROM source_health WHERE source IN ('docs:sec_edgar', 'sec_edgar') ORDER BY source")
+
+    assert rows == [
+        {"source": "docs:sec_edgar", "status": "verified_docs"},
+        {"source": "sec_edgar", "status": "ok"},
+    ]
+
+
 def test_intraday_freshness_uses_market_hours_not_wall_clock() -> None:
     sunday_after_close = datetime(2026, 5, 17, 16, 0, tzinfo=UTC)
     friday_close_snapshot = datetime(2026, 5, 15, 20, 0, tzinfo=UTC)
@@ -101,6 +158,12 @@ def test_intraday_freshness_uses_market_hours_not_wall_clock() -> None:
     assert classify_freshness("intraday_quote", friday_close_snapshot, "ok", False, now=sunday_after_close) == "fresh"
     assert classify_freshness("intraday_quote", friday_morning_snapshot, "ok", False, now=sunday_after_close) == "stale"
     assert classify_freshness("intraday_quote", old_snapshot, "ok", False, now=sunday_after_close) == "stale"
+
+
+def test_source_freshness_preserves_explicit_unknown_status() -> None:
+    checked_at = datetime(2026, 5, 17, 16, 0, tzinfo=UTC)
+    assert classify_freshness("provider_run", checked_at, "unknown", False, now=checked_at) == "unknown"
+    assert classify_freshness("provider_run", checked_at, "not_loaded", False, now=checked_at) == "stale"
 
 
 def test_daily_freshness_uses_trading_day_lag_when_market_is_closed() -> None:

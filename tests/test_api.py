@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Iterator
 
 import pytest
 from fastapi import HTTPException
@@ -9,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
+import investment_panel.core.source_ingestion.audit as audit_mod
 from app.data_access import DataStatus, PanelData, ticker_decision_brief
 import app.main as app_main
 from app.main import app, _require_local_request
@@ -195,6 +198,103 @@ def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     assert calls == ["feed_signals"]
     assert response.json()["rows"] == [{"id": "feed-1", "title": "Scoped feed"}]
+
+
+def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "source-rankings-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    calls: list[str] = []
+
+    routes = [
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/source-ticker-rankings" and "GET" in getattr(route, "methods", set())
+    ]
+
+    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
+        calls.append(table_name)
+        return PanelData(
+            status=DataStatus(True, "loaded scoped source rankings", "test"),
+            tables={table_name: [{"symbol": "NVDA", "signal_count": 3, "rank_score": 42}]},
+        )
+
+    def fail_full_loader(config: dict[str, object]) -> PanelData:
+        raise AssertionError("source ticker rankings should use the scoped table loader")
+
+    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
+    monkeypatch.setattr(app_main, "load_panel_data", fail_full_loader)
+
+    client = TestClient(app)
+    response = client.get("/api/source-ticker-rankings")
+
+    assert len(routes) == 1
+    assert response.status_code == 200
+    assert calls == ["source_ticker_rankings"]
+    assert response.json()["rows"] == [{"symbol": "NVDA", "signal_count": 3, "rank_score": 42}]
+
+
+def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "source-audit-api.duckdb"
+    init_db(db_path)
+    _use_temp_api_db(monkeypatch, db_path)
+    read_modes: list[bool] = []
+    real_db = app_main.db
+
+    @contextmanager
+    def read_only_db(path: str | Path, read_only: bool = False) -> Iterator[Any]:
+        read_modes.append(read_only)
+        if read_only is not True:
+            raise AssertionError("source ingestion audit GET must open DuckDB read-only")
+        with real_db(path, read_only=read_only) as con:
+            yield con
+
+    def fail_sync(_con: Any) -> dict[str, Any]:
+        raise AssertionError("source ingestion audit GET must not sync canonical sources")
+
+    monkeypatch.setattr(app_main, "db", read_only_db)
+    monkeypatch.setattr(audit_mod, "sync_canonical_sources", fail_sync)
+
+    client = TestClient(app)
+    response = client.get("/api/source-ingestion-audit")
+
+    assert response.status_code == 200
+    assert read_modes == [True]
+    assert response.json()["status"] == "ok"
+
+
+def test_source_freshness_defaults_to_capped_browser_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "source-freshness-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    rows = [
+        {
+            "source_key": f"source-{index:03d}",
+            "freshness_status": "fresh",
+            "status": "ok",
+            "checked_at": "2026-06-11T12:00:00Z",
+        }
+        for index in range(125)
+    ]
+
+    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
+        assert table_name == "source_freshness"
+        return PanelData(
+            status=DataStatus(True, "loaded source freshness", "test"),
+            tables={table_name: rows},
+        )
+
+    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
+
+    client = TestClient(app)
+    response = client.get("/api/source-freshness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 125
+    assert payload["returned_count"] == 100
+    assert payload["limit"] == 100
+    assert len(payload["rows"]) == 100
+    assert payload["rows"][0]["source_key"] == "source-000"
+    assert payload["rows"][-1]["source_key"] == "source-099"
 
 
 def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:

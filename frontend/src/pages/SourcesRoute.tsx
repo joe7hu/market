@@ -8,7 +8,7 @@ import { useMarketData } from "../marketData";
 import type { JsonValue, RowRecord } from "@/types";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { rows, tickerSymbol } from "@/utils";
-import { displayField, numberField, textField, titleLabel } from "@/views/rowFormat";
+import { displayField, numberField, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 
 type SourceFamily = "all" | "filing" | "transcript" | "podcast" | "blog" | "private_graph" | "market_data" | "other";
@@ -106,12 +106,12 @@ function TickerRankingTable({ mode, rows: rankingRows, onOpenTicker }: { mode: R
             <th className="px-3 py-3">Rank</th>
             <th className="px-3 py-3">Ticker</th>
             <th className="px-3 py-3">Sources</th>
-            <th className="px-3 py-3">Mentions</th>
+            <th className="px-3 py-3">Signals</th>
             <th className="px-3 py-3">Bullish</th>
             <th className="px-3 py-3">Bearish</th>
             <th className="px-3 py-3">Net</th>
-            <th className="px-3 py-3">Mean</th>
-            <th className="px-3 py-3">Top Sources</th>
+            <th className="px-3 py-3">Confidence</th>
+            <th className="px-3 py-3">Source Names</th>
             <th className="px-3 py-3">Latest</th>
             <th className="px-3 py-3">Open</th>
           </tr>
@@ -119,19 +119,20 @@ function TickerRankingTable({ mode, rows: rankingRows, onOpenTicker }: { mode: R
         <tbody>
           {rankingRows.map((row, index) => {
             const symbol = textField(row, ["symbol"], "");
-            const net = numberField(row, ["net_bulls"], 0);
+            const net = contractNumber(row, "net_consensus");
+            const netValue = net.kind === "value" ? net.value : 0;
             return (
               <tr key={symbol || index} className="border-b border-border align-top hover:bg-accent/40">
                 <td className="px-3 py-3 text-muted-foreground tabular-nums">#{index + 1}</td>
                 <td className="px-3 py-3 font-semibold">{symbol}</td>
-                <td className="px-3 py-3 tabular-nums">{numberField(row, ["sources", "analysts"], 0).toLocaleString()}</td>
-                <td className="px-3 py-3 tabular-nums">{numberField(row, ["mentions"], 0).toLocaleString()}</td>
-                <td className="px-3 py-3 tabular-nums">{formatPercent(numberField(row, ["pct_bullish"], 0))}</td>
-                <td className="px-3 py-3 tabular-nums">{formatPercent(numberField(row, ["pct_bearish"], 0))}</td>
-                <td className="px-3 py-3"><StatusBadge tone={net > 0 ? "good" : net < 0 ? "bad" : "muted"}>{formatSigned(net)}</StatusBadge></td>
-                <td className="px-3 py-3 tabular-nums">{numberField(row, ["mean_source_sentiment", "mean_of_analyst_means", "sentiment_score"], 0).toFixed(2)}</td>
-                <td className="max-w-[320px] px-3 py-3 text-muted-foreground">{stringsFromValue(row.top_sources).slice(0, 5).join(", ") || "-"}</td>
-                <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["latest_signal_at"], ""))}</td>
+                <td className="px-3 py-3 tabular-nums">{renderContractNumber(row, "source_count")}</td>
+                <td className="px-3 py-3 tabular-nums">{renderContractNumber(row, "signal_count")}</td>
+                <td className="px-3 py-3 tabular-nums">{renderContractNumber(row, "bullish_count")}</td>
+                <td className="px-3 py-3 tabular-nums">{renderContractNumber(row, "bearish_count")}</td>
+                <td className="px-3 py-3"><StatusBadge tone={netValue > 0 ? "good" : netValue < 0 ? "bad" : net.kind === "value" ? "muted" : "warn"}>{renderContractSigned(net)}</StatusBadge></td>
+                <td className="px-3 py-3 tabular-nums">{renderContractConfidence(row, "avg_confidence")}</td>
+                <td className="max-w-[320px] px-3 py-3 text-muted-foreground">{stringsFromValue(row.source_names).slice(0, 5).join(", ") || "-"}</td>
+                <td className="px-3 py-3 whitespace-nowrap text-muted-foreground">{formatDate(textField(row, ["latest_at"], ""))}</td>
                 <td className="px-3 py-2">
                   {symbol ? <Button type="button" variant="ghost" size="sm" onClick={() => onOpenTicker(symbol)}>{symbol}</Button> : <span className="text-muted-foreground">-</span>}
                 </td>
@@ -199,7 +200,8 @@ function SourceDirectoryTable({ rows: sourceRows }: { rows: RowRecord[] }) {
             <th className="px-3 py-3">Tickers</th>
             <th className="px-3 py-3">Signals</th>
             <th className="px-3 py-3">Access</th>
-            <th className="px-3 py-3">Status</th>
+            <th className="px-3 py-3">State</th>
+            <th className="px-3 py-3">Health</th>
           </tr>
         </thead>
         <tbody>
@@ -207,6 +209,7 @@ function SourceDirectoryTable({ rows: sourceRows }: { rows: RowRecord[] }) {
             const enabled = booleanValue(row.enabled) || booleanValue(row.is_followed);
             const signalCount = numberField(row, ["signals_count", "signal_count"], 0);
             const itemCount = numberField(row, ["items_count", "item_count"], 0);
+            const health = displayField(row, ["latest_run_status", "freshness", "health", "status"], "not_loaded");
             return (
               <tr key={`${textField(row, ["source_id", "source_name"], "source")}-${index}`} className="border-b border-border align-top hover:bg-accent/40">
                 <td className="max-w-[300px] px-3 py-3">
@@ -219,11 +222,12 @@ function SourceDirectoryTable({ rows: sourceRows }: { rows: RowRecord[] }) {
                 <td className="px-3 py-3 tabular-nums">{numberField(row, ["tickers_count", "ticker_count"], 0).toLocaleString()}</td>
                 <td className="px-3 py-3 tabular-nums">{signalCount.toLocaleString()}</td>
                 <td className="px-3 py-3 text-muted-foreground">{titleLabel(textField(row, ["raw_access", "origin"], "local"))}</td>
-                <td className="px-3 py-3"><StatusBadge tone={signalCount || itemCount ? "good" : enabled ? "warn" : "muted"}>{enabled ? "followed" : "candidate"}</StatusBadge></td>
+                <td className="px-3 py-3"><StatusBadge tone={enabled ? "good" : "muted"}>{enabled ? "followed" : "candidate"}</StatusBadge></td>
+                <td className="px-3 py-3"><StatusBadge tone={toneFromText(health)}>{titleLabel(health)}</StatusBadge></td>
               </tr>
             );
           })}
-          {!sourceRows.length ? <EmptyRow colSpan={8} text="No sources match the current filter." /> : null}
+          {!sourceRows.length ? <EmptyRow colSpan={9} text="No sources match the current filter." /> : null}
         </tbody>
       </table>
     </DataTableFrame>
@@ -255,26 +259,26 @@ function rankTickerRows(rankingRows: RowRecord[], mode: RankingMode): RowRecord[
   const copy = [...rankingRows];
   return copy.sort((a, b) => {
     if (mode === "bullish") {
-      return numberField(b, ["net_bulls"], 0) - numberField(a, ["net_bulls"], 0)
-        || numberField(b, ["pct_bullish"], 0) - numberField(a, ["pct_bullish"], 0)
-        || numberField(b, ["mentions"], 0) - numberField(a, ["mentions"], 0)
+      return contractNumberValue(b, "bullish_count") - contractNumberValue(a, "bullish_count")
+        || contractNumberValue(b, "net_consensus") - contractNumberValue(a, "net_consensus")
+        || contractNumberValue(b, "signal_count") - contractNumberValue(a, "signal_count")
         || textField(a, ["symbol"], "").localeCompare(textField(b, ["symbol"], ""));
     }
     if (mode === "bearish") {
-      return numberField(b, ["bearish_sources", "bearish_analysts"], 0) - numberField(a, ["bearish_sources", "bearish_analysts"], 0)
-        || numberField(b, ["pct_bearish"], 0) - numberField(a, ["pct_bearish"], 0)
-        || numberField(b, ["mentions"], 0) - numberField(a, ["mentions"], 0)
+      return contractNumberValue(b, "bearish_count") - contractNumberValue(a, "bearish_count")
+        || contractNumberValue(a, "net_consensus") - contractNumberValue(b, "net_consensus")
+        || contractNumberValue(b, "signal_count") - contractNumberValue(a, "signal_count")
         || textField(a, ["symbol"], "").localeCompare(textField(b, ["symbol"], ""));
     }
     if (mode === "conviction") {
-      return Math.abs(numberField(b, ["mean_source_sentiment", "mean_of_analyst_means"], 0)) - Math.abs(numberField(a, ["mean_source_sentiment", "mean_of_analyst_means"], 0))
-        || numberField(b, ["sources", "analysts"], 0) - numberField(a, ["sources", "analysts"], 0)
-        || numberField(b, ["mentions"], 0) - numberField(a, ["mentions"], 0)
+      return contractNumberValue(b, "avg_confidence") - contractNumberValue(a, "avg_confidence")
+        || contractNumberValue(b, "source_count") - contractNumberValue(a, "source_count")
+        || contractNumberValue(b, "signal_count") - contractNumberValue(a, "signal_count")
         || textField(a, ["symbol"], "").localeCompare(textField(b, ["symbol"], ""));
     }
-    return numberField(b, ["sources", "analysts"], 0) - numberField(a, ["sources", "analysts"], 0)
-      || numberField(b, ["mentions"], 0) - numberField(a, ["mentions"], 0)
-      || numberField(b, ["net_bulls"], 0) - numberField(a, ["net_bulls"], 0)
+    return contractNumberValue(b, "source_count") - contractNumberValue(a, "source_count")
+      || contractNumberValue(b, "signal_count") - contractNumberValue(a, "signal_count")
+      || contractNumberValue(b, "net_consensus") - contractNumberValue(a, "net_consensus")
       || textField(a, ["symbol"], "").localeCompare(textField(b, ["symbol"], ""));
   });
 }
@@ -341,14 +345,48 @@ function formatSigned(value: number): ReactNode {
   return value > 0 ? `+${value}` : String(value);
 }
 
-function formatPercent(value: number): string {
-  const pct = Math.abs(value) <= 1 ? value * 100 : value;
-  return `${pct.toFixed(0)}%`;
-}
-
 function formatDate(value: string): string {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+type ContractNumber = { kind: "value"; value: number } | { kind: "missing" } | { kind: "invalid" };
+
+function contractNumber(row: RowRecord, key: string): ContractNumber {
+  if (!(key in row)) return { kind: "missing" };
+  const value = row[key];
+  if (typeof value === "number" && Number.isFinite(value)) return { kind: "value", value };
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim().replace(/[$,%_,]/g, ""));
+    if (Number.isFinite(parsed)) return { kind: "value", value: parsed };
+  }
+  if (value === null || value === undefined || value === "") return { kind: "invalid" };
+  return { kind: "invalid" };
+}
+
+function contractNumberValue(row: RowRecord, key: string): number {
+  const result = contractNumber(row, key);
+  return result.kind === "value" ? result.value : 0;
+}
+
+function renderContractNumber(row: RowRecord, key: string): ReactNode {
+  const result = contractNumber(row, key);
+  if (result.kind === "missing") return <StatusBadge tone="warn">missing</StatusBadge>;
+  if (result.kind === "invalid") return "-";
+  return result.value.toLocaleString();
+}
+
+function renderContractSigned(result: ContractNumber): ReactNode {
+  if (result.kind === "missing") return "missing";
+  if (result.kind === "invalid") return "-";
+  return formatSigned(result.value);
+}
+
+function renderContractConfidence(row: RowRecord, key: string): ReactNode {
+  const result = contractNumber(row, key);
+  if (result.kind === "missing") return <StatusBadge tone="warn">missing</StatusBadge>;
+  if (result.kind === "invalid") return "-";
+  return result.value.toFixed(2);
 }

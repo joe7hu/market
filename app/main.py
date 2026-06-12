@@ -83,6 +83,7 @@ class StrategyPromotionInput(BaseModel):
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
+SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
 _CONTEXT_LOCK = RLock()
@@ -177,8 +178,8 @@ def create_app() -> FastAPI:
         return _table_payload("decision_queue")
 
     @app.get("/api/source-freshness")
-    def source_freshness() -> dict[str, Any]:
-        return _table_payload("source_freshness")
+    def source_freshness(limit: int = SOURCE_FRESHNESS_DEFAULT_LIMIT) -> dict[str, Any]:
+        return _capped_table_payload("source_freshness", limit=limit)
 
     @app.get("/api/symbol-decision-snapshots")
     def symbol_decision_snapshots() -> dict[str, Any]:
@@ -265,10 +266,9 @@ def create_app() -> FastAPI:
     @app.get("/api/sources/{source_id}")
     def source_detail(source_id: str) -> dict[str, Any]:
         config = load_config()
-        init_db(database_path(config))
         with _CONTEXT_LOCK:
-            with db(database_path(config), read_only=False) as con:
-                return source_detail_payload(con, source_id)
+            with db(database_path(config), read_only=True) as con:
+                return source_detail_payload(con, source_id, ensure_sources=False)
 
     @app.get("/api/source-items")
     def source_items() -> dict[str, Any]:
@@ -289,10 +289,9 @@ def create_app() -> FastAPI:
     @app.get("/api/source-ingestion-audit")
     def source_audit() -> dict[str, Any]:
         config = load_config()
-        init_db(database_path(config))
         with _CONTEXT_LOCK:
-            with db(database_path(config), read_only=False) as con:
-                return source_ingestion_audit(con)
+            with db(database_path(config), read_only=True) as con:
+                return source_ingestion_audit(con, sync_sources=False)
 
     @app.get("/api/quotes")
     def quotes() -> dict[str, Any]:
@@ -641,11 +640,6 @@ def create_app() -> FastAPI:
     def source_consensus() -> dict[str, Any]:
         return _table_payload("source_consensus")
 
-    @app.get("/api/source-ticker-rankings")
-    def source_ticker_rankings() -> dict[str, Any]:
-        _, panel_data = _context()
-        return table_payload(panel_data, "source_ticker_rankings")
-
     @app.get("/api/ownership-consensus")
     def ownership_consensus() -> dict[str, Any]:
         return _table_payload("ownership_consensus")
@@ -742,6 +736,20 @@ def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | 
 def _table_payload(table_name: str) -> dict[str, Any]:
     _, panel_data = _context(cache_key=f"table:{table_name}", loader=lambda config: load_table_panel_data(config, table_name))
     return table_payload(panel_data, table_name)
+
+
+def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:
+    payload = _table_payload(table_name)
+    rows = payload["rows"]
+    safe_limit = max(1, min(int(limit or SOURCE_FRESHNESS_DEFAULT_LIMIT), 500))
+    capped_rows = rows[:safe_limit]
+    return {
+        **payload,
+        "rows": capped_rows,
+        "count": len(rows),
+        "returned_count": len(capped_rows),
+        "limit": safe_limit,
+    }
 
 
 def _invalidate_context_cache() -> None:
