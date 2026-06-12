@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -24,6 +26,17 @@ OPTION_SCAN_LIMIT = 80
 # rate limits, so a saturated limiter cannot stretch the run across the whole
 # universe.
 OPTION_RATE_LIMIT_CIRCUIT_BREAKER = 4
+# Gap between yfinance option-liquidity calls. yfinance/Yahoo throttles per-IP;
+# without spacing, a full-universe sweep saturates the limiter and every call
+# 429s. A small gap keeps the burst rate under the limit so calls get through.
+YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS = 0.4
+_RATE_LIMIT_HINT = re.compile(r"\b429\b|too many requests|rate limit", re.IGNORECASE)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Whether an upstream exception looks like an HTTP 429 / rate limit."""
+
+    return bool(_RATE_LIMIT_HINT.search(str(exc)))
 
 
 def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] | None = None) -> dict[str, Any]:
@@ -366,7 +379,11 @@ def update_yfinance_sources(con: Any, config: AppConfig, symbols: list[str] | No
             record_source_health(con, f"yfinance:{symbol}", "error", str(exc), "https://pypi.org/project/yfinance/")
     chain_result = update_yfinance_options_chains(con, provider, target_symbols or option_symbols(con, config), observed_at, run_id, config)
     result.update(chain_result)
-    liquidity_result = update_yfinance_options_liquidity(con, provider, target_symbols, observed_at, run_id)
+    # Scope liquidity enrichment to the radar option universe, matching the chain
+    # job above. Unscoped, it swept the entire TradingView chain table (~3x the
+    # radar universe, incl. non-radar symbols and expired expiries), saturating
+    # the yfinance rate limiter so every call 429'd and zero OI/volume landed.
+    liquidity_result = update_yfinance_options_liquidity(con, provider, target_symbols or option_symbols(con, config), observed_at, run_id)
     result.update(liquidity_result)
     record_source_health(con, "yfinance_enrichment", "ok", json_dumps(result), "https://pypi.org/project/yfinance/")
     return result
@@ -484,14 +501,29 @@ def update_yfinance_options_liquidity(
     result: dict[str, Any] = {"options_liquidity": 0, "options_liquidity_expiries": 0}
     errors: list[str] = []
     record_yfinance_options_liquidity_capabilities(con, observed_at)
+    today = date.today().isoformat()
+    rate_limited_streak = 0
     for chain in latest_tradingview_option_chain_expiries(con, symbols):
         symbol = str(chain["symbol"]).upper()
         expiry = str(chain["expiry"])
+        # Skip already-expired expiries: they carry no live OI/volume and only
+        # burn rate-limit budget against the live contracts we actually need.
+        if expiry < today:
+            continue
+        # Circuit breaker: once the limiter is saturated, every further call 429s
+        # and only deepens the throttle. Stop and report partial so the limiter
+        # can cool before the next run, instead of grinding the whole universe.
+        if rate_limited_streak >= OPTION_RATE_LIMIT_CIRCUIT_BREAKER:
+            result["options_liquidity_circuit_breaker"] = f"stopped_after_{rate_limited_streak}_consecutive_rate_limited_calls"
+            break
         try:
             liquidity_rows = provider.options_chain_liquidity(symbol, expiry)
         except Exception as exc:
             errors.append(f"{symbol}:{expiry}:{exc}")
+            if _is_rate_limit_error(exc):
+                rate_limited_streak += 1
             continue
+        rate_limited_streak = 0
         updated = store_yfinance_options_liquidity(
             con,
             symbol,
@@ -503,6 +535,8 @@ def update_yfinance_options_liquidity(
         if updated:
             result["options_liquidity"] += updated
             result["options_liquidity_expiries"] += 1
+        if YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS:
+            time.sleep(YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS)
     status = "ok" if not errors else "partial"
     detail = json_dumps(result if not errors else {**result, "errors": errors[:10], "error_count": len(errors)})
     record_provider_run(con, stable_id(f"{run_id}:options-liquidity"), "yfinance", "options-liquidity", observed_at, status, detail, result)

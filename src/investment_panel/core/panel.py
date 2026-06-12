@@ -3451,6 +3451,21 @@ def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
     return display_snapshot_time(snaps), display_snapshot_time(opps)
 
 
+def _radar_current_candidate_time(con: Any) -> str | None:
+    """Snapshot the radar UI treats as 'current' for candidate-keyed reads.
+
+    Aligned with the displayed opportunity snapshot, which can freeze on the last
+    healthy snapshot when the newest pull is degraded (e.g. a pre-market
+    zero-premium capture). Keying candidate detail / theses / marks / attributions
+    off a raw max(candidate_event.snapshot_time) would point them at that degraded
+    newer pull and mismatch the opportunities and summary, emptying the signals
+    tab even though the opportunities are populated.
+    """
+
+    _display_snap, display_candidate = _radar_display_times(con)
+    return display_candidate
+
+
 def option_radar_summary(con: Any) -> list[dict[str, Any]]:
     display_snap, display_candidate = _radar_display_times(con)
     session = market_session()
@@ -3640,13 +3655,16 @@ def stock_features(con: Any) -> list[dict[str, Any]]:
 
 
 def agent_thesis(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
         WITH current_tickers AS (
             SELECT DISTINCT ticker
             FROM candidate_event
-            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+            WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
               AND state != 'REJECT'
         )
         SELECT thesis_id, ticker, created_at, agent_version, bull_target_price,
@@ -3658,18 +3676,22 @@ def agent_thesis(con: Any) -> list[dict[str, Any]]:
         ORDER BY created_at DESC, ticker
         LIMIT 500
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("required_proofs", "invalidation_conditions", "catalysts", "evidence_refs", "raw"))) for row in rows]
 
 
 def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
         WITH current_events AS (
             SELECT event_id
             FROM candidate_event
-            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+            WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
               AND state != 'REJECT'
         )
         SELECT request_id, created_at, ticker, event_id, strategy_version,
@@ -3682,18 +3704,22 @@ def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
                  created_at DESC
         LIMIT 500
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
 
 
 def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
         WITH current_events AS (
             SELECT event_id
             FROM candidate_event
-            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+            WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
               AND state != 'REJECT'
         )
         SELECT validation_id, thesis_id, ticker, strategy_version,
@@ -3707,6 +3733,7 @@ def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
         ORDER BY validation_date DESC NULLS LAST, validated_at DESC, ticker
         LIMIT 500
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("red_team_flags", "evidence_refs", "raw"))) for row in rows]
 
@@ -3744,19 +3771,18 @@ def agent_postmortem(con: Any) -> list[dict[str, Any]]:
 
 
 def candidate_event(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
-        WITH latest_candidates AS (
-            SELECT max(snapshot_time) AS snapshot_time
-            FROM candidate_event
-        )
         SELECT event_id, snapshot_time, ticker, contract_id, strategy_version,
                state, premium_mid, premium_fill_assumption, required_10x_price,
                required_move_pct, buy_under, trigger_reason, thesis_id, score,
                quality_status, quality_flags, raw
         FROM candidate_event
-        WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+        WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
           AND state != 'REJECT'
         ORDER BY CASE state WHEN 'FIRE' THEN 0 WHEN 'SETUP' THEN 1 WHEN 'WATCH' THEN 2 ELSE 3 END,
                  score DESC NULLS LAST,
@@ -3764,6 +3790,7 @@ def candidate_event(con: Any) -> list[dict[str, Any]]:
                  contract_id
         LIMIT 2000
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("quality_flags", "raw"))) for row in rows]
 
@@ -3802,13 +3829,16 @@ def shadow_trade(con: Any) -> list[dict[str, Any]]:
 
 
 def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
         WITH current_events AS (
             SELECT event_id
             FROM candidate_event
-            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+            WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
               AND state != 'REJECT'
         )
         SELECT mark_id, event_id, contract_id, ticker, strategy_version,
@@ -3822,18 +3852,22 @@ def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
         ORDER BY mark_time DESC, ticker, contract_id
         LIMIT 1000
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
 
 def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con)
+    if not current:
+        return []
     rows = query_rows(
         con,
         """
         WITH current_events AS (
             SELECT event_id
             FROM candidate_event
-            WHERE snapshot_time = (SELECT max(snapshot_time) FROM candidate_event)
+            WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
               AND state != 'REJECT'
         )
         SELECT attribution_id, event_id, contract_id, ticker, strategy_version,
@@ -3846,6 +3880,7 @@ def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
         ORDER BY snapshot_time DESC, ticker, contract_id
         LIMIT 1000
         """,
+        [current],
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 

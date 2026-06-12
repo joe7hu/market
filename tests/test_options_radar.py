@@ -99,6 +99,60 @@ def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without
     assert len(alternatives) == 1
 
 
+def test_options_radar_skips_degraded_snapshot_instead_of_collapsing(tmp_path) -> None:
+    """A pre-market/off-hours pull with zero premiums on ~all contracts must not
+    overwrite a healthy multi-ticker radar with the 1-2 names that happened to be
+    priced. The read model falls back to the last healthy snapshot."""
+
+    db_path = tmp_path / "radar-degraded.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "TSLA", slope=0.12)
+        seed_prices(con, "NVDA", slope=0.12)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        # Healthy snapshot: both tickers fully priced. The high-iv decoy contract
+        # seeds iv history so the target 120-call doesn't rank at the top iv
+        # percentile (which would reject it).
+        for symbol in ("TSLA", "NVDA"):
+            con.execute(
+                f"INSERT INTO quotes_intraday VALUES ('{symbol}', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{{}}')"
+            )
+            store_options_chain(
+                con,
+                symbol,
+                "2026-06-02T20:00:00Z",
+                [
+                    option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, f"OPRA:{symbol}270918C120", volume=25, open_interest=250),
+                    option_row("2027-09-18", 130, "call", 4.3, 4.7, 0.55, 0.30, f"OPRA:{symbol}270918C130", volume=25, open_interest=250),
+                ],
+            )
+        refresh_options_radar(con)
+        healthy = {row["ticker"] for row in query_rows(con, "SELECT ticker FROM option_radar_opportunity")}
+
+        # Degraded later snapshot: TSLA has one priced contract (so a candidate
+        # exists and it becomes the newest snapshot) buried among zero-premium
+        # rows; NVDA comes back entirely unpriced.
+        for symbol in ("TSLA", "NVDA"):
+            con.execute(
+                f"INSERT INTO quotes_intraday VALUES ('{symbol}', '2026-06-03T11:56:00Z', 102, 1, 1, 'USD', 'tradingview', '{{}}')"
+            )
+        degraded = [option_row("2027-09-18", strike, "call", 0.0, 0.0, 0.55, 0.30, f"OPRA:TSLA270918C{strike}", volume=0, open_interest=0) for strike in range(120, 220, 5)]
+        degraded[0] = option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)
+        store_options_chain(con, "TSLA", "2026-06-03T11:56:00Z", degraded)
+        store_options_chain(
+            con,
+            "NVDA",
+            "2026-06-03T11:56:00Z",
+            [option_row("2027-09-18", strike, "call", 0.0, 0.0, 0.55, 0.30, f"OPRA:NVDA270918C{strike}", volume=0, open_interest=0) for strike in range(120, 220, 5)],
+        )
+        refresh_options_radar(con)
+        after = {row["ticker"] for row in query_rows(con, "SELECT ticker FROM option_radar_opportunity")}
+
+    assert healthy == {"TSLA", "NVDA"}
+    # The degraded snapshot must not collapse the radar to just the priced name.
+    assert after == {"TSLA", "NVDA"}
+
+
 def test_option_radar_opportunity_closes_thesis_loop_from_source_evidence(tmp_path) -> None:
     db_path = tmp_path / "radar-opportunity-source-backed.duckdb"
     init_db(db_path)
