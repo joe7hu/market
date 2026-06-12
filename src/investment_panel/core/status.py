@@ -29,8 +29,11 @@ def write_source_status(config: AppConfig, status_id: str, payload: dict[str, An
     """
 
     status_path = config.nas.status_dir / f"{status_id}.json"
+    # Derive ok from the payload's own status instead of hardcoding True, so a job
+    # that failed (e.g. offline gateway, hard error) cannot publish a green status.
+    job_status = str(payload.get("status", "ok")).lower()
     body = {
-        "ok": True,
+        "ok": job_status not in {"error", "gateway_offline", "missing_dependency", "failed"},
         "host": socket.gethostname(),
         "finishedAt": utc_now(),
         **payload,

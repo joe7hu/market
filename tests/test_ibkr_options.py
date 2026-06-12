@@ -14,6 +14,15 @@ from investment_panel.core.ibkr_options import (
     select_strikes_around_spot,
 )
 from investment_panel.core.options_radar import persist_option_snapshots
+from investment_panel.jobs.update_ibkr_options import _ibkr_status
+
+
+def test_ibkr_status_does_not_report_green_when_gateway_offline() -> None:
+    # An offline gateway must surface as gateway_offline, never a silent "ok".
+    assert _ibkr_status(["ibkr_connect_failed"], 0) == "gateway_offline"
+    assert _ibkr_status(["RBLX:reqId timeout"], 0) == "error"
+    assert _ibkr_status(["RBLX:reqId timeout"], 120) == "partial"
+    assert _ibkr_status([], 120) == "ok"
 
 
 def test_select_leap_expiries_filters_to_dte_window() -> None:

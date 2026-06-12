@@ -33,6 +33,22 @@ def _max_symbols() -> int:
         return 40
 
 
+def _ibkr_status(errors: list[Any], stored: int) -> str:
+    """Honest job status so an offline gateway can't report green.
+
+    A connect failure is surfaced as ``gateway_offline``; other errors with no
+    stored rows are an ``error``; partial errors with data are ``partial``.
+    """
+
+    if any("ibkr_connect_failed" in str(err) for err in errors):
+        return "gateway_offline"
+    if errors and not stored:
+        return "error"
+    if errors:
+        return "partial"
+    return "ok"
+
+
 def run(config_path: str | None = None, symbols: list[str] | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     if not config.data_sources.brokers.enabled or not config.data_sources.brokers.ibkr.enabled:
@@ -81,6 +97,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
             stored += store_options_chain(con, symbol, collected["observed_at"], rows, source="ibkr")
     result = {
         "provider": "ibkr",
+        "status": _ibkr_status(collected["errors"], stored),
         "market_data": collected["market_data"],
         "symbols_with_chains": len(collected["rows"]),
         "chain_rows": stored,

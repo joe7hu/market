@@ -26,10 +26,11 @@ OPTION_SCAN_LIMIT = 80
 # rate limits, so a saturated limiter cannot stretch the run across the whole
 # universe.
 OPTION_RATE_LIMIT_CIRCUIT_BREAKER = 4
-# Gap between yfinance option-liquidity calls. yfinance/Yahoo throttles per-IP;
-# without spacing, a full-universe sweep saturates the limiter and every call
-# 429s. A small gap keeps the burst rate under the limit so calls get through.
-YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS = 0.4
+# Gap between yfinance option calls. The chains and liquidity jobs BOTH hit
+# Yahoo and share one per-IP limiter; without spacing, either job's burst
+# saturates it and every call 429s (which then also starves the other job). A
+# small gap keeps the combined burst rate under the limit so calls get through.
+YFINANCE_OPTION_THROTTLE_SECONDS = 0.4
 _RATE_LIMIT_HINT = re.compile(r"\b429\b|too many requests|rate limit", re.IGNORECASE)
 
 
@@ -385,8 +386,29 @@ def update_yfinance_sources(con: Any, config: AppConfig, symbols: list[str] | No
     # the yfinance rate limiter so every call 429'd and zero OI/volume landed.
     liquidity_result = update_yfinance_options_liquidity(con, provider, target_symbols or option_symbols(con, config), observed_at, run_id)
     result.update(liquidity_result)
-    record_source_health(con, "yfinance_enrichment", "ok", json_dumps(result), "https://pypi.org/project/yfinance/")
+    # Report the real health, not a hardcoded "ok": a run that 429'd every option
+    # call or tripped a circuit breaker must not show green in source_health.
+    result["status"] = _yfinance_enrichment_status(result)
+    record_source_health(con, "yfinance_enrichment", result["status"], json_dumps(result), "https://pypi.org/project/yfinance/")
     return result
+
+
+def _yfinance_enrichment_status(result: dict[str, Any]) -> str:
+    """Derive enrichment health from what the sub-jobs actually did.
+
+    'ok' only when nothing errored and no circuit breaker tripped; 'error' when
+    errors occurred and nothing was produced; otherwise 'partial'.
+    """
+
+    error_count = int(result.get("options_chain_error_count", 0) or 0) + int(result.get("options_liquidity_error_count", 0) or 0)
+    circuit_broken = bool(result.get("options_chain_circuit_breaker") or result.get("options_liquidity_circuit_breaker"))
+    produced = sum(
+        int(result.get(key, 0) or 0)
+        for key in ("options_chains", "options_liquidity", "market_snapshots", "estimates", "earnings", "etf_premiums")
+    )
+    if not error_count and not circuit_broken:
+        return "ok"
+    return "error" if not produced else "partial"
 
 
 def update_yfinance_options_chains(
@@ -408,12 +430,25 @@ def update_yfinance_options_chains(
     record_yfinance_options_chain_capabilities(con, observed_at)
     requested_symbols = unique_symbols(symbols or [])
     result["options_chain_symbols_requested"] = len(requested_symbols)
+    # Shares Yahoo's per-IP limiter with the liquidity job, so it carries the same
+    # throttle + rate-limit circuit breaker: spacing keeps the combined burst under
+    # the limit, and the breaker stops once saturated instead of grinding the whole
+    # universe and deepening the throttle (which would also starve the liquidity job).
+    rate_limited_streak = 0
     for symbol in requested_symbols:
+        if rate_limited_streak >= OPTION_RATE_LIMIT_CIRCUIT_BREAKER:
+            result["options_chain_circuit_breaker"] = f"stopped_after_{rate_limited_streak}_consecutive_rate_limited_calls"
+            break
         try:
             expiries = provider.options_expiries(symbol)
         except Exception as exc:
             errors.append(f"{symbol}:expiries:{exc}")
+            if _is_rate_limit_error(exc):
+                rate_limited_streak += 1
             continue
+        rate_limited_streak = 0
+        if YFINANCE_OPTION_THROTTLE_SECONDS:
+            time.sleep(YFINANCE_OPTION_THROTTLE_SECONDS)
         result["options_expiries"] += store_expiries(con, symbol, observed_at, expiries, source="yfinance")
         selected_expiries = selected_option_expiries(expiries, observed_at)
         if not selected_expiries:
@@ -425,7 +460,10 @@ def update_yfinance_options_chains(
                 chain = provider.options_chain(symbol, str(expiry))
             except Exception as exc:
                 errors.append(f"{symbol}:chain:{expiry}:{exc}")
+                if _is_rate_limit_error(exc):
+                    rate_limited_streak += 1
                 continue
+            rate_limited_streak = 0
             strikes_around_spot = option_chain_strikes_around_spot(
                 str(expiry),
                 expiries,
@@ -438,6 +476,8 @@ def update_yfinance_options_chains(
             if stored:
                 result["options_chain_expiries"] += 1
                 symbol_chain_rows += stored
+            if YFINANCE_OPTION_THROTTLE_SECONDS:
+                time.sleep(YFINANCE_OPTION_THROTTLE_SECONDS)
         if symbol_chain_rows:
             result["options_chain_symbols"] += 1
     status = "ok" if not errors else "partial"
@@ -535,8 +575,8 @@ def update_yfinance_options_liquidity(
         if updated:
             result["options_liquidity"] += updated
             result["options_liquidity_expiries"] += 1
-        if YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS:
-            time.sleep(YFINANCE_OPTION_LIQUIDITY_THROTTLE_SECONDS)
+        if YFINANCE_OPTION_THROTTLE_SECONDS:
+            time.sleep(YFINANCE_OPTION_THROTTLE_SECONDS)
     status = "ok" if not errors else "partial"
     detail = json_dumps(result if not errors else {**result, "errors": errors[:10], "error_count": len(errors)})
     record_provider_run(con, stable_id(f"{run_id}:options-liquidity"), "yfinance", "options-liquidity", observed_at, status, detail, result)
