@@ -193,7 +193,7 @@ def test_source_table_loader_requests_source_repair_without_decision_repair(monk
         )
         return {"ready": True, "message": "ok", "source": "test", "tables": {"source_items": []}, "metadata": {}}
 
-    monkeypatch.setattr(data_access, "_resolve_core_helper", lambda: fake_helper)
+    monkeypatch.setattr(data_access, "core_load_panel_data", fake_helper)
 
     data_access.load_table_panel_data({"database": {"duckdb_path": "/tmp/test.duckdb"}}, "source_items")
 

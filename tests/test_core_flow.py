@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
 from investment_panel.core.config import load_config
 from investment_panel.core.arco import (
@@ -44,6 +45,7 @@ def fixture_prices(symbol: str, lookback_days: int = 80, mode: str = "online") -
     return pd.DataFrame(rows)
 
 
+@pytest.mark.slow
 def test_daily_screen_builds_candidates_from_local_arco(monkeypatch: Any, tmp_path: Path) -> None:
     monkeypatch.setattr("investment_panel.jobs.daily_screen.fetch_prices", fixture_prices)
     arco_dir = tmp_path / "arco"

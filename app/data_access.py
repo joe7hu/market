@@ -5,13 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from importlib import import_module
-from inspect import signature
 import json
 import os
 from pathlib import Path
-import sys
-from typing import Any, Callable, Iterable
+import re
+from typing import Any, Iterable
 
 from app.panel_contracts import (
     DECISION_REPAIR_TABLES,
@@ -21,6 +19,10 @@ from app.panel_contracts import (
     tables_for_scope as contract_tables_for_scope,
 )
 from investment_panel.core.option_agent_thesis import DEFAULT_AGENT_THESIS_REQUEST_LIMIT
+from investment_panel.core.panel import (
+    load_panel_data as core_load_panel_data,
+    load_ticker_dossier_data as core_load_ticker_dossier_data,
+)
 
 
 SETUP_INSTRUCTIONS = (
@@ -51,21 +53,6 @@ class PanelData:
 
     def rows(self, name: str) -> list[dict[str, Any]]:
         return normalize_rows(self.table(name))
-
-
-CORE_MODULE_CANDIDATES = (
-    "src.investment_panel.core",
-    "investment_panel.core",
-)
-
-CORE_HELPER_CANDIDATES = (
-    "load_panel_data",
-    "load_dashboard_data",
-    "get_panel_snapshot",
-    "get_dashboard_snapshot",
-)
-
-CORE_TICKER_HELPER_CANDIDATES = ("load_ticker_dossier_data",)
 
 
 def project_root() -> Path:
@@ -125,37 +112,16 @@ def load_panel_data(
     ensure_decision_models: bool | None = None,
     ensure_source_models: bool | None = None,
 ) -> PanelData:
-    """Load panel data through future core helpers, if present."""
+    """Load panel read models from core and normalize them for the API."""
 
     active_config = config or load_config()
-    helper = _resolve_core_helper()
-    if helper is None:
-        return PanelData(
-            status=DataStatus(
-                ready=False,
-                message=(
-                    "Core data helpers are not installed yet. Expected one of "
-                    f"{', '.join(CORE_HELPER_CANDIDATES)} under "
-                    "`src.investment_panel.core` or `investment_panel.core`."
-                ),
-                source="missing-core",
-            ),
-            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
-        )
-
     try:
-        helper_params = signature(helper).parameters
-        if "table_names" in helper_params:
-            kwargs: dict[str, Any] = {"table_names": tuple(table_names or ())}
-            if ensure_decision_models is not None and "ensure_decision_models" in helper_params:
-                kwargs["ensure_decision_models"] = ensure_decision_models
-            if ensure_source_models is not None and "ensure_source_models" in helper_params:
-                kwargs["ensure_source_models"] = ensure_source_models
-            raw_data = helper(active_config, **kwargs)
-        else:
-            raw_data = helper(active_config)
-    except TypeError:
-        raw_data = helper()
+        raw_data = core_load_panel_data(
+            active_config,
+            table_names=tuple(table_names or ()),
+            ensure_decision_models=ensure_decision_models,
+            ensure_source_models=ensure_source_models,
+        )
     except Exception as exc:  # pragma: no cover - defensive UI boundary
         return PanelData(
             status=DataStatus(
@@ -207,14 +173,11 @@ def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelD
     normalized = ticker.strip().upper()
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
-    helper = _resolve_core_ticker_helper()
-    if helper is not None:
-        try:
-            raw_data = helper(config or load_config(), normalized)
-            return _normalize_panel_data(raw_data)
-        except Exception:
-            pass
-    return _filter_ticker_panel_data(load_panel_data(config, table_names=TICKER_TABLES), normalized)
+    try:
+        raw_data = core_load_ticker_dossier_data(config or load_config(), normalized)
+        return _normalize_panel_data(raw_data)
+    except Exception:
+        return _filter_ticker_panel_data(load_panel_data(config, table_names=TICKER_TABLES), normalized)
 
 
 def tables_for_scope(scope: str) -> tuple[str, ...]:
@@ -229,7 +192,6 @@ def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
     """Load only the broad-market tables required by the Market page."""
 
     active_config = config or load_config()
-    _resolve_core_helper()
     from investment_panel.core.db import db, init_db
     from investment_panel.core.panel import market_environment_assets, market_environment_model, market_valuation_reference_charts
 
@@ -264,7 +226,6 @@ def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) ->
     purchase_date = _optional_date(position.get("purchase_date"))
     notes = str(position.get("notes", "") or "").strip()
 
-    _resolve_core_helper()
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import refresh_decision_read_models
     from investment_panel.core.portfolio import ensure_portfolio_instruments
@@ -303,7 +264,6 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
     name = str(item.get("name") or "").strip() or symbol
     notes = str(item.get("notes", "") or "").strip()
 
-    _resolve_core_helper()
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import SYMBOL_RE, upsert_instrument_preserving
     from investment_panel.core.instruments import infer_asset_class, normalize_symbol
@@ -354,7 +314,6 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     if not normalized:
         return {"status": "skipped", "error": "symbol is required"}
 
-    _resolve_core_helper()
     from investment_panel.analysis.valuation import store_valuation_models
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import refresh_decision_read_models
@@ -447,7 +406,6 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
     if not normalized:
         raise ValueError("symbol is required")
 
-    _resolve_core_helper()
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import SYMBOL_RE
     from investment_panel.core.instruments import normalize_symbol
@@ -476,7 +434,6 @@ def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, 
     if not normalized:
         raise ValueError("symbol is required")
 
-    _resolve_core_helper()
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import refresh_decision_read_models
 
@@ -518,38 +475,6 @@ def _optional_date(value: Any) -> str | None:
         return datetime.fromisoformat(str(value)).date().isoformat()
     except ValueError as exc:
         raise ValueError("purchase_date must be YYYY-MM-DD") from exc
-
-
-def _resolve_core_helper() -> Callable[..., Any] | None:
-    src_path = project_root() / "src"
-    if src_path.exists() and str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-    for module_name in CORE_MODULE_CANDIDATES:
-        try:
-            module = import_module(module_name)
-        except ModuleNotFoundError:
-            continue
-        for helper_name in CORE_HELPER_CANDIDATES:
-            helper = getattr(module, helper_name, None)
-            if callable(helper):
-                return helper
-    return None
-
-
-def _resolve_core_ticker_helper() -> Callable[..., Any] | None:
-    src_path = project_root() / "src"
-    if src_path.exists() and str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
-    for module_name in CORE_MODULE_CANDIDATES:
-        try:
-            module = import_module(module_name)
-        except ModuleNotFoundError:
-            continue
-        for helper_name in CORE_TICKER_HELPER_CANDIDATES:
-            helper = getattr(module, helper_name, None)
-            if callable(helper):
-                return helper
-    return None
 
 
 def _normalize_panel_data(raw_data: Any) -> PanelData:
@@ -709,6 +634,13 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
         "options_radar": {
             "deterministic_cadence": "hourly",
             "agent_cadence": "daily_premarket",
+        },
+        "scheduler": {
+            "agent_refresh_seconds": os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0"),
+            "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
+            "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
+            "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
+            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "ibkr"),
         },
     }
 
@@ -2133,14 +2065,123 @@ def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str,
     return {
         "status": status_payload(panel_data),
         "config": jsonable(config),
+        "agents": agent_control_payload(config),
         "integration": {
-            "core_modules": list(CORE_MODULE_CANDIDATES),
-            "helper_names": list(CORE_HELPER_CANDIDATES),
+            "core_modules": ["investment_panel.core.panel"],
+            "helper_names": ["load_panel_data", "load_ticker_dossier_data"],
             "duckdb_path": config.get("database", {}).get("duckdb_path"),
             "arco_raw_dir": config.get("arco", {}).get("raw_dir"),
             "birdclaw_command": config.get("birdclaw", {}).get("command") or "Not configured",
         },
     }
+
+
+def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
+    agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
+    return {
+        "config": jsonable(agents),
+        "runtime": _runtime_metadata(config).get("agents", {}),
+        "scheduler": {
+            "enabled": os.environ.get("MARKET_SCHEDULER_ENABLED", "1"),
+            "agent_refresh_seconds": os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0"),
+            "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
+            "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
+            "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
+            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "ibkr"),
+        },
+        "model_overrides": {
+            "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),
+            "codex_reasoning_effort": os.environ.get("MARKET_CODEX_REASONING_EFFORT", ""),
+            "codex_timeout_seconds": os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"),
+            "openai_model": os.environ.get("MARKET_OPENAI_MODEL", "gpt-5.2"),
+            "openai_auth_mode": os.environ.get("MARKET_OPENAI_AUTH_MODE", "api_key_or_access_token"),
+            "openai_max_output_tokens": os.environ.get("MARKET_OPENAI_MAX_OUTPUT_TOKENS", "2000"),
+        },
+    }
+
+
+def update_agent_settings_config(config_path: str | Path | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist the editable agent-command block without rewriting the whole file."""
+
+    path = Path(config_path) if config_path else project_root() / "config.yaml"
+    if not path.is_absolute():
+        path = project_root() / path
+    raw = _read_yaml_config(path)
+    agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
+    next_agents = dict(agents)
+    for key in ("option_thesis", "option_postmortem"):
+        if key not in payload:
+            continue
+        current = next_agents.get(key) if isinstance(next_agents.get(key), dict) else {}
+        next_agents[key] = {**current, **_sanitize_agent_settings(payload[key])}
+    raw["agents"] = next_agents
+    _write_yaml_top_level_block(path, "agents", {"agents": next_agents})
+    return raw
+
+
+def _read_yaml_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency guard
+        raise RuntimeError("PyYAML is required to update config.yaml") from exc
+    with path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("config.yaml must contain a mapping")
+    return raw
+
+
+def _sanitize_agent_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("agent settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "command" in value:
+        command = str(value["command"] or "").strip()
+        if len(command) > 240:
+            raise ValueError("agent command is too long")
+        clean["command"] = command
+    if "timeout_seconds" in value:
+        clean["timeout_seconds"] = _bounded_int(value["timeout_seconds"], "timeout_seconds", minimum=10, maximum=900)
+    if "limit" in value:
+        clean["limit"] = _bounded_int(value["limit"], "limit", minimum=0, maximum=50)
+    return clean
+
+
+def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _write_yaml_top_level_block(path: Path, key: str, block: dict[str, Any]) -> None:
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency guard
+        raise RuntimeError("PyYAML is required to update config.yaml") from exc
+    rendered = yaml.safe_dump(block, sort_keys=False, default_flow_style=False).rstrip()
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = original.splitlines()
+    start = next((idx for idx, line in enumerate(lines) if re.match(rf"^{re.escape(key)}:\s*$", line)), None)
+    if start is None:
+        suffix = "\n\n" if original.strip() else ""
+        path.write_text(f"{original.rstrip()}{suffix}{rendered}\n", encoding="utf-8")
+        return
+    end = start + 1
+    while end < len(lines):
+        line = lines[end]
+        if line and not line.startswith((" ", "\t", "#")):
+            break
+        end += 1
+    next_lines = [*lines[:start], *rendered.splitlines(), *lines[end:]]
+    path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
 
 def normalize_rows(table: Any) -> list[dict[str, Any]]:

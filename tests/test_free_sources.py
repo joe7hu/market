@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
+import pytest
 
 from investment_panel.core import free_sources as free_sources_core
 from investment_panel.analysis import run_all_analyses
@@ -1010,6 +1011,7 @@ def test_valuation_models_use_yfinance_fundamental_fallback(tmp_path: Path) -> N
     assert any("yfinance_info" in json.loads(row["diagnostics"])["note"] for row in rows if row["method"] == "dcf_base_case")
 
 
+@pytest.mark.slow
 def test_free_source_rows_and_analyses_round_trip(tmp_path: Path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
