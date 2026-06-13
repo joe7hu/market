@@ -50,6 +50,7 @@ import {
   validationStatusTone,
   verdictTone,
 } from "./optionsRadarTone";
+import { Cell, FullText, Head, MetricPill, SectionTitle, TickerButton, Truncated } from "./optionsRadarPrimitives";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
@@ -2160,50 +2161,6 @@ function VerdictBadge({ row, keys }: { row: RowRecord | undefined; keys: string[
   if (!row) return <StatusBadge tone="muted">Pending</StatusBadge>;
   const verdict = textField(row, keys, "pending");
   return <StatusBadge tone={verdictTone(verdict)}>{titleLabel(verdict)}</StatusBadge>;
-}
-
-function SectionTitle({ title, count }: { title: string; count: number }) {
-  return (
-    <span className="flex items-center gap-2">
-      <span>{title}</span>
-      <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground" aria-label={`${count} rows`}>
-        {count.toLocaleString()}
-      </span>
-    </span>
-  );
-}
-
-function TickerButton({ ticker, onOpenTicker }: { ticker: string; onOpenTicker: OpenTicker }) {
-  return (
-    <Button type="button" variant="ghost" size="sm" className="-ml-2 h-7 font-semibold tracking-normal" onClick={() => onOpenTicker(ticker)}>
-      {ticker}
-    </Button>
-  );
-}
-
-function Head({ children, className }: { children: ReactNode; className?: string }) {
-  return <th className={cn("px-3 py-3 font-semibold", className)}>{children}</th>;
-}
-
-function Cell({ children, className }: { children: ReactNode; className?: string }) {
-  return <td className={cn("px-3 py-3 leading-6", className)}>{children}</td>;
-}
-
-function Truncated({ children }: { children: ReactNode }) {
-  return <div className="min-w-0 truncate" title={typeof children === "string" ? children : undefined}>{children}</div>;
-}
-
-function FullText({ children }: { children: ReactNode }) {
-  return <div className="min-w-0 whitespace-pre-wrap break-words leading-6">{children}</div>;
-}
-
-function MetricPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-20 rounded-md bg-muted px-2 py-1 text-right">
-      <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
-      <div className="text-sm font-semibold tabular-nums">{value}</div>
-    </div>
-  );
 }
 
 function rows(table: TablePayload): RowRecord[] {
