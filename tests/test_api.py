@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
 import investment_panel.core.source_ingestion.audit as audit_mod
-from app.data_access import DataStatus, PanelData, ticker_decision_brief
+from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config
 import app.main as app_main
 from app.main import app, _require_local_request
 from tests.test_option_agent_postmortem import seed_missed_winner
@@ -134,6 +134,95 @@ def test_api_routes_return_json() -> None:
         response = client.get(path)
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
+
+
+def test_settings_payload_includes_agent_control_metadata() -> None:
+    payload = settings_payload(
+        {
+            "database": {"duckdb_path": "data/test.duckdb"},
+            "agents": {
+                "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "timeout_seconds": 180, "limit": 8},
+                "option_postmortem": {"enabled": False, "command": "market-codex-option-postmortem-agent", "timeout_seconds": 120, "limit": 2},
+            },
+        },
+        PanelData(status=DataStatus(True, "ok", "test"), tables={}),
+    )
+
+    assert payload["agents"]["config"]["option_thesis"]["limit"] == 8
+    assert payload["agents"]["runtime"]["option_thesis"]["active"] is True
+    assert payload["agents"]["runtime"]["option_postmortem"]["status"] == "paused"
+    assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
+
+
+def test_update_agent_settings_config_rewrites_only_agents_block(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+database:
+  duckdb_path: data/test.duckdb
+
+agents:
+  option_thesis:
+    enabled: true
+    command: old-thesis
+    timeout_seconds: 180
+    limit: 8
+  option_postmortem:
+    enabled: true
+    command: old-postmortem
+    timeout_seconds: 180
+    limit: 4
+
+disclosures:
+  public_disclosure_csvs: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    update_agent_settings_config(
+        config_path,
+        {
+            "option_thesis": {"enabled": False, "command": "new-thesis", "timeout_seconds": 90, "limit": 3},
+            "option_postmortem": {"enabled": False, "limit": 0},
+        },
+    )
+
+    text = config_path.read_text(encoding="utf-8")
+    assert "duckdb_path: data/test.duckdb" in text
+    assert "command: new-thesis" in text
+    assert "limit: 3" in text
+    assert "option_postmortem:" in text
+    assert "limit: 0" in text
+    assert "disclosures:" in text
+
+
+def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "settings-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    captured: dict[str, Any] = {}
+
+    def fake_update(config_path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        captured["config_path"] = config_path
+        captured["payload"] = payload
+        return {}
+
+    monkeypatch.setattr(app_main, "update_agent_settings_config", fake_update)
+    monkeypatch.setattr(
+        app_main,
+        "load_panel_data",
+        lambda _config: PanelData(status=DataStatus(True, "loaded settings", "test"), tables={}),
+    )
+
+    client = TestClient(app)
+    response = client.patch(
+        "/api/settings/agents",
+        json={"option_thesis": {"enabled": False, "command": "market-codex-option-thesis-agent", "timeout_seconds": 90, "limit": 3}},
+    )
+
+    assert response.status_code == 200
+    assert captured["config_path"] == "config.yaml"
+    assert captured["payload"]["option_thesis"]["enabled"] is False
+    assert response.json()["status"]["ready"] is True
 
 
 def test_market_snapshot_only_returns_market_tables() -> None:

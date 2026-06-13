@@ -39,6 +39,12 @@ export type TickerPayload = {
 export type SettingsPayload = {
   status?: ApiStatus;
   config?: Record<string, JsonValue>;
+  agents?: {
+    config?: Record<string, JsonValue>;
+    runtime?: Record<string, JsonValue>;
+    scheduler?: Record<string, JsonValue>;
+    model_overrides?: Record<string, JsonValue>;
+  };
   integration?: Record<string, JsonValue>;
 };
 

@@ -38,6 +38,7 @@ from app.data_access import (
     signals_payload,
     table_payload,
     ticker_payload,
+    update_agent_settings_config,
 )
 from app.scheduler import run_scheduler, scheduler_enabled
 from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, fail_running_jobs, refresh_job_rows, run_refresh_job, start_refresh_job
@@ -80,6 +81,18 @@ class PaperOrderInput(BaseModel):
 
 class StrategyPromotionInput(BaseModel):
     approved_by: str = "joe"
+
+
+class AgentCommandSettingsInput(BaseModel):
+    enabled: bool | None = None
+    command: str | None = None
+    timeout_seconds: int | None = None
+    limit: int | None = None
+
+
+class AgentSettingsInput(BaseModel):
+    option_thesis: AgentCommandSettingsInput | None = None
+    option_postmortem: AgentCommandSettingsInput | None = None
 
 
 CONTEXT_CACHE_TTL_SECONDS = 3.0
@@ -709,6 +722,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/settings")
     def settings() -> dict[str, Any]:
+        config, panel_data = _context()
+        return settings_payload(config, panel_data)
+
+    @app.patch("/api/settings/agents")
+    def update_agent_settings(payload: AgentSettingsInput, request: Request) -> dict[str, Any]:
+        _require_local_request(request)
+        try:
+            update_agent_settings_config("config.yaml", payload.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _invalidate_context_cache()
         config, panel_data = _context()
         return settings_payload(config, panel_data)
 

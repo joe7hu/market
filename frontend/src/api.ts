@@ -50,6 +50,18 @@ export type StrategyPromotionResult = {
   approved_by?: string;
 };
 
+export type AgentCommandSettingsInput = {
+  enabled?: boolean;
+  command?: string;
+  timeout_seconds?: number;
+  limit?: number;
+};
+
+export type AgentSettingsInput = {
+  option_thesis?: AgentCommandSettingsInput;
+  option_postmortem?: AgentCommandSettingsInput;
+};
+
 export type PanelScopeOptions = {
   offset?: number;
   limit?: number;
@@ -209,6 +221,29 @@ async function sendJson<T>(path: string, method: "POST" | "DELETE", body?: unkno
   return (await response.json()) as T;
 }
 
+async function patchJson<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "PATCH",
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `${response.status} ${response.statusText}`;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      }
+    } catch {
+      // Keep the raw response text when the server does not return JSON.
+    }
+    throw new Error(message);
+  }
+  return (await response.json()) as T;
+}
+
 export async function loadPanelData(): Promise<PanelData> {
   return loadPanelScope("feed");
 }
@@ -242,8 +277,16 @@ export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
   return getJson<RefreshJobsPayload>("/api/refresh-jobs");
 }
 
+export async function loadSettings(): Promise<SettingsPayload> {
+  return getJson<SettingsPayload>("/api/settings");
+}
+
 export async function startRefreshJob(jobName: string): Promise<RefreshJob> {
   return sendJson<RefreshJob>(`/api/refresh-jobs/${encodeURIComponent(jobName)}/background`, "POST");
+}
+
+export async function updateAgentSettings(payload: AgentSettingsInput): Promise<SettingsPayload> {
+  return patchJson<SettingsPayload>("/api/settings/agents", payload);
 }
 
 export async function promoteStrategyMutation(proposalId: string, approvedBy = "joe"): Promise<StrategyPromotionResult> {
