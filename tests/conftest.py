@@ -52,4 +52,4 @@ def _zero_yfinance_option_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
         import investment_panel.core.free_sources as free_sources_core
     except Exception:  # pragma: no cover - core import optional in some envs
         return
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0, raising=False)
+    monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0, raising=False)

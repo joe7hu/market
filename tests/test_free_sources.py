@@ -488,7 +488,7 @@ def _liquidity_chain_rows(expiry: str) -> list[dict[str, object]]:
 def test_yfinance_options_liquidity_skips_expired_expiries(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
+    monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
     today = date.today()
     past = (today - timedelta(days=5)).isoformat()
     future = (today + timedelta(days=400)).isoformat()
@@ -515,7 +515,7 @@ def test_yfinance_options_liquidity_skips_expired_expiries(tmp_path: Path, monke
 def test_yfinance_options_liquidity_circuit_breaks_on_rate_limit(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
+    monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
     future = (date.today() + timedelta(days=400)).isoformat()
     symbols = [f"SYM{i}" for i in range(OPTION_RATE_LIMIT_CIRCUIT_BREAKER + 4)]
 
@@ -542,7 +542,7 @@ def test_yfinance_options_liquidity_circuit_breaks_on_rate_limit(tmp_path: Path,
 def test_yfinance_options_chains_circuit_breaks_on_rate_limit(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
-    monkeypatch.setattr(free_sources_core, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
+    monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0)
     config = SimpleNamespace(data_sources=SimpleNamespace(tradingview=SimpleNamespace(strikes_around_spot=2)))
     symbols = [f"SYM{i}" for i in range(OPTION_RATE_LIMIT_CIRCUIT_BREAKER + 4)]
 
@@ -677,7 +677,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
         ),
         watchlist=[],
     )
-    monkeypatch.setattr(free_sources_core, "TradingViewProvider", MultiExpiryOptionsProvider)
+    monkeypatch.setattr(free_sources_core.tradingview_sources, "TradingViewProvider",MultiExpiryOptionsProvider)
     with db(db_path) as con:
         upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
         upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"})
@@ -734,7 +734,7 @@ def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, m
         ),
         watchlist=[{"symbol": "TSLA", "asset_class": "equity"}],
     )
-    monkeypatch.setattr(free_sources_core, "TradingViewProvider", ErroringOptionsProvider)
+    monkeypatch.setattr(free_sources_core.tradingview_sources, "TradingViewProvider",ErroringOptionsProvider)
     with db(db_path) as con:
         upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
         con.execute("INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T15:30:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')")
@@ -803,7 +803,7 @@ def test_screener_rate_limit_does_not_abort_option_ingestion(tmp_path: Path, mon
         ),
         watchlist=[{"symbol": "TSLA", "asset_class": "equity"}],
     )
-    monkeypatch.setattr(free_sources_core, "TradingViewProvider", ScreenerRateLimitedProvider)
+    monkeypatch.setattr(free_sources_core.tradingview_sources, "TradingViewProvider",ScreenerRateLimitedProvider)
     with db(db_path) as con:
         upsert_instrument(con, {"symbol": "TSLA", "name": "Tesla", "asset_class": "equity"})
         result = free_sources_core.update_tradingview_sources(con, config)
@@ -863,7 +863,7 @@ def test_sustained_rate_limit_trips_option_scan_circuit_breaker(tmp_path: Path, 
         ),
         watchlist=[],
     )
-    monkeypatch.setattr(free_sources_core, "TradingViewProvider", AlwaysRateLimitedProvider)
+    monkeypatch.setattr(free_sources_core.tradingview_sources, "TradingViewProvider",AlwaysRateLimitedProvider)
     with db(db_path) as con:
         for symbol in universe:
             upsert_instrument(con, {"symbol": symbol, "name": symbol, "asset_class": "equity"})
