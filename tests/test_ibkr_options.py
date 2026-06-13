@@ -11,7 +11,9 @@ from investment_panel.core.ibkr_options import (
     pick_chain_param_set,
     select_leap_call_strikes,
     select_leap_expiries,
+    select_leap_put_strikes,
     select_strikes_around_spot,
+    select_term_structure_expiries,
 )
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.jobs.update_ibkr_options import _ibkr_status
@@ -71,6 +73,40 @@ def test_select_leap_call_strikes_falls_back_when_band_empty() -> None:
     strikes = [10.0, 20.0, 30.0]
     out = select_leap_call_strikes(strikes, spot=100.0, count=2)
     assert len(out) == 2
+
+
+def test_select_leap_put_strikes_targets_downside_band() -> None:
+    # Puts for breakdown/hedge archetypes want the 0.75-0.95x spot band. Spot 100 ->
+    # band [75, 95].
+    strikes = [float(s) for s in range(50, 205, 5)]
+    out = select_leap_put_strikes(strikes, spot=100.0, count=4)
+    assert out == sorted(out)
+    assert all(75.0 <= s <= 95.0 for s in out)
+    assert len(out) == 4
+
+
+def test_select_leap_put_strikes_falls_back_when_band_empty() -> None:
+    out = select_leap_put_strikes([200.0, 300.0], spot=100.0, count=2)
+    assert len(out) == 2  # nearest-spot fallback rather than empty
+
+
+def test_select_term_structure_expiries_spans_buckets() -> None:
+    today = date(2026, 6, 9)
+    expirations = [
+        "20260710",  # ~31 dte  (short bucket 30-60)
+        "20260911",  # ~94 dte  (mid bucket 90-180)
+        "20270618",  # ~374 dte (leap bucket 365-900)
+        "20271217",  # ~556 dte (leap bucket; later than the 374 pick)
+    ]
+    out = select_term_structure_expiries(expirations, today=today)
+    assert out == ["20260710", "20260911", "20270618"]  # one per bucket, nearest lower edge
+
+
+def test_select_term_structure_expiries_skips_empty_buckets() -> None:
+    today = date(2026, 6, 9)
+    # Only a mid-tenor exists; short and leap buckets stay empty (no crash, no padding).
+    out = select_term_structure_expiries(["20260911"], today=today)
+    assert out == ["20260911"]
 
 
 def test_pick_chain_param_set_prefers_real_class_over_adjusted() -> None:

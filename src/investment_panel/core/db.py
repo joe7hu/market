@@ -411,6 +411,92 @@ CREATE TABLE IF NOT EXISTS option_features (
     PRIMARY KEY(contract_id, snapshot_time)
 );
 
+CREATE TABLE IF NOT EXISTS option_flow_features (
+    snapshot_time TIMESTAMP,
+    contract_id TEXT,
+    ticker TEXT,
+    oi_change_1d DOUBLE,
+    oi_change_5d DOUBLE,
+    oi_zscore_20d DOUBLE,
+    volume_oi_ratio DOUBLE,
+    volume_zscore_20d DOUBLE,
+    ticker_call_oi_delta_1d DOUBLE,
+    ticker_call_volume_premium_usd DOUBLE,
+    flow_score DOUBLE,
+    raw JSON,
+    PRIMARY KEY(contract_id, snapshot_time)
+);
+
+CREATE TABLE IF NOT EXISTS trade_journal (
+    journal_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    strategy_version TEXT,
+    ticker TEXT,
+    contract_id TEXT,
+    event_id TEXT,
+    entry_premium DOUBLE,
+    predicted_ev_multiple DOUBLE,
+    predicted_p2x DOUBLE,
+    conviction_score DOUBLE,
+    opportunity_snapshot JSON,
+    realized_return DOUBLE,
+    realized_status TEXT,
+    closed_at TIMESTAMP,
+    notes TEXT,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS radar_alert (
+    alert_id TEXT PRIMARY KEY,
+    created_at TIMESTAMP,
+    strategy_version TEXT,
+    alert_type TEXT,
+    ticker TEXT,
+    contract_id TEXT,
+    event_id TEXT,
+    severity TEXT,
+    message TEXT,
+    acknowledged_at TIMESTAMP,
+    raw JSON
+);
+
+CREATE TABLE IF NOT EXISTS conviction_calibration (
+    strategy_version TEXT,
+    bin_index INTEGER,
+    bin_lo DOUBLE,
+    bin_hi DOUBLE,
+    n INTEGER,
+    predicted_p2x DOUBLE,
+    realized_p2x DOUBLE,
+    realized_p5x DOUBLE,
+    wilson_lo DOUBLE,
+    wilson_hi DOUBLE,
+    brier DOUBLE,
+    mature_n INTEGER,
+    calibrated BOOLEAN,
+    as_of TIMESTAMP,
+    raw JSON,
+    PRIMARY KEY(strategy_version, bin_index)
+);
+
+CREATE TABLE IF NOT EXISTS vol_surface_features (
+    snapshot_time TIMESTAMP,
+    ticker TEXT,
+    atm_iv_30d DOUBLE,
+    atm_iv_90d DOUBLE,
+    atm_iv_leap DOUBLE,
+    term_slope DOUBLE,
+    put_call_skew_25d DOUBLE,
+    skew_change_5d DOUBLE,
+    rv_20d DOUBLE,
+    rv_60d DOUBLE,
+    iv_rv_ratio DOUBLE,
+    iv_percentile_252d DOUBLE,
+    iv_percentile_basis TEXT,
+    raw JSON,
+    PRIMARY KEY(ticker, snapshot_time)
+);
+
 CREATE TABLE IF NOT EXISTS option_radar_opportunity (
     opportunity_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,

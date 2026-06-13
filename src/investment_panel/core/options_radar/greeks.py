@@ -1,12 +1,17 @@
-"""Option Greek resolution and Black-Scholes fallback modeling."""
+"""Option greeks resolution and a scipy-free Black-Scholes model.
+
+When a data provider ships incomplete greeks the radar falls back to a
+TradingView cross-source match and finally to this analytic model, tagging the
+result with its provenance so downstream quality scoring can flag modeled greeks.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import Any
 
-from investment_panel.core.options_radar_coerce import _number
-from investment_panel.core.options_radar_constants import (
+from investment_panel.core.options_radar.coerce import _number
+from investment_panel.core.options_radar.constants import (
     DEFAULT_OPTION_RISK_FREE_RATE,
     MIN_OPTION_MODEL_DTE_DAYS,
     MIN_OPTION_MODEL_IV,

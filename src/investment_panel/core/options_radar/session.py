@@ -1,17 +1,11 @@
-"""Market-session and snapshot-time helpers for the options radar.
-
-Pure, self-contained leaf functions (stdlib + is_market_open) shared across the
-radar pipeline. Kept separate so the large options_radar module — and future
-splits of it — import session logic from one place.
-"""
+"""Market-session / RTH helpers for snapshot timestamps."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
-from investment_panel.core.decision import is_market_open
-
+from investment_panel.core.decision import (MARKET_CLOSE, MARKET_TZ, is_market_open, is_us_market_day)
 
 def _parse_utc(value: Any) -> datetime | None:
     """Parse a snapshot timestamp into a tz-aware UTC datetime (naive == UTC)."""
@@ -39,7 +33,10 @@ def snapshot_is_rth(snapshot_time: Any) -> bool:
     """Whether a snapshot's data was captured during regular trading hours."""
 
     parsed = _parse_utc(snapshot_time)
-    return bool(parsed and (is_market_open(parsed) or is_market_open(parsed - timedelta(microseconds=1))))
+    if not parsed:
+        return False
+    local = parsed.astimezone(MARKET_TZ)
+    return is_market_open(parsed) or (is_us_market_day(local.date()) and local.time() == MARKET_CLOSE)
 
 
 def display_snapshot_time(snapshot_times: list[str], now: datetime | None = None) -> str | None:

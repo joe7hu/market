@@ -1,4 +1,10 @@
-"""Pure coercion helpers shared by the options radar pipeline."""
+"""Pure value-coercion helpers for the options radar.
+
+The radar reads loosely-typed DuckDB rows (``dict[str, Any]``) and JSON blobs, so
+almost every function leans on these to coerce scalars, dates and JSON safely.
+They depend on nothing in the package, which is why they live in their own leaf
+module.
+"""
 
 from __future__ import annotations
 

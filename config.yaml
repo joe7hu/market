@@ -108,6 +108,18 @@ analysis:
   max_correlation_peers: 8
 
 agents:
+  # Local commands read one request JSON from stdin and return structured JSON.
+  # The thesis worker runs through the signed-in Codex OAuth session by default;
+  # deterministic code still owns option math, validation, and trade gates.
+  #
+  # Scheduler env knobs (app/scheduler.py):
+  #   MARKET_AGENT_REFRESH_SECONDS   in-process agent thesis/postmortem cadence.
+  #                                  Default 86400 (daily, on). 0 disables. The
+  #                                  runner caps requests per pass and no-ops when
+  #                                  there are no new FIRE/SETUP candidates.
+  #   MARKET_RADAR_REFRESH_SECONDS   fast fresh-signal loop (default 900).
+  #   MARKET_SOURCE_REFRESH_SECONDS  option-chain pull (default 3600; 0 disables).
+  #   MARKET_LEARNING_REFRESH_SECONDS heavy learning/calibration pass (default 21600).
   option_thesis:
     enabled: false
     command: market-codex-option-thesis-agent

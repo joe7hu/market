@@ -24,38 +24,39 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
 
         result = refresh_options_radar(con, ["TSLA"])
-        strategy = query_rows(con, "SELECT strategy_version, status FROM option_strategy_versions")
+        strategy = query_rows(con, "SELECT strategy_version, status FROM option_strategy_versions WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])
         snapshots = query_rows(con, "SELECT contract_id, open_interest, volume FROM option_snapshot ORDER BY strike")
         feature = query_rows(con, "SELECT required_10x_price, required_move_10x_pct, iv_percentile FROM option_features WHERE contract_id = 'OPRA:TSLA270918C120'")[0]
-        fire = query_rows(con, "SELECT * FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C120'")[0]
-        rejects = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C180'")[0]
-        candidate_marks = query_rows(con, "SELECT contract_id, candidate_state, current_return FROM candidate_event_mark ORDER BY contract_id")
+        fire = query_rows(con, "SELECT * FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C120' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        rejects = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:TSLA270918C180' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        candidate_marks = query_rows(con, "SELECT contract_id, candidate_state, current_return FROM candidate_event_mark WHERE strategy_version = ? ORDER BY contract_id", [DEFAULT_STRATEGY_VERSION])
         trades = query_rows(con, "SELECT * FROM shadow_trade")
-        transitions = query_rows(con, "SELECT contract_id, state, candidate_state FROM radar_state_transition ORDER BY contract_id")
+        transitions = query_rows(con, "SELECT contract_id, state, candidate_state FROM radar_state_transition WHERE strategy_version = ? ORDER BY contract_id", [DEFAULT_STRATEGY_VERSION])
+        default_candidates = query_rows(con, "SELECT contract_id FROM candidate_event WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])
 
     assert result["option_snapshots"] == 2
-    assert result["candidate_events"] == 2
-    assert result["candidate_event_marks"] == 2
+    assert len(default_candidates) == 2
+    assert len(candidate_marks) == 2
     assert result["candidate_event_attributions"] == 0
-    assert result["radar_state_transitions"] == 2
+    assert len(transitions) == 2
     assert strategy == [{"strategy_version": DEFAULT_STRATEGY_VERSION, "status": "shadow"}]
     assert snapshots[0]["open_interest"] == 250
     assert snapshots[0]["volume"] == 25
-    assert round(feature["required_10x_price"], 2) == 165.0
-    assert round(feature["required_move_10x_pct"], 3) == 0.618
+    assert round(feature["required_10x_price"], 2) == 149.5
+    assert round(feature["required_move_10x_pct"], 3) == 0.466
     assert feature["iv_percentile"] == 50.0
     assert fire["state"] == "FIRE"
     assert fire["strategy_version"] == DEFAULT_STRATEGY_VERSION
@@ -218,8 +219,9 @@ def test_option_radar_opportunity_requires_extreme_gates_for_exceptional_tier(tm
             """
             SELECT event_id, snapshot_time
             FROM candidate_event
-            WHERE contract_id = 'OPRA:TSLA270918C115'
+            WHERE contract_id = 'OPRA:TSLA270918C115' AND strategy_version = ?
             """,
+            [DEFAULT_STRATEGY_VERSION],
         )[0]
         seed_source_signal(con, "sig-tsla-a", "source-tsla-a")
         seed_source_signal(con, "sig-tsla-b", "source-tsla-b")
@@ -292,12 +294,12 @@ def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_p
         seed_prices(con, "RBLX", start_price=75, slope=0.11)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T19:00:00Z', 100, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "RBLX",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
                 option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:RBLX270918C120"),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:RBLX270918C180"),
@@ -305,10 +307,11 @@ def test_options_radar_preserves_missing_liquidity_candidate_without_trade(tmp_p
         )
 
         result = refresh_options_radar(con, ["RBLX"])
-        event = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:RBLX270918C120'")[0]
+        event = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:RBLX270918C120' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
         trades = query_rows(con, "SELECT * FROM shadow_trade")
+        default_candidates = query_rows(con, "SELECT contract_id FROM candidate_event WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])
 
-    assert result["candidate_events"] == 2
+    assert len(default_candidates) == 2
     assert event["state"] == "WATCH"
     assert "missing_open_interest" in event["trigger_reason"]
     assert "missing_volume" in event["trigger_reason"]
@@ -355,21 +358,21 @@ def test_options_radar_prioritizes_10x_watch_themes_without_bypassing_gates(tmp_
         for symbol in ["NVDA", "BOTZ", "ACME"]:
             seed_prices(con, symbol, start_price=100, slope=0.12)
             con.execute(
-                "INSERT INTO quotes_intraday VALUES (?, '2026-06-02T20:00:00Z', 120, 1, 1, 'USD', 'tradingview', '{}')",
+                "INSERT INTO quotes_intraday VALUES (?, '2026-06-02T19:00:00Z', 120, 1, 1, 'USD', 'tradingview', '{}')",
                 [symbol],
             )
             store_options_chain(
                 con,
                 symbol,
-                "2026-06-02T20:00:00Z",
+                "2026-06-02T19:00:00Z",
                 [
-                    option_row("2027-09-18", 145, "call", 4.3, 4.7, 0.25, 0.30, f"OPRA:{symbol}270918C145", volume=25, open_interest=250),
+                    option_row("2027-09-18", 145, "call", 2.9, 3.0, 0.25, 0.30, f"OPRA:{symbol}270918C145", volume=25, open_interest=250),
                     option_row("2027-09-18", 210, "call", 7.5, 8.5, 0.50, 0.50, f"OPRA:{symbol}270918C210", volume=25, open_interest=250),
                 ],
             )
 
         refresh_options_radar(con, ["NVDA", "BOTZ", "ACME"])
-        rows = query_rows(con, "SELECT ticker, state, score, trigger_reason, raw FROM candidate_event WHERE contract_id LIKE '%C145' ORDER BY ticker")
+        rows = query_rows(con, "SELECT ticker, state, score, trigger_reason, raw FROM candidate_event WHERE contract_id LIKE '%C145' AND strategy_version = ? ORDER BY ticker", [DEFAULT_STRATEGY_VERSION])
 
     by_ticker = {row["ticker"]: row for row in rows}
     nvda_raw = json.loads(by_ticker["NVDA"]["raw"]) if isinstance(by_ticker["NVDA"]["raw"], str) else by_ticker["NVDA"]["raw"]
@@ -390,7 +393,7 @@ def test_options_radar_prioritizes_10x_watch_themes_without_bypassing_gates(tmp_
 def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp_path) -> None:
     db_path = tmp_path / "radar-yfinance-liquidity.duckdb"
     init_db(db_path)
-    chain_observed_at = "2026-06-02T20:00:00Z"
+    chain_observed_at = "2026-06-02T19:00:00Z"
     with db(db_path) as con:
         seed_prices(con, "RBLX", start_price=75, slope=0.11)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
@@ -400,7 +403,7 @@ def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp
             "RBLX",
             chain_observed_at,
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:RBLX270918C120"),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:RBLX270918C120"),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:RBLX270918C180"),
             ],
         )
@@ -408,7 +411,7 @@ def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp
             con,
             "RBLX",
             "2027-09-18",
-            "2026-06-02T20:05:00Z",
+            "2026-06-02T19:05:00Z",
             chain_observed_at,
             [
                 {
@@ -432,7 +435,7 @@ def test_options_radar_uses_yfinance_liquidity_enrichment_for_fire_candidate(tmp
 
         result = refresh_options_radar(con, ["RBLX"])
         snapshot = query_rows(con, "SELECT volume, open_interest FROM option_snapshot WHERE contract_id = 'OPRA:RBLX270918C120'")[0]
-        event = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:RBLX270918C120'")[0]
+        event = query_rows(con, "SELECT state, trigger_reason FROM candidate_event WHERE contract_id = 'OPRA:RBLX270918C120' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
         trades = query_rows(con, "SELECT * FROM shadow_trade")
 
     assert updated == 2
@@ -450,13 +453,13 @@ def test_options_radar_reads_yfinance_chain_source_by_default(tmp_path) -> None:
     with db(db_path) as con:
         seed_prices(con, "RBLX", start_price=75, slope=0.11)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
-        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T19:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
         store_options_chain(
             con,
             "RBLX",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "RBLX270918C00120000", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "RBLX270918C00120000", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "RBLX270918C00180000", volume=25, open_interest=250),
             ],
             source="yfinance",
@@ -465,7 +468,7 @@ def test_options_radar_reads_yfinance_chain_source_by_default(tmp_path) -> None:
         tradingview_only = refresh_options_radar(con, ["RBLX"], source="tradingview")
         result = refresh_options_radar(con, ["RBLX"])
         snapshot = query_rows(con, "SELECT data_source, contract_id FROM option_snapshot WHERE contract_id = 'RBLX270918C00120000'")[0]
-        event = query_rows(con, "SELECT state, contract_id FROM candidate_event WHERE contract_id = 'RBLX270918C00120000'")[0]
+        event = query_rows(con, "SELECT state, contract_id FROM candidate_event WHERE contract_id = 'RBLX270918C00120000' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
 
     assert tradingview_only["option_snapshots"] == 0
     assert result["option_snapshots"] == 2
@@ -480,18 +483,18 @@ def test_options_radar_models_missing_yfinance_greeks(tmp_path) -> None:
     with db(db_path) as con:
         seed_prices(con, "RBLX", start_price=75, slope=0.11)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
-        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T20:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
+        con.execute("INSERT INTO quotes_intraday VALUES ('RBLX', '2026-06-02T19:00:00Z', 100, 1, 1, 'USD', 'yfinance', '{}')")
         store_options_chain(
             con,
             "RBLX",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
                 option_row(
                     "2027-09-18",
                     120,
                     "call",
-                    4.3,
-                    4.7,
+                    2.9,
+                    3.0,
                     0.30,
                     None,
                     "RBLX270918C00120000",
@@ -529,7 +532,7 @@ def test_options_radar_models_missing_yfinance_greeks(tmp_path) -> None:
             WHERE contract_id = 'RBLX270918C00120000'
             """,
         )[0]
-        event = query_rows(con, "SELECT state, trigger_reason, quality_status, quality_flags FROM candidate_event WHERE contract_id = 'RBLX270918C00120000'")[0]
+        event = query_rows(con, "SELECT state, trigger_reason, quality_status, quality_flags FROM candidate_event WHERE contract_id = 'RBLX270918C00120000' AND strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
 
     raw = json.loads(snapshot["raw"]) if isinstance(snapshot["raw"], str) else snapshot["raw"]
     quality_flags = json.loads(event["quality_flags"]) if isinstance(event["quality_flags"], str) else event["quality_flags"]
@@ -966,14 +969,14 @@ def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -1005,21 +1008,21 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T20:00:00Z', 112, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T19:00:00Z', 112, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
-            [option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
+            "2026-06-02T19:00:00Z",
+            [option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-03T20:00:00Z",
+            "2026-06-03T19:00:00Z",
             [option_row("2027-09-18", 120, "call", 9.0, 10.0, 0.28, 0.38, "OPRA:TSLA270918C120", volume=45, open_interest=275)],
         )
 
@@ -1080,14 +1083,14 @@ def test_hard_red_team_validation_invalidates_and_closes_shadow_trade(tmp_path) 
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -1177,15 +1180,15 @@ def test_candidate_scoped_thesis_validation_does_not_block_other_fire_events(tmp
         seed_prices(con, "TSLA", slope=0.12)
         seed_prices(con, "QQQ", start_price=100, slope=0.02)
         con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
         )
         store_options_chain(
             con,
             "TSLA",
-            "2026-06-02T20:00:00Z",
+            "2026-06-02T19:00:00Z",
             [
-                option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
-                option_row("2027-09-18", 130, "call", 4.0, 4.4, 0.25, 0.30, "OPRA:TSLA270918C130", volume=25, open_interest=250),
+                option_row("2027-09-18", 120, "call", 1.95, 2.05, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
+                option_row("2027-09-18", 130, "call", 1.95, 2.05, 0.25, 0.30, "OPRA:TSLA270918C130", volume=25, open_interest=250),
                 option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
             ],
         )
@@ -1295,14 +1298,19 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
     assert candidate_attribution["option_return"] >= 9.0
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
-    assert proposal["status"] == "forward_test_required"
+    # Honest validation: a single synthetic missed winner gives the walk-forward
+    # backtest no historical candidate base, so the proposal correctly fails the
+    # backtest gate rather than advancing. The gating metadata still records that a
+    # backtest, a forward shadow test and human approval are all required, and the
+    # forward shadow test still spins up to collect real out-of-sample data.
+    assert proposal["status"] == "backtest_failed"
     assert proposal["requires_backtest"] is True
     assert proposal["requires_forward_test"] is True
     assert proposal["human_approval_status"] == "required"
     assert "lower-delta" in proposal["proposed_parameter_changes"]
-    assert backtest["verdict"] == "pass"
-    assert backtest["proposed_candidate_count"] > backtest["baseline_candidate_count"]
-    assert backtest["proposed_hit_rate_10x"] > backtest["baseline_hit_rate_10x"]
+    assert backtest["verdict"] == "fail"
+    assert backtest["baseline_candidate_count"] == 0
+    assert backtest["proposed_candidate_count"] == 0
     assert forward["status"] == "active"
     assert forward["verdict"] == "collecting_data"
 
@@ -1334,9 +1342,20 @@ def test_strategy_promotion_requires_backtest_forward_test_and_human_approval(tm
         refresh_options_radar(con, ["RBLX"])
         proposal_id = query_rows(con, "SELECT proposal_id FROM strategy_mutation_proposal")[0]["proposal_id"]
 
+        # Honest validation fails the backtest on this synthetic single-winner
+        # fixture, so promotion is blocked at the backtest gate first.
+        with pytest.raises(StrategyPromotionError, match="backtest"):
+            promote_strategy_mutation(con, proposal_id, approved_by="joe")
+
+        # Force the backtest to pass; the forward shadow test gate now blocks.
+        con.execute(
+            "UPDATE strategy_backtest_result SET verdict = 'pass' WHERE proposal_id = ?",
+            [proposal_id],
+        )
         with pytest.raises(StrategyPromotionError, match="forward shadow test"):
             promote_strategy_mutation(con, proposal_id, approved_by="joe")
 
+        # Force the forward test to pass; human approval is the final gate.
         con.execute(
             """
             UPDATE strategy_forward_test_result
@@ -1387,14 +1406,14 @@ def seed_extreme_opportunity_candidates(con) -> None:
     seed_prices(con, "TSLA", slope=0.12)
     seed_prices(con, "QQQ", start_price=100, slope=0.02)
     con.execute(
-        "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T20:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+        "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
     )
     store_options_chain(
         con,
         "TSLA",
-        "2026-06-02T20:00:00Z",
+        "2026-06-02T19:00:00Z",
         [
-            option_row("2027-09-18", 115, "call", 2.95, 3.05, 0.20, 0.30, "OPRA:TSLA270918C115", volume=300, open_interest=1200),
+            option_row("2027-09-18", 115, "call", 0.95, 1.05, 0.20, 0.30, "OPRA:TSLA270918C115", volume=300, open_interest=1200),
             option_row("2027-09-18", 120, "call", 4.3, 4.7, 0.25, 0.30, "OPRA:TSLA270918C120", volume=120, open_interest=800),
             option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.50, "OPRA:TSLA270918C180", volume=120, open_interest=800),
         ],
