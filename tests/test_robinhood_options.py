@@ -10,6 +10,7 @@ from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.core.robinhood_options import (
     collect_robinhood_option_chains,
+    load_robinhood_access_token,
     option_quote_row,
     select_robinhood_expiries,
 )
@@ -20,6 +21,7 @@ from investment_panel.jobs import update_robinhood_options
 class _ProviderConfig:
     enabled: bool = True
     mcp_url: str = "https://example.invalid/mcp"
+    token_path: str = "~/.config/market/robinhood-mcp-token.json"
     auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
     timeout_seconds: int = 30
     readonly: bool = True
@@ -245,6 +247,16 @@ def test_collect_robinhood_option_chains_with_fake_client() -> None:
     assert all(row["open_interest"] == 3652 for row in rows)
 
 
+def test_load_robinhood_access_token_from_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
+    token_path = tmp_path / "token.json"
+    token_path.write_text('{"access_token": "cached-token", "expires_at": 4102444800}', encoding="utf-8")
+
+    token = load_robinhood_access_token(_ProviderConfig(token_path=str(token_path)))
+
+    assert token == "cached-token"
+
+
 def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
     config_path = tmp_path / "config.yaml"
@@ -268,3 +280,4 @@ data_sources:
 
     assert result["status"] == "auth_required"
     assert result["provider"] == "robinhood"
+    assert result["auth_command"] == "market-update-robinhood-options --auth"

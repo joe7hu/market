@@ -79,9 +79,13 @@ data_sources:
     robinhood:
       enabled: true
       # Read-only MCP market-data endpoint. The token itself must come from the
-      # named environment variable; do not put Robinhood credentials in config.
+      # local OAuth cache or the named override environment variable; do not put
+      # Robinhood credentials in config.
       mcp_url: https://agent.robinhood.com/mcp/trading
+      token_path: ~/.config/market/robinhood-mcp-token.json
       auth_token_env: ROBINHOOD_MCP_TOKEN
+      callback_host: 127.0.0.1
+      callback_port: 8765
       readonly: true
       timeout_seconds: 30
       max_symbols: 40

@@ -99,7 +99,12 @@ class IBKRConfig:
 class RobinhoodConfig:
     enabled: bool = False
     mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    token_path: str = "~/.config/market/robinhood-mcp-token.json"
     auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
+    client_id: str | None = None
+    scope: str = ""
+    callback_host: str = "127.0.0.1"
+    callback_port: int = 8765
     timeout_seconds: int = 30
     readonly: bool = True
     max_symbols: int = 40
@@ -302,7 +307,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             robinhood=RobinhoodConfig(
                 enabled=bool(robinhood_raw.get("enabled", False)),
                 mcp_url=str(robinhood_raw.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),
+                token_path=str(robinhood_raw.get("token_path", "~/.config/market/robinhood-mcp-token.json")),
                 auth_token_env=str(robinhood_raw.get("auth_token_env", "ROBINHOOD_MCP_TOKEN")),
+                client_id=robinhood_raw.get("client_id"),
+                scope=str(robinhood_raw.get("scope", "")),
+                callback_host=str(robinhood_raw.get("callback_host", "127.0.0.1")),
+                callback_port=int(robinhood_raw.get("callback_port", 8765)),
                 timeout_seconds=int(robinhood_raw.get("timeout_seconds", 30)),
                 readonly=bool(robinhood_raw.get("readonly", True)),
                 max_symbols=int(robinhood_raw.get("max_symbols", 40)),
@@ -453,7 +463,12 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "robinhood": {
                     "enabled": config.data_sources.brokers.robinhood.enabled,
                     "mcp_url": config.data_sources.brokers.robinhood.mcp_url,
+                    "token_path": config.data_sources.brokers.robinhood.token_path,
                     "auth_token_env": config.data_sources.brokers.robinhood.auth_token_env,
+                    "client_id": config.data_sources.brokers.robinhood.client_id,
+                    "scope": config.data_sources.brokers.robinhood.scope,
+                    "callback_host": config.data_sources.brokers.robinhood.callback_host,
+                    "callback_port": config.data_sources.brokers.robinhood.callback_port,
                     "timeout_seconds": config.data_sources.brokers.robinhood.timeout_seconds,
                     "readonly": config.data_sources.brokers.robinhood.readonly,
                     "max_symbols": config.data_sources.brokers.robinhood.max_symbols,

@@ -15,7 +15,7 @@ from typing import Any
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, json_dumps
 from investment_panel.core.free_sources import option_symbols, store_options_chain
-from investment_panel.core.robinhood_options import RobinhoodClient, collect_robinhood_option_chains
+from investment_panel.core.robinhood_options import RobinhoodAuthRequired, RobinhoodClient, authorize_robinhood_mcp, collect_robinhood_option_chains
 from investment_panel.core.status import write_source_status
 
 
@@ -46,11 +46,13 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         return {"status": "disabled", "provider": "robinhood"}
     if not provider.readonly:
         return {"status": "unsafe_config", "provider": "robinhood", "error": "robinhood provider must remain readonly"}
-    if client is None and not os.environ.get(provider.auth_token_env):
+    if client is None and not os.environ.get(provider.auth_token_env) and not os.path.exists(os.path.expanduser(os.path.expandvars(provider.token_path))):
         result = {
             "provider": "robinhood",
             "status": "auth_required",
+            "auth_command": "market-update-robinhood-options --auth",
             "auth_token_env": provider.auth_token_env,
+            "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
             "database": str(config.database.duckdb_path),
         }
         status_path = write_source_status(
@@ -64,7 +66,24 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
     with db(config.database.duckdb_path) as con:
         target = symbols or option_symbols(con, config)[: _max_symbols(provider.max_symbols)]
 
-    collected = collect_robinhood_option_chains(provider, target, client=client)
+    try:
+        collected = collect_robinhood_option_chains(provider, target, client=client)
+    except RobinhoodAuthRequired as exc:
+        result = {
+            "provider": "robinhood",
+            "status": "auth_required",
+            "auth_command": "market-update-robinhood-options --auth",
+            "auth_token_env": provider.auth_token_env,
+            "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
+            "error": str(exc),
+            "database": str(config.database.duckdb_path),
+        }
+        status_path = write_source_status(
+            config,
+            "mini-market-robinhood-options",
+            {"source": "market-mini", "job": "update_robinhood_options", "origin": "autonomous_collector", **result},
+        )
+        return {**result, "status_path": str(status_path) if status_path else None}
     total_rows = sum(len(rows) for rows in collected["rows"].values())
     quoted_rows = sum(
         1
@@ -140,8 +159,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--symbol", action="append", dest="symbols", default=None)
+    parser.add_argument("--auth", action="store_true", help="run OAuth setup and cache a Robinhood MCP token")
     args = parser.parse_args()
-    print(json.dumps(run(args.config, symbols=args.symbols), indent=2, default=str))
+    if args.auth:
+        config = load_config(args.config)
+        print(json.dumps(authorize_robinhood_mcp(config.data_sources.brokers.robinhood), indent=2, default=str))
+    else:
+        print(json.dumps(run(args.config, symbols=args.symbols), indent=2, default=str))
 
 
 if __name__ == "__main__":
