@@ -24,6 +24,32 @@ import {
   sessionBadge,
   validationMillis,
 } from "./optionsRadarFormat";
+import {
+  arrayText,
+  boolFromRecord,
+  jsonArrayField,
+  jsonRecord,
+  latestBy,
+  latestValidationBy,
+  listFromRecord,
+  numberFromRecord,
+  recordField,
+  stringFromRecord,
+  validationHistoryBy,
+} from "./optionsRadarData";
+import {
+  attributionTone,
+  reasonLabel,
+  stateRank,
+  stateTone,
+  thesisStateTone,
+  thesisValidationLabel,
+  tierTone,
+  toneText,
+  validationStatusLabel,
+  validationStatusTone,
+  verdictTone,
+} from "./optionsRadarTone";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
@@ -2334,29 +2360,6 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right);
 }
 
-function stateRank(state: string): number {
-  if (state === "FIRE") return 0;
-  if (state === "SETUP") return 1;
-  if (state === "WATCH") return 2;
-  return 3;
-}
-
-function stateTone(state: string): Tone {
-  const normalized = state.toUpperCase();
-  if (normalized === "FIRE" || normalized === "HOLD") return "good";
-  if (normalized === "SETUP" || normalized === "TRIM") return "warn";
-  if (normalized === "INVALIDATED" || normalized === "EXIT") return "bad";
-  if (normalized === "WATCH") return "info";
-  return "muted";
-}
-
-function tierTone(tier: string): Tone {
-  if (tier === "Exceptional") return "good";
-  if (tier === "Service Bug") return "bad";
-  if (tier === "Research") return "info";
-  return "muted";
-}
-
 function investmentStateLabel(row: RowRecord): string {
   const tier = tierOf(row);
   const primaryState = textField(row, ["primary_state"], "watch").toUpperCase();
@@ -2376,137 +2379,6 @@ function investmentStateTone(row: RowRecord): Tone {
   return stateTone(textField(row, ["primary_state"]));
 }
 
-function thesisStateTone(state: string): Tone {
-  const normalized = state.toLowerCase();
-  if (normalized.includes("invalidated")) return "bad";
-  if (normalized.includes("validated")) return "good";
-  if (normalized.includes("tracking")) return "info";
-  if (normalized.includes("weakening")) return "warn";
-  if (!normalized) return "muted";
-  return "info";
-}
-
-function thesisValidationLabel(validation: RowRecord | undefined): string {
-  const state = textField(validation, ["state"]);
-  if (!state) return "No validation";
-  if (state.toLowerCase() === "pending") return "Needs proof";
-  return titleLabel(state);
-}
-
-function validationStatusLabel(status: string): string {
-  const normalized = status.toLowerCase();
-  if (normalized === "hard_risk_triggered") return "Fundamental risk flagged";
-  return titleLabel(status);
-}
-
-function validationStatusTone(status: string): Tone {
-  const normalized = status.toLowerCase();
-  if (["supported", "scheduled", "source_confirmed", "clear", "source_backed"].includes(normalized)) return "good";
-  if (["partial", "pending", "agent_cited", "source_context_available", "news_only", "agent_only"].includes(normalized)) return "warn";
-  if (["breached", "missing", "hard_risk_triggered"].includes(normalized)) return "bad";
-  return "muted";
-}
-
-function attributionTone(label: string): Tone {
-  const normalized = label.toLowerCase();
-  if (normalized.includes("good") || normalized.includes("convexity")) return "good";
-  if (normalized.includes("crush") || normalized.includes("decay") || normalized.includes("risk")) return "bad";
-  if (normalized.includes("bleed") || normalized.includes("spread")) return "warn";
-  return "info";
-}
-
-function verdictTone(value: string): Tone {
-  const normalized = value.toLowerCase();
-  if (normalized === "pass" || normalized === "complete") return "good";
-  if (normalized === "fail") return "bad";
-  if (normalized.includes("collecting") || normalized.includes("pending") || normalized.includes("active")) return "warn";
-  return toneFromText(normalized);
-}
-
-function toneText(tone: Tone): string {
-  if (tone === "good") return "text-green-700 dark:text-green-300";
-  if (tone === "warn") return "text-amber-700 dark:text-amber-300";
-  if (tone === "bad") return "text-destructive";
-  if (tone === "info") return "text-blue-700 dark:text-blue-300";
-  return "text-foreground";
-}
-
-const reasonLabels: Record<string, string> = {
-  "10x_math_inside_cap": "10x target inside cap",
-  asymmetry_below_exceptional_bar: "Asymmetry below top bar",
-  conviction_below_exceptional_bar: "Conviction below top bar",
-  convexity_inside_extreme_bar: "Convexity inside extreme bar",
-  delta_in_range: "Delta in range",
-  delta_outside_strategy_range: "Delta outside range",
-  dte_outside_strategy_range: "DTE outside range",
-  entry_quality_below_exceptional_bar: "Entry quality below top bar",
-  entry_quality_supported: "Entry quality supported",
-  hard_red_team_risk: "Fundamental risk flagged",
-  iv_not_overpriced: "IV acceptable",
-  iv_percentile_above_fire_threshold: "IV above fire limit",
-  iv_percentile_reject: "IV too expensive",
-  leap_survivability_not_exceptional: "LEAP survivability weak",
-  leap_survivability_supported: "LEAP survivability supported",
-  market_regime_hostile_to_long_premium: "Market regime hostile",
-  missing_50d_context: "Missing 50D context",
-  missing_delta: "Missing delta",
-  missing_dte: "Missing DTE",
-  missing_iv_percentile: "Missing IV rank",
-  missing_open_interest: "Missing open interest",
-  missing_rs_vs_qqq: "Missing RS context",
-  missing_spread: "Missing spread",
-  missing_volume: "Missing volume",
-  bank_move_implausible_without_validated_catalyst: "Bank move needs validated catalyst",
-  regulated_healthcare_move_implausible_without_validated_catalyst: "Regulated healthcare move needs validated catalyst",
-  mega_cap_move_implausible_without_validated_catalyst: "Mega-cap move needs validated catalyst",
-  no_printed_volume: "No volume print",
-  option_chain_terms_sync_gap: "Option terms sync gap",
-  option_contract_quote_sync_gap: "Option quote sync gap",
-  option_data_conflict: "Option data conflict",
-  option_iv_and_delta_sync_gap: "Option IV/Greek sync gap",
-  option_liquidity_sync_gap: "Option liquidity sync gap",
-  not_fire_state: "Wait for fire setup",
-  open_interest_below_threshold: "Open interest too low",
-  open_interest_not_exceptional: "Open interest not exceptional",
-  open_interest_supported: "Open interest supported",
-  premium_above_buy_under: "Option premium too high",
-  premium_inside_buy_under: "Premium inside cap",
-  provider_quality_flags_present: "Provider quality flags",
-  required_move_too_high: "Required move too high",
-  required_move_not_exceptional: "Required move not exceptional",
-  rs_vs_qqq_20d_negative: "RS vs QQQ weak",
-  rs_vs_qqq_improving: "RS vs QQQ improving",
-  market_regime_sync_gap: "Market regime sync gap",
-  source_evidence_cluster: "Source evidence cluster",
-  source_evidence_sync_gap: "Source evidence sync gap",
-  source_backed_thesis: "Source-backed thesis",
-  spread_above_fire_threshold: "Spread above fire limit",
-  spread_not_exceptional: "Spread not exceptional",
-  spread_reject: "Spread too wide",
-  spread_usable: "Spread usable",
-  theme_ai_applications: "AI applications watch",
-  theme_ai_biotech: "AI biotech watch",
-  theme_ai_infrastructure: "AI infrastructure watch",
-  theme_crypto_infrastructure: "Crypto infrastructure watch",
-  theme_robotics_physical_ai: "Robotics / physical AI watch",
-  theme_space_tech: "Space tech watch",
-  stock_above_50d: "Above 50D",
-  stock_below_50d: "Below 50D",
-  supportive_market_regime: "Supportive market regime",
-  strategy_only_tracks_calls: "Strategy tracks calls only",
-  stock_context_sync_gap: "Stock context sync gap",
-  thesis_synthesis_sync_gap: "Thesis synthesis sync gap",
-  thesis_invalidated: "Thesis invalidated",
-  thesis_validated: "Thesis validated",
-  volume_below_threshold: "Volume too low",
-  volume_seen: "Volume seen",
-  wait_for_fire_setup: "Wait for fire setup",
-};
-
-function reasonLabel(reason: string): string {
-  return reasonLabels[reason] ?? titleLabel(reason);
-}
-
 function dataContractStatus(row: RowRecord | undefined): string {
   return textField(row, ["data_contract_status"], "").toLowerCase();
 }
@@ -2524,41 +2396,6 @@ function readableReasonSummary(row: RowRecord): string {
   return [...listFromRecord(raw, "hard_rejects"), ...listFromRecord(raw, "blockers"), ...listFromRecord(raw, "positives")]
     .map(reasonLabel)
     .join(" ");
-}
-
-function recordField(row: RowRecord | undefined, key: string): Record<string, JsonValue> | undefined {
-  const value = row?.[key];
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, JsonValue>;
-  return undefined;
-}
-
-function jsonRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, JsonValue>;
-  return undefined;
-}
-
-function jsonArrayField(row: RowRecord | undefined, key: string): JsonValue[] {
-  const value = row?.[key];
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string" && value.trim().startsWith("[")) {
-    try {
-      const parsed = JSON.parse(value) as JsonValue;
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-function arrayText(row: RowRecord | undefined, key: string): string[] {
-  return jsonArrayField(row, key).map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
-}
-
-function listFromRecord(record: Record<string, JsonValue> | undefined, key: string): string[] {
-  const value = record?.[key];
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
 }
 
 function commonBlockers(rows: RowRecord[]): Array<[string, number]> {
@@ -2581,72 +2418,6 @@ function commonDataContractFailures(rows: RowRecord[]): Array<[string, number]> 
   return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
 }
 
-function numberFromRecord(record: Record<string, JsonValue> | undefined, key: string): number {
-  const value = record?.[key];
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return Number.NaN;
-}
-
-function stringFromRecord(record: Record<string, JsonValue> | undefined, key: string, fallback = ""): string {
-  const value = record?.[key];
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return fallback;
-}
-
-function boolFromRecord(record: Record<string, JsonValue> | undefined, key: string): boolean {
-  return record?.[key] === true;
-}
-
-function mapBy(items: RowRecord[], key: string): Map<string, RowRecord> {
-  const map = new Map<string, RowRecord>();
-  for (const item of items) {
-    const value = textField(item, [key]);
-    if (value) map.set(value, item);
-  }
-  return map;
-}
-
-function latestBy(items: RowRecord[], key: string, dateKey: string): Map<string, RowRecord> {
-  const map = new Map<string, RowRecord>();
-  for (const item of items) {
-    const value = textField(item, [key]);
-    if (!value) continue;
-    const current = map.get(value);
-    if (!current || dateMillis(textField(item, [dateKey])) >= dateMillis(textField(current, [dateKey]))) {
-      map.set(value, item);
-    }
-  }
-  return map;
-}
-
-function latestValidationBy(items: RowRecord[], key: string): Map<string, RowRecord> {
-  const history = validationHistoryBy(items, key);
-  const latest = new Map<string, RowRecord>();
-  for (const [value, rows] of history.entries()) {
-    if (rows[0]) latest.set(value, rows[0]);
-  }
-  return latest;
-}
-
-function validationHistoryBy(items: RowRecord[], key: string): Map<string, RowRecord[]> {
-  const history = new Map<string, RowRecord[]>();
-  for (const item of items) {
-    const value = textField(item, [key]);
-    if (!value) continue;
-    const rows = history.get(value) ?? [];
-    rows.push(item);
-    history.set(value, rows);
-  }
-  for (const rows of history.values()) {
-    rows.sort((left, right) => validationMillis(right) - validationMillis(left));
-  }
-  return history;
-}
 
 function oldestDate(items: RowRecord[], key: string): string {
   let oldest = "";
