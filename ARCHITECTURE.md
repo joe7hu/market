@@ -33,9 +33,10 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 | `core/brokers/` | Broker integration: `ibkr`, `moomoo` providers, `persistence`, `read_models`, `policy`, `recommendations`, `service` | broker data, paper orders, agent recs |
 | `core/free_sources/` | Free market-data updates: `tradingview_sources`, `yfinance_sources`, `options`, `store`, `provenance`, `coerce` | TradingView/yfinance ingestion + storage |
 | `core/source_ingestion/` | Followed-source directory ingestion (canonical, health, definitions, raw_sources) | followed-source pipeline |
+| `core/disclosures/` | SEC 13F + public/House disclosure ingestion. Submodules: `config`, `public_csv`, `house`, `prices`, `replica` (replica portfolios), `thirteen_f` (13F + SEC XML), `coerce`, `constants` | a disclosure ingestion / 13F parsing rule |
 | `core/db.py` + `core/schema.py` | DuckDB connection/helpers (`db`, `init_db`, `query_rows`, `json_dumps`) and the full DDL string | a table definition (`schema.py`) or a DB helper (`db.py`) |
 | `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
-| `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `portfolio_intelligence`, `thesis_monitor`, `daily_brief`, `disclosures`, `ibkr_options`, `options_intelligence`, `option_agent_*`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
+| `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `portfolio_intelligence`, `thesis_monitor`, `daily_brief`, `ibkr_options`, `options_intelligence`, `option_agent_*`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
 | `analysis/` | Pure computations: `valuation`, `sepa`, `liquidity`, `correlation`, `earnings_setup`, `option_ev`, `options_payoff`, `market_environment`, `stats` (+ `registry`, `run`) | a quantitative model |
 | `providers/` | External data adapters: `yfinance_provider`, `tradingview`, `opencli` | how an external source is fetched |
 | `jobs/` | Pipeline entry points (run as scripts / refresh jobs): `full_market_refresh`, `update_*`, `refresh_*`, `daily_screen`, `run_option_agents`, etc. | a pipeline step / job orchestration |
@@ -53,7 +54,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 ## Conventions (read before adding code)
 
 - **Facade packages, not god-files.** The large former monoliths (`panel`,
-  `data_access`, `decision`, `brokers`, `free_sources`) are now packages: the
+  `data_access`, `decision`, `brokers`, `free_sources`, `disclosures`) are now packages: the
   package `__init__.py` re-exports the public API; logic lives in responsibility
   submodules. **Import from the package** (`from investment_panel.core.panel import X`),
   not from submodules, in external code.
