@@ -32,7 +32,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 | `core/options_radar/` | Options-radar pipeline: candidates, gates, scoring, opportunities, alerts, learning loop | options-radar logic |
 | `core/brokers/` | Broker integration: `ibkr`, `moomoo` providers, `persistence`, `read_models`, `policy`, `recommendations`, `service` | broker data, paper orders, agent recs |
 | `core/free_sources/` | Free market-data updates: `tradingview_sources`, `yfinance_sources`, `options`, `store`, `provenance`, `coerce` | TradingView/yfinance ingestion + storage |
-| `core/source_ingestion/` | Followed-source directory ingestion (canonical, health, definitions, raw_sources) | followed-source pipeline |
+| `core/source_ingestion/` | Followed-source directory ingestion (canonical, health, definitions). `raw_sources/` is a sub-package: `sync` (orchestration), `tweets`, `browser`, `io`, `coerce`, `constants` | followed-source pipeline / raw Birdclaw+browser ingest |
 | `core/disclosures/` | SEC 13F + public/House disclosure ingestion. Submodules: `config`, `public_csv`, `house`, `prices`, `replica` (replica portfolios), `thirteen_f` (13F + SEC XML), `coerce`, `constants` | a disclosure ingestion / 13F parsing rule |
 | `core/db.py` + `core/schema.py` | DuckDB connection/helpers (`db`, `init_db`, `query_rows`, `json_dumps`) and the full DDL string | a table definition (`schema.py`) or a DB helper (`db.py`) |
 | `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
