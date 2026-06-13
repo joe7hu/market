@@ -64,13 +64,16 @@ def job_intervals() -> dict[str, int]:
     who rely on the daily full refresh for source freshness instead.
     """
 
-    # Option source for the radar: 'ibkr' (default — reliable OPRA chains with
-    # OI/volume/greeks) or 'free' (legacy TradingView+yfinance fallback).
-    option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "ibkr").strip().lower()
+    # Option source for the radar: 'robinhood' (default — read-only MCP chains
+    # with OI/volume/greeks), 'ibkr' (Gateway fallback), or 'free' (legacy
+    # TradingView+yfinance fallback).
+    option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
     if option_source == "free":
         signal_job, source_job = "refresh_options_radar_signal", "update_free_sources_radar"
-    else:
+    elif option_source == "ibkr":
         signal_job, source_job = "refresh_options_radar_signal_ibkr", "update_ibkr_options"
+    else:
+        signal_job, source_job = "refresh_options_radar_signal_robinhood", "update_robinhood_options"
 
     # Fast fresh-signal rematerialization (no heavy learning pass) — runs often so
     # the radar reflects the latest chains and ranking quickly without reprocessing

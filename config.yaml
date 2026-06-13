@@ -76,6 +76,19 @@ data_sources:
       stale_after_minutes: 15
       market_data_type: live_or_delayed
       quote_limit: 50
+    robinhood:
+      enabled: true
+      # Read-only MCP market-data endpoint. The token itself must come from the
+      # named environment variable; do not put Robinhood credentials in config.
+      mcp_url: https://agent.robinhood.com/mcp/trading
+      auth_token_env: ROBINHOOD_MCP_TOKEN
+      readonly: true
+      timeout_seconds: 30
+      max_symbols: 40
+      max_expiries: 2
+      strikes_around_spot: 12
+      quote_batch_size: 20
+      collect_puts: false
     moomoo:
       enabled: false
       host: 127.0.0.1

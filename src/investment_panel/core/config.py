@@ -96,6 +96,20 @@ class IBKRConfig:
 
 
 @dataclass(frozen=True)
+class RobinhoodConfig:
+    enabled: bool = False
+    mcp_url: str = "https://agent.robinhood.com/mcp/trading"
+    auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
+    timeout_seconds: int = 30
+    readonly: bool = True
+    max_symbols: int = 40
+    max_expiries: int = 2
+    strikes_around_spot: int = 12
+    quote_batch_size: int = 20
+    collect_puts: bool = False
+
+
+@dataclass(frozen=True)
 class MoomooConfig:
     enabled: bool = False
     host: str = "127.0.0.1"
@@ -120,6 +134,7 @@ class BrokerSourcesConfig:
     enabled: bool = True
     advisory_only: bool = True
     ibkr: IBKRConfig = IBKRConfig()
+    robinhood: RobinhoodConfig = RobinhoodConfig()
     moomoo: MoomooConfig = MoomooConfig()
     policy: BrokerPolicyConfig = BrokerPolicyConfig()
 
@@ -244,6 +259,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     yfinance_raw = data_sources_raw.get("yfinance", {})
     brokers_raw = data_sources_raw.get("brokers", {})
     ibkr_raw = brokers_raw.get("ibkr", {})
+    robinhood_raw = brokers_raw.get("robinhood", {})
     moomoo_raw = brokers_raw.get("moomoo", {})
     policy_raw = brokers_raw.get("policy", {})
     data_sources = DataSourcesConfig(
@@ -282,6 +298,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 stale_after_minutes=int(ibkr_raw.get("stale_after_minutes", 15)),
                 market_data_type=str(ibkr_raw.get("market_data_type", "live_or_delayed")),
                 quote_limit=int(ibkr_raw.get("quote_limit", 50)),
+            ),
+            robinhood=RobinhoodConfig(
+                enabled=bool(robinhood_raw.get("enabled", False)),
+                mcp_url=str(robinhood_raw.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),
+                auth_token_env=str(robinhood_raw.get("auth_token_env", "ROBINHOOD_MCP_TOKEN")),
+                timeout_seconds=int(robinhood_raw.get("timeout_seconds", 30)),
+                readonly=bool(robinhood_raw.get("readonly", True)),
+                max_symbols=int(robinhood_raw.get("max_symbols", 40)),
+                max_expiries=int(robinhood_raw.get("max_expiries", 2)),
+                strikes_around_spot=int(robinhood_raw.get("strikes_around_spot", 12)),
+                quote_batch_size=int(robinhood_raw.get("quote_batch_size", 20)),
+                collect_puts=bool(robinhood_raw.get("collect_puts", False)),
             ),
             moomoo=MoomooConfig(
                 enabled=bool(moomoo_raw.get("enabled", False)),
@@ -421,6 +449,18 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                     "stale_after_minutes": config.data_sources.brokers.ibkr.stale_after_minutes,
                     "market_data_type": config.data_sources.brokers.ibkr.market_data_type,
                     "quote_limit": config.data_sources.brokers.ibkr.quote_limit,
+                },
+                "robinhood": {
+                    "enabled": config.data_sources.brokers.robinhood.enabled,
+                    "mcp_url": config.data_sources.brokers.robinhood.mcp_url,
+                    "auth_token_env": config.data_sources.brokers.robinhood.auth_token_env,
+                    "timeout_seconds": config.data_sources.brokers.robinhood.timeout_seconds,
+                    "readonly": config.data_sources.brokers.robinhood.readonly,
+                    "max_symbols": config.data_sources.brokers.robinhood.max_symbols,
+                    "max_expiries": config.data_sources.brokers.robinhood.max_expiries,
+                    "strikes_around_spot": config.data_sources.brokers.robinhood.strikes_around_spot,
+                    "quote_batch_size": config.data_sources.brokers.robinhood.quote_batch_size,
+                    "collect_puts": config.data_sources.brokers.robinhood.collect_puts,
                 },
                 "moomoo": {
                     "enabled": config.data_sources.brokers.moomoo.enabled,

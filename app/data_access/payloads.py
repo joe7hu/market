@@ -57,7 +57,7 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
             "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
             "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
             "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
-            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "ibkr"),
+            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
         },
     }
 

@@ -23,6 +23,7 @@ from investment_panel.jobs import (
     update_event_calendar,
     update_free_sources,
     update_ibkr_options,
+    update_robinhood_options,
 )
 
 
@@ -48,6 +49,9 @@ ALLOWLIST: dict[str, JobRunner] = {
     # IBKR option chains (price/greeks/OI/volume) persisted as source='ibkr' — the
     # reliable option source replacing the rate-limited TradingView+yfinance combo.
     "update_ibkr_options": lambda config_path: update_ibkr_options.run(config_path),
+    # Robinhood option chains (price/greeks/OI/volume) persisted as
+    # source='robinhood'. This is market-data only; no account or order tools.
+    "update_robinhood_options": lambda config_path: update_robinhood_options.run(config_path),
     "refresh_options_radar": lambda config_path: refresh_options_radar.run(config_path),
     # Agent-free rematerialization for the in-process continuous scheduler. Codex
     # thesis/postmortem workers stay on the daily premarket cadence; this path
@@ -60,6 +64,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     # IBKR-scoped fast signal refresh for the cutover: rematerializes from the
     # reliable source='ibkr' chains only (clean OI/volume/greeks, no peer conflict).
     "refresh_options_radar_signal_ibkr": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="ibkr"),
+    "refresh_options_radar_signal_robinhood": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="robinhood"),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     "update_disclosures": lambda config_path: update_disclosures.run(config_path, online_check=False, max_filings=3, fetch_holdings=False),

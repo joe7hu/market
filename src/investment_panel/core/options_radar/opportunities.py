@@ -40,7 +40,7 @@ def refresh_option_radar_opportunities(
             FROM option_snapshot
             QUALIFY row_number() OVER (
                 PARTITION BY contract_id, snapshot_time
-                ORDER BY CASE data_source WHEN 'tradingview' THEN 0 WHEN 'yfinance' THEN 1 ELSE 2 END
+                ORDER BY CASE data_source WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 WHEN 'tradingview' THEN 2 WHEN 'yfinance' THEN 3 ELSE 4 END
             ) = 1
         ),
         latest_validation AS (
