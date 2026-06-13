@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
 from datetime import datetime
-from statistics import mean
 from typing import Any
 
 from investment_panel.core.db import json_dumps, query_rows
@@ -27,131 +25,51 @@ from investment_panel.core.options_radar_coerce import (
     _normalize_symbol,
     _number,
 )
+from investment_panel.core.options_radar_constants import (
+    DATA_CONTRACT_READY,
+    DATA_CONTRACT_REPAIR_REQUIRED,
+    DEFAULT_OPTION_RISK_FREE_RATE,
+    DEFAULT_STRATEGY_PARAMETERS,
+    DEFAULT_STRATEGY_VERSION,
+    EXCEPTIONAL_CONVICTION_BAR,
+    MIN_FORWARD_TEST_DAYS,
+    MIN_SNAPSHOT_PREMIUM_COVERAGE,
+    RADAR_ALERT_DEDUP_HOURS,
+    RADAR_ALERT_TYPES,
+    SERVICE_BUG_TIER,
+    SERVICE_REPAIR_JOB_ORDER,
+)
+from investment_panel.core.options_radar_filters import (
+    _bounded_abs_delta,
+    _contract_id,
+    _diff,
+    _premium_mid,
+    _required_move_pct,
+    _source_filter,
+    _spread_pct,
+    _symbol_filter,
+)
+from investment_panel.core.options_radar_greeks import _option_model_dte, _option_model_iv, _resolve_option_greeks
+from investment_panel.core.options_radar_indicators import (
+    _atr_pct,
+    _base_length_days,
+    _buy_under,
+    _candidate_score,
+    _convexity_score,
+    _has_missing_data,
+    _is_delayed_feed,
+    _iv_history_by_ticker,
+    _iv_rank,
+    _liquidity_score,
+    _percentile_rank,
+    _relative_strength,
+    _theme_watch_matches,
+    _theme_watch_score,
+    _volume_ratio,
+)
+from investment_panel.core.options_radar_quality import _candidate_quality
 from investment_panel.core.source_ingestion.utils import stable_id
 from investment_panel.core.options_radar_session import _parse_utc, display_snapshot_time, market_session, snapshot_is_rth
-
-
-DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
-MIN_FORWARD_TEST_DAYS = 30
-DEFAULT_OPTION_RISK_FREE_RATE = 0.045
-MIN_OPTION_MODEL_DTE_DAYS = 1
-MIN_OPTION_MODEL_IV = 0.0001
-OPTION_QUALITY_MID_CAUTION_RELATIVE_DIFF = 0.10
-OPTION_QUALITY_MID_BAD_RELATIVE_DIFF = 0.20
-OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF = 0.15
-OPTION_QUALITY_IV_BAD_RELATIVE_DIFF = 0.30
-OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF = 0.07
-OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF = 0.15
-OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS = 2.0
-EXCEPTIONAL_CONVICTION_BAR = 78.0
-RADAR_ALERT_DEDUP_HOURS = 72
-RADAR_ALERT_TYPES = ("data_contract", "exceptional_conviction", "buy_under_hit")
-DATA_CONTRACT_READY = "ready"
-DATA_CONTRACT_REPAIR_REQUIRED = "repair_required"
-# An off-hours/pre-market chain pull can return strikes with zero bid/ask/mid for
-# nearly every contract. Such a snapshot only yields option_features/candidates for
-# the few contracts that carried a premium, collapsing a full radar to 1-2 names.
-# We refuse to let a snapshot below this premium-coverage floor overwrite a
-# healthier existing radar.
-MIN_SNAPSHOT_PREMIUM_COVERAGE = 0.5
-SERVICE_BUG_TIER = "Service Bug"
-SERVICE_REPAIR_JOB_ORDER = [
-    "update_free_sources",
-    "update_arco_data",
-    "run_option_agents",
-    "refresh_options_radar",
-]
-
-DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
-    "strategy_name": "leap_10x_reversal",
-    "version": 1,
-    "option_type": "call",
-    "delta_min": 0.20,
-    "delta_max": 0.45,
-    "dte_min": 365,
-    "dte_max": 900,
-    "max_spread_pct": 0.25,
-    "reject_spread_pct": 0.40,
-    "min_open_interest": 100,
-    "min_volume": 1,
-    "max_required_move_pct": 3.50,
-    "max_iv_percentile": 70.0,
-    "reject_iv_percentile": 85.0,
-    "require_price_above_ma50": True,
-    "require_rs_improving": True,
-    "fill_slippage_pct": 0.03,
-}
-
-THEME_WATCH_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "theme_ai_infrastructure": (
-        "artificial intelligence",
-        " ai ",
-        "semiconductor",
-        "gpu",
-        "accelerator",
-        "data center",
-        "datacenter",
-        "cloud infrastructure",
-        "networking",
-        "memory",
-        "foundry",
-        "fabless",
-        "electronic components",
-    ),
-    "theme_ai_applications": (
-        "software",
-        "application software",
-        "cloud",
-        "automation",
-        "analytics",
-        "cybersecurity",
-        "digital advertising",
-        "internet content",
-    ),
-    "theme_robotics_physical_ai": (
-        "robotics",
-        "robot",
-        "humanoid",
-        "autonomous",
-        "autonomy",
-        "physical ai",
-        "industrial automation",
-        "factory automation",
-        "machine vision",
-        "sensors",
-        "actuator",
-        "drones",
-        "unmanned",
-        "advanced manufacturing",
-    ),
-    "theme_space_tech": (
-        "space",
-        "aerospace",
-        "satellite",
-        "rocket",
-        "defense",
-        "orbital",
-    ),
-    "theme_ai_biotech": (
-        "biotech",
-        "biotechnology",
-        "bioinformatics",
-        "genomics",
-        "life sciences",
-        "drug discovery",
-        "computational biology",
-        "precision medicine",
-    ),
-    "theme_crypto_infrastructure": (
-        "crypto",
-        "cryptocurrency",
-        "bitcoin",
-        "blockchain",
-        "digital assets",
-        "coinbase",
-        "mining",
-    ),
-}
 
 
 
@@ -4165,460 +4083,3 @@ def _existing_opportunity_ticker_count(con: Any, strategy_version: str, *, symbo
         [strategy_version, *symbol_filter["params"]],
     )
     return int(_number(rows[0].get("tickers")) or 0) if rows else 0
-
-
-def _symbol_filter(symbols: list[str] | None, *, table_alias: str, column: str = "symbol") -> dict[str, Any]:
-    clean = [_normalize_symbol(symbol) for symbol in symbols or [] if symbol]
-    if not clean:
-        return {"sql": "", "params": []}
-    placeholders = ", ".join(["?"] * len(clean))
-    return {"sql": f"AND {table_alias}.{column} IN ({placeholders})", "params": clean}
-
-
-def _source_filter(source: str | None, *, table_alias: str, column: str = "source") -> dict[str, Any]:
-    if not source:
-        return {"sql": "", "params": []}
-    return {"sql": f"AND {table_alias}.{column} = ?", "params": [source]}
-
-
-def _contract_id(ticker: str, expiration: Any, strike: float | None, option_type: str, provider_symbol: Any) -> str:
-    if provider_symbol:
-        return str(provider_symbol)
-    return f"{ticker}:{expiration}:{strike:g}:{option_type}" if strike is not None else stable_id(ticker, expiration, option_type)
-
-
-def _premium_mid(row: dict[str, Any], raw: dict[str, Any]) -> float | None:
-    mid = _number(row.get("mid")) or _coalesce_number(raw, "mid", "mark")
-    if mid is not None:
-        return mid
-    bid = _number(row.get("bid")) or _coalesce_number(raw, "bid")
-    ask = _number(row.get("ask")) or _coalesce_number(raw, "ask")
-    if bid is None or ask is None:
-        return None
-    return (bid + ask) / 2
-
-
-def _spread_pct(bid: float | None, ask: float | None, mid: float | None) -> float | None:
-    if bid is None or ask is None or mid is None or mid <= 0:
-        return None
-    return max(0.0, (ask - bid) / mid)
-
-
-def _required_move_pct(option_type: str, underlying: float | None, required_price: float) -> float | None:
-    if underlying is None or underlying <= 0:
-        return None
-    if option_type == "put":
-        return max(0.0, (underlying - required_price) / underlying)
-    return max(0.0, (required_price - underlying) / underlying)
-
-
-def _diff(left: float | None, right: float | None) -> float | None:
-    if left is None or right is None:
-        return None
-    return left - right
-
-
-def _bounded_abs_delta(value: Any) -> float | None:
-    delta = _number(value)
-    if delta is None:
-        return None
-    return max(0.0, min(1.0, abs(delta)))
-
-
-def _liquidity_score(spread_pct: float | None, open_interest: float | None, volume: float | None) -> float | None:
-    components: list[float] = []
-    weights: list[float] = []
-    if spread_pct is not None:
-        components.append(max(0.0, min(100.0, 100.0 - spread_pct * 300.0)))
-        weights.append(0.60)
-    if open_interest is not None:
-        components.append(max(0.0, min(100.0, open_interest / 500.0 * 100.0)))
-        weights.append(0.25)
-    if volume is not None:
-        components.append(max(0.0, min(100.0, volume / 100.0 * 100.0)))
-        weights.append(0.15)
-    if not components:
-        return None
-    score = sum(component * weight for component, weight in zip(components, weights, strict=False)) / sum(weights)
-    if open_interest is None or volume is None:
-        score = min(score, 70.0)
-    return round(score, 2)
-
-
-def _convexity_score(required_move_pct: float | None, delta: float | None, dte: int | None) -> float | None:
-    if required_move_pct is None:
-        return None
-    move_score = max(0.0, min(100.0, 100.0 - required_move_pct * 25.0))
-    delta_score = 100.0 - min(100.0, abs((abs(delta or 0.30) - 0.30) * 180.0))
-    dte_score = 100.0 if dte is None else max(0.0, min(100.0, (dte - 180) / 720 * 100.0))
-    return round(move_score * 0.60 + delta_score * 0.25 + dte_score * 0.15, 2)
-
-
-def _iv_history_by_ticker(rows: list[dict[str, Any]]) -> dict[str, list[float]]:
-    history: dict[str, list[float]] = {}
-    for row in rows:
-        iv = _number(row.get("iv"))
-        if iv is None:
-            continue
-        history.setdefault(_normalize_symbol(row.get("ticker")), []).append(iv)
-    return history
-
-
-def _percentile_rank(value: float | None, history: list[float]) -> float | None:
-    if value is None or not history:
-        return None
-    return round(sum(1 for item in history if item <= value) / len(history) * 100, 2)
-
-
-def _iv_rank(value: float | None, history: list[float]) -> float | None:
-    if value is None or not history:
-        return None
-    low = min(history)
-    high = max(history)
-    if high == low:
-        return 50.0
-    return round((value - low) / (high - low) * 100, 2)
-
-
-def _relative_strength(values: list[float | None], benchmark: list[float | None], period: int) -> float | None:
-    clean = [value for value in values if value is not None]
-    bench = [value for value in benchmark if value is not None]
-    if len(clean) <= period or len(bench) <= period:
-        return None
-    stock_return = clean[-1] / clean[-period - 1] - 1
-    benchmark_return = bench[-1] / bench[-period - 1] - 1
-    return stock_return - benchmark_return
-
-
-def _atr_pct(rows: list[dict[str, Any]], period: int = 14) -> float | None:
-    if not rows:
-        return None
-    true_ranges: list[float] = []
-    previous_close: float | None = None
-    for row in rows[-period:]:
-        high = _number(row.get("high"))
-        low = _number(row.get("low"))
-        close = _number(row.get("close"))
-        if high is None or low is None:
-            continue
-        values = [high - low]
-        if previous_close is not None:
-            values.extend([abs(high - previous_close), abs(low - previous_close)])
-        true_ranges.append(max(values))
-        previous_close = close
-    close = _number(rows[-1].get("close"))
-    if not true_ranges or close is None or close <= 0:
-        return None
-    return mean(true_ranges) / close
-
-
-def _volume_ratio(volumes: list[float]) -> float | None:
-    if len(volumes) < 20:
-        return None
-    recent = _average(volumes[-20:])
-    baseline = _average(volumes[-60:]) if len(volumes) >= 60 else _average(volumes)
-    if recent is None or baseline is None or baseline <= 0:
-        return None
-    return recent / baseline
-
-
-def _base_length_days(closes: list[float], high_252: float) -> int | None:
-    if not closes or high_252 <= 0:
-        return None
-    floor = high_252 * 0.75
-    count = 0
-    for close in reversed(closes):
-        if close < floor:
-            break
-        count += 1
-    return count
-
-
-def _buy_under(row: dict[str, Any], strategy: dict[str, Any]) -> float | None:
-    underlying = _number(row.get("underlying_price"))
-    strike = _number(row.get("strike"))
-    if underlying is None or strike is None:
-        return None
-    max_move = float(strategy["max_required_move_pct"])
-    option_type = str(row.get("option_type") or "").lower()
-    if option_type == "put":
-        return max(0.0, (strike - underlying * (1 - max_move)) / 10)
-    return max(0.0, (underlying * (1 + max_move) - strike) / 10)
-
-
-def _candidate_score(row: dict[str, Any], state: str, watch_themes: list[str] | None = None) -> float:
-    if state == "REJECT":
-        return 0.0
-    required_move = _number(row.get("required_move_10x_pct")) or 10
-    liquidity = _number(row.get("liquidity_score")) or 0
-    convexity = _number(row.get("convexity_score")) or 0
-    rs = _number(row.get("rs_vs_qqq_20d")) or 0
-    technical = 100.0 if (_number(row.get("price")) or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
-    score = (max(0.0, 100.0 - required_move * 20.0) * 0.35) + (liquidity * 0.20) + (convexity * 0.30) + (technical * 0.10) + (max(-20.0, min(20.0, rs * 100)) + 20) * 0.05
-    score += _theme_watch_score(watch_themes or _theme_watch_matches(row))
-    if state == "WATCH":
-        score *= 0.70
-    if state == "SETUP":
-        score *= 0.88
-    return round(max(0.0, min(100.0, score)), 2)
-
-
-def _theme_watch_score(themes: list[str]) -> float:
-    if not themes:
-        return 0.0
-    return min(8.0, 4.0 + max(0, len(themes) - 1) * 2.0)
-
-
-def _theme_watch_matches(row: dict[str, Any]) -> list[str]:
-    text = _theme_context_text(row)
-    if not text:
-        return []
-    matches: list[str] = []
-    for theme, keywords in THEME_WATCH_KEYWORDS.items():
-        if any(keyword in text for keyword in keywords):
-            matches.append(theme)
-    return matches
-
-
-def _theme_context_text(row: dict[str, Any]) -> str:
-    parts = [
-        row.get("ticker"),
-        row.get("instrument_name"),
-        row.get("asset_class"),
-        row.get("sector"),
-        row.get("industry"),
-        row.get("category"),
-    ]
-    return f" {' '.join(str(part or '').lower() for part in parts)} "
-
-
-def _has_missing_data(blockers: list[str]) -> bool:
-    return any(blocker.startswith("missing_") for blocker in blockers)
-
-
-def _is_delayed_feed(row: dict[str, Any]) -> bool:
-    """Whether a candidate's quotes came from a delayed (non-real-time) feed.
-
-    IBKR delayed OPRA chains stamp the chain row ``market_data='delayed'``; other
-    providers expose it via ``market_data_type``/``data_status``. Such feeds do not
-    carry usable real-time option volume, so the volume gate is not applied to them.
-    """
-
-    raw = _json(row.get("raw"))
-    marker = str(
-        raw.get("market_data")
-        or raw.get("market_data_type")
-        or raw.get("data_status")
-        or row.get("data_status")
-        or ""
-    ).lower()
-    return "delayed" in marker
-
-
-def _candidate_quality(row: dict[str, Any], *, state: str, blockers: list[str], hard_rejects: list[str]) -> dict[str, Any]:
-    if state == "REJECT":
-        return {"status": "ok", "flags": [], "peer": {}}
-
-    flags: list[str] = []
-    bad_flags: set[str] = set()
-    raw = _json(row.get("raw"))
-    greeks_source = str(raw.get("greeks_source") or "provider")
-    data_source = str(row.get("data_source") or "unknown")
-    peer_source = row.get("peer_data_source")
-    peer: dict[str, Any] = {"source": peer_source} if peer_source else {}
-    peer_age_hours = _elapsed_hours(row.get("peer_snapshot_time"), row.get("snapshot_time"))
-    peer_fresh = peer_age_hours is None or peer_age_hours <= OPTION_PEER_CROSSCHECK_MAX_AGE_HOURS
-    if peer_source and peer_age_hours is not None:
-        peer["age_hours"] = round(peer_age_hours, 2)
-    if peer_source and not peer_fresh:
-        peer["crosscheck_skipped"] = "stale_peer_snapshot"
-
-    missing_flags = [blocker for blocker in blockers if blocker in {"missing_delta", "missing_spread", "missing_open_interest", "missing_volume", "missing_iv_percentile"}]
-    if missing_flags:
-        flags.extend(missing_flags)
-        bad_flags.update(missing_flags)
-    if "spread_above_fire_threshold" in blockers:
-        flags.append("spread_above_threshold")
-    if any(reject in hard_rejects for reject in {"spread_reject"}):
-        flags.append("spread_reject")
-        bad_flags.add("spread_reject")
-    if state == "FIRE" and greeks_source in {"black_scholes_model", "mixed_fallback"}:
-        flags.append("modeled_greeks")
-    if state == "FIRE" and greeks_source == "mixed_fallback":
-        flags.append("mixed_greek_sources")
-
-    data_status = str(raw.get("market_data") or raw.get("market_data_type") or raw.get("data_status") or raw.get("entitlement_status") or "").lower()
-    if "delayed" in data_status:
-        flags.append("delayed_market_data")
-    if "stale" in data_status:
-        flags.append("stale_market_data")
-        bad_flags.add("stale_market_data")
-
-    mid = _number(row.get("mid"))
-    peer_mid = _number(row.get("peer_mid"))
-    mid_diff = _relative_diff(mid, peer_mid) if peer_fresh else None
-    if mid_diff is not None:
-        peer["mid_relative_diff"] = round(mid_diff, 4)
-        if mid_diff >= OPTION_QUALITY_MID_BAD_RELATIVE_DIFF:
-            flags.append("source_mid_disagreement")
-            bad_flags.add("source_mid_disagreement")
-        elif mid_diff >= OPTION_QUALITY_MID_CAUTION_RELATIVE_DIFF:
-            flags.append("source_mid_disagreement")
-
-    iv = _number(row.get("iv"))
-    peer_iv = _number(row.get("peer_iv"))
-    iv_diff = _relative_diff(iv, peer_iv) if peer_fresh else None
-    if iv_diff is not None:
-        peer["iv_relative_diff"] = round(iv_diff, 4)
-        if iv_diff >= OPTION_QUALITY_IV_BAD_RELATIVE_DIFF:
-            flags.append("source_iv_disagreement")
-            bad_flags.add("source_iv_disagreement")
-        elif iv_diff >= OPTION_QUALITY_IV_CAUTION_RELATIVE_DIFF:
-            flags.append("source_iv_disagreement")
-
-    delta = _number(row.get("delta"))
-    peer_delta = _number(row.get("peer_delta"))
-    if peer_fresh and delta is not None and peer_delta is not None:
-        delta_diff = abs(delta - peer_delta)
-        peer["delta_absolute_diff"] = round(delta_diff, 4)
-        if delta_diff >= OPTION_QUALITY_DELTA_BAD_ABSOLUTE_DIFF:
-            flags.append("source_delta_disagreement")
-            bad_flags.add("source_delta_disagreement")
-        elif delta_diff >= OPTION_QUALITY_DELTA_CAUTION_ABSOLUTE_DIFF:
-            flags.append("source_delta_disagreement")
-
-    deduped_flags = list(dict.fromkeys(flags))
-    if bad_flags:
-        status = "bad"
-    elif deduped_flags:
-        status = "caution"
-    else:
-        status = "ok"
-    return {
-        "status": status,
-        "flags": deduped_flags,
-        "source": data_source,
-        "greeks_source": greeks_source,
-        "peer": peer,
-    }
-
-
-def _relative_diff(left: float | None, right: float | None) -> float | None:
-    if left is None or right is None:
-        return None
-    denominator = max(abs(left), abs(right))
-    if denominator <= 0:
-        return None
-    return abs(left - right) / denominator
-
-
-def _resolve_option_greeks(
-    row: dict[str, Any],
-    *,
-    option_type: str,
-    underlying_price: float | None,
-    strike: float | None,
-    dte: int | None,
-    iv: float | None,
-) -> dict[str, Any]:
-    provider_values = {name: _number(row.get(name)) for name in ("delta", "gamma", "theta", "vega")}
-    matched_values = {name: _number(row.get(f"tradingview_{name}")) for name in ("delta", "gamma", "theta", "vega")}
-    if all(value is not None for value in provider_values.values()):
-        return {**provider_values, "source": "provider"}
-
-    resolved: dict[str, float | None] = {}
-    used_match = False
-    for name, value in provider_values.items():
-        if value is not None:
-            resolved[name] = value
-            continue
-        matched = matched_values[name]
-        if matched is not None:
-            resolved[name] = matched
-            used_match = True
-        else:
-            resolved[name] = None
-
-    used_model = False
-    if any(value is None for value in resolved.values()):
-        modeled_values = _black_scholes_greeks(option_type, underlying_price, strike, dte, iv)
-        for name, value in resolved.items():
-            if value is None and modeled_values.get(name) is not None:
-                resolved[name] = modeled_values[name]
-                used_model = True
-
-    if used_match and used_model:
-        greek_source = "mixed_fallback"
-    elif used_model:
-        greek_source = "black_scholes_model"
-    elif used_match:
-        greek_source = "tradingview_match"
-    else:
-        greek_source = "provider"
-    return {**resolved, "source": greek_source}
-
-
-def _black_scholes_greeks(
-    option_type: str,
-    spot: float | None,
-    strike: float | None,
-    dte: int | None,
-    iv: float | None,
-    *,
-    risk_free_rate: float = DEFAULT_OPTION_RISK_FREE_RATE,
-) -> dict[str, float]:
-    if not option_type or spot is None or strike is None or dte is None or iv is None:
-        return {}
-    if option_type not in {"call", "put"} or spot <= 0 or strike <= 0 or dte < 0 or iv < 0:
-        return {}
-    if not all(math.isfinite(value) for value in (spot, strike, float(dte), iv, risk_free_rate)):
-        return {}
-    model_dte = _option_model_dte(dte)
-    model_iv = _option_model_iv(iv)
-    if model_dte is None or model_iv is None:
-        return {}
-    years = model_dte / 365.0
-    sqrt_years = math.sqrt(years)
-    sigma_sqrt_t = model_iv * sqrt_years
-    if sigma_sqrt_t <= 0:
-        return {}
-
-    d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * model_iv * model_iv) * years) / sigma_sqrt_t
-    d2 = d1 - sigma_sqrt_t
-    pdf = _norm_pdf(d1)
-    discount = math.exp(-risk_free_rate * years)
-    if option_type == "call":
-        delta = _norm_cdf(d1)
-        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) - (risk_free_rate * strike * discount * _norm_cdf(d2))
-    else:
-        delta = _norm_cdf(d1) - 1.0
-        theta_annual = -((spot * pdf * model_iv) / (2 * sqrt_years)) + (risk_free_rate * strike * discount * _norm_cdf(-d2))
-    gamma = pdf / (spot * sigma_sqrt_t)
-    theta = theta_annual / 365.0
-    vega = spot * pdf * sqrt_years
-    return {
-        "delta": round(delta, 6),
-        "gamma": round(gamma, 6),
-        "theta": round(theta, 6),
-        "vega": round(vega, 6),
-    }
-
-
-def _option_model_dte(dte: int | None) -> int | None:
-    if dte is None or dte < 0:
-        return None
-    return max(dte, MIN_OPTION_MODEL_DTE_DAYS)
-
-
-def _option_model_iv(iv: float | None) -> float | None:
-    if iv is None or iv < 0:
-        return None
-    return max(iv, MIN_OPTION_MODEL_IV)
-
-
-def _norm_cdf(value: float) -> float:
-    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
-
-
-def _norm_pdf(value: float) -> float:
-    return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
