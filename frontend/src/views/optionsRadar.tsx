@@ -11,6 +11,19 @@ import { cn } from "@/lib/utils";
 import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
+import {
+  dateMillis,
+  formatDate,
+  formatMultiple,
+  formatNumber,
+  formatRatio,
+  formatScore,
+  formatShortDate,
+  formatSignedRatio,
+  moneyField,
+  sessionBadge,
+  validationMillis,
+} from "./optionsRadarFormat";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
@@ -2644,102 +2657,3 @@ function oldestDate(items: RowRecord[], key: string): string {
   return oldest;
 }
 
-function moneyField(row: RowRecord | undefined, keys: string[]): string {
-  return formatMoney(numberField(row, keys, Number.NaN));
-}
-
-function formatRatio(value: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return `${(value * 100).toFixed(Math.abs(value) >= 10 ? 0 : 1)}%`;
-}
-
-function formatSignedRatio(value: number): string {
-  if (!Number.isFinite(value)) return "-";
-  const pct = value * 100;
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(Math.abs(pct) >= 100 ? 0 : 1)}%`;
-}
-
-function formatMultiple(value: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return `${(value + 1).toFixed(value + 1 >= 10 ? 1 : 2)}x`;
-}
-
-function formatScore(value: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return value.toFixed(Math.abs(value) >= 10 ? 0 : 1);
-}
-
-function formatNumber(value: number, digits: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return value.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
-}
-
-function formatDate(value: string): string {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-// The backend writes naive UTC ISO timestamps (datetime.utcnow().isoformat()),
-// so append a Z when no timezone is present before measuring age.
-function parseUtcMillis(value: string): number {
-  if (!value) return 0;
-  const hasZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value);
-  const date = new Date(hasZone ? value : `${value}Z`);
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
-
-function formatAge(minutes: number): string {
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-// Honest freshness state for the snapshot. Replaces a static "Hourly
-// deterministic" badge that implied freshness even when data was days stale.
-function freshnessBadge(snapshotIso: string): { label: string; tone: Tone } {
-  const ms = parseUtcMillis(snapshotIso);
-  if (!ms) return { label: "No data", tone: "muted" };
-  const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
-  if (minutes < 90) return { label: `Live · ${formatAge(minutes)} ago`, tone: "good" };
-  if (minutes < 24 * 60) return { label: `${formatAge(minutes)} old`, tone: "warn" };
-  return { label: `Stale · ${formatAge(minutes)} old`, tone: "bad" };
-}
-
-// Session-aware header badge. During RTH the freshness/age is what matters; when
-// the market is closed we say so (and that we're frozen on the last regular-hours
-// snapshot) instead of showing a misleading "Live"/"Stale" age.
-function sessionBadge(
-  marketSession: string,
-  frozen: boolean,
-  snapshotIso: string,
-): { label: string; tone: Tone } {
-  if (marketSession === "closed") {
-    const suffix = frozen && snapshotIso ? ` · last RTH ${formatDate(snapshotIso)}` : "";
-    return { label: `Market closed${suffix}`, tone: "info" };
-  }
-  if (marketSession === "rth") {
-    const fresh = freshnessBadge(snapshotIso);
-    return { label: `RTH · ${fresh.label}`, tone: fresh.tone };
-  }
-  return freshnessBadge(snapshotIso); // session unknown — fall back to freshness
-}
-
-function formatShortDate(value: string): string {
-  if (!value) return "-";
-  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-function dateMillis(value: string): number {
-  if (!value) return 0;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-}
-
-function validationMillis(row: RowRecord): number {
-  return dateMillis(textField(row, ["validated_at"])) || dateMillis(textField(row, ["validation_date"]));
-}
