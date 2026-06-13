@@ -10,7 +10,7 @@ import {recordField, numberFromRecord, stringFromRecord, boolFromRecord } from "
 import {stateTone, tierTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone } from "../optionsRadarTone";
 import {FullText, TickerButton } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, opportunityActionText, rows, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures } from "./helpers";
+import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, opportunityActionText, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures } from "./helpers";
 import {OptionThesisAgentRuntime } from "./types";
 import {BriefCallout, InsightLine, MetricBox } from "./shared";
 

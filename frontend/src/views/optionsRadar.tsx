@@ -1,127 +1,17 @@
-import { Activity, AlertTriangle, ArrowDownUp, BrainCircuit, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, GitBranchPlus, Loader2, Search, Target, TrendingUp } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-
-import { acknowledgeRadarAlert, promoteStrategyMutation } from "@/api";
-import { DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
-import type { JsonValue, PanelData, RowRecord, TablePayload } from "@/types";
-import type { Tone } from "@/ui/tone";
-import { displayField, formatMoney, fullField, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
-import {
-  dateMillis,
-  formatDate,
-  formatMultiple,
-  formatNumber,
-  formatRatio,
-  formatScore,
-  formatShortDate,
-  formatSignedRatio,
-  moneyField,
-  sessionBadge,
-  validationMillis,
-} from "./optionsRadarFormat";
-import {
-  arrayText,
-  boolFromRecord,
-  jsonArrayField,
-  jsonRecord,
-  latestBy,
-  latestValidationBy,
-  listFromRecord,
-  numberFromRecord,
-  recordField,
-  stringFromRecord,
-  validationHistoryBy,
-} from "./optionsRadarData";
-import {
-  attributionTone,
-  reasonLabel,
-  stateRank,
-  stateTone,
-  thesisStateTone,
-  thesisValidationLabel,
-  tierTone,
-  toneText,
-  validationStatusLabel,
-  validationStatusTone,
-  verdictTone,
-} from "./optionsRadarTone";
-import { Cell, FullText, Head, MetricPill, SectionTitle, TickerButton, Truncated } from "./optionsRadarPrimitives";
-import {
-  OPPORTUNITY_STATES,
-  backtestDetail,
-  candidateActionText,
-  candidateConviction,
-  candidateFamily,
-  candidateOpportunityFields,
-  cohortDefinition,
-  cohortHasMatureEvidence,
-  cohortKey,
-  cohortObservationStats,
-  commonBlockers,
-  commonDataContractFailures,
-  compactStrategyVersion,
-  compareCandidates,
-  compareGroupedOpportunities,
-  compareNumber,
-  compareScore,
-  compareText,
-  countWhere,
-  dataContractFailures,
-  dataContractStatus,
-  focusCandidateRows,
-  formatConfigValue,
-  formatObservedWindow,
-  forwardDetail,
-  impactSummary,
-  investmentStateLabel,
-  investmentStateTone,
-  isOpportunityCandidate,
-  isServiceRepair,
-  oldestDate,
-  optionThesisAgentState,
-  opportunityActionText,
-  outcomeMaturity,
-  postmortemImpact,
-  proposalChangeItems,
-  proposalChangeNote,
-  proposalGateSummary,
-  qualityOf,
-  readableReasonSummary,
-  rows,
-  stateOf,
-  summarizeReasons,
-  tabButtonClass,
-  thesisFallbackText,
-  thesisId,
-  thesisState,
-  tierOf,
-  uniqueText,
-  uniqueValues,
-  validationForThesis,
-  validationHistoryForThesis,
-  valueIsPresent,
-} from "./optionsRadar/helpers";
-import {
-  CANDIDATE_PAGE_SIZE,
-  type CandidateFocus,
-  type CandidateSort,
-  type CandidateStateFilter,
-  type FamilyFilter,
-  type OptionThesisAgentRuntime,
-  type QualityFilter,
-  type ThesisFilter,
-} from "./optionsRadar/types";
-import { RadarAlertPanel, RadarSummaryStrip } from "./optionsRadar/summary";
-import { SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
-import { CandidateEventsTable } from "./optionsRadar/candidateTable";
-import { CohortResultsTable, LearningProgressPanel, MissedWinnersTable, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
-import { StrategyProposalsTable } from "./optionsRadar/strategyProposals";
-import { WorkspacePage, type OpenTicker } from "./workspacePage";
+import {useMemo, useState } from "react";
+import {acknowledgeRadarAlert, promoteStrategyMutation } from "@/api";
+import {StatusBadge } from "@/components/market/workstation";
+import {PanelData, RowRecord } from "@/types";
+import {displayField, numberField, textField } from "./rowFormat";
+import {formatDate, sessionBadge } from "./optionsRadarFormat";
+import {latestBy, latestValidationBy } from "./optionsRadarData";
+import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf, tierOf, isServiceRepair } from "./optionsRadar/helpers";
+import {RadarSummaryStrip, RadarAlertPanel } from "./optionsRadar/summary";
+import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
+import {CandidateEventsTable } from "./optionsRadar/candidateTable";
+import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
+import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
+import {WorkspacePage, OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
   data: PanelData;

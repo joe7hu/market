@@ -14,7 +14,7 @@ import {recordField, listFromRecord, stringFromRecord } from "../optionsRadarDat
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";
 import {Cell, FullText, Head, MetricPill, SectionTitle, TickerButton } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {candidateActionText, rows, uniqueText, uniqueValues, candidateConviction, candidateFamily, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
+import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
 import {OptionThesisAgentRuntime, CandidateSort, CandidateStateFilter, CandidateFocus, ThesisFilter, QualityFilter, FamilyFilter, CANDIDATE_PAGE_SIZE } from "./types";
 import {ReadableReasonGroup, InlineMetric, MobileSection, QualityIndicator, HelpLabel, FillTarget, PremiumCapHint, OpportunityOutcome } from "./shared";
 import {OpportunityThesisSummary } from "./signalBrief";

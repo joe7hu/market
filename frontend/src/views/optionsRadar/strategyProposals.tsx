@@ -8,7 +8,7 @@ import {RowRecord } from "@/types";
 import {displayField, textField, titleLabel, toneFromText } from "../rowFormat";
 import {formatDate } from "../optionsRadarFormat";
 import {toneText } from "../optionsRadarTone";
-import {proposalGateSummary, proposalChangeItems, proposalChangeNote, compactStrategyVersion, backtestDetail, forwardDetail, rows } from "./helpers";
+import {proposalGateSummary, proposalChangeItems, proposalChangeNote, compactStrategyVersion, backtestDetail, forwardDetail} from "./helpers";
 import {GatePill, InsightLine } from "./shared";
 
 export function StrategyProposalsTable({

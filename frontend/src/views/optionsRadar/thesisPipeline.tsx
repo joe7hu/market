@@ -1,7 +1,7 @@
 // Thesis pipeline, requests, agent browser, and detail pane.
 
 import {useEffect, useMemo, useState } from "react";
-import {BrainCircuit, Search, Target } from "lucide-react";
+import {BrainCircuit, Search} from "lucide-react";
 import {DataTableFrame, EmptyState, StatusBadge } from "@/components/market/workstation";
 import {Input } from "@/components/ui/input";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -14,7 +14,7 @@ import {jsonRecord, jsonArrayField, stringFromRecord, latestValidationBy, valida
 import {stateTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone, toneText } from "../optionsRadarTone";
 import {Cell, Head, SectionTitle, TickerButton, Truncated } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {thesisId, validationForThesis, validationHistoryForThesis, rows, countWhere, stateOf, oldestDate } from "./helpers";
+import {thesisId, validationForThesis, validationHistoryForThesis, countWhere, stateOf, oldestDate } from "./helpers";
 import {OptionThesisAgentRuntime } from "./types";
 import {BrowserStat, MetricBox, ReadableSection, ReadableList } from "./shared";
 

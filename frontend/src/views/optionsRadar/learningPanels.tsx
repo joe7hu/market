@@ -11,7 +11,7 @@ import {jsonArrayField } from "../optionsRadarData";
 import {toneText } from "../optionsRadarTone";
 import {Cell, Head, MetricPill, SectionTitle, TickerButton, Truncated } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {postmortemImpact, cohortKey, cohortObservationStats, formatObservedWindow, rows, countWhere, cohortHasMatureEvidence, cohortDefinition } from "./helpers";
+import {postmortemImpact, cohortKey, cohortObservationStats, formatObservedWindow, countWhere, cohortHasMatureEvidence, cohortDefinition } from "./helpers";
 import {InsightLine } from "./shared";
 
 export function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: OpenTicker }) {
