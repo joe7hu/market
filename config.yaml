@@ -84,6 +84,10 @@ data_sources:
       mcp_url: https://agent.robinhood.com/mcp/trading
       token_path: ~/.config/market/robinhood-mcp-token.json
       auth_token_env: ROBINHOOD_MCP_TOKEN
+      prefer_codex_credentials: true
+      codex_credentials_path: ~/.codex/.credentials.json
+      codex_mcp_server_name: robinhood-trading
+      scope: internal
       callback_host: 127.0.0.1
       callback_port: 8765
       readonly: true

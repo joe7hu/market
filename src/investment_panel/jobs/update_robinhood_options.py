@@ -15,7 +15,13 @@ from typing import Any
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, json_dumps
 from investment_panel.core.free_sources import option_symbols, store_options_chain
-from investment_panel.core.robinhood_options import RobinhoodAuthRequired, RobinhoodClient, authorize_robinhood_mcp, collect_robinhood_option_chains
+from investment_panel.core.robinhood_options import (
+    RobinhoodAuthRequired,
+    RobinhoodClient,
+    authorize_robinhood_mcp,
+    collect_robinhood_option_chains,
+    load_robinhood_access_token,
+)
 from investment_panel.core.status import write_source_status
 
 
@@ -46,7 +52,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         return {"status": "disabled", "provider": "robinhood"}
     if not provider.readonly:
         return {"status": "unsafe_config", "provider": "robinhood", "error": "robinhood provider must remain readonly"}
-    if client is None and not os.environ.get(provider.auth_token_env) and not os.path.exists(os.path.expanduser(os.path.expandvars(provider.token_path))):
+    if client is None and not _robinhood_auth_available(provider):
         result = {
             "provider": "robinhood",
             "status": "auth_required",
@@ -133,6 +139,13 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         {"source": "market-mini", "job": "update_robinhood_options", "origin": "autonomous_collector", **result},
     )
     return {**result, "status_path": str(status_path) if status_path else None}
+
+
+def _robinhood_auth_available(provider: Any) -> bool:
+    try:
+        return bool(load_robinhood_access_token(provider))
+    except RobinhoodAuthRequired:
+        return False
 
 
 def _upsert_robinhood_quote(con: Any, row: dict[str, Any]) -> None:

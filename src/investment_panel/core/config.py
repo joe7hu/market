@@ -101,8 +101,11 @@ class RobinhoodConfig:
     mcp_url: str = "https://agent.robinhood.com/mcp/trading"
     token_path: str = "~/.config/market/robinhood-mcp-token.json"
     auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
+    prefer_codex_credentials: bool = True
+    codex_credentials_path: str = "~/.codex/.credentials.json"
+    codex_mcp_server_name: str = "robinhood-trading"
     client_id: str | None = None
-    scope: str = ""
+    scope: str = "internal"
     callback_host: str = "127.0.0.1"
     callback_port: int = 8765
     timeout_seconds: int = 30
@@ -309,8 +312,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 mcp_url=str(robinhood_raw.get("mcp_url", "https://agent.robinhood.com/mcp/trading")),
                 token_path=str(robinhood_raw.get("token_path", "~/.config/market/robinhood-mcp-token.json")),
                 auth_token_env=str(robinhood_raw.get("auth_token_env", "ROBINHOOD_MCP_TOKEN")),
+                prefer_codex_credentials=bool(robinhood_raw.get("prefer_codex_credentials", True)),
+                codex_credentials_path=str(robinhood_raw.get("codex_credentials_path", "~/.codex/.credentials.json")),
+                codex_mcp_server_name=str(robinhood_raw.get("codex_mcp_server_name", "robinhood-trading")),
                 client_id=robinhood_raw.get("client_id"),
-                scope=str(robinhood_raw.get("scope", "")),
+                scope=str(robinhood_raw.get("scope", "internal")),
                 callback_host=str(robinhood_raw.get("callback_host", "127.0.0.1")),
                 callback_port=int(robinhood_raw.get("callback_port", 8765)),
                 timeout_seconds=int(robinhood_raw.get("timeout_seconds", 30)),
@@ -465,6 +471,9 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                     "mcp_url": config.data_sources.brokers.robinhood.mcp_url,
                     "token_path": config.data_sources.brokers.robinhood.token_path,
                     "auth_token_env": config.data_sources.brokers.robinhood.auth_token_env,
+                    "prefer_codex_credentials": config.data_sources.brokers.robinhood.prefer_codex_credentials,
+                    "codex_credentials_path": config.data_sources.brokers.robinhood.codex_credentials_path,
+                    "codex_mcp_server_name": config.data_sources.brokers.robinhood.codex_mcp_server_name,
                     "client_id": config.data_sources.brokers.robinhood.client_id,
                     "scope": config.data_sources.brokers.robinhood.scope,
                     "callback_host": config.data_sources.brokers.robinhood.callback_host,

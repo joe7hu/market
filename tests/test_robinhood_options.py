@@ -12,6 +12,7 @@ from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.core.robinhood_options import (
     _authorization_server_metadata,
+    authorize_robinhood_mcp,
     collect_robinhood_option_chains,
     load_robinhood_access_token,
     option_quote_row,
@@ -26,6 +27,9 @@ class _ProviderConfig:
     mcp_url: str = "https://example.invalid/mcp"
     token_path: str = "~/.config/market/robinhood-mcp-token.json"
     auth_token_env: str = "ROBINHOOD_MCP_TOKEN"
+    prefer_codex_credentials: bool = True
+    codex_credentials_path: str = "~/.codex/.credentials.json"
+    codex_mcp_server_name: str = "robinhood-trading"
     timeout_seconds: int = 30
     readonly: bool = True
     max_symbols: int = 40
@@ -260,6 +264,61 @@ def test_load_robinhood_access_token_from_cache(tmp_path: Path, monkeypatch) -> 
     assert token == "cached-token"
 
 
+def test_load_robinhood_access_token_from_codex_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
+    token_path = tmp_path / "missing-market-token.json"
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text(
+        """
+{
+  "robinhood-trading|abc": {
+    "server_name": "robinhood-trading",
+    "server_url": "https://agent.robinhood.com/mcp/trading",
+    "client_id": "client",
+    "access_token": "codex-token",
+    "expires_at": 4102444800000,
+    "refresh_token": "refresh",
+    "scopes": ["internal"]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    token = load_robinhood_access_token(
+        _ProviderConfig(token_path=str(token_path), codex_credentials_path=str(credentials_path))
+    )
+
+    assert token == "codex-token"
+
+
+def test_authorize_robinhood_mcp_uses_existing_codex_credentials(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text(
+        """
+{
+  "robinhood-trading|abc": {
+    "server_name": "robinhood-trading",
+    "server_url": "https://agent.robinhood.com/mcp/trading",
+    "client_id": "client",
+    "access_token": "codex-token",
+    "expires_at": 4102444800000,
+    "refresh_token": "refresh",
+    "scopes": ["internal"]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = authorize_robinhood_mcp(_ProviderConfig(codex_credentials_path=str(credentials_path)))
+
+    assert result["status"] == "ok"
+    assert result["auth_provider"] == "codex_mcp"
+    assert result["server_name"] == "robinhood-trading"
+
+
 def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -298,6 +357,7 @@ data_sources:
     robinhood:
       enabled: true
       auth_token_env: ROBINHOOD_MCP_TOKEN
+      prefer_codex_credentials: false
 """,
         encoding="utf-8",
     )

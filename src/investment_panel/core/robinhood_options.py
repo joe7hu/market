@@ -12,7 +12,9 @@ import json
 import os
 import base64
 import hashlib
+import shutil
 import secrets
+import subprocess
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -213,25 +215,52 @@ def load_robinhood_access_token(config: Any) -> str:
     if env_token:
         return env_token
     token_path = _token_path(config)
+    if token_path.exists():
+        token = _load_access_token_from_payload_path(token_path, config=config, refresh=True)
+        if token:
+            return token
+    if bool(getattr(config, "prefer_codex_credentials", True)):
+        token = _load_codex_mcp_access_token(config)
+        if token:
+            return token
     if not token_path.exists():
         raise RobinhoodAuthRequired(f"Robinhood MCP token cache not found: {token_path}")
+    raise RobinhoodAuthRequired(f"Robinhood MCP token cache is expired: {token_path}")
+
+
+def _load_access_token_from_payload_path(path: Path, *, config: Any, refresh: bool) -> str | None:
     try:
-        payload = json.loads(token_path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise RobinhoodAuthRequired(f"Robinhood MCP token cache is unreadable: {token_path}") from exc
+        raise RobinhoodAuthRequired(f"Robinhood MCP token cache is unreadable: {path}") from exc
     access_token = payload.get("access_token")
-    expires_at = _float_value(payload.get("expires_at"))
+    expires_at = _expiry_seconds(payload.get("expires_at"))
     if isinstance(access_token, str) and access_token and (expires_at is None or expires_at > time.time() + 60):
         return access_token
+    if not refresh:
+        return None
     refreshed = _refresh_robinhood_token(config, payload)
     if refreshed:
-        _write_token_payload(token_path, refreshed)
+        _write_token_payload(path, refreshed)
         return str(refreshed["access_token"])
-    raise RobinhoodAuthRequired(f"Robinhood MCP token cache is expired: {token_path}")
+    return None
 
 
 def authorize_robinhood_mcp(config: Any) -> dict[str, Any]:
     """Run a browser OAuth + PKCE flow and persist a local token cache."""
+
+    if bool(getattr(config, "prefer_codex_credentials", True)):
+        token = _load_codex_mcp_access_token(config)
+        if token:
+            return {
+                "status": "ok",
+                "auth_provider": "codex_mcp",
+                "server_name": str(getattr(config, "codex_mcp_server_name", "robinhood-trading")),
+                "credentials_path": str(_codex_credentials_path(config)),
+            }
+        codex_auth = _authorize_with_codex_cli(config)
+        if codex_auth.get("status") == "ok":
+            return codex_auth
 
     mcp_url = str(getattr(config, "mcp_url", "https://agent.robinhood.com/mcp/trading"))
     resource_metadata_url = _discover_resource_metadata_url(mcp_url, int(getattr(config, "timeout_seconds", 30)))
@@ -595,7 +624,7 @@ def _exchange_authorization_code(
 
 def _refresh_robinhood_token(config: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
     refresh_token = payload.get("refresh_token")
-    token_endpoint = payload.get("token_endpoint")
+    token_endpoint = payload.get("token_endpoint") or _robinhood_token_endpoint(config)
     client_id = payload.get("client_id") or getattr(config, "client_id", None)
     resource = payload.get("resource") or getattr(config, "mcp_url", None)
     if not refresh_token or not token_endpoint or not client_id:
@@ -619,6 +648,109 @@ def _refresh_robinhood_token(config: Any, payload: dict[str, Any]) -> dict[str, 
     refreshed["resource"] = resource
     refreshed["saved_at"] = time.time()
     return refreshed
+
+
+def _load_codex_mcp_access_token(config: Any) -> str | None:
+    payload = _codex_mcp_credential(config)
+    if not payload:
+        return None
+    access_token = payload.get("access_token")
+    expires_at = _expiry_seconds(payload.get("expires_at"))
+    if isinstance(access_token, str) and access_token and (expires_at is None or expires_at > time.time() + 60):
+        return access_token
+    refreshed = _refresh_robinhood_token(config, payload)
+    if not refreshed:
+        return None
+    _write_codex_mcp_credential(config, refreshed)
+    return str(refreshed["access_token"])
+
+
+def _codex_mcp_credential(config: Any) -> dict[str, Any] | None:
+    path = _codex_credentials_path(config)
+    try:
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(credentials, dict):
+        return None
+    server_name = str(getattr(config, "codex_mcp_server_name", "robinhood-trading"))
+    server_url = str(getattr(config, "mcp_url", "https://agent.robinhood.com/mcp/trading"))
+    for value in credentials.values():
+        if not isinstance(value, dict):
+            continue
+        if value.get("server_name") == server_name or value.get("server_url") == server_url:
+            payload = dict(value)
+            payload.setdefault("resource", server_url)
+            return payload
+    return None
+
+
+def _write_codex_mcp_credential(config: Any, refreshed: dict[str, Any]) -> None:
+    path = _codex_credentials_path(config)
+    try:
+        credentials = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(credentials, dict):
+        return
+    server_name = str(getattr(config, "codex_mcp_server_name", "robinhood-trading"))
+    server_url = str(getattr(config, "mcp_url", "https://agent.robinhood.com/mcp/trading"))
+    for key, value in credentials.items():
+        if not isinstance(value, dict):
+            continue
+        if value.get("server_name") != server_name and value.get("server_url") != server_url:
+            continue
+        updated = dict(value)
+        updated.update(refreshed)
+        updated.setdefault("server_name", server_name)
+        updated.setdefault("server_url", server_url)
+        expires_at = _expiry_seconds(updated.get("expires_at"))
+        if expires_at is not None:
+            updated["expires_at"] = int(expires_at * 1000)
+        credentials[key] = updated
+        path.write_text(json.dumps(credentials, indent=2), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return
+
+
+def _authorize_with_codex_cli(config: Any) -> dict[str, Any]:
+    codex = shutil.which("codex")
+    if not codex:
+        return {"status": "unavailable", "auth_provider": "codex_mcp", "reason": "codex CLI was not found"}
+    server_name = str(getattr(config, "codex_mcp_server_name", "robinhood-trading"))
+    scope = str(getattr(config, "scope", "internal") or "")
+    command = [codex, "mcp", "login"]
+    if scope:
+        command.extend(["--scopes", scope])
+    command.append(server_name)
+    subprocess.run(command, check=True)
+    token = _load_codex_mcp_access_token(config)
+    if not token:
+        raise RobinhoodAuthRequired(f"Codex MCP login completed but no usable credential was found for {server_name}")
+    return {
+        "status": "ok",
+        "auth_provider": "codex_mcp",
+        "server_name": server_name,
+        "credentials_path": str(_codex_credentials_path(config)),
+    }
+
+
+def _robinhood_token_endpoint(config: Any) -> str | None:
+    try:
+        timeout = int(getattr(config, "timeout_seconds", 30))
+        resource_metadata_url = _discover_resource_metadata_url(str(getattr(config, "mcp_url")), timeout)
+        resource_metadata = _get_json(resource_metadata_url, timeout=timeout)
+        auth_server = str((resource_metadata.get("authorization_servers") or [""])[0])
+        if not auth_server:
+            return None
+        metadata = _authorization_server_metadata(auth_server, timeout=timeout)
+    except Exception:
+        return None
+    endpoint = metadata.get("token_endpoint")
+    return str(endpoint) if endpoint else None
 
 
 def _wait_for_oauth_callback(auth_url: str, *, expected_state: str, host: str, port: int) -> str:
@@ -694,6 +826,10 @@ def _token_path(config: Any) -> Path:
     return Path(os.path.expandvars(str(getattr(config, "token_path", "~/.config/market/robinhood-mcp-token.json")))).expanduser()
 
 
+def _codex_credentials_path(config: Any) -> Path:
+    return Path(os.path.expandvars(str(getattr(config, "codex_credentials_path", "~/.codex/.credentials.json")))).expanduser()
+
+
 def _write_token_payload(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -709,6 +845,13 @@ def _float_value(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number else None
+
+
+def _expiry_seconds(value: Any) -> float | None:
+    expires_at = _float_value(value)
+    if expires_at is None:
+        return None
+    return expires_at / 1000 if expires_at > 10_000_000_000 else expires_at
 
 
 def _payload_data(payload: dict[str, Any]) -> dict[str, Any]:
