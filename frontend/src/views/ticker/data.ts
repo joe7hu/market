@@ -34,8 +34,14 @@ export function tickerHeaderMetrics(ticker: TickerPayload | null): MetricSpec[] 
   const verdict = objectField(d?.decision, "verdict");
   const sec = d?.fundamentals?.sec;
   const sources = d?.sources?.signal_count ?? 0;
+  const quoteType = textField(quote, ["type"]);
+  const isLiveQuote = quoteType === "market_quote";
+  const quoteLabel = textField(quote, ["label"]);
+  const priceDetail = isLiveQuote || !quoteLabel
+    ? displayField(quote, ["observed_at"], "No quote timestamp")
+    : `${quoteLabel} · ${displayField(quote, ["observed_at"], "no timestamp")}`;
   return [
-    ["Price", moneyMetric(quote, "price"), displayField(quote, ["observed_at"], "No quote timestamp"), toneFromText(textField(quote, ["freshness", "type"], "loaded"))],
+    ["Price", moneyMetric(quote, "price"), priceDetail, isLiveQuote ? "good" : quoteType ? "warn" : "info"],
     ["Action", displayField(verdict, ["action"], "Not loaded"), displayField(verdict, ["freshness"], "No decision freshness"), toneFromText(textField(verdict, ["action"], "info"))],
     ["Revenue YoY", ratioMetric(sec, "revenue_growth"), "SEC company facts", toneFromText(ratioTone(numberFrom(sec?.revenue_growth)))],
     ["Sources", sources ? String(sources) : "0", "consensus and ticker signals", sources ? "good" : "warn"],

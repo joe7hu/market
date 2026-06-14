@@ -4,10 +4,9 @@ import { textField } from "@/views/rowFormat";
 export function resolveTradingViewSymbol(symbol: string, ticker: TickerPayload | null): string {
   const resolved = textField(ticker?.dossier?.identity, ["tradingview_symbol"]);
   if (resolved) return resolved.toUpperCase();
-  const normalized = symbol.toUpperCase();
-  if (normalized.endsWith("-USD")) return `COINBASE:${normalized.replace("-USD", "USD")}`;
-  if (["SPY", "QQQ"].includes(normalized)) return `AMEX:${normalized}`;
-  return `NASDAQ:${normalized}`;
+  // Exchange-qualification (-USD, SPY/QQQ on AMEX, etc.) is the backend's job via
+  // identity.tradingview_symbol; fall back to a plain default only when it's absent.
+  return `NASDAQ:${symbol.toUpperCase()}`;
 }
 
 export function tradingViewEmbedUrl(tradingViewSymbol: string): string {

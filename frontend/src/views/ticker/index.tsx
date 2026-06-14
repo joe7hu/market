@@ -19,12 +19,21 @@ import {
 export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; data: PanelData; onOpenTicker: OpenTicker }) {
   const dossier = ticker?.dossier;
   const metrics = tickerHeaderMetrics(ticker);
-  const title = ticker?.found === false ? `${symbol} not found` : symbol;
+  const notFound = ticker?.found === false;
+  const title = notFound ? `${symbol} not found` : symbol;
+  const portfolio = dossier?.portfolio;
+  const showPortfolio = Boolean(
+    portfolio &&
+      (portfolio.owned ||
+        Object.keys(portfolio.fit ?? {}).length ||
+        (portfolio.correlations?.length ?? 0) ||
+        (portfolio.risk_cards?.length ?? 0)),
+  );
   return (
     <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Authoritative fundamentals, source-backed evidence, thesis state, and decision context." metrics={metrics}>
-      {dossier ? (
+      {dossier && !notFound ? (
         <>
-          {dossier.decision ? <DecisionPanel brief={dossier.decision} /> : null}
+          <DecisionPanel brief={dossier.decision} />
           <FundamentalsPanel fundamentals={dossier.fundamentals} />
           <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.7fr)]">
             <TradingViewChart symbol={symbol} ticker={ticker} />
@@ -36,13 +45,17 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
             <ThesisPanel thesis={dossier.thesis} />
             <OwnershipPanel ownership={dossier.ownership} />
           </div>
-          {dossier.portfolio.owned ? <PortfolioPanel portfolio={dossier.portfolio} /> : null}
+          {showPortfolio ? <PortfolioPanel portfolio={dossier.portfolio} /> : null}
           <div className="grid min-w-0 gap-4 xl:grid-cols-2">
             <SourceCoveragePanel sources={dossier.sources} onOpenTicker={onOpenTicker} />
             <EvidencePanel sources={dossier.sources} />
           </div>
         </>
-      ) : null}
+      ) : (
+        <div className="rounded-md border border-border bg-background px-4 py-6 text-sm text-muted-foreground">
+          No dossier data is loaded for {symbol}.
+        </div>
+      )}
     </WorkspacePage>
   );
 }

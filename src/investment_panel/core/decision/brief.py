@@ -89,7 +89,7 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
         "portfolio_fit": {
             "owned": bool(portfolio_row) or bool(_object(snapshot.get("portfolio_impact")).get("owned")),
             "current_exposure": _portfolio_exposure(portfolio_row, snapshot),
-            "theme_concentration": "AI infrastructure exposure; compare against NVDA, QQQ, SOX, and any current semiconductor holdings.",
+            "theme_concentration": _theme_concentration(symbol, tables, snapshot),
             "duplicates_risk": bool(portfolio_row),
         },
         "evidence_for": _evidence_for(tables, technical, sepa, liquidity, best_valuation, earnings_setup, best_option, research_packet),
@@ -110,7 +110,7 @@ def _canonical_quote(symbol: str, quote: dict[str, Any], decision: dict[str, Any
         return {
             "symbol": symbol,
             "price": _number(quote.get("price") or quote.get("close") or quote.get("last")),
-            "change_pct": _number(quote.get("change_pct") or quote.get("percent_change") or quote.get("change"), 0.0),
+            "change_pct": _optional_change_pct(quote.get("change_pct") or quote.get("percent_change") or quote.get("change")),
             "observed_at": quote.get("observed_at") or quote.get("as_of") or quote.get("date"),
             "source": source,
             "type": quote_type,
@@ -126,6 +126,48 @@ def _canonical_quote(symbol: str, quote: dict[str, Any], decision: dict[str, Any
         "type": "decision_snapshot_quote",
         "label": "Decision snapshot quote",
     }
+
+
+def _optional_change_pct(value: Any) -> float | None:
+    """Coerce a quote change to a number, but keep a genuinely missing one None.
+
+    Mirrors the non-canonical ``build_quote`` path: a missing change must not be
+    rendered as a real-looking 0.00%.
+    """
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.replace("$", "").replace(",", "").replace("%", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _theme_concentration(symbol: str, tables: dict[str, list[dict[str, Any]]], snapshot: dict[str, Any]) -> str:
+    """Describe sector/theme exposure derived from the ticker's own rows.
+
+    Prefer the sector/category carried by the universe, candidate, or fundamentals
+    rows; fall back to a neutral generic string when no sector is classified. Never
+    name a specific sector that the data does not support.
+    """
+
+    universe = _first_row(tables, "universe_screen", "discovered_universe")
+    candidate = _first_row(tables, "candidates", "signals")
+    fundamentals = _first_row(tables, "fundamentals")
+    sector = _text(
+        universe.get("sector")
+        or fundamentals.get("sector")
+        or candidate.get("sector")
+        or candidate.get("category")
+        or _object(snapshot.get("identity")).get("sector")
+    ).strip()
+    if sector:
+        return f"{sector} sector exposure; compare against current holdings and peers in the same sector."
+    return "Sector exposure not classified for this ticker."
 
 
 def _is_no_trade_action(action: Any) -> bool:
