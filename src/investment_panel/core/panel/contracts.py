@@ -278,6 +278,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),
     "health": (
+        "source_catalog",
         "sources",
         "source_freshness",
         "source_health",
@@ -379,6 +380,7 @@ ENDPOINT_TABLES: dict[str, str] = {
     "source-items": "source_items",
     "source-ticker-rankings": "source_ticker_rankings",
     "source-runs": "source_runs",
+    "source-catalog": "source_catalog",
     "ticker-source-signals": "ticker_source_signals",
     "quotes": "quotes",
     "screener": "screener",

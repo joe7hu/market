@@ -24,6 +24,7 @@ from investment_panel.core.signals import signal_rows
 from investment_panel.core.sources import source_item_rows, source_registry_rows, source_run_rows, source_ticker_ranking_rows, ticker_source_signal_rows
 from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
+from investment_panel.core.panel.catalog import build_source_catalog_health
 from investment_panel.core.panel.technicals import technicals
 from investment_panel.core.panel.disclosures import disclosures
 from investment_panel.core.panel.market_environment import market_context, market_environment_assets, market_environment_model, market_valuation_charts, market_valuation_reference_charts
@@ -150,6 +151,7 @@ READ_MODELS: dict[str, ReadLoader] = {
     "source_ticker_rankings": lambda ctx: source_ticker_ranking_rows(ctx.con),
     "source_items": lambda ctx: source_item_rows(ctx.con),
     "ticker_source_signals": lambda ctx: ticker_source_signal_rows(ctx.con),
+    "source_catalog": lambda ctx: build_source_catalog_health(ctx.con)["categories"],
 }
 
 

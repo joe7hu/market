@@ -69,6 +69,9 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
             continue
         current = next_agents.get(key) if isinstance(next_agents.get(key), dict) else {}
         next_agents[key] = {**current, **_sanitize_agent_settings(payload[key])}
+    if "option_agent" in payload:
+        current = next_agents.get("option_agent") if isinstance(next_agents.get("option_agent"), dict) else {}
+        next_agents["option_agent"] = {**current, **_sanitize_option_agent_settings(payload["option_agent"])}
     raw["agents"] = next_agents
     _write_yaml_top_level_block(path, "agents", {"agents": next_agents})
     return raw
@@ -110,6 +113,26 @@ def _sanitize_agent_settings(value: Any) -> dict[str, Any]:
     return clean
 
 
+
+
+def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("agent settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "command" in value:
+        command = str(value["command"] or "").strip()
+        if len(command) > 240:
+            raise ValueError("agent command is too long")
+        clean["command"] = command
+    if "timeout_seconds" in value:
+        clean["timeout_seconds"] = _bounded_int(value["timeout_seconds"], "timeout_seconds", minimum=10, maximum=900)
+    if "thesis_limit" in value:
+        clean["thesis_limit"] = _bounded_int(value["thesis_limit"], "thesis_limit", minimum=0, maximum=50)
+    if "postmortem_limit" in value:
+        clean["postmortem_limit"] = _bounded_int(value["postmortem_limit"], "postmortem_limit", minimum=0, maximum=50)
+    return clean
 
 
 def _bounded_int(value: Any, name: str, *, minimum: int, maximum: int) -> int:

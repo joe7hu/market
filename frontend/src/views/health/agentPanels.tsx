@@ -51,9 +51,25 @@ export function AgentUsagePanel({ pipelines, jobs, schedulerSeconds }: { pipelin
                 <AgentMiniStat label="Failed" value={pipeline.failed} tone={pipeline.failed ? "bad" : "good"} />
                 <AgentMiniStat label="Superseded" value={pipeline.superseded} tone="muted" />
               </div>
+              {pipeline.subCounts?.length ? (
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {pipeline.subCounts.map((sub) => (
+                    <div key={sub.label} className="rounded-md border border-border/80 bg-muted/30 p-2 text-xs">
+                      <div className="font-medium text-foreground">{sub.label}</div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground">
+                        <span>Open <span className="text-foreground tabular-nums">{sub.open.toLocaleString()}</span></span>
+                        <span>Done <span className="text-foreground tabular-nums">{sub.fulfilled.toLocaleString()}</span></span>
+                        <span>Failed <span className="text-foreground tabular-nums">{sub.failed.toLocaleString()}</span></span>
+                        <span>Cap <span className="text-foreground tabular-nums">{sub.limit.toLocaleString()}</span></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span>Run cap <span className="text-foreground tabular-nums">{pipeline.limit}</span></span>
                 <span>Timeout <span className="text-foreground tabular-nums">{pipeline.timeoutSeconds}s</span></span>
+                {pipeline.mode ? <span>Mode <span className="text-foreground">{titleLabel(pipeline.mode)}</span></span> : null}
                 <span>Latest <span className="text-foreground">{formatDateTime(pipeline.latestAt)}</span></span>
               </div>
             </div>

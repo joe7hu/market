@@ -138,6 +138,7 @@ export function emptyPanelData(): PanelData {
     portfolioRiskCards: EMPTY_TABLE,
     reviewActions: EMPTY_TABLE,
     sourceHealth: EMPTY_TABLE,
+    sourceCatalog: EMPTY_TABLE,
     refreshJobs: EMPTY_TABLE,
     settings: {},
     errors: {},

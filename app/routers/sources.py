@@ -56,6 +56,28 @@ def source_runs() -> dict[str, Any]:
     return deps._table_payload("source_runs")
 
 
+@router.get("/api/source-catalog")
+def source_catalog() -> dict[str, Any]:
+    """Authoritative data-source catalog joined with live freshness/health status."""
+    config = deps.load_config()
+    db_path = deps.database_path(config)
+    if not db_path.exists():
+        return {
+            "categories": [],
+            "families": {},
+            "generated_from": "source_catalog",
+            "status": {
+                "ready": False,
+                "source": "duckdb-missing",
+                "message": "DuckDB database does not exist yet. Run a refresh job to initialize it.",
+            },
+        }
+    with deps._CONTEXT_LOCK:
+        with deps.db(db_path, read_only=True) as con:
+            payload = deps.build_source_catalog_health(con)
+    return {**payload, "status": {"ready": True, "source": "duckdb"}}
+
+
 @router.get("/api/ticker-source-signals")
 def ticker_source_signals() -> dict[str, Any]:
     return deps._table_payload("ticker_source_signals")

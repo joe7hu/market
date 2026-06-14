@@ -128,6 +128,29 @@ analysis:
   correlation_lookback_days: 180
   max_correlation_peers: 8
 
+# Live opencli research ingestion (X/social, news, blogs). Cadence env knobs in
+# app/scheduler.py: MARKET_SOCIAL_REFRESH_SECONDS (default 1800),
+# MARKET_RESEARCH_REFRESH_SECONDS (default 3600); both honor 0 to disable.
+research_sources:
+  x:
+    enabled: true
+    # The X list call is the primary, low-rate-limit fetch (one request covers the
+    # whole curated list). Supply your own X list id here; the social job no-ops
+    # the list fetch gracefully when this is empty and only runs per-account
+    # fallbacks for the priority handles below.
+    list_id: ""
+    priority_handles: [balajis, karpathy, citrini, BillAckman, dylan522p, IncomeSharks]
+    limit: 30
+    account_fetch_cap: 2
+  news:
+    enabled: true
+    providers: [bloomberg, reuters, google-news, hackernews]
+    limit: 30
+  blogs:
+    enabled: true
+    substack_urls: []
+    rss_urls: []
+
 agents:
   # Local commands read one request JSON from stdin and return structured JSON.
   # The thesis worker runs through the signed-in Codex OAuth session by default;
@@ -151,6 +174,15 @@ agents:
     command: market-codex-option-postmortem-agent
     timeout_seconds: 180
     limit: 4
+  # Unified single-pass agent: one LLM/codex call covers all open thesis +
+  # postmortem requests (max token savings). When enabled+command set, the runner
+  # uses this instead of the separate thesis/postmortem commands above.
+  option_agent:
+    enabled: false
+    command: market-codex-option-agent
+    timeout_seconds: 240
+    thesis_limit: 8
+    postmortem_limit: 4
 disclosures:
   # Add normalized public disclosure CSVs here to build scalable trader
   # replica portfolios. Expected columns include trader_name, symbol,

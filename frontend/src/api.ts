@@ -35,6 +35,46 @@ export type RefreshJobsPayload = {
   } | null;
 };
 
+// --- Source catalog (GET /api/source-catalog) ------------------------------
+// Backend tones are good|warn|bad|neutral|unknown; the UI Tone system uses
+// good|warn|bad|info|muted, so the catalog views map neutral/unknown -> muted.
+export type SourceCatalogTone = "good" | "warn" | "bad" | "neutral" | "unknown";
+
+export type SourceCatalogProvider = {
+  provider: string;
+  status: "ok" | "stale" | "failed" | "rate_limited" | "unknown" | string;
+  tone: SourceCatalogTone;
+  provider_status: "ok" | "degraded" | "failed" | string;
+  last_observed_at: string | null;
+  stale_after: string;
+  symbol_count: number;
+  rate_limited: boolean;
+  freshness_status: "fresh" | "stale" | string;
+  detail: string;
+};
+
+export type SourceCatalogCategory = {
+  id: string;
+  label: string;
+  family: string;
+  cadence_label: string;
+  cadence_seconds: number;
+  refresh_job: string;
+  stale_after: string;
+  source_types: string[];
+  live_fetcher: boolean;
+  tone: SourceCatalogTone;
+  primary: SourceCatalogProvider | null;
+  fallback: SourceCatalogProvider[];
+};
+
+export type SourceCatalogPayload = {
+  categories: SourceCatalogCategory[];
+  families: Record<string, string[]>;
+  generated_from?: string;
+  status?: { ready?: boolean; source?: string; message?: string };
+};
+
 export type StrategyPromotionResult = {
   status?: string;
   proposal_id?: string;
@@ -153,6 +193,10 @@ export async function deleteWatchlistSymbol(symbol: string): Promise<TablePayloa
 
 export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
   return getJson<RefreshJobsPayload>("/api/refresh-jobs");
+}
+
+export async function loadSourceCatalog(): Promise<SourceCatalogPayload> {
+  return getJson<SourceCatalogPayload>("/api/source-catalog");
 }
 
 export async function loadSettings(): Promise<SettingsPayload> {

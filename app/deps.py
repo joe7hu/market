@@ -54,6 +54,7 @@ from investment_panel.core.options_radar import (
     record_trade_journal_entry,
     refresh_strategy_proposal_evaluations,
 )
+from investment_panel.core.panel import build_source_catalog_health
 from investment_panel.core.sources import source_detail_payload, source_ingestion_audit
 
 
@@ -95,9 +96,18 @@ class AgentCommandSettingsInput(BaseModel):
     limit: int | None = None
 
 
+class OptionAgentSettingsInput(BaseModel):
+    enabled: bool | None = None
+    command: str | None = None
+    timeout_seconds: int | None = None
+    thesis_limit: int | None = None
+    postmortem_limit: int | None = None
+
+
 class AgentSettingsInput(BaseModel):
     option_thesis: AgentCommandSettingsInput | None = None
     option_postmortem: AgentCommandSettingsInput | None = None
+    option_agent: OptionAgentSettingsInput | None = None
 
 
 class TradeJournalInput(BaseModel):

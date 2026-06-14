@@ -156,6 +156,39 @@ class DataSourcesConfig:
 
 
 @dataclass(frozen=True)
+class ResearchXConfig:
+    enabled: bool = True
+    list_id: str = ""
+    priority_handles: list[str] = field(
+        default_factory=lambda: ["balajis", "karpathy", "citrini", "BillAckman", "dylan522p", "IncomeSharks"]
+    )
+    limit: int = 30
+    # Per-cycle cap on per-account fallback requests (the list call is one request).
+    account_fetch_cap: int = 2
+
+
+@dataclass(frozen=True)
+class ResearchNewsConfig:
+    enabled: bool = True
+    providers: list[str] = field(default_factory=lambda: ["bloomberg", "reuters", "google-news", "hackernews"])
+    limit: int = 30
+
+
+@dataclass(frozen=True)
+class ResearchBlogsConfig:
+    enabled: bool = True
+    substack_urls: list[str] = field(default_factory=list)
+    rss_urls: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ResearchSourcesConfig:
+    x: ResearchXConfig = ResearchXConfig()
+    news: ResearchNewsConfig = ResearchNewsConfig()
+    blogs: ResearchBlogsConfig = ResearchBlogsConfig()
+
+
+@dataclass(frozen=True)
 class EventSourcesConfig:
     enabled: bool = False
     seed_requested_week: bool = False
@@ -182,9 +215,21 @@ class AgentCommandConfig:
 
 
 @dataclass(frozen=True)
+class OptionAgentConfig:
+    """Unified single-pass option agent (consolidated thesis + postmortem)."""
+
+    enabled: bool = False
+    command: str = ""
+    timeout_seconds: int = 180
+    thesis_limit: int = 8
+    postmortem_limit: int = 4
+
+
+@dataclass(frozen=True)
 class AgentsConfig:
     option_thesis: AgentCommandConfig = AgentCommandConfig()
     option_postmortem: AgentCommandConfig = AgentCommandConfig()
+    option_agent: OptionAgentConfig = OptionAgentConfig()
 
 
 @dataclass(frozen=True)
@@ -209,6 +254,7 @@ class AppConfig:
     arco: ArcoConfig = ArcoConfig()
     market_data: MarketDataConfig = MarketDataConfig()
     data_sources: DataSourcesConfig = DataSourcesConfig()
+    research_sources: ResearchSourcesConfig = ResearchSourcesConfig()
     event_sources: EventSourcesConfig = EventSourcesConfig()
     analysis: AnalysisConfig = AnalysisConfig()
     agents: AgentsConfig = AgentsConfig()
@@ -345,6 +391,33 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
         ),
     )
+    research_sources_raw = raw.get("research_sources", {})
+    research_x_raw = research_sources_raw.get("x", {})
+    research_news_raw = research_sources_raw.get("news", {})
+    research_blogs_raw = research_sources_raw.get("blogs", {})
+    research_sources = ResearchSourcesConfig(
+        x=ResearchXConfig(
+            enabled=bool(research_x_raw.get("enabled", True)),
+            list_id=str(research_x_raw.get("list_id", "") or ""),
+            priority_handles=list(
+                research_x_raw.get(
+                    "priority_handles", ["balajis", "karpathy", "citrini", "BillAckman", "dylan522p", "IncomeSharks"]
+                )
+            ),
+            limit=int(research_x_raw.get("limit", 30)),
+            account_fetch_cap=int(research_x_raw.get("account_fetch_cap", 2)),
+        ),
+        news=ResearchNewsConfig(
+            enabled=bool(research_news_raw.get("enabled", True)),
+            providers=list(research_news_raw.get("providers", ["bloomberg", "reuters", "google-news", "hackernews"])),
+            limit=int(research_news_raw.get("limit", 30)),
+        ),
+        blogs=ResearchBlogsConfig(
+            enabled=bool(research_blogs_raw.get("enabled", True)),
+            substack_urls=list(research_blogs_raw.get("substack_urls", [])),
+            rss_urls=list(research_blogs_raw.get("rss_urls", [])),
+        ),
+    )
     event_sources_raw = raw.get("event_sources", {})
     event_sources = EventSourcesConfig(
         enabled=bool(event_sources_raw.get("enabled", False)),
@@ -368,6 +441,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     option_postmortem_env_command = os.environ.get("MARKET_OPTION_POSTMORTEM_AGENT_COMMAND")
     option_thesis_command = str(option_thesis_env_command or option_thesis_raw.get("command", ""))
     option_postmortem_command = str(option_postmortem_env_command or option_postmortem_raw.get("command", ""))
+    option_agent_raw = agents_raw.get("option_agent", {})
+    option_agent_env_command = os.environ.get("MARKET_OPTION_AGENT_COMMAND")
+    option_agent_command = str(option_agent_env_command or option_agent_raw.get("command", ""))
     agents = AgentsConfig(
         option_thesis=AgentCommandConfig(
             enabled=bool(option_thesis_env_command) or bool(option_thesis_raw.get("enabled", bool(option_thesis_command))),
@@ -380,6 +456,13 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             command=option_postmortem_command,
             timeout_seconds=int(option_postmortem_raw.get("timeout_seconds", 120)),
             limit=int(option_postmortem_raw.get("limit", 20)),
+        ),
+        option_agent=OptionAgentConfig(
+            enabled=bool(option_agent_env_command) or bool(option_agent_raw.get("enabled", bool(option_agent_command))),
+            command=option_agent_command,
+            timeout_seconds=int(option_agent_raw.get("timeout_seconds", 180)),
+            thesis_limit=int(option_agent_raw.get("thesis_limit", option_thesis_raw.get("limit", 8))),
+            postmortem_limit=int(option_agent_raw.get("postmortem_limit", option_postmortem_raw.get("limit", 4))),
         ),
     )
     scoring_raw = raw.get("scoring", {})
@@ -530,6 +613,32 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "command": config.agents.option_postmortem.command,
                 "timeout_seconds": config.agents.option_postmortem.timeout_seconds,
                 "limit": config.agents.option_postmortem.limit,
+            },
+            "option_agent": {
+                "enabled": config.agents.option_agent.enabled,
+                "command": config.agents.option_agent.command,
+                "timeout_seconds": config.agents.option_agent.timeout_seconds,
+                "thesis_limit": config.agents.option_agent.thesis_limit,
+                "postmortem_limit": config.agents.option_agent.postmortem_limit,
+            },
+        },
+        "research_sources": {
+            "x": {
+                "enabled": config.research_sources.x.enabled,
+                "list_id": config.research_sources.x.list_id,
+                "priority_handles": config.research_sources.x.priority_handles,
+                "limit": config.research_sources.x.limit,
+                "account_fetch_cap": config.research_sources.x.account_fetch_cap,
+            },
+            "news": {
+                "enabled": config.research_sources.news.enabled,
+                "providers": config.research_sources.news.providers,
+                "limit": config.research_sources.news.limit,
+            },
+            "blogs": {
+                "enabled": config.research_sources.blogs.enabled,
+                "substack_urls": config.research_sources.blogs.substack_urls,
+                "rss_urls": config.research_sources.blogs.rss_urls,
             },
         },
         "scoring": {

@@ -23,7 +23,9 @@ from investment_panel.jobs import (
     update_event_calendar,
     update_free_sources,
     update_ibkr_options,
+    update_research_sources,
     update_robinhood_options,
+    update_social_sources,
 )
 
 
@@ -67,6 +69,10 @@ ALLOWLIST: dict[str, JobRunner] = {
     "refresh_options_radar_signal_robinhood": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="robinhood"),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
+    # Live opencli social (X list + per-account fallback) and research (news +
+    # blogs) ingestion. Both record source_runs with ok/rate_limited/failed.
+    "update_social_sources": lambda config_path: update_social_sources.run(config_path),
+    "update_research_sources": lambda config_path: update_research_sources.run(config_path),
     "update_disclosures": lambda config_path: update_disclosures.run(config_path, online_check=False, max_filings=3, fetch_holdings=False),
     "update_event_calendar": lambda config_path: update_event_calendar.run(config_path),
 }

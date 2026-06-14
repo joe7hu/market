@@ -14,10 +14,12 @@ import {
   buildFamilyHealth,
   collectTopErrors,
 } from "@/views/health/aggregate";
+import { catalogToneCounts, groupCatalogByFamily, parseSourceCatalog } from "@/views/health/catalog";
 import { useRefreshJobs } from "@/views/health/useRefreshJobs";
 import { AgentUsagePanel } from "@/views/health/agentPanels";
 import { TriggerPanel } from "@/views/health/triggerPanels";
-import { CategoryControlPlane, TopErrorsPanel } from "@/views/health/categoryPanels";
+import { CatalogControlPlane } from "@/views/health/catalogPanels";
+import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { CollapsibleSection, RefreshHistoryTable, RunStatusTable } from "@/views/health/tables";
 
 export function HealthRoute() {
@@ -35,13 +37,21 @@ export function HealthRoute() {
   const schedulerAgentSeconds = useMemo(() => agentSchedulerSeconds(data), [data]);
   const topErrors = useMemo(() => collectTopErrors(categories, data, jobs.rows), [categories, data, jobs.rows]);
 
+  // Authoritative catalog (primary/fallback/cadence) drives the top-level view.
+  const catalogCategories = useMemo(() => parseSourceCatalog(data), [data]);
+  const catalogFamilies = useMemo(() => groupCatalogByFamily(catalogCategories), [catalogCategories]);
+
+  // Prefer the catalog's category tones for top metrics; fall back to the live
+  // joiner's provider counts when the catalog has not arrived yet.
+  const catalogCounts = useMemo(() => catalogToneCounts(catalogCategories), [catalogCategories]);
   const totalProviders = categories.reduce((sum, category) => sum + category.total, 0);
-  const failed = categories.reduce((sum, category) => sum + category.failed, 0);
-  const stale = categories.reduce((sum, category) => sum + category.stale, 0);
-  const fresh = categories.reduce((sum, category) => sum + category.fresh, 0);
+  const failed = catalogCategories.length ? catalogCounts.failed : categories.reduce((sum, category) => sum + category.failed, 0);
+  const stale = catalogCategories.length ? catalogCounts.stale : categories.reduce((sum, category) => sum + category.stale, 0);
+  const fresh = catalogCategories.length ? catalogCounts.fresh : categories.reduce((sum, category) => sum + category.fresh, 0);
+  const categoryCount = catalogCategories.length || categories.length;
 
   const metrics: MetricSpec[] = [
-    ["Sources", totalProviders.toLocaleString(), `across ${categories.length} categories`, totalProviders ? "info" : "muted"],
+    ["Categories", categoryCount.toLocaleString(), `${totalProviders.toLocaleString()} live providers`, categoryCount ? "info" : "muted"],
     ["Fresh", fresh.toLocaleString(), "reporting on contract", fresh ? "good" : "muted"],
     ["Stale", stale.toLocaleString(), "past freshness window", stale ? "warn" : "good"],
     ["Failed", failed.toLocaleString(), "errored or unreachable", failed ? "bad" : "good"],
@@ -74,18 +84,19 @@ export function HealthRoute() {
     >
       <DataFlowDiagram stages={flowStages} />
 
+      <CatalogControlPlane
+        families={catalogFamilies}
+        data={data}
+        expanded={expanded}
+        onToggle={(id) => setExpanded((current) => (current === id ? null : id))}
+        jobs={jobs}
+      />
+
       <AgentUsagePanel pipelines={agentPipelines} jobs={jobs} schedulerSeconds={schedulerAgentSeconds} />
 
       <TriggerPanel jobs={jobs} />
 
       <TopErrorsPanel errors={topErrors} />
-
-      <CategoryControlPlane
-        categories={categories}
-        expanded={expanded}
-        onToggle={(id) => setExpanded((current) => (current === id ? null : id))}
-        jobs={jobs}
-      />
 
       <CollapsibleSection title="Provider Runs" count={rows(data.providerRuns).length}>
         <RunStatusTable rows={rows(data.providerRuns).slice(0, 80)} />
