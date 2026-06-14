@@ -32,8 +32,20 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
     agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
     option_thesis = agents.get("option_thesis", {}) if isinstance(agents.get("option_thesis"), dict) else {}
     option_postmortem = agents.get("option_postmortem", {}) if isinstance(agents.get("option_postmortem"), dict) else {}
+    option_agent = agents.get("option_agent", {}) if isinstance(agents.get("option_agent"), dict) else {}
     return {
         "agents": {
+            # Unified single-pass agent runtime. Sub-limits keep thesis/postmortem
+            # counts visible even though one consolidated call covers both.
+            "option_agent": _agent_runtime_metadata(option_agent, default_limit=8) | {
+                "thesis_limit": _int_value(option_agent.get("thesis_limit"), 8),
+                "postmortem_limit": _int_value(option_agent.get("postmortem_limit"), 4),
+                "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
+                "queue_policy": "current_top_ranked_candidates_only",
+                "cadence": "daily_premarket",
+                "max_runs_per_day": 1,
+                "mode": "consolidated_single_pass",
+            },
             "option_thesis": _agent_runtime_metadata(option_thesis, default_limit=20) | {
                 "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
                 "queue_policy": "current_top_ranked_candidates_only",
@@ -54,6 +66,8 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
             "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
             "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
             "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
+            "social_refresh_seconds": os.environ.get("MARKET_SOCIAL_REFRESH_SECONDS", "1800"),
+            "research_refresh_seconds": os.environ.get("MARKET_RESEARCH_REFRESH_SECONDS", "3600"),
             "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
         },
     }

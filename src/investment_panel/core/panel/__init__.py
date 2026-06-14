@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from investment_panel.core.sources import source_ticker_ranking_rows
+from investment_panel.core.panel.catalog import build_source_catalog_health
 from investment_panel.core.panel.coerce import decode_fields, decode_json_value, first_heading
 from investment_panel.core.panel.sources import source_rows
 from investment_panel.core.panel.technicals import average_true_range_pct, one_month_bar_points, one_month_volume_bar_points, period_bar_points, period_return, relative_volume, sampled_price_points, technical_price_history, technicals, trailing_return, true_range_pct_points
@@ -21,6 +22,7 @@ from investment_panel.core.panel.ticker_dossier import ticker_payload_tables
 from investment_panel.core.panel.ticker_sections import build_ticker_dossier
 
 __all__ = [
+    "build_source_catalog_health",
     "build_ticker_dossier",
     "ticker_payload_tables",
     "DECISION_READ_MODEL_TABLES",

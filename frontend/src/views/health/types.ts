@@ -37,7 +37,8 @@ export type Category = {
 };
 
 export type JobState = { status: string; startedAt?: string; finishedAt?: string | null; error?: string | null };
-export type AgentRuntime = { active: boolean; configured: boolean; limit: number; timeoutSeconds: number; requestCap?: number; cadence: string };
+export type AgentRuntime = { active: boolean; configured: boolean; limit: number; timeoutSeconds: number; requestCap?: number; cadence: string; mode?: string; thesisLimit?: number; postmortemLimit?: number };
+export type AgentSubCount = { label: string; open: number; fulfilled: number; failed: number; limit: number };
 export type AgentPipeline = {
   id: string;
   label: string;
@@ -51,6 +52,8 @@ export type AgentPipeline = {
   limit: number;
   timeoutSeconds: number;
   latestAt: string;
+  mode?: string;
+  subCounts?: AgentSubCount[];
 };
 
 export type ErrorAgg = { message: string; tone: Tone; count: number; latestAt: string; sources: string[] };

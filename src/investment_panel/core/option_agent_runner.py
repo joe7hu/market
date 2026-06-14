@@ -122,6 +122,108 @@ def run_external_option_agents(
     }
 
 
+_BATCH_GUARDRAILS: dict[str, Any] = {
+    "authority": "hypothesis_only",
+    "deterministic_code_owns": ["facts", "math", "storage", "validation", "scoring", "backtests", "promotion"],
+    "agent_owns": ["interpretation", "thesis_generation", "red_team", "catalyst_extraction", "proposal_drafting"],
+    "forbidden": ["trade_execution", "silent_strategy_promotion", "unstructured_prose_response"],
+}
+
+
+def run_consolidated_option_agents(
+    con: Any,
+    *,
+    command: str,
+    limit_thesis: int = 8,
+    limit_postmortem: int = 4,
+    timeout_seconds: int = 180,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+) -> dict[str, Any]:
+    """Single batched pass: one agent invocation covers thesis + postmortem.
+
+    Gathers all open requests, builds ONE payload (shared guardrails + both
+    schemas), invokes the command exactly once, and dispatches the structured
+    outputs back through the existing upsert paths. No-op when there are no open
+    requests, so the cost is paid only when there is work.
+    """
+
+    if not command:
+        return {"enabled": False, "skipped_reason": "no_option_agent_command", "attempted": 0, "accepted": 0, "failed": 0}
+
+    thesis_rows = _open_request_rows(con, "agent_thesis_request", strategy_version=strategy_version, limit=limit_thesis)
+    postmortem_rows = _open_request_rows(con, "agent_postmortem_request", strategy_version=strategy_version, limit=limit_postmortem)
+    if not thesis_rows and not postmortem_rows:
+        return {"enabled": True, "skipped_reason": "no_open_requests", "attempted": 0, "accepted": 0, "failed": 0}
+
+    payload = {
+        "thesis": [_agent_request_payload(row, output_schema=AGENT_THESIS_OUTPUT_SCHEMA) for row in thesis_rows],
+        "postmortem": [_agent_request_payload(row, output_schema=AGENT_POSTMORTEM_OUTPUT_SCHEMA) for row in postmortem_rows],
+        "guardrails": _BATCH_GUARDRAILS,
+        "output_schemas": {"thesis": AGENT_THESIS_OUTPUT_SCHEMA, "postmortem": AGENT_POSTMORTEM_OUTPUT_SCHEMA},
+    }
+
+    attempted = len(thesis_rows) + len(postmortem_rows)
+    try:
+        output = _invoke_agent_command(command, payload, timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        for table, row in [("agent_thesis_request", r) for r in thesis_rows] + [("agent_postmortem_request", r) for r in postmortem_rows]:
+            _mark_request_failed(con, table, str(row["request_id"]), exc)
+        return {"enabled": True, "attempted": attempted, "accepted": 0, "failed": attempted, "error": str(exc)}
+
+    thesis_out = output.get("thesis") if isinstance(output.get("thesis"), list) else []
+    postmortem_out = output.get("postmortem") if isinstance(output.get("postmortem"), list) else []
+
+    thesis_accepted, thesis_failures = _dispatch_batch_outputs(
+        con, thesis_rows, thesis_out, table_name="agent_thesis_request", upsert=upsert_agent_thesis
+    )
+    postmortem_accepted, postmortem_failures = _dispatch_batch_outputs(
+        con, postmortem_rows, postmortem_out, table_name="agent_postmortem_request", upsert=upsert_agent_postmortem
+    )
+
+    followup: dict[str, Any] = {}
+    if thesis_accepted:
+        followup["thesis_followup"] = _refresh_after_agent_theses(con, strategy_version=strategy_version)
+    if postmortem_accepted:
+        followup["postmortem_followup"] = _refresh_after_agent_postmortems(con, strategy_version=strategy_version)
+
+    return {
+        "enabled": True,
+        "attempted": attempted,
+        "accepted": thesis_accepted + postmortem_accepted,
+        "failed": len(thesis_failures) + len(postmortem_failures),
+        "thesis": {"attempted": len(thesis_rows), "accepted": thesis_accepted, "failures": thesis_failures},
+        "postmortem": {"attempted": len(postmortem_rows), "accepted": postmortem_accepted, "failures": postmortem_failures},
+        "strategy_version": strategy_version,
+        **followup,
+    }
+
+
+def _dispatch_batch_outputs(
+    con: Any,
+    rows: list[dict[str, Any]],
+    outputs: list[Any],
+    *,
+    table_name: str,
+    upsert: Any,
+) -> tuple[int, list[dict[str, Any]]]:
+    accepted = 0
+    failures: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        output = outputs[index] if index < len(outputs) and isinstance(outputs[index], dict) else None
+        if output is None:
+            exc = ExternalOptionAgentError("agent returned no output for request")
+            _mark_request_failed(con, table_name, str(row["request_id"]), exc)
+            failures.append({"request_id": row.get("request_id"), "ticker": row.get("ticker"), "error": str(exc)})
+            continue
+        try:
+            upsert(con, _with_request_defaults(output, row))
+            accepted += 1
+        except Exception as exc:
+            _mark_request_failed(con, table_name, str(row["request_id"]), exc)
+            failures.append({"request_id": row.get("request_id"), "ticker": row.get("ticker"), "error": str(exc)})
+    return accepted, failures
+
+
 def run_external_agent_thesis_requests(
     con: Any,
     *,

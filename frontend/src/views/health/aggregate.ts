@@ -236,72 +236,71 @@ export function buildFamilyHealth(categories: Category[]): FamilyHealth[] {
 export function buildAgentPipelines(data: PanelData): AgentPipeline[] {
   const metadata = jsonRecord(data.dashboard.status?.metadata);
   const agents = jsonRecord(metadata.agents);
-  const thesisRuntime = agentRuntime(jsonRecord(agents.option_thesis), 8);
-  const postmortemRuntime = agentRuntime(jsonRecord(agents.option_postmortem), 4);
+
   const thesisRequests = rows(data.agentThesisRequest);
   const postmortemRequests = rows(data.agentPostmortemRequest);
+  const thesisResults = rows(data.agentThesis);
+  const postmortemResults = rows(data.agentPostmortem);
+
+  // Prefer the unified single-pass `option_agent` block; fall back to the legacy
+  // split blocks for back-compat with older runtimes.
+  const unified = jsonRecord(agents.option_agent);
+  const runtime = agentRuntime(
+    Object.keys(unified).length ? unified : jsonRecord(agents.option_thesis),
+    8,
+  );
+
+  const thesis = pipelineCounts(thesisRequests, thesisResults);
+  const postmortem = pipelineCounts(postmortemRequests, postmortemResults);
+  const failed = thesis.failed + postmortem.failed;
+  const open = thesis.open + postmortem.open;
+  const latestAt = dateMs(thesis.latestAt) > dateMs(postmortem.latestAt) ? thesis.latestAt : postmortem.latestAt;
+  const tone: Tone = failed ? "bad" : open && !runtime.active ? "warn" : runtime.active ? "good" : "muted";
+
   return [
-    buildAgentPipeline({
-      id: "option_thesis",
-      label: "Option Thesis Agent",
-      caption: "Product, technology, catalyst, invalidation, and red-team synthesis for top-ranked options candidates.",
-      runtime: thesisRuntime,
-      requestRows: thesisRequests,
-      resultRows: rows(data.agentThesis),
-    }),
-    buildAgentPipeline({
-      id: "option_postmortem",
-      label: "Option Postmortem Agent",
-      caption: "Structured explanations and strategy-mutation proposals for missed winners, losers, and invalidations.",
-      runtime: postmortemRuntime,
-      requestRows: postmortemRequests,
-      resultRows: rows(data.agentPostmortem),
-    }),
+    {
+      id: "option_agent",
+      label: "Option Agent",
+      caption:
+        "Single consolidated pass producing option theses (synthesis, catalysts, invalidation, red-team) and postmortems (missed winners/losers) for top-ranked candidates.",
+      tone,
+      active: runtime.active,
+      open,
+      fulfilled: thesis.fulfilled + postmortem.fulfilled,
+      failed,
+      superseded: thesis.superseded + postmortem.superseded,
+      limit: runtime.limit,
+      timeoutSeconds: runtime.timeoutSeconds,
+      latestAt,
+      mode: runtime.mode,
+      subCounts: [
+        { label: "Thesis", open: thesis.open, fulfilled: thesis.fulfilled, failed: thesis.failed, limit: runtime.thesisLimit ?? runtime.limit },
+        { label: "Postmortem", open: postmortem.open, fulfilled: postmortem.fulfilled, failed: postmortem.failed, limit: runtime.postmortemLimit ?? runtime.limit },
+      ],
+    },
   ];
+}
+
+function pipelineCounts(
+  requestRows: RowRecord[],
+  resultRows: RowRecord[],
+): { open: number; fulfilled: number; failed: number; superseded: number; latestAt: string } {
+  const statusCounts = countByStatus(requestRows);
+  const latestRequest = latestRowDate(requestRows, ["created_at", "updated_at"]);
+  const latestResult = latestRowDate(resultRows, ["created_at", "updated_at"]);
+  return {
+    open: statusCounts.open ?? 0,
+    fulfilled: statusCounts.fulfilled ?? resultRows.length,
+    failed: (statusCounts.agent_failed ?? 0) + (statusCounts.failed ?? 0),
+    superseded: statusCounts.superseded ?? 0,
+    latestAt: dateMs(latestResult) > dateMs(latestRequest) ? latestResult : latestRequest,
+  };
 }
 
 export function agentSchedulerSeconds(data: PanelData): number {
   const metadata = jsonRecord(data.dashboard.status?.metadata);
   const scheduler = jsonRecord(metadata.scheduler);
   return numberFromJson(scheduler.agent_refresh_seconds, 0);
-}
-
-export function buildAgentPipeline({
-  id,
-  label,
-  caption,
-  runtime,
-  requestRows,
-  resultRows,
-}: {
-  id: string;
-  label: string;
-  caption: string;
-  runtime: AgentRuntime;
-  requestRows: RowRecord[];
-  resultRows: RowRecord[];
-}): AgentPipeline {
-  const statusCounts = countByStatus(requestRows);
-  const failed = (statusCounts.agent_failed ?? 0) + (statusCounts.failed ?? 0);
-  const open = statusCounts.open ?? 0;
-  const latestRequest = latestRowDate(requestRows, ["created_at", "updated_at"]);
-  const latestResult = latestRowDate(resultRows, ["created_at", "updated_at"]);
-  const latestAt = dateMs(latestResult) > dateMs(latestRequest) ? latestResult : latestRequest;
-  const tone: Tone = failed ? "bad" : open && !runtime.active ? "warn" : runtime.active ? "good" : "muted";
-  return {
-    id,
-    label,
-    caption,
-    tone,
-    active: runtime.active,
-    open,
-    fulfilled: statusCounts.fulfilled ?? resultRows.length,
-    failed,
-    superseded: statusCounts.superseded ?? 0,
-    limit: runtime.limit,
-    timeoutSeconds: runtime.timeoutSeconds,
-    latestAt,
-  };
 }
 
 export function agentRuntime(raw: Record<string, unknown>, fallbackLimit: number): AgentRuntime {
@@ -312,6 +311,9 @@ export function agentRuntime(raw: Record<string, unknown>, fallbackLimit: number
     timeoutSeconds: numberFromJson(raw.timeout_seconds, 120),
     requestCap: raw.request_cap === undefined ? undefined : numberFromJson(raw.request_cap, fallbackLimit),
     cadence: stringFromJson(raw.cadence, "daily_premarket"),
+    mode: raw.mode === undefined ? undefined : stringFromJson(raw.mode, ""),
+    thesisLimit: raw.thesis_limit === undefined ? undefined : numberFromJson(raw.thesis_limit, fallbackLimit),
+    postmortemLimit: raw.postmortem_limit === undefined ? undefined : numberFromJson(raw.postmortem_limit, fallbackLimit),
   };
 }
 

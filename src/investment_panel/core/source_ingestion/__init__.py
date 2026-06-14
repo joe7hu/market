@@ -20,6 +20,13 @@ from investment_panel.core.source_ingestion.read_models import (
     source_ticker_ranking_rows,
     ticker_source_signal_rows,
 )
+from investment_panel.core.source_ingestion.live import (
+    fetch_news,
+    fetch_substack,
+    fetch_web_rss,
+    fetch_x_account,
+    fetch_x_list,
+)
 from investment_panel.core.source_ingestion.raw_sources import sync_private_raw_sources
 from investment_panel.core.source_ingestion.audit import source_ingestion_audit
 from investment_panel.core.source_ingestion.utils import (
@@ -42,6 +49,11 @@ __all__ = [
     "ensure_canonical_sources",
     "ensure_source_registry",
     "evidence_refs_from_claims",
+    "fetch_news",
+    "fetch_substack",
+    "fetch_web_rss",
+    "fetch_x_account",
+    "fetch_x_list",
     "infer_sentiment",
     "lightweight_online_check",
     "normalize_signal_symbol",

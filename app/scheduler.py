@@ -99,6 +99,14 @@ def job_intervals() -> dict[str, int]:
     agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 86400, allow_zero=True)
     if agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
+    # Live opencli social (X) ingestion — conservative ~30 min by default; 0 disables.
+    social_seconds = _env_int("MARKET_SOCIAL_REFRESH_SECONDS", 1800, allow_zero=True)
+    if social_seconds > 0:
+        intervals["update_social_sources"] = social_seconds
+    # Live opencli research (news + blogs) ingestion — hourly by default; 0 disables.
+    research_seconds = _env_int("MARKET_RESEARCH_REFRESH_SECONDS", 3600, allow_zero=True)
+    if research_seconds > 0:
+        intervals["update_research_sources"] = research_seconds
     return intervals
 
 
