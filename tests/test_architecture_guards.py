@@ -99,8 +99,6 @@ FACADE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "re-export panel_read_session from the panel facade",
     ("app/data_access/payloads.py", "investment_panel.core.panel.payloads"):
         "re-export payload builders from the panel facade",
-    ("app/data_access/payloads.py", "investment_panel.core.panel.ticker_dossier"):
-        "re-export ticker_payload_tables from the panel facade",
     ("app/panel_contracts.py", "investment_panel.core.panel.contracts"):
         "thin re-export shim (import *) — fold into the panel facade",
     # Layering smells: worth a real fix, not just a re-export.

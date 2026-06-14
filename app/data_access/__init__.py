@@ -10,7 +10,6 @@ from app.data_access.coerce import jsonable, normalize_rows
 from app.data_access.mutations import delete_portfolio_position, delete_watchlist_symbol, populate_watchlist_symbol_data, save_portfolio_position, save_watchlist_symbol
 from app.data_access.loaders import load_market_panel_data, load_panel_data, load_panel_scope_data, load_table_panel_data, load_ticker_panel_data, panel_contract_payload
 from app.data_access.payloads import dashboard_payload, panel_snapshot_payload, signals_payload, status_payload, table_payload, ticker_payload, watchlist_section_payload
-from app.data_access.ticker_dossier import TICKER_DATA_SOURCE_FAMILIES, ticker_data_source_rows
 from app.data_access.decision_brief import GATE_LABELS, ticker_decision_brief
 from app.data_access.settings import agent_control_payload, settings_payload, update_agent_settings_config
 
@@ -19,7 +18,6 @@ __all__ = [
     "GATE_LABELS",
     "PanelData",
     "SETUP_INSTRUCTIONS",
-    "TICKER_DATA_SOURCE_FAMILIES",
     "_runtime_metadata",
     "agent_control_payload",
     "dashboard_payload",
@@ -45,7 +43,6 @@ __all__ = [
     "status_payload",
     "table_payload",
     "tables_for_scope",
-    "ticker_data_source_rows",
     "ticker_decision_brief",
     "ticker_payload",
     "update_agent_settings_config",

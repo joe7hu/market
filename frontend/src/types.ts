@@ -27,12 +27,54 @@ export type DashboardPayload = {
   news?: RowRecord[];
 };
 
+export type Coverage = {
+  status?: string;
+  rows?: number;
+  sources?: string[];
+};
+
+export type TickerDossier = {
+  identity: RowRecord & { coverage?: Coverage };
+  quote: RowRecord & { coverage?: Coverage };
+  decision: RowRecord;
+  fundamentals: { sec?: RowRecord; market?: RowRecord; coverage?: Coverage };
+  estimates: {
+    analyst?: { as_of?: string | null; earnings_estimate?: RowRecord[]; revenue_estimate?: RowRecord[]; price_targets?: RowRecord };
+    earnings_event?: RowRecord;
+    earnings_setup?: RowRecord;
+    coverage?: Coverage;
+  };
+  technicals: { trend?: RowRecord; momentum?: RowRecord; sepa?: RowRecord; liquidity?: RowRecord; chart_context?: RowRecord; coverage?: Coverage };
+  options: { signal?: RowRecord; unavailable_signals?: RowRecord[]; expiries?: RowRecord[]; capabilities?: RowRecord[]; context?: RowRecord; coverage?: Coverage };
+  ownership: { institutional?: RowRecord; filings?: RowRecord[]; coverage?: Coverage };
+  sources: { consensus?: RowRecord[]; signals?: RowRecord[]; evidence?: RowRecord[]; signal_count?: number; coverage?: Coverage };
+  thesis: { state?: RowRecord; research_packet?: RowRecord; coverage?: Coverage };
+  portfolio: {
+    owned?: boolean;
+    position?: RowRecord;
+    fit?: RowRecord;
+    risk_cards?: RowRecord[];
+    exposure_clusters?: RowRecord[];
+    correlations?: RowRecord[];
+    review_actions?: RowRecord[];
+    coverage?: Coverage;
+  };
+  coverage: {
+    families?: Record<string, Coverage>;
+    live?: string[];
+    missing?: string[];
+    loaded_families?: number;
+    total_families?: number;
+    as_of?: string | null;
+  };
+};
+
 export type TickerPayload = {
+  symbol?: string;
   ticker?: string;
   status?: ApiStatus;
-  tables?: Record<string, RowRecord[] | undefined>;
-  decision_snapshot?: RowRecord;
-  decision_brief?: RowRecord;
+  as_of?: string | null;
+  dossier?: TickerDossier;
   found?: boolean;
 };
 

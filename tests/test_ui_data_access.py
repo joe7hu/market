@@ -39,70 +39,72 @@ def test_ticker_payload_matches_symbol() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
         tables={
-            "candidates": [{"symbol": "ABC"}],
+            "candidates": [{"symbol": "ABC", "name": "Alpha"}],
             "portfolio": [],
-            "thesis_monitor": [{"symbol": "ABC", "needs_review": True}],
+            "thesis_monitor": [{"symbol": "ABC", "needs_review": True, "thesis": "watch"}],
         },
     )
 
     payload = data_access.ticker_payload(panel_data, "abc")
+    dossier = payload["dossier"]
 
+    assert payload["symbol"] == "ABC"
     assert payload["found"] is True
-    assert payload["tables"]["candidates"][0]["symbol"] == "ABC"
-    assert payload["tables"]["thesis_monitor"][0]["needs_review"] is True
+    assert dossier["identity"]["name"] == "Alpha"
+    assert dossier["thesis"]["state"]["needs_review"] is True
+    assert dossier["thesis"]["coverage"]["status"] == "live"
 
 
-def test_ticker_payload_includes_quote_and_signal_context_for_deep_links() -> None:
+def test_ticker_payload_organizes_sections_for_deep_links() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
         tables={
             "decision_queue": [{"symbol": "NVDA", "score": 91, "action_grade": "research"}],
-            "quotes": [{"symbol": "NVDA", "price": 135.25, "change_pct": 1.4}],
-            "technicals": [{"symbol": "NVDA", "technical_score": 82}],
-            "opportunity_sources": [{"symbol": "NVDA", "source_key": "technicals", "title": "Technical setup"}],
+            "quotes": [{"symbol": "NVDA", "price": 135.25, "change_pct": 1.4, "observed_at": "2026-06-12T20:00:00"}],
+            "technicals": [{"symbol": "NVDA", "technical_score": 82, "ma50": 130.0, "date": "2026-06-11"}],
+            "liquidity": [{"symbol": "NVDA", "grade": "very_high", "avg_dollar_volume": 3.3e10}],
+            "disclosures": [{"symbol": "NVDA", "filer_name": "Pelosi", "action": "SELL", "amount": "$1M", "filed_date": "2026-01-23"}],
         },
     )
 
     payload = data_access.ticker_payload(panel_data, "nvda")
+    dossier = payload["dossier"]
 
     assert payload["found"] is True
-    assert payload["tables"]["decision_queue"][0]["score"] == 91
-    assert payload["tables"]["quotes"][0]["price"] == 135.25
-    assert payload["tables"]["technicals"][0]["technical_score"] == 82
-    assert payload["tables"]["opportunity_sources"][0]["source_key"] == "technicals"
+    assert dossier["quote"]["price"] == 135.25
+    assert dossier["quote"]["coverage"]["status"] == "live"
+    assert dossier["technicals"]["momentum"]["technical_score"] == 82
+    assert dossier["technicals"]["liquidity"]["grade"] == "very_high"
+    assert dossier["ownership"]["filings"][0]["filer_name"] == "Pelosi"
+    assert dossier["ownership"]["filings"][0]["action"] == "SELL"
 
 
-def test_ticker_payload_guarantees_dossier_tab_coverage_from_read_models() -> None:
+def test_ticker_payload_reports_missing_coverage_without_fabricating_rows() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
         tables={
             "discovered_universe": [{"symbol": "CRWV", "name": "CoreWeave", "source_counts": {"filing": 1}}],
-            "universe_screen": [{"symbol": "CRWV", "watch_state": "candidate", "market_cap": 10_000_000_000, "forward_pe": 55, "roic": 9, "quality_score": 42, "value_signal": "expensive"}],
+            "universe_screen": [{"symbol": "CRWV", "name": "CoreWeave", "watch_state": "candidate", "market_cap": 10_000_000_000, "forward_pe": 55, "roic": 9, "quality_score": 42, "value_signal": "expensive"}],
             "symbol_decision_snapshot": [{"symbol": "CRWV", "action_grade": "Watch", "freshness_status": "fresh", "decision_basis": {"summary": "AI infrastructure candidate", "source_counts": {"filing": 1}}, "invalidation": "Capacity demand slows"}],
         },
     )
 
     payload = data_access.ticker_payload(panel_data, "crwv")
-    tables = payload["tables"]
+    dossier = payload["dossier"]
+    coverage = dossier["coverage"]
 
     assert payload["found"] is True
-    assert tables["quotes"][0]["source"] == "ticker_dossier_coverage"
-    assert tables["fundamentals"][0]["source"] == "universe_screen"
-    assert tables["source_consensus"][0]["source_name"] == "Ticker source coverage"
-    assert tables["ownership_consensus"][0]["source_type"] == "coverage_gap"
-    assert tables["feed_signals"][0]["source"] == "ticker_dossier_coverage"
-    assert tables["thesis_monitor"][0]["needs_review"] is True
-    diagnostic_rows = data_access.ticker_data_source_rows("CRWV", tables)
-    assert diagnostic_rows
-    assert {row["family"] for row in diagnostic_rows} >= {"decision", "quote", "fundamentals", "source_evidence"}
-    for row in diagnostic_rows:
-        assert row["symbol"] == "CRWV"
-        assert row["label"]
-        assert row["status"]
-        assert row["source_tables"]
-        assert row["shared_surfaces"]
-        assert row["latest_at"]
-        assert row["fields_loaded"]
+    assert dossier["identity"]["name"] == "CoreWeave"
+    # Fundamentals + decision are live from the universe/decision rows...
+    assert dossier["fundamentals"]["market"]["forward_pe"] == 55
+    assert "fundamentals" in coverage["live"]
+    assert "decision" in coverage["live"]
+    # ...but families with no loaded rows are reported missing, not fabricated.
+    assert dossier["ownership"]["coverage"]["status"] == "missing"
+    assert dossier["ownership"]["filings"] == []
+    assert dossier["quote"]["coverage"]["status"] == "missing"
+    assert {"ownership", "quote", "options"} <= set(coverage["missing"])
+    assert coverage["families"]["fundamentals"]["status"] == "live"
 
 
 def test_new_ia_panel_scopes_are_backend_owned() -> None:
@@ -430,11 +432,17 @@ def test_ticker_payload_excludes_health_only_operational_tables() -> None:
 
     payload = data_access.ticker_payload(panel_data, "nvda")
 
-    assert "decision_readiness" not in payload["tables"]
-    assert "broker_status" not in payload["tables"]
-    assert "broker_accounts" not in payload["tables"]
-    assert "paper_orders" not in payload["tables"]
-    assert "ticker_data_sources" not in payload["tables"]
+    # The dossier is section-organized; there is no raw table bag to leak
+    # operational/health tables into.
+    assert "tables" not in payload
+    assert set(payload["dossier"]) == {
+        "identity", "quote", "decision", "fundamentals", "estimates",
+        "technicals", "options", "ownership", "sources", "thesis",
+        "portfolio", "coverage",
+    }
+    serialized = repr(payload["dossier"])
+    for operational in ("decision_readiness", "broker_status", "broker_accounts", "paper_orders", "ticker_data_sources"):
+        assert operational not in serialized
 
 
 def test_ticker_page_does_not_render_operational_data_coverage_panel() -> None:
