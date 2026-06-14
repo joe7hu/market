@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -37,127 +38,50 @@ def init_db(path: str | Path) -> None:
 
 
 def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
-    columns = {row[1] for row in con.execute("PRAGMA table_info('portfolio_positions')").fetchall()}
-    if "purchase_date" not in columns:
-        con.execute("ALTER TABLE portfolio_positions ADD COLUMN purchase_date DATE")
-    catalyst_columns = {row[1] for row in con.execute("PRAGMA table_info('catalysts')").fetchall()}
-    for column, column_type in {
-        "start_at": "TIMESTAMP",
-        "end_at": "TIMESTAMP",
-        "timezone": "TEXT",
-        "event_scope": "TEXT",
-        "event_kind": "TEXT",
-        "importance": "TEXT",
-        "verification_status": "TEXT",
-        "source_url": "TEXT",
-        "source_name": "TEXT",
-    }.items():
-        if column not in catalyst_columns:
-            con.execute(f"ALTER TABLE catalysts ADD COLUMN {column} {column_type}")
-    thesis_validation_columns = {row[1] for row in con.execute("PRAGMA table_info('agent_thesis_validation')").fetchall()}
-    for column, column_type in {
-        "strategy_version": "TEXT",
-        "validation_date": "DATE",
-        "candidate_event_id": "TEXT",
-        "candidate_snapshot_time": "TIMESTAMP",
-        "proof_status": "TEXT",
-        "catalyst_status": "TEXT",
-        "invalidation_status": "TEXT",
-        "evidence_status": "TEXT",
-        "red_team_status": "TEXT",
-        "red_team_flags": "JSON",
-    }.items():
-        if column not in thesis_validation_columns:
-            con.execute(f"ALTER TABLE agent_thesis_validation ADD COLUMN {column} {column_type}")
-    for table, columns_to_add in {
-        "discovered_universe": {
-            "latest_observed_at": "TIMESTAMP",
-            "next_event_at": "TIMESTAMP",
-            "discovery_score": "DOUBLE",
-        },
-        "decision_queue": {
-            "discovery_score": "DOUBLE",
-            "decision_score": "DOUBLE",
-            "action_score": "DOUBLE",
-            "quote_freshness": "TEXT",
-            "daily_analysis_freshness": "TEXT",
-            "filing_freshness": "TEXT",
-            "thesis_freshness": "TEXT",
-            "overall_decision_freshness": "TEXT",
-            "raw_source_rows": "INTEGER",
-            "independent_source_count": "INTEGER",
-            "evidence_items_count": "INTEGER",
-            "primary_evidence_count": "INTEGER",
-            "latest_observed_at": "TIMESTAMP",
-            "next_event_at": "TIMESTAMP",
-        },
-        "symbol_decision_snapshots": {
-            "quote_freshness": "TEXT",
-            "daily_analysis_freshness": "TEXT",
-            "filing_freshness": "TEXT",
-            "thesis_freshness": "TEXT",
-        },
-        "source_registry": {
-            "source_family": "TEXT",
-            "raw_access": "TEXT",
-        },
-        "source_runs": {
-            "item_count": "INTEGER",
-            "ticker_count": "INTEGER",
-            "failure_detail": "TEXT",
-        },
-        "source_items": {
-            "source_run_id": "TEXT",
-            "content_hash": "TEXT",
-            "license_status": "TEXT",
-        },
-        "ticker_source_signals": {
-            "needs_market_context": "BOOLEAN",
-        },
-        "manual_watchlist": {
-            "watch_state": "TEXT",
-        },
-        "options_chain": {
-            "rho": "DOUBLE",
-            "theo": "DOUBLE",
-            "bid_iv": "DOUBLE",
-            "ask_iv": "DOUBLE",
-            "contract_symbol": "TEXT",
-        },
-        "strategy_mutation_proposal": {
-            "approved_by": "TEXT",
-            "approved_at": "TIMESTAMP",
-        },
-        "candidate_event": {
-            "quality_status": "TEXT",
-            "quality_flags": "JSON",
-        },
-        "option_radar_opportunity": {
-            "data_contract_status": "TEXT",
-            "data_contract_failures": "JSON",
-            "data_contract_satisfied": "JSON",
-            "service_repair_jobs": "JSON",
-            "service_repair_summary": "TEXT",
-        },
-        "radar_alert": {
-            "created_at": "TIMESTAMP",
-            "alert_type": "TEXT",
-            "ticker": "TEXT",
-            "contract_id": "TEXT",
-            "event_id": "TEXT",
-            "severity": "TEXT",
-            "title": "TEXT",
-            "detail": "TEXT",
-            "acknowledged_at": "TIMESTAMP",
-            "resolution_reason": "TEXT",
-            "raw": "JSON",
-        },
-    }.items():
-        existing_columns = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
-        for column, column_type in columns_to_add.items():
-            if column not in existing_columns:
-                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+    # schema.py is the single source of table shape; bring existing tables up to
+    # it, then apply data backfills that are not column additions.
+    _reconcile_columns_to_ddl(con)
     con.execute("UPDATE manual_watchlist SET watch_state = 'watched' WHERE watch_state IS NULL OR watch_state = ''")
+
+
+@lru_cache(maxsize=1)
+def _ddl_table_columns() -> dict[str, dict[str, str]]:
+    """``table -> {column: type}`` for every table the DDL declares.
+
+    DuckDB parses its own DDL in a throwaway in-memory database, so the column
+    set is derived from schema.py rather than restated as a hand-maintained
+    migration list that can drift. Cached because ``SCHEMA_SQL`` is constant.
+    """
+    reference = duckdb.connect(":memory:")
+    try:
+        reference.execute(SCHEMA_SQL)
+        rows = reference.execute(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'main' ORDER BY table_name, ordinal_position"
+        ).fetchall()
+    finally:
+        reference.close()
+    columns: dict[str, dict[str, str]] = {}
+    for table_name, column_name, data_type in rows:
+        columns.setdefault(table_name, {})[column_name] = data_type
+    return columns
+
+
+def _reconcile_columns_to_ddl(con: duckdb.DuckDBPyConnection) -> None:
+    """Add any column the DDL declares that an existing table is missing.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves a pre-existing table untouched, so a DB
+    created against an older schema keeps its old column set. This walks each
+    declared table forward to schema.py's columns without dropping or retyping
+    anything an existing column already holds.
+    """
+    for table, ddl_columns in _ddl_table_columns().items():
+        existing = {row[1] for row in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        if not existing:
+            continue
+        for name, col_type in ddl_columns.items():
+            if name not in existing:
+                con.execute(f'ALTER TABLE {table} ADD COLUMN "{name}" {col_type}')
 
 
 @contextmanager

@@ -12,12 +12,17 @@ from investment_panel.core.panel.feed import feed_signals, ownership_consensus, 
 from investment_panel.core.panel.read_equity import analyst_estimates, candidate_source_evidence, candidates, catalysts, confidence_to_number, correlations, decision_queue, decision_readiness, discovered_universe, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, opportunities_ranked, opportunity_source_counts, opportunity_sources, portfolio, provider_runs, quotes, reports, research_packets, screener, sepa, source_freshness, source_health, symbol_decision_snapshots, theses, top_source_label, trader_profiles, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists, valuations
 from investment_panel.core.panel.read_options import option_features, option_radar_opportunity, option_radar_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
 from investment_panel.core.panel.read_learning import agent_postmortem, agent_postmortem_request, agent_thesis, agent_thesis_request, agent_thesis_validation, candidate_event, candidate_event_attribution, candidate_event_mark, conviction_calibration, missed_winner_event, option_attribution, radar_alert, radar_state_transition, shadow_trade, shadow_trade_mark, strategy_backtest_result, strategy_cohort_result, strategy_forward_test_result, strategy_mutation_proposal, trade_journal, vol_surface_features
+from investment_panel.core.panel.registry import READ_MODELS, ReadContext, load_read_models, read_model_names
 from investment_panel.core.panel.snapshot import DECISION_READ_MODEL_TABLES, DECISION_REFRESH_LOCK, decision_readiness_snapshot, ensure_decision_read_models, get_panel_snapshot, load_panel_data, load_ticker_dossier_data
 
 __all__ = [
     "DECISION_READ_MODEL_TABLES",
     "DECISION_REFRESH_LOCK",
     "MarketDisplayContext",
+    "READ_MODELS",
+    "ReadContext",
+    "load_read_models",
+    "read_model_names",
     "agent_postmortem",
     "agent_postmortem_request",
     "agent_thesis",

@@ -40,6 +40,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 | `core/portfolio_intelligence/` | Portfolio-level risk read models. Submodules: `exposure` (clusters), `correlation` (edges), `cards` (risk cards + review actions), `holdings` (shared accessors), `coerce` | portfolio risk/exposure read models |
 | `core/db.py` + `core/schema.py` | DuckDB connection/helpers (`db`, `init_db`, `query_rows`, `json_dumps`) and the full DDL string | a table definition (`schema.py`) or a DB helper (`db.py`) |
 | `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
+| `core/robinhood_options/` | Read-only Robinhood option-chain collector. Submodules: `auth` (MCP OAuth/PKCE token dance + Codex credential bridge), `collector` (chain collection + `store_options_chain` normalization) | Robinhood auth or chain collection |
 | `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `thesis_monitor`, `daily_brief`, `ibkr_options`, `options_intelligence`, `option_agent_runner`/`option_agent_postmortem`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
 | `analysis/` | Pure computations: `valuation`, `sepa`, `liquidity`, `correlation`, `earnings_setup`, `option_ev`, `options_payoff`, `market_environment`, `stats` (+ `registry`, `run`) | a quantitative model |
 | `providers/` | External data adapters: `yfinance_provider`, `tradingview`, `opencli` | how an external source is fetched |

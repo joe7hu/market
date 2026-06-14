@@ -333,7 +333,7 @@ def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypat
         response = httpx.Response(404, request=request)
         raise httpx.HTTPStatusError("not found", request=request, response=response)
 
-    monkeypatch.setattr("investment_panel.core.robinhood_options._get_json", fake_get_json)
+    monkeypatch.setattr("investment_panel.core.robinhood_options.auth._get_json", fake_get_json)
 
     metadata = _authorization_server_metadata("https://agent.robinhood.com/mcp/trading", timeout=30)
 

@@ -448,7 +448,10 @@ CREATE TABLE IF NOT EXISTS radar_alert (
     event_id TEXT,
     severity TEXT,
     message TEXT,
+    title TEXT,
+    detail TEXT,
     acknowledged_at TIMESTAMP,
+    resolution_reason TEXT,
     raw JSON
 );
 
@@ -657,21 +660,6 @@ CREATE TABLE IF NOT EXISTS candidate_event (
     score DOUBLE,
     quality_status TEXT,
     quality_flags JSON,
-    raw JSON
-);
-
-CREATE TABLE IF NOT EXISTS radar_alert (
-    alert_id TEXT PRIMARY KEY,
-    created_at TIMESTAMP,
-    alert_type TEXT,
-    ticker TEXT,
-    contract_id TEXT,
-    event_id TEXT,
-    severity TEXT,
-    title TEXT,
-    detail TEXT,
-    acknowledged_at TIMESTAMP,
-    resolution_reason TEXT,
     raw JSON
 );
 
