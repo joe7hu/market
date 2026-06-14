@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from app.data_access.coerce import _first_row, _fmt_money, _fmt_pct, _number, _object, _parse_date, _text, _text_join
+from investment_panel.core.decision.brief_coerce import (
+    _first_row,
+    _fmt_money,
+    _fmt_pct,
+    _number,
+    _object,
+    _parse_date,
+    _text,
+    _text_join,
+)
 
 
 def _is_option_expired(row: dict[str, Any], today: date | None = None) -> bool:
@@ -123,4 +132,3 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
             {"label": "Entry Plan", "value": _text(_object(memo.get("entry_plan")).get("initial_weight")) or "Review required", "caption": _text(_object(memo.get("entry_plan")).get("ideal_entry"))},
         ],
     }
-
