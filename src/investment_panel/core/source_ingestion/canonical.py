@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 from investment_panel.core.db import json_dumps, query_rows, upsert_instrument
 from investment_panel.core.instruments import infer_asset_class
@@ -50,11 +51,56 @@ SEC_FILING_SOURCE_BY_FORM = {
 }
 
 
+@dataclass(frozen=True)
+class SourceSyncCounts:
+    runs: int = 0
+    items: int = 0
+    signals: int = 0
+
+    def __add__(self, other: "SourceSyncCounts") -> "SourceSyncCounts":
+        return SourceSyncCounts(
+            runs=self.runs + other.runs,
+            items=self.items + other.items,
+            signals=self.signals + other.signals,
+        )
+
+
+SourceSyncAdapter = Callable[[Any], SourceSyncCounts]
+
+
+SOURCE_SYNC_ADAPTERS: tuple[SourceSyncAdapter, ...] = (
+    lambda con: _sync_provider_runs(con),
+    lambda con: _sync_source_health_runs(con),
+    lambda con: _sync_news_items(con),
+    lambda con: _sync_arco_theses(con),
+    lambda con: _sync_disclosures(con),
+    lambda con: _sync_market_screener_rows(con),
+    lambda con: _sync_equity_fundamentals(con),
+    lambda con: _sync_crypto_fundamentals(con),
+    lambda con: _sync_earnings_events(con),
+    lambda con: _sync_analyst_estimates(con),
+)
+
+
 def sync_canonical_sources(con: Any) -> dict[str, Any]:
+    """Sync every source family into canonical source items and ticker signals."""
+
     ensure_source_registry(con)
+    counts = SourceSyncCounts()
+    for adapter in SOURCE_SYNC_ADAPTERS:
+        counts += adapter(con)
+    update_signal_market_context(con)
+    counts += SourceSyncCounts(runs=record_registry_run_placeholders(con))
+    return {
+        "status": "canonical_sources_synced",
+        "runs": counts.runs,
+        "items": counts.items,
+        "signals": counts.signals,
+    }
+
+
+def _sync_provider_runs(con: Any) -> SourceSyncCounts:
     runs = 0
-    items = 0
-    signals = 0
 
     for row in query_rows(con, "SELECT id, provider, capability, started_at, finished_at, status, detail, raw FROM provider_runs"):
         source_id = slug(row.get("provider") or "provider")
@@ -70,7 +116,11 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
             raw=parse_json(row.get("raw")),
         )
         runs += 1
+    return SourceSyncCounts(runs=runs)
 
+
+def _sync_source_health_runs(con: Any) -> SourceSyncCounts:
+    runs = 0
     for row in query_rows(con, "SELECT source, checked_at, status, detail, source_url FROM source_health"):
         source_id = slug(row.get("source") or "source_health")
         record_source_run(
@@ -85,7 +135,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
             raw=row,
         )
         runs += 1
+    return SourceSyncCounts(runs=runs)
 
+
+def _sync_news_items(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT id, published_at, provider, title, related_symbols, link, source, raw FROM news_items"):
         source_id = slug(row.get("provider") or row.get("source") or "news")
         symbols = symbols_from_value(row.get("related_symbols"))
@@ -113,7 +168,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_arco_theses(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT id, symbol, author, created_at, thesis_summary, claims, source_url FROM birdclaw_theses"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -145,7 +205,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_disclosures(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT id, source_type, trader_name, filer_name, symbol, event_date, filed_date, action, amount, raw, source_url FROM disclosures"):
         source_type = str(row.get("source_type") or "disclosure")
         source_id = "sec_disclosures" if source_type in SEC_DISCLOSURE_TYPES else slug(source_type)
@@ -184,7 +249,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_market_screener_rows(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT run_id, symbol, observed_at, name, metrics, source FROM market_screener_rows"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -215,7 +285,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_equity_fundamentals(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT symbol, period_end, filing_date, form_type, metrics, source_url FROM equity_fundamentals"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -254,7 +329,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_crypto_fundamentals(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT symbol, date, metrics, source FROM crypto_fundamentals"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -286,7 +366,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_earnings_events(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT symbol, event_date, event_type, metrics, source FROM earnings_events"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -319,7 +404,12 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
+    return SourceSyncCounts(items=items, signals=signals)
 
+
+def _sync_analyst_estimates(con: Any) -> SourceSyncCounts:
+    items = 0
+    signals = 0
     for row in query_rows(con, "SELECT symbol, as_of, estimates, source FROM analyst_estimates"):
         symbol = normalize_signal_symbol(row.get("symbol"))
         if not symbol:
@@ -351,10 +441,7 @@ def sync_canonical_sources(con: Any) -> dict[str, Any]:
         )
         items += stored_items
         signals += stored_signals
-
-    update_signal_market_context(con)
-    runs += record_registry_run_placeholders(con)
-    return {"status": "canonical_sources_synced", "runs": runs, "items": items, "signals": signals}
+    return SourceSyncCounts(items=items, signals=signals)
 
 
 def ensure_canonical_sources(con: Any) -> dict[str, Any]:

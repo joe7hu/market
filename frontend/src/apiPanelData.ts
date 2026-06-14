@@ -9,122 +9,18 @@ export type PanelSnapshotPayload = {
   tables?: Record<string, TablePayload>;
 };
 
-const TABLE_KEYS: Record<string, keyof PanelData> = {
-  discovered_universe: "discoveredUniverse",
-  decision_queue: "decisionQueue",
-  decision_readiness: "decisionReadiness",
-  source_freshness: "sourceFreshness",
-  symbol_decision_snapshots: "symbolDecisionSnapshots",
-  signals: "signals",
-  opportunities_ranked: "opportunitiesRanked",
-  opportunity_sources: "opportunitySources",
-  candidates: "candidates",
-  portfolio: "portfolio",
-  theses: "theses",
-  thesis_monitor: "thesisMonitor",
-  trader_twins: "traderTwins",
-  catalysts: "catalysts",
-  fundamentals: "fundamentals",
-  disclosures: "disclosures",
-  quotes: "quotes",
-  screener: "screener",
-  options_expiries: "optionsExpiries",
-  options_chain: "optionsChain",
-  options_payoff_scenarios: "optionsPayoffScenarios",
-  options_provider_capabilities: "optionsProviderCapabilities",
-  options_expiry_signals: "optionsExpirySignals",
-  options_ticker_signals: "optionsTickerSignals",
-  option_strategy_versions: "optionStrategyVersions",
-  option_radar_summary: "optionRadarSummary",
-  option_radar_opportunity: "optionRadarOpportunity",
-  radar_alert: "radarAlert",
-  option_snapshot: "optionSnapshot",
-  option_features: "optionFeatures",
-  stock_features: "stockFeatures",
-  agent_thesis: "agentThesis",
-  agent_thesis_request: "agentThesisRequest",
-  agent_thesis_validation: "agentThesisValidation",
-  agent_postmortem_request: "agentPostmortemRequest",
-  agent_postmortem: "agentPostmortem",
-  candidate_event: "candidateEvent",
-  candidate_event_mark: "candidateEventMark",
-  candidate_event_attribution: "candidateEventAttribution",
-  shadow_trade: "shadowTrade",
-  shadow_trade_mark: "shadowTradeMark",
-  radar_state_transition: "radarStateTransition",
-  conviction_calibration: "convictionCalibration",
-  vol_surface_features: "volSurfaceFeatures",
-  trade_journal: "tradeJournal",
-  option_attribution: "optionAttribution",
-  missed_winner_event: "missedWinnerEvent",
-  strategy_mutation_proposal: "strategyMutationProposal",
-  strategy_backtest_result: "strategyBacktestResult",
-  strategy_forward_test_result: "strategyForwardTestResult",
-  strategy_cohort_result: "strategyCohortResult",
-  news: "news",
-  tradingview_symbol_search: "tradingviewSymbolSearch",
-  tradingview_watchlists: "tradingviewWatchlists",
-  tradingview_alerts: "tradingviewAlerts",
-  tradingview_chart_state: "tradingviewChartState",
-  sepa: "sepa",
-  liquidity: "liquidity",
-  correlations: "correlations",
-  etf_premiums: "etfPremiums",
-  analyst_estimates: "analystEstimates",
-  earnings: "earnings",
-  earnings_setups: "earningsSetups",
-  valuations: "valuations",
-  technicals: "technicals",
-  research_packets: "researchPackets",
+const TABLE_KEY_OVERRIDES: Record<string, keyof PanelData> = {
   ticker_memos: "memos",
-  provider_runs: "providerRuns",
-  broker_status: "brokerStatus",
-  broker_accounts: "brokerAccounts",
-  broker_positions: "brokerPositions",
-  broker_market_snapshots: "brokerMarketSnapshots",
-  broker_scanner_signals: "brokerScannerSignals",
-  agent_recommendations: "agentRecommendations",
-  paper_orders: "paperOrders",
-  daily_brief: "dailyBrief",
-  feed_signals: "feedSignals",
-  universe_screen: "universeScreen",
-  watchlist_watched: "watchlistWatched",
-  watchlist_unwatched: "watchlistUnwatched",
-  watchlist_watched_quotes: "watchlistWatchedQuotes",
-  watchlist_unwatched_quotes: "watchlistUnwatchedQuotes",
-  watchlist_watched_fundamentals: "watchlistWatchedFundamentals",
-  watchlist_unwatched_fundamentals: "watchlistUnwatchedFundamentals",
-  watchlist_watched_technicals: "watchlistWatchedTechnicals",
-  watchlist_unwatched_technicals: "watchlistUnwatchedTechnicals",
-  watchlist_watched_valuations: "watchlistWatchedValuations",
-  watchlist_unwatched_valuations: "watchlistUnwatchedValuations",
-  watchlist_watched_screener: "watchlistWatchedScreener",
-  watchlist_unwatched_screener: "watchlistUnwatchedScreener",
-  watchlist_watched_decision_queue: "watchlistWatchedDecisionQueue",
-  watchlist_unwatched_decision_queue: "watchlistUnwatchedDecisionQueue",
-  watchlist_watched_portfolio: "watchlistWatchedPortfolio",
-  watchlist_unwatched_portfolio: "watchlistUnwatchedPortfolio",
-  watchlist_watched_options: "watchlistWatchedOptions",
-  watchlist_unwatched_options: "watchlistUnwatchedOptions",
-  manual_watchlist: "manualWatchlist",
-  sources: "sources",
-  source_consensus: "sourceConsensus",
-  source_ticker_rankings: "sourceTickerRankings",
-  source_items: "sourceItems",
-  ticker_source_signals: "tickerSourceSignals",
-  ownership_consensus: "ownershipConsensus",
-  market_context: "marketContext",
-  market_valuation_reference_charts: "marketValuationReferenceCharts",
-  market_valuation_charts: "marketValuationCharts",
-  market_environment_assets: "marketEnvironmentAssets",
-  market_environment_model: "marketEnvironmentModel",
-  exposure_clusters: "exposureClusters",
-  correlation_edges: "correlationEdges",
-  portfolio_risk_cards: "portfolioRiskCards",
-  review_actions: "reviewActions",
-  source_health: "sourceHealth",
-  refresh_jobs: "refreshJobs",
 };
+
+let panelDataKeys: Set<string> | undefined;
+
+function tableKeyFor(apiKey: string): keyof PanelData | undefined {
+  if (apiKey in TABLE_KEY_OVERRIDES) return TABLE_KEY_OVERRIDES[apiKey];
+  const key = apiKey.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase()) as keyof PanelData;
+  panelDataKeys ??= new Set(Object.keys(emptyPanelData()));
+  return panelDataKeys.has(key) ? key : undefined;
+}
 
 export function emptyPanelData(): PanelData {
   return {
@@ -256,7 +152,7 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
     next.dashboard = { ...next.dashboard, status: snapshot.status };
   }
   for (const [apiKey, table] of Object.entries(snapshot.tables ?? {})) {
-    const dataKey = TABLE_KEYS[apiKey];
+    const dataKey = tableKeyFor(apiKey);
     if (dataKey && dataKey !== "dashboard" && dataKey !== "settings" && dataKey !== "errors") {
       const existingTable = next[dataKey] as TablePayload;
       (next[dataKey] as TablePayload) = options.append ? appendTable(existingTable, table ?? EMPTY_TABLE) : table ?? EMPTY_TABLE;
@@ -292,4 +188,3 @@ function rowKey(row: RowRecord): string {
   const qualifier = String(row.method ?? row.source ?? row.source_key ?? row.id ?? row.date ?? row.as_of ?? "");
   return symbol || qualifier ? `${symbol}:${qualifier}` : JSON.stringify(row);
 }
-

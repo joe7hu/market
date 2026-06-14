@@ -91,6 +91,26 @@ def load_ticker_dossier_tables(con: Any, active_watchlist: list[dict[str, Any]],
     }
 
 
+def ticker_payload_tables(rows_for_table: Callable[[str], list[dict[str, Any]]], symbol: str) -> dict[str, list[dict[str, Any]]]:
+    """Build the ticker payload table map from already-loaded read models.
+
+    This is the API/test path equivalent of :func:`load_ticker_dossier_tables`.
+    It keeps ticker table names and symbol-matching semantics with the core
+    ticker dossier module instead of restating them in the FastAPI payload layer.
+    """
+
+    normalized = _normalize_symbol_token(symbol)
+    tables: dict[str, list[dict[str, Any]]] = {}
+    for table_name in TICKER_DOSSIER_LOADERS:
+        source_name = "ticker_memos" if table_name == "ticker_memos" else table_name
+        if table_name == "options_provider_capabilities":
+            rows = rows_for_table(source_name)
+        else:
+            rows = rows_matching_symbol(rows_for_table(source_name), normalized)
+        tables["memos" if table_name == "ticker_memos" else table_name] = rows
+    return tables
+
+
 def rows_matching_symbol(rows: list[dict[str, Any]], symbol: str) -> list[dict[str, Any]]:
     normalized = _normalize_symbol_token(symbol)
     return [row for row in rows if row_matches_symbol(row, normalized)]

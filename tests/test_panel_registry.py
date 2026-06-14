@@ -8,7 +8,6 @@ that previously left ``option_flow_features`` requested but unservable.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from app import panel_contracts
@@ -42,20 +41,15 @@ def test_repair_tables_are_real_read_models() -> None:
 
 def test_frontend_snapshot_keys_cover_backend_panel_manifest() -> None:
     api_panel_data = Path("frontend/src/apiPanelData.ts").read_text(encoding="utf-8")
-    table_keys_block = re.search(r"const TABLE_KEYS: Record<string, keyof PanelData> = \{(?P<body>.*?)\n\};", api_panel_data, re.S)
-    assert table_keys_block is not None
-    frontend_keys = dict(re.findall(r"\s*([a-zA-Z0-9_]+): \"([a-zA-Z0-9_]+)\"", table_keys_block.group("body")))
-
-    expected = {
+    assert "const TABLE_KEYS" not in api_panel_data
+    assert "function tableKeyFor(apiKey: string)" in api_panel_data
+    assert "ticker_memos: \"memos\"" in api_panel_data
+    overrides = {
         table_name: panel_contracts.frontend_key_for_table(table_name)
         for table_name in panel_contracts.panel_snapshot_table_names()
+        if panel_contracts.frontend_key_for_table(table_name) != (
+            table_name.split("_")[0]
+            + "".join(part[:1].upper() + part[1:] for part in table_name.split("_")[1:])
+        )
     }
-
-    missing = sorted(set(expected) - set(frontend_keys))
-    mismatched = {
-        table_name: {"expected": expected_key, "actual": frontend_keys.get(table_name)}
-        for table_name, expected_key in expected.items()
-        if frontend_keys.get(table_name) != expected_key
-    }
-    assert missing == []
-    assert mismatched == {}
+    assert overrides == {"ticker_memos": "memos"}
