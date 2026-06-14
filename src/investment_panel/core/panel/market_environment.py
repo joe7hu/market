@@ -10,7 +10,9 @@ from investment_panel.core.panel.coerce import _average, _dict_from_value, _form
 from investment_panel.core.panel.metrics import _is_watch_universe, _metric_number, _ps_from_fundamentals
 from investment_panel.core.panel.technicals import technical_price_history, technicals
 from investment_panel.core.panel.disclosures import _compact_empty_fields
-from investment_panel.core.panel.read_equity import candidates, discovered_universe, earnings_setups, liquidity, portfolio, quotes, screener, tradingview_watchlists, valuations
+from investment_panel.core.panel.read_equity import candidates, discovered_universe, portfolio
+from investment_panel.core.panel.read_market_data import earnings_setups, liquidity, quotes, screener, valuations
+from investment_panel.core.panel.read_tradingview import tradingview_watchlists
 
 
 

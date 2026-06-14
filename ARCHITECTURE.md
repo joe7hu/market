@@ -69,6 +69,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 - **Move, don't rewrite.** When extracting, preserve behavior and the public import
   contract; tests and the API import names from the facade.
 - **Schema lives in `core/schema.py`** (one DDL string), applied by `core/db.py:init_db`.
+  See `docs/schema-ddl-architecture-decision.md` before proposing a DDL split.
   Frontend page = `pages/XRoute.tsx`; its logic/components live under `views/`.
 
 ## Verify changes

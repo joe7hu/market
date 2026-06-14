@@ -14,7 +14,8 @@ from investment_panel.core.panel.metrics import _free_cash_flow, _is_watch_unive
 from investment_panel.core.panel.sources import _countercase, _disclosure_investor_source_rows, _expanded_disclosure_positions, _news_provider_source_rows, _primary_symbol, _provider_source_rows, _research_report_source_rows, _source_count_rows, _source_event_countercase, _source_event_next_action, _source_event_thesis, _source_family_counts, _source_family_for_name, _source_sentiment, _thesis_author_source_rows
 from investment_panel.core.panel.technicals import technicals
 from investment_panel.core.panel.disclosures import _compact_empty_fields, disclosures
-from investment_panel.core.panel.read_equity import decision_queue, discovered_universe, fundamentals, portfolio, quotes, screener, valuations
+from investment_panel.core.panel.read_equity import decision_queue, discovered_universe, portfolio
+from investment_panel.core.panel.read_market_data import fundamentals, quotes, screener, valuations
 
 
 
