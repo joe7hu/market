@@ -34,6 +34,15 @@ _RUN_SOURCE_ALIASES: dict[str, tuple[str, bool]] = {
     "web_rss": ("blog_", True),
 }
 
+# Catalog provider names that aggregate several freshness providers. Filings come
+# in under source_type="filing" keyed by the disclosure source_type (13f, House
+# CSV, etc.), not by "sec_edgar"/"house_disclosures", so map those names to the
+# concrete freshness provider keys they represent.
+_FRESHNESS_PROVIDER_ALIASES: dict[str, list[str]] = {
+    "sec_edgar": ["13f", "disclosure"],
+    "house_disclosures": ["public_disclosure_transaction", "pelositracker_portfolio", "trader_portfolio_model"],
+}
+
 
 def build_source_catalog_health(con: Any) -> dict[str, Any]:
     """Return the catalog with live primary/fallback status per category."""
@@ -109,13 +118,49 @@ def _provider_status_index(freshness_rows: list[dict[str, Any]]) -> dict[str, di
     return index
 
 
+def _resolve_freshness_entry(name: str, index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Look up a provider's freshness entry, aggregating aliased providers.
+
+    Most catalog providers map 1:1 to a freshness ``provider`` value. Filings are
+    the exception: many disclosure source_types roll up under one catalog name
+    (sec_edgar / house_disclosures), so merge their entries.
+    """
+
+    direct = index.get(name)
+    if direct is not None:
+        return direct
+    keys = _FRESHNESS_PROVIDER_ALIASES.get(name)
+    if not keys:
+        return None
+    entries = [index[key] for key in keys if key in index]
+    return _merge_freshness_entries(entries) if entries else None
+
+
+def _merge_freshness_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge several provider entries: most-recent observation wins, counts sum."""
+
+    merged = dict(entries[0])
+    merged["symbol_count"] = sum(int(entry.get("symbol_count") or 0) for entry in entries)
+    best = None
+    for entry in entries:
+        observed = entry.get("last_observed_at")
+        if observed is not None and (best is None or observed > best):
+            best = observed
+            merged["last_observed_at"] = observed
+            merged["provider_status"] = entry["provider_status"]
+            merged["freshness_status"] = entry.get("freshness_status")
+            merged["stale_after"] = entry.get("stale_after")
+            merged["detail"] = entry.get("detail") or ""
+    return merged
+
+
 def _provider_block(
     name: str,
     index: dict[str, dict[str, Any]],
     rate_limited: set[str],
     run_index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    entry = index.get(name)
+    entry = _resolve_freshness_entry(name, index)
     is_rate_limited = name in rate_limited or _alias_rate_limited(name, rate_limited)
     if entry is None:
         # Live opencli sources (X/blogs) report status via source_runs, not the
