@@ -49,7 +49,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 |---|---|
 | `App.tsx`, `main.tsx` | Router + app shell |
 | `pages/*Route.tsx` | One route per page (Market, Watchlist, OptionsRadar, Health, Ticker, …) — thin; compose views |
-| `views/` | Feature view modules. Larger features are folders: `health/`, `optionsRadar/`, `watchlist/` (`index` composition, `columns`, `format`, `cells`, `table`, `controls`). Shared: `rowFormat.ts`, `workspacePage.tsx` |
+| `views/` | Feature view modules. Larger features are folders: `health/`, `optionsRadar/`, `watchlist/` (`index` composition, `columns`, `format`, `cells`, `table`, `controls`), `market/` (`panels`, `chart`, `cells`, `format`, `types`). Shared: `rowFormat.ts`, `workspacePage.tsx` |
 | `components/` | Reusable UI primitives (incl. `components/ui/`, `components/market/`) |
 | `api.ts`, `marketData.tsx`, `model.ts`, `types.ts`, `hooks.ts`, `utils.ts` | API client, data context/model, shared types/hooks/utils |
 
