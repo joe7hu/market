@@ -5,10 +5,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.core.robinhood_options import (
+    _authorization_server_metadata,
     collect_robinhood_option_chains,
     load_robinhood_access_token,
     option_quote_row,
@@ -255,6 +258,29 @@ def test_load_robinhood_access_token_from_cache(tmp_path: Path, monkeypatch) -> 
     token = load_robinhood_access_token(_ProviderConfig(token_path=str(token_path)))
 
     assert token == "cached-token"
+
+
+def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get_json(url: str, *, timeout: int) -> dict[str, Any]:
+        calls.append(url)
+        if url == "https://agent.robinhood.com/.well-known/oauth-authorization-server":
+            return {
+                "authorization_endpoint": "https://robinhood.com/oauth",
+                "token_endpoint": "https://api.robinhood.com/oauth2/token/",
+            }
+        request = httpx.Request("GET", url)
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    monkeypatch.setattr("investment_panel.core.robinhood_options._get_json", fake_get_json)
+
+    metadata = _authorization_server_metadata("https://agent.robinhood.com/mcp/trading", timeout=30)
+
+    assert metadata["authorization_endpoint"] == "https://robinhood.com/oauth"
+    assert "https://agent.robinhood.com/.well-known/oauth-authorization-server/mcp/trading" in calls
+    assert calls[-1] == "https://agent.robinhood.com/.well-known/oauth-authorization-server"
 
 
 def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypatch) -> None:

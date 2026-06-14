@@ -513,15 +513,40 @@ def _discover_resource_metadata_url(mcp_url: str, timeout: int) -> str:
 
 
 def _authorization_server_metadata(auth_server: str, *, timeout: int) -> dict[str, Any]:
-    base = auth_server.rstrip("/")
-    for suffix in ("/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"):
+    for url in _authorization_server_metadata_urls(auth_server):
         try:
-            payload = _get_json(f"{base}{suffix}", timeout=timeout)
+            payload = _get_json(url, timeout=timeout)
         except httpx.HTTPError:
             continue
         if payload.get("authorization_endpoint") and payload.get("token_endpoint"):
             return payload
     raise RuntimeError(f"Authorization server metadata was not available for {auth_server}")
+
+
+def _authorization_server_metadata_urls(auth_server: str) -> list[str]:
+    parsed = urlparse(auth_server)
+    base = auth_server.rstrip("/")
+    origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base
+    issuer_path = parsed.path.rstrip("/")
+    candidates = [
+        f"{base}/.well-known/openid-configuration",
+        f"{base}/.well-known/oauth-authorization-server",
+    ]
+    if origin and issuer_path:
+        candidates.extend(
+            [
+                f"{origin}/.well-known/openid-configuration{issuer_path}",
+                f"{origin}/.well-known/oauth-authorization-server{issuer_path}",
+            ]
+        )
+    if origin:
+        candidates.extend(
+            [
+                f"{origin}/.well-known/openid-configuration",
+                f"{origin}/.well-known/oauth-authorization-server",
+            ]
+        )
+    return list(dict.fromkeys(candidates))
 
 
 def _register_oauth_client(auth_metadata: dict[str, Any], redirect_uri: str, *, timeout: int) -> str:
