@@ -1,9 +1,11 @@
 """JSON/date parsing and row coercion helpers."""
 
 from __future__ import annotations
-import json
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime
 from typing import Any
+
+from investment_panel.core.coercion import parse_dt_utc as parse_dt
+from investment_panel.core.coercion import parse_json
 
 
 
@@ -37,36 +39,6 @@ def related_symbols(value: Any) -> list[str]:
     if isinstance(value, str):
         return [item.strip().split(":")[-1].upper() for item in value.replace(";", ",").split(",") if item.strip()]
     return []
-
-
-
-
-def parse_json(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return {}
-    try:
-        return json.loads(value)
-    except Exception:
-        return {}
-
-
-
-
-def parse_dt(value: Any) -> datetime | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return value.astimezone(UTC) if value.tzinfo else value.astimezone(UTC)
-    if isinstance(value, date):
-        return datetime.combine(value, time.min, tzinfo=UTC)
-    text = str(value)
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.astimezone(UTC)
-    except ValueError:
-        return None
 
 
 

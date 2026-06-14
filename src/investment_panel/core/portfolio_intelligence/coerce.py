@@ -1,8 +1,11 @@
 """Auto-split from portfolio_intelligence.py — see ARCHITECTURE.md."""
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from investment_panel.core.coercion import parse_json_dict as _json_obj
+from investment_panel.core.coercion import parse_json_list as _json_list
+from investment_panel.core.coercion import to_float_or_none as _float
 
 
 BROAD_CATEGORIES = {"", "owned-portfolio", "portfolio", "manual", "watchlist", "market"}
@@ -24,34 +27,3 @@ def _money(value: float) -> str:
     return f"${value:,.0f}"
 
 
-def _float(value: Any) -> float | None:
-    try:
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _json_list(value: Any) -> list[dict[str, Any]]:
-    parsed = value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except Exception:
-            parsed = []
-    if not isinstance(parsed, list):
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
-
-
-def _json_obj(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}

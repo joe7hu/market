@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
 from typing import Any
 
+from investment_panel.core.coercion import iso_date_string as _date_string
+from investment_panel.core.coercion import iso_or_none_strict as _iso_or_none
+from investment_panel.core.coercion import parse_date_lenient as _date_value
+from investment_panel.core.coercion import to_float_or_none as _number
 from investment_panel.core.option_agent_thesis.constants import PRICE_RE, STOP_WORDS
 from investment_panel.core.option_agent_thesis.dbutil import _json_or_value
 
@@ -74,54 +77,6 @@ def _list_value(value: Any) -> list[Any]:
             return decoded
         return [value] if value else []
     return []
-
-
-def _date_string(value: Any) -> str | None:
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
-    except ValueError:
-        return text
-
-
-def _iso_or_none(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)
-
-
-def _date_value(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return date.fromisoformat(text[:10])
-        except ValueError:
-            return None
-
-
-def _number(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _confidence_score(value: Any) -> float:

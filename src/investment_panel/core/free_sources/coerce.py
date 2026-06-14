@@ -1,12 +1,14 @@
 """Symbol/number/date coercion and rate-limit detection helpers."""
 
 from __future__ import annotations
-import hashlib
-import json
-import math
 from datetime import date, datetime
 from typing import Any
 
+from investment_panel.core.coercion import parse_json_dict_copy as parse_json_object
+from investment_panel.core.coercion import stable_id
+from investment_panel.core.coercion import to_finite_float as as_float
+from investment_panel.core.coercion import to_int_or_none as as_int
+from investment_panel.core.coercion import unique_strings as _unique_strings
 from investment_panel.core.free_sources.constants import _RATE_LIMIT_HINT
 
 
@@ -35,19 +37,6 @@ def _dte_from_expiry(expiry: str, observed_at: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return (expiry_date - observed_date).days
-
-
-
-
-def _unique_strings(values: list[str]) -> list[str]:
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return output
 
 
 
@@ -98,20 +87,6 @@ def first_date_value(value: Any) -> str | None:
 
 
 
-def parse_json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if not value:
-        return {}
-    try:
-        decoded = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return dict(decoded) if isinstance(decoded, dict) else {}
-
-
-
-
 def normalize_symbol(value: Any) -> str:
     symbol = str(value or "").upper()
     return symbol.split(":")[-1]
@@ -119,26 +94,3 @@ def normalize_symbol(value: Any) -> str:
 
 
 
-def as_float(value: Any) -> float | None:
-    try:
-        number = float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-    if number is None or not math.isfinite(number):
-        return None
-    return number
-
-
-
-
-def as_int(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-
-
-def stable_id(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]

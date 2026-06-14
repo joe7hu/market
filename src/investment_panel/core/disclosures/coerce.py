@@ -1,8 +1,10 @@
 """Auto-split from core/disclosures.py — see ARCHITECTURE.md."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
+
+from investment_panel.core.coercion import float_from_comma as _float_or_none
 
 
 def days_since(value: str) -> int:
@@ -33,12 +35,3 @@ def amount_midpoint(low: float | None, high: float | None) -> float | None:
     if high is None:
         return low
     return (low + high) / 2
-
-
-def _float_or_none(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(str(value).replace(",", ""))
-    except ValueError:
-        return None

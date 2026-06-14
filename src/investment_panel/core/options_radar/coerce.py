@@ -9,9 +9,16 @@ module.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
 from statistics import mean
 from typing import Any
+
+from investment_panel.core.coercion import iso_string as _iso
+from investment_panel.core.coercion import parse_date as _date
+from investment_panel.core.coercion import parse_json as _json_or_list
+from investment_panel.core.coercion import parse_json_dict as _json
+from investment_panel.core.coercion import parse_naive_datetime as _datetime
+from investment_panel.core.coercion import to_float_or_none as _number
+from investment_panel.core.coercion import to_int_or_none as _integer
 
 
 def _days_to_expiration(expiration: Any, snapshot_time: str) -> int | None:
@@ -36,62 +43,6 @@ def _elapsed_hours(start: Any, end: Any) -> float | None:
     if start_dt is None or end_dt is None:
         return None
     return max(0.0, (end_dt - start_dt).total_seconds() / 3600)
-
-
-def _datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    text = str(value or "")
-    if not text:
-        return None
-    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    if parsed.tzinfo is not None:
-        parsed = parsed.replace(tzinfo=None)
-    return parsed
-
-
-def _date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "")
-    if not text:
-        return None
-    return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-
-
-def _iso(value: Any) -> str:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)
-
-
-def _json(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        decoded = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
-
-
-def _json_or_list(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return {}
-    try:
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return {}
 
 
 def _list_value(value: Any) -> list[str]:
@@ -132,20 +83,6 @@ def _median(values: list[float]) -> float | None:
     if len(clean) % 2:
         return clean[midpoint]
     return (clean[midpoint - 1] + clean[midpoint]) / 2
-
-
-def _number(value: Any) -> float | None:
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _integer(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _normalize_symbol(value: Any) -> str:

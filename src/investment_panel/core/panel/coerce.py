@@ -5,6 +5,12 @@ import json
 import re
 from typing import Any
 
+from investment_panel.core.coercion import decode_json_value
+from investment_panel.core.coercion import iso_or_none as _iso_or_none
+from investment_panel.core.coercion import number_from_any as _number_from_any
+from investment_panel.core.coercion import optional_number as _optional_number
+from investment_panel.core.coercion import string_list as _string_list
+
 
 
 def _median(values: list[float | None]) -> float | None:
@@ -25,15 +31,6 @@ def _percentile_rank(values: list[float | None], current: float | None) -> float
         return None
     below = sum(1 for value in cleaned if value < current)
     return round((below / (len(cleaned) - 1)) * 100, 2)
-
-
-
-
-def _optional_number(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    number = _number_from_any(value)
-    return number if number == number else None
 
 
 
@@ -125,28 +122,6 @@ def _normalize_symbol_token(value: Any) -> str:
 
 
 
-def _string_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, dict):
-        return [str(item).strip() for item in value.values() if str(item).strip()]
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return []
-        if stripped.startswith("[") or stripped.startswith("{") or stripped.startswith('"'):
-            try:
-                return _string_list(json.loads(stripped))
-            except Exception:
-                pass
-        return [item.strip() for item in stripped.replace("|", ";").replace(",", ";").split(";") if item.strip()]
-    return [str(value).strip()] if str(value).strip() else []
-
-
-
-
 def _dict_from_value(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -188,19 +163,6 @@ def _plain_text(value: Any) -> str:
 
 
 
-def _number_from_any(value: Any) -> float:
-    if isinstance(value, (int, float)) and value == value:
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.replace("$", "").replace(",", "").replace("%", ""))
-        except ValueError:
-            return 0.0
-    return 0.0
-
-
-
-
 def _ratio(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None or denominator is None or not denominator:
         return None
@@ -212,14 +174,6 @@ def _ratio(numerator: float | None, denominator: float | None) -> float | None:
 def _meaningful_text(value: Any) -> str:
     text = str(value or "").strip()
     return "" if text in {"", "-", "none", "None", "null", "N/A", "n/a"} else text
-
-
-
-
-def _iso_or_none(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 
@@ -242,13 +196,3 @@ def decode_fields(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any
             except Exception:
                 pass
     return decoded
-
-
-
-
-def decode_json_value(value: Any) -> Any:
-    if value in (None, ""):
-        return None
-    if isinstance(value, (dict, list)):
-        return value
-    return json.loads(value)
