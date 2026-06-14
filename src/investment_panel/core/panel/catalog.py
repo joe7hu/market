@@ -23,17 +23,30 @@ _SEVERITY_TONE = {"good": "good", "warn": "warn", "bad": "bad", "info": "neutral
 _TONE_RANK = {"bad": 3, "warn": 2, "neutral": 1, "good": 0, "unknown": 1}
 
 
+# Catalog provider names whose live status lives in source_runs (live opencli
+# ingestion) rather than the per-symbol freshness index. Values match a
+# source_runs.source_id exactly, or as a prefix for dynamic ids (blog_<host>).
+_RUN_SOURCE_ALIASES: dict[str, tuple[str, bool]] = {
+    "x_list": ("birdclaw_primary_tweets", False),
+    "x_account": ("birdclaw_primary_tweets", False),
+    "arco_birdclaw": ("birdclaw_primary_tweets", False),
+    "substack": ("blog_", True),
+    "web_rss": ("blog_", True),
+}
+
+
 def build_source_catalog_health(con: Any) -> dict[str, Any]:
     """Return the catalog with live primary/fallback status per category."""
 
     freshness_rows = build_source_freshness(con)
     provider_index = _provider_status_index(freshness_rows)
+    run_index = _run_status_index(con)
     rate_limited = _rate_limited_providers(con)
 
     categories: list[dict[str, Any]] = []
     for category in SOURCE_CATALOG:
-        primary = _provider_block(category.primary, provider_index, rate_limited)
-        fallbacks = [_provider_block(name, provider_index, rate_limited) for name in category.fallback]
+        primary = _provider_block(category.primary, provider_index, rate_limited, run_index)
+        fallbacks = [_provider_block(name, provider_index, rate_limited, run_index) for name in category.fallback]
         tone = _category_tone(category, primary, fallbacks)
         categories.append(
             {
@@ -96,10 +109,32 @@ def _provider_status_index(freshness_rows: list[dict[str, Any]]) -> dict[str, di
     return index
 
 
-def _provider_block(name: str, index: dict[str, dict[str, Any]], rate_limited: set[str]) -> dict[str, Any]:
+def _provider_block(
+    name: str,
+    index: dict[str, dict[str, Any]],
+    rate_limited: set[str],
+    run_index: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     entry = index.get(name)
-    is_rate_limited = name in rate_limited
+    is_rate_limited = name in rate_limited or _alias_rate_limited(name, rate_limited)
     if entry is None:
+        # Live opencli sources (X/blogs) report status via source_runs, not the
+        # per-symbol freshness index — resolve those here before giving up.
+        run = _alias_run_status(name, run_index or {})
+        if run is not None:
+            severity = source_status_severity(run["status"])
+            return {
+                "provider": name,
+                "status": "rate_limited" if is_rate_limited else run["status"],
+                "tone": "warn" if is_rate_limited else _SEVERITY_TONE.get(severity, "unknown"),
+                "provider_status": run["status"],
+                "last_observed_at": run.get("finished_at"),
+                "stale_after": "",
+                "symbol_count": 0,
+                "rate_limited": is_rate_limited,
+                "freshness_status": run["status"],
+                "detail": run.get("detail") or "",
+            }
         status = "rate_limited" if is_rate_limited else "unknown"
         return {
             "provider": name,
@@ -140,6 +175,58 @@ def _category_tone(category: DataCategory, primary: dict[str, Any], fallbacks: l
     if "good" in tones:
         return "good"
     return max(tones, key=lambda tone: _TONE_RANK.get(tone, 1))
+
+
+def _run_status_index(con: Any) -> dict[str, dict[str, Any]]:
+    """Latest source_run per source_id (status + finished_at) for live sources."""
+
+    rows = query_rows(
+        con,
+        """
+        SELECT source_id, status, finished_at, failure_detail
+        FROM source_runs
+        QUALIFY row_number() OVER (PARTITION BY source_id ORDER BY finished_at DESC NULLS LAST) = 1
+        """,
+    )
+    index: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        source_id = str(row.get("source_id") or "")
+        if not source_id:
+            continue
+        index[source_id] = {
+            "status": normalize_source_status(row.get("status")),
+            "finished_at": parse_dt(row.get("finished_at")),
+            "detail": row.get("failure_detail") or "",
+        }
+    return index
+
+
+def _alias_source_ids(name: str, run_index: dict[str, dict[str, Any]]) -> list[str]:
+    alias = _RUN_SOURCE_ALIASES.get(name)
+    if alias is None:
+        return [name] if name in run_index else []
+    target, is_prefix = alias
+    if not is_prefix:
+        return [target] if target in run_index else []
+    return [source_id for source_id in run_index if source_id.startswith(target)]
+
+
+def _alias_run_status(name: str, run_index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [run_index[source_id] for source_id in _alias_source_ids(name, run_index)]
+    if not candidates:
+        return None
+    # Most recent run wins (None finished_at sorts last).
+    return max(candidates, key=lambda run: (run.get("finished_at") is not None, run.get("finished_at")))
+
+
+def _alias_rate_limited(name: str, rate_limited: set[str]) -> bool:
+    alias = _RUN_SOURCE_ALIASES.get(name)
+    if alias is None:
+        return False
+    target, is_prefix = alias
+    if is_prefix:
+        return any(source_id.startswith(target) for source_id in rate_limited)
+    return target in rate_limited
 
 
 def _rate_limited_providers(con: Any) -> set[str]:

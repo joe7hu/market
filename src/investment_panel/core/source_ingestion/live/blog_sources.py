@@ -37,21 +37,17 @@ def fetch_substack(con: Any, runner: OpenCliRunner, url: str, *, known: set[str]
 
 
 def fetch_web_rss(con: Any, runner: OpenCliRunner, url: str, *, known: set[str] | None = None) -> LiveFetchResult:
-    source_id = slug(f"blog_{_host(url)}")
-    result = LiveFetchResult(source_id=source_id)
-    if not url:
-        result.status = "skipped"
-        result.detail = "empty rss url"
-        return result
-    try:
-        payload = runner.read_json(["web", "rss", url])
-    except OpenCliRateLimitError as exc:
-        return _record(result, "rate_limited", exc, con, capability="web_rss", run_key=url, rate_limited=True)
-    except Exception as exc:  # noqa: BLE001
-        return _record(result, "failed", exc, con, capability="web_rss", run_key=url)
+    """Generic web RSS is not supported by the installed opencli adapters.
 
-    _ingest_posts(con, ensure_list(payload), result, source_id=source_id, source_url=url, known=known)
-    record_live_run(con, result, capability="web_rss", run_key=url)
+    The ``web`` adapter only exposes ``read`` (single page → Markdown), not a feed
+    parser, so there is no clean way to enumerate posts from an arbitrary RSS URL.
+    Skip explicitly (rather than record spurious failures) until a real feed
+    adapter exists; ``substack_urls`` is the supported blog path.
+    """
+
+    result = LiveFetchResult(source_id=slug(f"blog_{_host(url)}"))
+    result.status = "skipped"
+    result.detail = "generic web RSS unsupported by opencli; use substack_urls"
     return result
 
 

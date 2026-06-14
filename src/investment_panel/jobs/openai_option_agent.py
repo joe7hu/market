@@ -7,13 +7,12 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
-from binascii import Error as BinasciiError
-from base64 import urlsafe_b64decode
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from investment_panel.jobs.openai_option_agent_auth import codex_oauth_access_token
 
 
 DEFAULT_MODEL = "gpt-5.2"
@@ -222,6 +221,7 @@ def generate_openai_option_agent(payload: dict[str, Any]) -> dict[str, Any]:
         schema_name="option_agent_batch",
         schema=_agent_wrapper_schema(),
         system_prompt=_agent_system_prompt(),
+        compact=False,
     )
     return _dispatch_agent_batch_refs(result, payload)
 
@@ -232,6 +232,7 @@ def generate_codex_option_agent(payload: dict[str, Any]) -> dict[str, Any]:
         schema_name="option_agent_batch",
         schema=_agent_wrapper_schema(),
         system_prompt=_agent_system_prompt(),
+        compact=False,
     )
     return _dispatch_agent_batch_refs(result, payload)
 
@@ -296,7 +297,12 @@ def _call_openai_structured(
     schema_name: str,
     schema: dict[str, Any],
     system_prompt: str,
+    compact: bool = True,
 ) -> dict[str, Any]:
+    # Single-request callers pass the raw request and rely on compaction; the
+    # consolidated batch caller pre-shapes its payload and must NOT be re-compacted
+    # (that would strip the thesis/postmortem arrays).
+    body_payload = _compact_request_payload(request_payload) if compact else request_payload
     bearer_token = _openai_bearer_token()
     model = os.environ.get("MARKET_OPENAI_MODEL", DEFAULT_MODEL)
     base_url = os.environ.get("MARKET_OPENAI_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
@@ -306,7 +312,7 @@ def _call_openai_structured(
         "model": model,
         "input": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(_compact_request_payload(request_payload), default=str)},
+            {"role": "user", "content": json.dumps(body_payload, default=str)},
         ],
         "max_output_tokens": max_output_tokens,
         "store": False,
@@ -349,7 +355,11 @@ def _call_codex_structured(
     schema_name: str,
     schema: dict[str, Any],
     system_prompt: str,
+    compact: bool = True,
 ) -> dict[str, Any]:
+    # See _call_openai_structured: the batch caller pre-shapes its payload and must
+    # not be re-compacted (that would strip the thesis/postmortem arrays).
+    body_payload = _compact_request_payload(request_payload) if compact else request_payload
     codex_bin = os.environ.get("MARKET_CODEX_BIN", "codex")
     timeout = float(os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"))
     with tempfile.NamedTemporaryFile("w", suffix=f"-{schema_name}.schema.json", delete=False) as schema_file:
@@ -360,7 +370,7 @@ def _call_codex_structured(
     try:
         completed = subprocess.run(
             _codex_command(codex_bin=codex_bin, schema_path=schema_path, output_path=output_path, system_prompt=system_prompt),
-            input=json.dumps(_compact_request_payload(request_payload), default=str),
+            input=json.dumps(body_payload, default=str),
             text=True,
             capture_output=True,
             timeout=timeout,
@@ -486,7 +496,7 @@ def _openai_bearer_token() -> str:
         access_token = os.environ.get("MARKET_OPENAI_ACCESS_TOKEN") or os.environ.get("OPENAI_ACCESS_TOKEN")
         if access_token:
             return access_token
-        access_token = _codex_oauth_access_token()
+        access_token = codex_oauth_access_token()
         if access_token:
             return access_token
         raise OpenAIOptionAgentError("OpenAI OAuth access token with api.responses.write scope is required")
@@ -498,69 +508,6 @@ def _openai_bearer_token() -> str:
     if access_token:
         return access_token
     raise OpenAIOptionAgentError("OPENAI_API_KEY or OpenAI OAuth access token is required")
-
-
-def _codex_oauth_access_token() -> str:
-    auth_path = Path(os.environ.get("MARKET_OPENAI_OAUTH_FILE") or (Path.home() / ".codex" / "auth.json"))
-    try:
-        data = json.loads(auth_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return ""
-
-    candidates: list[str] = []
-    _collect_access_tokens(data, candidates)
-    if not candidates:
-        return ""
-
-    now = int(time.time())
-    for token in candidates:
-        payload = _jwt_payload(token)
-        if not payload:
-            continue
-        exp = payload.get("exp")
-        aud = payload.get("aud")
-        audiences = aud if isinstance(aud, list) else [aud]
-        is_openai_api = "https://api.openai.com/v1" in audiences
-        is_current = not isinstance(exp, (int, float)) or exp > now + 60
-        if is_openai_api and is_current and _has_responses_write_scope(payload):
-            return token
-    return ""
-
-
-def _has_responses_write_scope(payload: dict[str, Any]) -> bool:
-    scopes = payload.get("scp", payload.get("scope"))
-    if isinstance(scopes, str):
-        scope_values = scopes.split()
-    elif isinstance(scopes, list):
-        scope_values = [str(scope) for scope in scopes]
-    else:
-        scope_values = []
-    return "api.responses.write" in set(scope_values)
-
-
-def _collect_access_tokens(value: Any, candidates: list[str]) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key == "access_token" and isinstance(child, str) and child:
-                candidates.append(child)
-            else:
-                _collect_access_tokens(child, candidates)
-    elif isinstance(value, list):
-        for child in value:
-            _collect_access_tokens(child, candidates)
-
-
-def _jwt_payload(token: str) -> dict[str, Any]:
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return {}
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        decoded = urlsafe_b64decode(payload.encode())
-        data = json.loads(decoded)
-    except (BinasciiError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _extract_output_text(data: dict[str, Any]) -> str:
