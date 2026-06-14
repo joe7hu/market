@@ -59,3 +59,15 @@ def update_agent_settings(payload: deps.AgentSettingsInput, request: Request) ->
     deps._invalidate_context_cache()
     config, panel_data = deps._context()
     return deps.settings_payload(config, panel_data)
+
+
+@router.patch("/api/settings/research-sources")
+def update_research_sources(payload: deps.ResearchSourcesInput, request: Request) -> dict[str, Any]:
+    deps._require_local_request(request)
+    try:
+        deps.update_research_sources_config("config.yaml", payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    deps._invalidate_context_cache()
+    config, panel_data = deps._context()
+    return deps.settings_payload(config, panel_data)

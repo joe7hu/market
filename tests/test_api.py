@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
 import investment_panel.core.source_ingestion.audit as audit_mod
-from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config
+from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config, update_research_sources_config
 import app.main as app_main
 import app.deps as app_deps
 from app import panel_contracts
@@ -196,6 +196,51 @@ disclosures:
     assert "option_postmortem:" in text
     assert "limit: 0" in text
     assert "disclosures:" in text
+
+
+def test_update_research_sources_config_rewrites_only_research_block(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+database:
+  duckdb_path: data/test.duckdb
+
+research_sources:
+  x:
+    enabled: true
+    list_id: ""
+    priority_handles: [balajis]
+    limit: 30
+
+disclosures:
+  public_disclosure_csvs: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    update_research_sources_config(
+        config_path,
+        {
+            "x": {"enabled": True, "list_id": "1734567890", "priority_handles": "@balajis, karpathy, karpathy", "limit": 40},
+            "news": {"enabled": False, "providers": ["bloomberg", "reuters"]},
+        },
+    )
+
+    text = config_path.read_text(encoding="utf-8")
+    assert "duckdb_path: data/test.duckdb" in text
+    assert "list_id: '1734567890'" in text or "list_id: \"1734567890\"" in text or "list_id: 1734567890" in text
+    # @ stripped, de-duped
+    assert "balajis" in text and "karpathy" in text
+    assert text.count("karpathy") == 1
+    assert "limit: 40" in text
+    assert "disclosures:" in text
+
+
+def test_update_research_sources_config_rejects_bad_values(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("research_sources:\n  x:\n    enabled: true\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        update_research_sources_config(config_path, {"x": {"limit": 9999}})
 
 
 def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatch) -> None:

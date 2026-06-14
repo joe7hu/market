@@ -89,9 +89,38 @@ export type AgentCommandSettingsInput = {
   limit?: number;
 };
 
+export type OptionAgentSettingsInput = {
+  enabled?: boolean;
+  command?: string;
+  timeout_seconds?: number;
+  thesis_limit?: number;
+  postmortem_limit?: number;
+};
+
 export type AgentSettingsInput = {
   option_thesis?: AgentCommandSettingsInput;
   option_postmortem?: AgentCommandSettingsInput;
+  option_agent?: OptionAgentSettingsInput;
+};
+
+export type ResearchSourcesInput = {
+  x?: {
+    enabled?: boolean;
+    list_id?: string;
+    priority_handles?: string[];
+    limit?: number;
+    account_fetch_cap?: number;
+  };
+  news?: {
+    enabled?: boolean;
+    providers?: string[];
+    limit?: number;
+  };
+  blogs?: {
+    enabled?: boolean;
+    substack_urls?: string[];
+    rss_urls?: string[];
+  };
 };
 
 export type PanelScopeOptions = {
@@ -209,6 +238,10 @@ export async function startRefreshJob(jobName: string): Promise<RefreshJob> {
 
 export async function updateAgentSettings(payload: AgentSettingsInput): Promise<SettingsPayload> {
   return patchJson<SettingsPayload>("/api/settings/agents", payload);
+}
+
+export async function updateResearchSources(payload: ResearchSourcesInput): Promise<SettingsPayload> {
+  return patchJson<SettingsPayload>("/api/settings/research-sources", payload);
 }
 
 export async function promoteStrategyMutation(proposalId: string, approvedBy = "joe"): Promise<StrategyPromotionResult> {

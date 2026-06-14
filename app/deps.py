@@ -39,6 +39,7 @@ from app.data_access import (
     table_payload,
     ticker_payload,
     update_agent_settings_config,
+    update_research_sources_config,
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, refresh_job_rows, run_refresh_job, start_refresh_job
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
@@ -108,6 +109,32 @@ class AgentSettingsInput(BaseModel):
     option_thesis: AgentCommandSettingsInput | None = None
     option_postmortem: AgentCommandSettingsInput | None = None
     option_agent: OptionAgentSettingsInput | None = None
+
+
+class ResearchXSettingsInput(BaseModel):
+    enabled: bool | None = None
+    list_id: str | None = None
+    priority_handles: list[str] | str | None = None
+    limit: int | None = None
+    account_fetch_cap: int | None = None
+
+
+class ResearchNewsSettingsInput(BaseModel):
+    enabled: bool | None = None
+    providers: list[str] | str | None = None
+    limit: int | None = None
+
+
+class ResearchBlogsSettingsInput(BaseModel):
+    enabled: bool | None = None
+    substack_urls: list[str] | str | None = None
+    rss_urls: list[str] | str | None = None
+
+
+class ResearchSourcesInput(BaseModel):
+    x: ResearchXSettingsInput | None = None
+    news: ResearchNewsSettingsInput | None = None
+    blogs: ResearchBlogsSettingsInput | None = None
 
 
 class TradeJournalInput(BaseModel):
