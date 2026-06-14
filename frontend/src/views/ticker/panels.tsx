@@ -3,45 +3,34 @@ import { ExternalLink } from "lucide-react";
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
-import type { JsonValue, PanelData, RowRecord, TickerPayload } from "@/types";
-import { rows } from "@/utils";
-import { displayField, formatPct, listField, symbolList, textField, toneFromText } from "./rowFormat";
-import { WorkspacePage, type MetricSpec, type OpenTicker } from "./workspacePage";
+import type { RowRecord, TickerPayload } from "@/types";
+import { displayField, listField, symbolList, textField, toneFromText } from "@/views/rowFormat";
+import type { OpenTicker } from "@/views/workspacePage";
 
-export function TickerPage({ symbol, ticker, data, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; data: PanelData; onOpenTicker: OpenTicker }) {
-  const tables = ticker?.tables ?? {};
-  const thesisRows = rows(data.thesisMonitor).filter((row) => symbolList(row).includes(symbol));
-  const metrics = tickerHeaderMetrics(ticker);
-  const title = ticker?.found === false ? `${symbol} not found` : symbol;
-  return (
-    <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Authoritative fundamentals, source-backed evidence, thesis state, and decision context." metrics={metrics}>
-      <FundamentalsPanel ticker={ticker} />
-      {ticker?.decision_brief ? <DecisionPanel brief={ticker.decision_brief} /> : null}
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.7fr)]">
-        <TradingViewChart symbol={symbol} ticker={ticker} />
-        <AnalystEstimatePanel rows={compactRows(tables.analyst_estimates)} />
-      </div>
-      <OptionsIntelligencePanel ticker={ticker} />
-      <div className="grid min-w-0 gap-4 xl:grid-cols-2">
-        <ThesisPanel rows={thesisRows.length ? thesisRows : compactRows(tables.thesis_monitor)} />
-        <SourceCoveragePanel
-          consensusRows={compactRows(tables.source_consensus)}
-          signalRows={compactRows(tables.ticker_source_signals)}
-          onOpenTicker={onOpenTicker}
-        />
-      </div>
-      <EvidencePanel
-        rows={[
-          ...compactRows(tables.feed_signals),
-          ...compactRows(tables.news),
-          ...compactRows(tables.opportunity_sources),
-        ]}
-      />
-    </WorkspacePage>
-  );
-}
+import { DecisionStat, MetricGrid, ReasonList, SimpleTable } from "./cells";
+import {
+  arrayField,
+  compactRows,
+  dateSortValue,
+  estimateForPeriod,
+  latestRow,
+  liquidityDetail,
+  moneyMetric,
+  moneyOrNumber,
+  multipleMetric,
+  numberMetric,
+  objectField,
+  optionMove,
+  percentMetric,
+  presentMetricCells,
+  ratioMetric,
+  skewDetail,
+  targetRange,
+  unavailableSignals,
+  usefulEvidence,
+} from "./data";
 
-function DecisionPanel({ brief }: { brief: RowRecord }) {
+export function DecisionPanel({ brief }: { brief: RowRecord }) {
   const verdict = objectField(brief, "verdict");
   const setup = objectField(brief, "setup");
   const riskPlan = objectField(brief, "risk_plan");
@@ -91,32 +80,7 @@ function DecisionPanel({ brief }: { brief: RowRecord }) {
   );
 }
 
-function DecisionStat({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return (
-    <div className="rounded-md border border-border bg-background px-3 py-2">
-      <div className="text-xs font-medium uppercase text-muted-foreground">{label}</div>
-      <div className="mt-1 text-lg font-semibold">{value}</div>
-      <div className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</div>
-    </div>
-  );
-}
-
-function ReasonList({ title, rows, empty }: { title: string; rows: string[]; empty: string }) {
-  return (
-    <section>
-      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
-      {rows.length ? (
-        <ul className="space-y-2 text-sm leading-6">
-          {rows.map((row, index) => <li key={`${title}-${index}`}>{row}</li>)}
-        </ul>
-      ) : (
-        <p className="text-sm text-muted-foreground">{empty}</p>
-      )}
-    </section>
-  );
-}
-
-function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPayload | null }) {
+export function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPayload | null }) {
   const tradingViewSymbol = resolveTradingViewSymbol(symbol, ticker);
   const chartUrl = tradingViewEmbedUrl(tradingViewSymbol);
   const externalUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`;
@@ -143,7 +107,7 @@ function TradingViewChart({ symbol, ticker }: { symbol: string; ticker: TickerPa
   );
 }
 
-function FundamentalsPanel({ ticker }: { ticker: TickerPayload | null }) {
+export function FundamentalsPanel({ ticker }: { ticker: TickerPayload | null }) {
   const rows = compactRows(ticker?.tables?.fundamentals);
   const secRows = rows
     .filter((row) => textField(row, ["source"]) === "sec_companyfacts")
@@ -202,28 +166,7 @@ function FundamentalsPanel({ ticker }: { ticker: TickerPayload | null }) {
   );
 }
 
-type MetricCell = [label: string, value: string, detail: string];
-
-function presentMetricCells(rows: MetricCell[]): MetricCell[] {
-  return rows.filter(([, value]) => value !== "-");
-}
-
-function MetricGrid({ rows, empty }: { rows: MetricCell[]; empty: string }) {
-  if (!rows.length) return <p className="text-sm text-muted-foreground">{empty}</p>;
-  return (
-    <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-      {rows.map(([label, value, detail]) => (
-        <div key={label} className="min-h-24 rounded-md border border-border bg-background px-3 py-2">
-          <dt className="text-xs font-medium uppercase text-muted-foreground">{label}</dt>
-          <dd className="mt-1 break-words text-lg font-semibold tabular-nums">{value}</dd>
-          <dd className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function AnalystEstimatePanel({ rows }: { rows: RowRecord[] }) {
+export function AnalystEstimatePanel({ rows }: { rows: RowRecord[] }) {
   const latest = latestRow(rows, ["as_of"]);
   const estimates = objectField(latest, "estimates");
   const earnings = arrayField(estimates, "earnings_estimate");
@@ -252,7 +195,7 @@ function AnalystEstimatePanel({ rows }: { rows: RowRecord[] }) {
   );
 }
 
-function OptionsIntelligencePanel({ ticker }: { ticker: TickerPayload | null }) {
+export function OptionsIntelligencePanel({ ticker }: { ticker: TickerPayload | null }) {
   const tickerSignal = latestRow(compactRows(ticker?.tables?.options_ticker_signals), ["as_of"]);
   const expiries = compactRows(ticker?.tables?.options_expiry_signals)
     .sort((a, b) => dateSortValue(a, ["expiry"]) - dateSortValue(b, ["expiry"]))
@@ -323,7 +266,7 @@ function OptionsIntelligencePanel({ ticker }: { ticker: TickerPayload | null }) 
   );
 }
 
-function ThesisPanel({ rows }: { rows: RowRecord[] }) {
+export function ThesisPanel({ rows }: { rows: RowRecord[] }) {
   const visibleRows = rows.slice(0, 4).map((row) => ({
     status: displayField(row, ["needs_review", "review_reason", "status"], "Loaded"),
     thesis: displayField(row, ["thesis", "why_owned_watched", "summary"], "No thesis text loaded"),
@@ -346,7 +289,7 @@ function ThesisPanel({ rows }: { rows: RowRecord[] }) {
   );
 }
 
-function SourceCoveragePanel({ consensusRows, signalRows, onOpenTicker }: { consensusRows: RowRecord[]; signalRows: RowRecord[]; onOpenTicker: OpenTicker }) {
+export function SourceCoveragePanel({ consensusRows, signalRows, onOpenTicker }: { consensusRows: RowRecord[]; signalRows: RowRecord[]; onOpenTicker: OpenTicker }) {
   const visibleRows = [
     ...consensusRows.slice(0, 8).map((row) => ({
       source: displayField(row, ["source_name"], "Source"),
@@ -387,7 +330,7 @@ function SourceCoveragePanel({ consensusRows, signalRows, onOpenTicker }: { cons
   );
 }
 
-function EvidencePanel({ rows }: { rows: RowRecord[] }) {
+export function EvidencePanel({ rows }: { rows: RowRecord[] }) {
   const visibleRows = rows
     .map((row) => ({
       source: displayField(row, ["source_name", "source", "source_key"], "Source"),
@@ -411,189 +354,4 @@ function EvidencePanel({ rows }: { rows: RowRecord[] }) {
       />
     </DataTableFrame>
   );
-}
-
-function SimpleTable({ rows, columns, empty }: { rows: Array<Record<string, string>>; columns: Array<[key: string, label: string]>; empty: string }) {
-  if (!rows.length) return <div className="px-4 py-6 text-sm text-muted-foreground">{empty}</div>;
-  return (
-    <table className="w-full min-w-full text-sm">
-      <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-        <tr>{columns.map(([, label]) => <th key={label} className="px-3 py-3 font-medium">{label}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.map((row, index) => (
-          <tr key={index} className="border-b border-border align-top">
-            {columns.map(([key]) => (
-              <td key={key} className="max-w-[480px] px-3 py-3 leading-6">
-                {(key === "signal" || key === "status") && row[key] !== "-" ? <StatusBadge tone={toneFromText(row[key])}>{row[key]}</StatusBadge> : row[key]}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function compactRows(sectionRows: RowRecord[] | undefined): RowRecord[] {
-  return (sectionRows ?? [])
-    .map((row) => Object.fromEntries(Object.entries(row).filter(([, value]) => !isEmptyCell(value))) as RowRecord)
-    .filter((row) => Object.keys(row).length > 0);
-}
-
-function isEmptyCell(value: RowRecord[string]): boolean {
-  if (value === undefined || value === null || value === "") return true;
-  if (Array.isArray(value)) return value.length === 0;
-  return typeof value === "object" && Object.keys(value).length === 0;
-}
-
-function tickerHeaderMetrics(ticker: TickerPayload | null): MetricSpec[] {
-  const tables = ticker?.tables ?? {};
-  const quote = latestRow(compactRows(tables.quotes), ["observed_at", "as_of", "date"]);
-  const decision = compactRows(tables.decision_queue)[0] ?? compactRows(tables.symbol_decision_snapshot)[0];
-  const fundamentals = compactRows(tables.fundamentals)
-    .filter((row) => textField(row, ["source"]) === "sec_companyfacts")
-    .sort((a, b) => dateSortValue(b, ["filing_date", "period_end"]) - dateSortValue(a, ["filing_date", "period_end"]))[0];
-  const metrics = objectField(fundamentals, "metrics");
-  const sourceCount = compactRows(tables.source_consensus).length + compactRows(tables.ticker_source_signals).length;
-  return [
-    ["Price", moneyMetric(quote, "price"), displayField(quote, ["observed_at", "as_of"], "No quote timestamp"), toneFromText(displayField(quote, ["freshness_status"], "loaded"))],
-    ["Action", displayField(decision, ["action_grade", "decision_bucket", "decision"], "Not loaded"), displayField(decision, ["freshness_status", "overall_decision_freshness"], "No decision freshness"), toneFromText(displayField(decision, ["action_grade", "freshness_status"], "info"))],
-    ["Revenue YoY", ratioMetric(metrics, "revenue_growth"), "SEC company facts", toneFromText(ratioTone(numberFrom(metrics.revenue_growth)))],
-    ["Sources", sourceCount ? String(sourceCount) : "0", "consensus and ticker signals", sourceCount ? "good" : "warn"],
-  ];
-}
-
-function objectField(row: RowRecord | undefined, key: string): RowRecord {
-  const value = row?.[key];
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as RowRecord;
-  if (typeof value === "string" && value.trim().startsWith("{")) {
-    try {
-      const parsed = JSON.parse(value) as JsonValue;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as RowRecord : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
-}
-
-function arrayField(row: RowRecord | undefined, key: string): RowRecord[] {
-  const value = row?.[key];
-  if (Array.isArray(value)) return value.filter((item) => Boolean(item) && typeof item === "object" && !Array.isArray(item)) as RowRecord[];
-  return [];
-}
-
-function latestRow(rows: RowRecord[], keys: string[]): RowRecord | undefined {
-  return rows.length ? [...rows].sort((a, b) => dateSortValue(b, keys) - dateSortValue(a, keys))[0] : undefined;
-}
-
-function dateSortValue(row: RowRecord | undefined, keys: string[]): number {
-  if (!row) return 0;
-  for (const key of keys) {
-    const value = row[key];
-    if (!value) continue;
-    const date = new Date(String(value));
-    if (!Number.isNaN(date.getTime())) return date.getTime();
-  }
-  return 0;
-}
-
-function estimateForPeriod(rows: RowRecord[], period: string): RowRecord {
-  return rows.find((row) => textField(row, ["period"]) === period) ?? {};
-}
-
-function moneyMetric(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  return value === null ? "-" : formatCompactMoney(value);
-}
-
-function ratioMetric(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  return value === null ? "-" : formatPct(value * 100);
-}
-
-function percentMetric(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  return value === null ? "-" : formatPct(value);
-}
-
-function multipleMetric(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  return value === null ? "-" : `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}x`;
-}
-
-function numberMetric(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  return value === null ? "-" : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-
-function targetRange(row: RowRecord | undefined): string {
-  const low = moneyMetric(row, "low");
-  const high = moneyMetric(row, "high");
-  return low === "-" && high === "-" ? "-" : `${low} / ${high}`;
-}
-
-function optionMove(row: RowRecord | undefined): string {
-  const move = numberFrom(row?.expected_move);
-  const pct = numberFrom(row?.expected_move_pct);
-  if (move === null && pct === null) return "-";
-  const parts = [];
-  if (move !== null) parts.push(formatCompactMoney(move));
-  if (pct !== null) parts.push(formatPct(pct * 100));
-  return parts.join(" / ");
-}
-
-function skewDetail(row: RowRecord | undefined): string {
-  const skew = numberFrom(row?.put_call_iv_skew);
-  return skew === null ? "25-delta skew unavailable" : `${formatPct(skew * 100)} put-call IV`;
-}
-
-function liquidityDetail(row: RowRecord | undefined): string {
-  const score = numberFrom(row?.liquidity_score);
-  return score === null ? "spread quality from bid/ask" : `${score.toFixed(0)} spread-derived score`;
-}
-
-function moneyOrNumber(row: RowRecord | undefined, key: string): string {
-  const value = numberFrom(row?.[key]);
-  if (value === null) return "-";
-  return value >= 100 ? value.toFixed(0) : value.toFixed(2);
-}
-
-function unavailableSignals(row: RowRecord | undefined): RowRecord[] {
-  const value = row?.unavailable_signals;
-  if (Array.isArray(value)) return value.filter((item) => item && typeof item === "object" && !Array.isArray(item)) as RowRecord[];
-  return [];
-}
-
-function numberFrom(value: RowRecord[string]): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value.trim().replace(/[$,%_,]/g, ""));
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function ratioTone(value: number | null): string {
-  if (value === null) return "warn";
-  return value > 0 ? "good" : value < 0 ? "bad" : "info";
-}
-
-function usefulEvidence(row: Record<string, string>): boolean {
-  const source = row.source.toLowerCase();
-  const title = row.title.toLowerCase();
-  const genericTitle = ["technical setups", "liquidity", "earnings setups", "options payoff", "trader filings", "evidence item"].includes(title);
-  const genericSource = ["technical", "liquidity", "earnings_setup", "options_payoff", "filings"].includes(source);
-  const hasSignal = row.signal !== "-";
-  const hasDate = row.date !== "-";
-  return !genericTitle && (!genericSource || hasSignal || hasDate);
-}
-
-function formatCompactMoney(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000_000) return `${value < 0 ? "-" : ""}$${(abs / 1_000_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}T`;
-  if (abs >= 1_000_000_000) return `${value < 0 ? "-" : ""}$${(abs / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}B`;
-  if (abs >= 1_000_000) return `${value < 0 ? "-" : ""}$${(abs / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 2 })}M`;
-  return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: abs > 1000 ? 0 : 2 });
 }
