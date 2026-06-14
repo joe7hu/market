@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.core.panel.coerce import _average, _format_metric, _median, _number_from_any, _optional_number, _share
+from investment_panel.core.coercion import average as _average
+from investment_panel.core.coercion import format_metric as _format_metric
+from investment_panel.core.coercion import median as _median
+from investment_panel.core.coercion import number_from_any as _number_from_any
+from investment_panel.core.coercion import optional_number as _optional_number
+from investment_panel.core.coercion import share as _share
 
 
 def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:

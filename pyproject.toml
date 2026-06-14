@@ -56,3 +56,30 @@ packages = ["src/investment_panel"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
+
+[tool.ruff]
+# Module length is enforced by tests/test_architecture_guards.py (the 700-line
+# size guard), so line-length (E501) is intentionally NOT a ruff concern.
+target-version = "py311"
+extend-exclude = [".venv", "frontend", "build", "dist"]
+
+[tool.ruff.lint]
+# High-signal, zero-false-positive rules that are GREEN today, so `make check`
+# stays a real gate rather than a wall of pre-existing noise. Deliberately NOT
+# enforced yet (each needs a small cleanup first):
+#   F401 unused-import  - this codebase relies on implicit re-exports that lack
+#                         `__all__`, so F401 has many false positives (and its
+#                         autofix breaks imports). Add `__all__` to re-exporting
+#                         modules, then enable F401.
+#   F811 redefinition   - a few broker modules shadow `dataclasses.field`.
+#   B    flake8-bugbear - 4 pre-existing findings to triage.
+# Widen this list as the codebase is cleaned.
+select = [
+  "E9",                              # syntax / IO / runtime errors
+  "F63", "F7",                       # logic errors (assert tuple, break outside loop, ...)
+  "F501", "F502", "F503", "F506", "F509",  # %-format string bugs
+  "F601", "F602",                    # `is` / `is not` against a literal
+  "E711", "E712", "E713", "E714",    # `== None`, `== True`, `not in`, `not ... is`
+  "E722",                            # bare `except:`
+  "PLE",                             # pylint error-class rules
+]

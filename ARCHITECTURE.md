@@ -72,8 +72,28 @@ compute via `analysis/`, and persist read-model tables that the read path serves
   See `docs/schema-ddl-architecture-decision.md` before proposing a DDL split.
   Frontend page = `pages/XRoute.tsx`; its logic/components live under `views/`.
 
+## Guardrails (enforced, not just documented)
+
+The conventions above are checked mechanically so they can't silently rot:
+
+- **`make check`** — the fast pre-commit gate (~1s): architecture guards + ruff + frontend typecheck.
+- **`tests/test_architecture_guards.py`** — turns two conventions into tests:
+  - *Module-size guard*: fails if any module exceeds **700 lines** (the "don't re-grow a
+    monolith" rule). Deliberate exceptions live in `SIZE_ALLOWLIST` with a reason.
+  - *Facade-import guard*: fails if external code imports a facade **submodule**
+    (`core.panel.feed`) instead of the package (`core.panel`). Pre-existing leaks are
+    frozen in `FACADE_IMPORT_ALLOWLIST` (a ratchet — new ones are blocked; shrink the
+    list over time). Both allowlists have staleness tests so dead entries get removed.
+- **ruff** (`pyproject.toml [tool.ruff]`) — a curated, green-today set of real bug-class
+  rules (syntax/runtime errors, `%`-format bugs, `== None`, bare `except`). `F401`
+  unused-import is intentionally *not* enabled yet: this codebase has implicit
+  re-exports without `__all__`, so F401 false-positives (and its autofix breaks imports).
+  Adding `__all__` to re-exporting modules is the prerequisite to turning it on.
+
 ## Verify changes
 
+- **`make check`** runs the gate below in one shot; targets are also runnable individually
+  (`make guards`, `make lint`, `make test`).
 - Backend: `.venv/bin/python -m pytest tests/<relevant>.py -q` (focused first).
   Full suite hits a shared DuckDB; if a live `uvicorn --reload` dev server is running
   it holds the write lock and the run hangs — set `MARKET_DUCKDB_PATH=/tmp/x.duckdb`

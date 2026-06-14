@@ -163,6 +163,45 @@ def optional_number(value: Any) -> float | None:
     return number if number == number else None
 
 
+def median(values: list[float | None]) -> float | None:
+    """Median of the finite, non-``None`` values (rounded to 4dp), else ``None``."""
+
+    cleaned = sorted(value for value in values if value is not None and value == value)
+    if not cleaned:
+        return None
+    mid = len(cleaned) // 2
+    if len(cleaned) % 2:
+        return round(cleaned[mid], 4)
+    return round((cleaned[mid - 1] + cleaned[mid]) / 2, 4)
+
+
+def average(values: list[float | None]) -> float | None:
+    """Mean of the finite, non-``None`` values (rounded to 4dp), else ``None``."""
+
+    cleaned = [value for value in values if value is not None and value == value]
+    return round(sum(cleaned) / len(cleaned), 4) if cleaned else None
+
+
+def share(values: list[bool]) -> float:
+    """Fraction of truthy values in ``values`` (``0.0`` for an empty list)."""
+
+    return sum(1 for value in values if value) / len(values) if values else 0.0
+
+
+def format_metric(value: float | None, unit: str) -> str:
+    """Render a metric for display: ``None`` -> ``"n/a"``; units ``$``/``%``/``x``."""
+
+    if value is None:
+        return "n/a"
+    if unit == "$":
+        return f"${value / 1_000_000:.1f}M" if abs(value) >= 1_000_000 else f"${value:,.0f}"
+    if unit == "%":
+        return f"{value:+.1f}%"
+    if unit == "x":
+        return f"{value:.1f}x"
+    return f"{value:.1f}"
+
+
 def to_int_or_none(value: Any) -> int | None:
     """``int(value)`` or ``None`` for ``None``/unparseable input."""
 

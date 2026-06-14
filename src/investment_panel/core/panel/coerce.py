@@ -5,24 +5,19 @@ import json
 import re
 from typing import Any
 
+# Pure numeric/stat/format helpers now live in core.coercion (the shared scalar
+# leaf). Re-exported here under their legacy `_`-names so existing
+# `core.panel.coerce` consumers keep working; new code should import them from
+# core.coercion directly.
+from investment_panel.core.coercion import average as _average
 from investment_panel.core.coercion import decode_json_value
+from investment_panel.core.coercion import format_metric as _format_metric
 from investment_panel.core.coercion import iso_or_none as _iso_or_none
+from investment_panel.core.coercion import median as _median
 from investment_panel.core.coercion import number_from_any as _number_from_any
 from investment_panel.core.coercion import optional_number as _optional_number
+from investment_panel.core.coercion import share as _share
 from investment_panel.core.coercion import string_list as _string_list
-
-
-
-def _median(values: list[float | None]) -> float | None:
-    cleaned = sorted(value for value in values if value is not None and value == value)
-    if not cleaned:
-        return None
-    mid = len(cleaned) // 2
-    if len(cleaned) % 2:
-        return round(cleaned[mid], 4)
-    return round((cleaned[mid - 1] + cleaned[mid]) / 2, 4)
-
-
 
 
 def _percentile_rank(values: list[float | None], current: float | None) -> float | None:
@@ -31,33 +26,6 @@ def _percentile_rank(values: list[float | None], current: float | None) -> float
         return None
     below = sum(1 for value in cleaned if value < current)
     return round((below / (len(cleaned) - 1)) * 100, 2)
-
-
-
-
-def _average(values: list[float | None]) -> float | None:
-    cleaned = [value for value in values if value is not None and value == value]
-    return round(sum(cleaned) / len(cleaned), 4) if cleaned else None
-
-
-
-
-def _share(values: list[bool]) -> float:
-    return sum(1 for value in values if value) / len(values) if values else 0.0
-
-
-
-
-def _format_metric(value: float | None, unit: str) -> str:
-    if value is None:
-        return "n/a"
-    if unit == "$":
-        return f"${value / 1_000_000:.1f}M" if abs(value) >= 1_000_000 else f"${value:,.0f}"
-    if unit == "%":
-        return f"{value:+.1f}%"
-    if unit == "x":
-        return f"{value:.1f}x"
-    return f"{value:.1f}"
 
 
 
