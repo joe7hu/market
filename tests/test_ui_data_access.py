@@ -95,16 +95,19 @@ def test_ticker_payload_reports_missing_coverage_without_fabricating_rows() -> N
 
     assert payload["found"] is True
     assert dossier["identity"]["name"] == "CoreWeave"
-    # Fundamentals + decision are live from the universe/decision rows...
+    # Decision is live from the decision row; fundamentals is only screen-data
+    # (universe_screen) with no authoritative sec_companyfacts row, so it is
+    # reported "partial" (present, not fully live) rather than overstated.
     assert dossier["fundamentals"]["market"]["forward_pe"] == 55
-    assert "fundamentals" in coverage["live"]
+    assert coverage["families"]["fundamentals"]["status"] == "partial"
+    assert "fundamentals" in coverage["present"]
+    assert "fundamentals" not in coverage["live"]
     assert "decision" in coverage["live"]
     # ...but families with no loaded rows are reported missing, not fabricated.
     assert dossier["ownership"]["coverage"]["status"] == "missing"
     assert dossier["ownership"]["filings"] == []
     assert dossier["quote"]["coverage"]["status"] == "missing"
     assert {"ownership", "quote", "options"} <= set(coverage["missing"])
-    assert coverage["families"]["fundamentals"]["status"] == "live"
 
 
 def test_new_ia_panel_scopes_are_backend_owned() -> None:

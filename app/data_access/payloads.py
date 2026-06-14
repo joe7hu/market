@@ -133,5 +133,5 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "status": status_payload(panel_data),
         "as_of": dossier["coverage"].get("as_of"),
         "dossier": dossier,
-        "found": bool(dossier["coverage"]["live"]),
+        "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
     }

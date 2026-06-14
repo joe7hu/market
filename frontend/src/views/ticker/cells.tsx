@@ -7,7 +7,8 @@ import { coverageStatus, coverageTone, type MetricCell } from "./data";
 export function CoverageBadge({ coverage }: { coverage: Coverage | undefined }) {
   const status = coverageStatus(coverage);
   const rows = coverage?.rows ?? 0;
-  return <StatusBadge tone={coverageTone(coverage)}>{status === "live" ? `${rows} loaded` : status}</StatusBadge>;
+  const label = status === "live" ? `${rows} loaded` : status === "partial" && rows ? `partial · ${rows}` : status;
+  return <StatusBadge tone={coverageTone(coverage)}>{label}</StatusBadge>;
 }
 
 export function DecisionStat({ label, value, detail }: { label: string; value: string; detail: string }) {

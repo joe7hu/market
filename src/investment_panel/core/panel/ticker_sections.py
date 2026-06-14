@@ -83,6 +83,14 @@ def _section_coverage(tables: dict[str, list[dict[str, Any]]], section: str) -> 
         payoff = tables.get("options_payoff_scenarios") or []
         if payoff and all(_is_expired(row) for row in payoff):
             status = "expired"
+    if section == "fundamentals" and rows:
+        # ``build_fundamentals`` only fills the SEC block from authoritative
+        # ``sec_companyfacts`` rows; without one, the panel is screen-only.
+        has_sec = any(
+            _text(row.get("source")) == "sec_companyfacts"
+            for row in (tables.get("fundamentals") or [])
+        )
+        status = "live" if has_sec else "partial"
     return {"status": status, "rows": rows, "sources": list(present)}
 
 
@@ -90,11 +98,16 @@ def _coverage_overview(tables: dict[str, list[dict[str, Any]]], sections: dict[s
     families = {name: _section_coverage(tables, name) for name in SECTION_TABLE_SOURCES}
     live = [name for name, cov in families.items() if cov["status"] == "live"]
     missing = [name for name, cov in families.items() if cov["status"] == "missing"]
+    # A family is "present" if it has any rows (status != "missing"), even when
+    # those rows are only partial or expired — that data is still worth showing,
+    # so loaded_families/found count it rather than dropping it on the floor.
+    present = [name for name, cov in families.items() if cov["status"] != "missing"]
     return {
         "families": families,
         "live": live,
+        "present": present,
         "missing": missing,
-        "loaded_families": len(live),
+        "loaded_families": len(present),
         "total_families": len(families),
         "as_of": _latest_timestamp(tables),
     }
@@ -179,7 +192,7 @@ def build_estimates(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> dic
     estimate_row = _latest(tables.get("analyst_estimates") or [])
     estimates = parse_json_dict(estimate_row.get("estimates"))
     targets = parse_json_dict(estimates.get("analyst_price_targets"))
-    event = _latest(tables.get("earnings") or [])
+    event = _nearest_event(tables.get("earnings") or [])
     setup = _latest(tables.get("earnings_setups") or [])
     return {
         "analyst": {
@@ -499,6 +512,26 @@ def _latest(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {}
     return max(rows, key=_row_timestamp)
+
+
+def _nearest_event(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the nearest upcoming earnings event, else the most recent past one.
+
+    ``_latest`` maximizes over event_date, so it surfaces the furthest-future
+    scheduled event rather than the next one. Prefer the soonest event whose
+    ``event_date`` is today or later; fall back to the latest past event.
+    """
+
+    from datetime import datetime, timezone
+
+    if not rows:
+        return {}
+    now = datetime.now(timezone.utc).timestamp()
+    future = [(parse_dt_utc(row.get("event_date")), row) for row in rows]
+    upcoming = [(ts.timestamp(), row) for ts, row in future if ts is not None and ts.timestamp() >= now]
+    if upcoming:
+        return min(upcoming, key=lambda pair: pair[0])[1]
+    return _latest(rows)
 
 
 def _row_timestamp(row: dict[str, Any]) -> float:
