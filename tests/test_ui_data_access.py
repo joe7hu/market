@@ -366,7 +366,8 @@ def test_ticker_payload_excludes_health_only_operational_tables() -> None:
 
 
 def test_ticker_page_does_not_render_operational_data_coverage_panel() -> None:
-    source = Path("frontend/src/views/ticker.tsx").read_text(encoding="utf-8")
+    ticker_dir = Path("frontend/src/views/ticker")
+    source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(ticker_dir.glob("*.ts*")))
 
     assert "Data Source Coverage" not in source
     assert "Shared Surfaces" not in source
