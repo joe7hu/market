@@ -40,6 +40,8 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
             "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
             "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
             "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
+            "social_refresh_seconds": os.environ.get("MARKET_SOCIAL_REFRESH_SECONDS", "1800"),
+            "research_refresh_seconds": os.environ.get("MARKET_RESEARCH_REFRESH_SECONDS", "3600"),
             "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
         },
         "model_overrides": {
@@ -55,12 +57,25 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def _resolve_config_path(config_path: str | Path | None) -> Path:
+    """Resolve a writable config.yaml path.
+
+    ``project_root()`` here is the ``app/`` package dir, but config.yaml lives at
+    the repository root (the same file ``investment_panel.core.config`` loads), so
+    relative paths resolve against ``app/``'s parent.
+    """
+
+    repo_root = project_root().parent
+    if not config_path:
+        return repo_root / "config.yaml"
+    path = Path(config_path)
+    return path if path.is_absolute() else repo_root / path
+
+
 def update_agent_settings_config(config_path: str | Path | None, payload: dict[str, Any]) -> dict[str, Any]:
     """Persist the editable agent-command block without rewriting the whole file."""
 
-    path = Path(config_path) if config_path else project_root() / "config.yaml"
-    if not path.is_absolute():
-        path = project_root() / path
+    path = _resolve_config_path(config_path)
     raw = _read_yaml_config(path)
     agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
     next_agents = dict(agents)
@@ -77,6 +92,100 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
     return raw
 
 
+
+
+def update_research_sources_config(config_path: str | Path | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist the editable research/social-source block (X list, news, blogs)."""
+
+    path = _resolve_config_path(config_path)
+    raw = _read_yaml_config(path)
+    current = raw.get("research_sources") if isinstance(raw.get("research_sources"), dict) else {}
+    next_block = dict(current)
+    if "x" in payload:
+        prev = next_block.get("x") if isinstance(next_block.get("x"), dict) else {}
+        next_block["x"] = {**prev, **_sanitize_research_x(payload["x"])}
+    if "news" in payload:
+        prev = next_block.get("news") if isinstance(next_block.get("news"), dict) else {}
+        next_block["news"] = {**prev, **_sanitize_research_news(payload["news"])}
+    if "blogs" in payload:
+        prev = next_block.get("blogs") if isinstance(next_block.get("blogs"), dict) else {}
+        next_block["blogs"] = {**prev, **_sanitize_research_blogs(payload["blogs"])}
+    raw["research_sources"] = next_block
+    _write_yaml_top_level_block(path, "research_sources", {"research_sources": next_block})
+    return raw
+
+
+def _sanitize_research_x(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("x settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "list_id" in value:
+        clean["list_id"] = _clean_token(value["list_id"], "list_id", maximum=64)
+    if "priority_handles" in value:
+        clean["priority_handles"] = _clean_str_list(value["priority_handles"], "priority_handles", max_items=50, strip_prefix="@")
+    if "limit" in value:
+        clean["limit"] = _bounded_int(value["limit"], "limit", minimum=1, maximum=200)
+    if "account_fetch_cap" in value:
+        clean["account_fetch_cap"] = _bounded_int(value["account_fetch_cap"], "account_fetch_cap", minimum=0, maximum=50)
+    return clean
+
+
+def _sanitize_research_news(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("news settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "providers" in value:
+        clean["providers"] = _clean_str_list(value["providers"], "providers", max_items=20)
+    if "limit" in value:
+        clean["limit"] = _bounded_int(value["limit"], "limit", minimum=1, maximum=200)
+    return clean
+
+
+def _sanitize_research_blogs(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("blogs settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "substack_urls" in value:
+        clean["substack_urls"] = _clean_str_list(value["substack_urls"], "substack_urls", max_items=50)
+    if "rss_urls" in value:
+        clean["rss_urls"] = _clean_str_list(value["rss_urls"], "rss_urls", max_items=50)
+    return clean
+
+
+def _clean_token(value: Any, name: str, *, maximum: int) -> str:
+    token = str(value or "").strip()
+    if len(token) > maximum:
+        raise ValueError(f"{name} is too long")
+    return token
+
+
+def _clean_str_list(value: Any, name: str, *, max_items: int, strip_prefix: str = "") -> list[str]:
+    if isinstance(value, str):
+        items: Iterable[Any] = re.split(r"[\n,]+", value)
+    elif isinstance(value, (list, tuple)):
+        items = value
+    else:
+        raise ValueError(f"{name} must be a list or comma-separated string")
+    out: list[str] = []
+    for item in items:
+        token = str(item or "").strip()
+        if strip_prefix and token.startswith(strip_prefix):
+            token = token[len(strip_prefix):]
+        if not token:
+            continue
+        if len(token) > 240:
+            raise ValueError(f"{name} entry is too long")
+        if token not in out:
+            out.append(token)
+    if len(out) > max_items:
+        raise ValueError(f"{name} accepts at most {max_items} entries")
+    return out
 
 
 def _read_yaml_config(path: Path) -> dict[str, Any]:
