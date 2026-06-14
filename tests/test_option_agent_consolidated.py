@@ -83,3 +83,57 @@ def test_consolidated_runner_disabled_without_command(tmp_path: Path) -> None:
     with db(db_path, read_only=False) as con:
         result = run_consolidated_option_agents(con, command="")
     assert result["enabled"] is False
+
+
+def test_batch_worker_sends_thesis_and_postmortem_arrays(monkeypatch) -> None:
+    """Regression: the batch payload must reach the model un-compacted.
+
+    The shared structured callers compact single-request payloads to
+    request/prompt/context, which would strip the thesis/postmortem arrays unless
+    the batch path opts out (compact=False).
+    """
+
+    from investment_panel.jobs import openai_option_agent as worker
+
+    captured: dict[str, Any] = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "output_text": json_dumps(
+                    {
+                        "thesis": [{"ticker": "NVDA", "core_thesis": "x", "evidence_refs": []}],
+                        "postmortem": [{"ticker": "TSLA", "outcome_type": "loser", "evidence_refs": []}],
+                    }
+                )
+            }
+
+    def fake_post(url: str, *, headers: Any, json: Any, timeout: Any) -> _FakeResponse:  # noqa: A002
+        captured["body"] = json
+        return _FakeResponse()
+
+    monkeypatch.setattr(worker, "_openai_bearer_token", lambda: "test-token")
+    monkeypatch.setattr(worker.httpx, "post", fake_post)
+
+    payload = {
+        "thesis": [{"request": {"request_id": "t1", "ticker": "NVDA"}, "prompt": "p", "context": {"k": "v"}}],
+        "postmortem": [{"request": {"request_id": "p1", "ticker": "TSLA"}, "prompt": "q", "context": {}}],
+        "guardrails": {"authority": "hypothesis_only"},
+    }
+    out = worker.generate_openai_option_agent(payload)
+
+    sent = _user_content(captured["body"])
+    assert len(sent["thesis"]) == 1 and len(sent["postmortem"]) == 1, "batch arrays must survive to the model"
+    assert sent["thesis"][0]["request"]["request_id"] == "t1"
+    assert out["thesis"][0]["ticker"] == "NVDA" and out["postmortem"][0]["ticker"] == "TSLA"
+
+
+def _user_content(body: dict[str, Any]) -> dict[str, Any]:
+    import json
+
+    for message in body.get("input", []):
+        if message.get("role") == "user":
+            return json.loads(message["content"])
+    raise AssertionError("no user message in request body")

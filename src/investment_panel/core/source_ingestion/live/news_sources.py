@@ -21,11 +21,13 @@ from investment_panel.core.source_ingestion.live.common import (
 )
 from investment_panel.core.source_ingestion.utils import slug, stable_id
 
-# provider -> (opencli args template). hackernews is the fallback wire.
+# provider -> opencli args (verified against the installed adapters). reuters has
+# no `news` subcommand (search only); google news lives on the `google` adapter;
+# hackernews is the always-public fallback wire.
 _PROVIDER_COMMANDS: dict[str, list[str]] = {
     "bloomberg": ["bloomberg", "markets"],
-    "reuters": ["reuters", "news"],
-    "google-news": ["google-news", "search", "stock market"],
+    "reuters": ["reuters", "search", "stock market"],
+    "google-news": ["google", "news", "stock market"],
     "hackernews": ["hackernews", "top"],
 }
 
