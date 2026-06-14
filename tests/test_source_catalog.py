@@ -101,3 +101,28 @@ def test_social_and_blog_status_surface_from_source_runs(tmp_path) -> None:
     assert by_id["social"]["primary"]["tone"] == "good"
     assert by_id["blogs"]["primary"]["status"] != "unknown"
     assert by_id["blogs"]["primary"]["tone"] == "good"
+
+
+def test_filings_status_aggregates_disclosure_source_types(tmp_path) -> None:
+    """Filings come in under disclosure source_types (13f / House CSV), not under
+    'sec_edgar'/'house_disclosures' — the rollup must alias them so the tile is live."""
+
+    db_path = tmp_path / "filings.duckdb"
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute(
+            "INSERT INTO disclosures (id, source_type, symbol, filed_date) VALUES (?, ?, ?, ?)",
+            ["d_13f_1", "13f", "NVDA", datetime.now(UTC).date()],
+        )
+        con.execute(
+            "INSERT INTO disclosures (id, source_type, symbol, filed_date) VALUES (?, ?, ?, ?)",
+            ["d_house_1", "public_disclosure_transaction", "AAPL", datetime.now(UTC).date()],
+        )
+        health = build_source_catalog_health(con)
+
+    filings = {c["id"]: c for c in health["categories"]}["filings"]
+    assert filings["primary"]["provider"] == "sec_edgar"
+    assert filings["primary"]["status"] != "unknown", "SEC EDGAR (13f) should resolve"
+    assert filings["fallback"][0]["provider"] == "house_disclosures"
+    assert filings["fallback"][0]["status"] != "unknown", "House disclosures should resolve"
+    assert filings["tone"] != "unknown"
