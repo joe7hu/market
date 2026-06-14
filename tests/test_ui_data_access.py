@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import duckdb
+
 from app import data_access
 
 
@@ -204,6 +206,76 @@ def test_source_table_loader_requests_source_repair_without_decision_repair(monk
             "ensure_source_models": True,
         }
     ]
+
+
+def test_default_panel_loader_preserves_full_load_sentinel(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(
+        config: dict[str, object],
+        table_names: tuple[str, ...] | None,
+        ensure_decision_models: bool | None,
+        ensure_source_models: bool | None,
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "table_names": table_names,
+                "ensure_decision_models": ensure_decision_models,
+                "ensure_source_models": ensure_source_models,
+            }
+        )
+        return {"ready": True, "message": "ok", "source": "test", "tables": {"signals": [{"symbol": "NVDA"}]}, "metadata": {}}
+
+    monkeypatch.setattr(data_access.loaders, "core_load_panel_data", fake_helper)
+
+    panel_data = data_access.load_panel_data({"database": {"duckdb_path": "/tmp/test.duckdb"}})
+
+    assert panel_data.status.ready is True
+    assert calls == [
+        {
+            "table_names": None,
+            "ensure_decision_models": None,
+            "ensure_source_models": None,
+        }
+    ]
+
+
+def test_empty_settings_scope_does_not_touch_missing_database(tmp_path) -> None:
+    db_path = tmp_path / "missing-settings.duckdb"
+
+    panel_data = data_access.load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "settings")
+
+    assert panel_data.status.ready is True
+    assert panel_data.status.source == "duckdb"
+    assert panel_data.tables == {}
+    assert not db_path.exists()
+
+
+def test_market_panel_loader_handles_unmigrated_existing_database(tmp_path) -> None:
+    db_path = tmp_path / "unmigrated.duckdb"
+    duckdb.connect(str(db_path)).close()
+
+    panel_data = data_access.load_market_panel_data({"database": {"duckdb_path": str(db_path)}})
+
+    assert panel_data.status.ready is True
+    assert panel_data.status.source != "core-error"
+    assert panel_data.rows("market_valuation_reference_charts") == []
+    assert panel_data.rows("market_environment_assets") == []
+    assert panel_data.rows("market_environment_model")
+
+
+def test_pure_scoped_read_migrates_stale_database_before_reading(tmp_path) -> None:
+    db_path = tmp_path / "stale.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute("CREATE TABLE source_health (source TEXT PRIMARY KEY, checked_at TIMESTAMP, status TEXT, detail TEXT)")
+
+    panel_data = data_access.load_table_panel_data({"database": {"duckdb_path": str(db_path)}}, "source_health")
+
+    assert panel_data.status.source != "core-error"
+    assert panel_data.rows("source_health") == []
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        columns = {row[1] for row in con.execute("PRAGMA table_info('source_health')").fetchall()}
+    assert "source_url" in columns
 
 
 def test_scoped_panel_status_is_ready_when_requested_table_has_rows(tmp_path) -> None:

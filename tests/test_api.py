@@ -15,6 +15,7 @@ import investment_panel.core.source_ingestion.audit as audit_mod
 from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config
 import app.main as app_main
 import app.deps as app_deps
+from app import panel_contracts
 from app.main import app, _require_local_request
 from tests.test_option_agent_postmortem import seed_missed_winner
 from tests.test_option_agent_thesis import seed_fire_candidate
@@ -240,6 +241,18 @@ def test_market_snapshot_only_returns_market_tables() -> None:
     }
 
 
+def test_settings_snapshot_returns_no_panel_tables() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/panel-snapshot?scope=settings")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tables"] == {}
+    assert payload["status"]["ready"] is True
+    assert payload["status"]["source"] == "duckdb"
+
+
 def test_options_radar_snapshot_returns_radar_tables() -> None:
     client = TestClient(app)
 
@@ -247,25 +260,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload["tables"]) == {
-        "option_strategy_versions",
-        "option_radar_opportunity",
-        "radar_alert",
-        "candidate_event",
-        "candidate_event_mark",
-        "candidate_event_attribution",
-        "missed_winner_event",
-        "strategy_mutation_proposal",
-        "strategy_backtest_result",
-        "strategy_forward_test_result",
-        "strategy_cohort_result",
-        "agent_thesis",
-        "agent_thesis_request",
-        "agent_thesis_validation",
-        "agent_postmortem_request",
-        "agent_postmortem",
-        "option_radar_summary",
-    }
+    assert set(payload["tables"]) == set(panel_contracts.PANEL_SCOPE_TABLES["options-radar"])
 
 
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
@@ -542,7 +537,21 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     )
 
     assert blocked.status_code == 400
-    assert "forward shadow test" in blocked.text
+    assert "backtest" in blocked.text
+
+    with db(db_path) as con:
+        con.execute(
+            "UPDATE strategy_backtest_result SET verdict = 'pass' WHERE proposal_id = ?",
+            [proposal_id],
+        )
+
+    forward_blocked = client.post(
+        f"/api/strategy-mutation-proposals/{proposal_id}/promote",
+        json={"approved_by": "joe"},
+    )
+
+    assert forward_blocked.status_code == 400
+    assert "forward shadow test" in forward_blocked.text
 
     with db(db_path) as con:
         con.execute(

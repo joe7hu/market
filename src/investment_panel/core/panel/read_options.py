@@ -1,6 +1,7 @@
 """Options chain, radar, and snapshot read accessors."""
 
 from __future__ import annotations
+from dataclasses import dataclass
 from typing import Any
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import display_snapshot_time, market_session
@@ -110,6 +111,12 @@ def option_strategy_versions(con: Any) -> list[dict[str, Any]]:
     return [_compact_empty_fields(decode_fields(row, ("parameters",))) for row in rows]
 
 
+@dataclass(frozen=True)
+class RadarDisplayContext:
+    snapshot_time: str | None
+    candidate_time: str | None
+    market_session: str
+    frozen_to_last_rth: bool
 
 
 def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
@@ -134,9 +141,23 @@ def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
     return display_snapshot_time(snaps), display_snapshot_time(opps)
 
 
+def radar_display_context(con: Any) -> RadarDisplayContext:
+    display_snap, display_candidate = _radar_display_times(con)
+    session = market_session()
+    newest = query_rows(con, "SELECT max(snapshot_time) AS t FROM candidate_event")
+    newest_time = newest[0]["t"] if newest else None
+    frozen = bool(session == "closed" and display_candidate and newest_time and str(display_candidate) != _iso_or_none(newest_time))
+    return RadarDisplayContext(
+        snapshot_time=display_snap,
+        candidate_time=display_candidate,
+        market_session=session,
+        frozen_to_last_rth=frozen,
+    )
 
 
-def _radar_current_candidate_time(con: Any) -> str | None:
+
+
+def _radar_current_candidate_time(con: Any, radar_context: RadarDisplayContext | None = None) -> str | None:
     """Snapshot the radar UI treats as 'current' for candidate-keyed reads.
 
     Aligned with the displayed opportunity snapshot, which can freeze on the last
@@ -147,15 +168,13 @@ def _radar_current_candidate_time(con: Any) -> str | None:
     tab even though the opportunities are populated.
     """
 
-    _display_snap, display_candidate = _radar_display_times(con)
-    return display_candidate
+    return (radar_context or radar_display_context(con)).candidate_time
 
 
 
 
-def option_radar_summary(con: Any) -> list[dict[str, Any]]:
-    display_snap, display_candidate = _radar_display_times(con)
-    session = market_session()
+def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    context = radar_context or radar_display_context(con)
     rows = query_rows(
         con,
         """
@@ -228,21 +247,18 @@ def option_radar_summary(con: Any) -> list[dict[str, Any]]:
                   AND tier = 'Research'
             ) AS research_opportunities_current
         """,
-        [display_snap, display_candidate],
+        [context.snapshot_time, context.candidate_time],
     )
-    newest = query_rows(con, "SELECT max(snapshot_time) AS t FROM candidate_event")
-    newest_time = newest[0]["t"] if newest else None
-    frozen = bool(session == "closed" and display_candidate and newest_time and str(display_candidate) != _iso_or_none(newest_time))
     for row in rows:
-        row["market_session"] = session
-        row["frozen_to_last_rth"] = frozen
+        row["market_session"] = context.market_session
+        row["frozen_to_last_rth"] = context.frozen_to_last_rth
     return [_compact_empty_fields(row) for row in rows]
 
 
 
 
-def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
-    _display_snap, display_candidate = _radar_display_times(con)
+def option_radar_opportunity(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    context = radar_context or radar_display_context(con)
     rows = query_rows(
         con,
         """
@@ -268,7 +284,7 @@ def option_radar_opportunity(con: Any) -> list[dict[str, Any]]:
                  ticker
         LIMIT 500
         """,
-        [display_candidate],
+        [context.candidate_time],
     )
     return [
         _compact_empty_fields(

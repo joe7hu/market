@@ -6,12 +6,12 @@ from investment_panel.core.db import db, init_db, query_rows
 
 from investment_panel.core.panel.coerce import decode_fields
 from investment_panel.core.panel.disclosures import _compact_empty_fields
-from investment_panel.core.panel.read_options import _radar_current_candidate_time
+from investment_panel.core.panel.read_options import RadarDisplayContext, _radar_current_candidate_time
 
 
 
-def agent_thesis(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def agent_thesis(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(
@@ -39,8 +39,8 @@ def agent_thesis(con: Any) -> list[dict[str, Any]]:
 
 
 
-def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def agent_thesis_request(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(
@@ -69,8 +69,8 @@ def agent_thesis_request(con: Any) -> list[dict[str, Any]]:
 
 
 
-def agent_thesis_validation(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def agent_thesis_validation(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(
@@ -136,8 +136,8 @@ def agent_postmortem(con: Any) -> list[dict[str, Any]]:
 
 
 
-def candidate_event(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def candidate_event(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(
@@ -200,8 +200,8 @@ def shadow_trade(con: Any) -> list[dict[str, Any]]:
 
 
 
-def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def candidate_event_mark(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(
@@ -231,8 +231,8 @@ def candidate_event_mark(con: Any) -> list[dict[str, Any]]:
 
 
 
-def candidate_event_attribution(con: Any) -> list[dict[str, Any]]:
-    current = _radar_current_candidate_time(con)
+def candidate_event_attribution(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
+    current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
     rows = query_rows(

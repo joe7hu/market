@@ -470,6 +470,31 @@ SOURCE_REPAIR_TABLES = {
     "ticker_source_signals",
 }
 
+FRONTEND_TABLE_KEY_OVERRIDES = {
+    "ticker_memos": "memos",
+}
+
+WATCHLIST_SECTION_OUTPUT_TABLES = (
+    "watchlist_watched",
+    "watchlist_unwatched",
+    "watchlist_watched_quotes",
+    "watchlist_unwatched_quotes",
+    "watchlist_watched_fundamentals",
+    "watchlist_unwatched_fundamentals",
+    "watchlist_watched_technicals",
+    "watchlist_unwatched_technicals",
+    "watchlist_watched_valuations",
+    "watchlist_unwatched_valuations",
+    "watchlist_watched_screener",
+    "watchlist_unwatched_screener",
+    "watchlist_watched_decision_queue",
+    "watchlist_unwatched_decision_queue",
+    "watchlist_watched_portfolio",
+    "watchlist_unwatched_portfolio",
+    "watchlist_watched_options",
+    "watchlist_unwatched_options",
+)
+
 
 def tables_for_scope(scope: str) -> tuple[str, ...]:
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
@@ -481,10 +506,31 @@ def table_for_endpoint(endpoint_key: str) -> str:
     return ENDPOINT_TABLES[endpoint_key]
 
 
+def panel_snapshot_table_names() -> frozenset[str]:
+    names: set[str] = set()
+    for scope, tables in PANEL_SCOPE_TABLES.items():
+        if scope != "settings":
+            names.update(tables)
+    names.update(WATCHLIST_SECTION_OUTPUT_TABLES)
+    return frozenset(names)
+
+
+def frontend_key_for_table(table_name: str) -> str:
+    if table_name in FRONTEND_TABLE_KEY_OVERRIDES:
+        return FRONTEND_TABLE_KEY_OVERRIDES[table_name]
+    head, *tail = table_name.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in tail)
+
+
 def panel_contract_payload() -> dict[str, Any]:
     return {
         "scopes": {scope: list(tables) for scope, tables in PANEL_SCOPE_TABLES.items()},
         "watchlist_section_tables": list(WATCHLIST_SECTION_TABLES),
+        "watchlist_section_output_tables": list(WATCHLIST_SECTION_OUTPUT_TABLES),
         "ticker_tables": list(TICKER_TABLES),
         "endpoint_tables": dict(ENDPOINT_TABLES),
+        "frontend_table_keys": {
+            table_name: frontend_key_for_table(table_name)
+            for table_name in sorted(panel_snapshot_table_names())
+        },
     }

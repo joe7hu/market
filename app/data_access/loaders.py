@@ -5,7 +5,6 @@ from typing import Any, Iterable
 from app.panel_contracts import (
     DECISION_REPAIR_TABLES,
     SOURCE_REPAIR_TABLES,
-    TICKER_TABLES,
     panel_contract_payload as contract_panel_payload,
     tables_for_scope as contract_tables_for_scope,
 )
@@ -18,7 +17,7 @@ from app.data_access.types import DataStatus, PanelData, SETUP_INSTRUCTIONS
 from app.data_access.config import _database_path, load_config, tables_for_scope
 from app.data_access.coerce import _is_empty
 from app.data_access.normalize import _normalize_panel_data
-from app.data_access.payloads import _filter_ticker_panel_data, _runtime_metadata
+from app.data_access.payloads import _runtime_metadata
 
 
 
@@ -31,10 +30,11 @@ def load_panel_data(
     """Load panel read models from core and normalize them for the API."""
 
     active_config = config or load_config()
+    requested_table_names = None if table_names is None else tuple(table_names)
     try:
         raw_data = core_load_panel_data(
             active_config,
-            table_names=tuple(table_names or ()),
+            table_names=requested_table_names,
             ensure_decision_models=ensure_decision_models,
             ensure_source_models=ensure_source_models,
         )
@@ -50,7 +50,7 @@ def load_panel_data(
 
     panel_data = _normalize_panel_data(raw_data)
     panel_data.metadata.update(_runtime_metadata(active_config))
-    if _is_empty(panel_data):
+    if _is_empty(panel_data) and panel_data.status.source != "duckdb-missing" and requested_table_names != ():
         panel_data.status = DataStatus(
             ready=False,
             message="Core helpers returned no rows for the configured DuckDB.",
@@ -98,8 +98,12 @@ def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelD
     try:
         raw_data = core_load_ticker_dossier_data(config or load_config(), normalized)
         return _normalize_panel_data(raw_data)
-    except Exception:
-        return _filter_ticker_panel_data(load_panel_data(config, table_names=TICKER_TABLES), normalized)
+    except Exception as exc:
+        return PanelData(
+            status=DataStatus(False, f"Ticker dossier helper failed: {exc}", "core-error"),
+            tables={},
+            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
+        )
 
 
 
@@ -114,17 +118,24 @@ def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
     """Load only the broad-market tables required by the Market page."""
 
     active_config = config or load_config()
-    from investment_panel.core.db import db, init_db
+    from investment_panel.core.panel.read_session import panel_read_session
     from investment_panel.core.panel import market_environment_assets, market_environment_model, market_valuation_reference_charts
 
     db_path = _database_path(active_config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        tables = {
-            "market_valuation_reference_charts": market_valuation_reference_charts(con),
-            "market_environment_assets": market_environment_assets(con),
-            "market_environment_model": market_environment_model(con, [], include_exposure=False),
-        }
+    try:
+        with panel_read_session(db_path, needs_write=False) as con:
+            if con is None:
+                return _empty_market_panel_data(
+                    "DuckDB database does not exist yet. Run a refresh job to initialize it.",
+                    "duckdb-missing",
+                )
+            tables = {
+                "market_valuation_reference_charts": market_valuation_reference_charts(con),
+                "market_environment_assets": market_environment_assets(con),
+                "market_environment_model": market_environment_model(con, [], include_exposure=False),
+            }
+    except Exception as exc:
+        return _empty_market_panel_data(f"Market read models are unavailable: {exc}", "core-error")
     ready = any(tables.values())
     return PanelData(
         status=DataStatus(
@@ -134,4 +145,16 @@ def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
         ),
         tables=tables,
         metadata={},
+    )
+
+
+def _empty_market_panel_data(message: str, source: str) -> PanelData:
+    return PanelData(
+        status=DataStatus(ready=False, message=message, source=source),
+        tables={
+            "market_valuation_reference_charts": [],
+            "market_environment_assets": [],
+            "market_environment_model": [],
+        },
+        metadata={"setup_instructions": SETUP_INSTRUCTIONS},
     )

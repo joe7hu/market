@@ -44,6 +44,7 @@ class ReadContext:
     active_watchlist: list[dict[str, Any]]
     app_config: Any
     decision_snapshots: list[dict[str, Any]]
+    radar_context: Any | None = None
 
 
 ReadLoader = Callable[[ReadContext], list[dict[str, Any]]]
@@ -78,20 +79,20 @@ READ_MODELS: dict[str, ReadLoader] = {
     "options_expiry_signals": lambda ctx: options_expiry_signals(ctx.con),
     "options_ticker_signals": lambda ctx: options_ticker_signals(ctx.con),
     "option_strategy_versions": lambda ctx: option_strategy_versions(ctx.con),
-    "option_radar_summary": lambda ctx: option_radar_summary(ctx.con),
-    "option_radar_opportunity": lambda ctx: option_radar_opportunity(ctx.con),
+    "option_radar_summary": lambda ctx: option_radar_summary(ctx.con, ctx.radar_context),
+    "option_radar_opportunity": lambda ctx: option_radar_opportunity(ctx.con, ctx.radar_context),
     "option_snapshot": lambda ctx: option_snapshot(ctx.con),
     "option_features": lambda ctx: option_features(ctx.con),
     "stock_features": lambda ctx: stock_features(ctx.con),
-    "agent_thesis": lambda ctx: agent_thesis(ctx.con),
-    "agent_thesis_request": lambda ctx: agent_thesis_request(ctx.con),
-    "agent_thesis_validation": lambda ctx: agent_thesis_validation(ctx.con),
+    "agent_thesis": lambda ctx: agent_thesis(ctx.con, ctx.radar_context),
+    "agent_thesis_request": lambda ctx: agent_thesis_request(ctx.con, ctx.radar_context),
+    "agent_thesis_validation": lambda ctx: agent_thesis_validation(ctx.con, ctx.radar_context),
     "agent_postmortem_request": lambda ctx: agent_postmortem_request(ctx.con),
     "agent_postmortem": lambda ctx: agent_postmortem(ctx.con),
     "radar_alert": lambda ctx: radar_alert(ctx.con),
-    "candidate_event": lambda ctx: candidate_event(ctx.con),
-    "candidate_event_mark": lambda ctx: candidate_event_mark(ctx.con),
-    "candidate_event_attribution": lambda ctx: candidate_event_attribution(ctx.con),
+    "candidate_event": lambda ctx: candidate_event(ctx.con, ctx.radar_context),
+    "candidate_event_mark": lambda ctx: candidate_event_mark(ctx.con, ctx.radar_context),
+    "candidate_event_attribution": lambda ctx: candidate_event_attribution(ctx.con, ctx.radar_context),
     "conviction_calibration": lambda ctx: conviction_calibration(ctx.con),
     "vol_surface_features": lambda ctx: vol_surface_features(ctx.con),
     "trade_journal": lambda ctx: trade_journal(ctx.con),
@@ -165,5 +166,5 @@ def load_read_models(ctx: ReadContext, names: set[str] | None = None) -> dict[st
     rather than raising; the scope-contract invariant test is what flags drift.
     """
 
-    selected = set(READ_MODELS) if not names else (set(names) & set(READ_MODELS))
+    selected = set(READ_MODELS) if names is None else (set(names) & set(READ_MODELS))
     return {name: READ_MODELS[name](ctx) for name in READ_MODELS if name in selected}
