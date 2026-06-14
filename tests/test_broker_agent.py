@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app import deps as api_deps
 from app import main as api_main
 from investment_panel.core.brokers import BrokerSnapshot, ProviderStatus, build_and_persist_agent_recommendations, ibkr_accept_account, ibkr_market_data_type_id, ibkr_market_snapshots, ibkr_missing_quote_symbols, ibkr_paper_account_mismatch, ibkr_position_symbol, ibkr_snapshot_status, persist_broker_snapshot, stage_paper_order, update_broker_sources
 from investment_panel.core.config import IBKRConfig, load_config
@@ -337,9 +338,9 @@ def test_broker_api_routes_smoke(tmp_path: Path, monkeypatch: Any) -> None:
         seed_decision_inputs(con)
         update_broker_sources(con, config, [FakeProvider(ibkr_success())])
 
-    monkeypatch.setattr(api_main, "load_config", lambda: {"database": {"duckdb_path": str(config.database.duckdb_path)}})
-    monkeypatch.setattr(api_main, "load_core_config", lambda path="config.yaml": config)
-    api_main._CONTEXT_CACHE.update({"expires_at": 0.0, "config_key": None, "value": None})
+    monkeypatch.setattr(api_deps, "load_config", lambda: {"database": {"duckdb_path": str(config.database.duckdb_path)}})
+    monkeypatch.setattr(api_deps, "load_core_config", lambda path="config.yaml": config)
+    api_deps._invalidate_context_cache()
     client = TestClient(api_main.app)
     for path in ["/api/broker/status", "/api/broker/accounts", "/api/broker/positions", "/api/agent/recommendations", "/api/paper-orders"]:
         response = client.get(path)

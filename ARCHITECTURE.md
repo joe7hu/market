@@ -23,7 +23,9 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 
 | Location | Responsibility | Go here to change… |
 |---|---|---|
-| `app/main.py` | FastAPI app: all HTTP routes, refresh-job triggers, SPA serving | an API endpoint / route shape |
+| `app/main.py` | **Thin app factory**: builds FastAPI, includes `app/routers/`, mounts SPA, runs the scheduler lifespan | app wiring / startup |
+| `app/routers/` | HTTP routes by domain (`panel`, `tickers`, `portfolio`, `theses`, `sources`, `market_data`, `options`, `brokers`, `system`); registered via `ALL_ROUTERS`. Add a router here, don't grow `main.py` | an API endpoint / route shape |
+| `app/deps.py` | Shared route service layer: loaders, the `_context`/`_table_payload` helpers, request guard, Pydantic input models, constants. Routers reference these as `deps.X` (single patch seam) | a shared route helper / request model |
 | `app/data_access/` | Load core read models and normalize them into API payloads (types, config, loaders, mutations, payloads, ticker dossier, decision brief, settings) | how data is shaped for the UI / a payload field |
 | `app/panel_contracts.py` | Scope→table contracts (which tables each page needs) | which tables a page scope loads |
 | `app/scheduler.py` | In-app background refresh scheduler | scheduled in-app agent passes |

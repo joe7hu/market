@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app import deps as api_deps
 from app import main as api_main
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.decision import build_source_freshness, classify_freshness, symbol_freshness_detail
@@ -523,7 +524,7 @@ def test_decision_grade_api_contract_routes_smoke(
     expected_key: str,
 ) -> None:
     db_path = seed_decision_fixture(tmp_path)
-    monkeypatch.setattr(api_main, "load_config", lambda: config_for(db_path))
+    monkeypatch.setattr(api_deps, "load_config", lambda: config_for(db_path))
     client = TestClient(api_main.app)
 
     response = client.get(path)

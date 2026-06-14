@@ -14,6 +14,7 @@ from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refres
 import investment_panel.core.source_ingestion.audit as audit_mod
 from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config
 import app.main as app_main
+import app.deps as app_deps
 from app.main import app, _require_local_request
 from tests.test_option_agent_postmortem import seed_missed_winner
 from tests.test_option_agent_thesis import seed_fire_candidate
@@ -22,7 +23,7 @@ from tests.test_option_agent_thesis import seed_fire_candidate
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     app_main._invalidate_context_cache()
     monkeypatch.setattr(
-        app_main,
+        app_deps,
         "load_config",
         lambda _path=None: {
             "database": {"duckdb_path": str(db_path)},
@@ -206,9 +207,9 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
         captured["payload"] = payload
         return {}
 
-    monkeypatch.setattr(app_main, "update_agent_settings_config", fake_update)
+    monkeypatch.setattr(app_deps, "update_agent_settings_config", fake_update)
     monkeypatch.setattr(
-        app_main,
+        app_deps,
         "load_panel_data",
         lambda _config: PanelData(status=DataStatus(True, "loaded settings", "test"), tables={}),
     )
@@ -279,7 +280,7 @@ def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
             tables={table_name: [{"id": "feed-1", "title": "Scoped feed"}]},
         )
 
-    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
+    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
 
     client = TestClient(app)
     response = client.get("/api/feed")
@@ -310,8 +311,8 @@ def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp
     def fail_full_loader(config: dict[str, object]) -> PanelData:
         raise AssertionError("source ticker rankings should use the scoped table loader")
 
-    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
-    monkeypatch.setattr(app_main, "load_panel_data", fail_full_loader)
+    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
+    monkeypatch.setattr(app_deps, "load_panel_data", fail_full_loader)
 
     client = TestClient(app)
     response = client.get("/api/source-ticker-rankings")
@@ -327,7 +328,7 @@ def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(tmp_path, mon
     init_db(db_path)
     _use_temp_api_db(monkeypatch, db_path)
     read_modes: list[bool] = []
-    real_db = app_main.db
+    real_db = app_deps.db
 
     @contextmanager
     def read_only_db(path: str | Path, read_only: bool = False) -> Iterator[Any]:
@@ -340,7 +341,7 @@ def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(tmp_path, mon
     def fail_sync(_con: Any) -> dict[str, Any]:
         raise AssertionError("source ingestion audit GET must not sync canonical sources")
 
-    monkeypatch.setattr(app_main, "db", read_only_db)
+    monkeypatch.setattr(app_deps, "db", read_only_db)
     monkeypatch.setattr(audit_mod, "sync_canonical_sources", fail_sync)
 
     client = TestClient(app)
@@ -371,7 +372,7 @@ def test_source_freshness_defaults_to_capped_browser_payload(tmp_path, monkeypat
             tables={table_name: rows},
         )
 
-    monkeypatch.setattr(app_main, "load_table_panel_data", fake_table_loader)
+    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
 
     client = TestClient(app)
     response = client.get("/api/source-freshness")
