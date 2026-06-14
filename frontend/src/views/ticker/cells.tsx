@@ -1,7 +1,14 @@
 import { StatusBadge } from "@/components/market/workstation";
+import type { Coverage } from "@/types";
 import { toneFromText } from "@/views/rowFormat";
 
-import type { MetricCell } from "./data";
+import { coverageStatus, coverageTone, type MetricCell } from "./data";
+
+export function CoverageBadge({ coverage }: { coverage: Coverage | undefined }) {
+  const status = coverageStatus(coverage);
+  const rows = coverage?.rows ?? 0;
+  return <StatusBadge tone={coverageTone(coverage)}>{status === "live" ? `${rows} loaded` : status}</StatusBadge>;
+}
 
 export function DecisionStat({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (

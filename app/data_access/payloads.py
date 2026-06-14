@@ -8,12 +8,11 @@ from investment_panel.core.panel.payloads import (
     dashboard_payload as core_dashboard_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
 )
-from investment_panel.core.panel.ticker_dossier import ticker_payload_tables
+from investment_panel.core.panel import build_ticker_dossier, ticker_payload_tables
 from investment_panel.core.option_agent_thesis import DEFAULT_AGENT_THESIS_REQUEST_LIMIT
 
 from app.data_access.types import PanelData
 from app.data_access.coerce import _int_value, jsonable
-from app.data_access.ticker_dossier import _ensure_ticker_dossier_tables
 from app.data_access.decision_brief import ticker_decision_brief
 
 
@@ -115,14 +114,24 @@ def watchlist_section_payload(panel_data: PanelData, scope: str, offset: int = 0
 
 
 def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
+    """Section-organized per-ticker dossier (the single authoritative API model).
+
+    Loads the per-ticker read-model tables, synthesizes the decision brief, and
+    composes both into one ``dossier`` of normalized sections (quote,
+    fundamentals, estimates, technicals, options, ownership, sources, thesis,
+    portfolio, decision) plus a coverage overview. Each section carries an
+    explicit ``coverage.status`` so callers can degrade gracefully.
+    """
+
     normalized_ticker = ticker.upper()
     tables = ticker_payload_tables(panel_data.rows, normalized_ticker)
-    _ensure_ticker_dossier_tables(normalized_ticker, tables)
+    decision_brief = ticker_decision_brief(normalized_ticker, tables)
+    dossier = build_ticker_dossier(normalized_ticker, tables, decision_brief)
     return {
+        "symbol": normalized_ticker,
         "ticker": normalized_ticker,
         "status": status_payload(panel_data),
-        "tables": tables,
-        "decision_snapshot": (tables["symbol_decision_snapshot"] or tables["symbol_decision_snapshots"] or [None])[0],
-        "decision_brief": ticker_decision_brief(normalized_ticker, tables),
-        "found": any(tables.values()),
+        "as_of": dossier["coverage"].get("as_of"),
+        "dossier": dossier,
+        "found": bool(dossier["coverage"]["live"]),
     }
