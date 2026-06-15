@@ -68,6 +68,9 @@ ALLOWLIST: dict[str, JobRunner] = {
     "refresh_options_radar_signal_ibkr": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="ibkr"),
     "refresh_options_radar_signal_robinhood": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="robinhood"),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
+    # Manual / on-demand run: forces the consolidated agent whenever a command is
+    # configured, independent of the auto-run (enabled) toggle.
+    "run_option_agents_force": lambda config_path: run_option_agents.run(config_path, force=True),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     # Live opencli social (X list + per-account fallback) and research (news +
     # blogs) ingestion. Both record source_runs with ok/rate_limited/failed.

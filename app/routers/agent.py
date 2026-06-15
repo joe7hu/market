@@ -42,16 +42,18 @@ def analyze_ticker(payload: deps.AgentAnalyzeInput, request: Request, background
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker is required")
     option_agent = app_config.agents.option_agent
-    if not (option_agent.enabled and option_agent.command):
-        raise HTTPException(status_code=400, detail="Enable the option agent and set its command before running on-demand analysis.")
+    # On-demand only needs a configured command — it does NOT depend on the auto-run
+    # (enabled) toggle.
+    if not option_agent.command:
+        raise HTTPException(status_code=400, detail="Set the option agent command before running on-demand analysis.")
     db_path = app_config.database.duckdb_path
     deps.init_db(db_path)
     with deps.db(db_path, read_only=False) as con:
         req = build_ondemand_request(con, ticker, payload.prompt, option_agent)
-    # Reuse the consolidated batched pass (picks up the new high-priority request).
-    job = deps.start_refresh_job("run_option_agents", db_path)
+    # Forced consolidated pass (runs regardless of auto-run), picks up the new request.
+    job = deps.start_refresh_job("run_option_agents_force", db_path)
     if job.get("created"):
-        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents", db_path)
+        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents_force", db_path)
     deps._invalidate_context_cache()
     return {"ticker": ticker, "request_id": req["request_id"], "job": job}
 

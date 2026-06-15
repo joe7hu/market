@@ -12,12 +12,20 @@ from investment_panel.core.option_agent_runner import run_consolidated_option_ag
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION
 
 
-def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
+def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRATEGY_VERSION, force: bool = False) -> dict[str, Any]:
+    """Run the option agent.
+
+    ``enabled`` is the *auto-run* (scheduled) toggle. ``force=True`` is the manual /
+    on-demand path: it runs the consolidated agent whenever a command is configured,
+    regardless of ``enabled`` — so on-demand analysis does not depend on auto-run.
+    """
+
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     option_agent = config.agents.option_agent
+    use_consolidated = bool(option_agent.command) and (option_agent.enabled or force)
     with db(config.database.duckdb_path, read_only=False) as con:
-        if option_agent.enabled and option_agent.command:
+        if use_consolidated:
             # Consolidated single-pass: one LLM/codex call covers thesis + postmortem.
             result = {
                 "mode": "consolidated",
@@ -32,7 +40,7 @@ def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRAT
                     model=option_agent.model,
                     reasoning_effort=option_agent.reasoning_effort,
                     pricing=config.agents.pricing,
-                    trigger="scheduled",
+                    trigger="manual" if force else "scheduled",
                 ),
             }
         else:

@@ -102,6 +102,66 @@ def test_option_agent_sanitizer_rejects_bad_provider() -> None:
         _sanitize_option_agent_settings({"provider": "anthropic"})
 
 
+def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> None:
+    """On-demand/manual (force=True) runs the consolidated agent even when the
+    auto-run (enabled) toggle is off — as long as a command is configured."""
+
+    from investment_panel.jobs import run_option_agents
+
+    calls: list[bool] = []
+
+    class _Cfg:
+        class database:
+            duckdb_path = str(tmp_path / "force.duckdb")
+
+        class agents:
+            class option_agent:
+                enabled = False  # auto-run OFF
+                command = "fake-agent"
+                thesis_limit = 8
+                postmortem_limit = 4
+                timeout_seconds = 180
+                provider = "codex"
+                model = ""
+                reasoning_effort = ""
+
+            class option_thesis:
+                enabled = False
+                command = ""
+                limit = 8
+                timeout_seconds = 120
+
+            class option_postmortem:
+                enabled = False
+                command = ""
+                limit = 4
+                timeout_seconds = 120
+
+            pricing: dict = {}
+
+    monkeypatch.setattr(run_option_agents, "load_config", lambda path=None: _Cfg)
+    monkeypatch.setattr(run_option_agents, "init_db", lambda path: None)
+    monkeypatch.setattr(run_option_agents, "run_external_option_agents", lambda con, **kw: {"mode": "separate"})
+
+    class _NullCtx:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(run_option_agents, "db", lambda path, read_only=False: _NullCtx())
+    monkeypatch.setattr(run_option_agents, "run_consolidated_option_agents", lambda con, **kw: calls.append(kw.get("trigger")) or {"accepted": 0})
+
+    # Auto-run off + no force => does NOT run the consolidated path.
+    run_option_agents.run(force=False)
+    assert calls == []
+
+    # force=True => runs consolidated despite enabled=False, tagged manual.
+    run_option_agents.run(force=True)
+    assert calls == ["manual"]
+
+
 def test_partial_context_sources_patch_merges_existing(tmp_path) -> None:
     from app.data_access.settings import update_agent_settings_config
 
