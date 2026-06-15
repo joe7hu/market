@@ -139,23 +139,30 @@ analysis:
 research_sources:
   x:
     enabled: true
-    # The X list call is the primary, low-rate-limit fetch (one request covers the
-    # whole curated list). Supply your own X list id here; the social job no-ops
-    # the list fetch gracefully when this is empty and only runs per-account
-    # fallbacks for the priority handles below.
-    list_id: ""
-    priority_handles: [balajis, karpathy, citrini, BillAckman, dylan522p, IncomeSharks]
+    list_id: '2066531259283656729'
+    priority_handles:
+    - balajis
+    - karpathy
+    - citrini
+    - BillAckman
+    - dylan522p
+    - IncomeSharks
     limit: 30
     account_fetch_cap: 2
   news:
     enabled: true
-    providers: [bloomberg, reuters, google-news, hackernews]
+    providers:
+    - bloomberg
+    - reuters
+    - google-news
+    - hackernews
     limit: 30
   blogs:
     enabled: true
-    substack_urls: []
-    rss_urls: []
-
+    substack_urls:
+    - https://blog.eladgil.com/?sort=new
+    rss_urls:
+    - https://www.ben-evans.com/benedictevans?format=rss
 agents:
   option_thesis:
     enabled: false

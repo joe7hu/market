@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from html import unescape
+import re
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 
 from investment_panel.providers.opencli import OpenCliRateLimitError, OpenCliRunner, ensure_list
 from investment_panel.core.source_ingestion.canonical import store_item_with_signals
@@ -37,17 +43,20 @@ def fetch_substack(con: Any, runner: OpenCliRunner, url: str, *, known: set[str]
 
 
 def fetch_web_rss(con: Any, runner: OpenCliRunner, url: str, *, known: set[str] | None = None) -> LiveFetchResult:
-    """Generic web RSS is not supported by the installed opencli adapters.
+    """Fetch and parse a generic RSS/Atom feed URL."""
 
-    The ``web`` adapter only exposes ``read`` (single page → Markdown), not a feed
-    parser, so there is no clean way to enumerate posts from an arbitrary RSS URL.
-    Skip explicitly (rather than record spurious failures) until a real feed
-    adapter exists; ``substack_urls`` is the supported blog path.
-    """
-
-    result = LiveFetchResult(source_id=slug(f"blog_{_host(url)}"))
-    result.status = "skipped"
-    result.detail = "generic web RSS unsupported by opencli; use substack_urls"
+    source_id = slug(f"blog_{_host(url)}")
+    result = LiveFetchResult(source_id=source_id)
+    if not url:
+        result.status = "skipped"
+        result.detail = "empty rss url"
+        return result
+    try:
+        posts = _fetch_feed_posts(url)
+    except Exception as exc:  # noqa: BLE001
+        return _record(result, "failed", exc, con, capability="rss", run_key=url)
+    _ingest_posts(con, posts, result, source_id=source_id, source_url=url, known=known)
+    record_live_run(con, result, capability="rss", run_key=url)
     return result
 
 
@@ -102,6 +111,80 @@ def _host(url: str) -> str:
     except Exception:
         netloc = url
     return netloc.replace("www.", "") or "blog"
+
+
+def _fetch_feed_posts(url: str) -> list[dict[str, Any]]:
+    request = Request(url, headers={"User-Agent": "joehu-market-panel/0.1 contact:local"})
+    try:
+        with urlopen(request, timeout=25) as response:  # noqa: S310 - configured user source URL
+            body = response.read()
+    except URLError as exc:
+        raise RuntimeError(str(exc)) from exc
+    root = ET.fromstring(body)
+    rows = _rss_items(root)
+    if not rows:
+        rows = _atom_entries(root)
+    return rows
+
+
+def _rss_items(root: ET.Element) -> list[dict[str, Any]]:
+    rows = []
+    for item in root.findall(".//item"):
+        title = _child_text(item, "title")
+        link = _child_text(item, "link") or _child_text(item, "guid")
+        summary = _child_text(item, "description") or _child_text(item, "{http://purl.org/rss/1.0/modules/content/}encoded")
+        published = _normalize_feed_date(_child_text(item, "pubDate") or _child_text(item, "{http://purl.org/dc/elements/1.1/}date"))
+        author = _child_text(item, "{http://purl.org/dc/elements/1.1/}creator") or _child_text(item, "author")
+        rows.append({"title": title, "link": link, "summary": _plain_text(summary), "published": published, "author": author})
+    return [row for row in rows if row.get("title")]
+
+
+def _atom_entries(root: ET.Element) -> list[dict[str, Any]]:
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    rows = []
+    for entry in root.findall(".//atom:entry", ns):
+        link = ""
+        for link_node in entry.findall("atom:link", ns):
+            if link_node.get("href"):
+                link = str(link_node.get("href"))
+                break
+        rows.append(
+            {
+                "title": _child_text(entry, "{http://www.w3.org/2005/Atom}title"),
+                "link": link,
+                "summary": _plain_text(
+                    _child_text(entry, "{http://www.w3.org/2005/Atom}summary")
+                    or _child_text(entry, "{http://www.w3.org/2005/Atom}content")
+                ),
+                "published": _normalize_feed_date(
+                    _child_text(entry, "{http://www.w3.org/2005/Atom}published")
+                    or _child_text(entry, "{http://www.w3.org/2005/Atom}updated")
+                ),
+                "author": _child_text(entry, "{http://www.w3.org/2005/Atom}author"),
+            }
+        )
+    return [row for row in rows if row.get("title")]
+
+
+def _child_text(node: ET.Element, name: str) -> str:
+    child = node.find(name)
+    if child is None or child.text is None:
+        return ""
+    return child.text.strip()
+
+
+def _plain_text(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    return re.sub(r"\s+", " ", unescape(text)).strip()
+
+
+def _normalize_feed_date(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return value
 
 
 def _record(

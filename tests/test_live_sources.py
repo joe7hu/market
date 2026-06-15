@@ -10,6 +10,7 @@ from investment_panel.providers.opencli import OpenCliRateLimitError
 from investment_panel.core.source_ingestion.live import (
     fetch_news,
     fetch_substack,
+    fetch_web_rss,
     fetch_x_account,
     fetch_x_list,
     known_symbols,
@@ -128,6 +129,44 @@ def test_fetch_substack_creates_blog_source_items(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert len(items) == 1
     assert any(row.get("symbol") == "MSFT" for row in signals)
+
+
+def test_fetch_web_rss_creates_blog_source_items(tmp_path: Path, monkeypatch) -> None:
+    feed = b"""<?xml version="1.0"?>
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>AI chips and $NVDA</title>
+          <link>https://example.com/post</link>
+          <description>Supply chain note</description>
+          <pubDate>Mon, 15 Jun 2026 12:00:00 GMT</pubDate>
+          <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">Analyst</dc:creator>
+        </item>
+      </channel>
+    </rss>"""
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return feed
+
+    monkeypatch.setattr("investment_panel.core.source_ingestion.live.blog_sources.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    with _con(tmp_path) as con:
+        result = fetch_web_rss(con, FakeRunner(), "https://example.com/feed")
+        items = query_rows(con, "SELECT title, source_kind FROM source_items WHERE source_kind = 'blog'")
+        signals = query_rows(con, "SELECT symbol FROM ticker_source_signals")
+        runs = query_rows(con, "SELECT status, capability FROM source_runs")
+
+    assert result.status == "ok"
+    assert result.items == 1
+    assert items == [{"title": "AI chips and $NVDA", "source_kind": "blog"}]
+    assert any(row.get("symbol") == "NVDA" for row in signals)
+    assert any(run.get("capability") == "rss" and run.get("status") == "ok" for run in runs)
 
 
 def test_known_symbols_enables_bare_mention_extraction(tmp_path: Path) -> None:
