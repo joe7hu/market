@@ -185,6 +185,58 @@ def build_agent_thesis_request(con: Any, candidate: dict[str, Any]) -> dict[str,
             [ticker],
             ("related_symbols",),
         ),
+        # Full per-ticker bundle: one agent run sees ownership, technicals, our
+        # position, the decision grade, and upcoming catalysts — not just options.
+        "technicals": first_row(
+            con,
+            "SELECT symbol, date, features FROM technical_features WHERE symbol = ? ORDER BY date DESC LIMIT 1",
+            [ticker],
+            ("features",),
+        ),
+        "ownership_and_disclosures": query_decoded(
+            con,
+            """
+            SELECT source_type, trader_name, filer_name, symbol, event_date, filed_date, action, amount, source_url
+            FROM disclosures
+            WHERE symbol = ?
+            ORDER BY filed_date DESC NULLS LAST, event_date DESC NULLS LAST
+            LIMIT 6
+            """,
+            [ticker],
+        ),
+        "portfolio_position": first_row(
+            con,
+            "SELECT symbol, quantity, avg_cost, purchase_date, notes FROM portfolio_positions WHERE symbol = ? LIMIT 1",
+            [ticker],
+        ),
+        "decision": first_row(
+            con,
+            """
+            SELECT symbol, as_of, action_grade, freshness_status, source_cluster,
+                   inclusion_reasons, blocking_gates, decision_basis
+            FROM symbol_decision_snapshots
+            WHERE symbol = ?
+            LIMIT 1
+            """,
+            [ticker],
+            ("inclusion_reasons", "blocking_gates", "decision_basis"),
+        ),
+        "catalysts": query_decoded(
+            con,
+            """
+            SELECT symbol, event_date, event, expected_impact, importance, source
+            FROM catalysts
+            WHERE symbol = ?
+            ORDER BY event_date ASC NULLS LAST
+            LIMIT 5
+            """,
+            [ticker],
+        ),
+        "earnings": query_decoded(
+            con,
+            "SELECT symbol, event_date, event_type FROM earnings_events WHERE symbol = ? ORDER BY event_date ASC NULLS LAST LIMIT 3",
+            [ticker],
+        ),
     }
     prompt = agent_thesis_prompt(ticker)
     return {

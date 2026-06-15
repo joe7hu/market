@@ -8,6 +8,7 @@ import time
 import pytest
 
 from investment_panel.jobs import openai_option_agent
+from investment_panel.jobs import openai_option_agent_auth
 
 
 class FakeResponse:
@@ -324,7 +325,7 @@ def test_codex_oauth_file_rejects_wrong_audience_or_missing_write_scope(monkeypa
         )
     )
     monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(auth_path))
-    assert openai_option_agent._codex_oauth_access_token() == ""
+    assert openai_option_agent_auth.codex_oauth_access_token() == ""
 
     auth_path.write_text(
         jsonlib.dumps(
@@ -337,7 +338,7 @@ def test_codex_oauth_file_rejects_wrong_audience_or_missing_write_scope(monkeypa
             }
         )
     )
-    assert openai_option_agent._codex_oauth_access_token() == ""
+    assert openai_option_agent_auth.codex_oauth_access_token() == ""
 
 
 def test_codex_oauth_file_skips_malformed_access_token(monkeypatch, tmp_path) -> None:
@@ -357,7 +358,7 @@ def test_codex_oauth_file_skips_malformed_access_token(monkeypatch, tmp_path) ->
     )
     monkeypatch.setenv("MARKET_OPENAI_OAUTH_FILE", str(auth_path))
 
-    assert openai_option_agent._codex_oauth_access_token() == valid
+    assert openai_option_agent_auth.codex_oauth_access_token() == valid
 
 
 def _fake_jwt(payload: dict) -> str:

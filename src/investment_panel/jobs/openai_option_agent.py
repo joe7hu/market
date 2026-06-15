@@ -552,7 +552,10 @@ def _ensure_request_ref(result: dict[str, Any], request_payload: dict[str, Any])
 def _thesis_system_prompt() -> str:
     return (
         "You generate structured 10x options-radar hypotheses only. "
-        "Use the supplied candidate, stock, option, source-signal, and news context. "
+        "Use the full per-ticker context supplied: candidate, instrument, stock and option "
+        "features, fundamentals, technicals, ownership/13F and disclosures, source signals "
+        "(including X/social and blogs), news, our portfolio position, the decision grade, "
+        "and upcoming catalysts/earnings. "
         "Do not recommend or execute trades. Do not change deterministic scores. "
         "Create falsifiable thesis, proof, catalyst, invalidation, and red-team material. "
         "A valid core_thesis is not technical analysis: it must connect product or protocol "
