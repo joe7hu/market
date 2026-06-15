@@ -4,23 +4,21 @@ import { useCallback, useMemo, useState } from "react";
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
 import { Button } from "@/components/ui/button";
-import { rows } from "@/utils";
 import { buildFlowStages, DataFlowDiagram } from "@/views/health/dataFlow";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 import {
   agentSchedulerSeconds,
-  buildAgentPipelines,
   buildCategories,
   buildFamilyHealth,
   collectTopErrors,
 } from "@/views/health/aggregate";
 import { catalogToneCounts, groupCatalogByFamily, parseSourceCatalog } from "@/views/health/catalog";
 import { useRefreshJobs } from "@/views/health/useRefreshJobs";
-import { AgentUsagePanel } from "@/views/health/agentPanels";
+import { AgentControlPanel } from "@/views/health/agentPanels";
 import { TriggerPanel } from "@/views/health/triggerPanels";
 import { CatalogControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
-import { CollapsibleSection, RefreshHistoryTable, RunStatusTable } from "@/views/health/tables";
+import { RefreshHistoryTable } from "@/views/health/tables";
 
 export function HealthRoute() {
   const { data, model, loadScope } = useMarketData();
@@ -33,13 +31,18 @@ export function HealthRoute() {
   const categories = useMemo(() => buildCategories(data), [data]);
   const families = useMemo(() => buildFamilyHealth(categories), [categories]);
   const flowStages = useMemo(() => buildFlowStages(families), [families]);
-  const agentPipelines = useMemo(() => buildAgentPipelines(data), [data]);
   const schedulerAgentSeconds = useMemo(() => agentSchedulerSeconds(data), [data]);
   const topErrors = useMemo(() => collectTopErrors(categories, data, jobs.rows), [categories, data, jobs.rows]);
 
   // Authoritative catalog (primary/fallback/cadence) drives the top-level view.
   const catalogCategories = useMemo(() => parseSourceCatalog(data), [data]);
   const catalogFamilies = useMemo(() => groupCatalogByFamily(catalogCategories), [catalogCategories]);
+  // Per-category refresh jobs are launched from the catalog, so the Operations
+  // trigger panel hides them and shows only orchestration/uncovered jobs.
+  const catalogJobs = useMemo(
+    () => new Set(catalogCategories.map((category) => category.refresh_job).filter(Boolean)),
+    [catalogCategories],
+  );
 
   // Prefer the catalog's category tones for top metrics; fall back to the live
   // joiner's provider counts when the catalog has not arrived yet.
@@ -73,7 +76,7 @@ export function HealthRoute() {
     <WorkspacePage
       eyebrow="Control plane"
       title="Source Health"
-      subtitle="Per-source status, top errors, manual refresh triggers, and how every source feeds each ticker's signals."
+      subtitle="Data sources by category with primary/fallback status, the option-agent control plane, and operations triggers."
       metrics={metrics}
       actions={
         <Button type="button" variant="outline" size="sm" onClick={() => void reload()} disabled={reloading}>
@@ -92,21 +95,27 @@ export function HealthRoute() {
         jobs={jobs}
       />
 
-      <AgentUsagePanel pipelines={agentPipelines} jobs={jobs} schedulerSeconds={schedulerAgentSeconds} />
+      <AgentControlPanel data={data} jobs={jobs} schedulerSeconds={schedulerAgentSeconds} onChanged={() => void reload()} />
 
-      <TriggerPanel jobs={jobs} />
-
-      <TopErrorsPanel errors={topErrors} />
-
-      <CollapsibleSection title="Provider Runs" count={rows(data.providerRuns).length}>
-        <RunStatusTable rows={rows(data.providerRuns).slice(0, 80)} />
-      </CollapsibleSection>
-      <CollapsibleSection title="Refresh Job History" count={jobs.rows.length}>
-        <RefreshHistoryTable rows={jobs.rows.slice(0, 60)} />
-      </CollapsibleSection>
-      <CollapsibleSection title="Broker Status" count={rows(data.brokerStatus).length}>
-        <RunStatusTable rows={rows(data.brokerStatus).slice(0, 60)} />
-      </CollapsibleSection>
+      <details className="overflow-hidden rounded-xl border border-border bg-card">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-lg font-semibold">
+          <span>Operations</span>
+          <span className="text-sm font-normal text-muted-foreground">triggers · top errors · run history</span>
+        </summary>
+        <div className="space-y-4 border-t border-border p-4">
+          <TriggerPanel jobs={jobs} excludeJobs={catalogJobs} />
+          <TopErrorsPanel errors={topErrors} />
+          <div className="overflow-hidden rounded-xl border border-border bg-card">
+            <div className="flex items-center justify-between px-4 py-3 text-sm font-semibold">
+              <span>Refresh Job History</span>
+              <span className="font-normal text-muted-foreground">{jobs.rows.length.toLocaleString()} rows</span>
+            </div>
+            <div className="overflow-x-auto border-t border-border">
+              <RefreshHistoryTable rows={jobs.rows.slice(0, 60)} />
+            </div>
+          </div>
+        </div>
+      </details>
     </WorkspacePage>
   );
 }

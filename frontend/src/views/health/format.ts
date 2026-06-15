@@ -75,3 +75,15 @@ export function formatDateTime(value: string | undefined | null): string {
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
+
+/** Relative age, e.g. "3h ago". Empty/invalid -> "-". */
+export function formatAge(value: string | undefined | null): string {
+  const ms = dateMs(value ?? "");
+  if (!ms) return "-";
+  const diffMin = Math.floor((Date.now() - ms) / 60000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const hours = Math.floor(diffMin / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}

@@ -303,6 +303,131 @@ export function agentSchedulerSeconds(data: PanelData): number {
   return numberFromJson(scheduler.agent_refresh_seconds, 0);
 }
 
+export type AgentOptionConfig = {
+  enabled: boolean;
+  command: string;
+  thesisLimit: number;
+  postmortemLimit: number;
+  timeoutSeconds: number;
+  active: boolean;
+  configured: boolean;
+  mode: string;
+};
+
+/** Live option-agent config from the dashboard metadata (metadata.config.agents),
+ *  which carries the persisted config.yaml values (metadata.agents is not set). */
+export function agentOptionConfig(data: PanelData): AgentOptionConfig {
+  const metadata = jsonRecord(data.dashboard.status?.metadata);
+  const agents = jsonRecord(jsonRecord(metadata.config).agents);
+  const unified = jsonRecord(agents.option_agent);
+  const raw = Object.keys(unified).length ? unified : jsonRecord(agents.option_thesis);
+  const enabled = booleanFromJson(raw.enabled, false);
+  const command = stringFromJson(raw.command, "");
+  return {
+    enabled,
+    command,
+    thesisLimit: numberFromJson(raw.thesis_limit ?? raw.limit, 8),
+    postmortemLimit: numberFromJson(raw.postmortem_limit ?? raw.limit, 4),
+    timeoutSeconds: numberFromJson(raw.timeout_seconds, 180),
+    active: enabled && Boolean(command),
+    configured: Boolean(command),
+    mode: stringFromJson(raw.mode, "consolidated"),
+  };
+}
+
+export type AgentQueue = {
+  thesisOpen: number;
+  postmortemOpen: number;
+  totalOpen: number;
+  oldestOpenAt: string;
+  done: number;
+  failed: number;
+};
+
+export function agentQueueStats(data: PanelData): AgentQueue {
+  const thesisReq = rows(data.agentThesisRequest);
+  const postmortemReq = rows(data.agentPostmortemRequest);
+  const isOpen = (row: RowRecord) => displayField(row, ["status"], "").toLowerCase() === "open";
+  const thesisOpen = thesisReq.filter(isOpen);
+  const postmortemOpen = postmortemReq.filter(isOpen);
+  const oldestOpenAt = [...thesisOpen, ...postmortemOpen].reduce((oldest, row) => {
+    const value = displayField(row, ["created_at", "updated_at"], "");
+    return value && (!oldest || dateMs(value) < dateMs(oldest)) ? value : oldest;
+  }, "");
+  const counts = mergeCounts(countByStatus(thesisReq), countByStatus(postmortemReq));
+  return {
+    thesisOpen: thesisOpen.length,
+    postmortemOpen: postmortemOpen.length,
+    totalOpen: thesisOpen.length + postmortemOpen.length,
+    oldestOpenAt,
+    done: rows(data.agentThesis).length + rows(data.agentPostmortem).length,
+    failed: (counts.agent_failed ?? 0) + (counts.failed ?? 0),
+  };
+}
+
+function mergeCounts(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = { ...a };
+  for (const [key, value] of Object.entries(b)) out[key] = (out[key] ?? 0) + value;
+  return out;
+}
+
+export type AgentRunOutcome = {
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  attempted: number;
+  accepted: number;
+  failed: number;
+  mode: string;
+  failures: Array<{ ticker: string; error: string }>;
+};
+
+/** Parse the most recent run_option_agents job summary into a granular outcome. */
+export function agentLastRun(jobRows: RefreshJob[]): AgentRunOutcome | null {
+  const row = jobRows.find((item) => item.job_name === "run_option_agents");
+  if (!row) return null;
+  const summary = jsonRecord(row.summary);
+  // Consolidated runner: summary.option_agent_runner = {attempted, accepted, failed,
+  // thesis:{failures}, postmortem:{failures}}. Separate runner: agent_thesis_runner /
+  // agent_postmortem_runner at the top level.
+  const consolidated = jsonRecord(summary.option_agent_runner);
+  const sources = Object.keys(consolidated).length
+    ? [consolidated]
+    : [jsonRecord(summary.agent_thesis_runner), jsonRecord(summary.agent_postmortem_runner)];
+  let attempted = 0;
+  let accepted = 0;
+  let failed = 0;
+  const failures: Array<{ ticker: string; error: string }> = [];
+  for (const source of sources) {
+    attempted += numberFromJson(source.attempted, 0);
+    accepted += numberFromJson(source.accepted, 0);
+    failed += numberFromJson(source.failed, 0);
+    for (const group of [source, jsonRecord(source.thesis), jsonRecord(source.postmortem)]) {
+      for (const item of Array.isArray(group.failures) ? group.failures : []) {
+        const failure = jsonRecord(item);
+        failures.push({
+          ticker: stringFromJson(failure.ticker, stringFromJson(failure.request_id, "?")),
+          error: stringFromJson(failure.error, "unknown error"),
+        });
+      }
+    }
+  }
+  return {
+    status: row.status ?? "unknown",
+    startedAt: row.started_at ?? "",
+    finishedAt: row.finished_at ?? "",
+    attempted,
+    accepted,
+    failed,
+    mode: stringFromJson(summary.mode, Object.keys(consolidated).length ? "consolidated" : "separate"),
+    failures: failures.slice(0, 8),
+  };
+}
+
+export function recentAgentRuns(jobRows: RefreshJob[], limit = 8): RefreshJob[] {
+  return jobRows.filter((row) => row.job_name === "run_option_agents").slice(0, limit);
+}
+
 export function agentRuntime(raw: Record<string, unknown>, fallbackLimit: number): AgentRuntime {
   return {
     active: booleanFromJson(raw.active ?? raw.enabled, false) && booleanFromJson(raw.configured, Boolean(raw.command)),
