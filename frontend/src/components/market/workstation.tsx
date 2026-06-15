@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BarChart3,
   BookOpenCheck,
+  BrainCircuit,
   CalendarDays,
   Database,
   Eye,
@@ -52,6 +53,7 @@ const navItems: NavItem[] = [
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
   { to: "/sources", label: "Sources", icon: Mic },
   { to: "/market", label: "Market", icon: BarChart3 },
+  { to: "/agent", label: "Agent", icon: BrainCircuit },
   { to: "/health", label: "Health", icon: HeartPulse },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

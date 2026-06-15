@@ -36,7 +36,7 @@ def test_consolidated_runner_invokes_command_once_for_mixed_batch(tmp_path: Path
     thesis_upserts: list[dict[str, Any]] = []
     postmortem_upserts: list[dict[str, Any]] = []
 
-    def fake_invoke(command: str, payload: dict[str, Any], *, timeout_seconds: int) -> dict[str, Any]:
+    def fake_invoke(command: str, payload: dict[str, Any], *, timeout_seconds: int, env=None) -> dict[str, Any]:
         invoke_calls.append(payload)
         return {
             "thesis": [{"ticker": "NVDA", "core_thesis": "x", "evidence_refs": []}],

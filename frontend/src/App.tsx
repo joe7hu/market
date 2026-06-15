@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/market/workstation";
 import { MarketDataProvider } from "./marketData";
+import { AgentRoute } from "./pages/AgentRoute";
 import { CalendarRoute } from "./pages/CalendarRoute";
 import { FeedRoute } from "./pages/FeedRoute";
 import { HealthRoute } from "./pages/HealthRoute";
@@ -38,6 +39,7 @@ export function App() {
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />
           <Route path="calendar" element={<CalendarRoute />} />
+          <Route path="agent" element={<AgentRoute />} />
           <Route path="health" element={<HealthRoute />} />
           <Route path="settings" element={<SettingsRoute />} />
           <Route path="tickers/:symbol" element={<TickerRoute />} />

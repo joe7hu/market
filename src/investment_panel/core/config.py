@@ -214,6 +214,23 @@ class AgentCommandConfig:
     limit: int = 20
 
 
+DEFAULT_AGENT_CONTEXT_SOURCES: dict[str, bool] = {
+    "fundamentals": True,
+    "technicals": True,
+    "ownership": True,
+    "news": True,
+    "social_signals": True,
+    "catalysts": True,
+    "portfolio": True,
+    "decision": True,
+}
+
+DEFAULT_AGENT_PRICING: dict[str, dict[str, float]] = {
+    "default": {"input_per_1m": 1.25, "output_per_1m": 10.0},
+    "gpt-5.2": {"input_per_1m": 1.25, "output_per_1m": 10.0},
+}
+
+
 @dataclass(frozen=True)
 class OptionAgentConfig:
     """Unified single-pass option agent (consolidated thesis + postmortem)."""
@@ -223,6 +240,14 @@ class OptionAgentConfig:
     timeout_seconds: int = 180
     thesis_limit: int = 8
     postmortem_limit: int = 4
+    provider: str = "codex"
+    model: str = ""
+    reasoning_effort: str = ""
+    # In-app scheduler cadence override (0 = use MARKET_AGENT_REFRESH_SECONDS / default).
+    auto_run_seconds: int = 0
+    max_runs_per_day: int = 1
+    # Per-ticker context sources fed to each run; toggle off to trim the prompt.
+    context_sources: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_AGENT_CONTEXT_SOURCES))
 
 
 @dataclass(frozen=True)
@@ -230,6 +255,7 @@ class AgentsConfig:
     option_thesis: AgentCommandConfig = AgentCommandConfig()
     option_postmortem: AgentCommandConfig = AgentCommandConfig()
     option_agent: OptionAgentConfig = OptionAgentConfig()
+    pricing: dict[str, dict[str, float]] = field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()})
 
 
 @dataclass(frozen=True)
@@ -463,7 +489,14 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             timeout_seconds=int(option_agent_raw.get("timeout_seconds", 180)),
             thesis_limit=int(option_agent_raw.get("thesis_limit", option_thesis_raw.get("limit", 8))),
             postmortem_limit=int(option_agent_raw.get("postmortem_limit", option_postmortem_raw.get("limit", 4))),
+            provider=str(option_agent_raw.get("provider", "codex")),
+            model=str(option_agent_raw.get("model", "")),
+            reasoning_effort=str(option_agent_raw.get("reasoning_effort", "")),
+            auto_run_seconds=int(option_agent_raw.get("auto_run_seconds", 0)),
+            max_runs_per_day=int(option_agent_raw.get("max_runs_per_day", 1)),
+            context_sources={**DEFAULT_AGENT_CONTEXT_SOURCES, **{k: bool(v) for k, v in dict(option_agent_raw.get("context_sources", {})).items()}},
         ),
+        pricing={**{k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()}, **{k: dict(v) for k, v in dict(agents_raw.get("pricing", {})).items()}},
     )
     scoring_raw = raw.get("scoring", {})
     scoring = ScoringConfig(
@@ -620,7 +653,14 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "timeout_seconds": config.agents.option_agent.timeout_seconds,
                 "thesis_limit": config.agents.option_agent.thesis_limit,
                 "postmortem_limit": config.agents.option_agent.postmortem_limit,
+                "provider": config.agents.option_agent.provider,
+                "model": config.agents.option_agent.model,
+                "reasoning_effort": config.agents.option_agent.reasoning_effort,
+                "auto_run_seconds": config.agents.option_agent.auto_run_seconds,
+                "max_runs_per_day": config.agents.option_agent.max_runs_per_day,
+                "context_sources": dict(config.agents.option_agent.context_sources),
             },
+            "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},
         },
         "research_sources": {
             "x": {

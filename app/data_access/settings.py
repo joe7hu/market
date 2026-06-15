@@ -86,7 +86,12 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
         next_agents[key] = {**current, **_sanitize_agent_settings(payload[key])}
     if "option_agent" in payload:
         current = next_agents.get("option_agent") if isinstance(next_agents.get("option_agent"), dict) else {}
-        next_agents["option_agent"] = {**current, **_sanitize_option_agent_settings(payload["option_agent"])}
+        sanitized = _sanitize_option_agent_settings(payload["option_agent"])
+        # context_sources is a partial map: merge sub-keys instead of replacing the
+        # whole block, so a partial PATCH doesn't drop the untouched toggles.
+        if isinstance(sanitized.get("context_sources"), dict) and isinstance(current.get("context_sources"), dict):
+            sanitized["context_sources"] = {**current["context_sources"], **sanitized["context_sources"]}
+        next_agents["option_agent"] = {**current, **sanitized}
     raw["agents"] = next_agents
     _write_yaml_top_level_block(path, "agents", {"agents": next_agents})
     return raw
@@ -241,6 +246,28 @@ def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
         clean["thesis_limit"] = _bounded_int(value["thesis_limit"], "thesis_limit", minimum=0, maximum=50)
     if "postmortem_limit" in value:
         clean["postmortem_limit"] = _bounded_int(value["postmortem_limit"], "postmortem_limit", minimum=0, maximum=50)
+    if "provider" in value:
+        provider = str(value["provider"] or "").strip().lower()
+        if provider not in {"codex", "openai"}:
+            raise ValueError("provider must be 'codex' or 'openai'")
+        clean["provider"] = provider
+    if "model" in value:
+        clean["model"] = _clean_token(value["model"], "model", maximum=80)
+    if "reasoning_effort" in value:
+        effort = str(value["reasoning_effort"] or "").strip().lower()
+        if effort and effort not in {"low", "medium", "high", "minimal"}:
+            raise ValueError("reasoning_effort must be low, medium, high, or minimal")
+        clean["reasoning_effort"] = effort
+    if "auto_run_seconds" in value:
+        clean["auto_run_seconds"] = _bounded_int(value["auto_run_seconds"], "auto_run_seconds", minimum=0, maximum=604800)
+    if "max_runs_per_day" in value:
+        clean["max_runs_per_day"] = _bounded_int(value["max_runs_per_day"], "max_runs_per_day", minimum=0, maximum=48)
+    if "context_sources" in value:
+        sources = value["context_sources"]
+        if not isinstance(sources, dict):
+            raise ValueError("context_sources must be an object of name -> bool")
+        allowed = {"fundamentals", "technicals", "ownership", "news", "social_signals", "catalysts", "portfolio", "decision"}
+        clean["context_sources"] = {key: bool(val) for key, val in sources.items() if key in allowed}
     return clean
 
 

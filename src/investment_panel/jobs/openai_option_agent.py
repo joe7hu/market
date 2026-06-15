@@ -216,25 +216,29 @@ def _dispatch_agent_batch_refs(result: dict[str, Any], payload: dict[str, Any]) 
 
 
 def generate_openai_option_agent(payload: dict[str, Any]) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
     result = _call_openai_structured(
         _compact_agent_batch(payload),
         schema_name="option_agent_batch",
         schema=_agent_wrapper_schema(),
         system_prompt=_agent_system_prompt(),
         compact=False,
+        meta_sink=meta,
     )
-    return _dispatch_agent_batch_refs(result, payload)
+    return {**_dispatch_agent_batch_refs(result, payload), "_meta": meta}
 
 
 def generate_codex_option_agent(payload: dict[str, Any]) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
     result = _call_codex_structured(
         _compact_agent_batch(payload),
         schema_name="option_agent_batch",
         schema=_agent_wrapper_schema(),
         system_prompt=_agent_system_prompt(),
         compact=False,
+        meta_sink=meta,
     )
-    return _dispatch_agent_batch_refs(result, payload)
+    return {**_dispatch_agent_batch_refs(result, payload), "_meta": meta}
 
 
 def generate_openai_option_thesis(request_payload: dict[str, Any]) -> dict[str, Any]:
@@ -298,6 +302,7 @@ def _call_openai_structured(
     schema: dict[str, Any],
     system_prompt: str,
     compact: bool = True,
+    meta_sink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Single-request callers pass the raw request and rely on compaction; the
     # consolidated batch caller pre-shapes its payload and must NOT be re-compacted
@@ -339,6 +344,19 @@ def _call_openai_structured(
     data = response.json()
     if data.get("error"):
         raise OpenAIOptionAgentError(f"OpenAI response error: {data['error']}")
+    if meta_sink is not None:
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        meta_sink.update(
+            {
+                "provider": "openai",
+                "model": model,
+                "estimated": False,
+                "usage": {
+                    "input_tokens": int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
+                },
+            }
+        )
     text = _extract_output_text(data)
     try:
         parsed = json.loads(text)
@@ -356,6 +374,7 @@ def _call_codex_structured(
     schema: dict[str, Any],
     system_prompt: str,
     compact: bool = True,
+    meta_sink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # See _call_openai_structured: the batch caller pre-shapes its payload and must
     # not be re-compacted (that would strip the thesis/postmortem arrays).
@@ -396,6 +415,20 @@ def _call_codex_structured(
         raise OpenAIOptionAgentError(f"Codex option agent returned invalid JSON: {output_text[:500]}") from exc
     if not isinstance(parsed, dict):
         raise OpenAIOptionAgentError("Codex option agent output must be a JSON object")
+    if meta_sink is not None:
+        # Codex does not report token usage; estimate ~4 chars/token for cost visibility.
+        prompt_chars = len(system_prompt) + len(json.dumps(body_payload, default=str))
+        meta_sink.update(
+            {
+                "provider": "codex",
+                "model": os.environ.get("MARKET_CODEX_MODEL", "") or "codex",
+                "estimated": True,
+                "usage": {
+                    "input_tokens": prompt_chars // 4,
+                    "output_tokens": len(output_text) // 4,
+                },
+            }
+        )
     return parsed
 
 
