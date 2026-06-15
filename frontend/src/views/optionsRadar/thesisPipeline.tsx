@@ -14,7 +14,7 @@ import {jsonRecord, jsonArrayField, stringFromRecord, latestValidationBy, valida
 import {stateTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone, toneText } from "../optionsRadarTone";
 import {Cell, Head, SectionTitle, TickerButton, Truncated } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {thesisId, validationForThesis, validationHistoryForThesis, countWhere, stateOf, oldestDate } from "./helpers";
+import {thesisId, validationForThesis, validationHistoryForThesis, countWhere, contractLabel, stateOf, oldestDate } from "./helpers";
 import {OptionThesisAgentRuntime } from "./types";
 import {BrowserStat, MetricBox, ReadableSection, ReadableList } from "./shared";
 
@@ -114,7 +114,7 @@ export function ThesisRequestsTable({
             const ticker = textField(row, ["ticker"]);
             const event = eventById.get(textField(row, ["event_id"]));
             const status = textField(row, ["status"], "open");
-            const contract = displayField(event, ["contract_id"], textField(row, ["event_id"]));
+            const contract = event ? contractLabel(event) : textField(row, ["event_id"]);
             return (
               <tr key={textField(row, ["request_id"], `${ticker}-${textField(row, ["created_at"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>

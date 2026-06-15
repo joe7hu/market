@@ -8,13 +8,13 @@ import {Input } from "@/components/ui/input";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
-import {displayField, listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
-import {moneyField, formatRatio, formatScore, formatShortDate } from "../optionsRadarFormat";
-import {recordField, listFromRecord, stringFromRecord } from "../optionsRadarData";
+import {listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {moneyField, formatRatio, formatScore, formatShortDate, formatNumber } from "../optionsRadarFormat";
+import {recordField, listFromRecord, stringFromRecord, numberFromRecord } from "../optionsRadarData";
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";
 import {Cell, FullText, Head, MetricPill, SectionTitle, TickerButton } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
+import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, contractLabel, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
 import {OptionThesisAgentRuntime, CandidateSort, CandidateStateFilter, CandidateFocus, ThesisFilter, QualityFilter, FamilyFilter, CANDIDATE_PAGE_SIZE } from "./types";
 import {ReadableReasonGroup, InlineMetric, MobileSection, QualityIndicator, HelpLabel, FillTarget, PremiumCapHint, OpportunityOutcome } from "./shared";
 import {OpportunityThesisSummary } from "./signalBrief";
@@ -254,8 +254,7 @@ export function CandidateEventsTable({
                     </div>
                   </Cell>
                   <Cell>
-                    <FullText>{displayField(row, ["contract_id"])}</FullText>
-                    <div className="mt-1 text-xs text-muted-foreground">{candidateFamily(row)} | {titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}</div>
+                    <ContractIdentity row={row} />
                   </Cell>
                   <Cell className="text-right tabular-nums">
                     <div>{moneyField(row, ["premium_mid"])}</div>
@@ -342,10 +341,7 @@ export function CandidateMobileCard({
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
-          <FullText>{displayField(row, ["contract_id"])}</FullText>
-          <div className="mt-1 text-xs text-muted-foreground">
-            {titleLabel(stringFromRecord(recordField(row, "raw"), "option_type", "call"))} {formatShortDate(stringFromRecord(recordField(row, "raw"), "expiration"))}
-          </div>
+          <ContractIdentity row={row} />
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <div className="flex items-center gap-1.5">
@@ -414,6 +410,45 @@ export function ThesisCompactSummary({
       </Button>
     </div>
   );
+}
+
+// Readable contract identity for the radar table/card: "$845 Call", the family +
+// expiration + DTE subline, and a compact greeks/liquidity strip. The opaque
+// contract_id is preserved as a hover title for debugging.
+export function ContractIdentity({ row }: { row: RowRecord }) {
+  const raw = recordField(row, "raw");
+  const expiration = stringFromRecord(raw, "expiration");
+  const dte = numberFromRecord(raw, "dte");
+  return (
+    <div className="min-w-0" title={textField(row, ["contract_id"])}>
+      <FullText>{contractLabel(row)}</FullText>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {candidateFamily(row)} · {formatShortDate(expiration)}{Number.isFinite(dte) ? ` · ${dte}d` : ""}
+      </div>
+      <ContractGreeks row={row} />
+    </div>
+  );
+}
+
+export function ContractGreeks({ row }: { row: RowRecord }) {
+  const raw = recordField(row, "raw");
+  const delta = numberFromRecord(raw, "delta");
+  const theta = numberFromRecord(raw, "theta");
+  const iv = numberFromRecord(raw, "iv");
+  const ivPercentile = numberFromRecord(raw, "iv_percentile");
+  const openInterest = numberFromRecord(raw, "open_interest");
+  const volume = numberFromRecord(raw, "volume");
+  const spread = numberFromRecord(raw, "spread_pct");
+  const parts: string[] = [];
+  if (Number.isFinite(delta)) parts.push(`Δ ${delta.toFixed(2)}`);
+  if (Number.isFinite(theta)) parts.push(`Θ ${theta.toFixed(2)}`);
+  if (Number.isFinite(iv)) parts.push(`IV ${formatRatio(iv)}`);
+  if (Number.isFinite(ivPercentile)) parts.push(`IVR ${formatNumber(ivPercentile, 0)}`);
+  if (Number.isFinite(spread)) parts.push(`Spr ${formatRatio(spread)}`);
+  if (Number.isFinite(openInterest)) parts.push(`OI ${formatNumber(openInterest, 0)}`);
+  if (Number.isFinite(volume)) parts.push(`Vol ${formatNumber(volume, 0)}`);
+  if (!parts.length) return null;
+  return <div className="mt-1 font-mono text-[11px] leading-5 text-muted-foreground tabular-nums">{parts.join("  ·  ")}</div>;
 }
 
 export function CandidateSignalEvidence({ row }: { row: RowRecord }) {

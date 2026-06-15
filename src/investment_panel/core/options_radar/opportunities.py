@@ -427,6 +427,13 @@ def _opportunity_candidate_detail(
             "open_interest": _number(row.get("open_interest")),
             "volume": _number(row.get("volume")),
             "iv_percentile": _number(row.get("iv_percentile")),
+            # Greeks for the contract, so the opportunity detail / alternative
+            # contracts show what the trader buys (mirrors candidate_event.raw).
+            "delta": _number(row.get("delta")),
+            "gamma": _number(row.get("gamma")),
+            "theta": _number(row.get("theta")),
+            "vega": _number(row.get("vega")),
+            "iv": _number(row.get("iv")),
             # The differentiating signals the trader actually decides on — EV asymmetry
             # (per-ticker, unlike the generic payoff shape) and catalyst proximity.
             "ev": raw.get("ev") if isinstance(raw.get("ev"), dict) else None,

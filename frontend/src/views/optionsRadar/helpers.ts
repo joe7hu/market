@@ -250,6 +250,17 @@ export function candidateConviction(row: RowRecord): number {
   return numberField(row, ["opportunity_conviction_score", "conviction_score", "score"], Number.NEGATIVE_INFINITY);
 }
 
+// Human-readable contract label (e.g. "$845 Call") for the radar table, replacing
+// the opaque contract_id UUID. Strike/option_type live in candidate_event.raw.
+export function contractLabel(row: RowRecord): string {
+  const raw = recordField(row, "raw");
+  const strike = numberFromRecord(raw, "strike");
+  const optionType = stringFromRecord(raw, "option_type", "call");
+  const strikeText = Number.isFinite(strike) ? `$${formatNumber(strike, Number.isInteger(strike) ? 0 : 2)}` : "";
+  const label = [strikeText, titleLabel(optionType)].filter(Boolean).join(" ");
+  return label || textField(row, ["contract_id"], "Unknown contract");
+}
+
 export function candidateFamily(row: RowRecord): string {
   const raw = recordField(row, "raw");
   const rawFamily = stringFromRecord(raw, "strategy_family");
