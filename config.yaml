@@ -163,9 +163,9 @@ agents:
     timeout_seconds: 180
     limit: 4
   option_agent:
-    enabled: false
-    command: market-codex-option-agent
-    timeout_seconds: 240
+    enabled: true
+    command: ''
+    timeout_seconds: 180
     thesis_limit: 8
     postmortem_limit: 4
     provider: codex
@@ -173,7 +173,6 @@ agents:
     reasoning_effort: ''
     auto_run_seconds: 0
     max_runs_per_day: 1
-    # Per-ticker context fed to each run; toggle off to trim prompt tokens.
     context_sources:
       fundamentals: true
       technicals: true

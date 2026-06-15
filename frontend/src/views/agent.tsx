@@ -17,7 +17,8 @@ import type { Tone } from "@/ui/tone";
 import { titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
 
-const AGENT_JOB = "run_option_agents";
+// Manual / on-demand runs force the consolidated pass regardless of auto-run.
+const FORCE_JOB = "run_option_agents_force";
 const CONTEXT_KEYS = ["fundamentals", "technicals", "ownership", "news", "social_signals", "catalysts", "portfolio", "decision"] as const;
 
 type ControlForm = {
@@ -57,7 +58,9 @@ export function AgentPage() {
 
   const live = useMemo(() => formFromConfig(data?.config ?? {}), [data?.config]);
   const form = draft ?? live;
-  const running = busy === AGENT_JOB;
+  const running = busy === FORCE_JOB;
+  const hasCommand = Boolean(form.command.trim());
+  const autoRun = form.enabled;
 
   const saveControls = async (overrides: Partial<ControlForm> = {}) => {
     const next = { ...form, ...overrides };
@@ -78,11 +81,11 @@ export function AgentPage() {
   };
 
   const runNow = async () => {
-    setBusy(AGENT_JOB);
+    setBusy(FORCE_JOB);
     setError("");
     setMessage("");
     try {
-      await startRefreshJob(AGENT_JOB);
+      await startRefreshJob(FORCE_JOB);
       setMessage("Agent run started.");
       await refresh();
     } catch (exc) {
@@ -113,9 +116,9 @@ export function AgentPage() {
 
   const cost = data?.cost;
   const queue = data?.queue;
-  const active = form.enabled && Boolean(form.command);
   const metrics: MetricSpec[] = [
-    ["Status", active ? "Active" : "Paused", form.command || "no command", active ? "good" : "muted"],
+    ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
+    ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
     ["Cost today", cost ? `$${cost.today.est_cost_usd.toFixed(4)}` : "—", `${(cost?.today.input_tokens ?? 0).toLocaleString()} in / ${(cost?.today.output_tokens ?? 0).toLocaleString()} out tok`, cost?.today.est_cost_usd ? "info" : "muted"],
     ["Cost 7d", cost ? `$${cost.last_7d.est_cost_usd.toFixed(4)}` : "—", `${cost?.last_7d.runs ?? 0} runs`, "info"],
@@ -128,7 +131,7 @@ export function AgentPage() {
       subtitle="Full control over how the option agent analyzes each ticker — config, on-demand runs, context, and cost."
       metrics={metrics}
       actions={
-        <Button type="button" disabled={running || !active} onClick={() => void runNow()} title={active ? "Run the consolidated agent now" : "Enable the agent first"}>
+        <Button type="button" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? "Run the consolidated agent now (independent of auto-run)" : "Set the agent command first"}>
           {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
           {running ? "Running" : "Run now"}
         </Button>
@@ -160,20 +163,20 @@ export function AgentPage() {
               />
             </div>
             <div className="lg:pt-5">
-              <Button type="button" disabled={busy === "analyze" || !ticker.trim() || !active} onClick={() => void analyze()}>
+              <Button type="button" disabled={busy === "analyze" || !ticker.trim() || !hasCommand} onClick={() => void analyze()}>
                 {busy === "analyze" ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 Analyze
               </Button>
             </div>
           </div>
-          {!active ? <p className="text-xs text-amber-600 dark:text-amber-400">Enable the agent and set its command below to run analyses.</p> : null}
+          {!hasCommand ? <p className="text-xs text-amber-600 dark:text-amber-400">Set the agent command below to run on-demand analyses (auto-run is a separate toggle).</p> : null}
         </div>
       </DataTableFrame>
 
       {/* Controls */}
       <DataTableFrame
         title="Configuration"
-        action={<StatusBadge tone={active ? "good" : "muted"}>{active ? "Active" : "Paused"}</StatusBadge>}
+        action={<StatusBadge tone={autoRun ? "good" : "muted"}>{autoRun ? "Auto-run on" : "Auto-run off"}</StatusBadge>}
       >
         <div className="space-y-4 p-4">
           <div className="flex items-start gap-3">
@@ -184,7 +187,10 @@ export function AgentPage() {
           </div>
 
           <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
-            <span className="text-sm font-medium">Agent enabled</span>
+            <span>
+              <span className="block text-sm font-medium">Auto-run (scheduled)</span>
+              <span className="block text-xs text-muted-foreground">Runs the agent automatically on the cadence below. On-demand &amp; Run now work without this.</span>
+            </span>
             <input type="checkbox" checked={form.enabled} disabled={busy === "save"} onChange={(e) => void saveControls({ enabled: e.target.checked })} className="size-5 accent-primary" />
           </label>
 
