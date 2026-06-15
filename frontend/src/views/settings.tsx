@@ -1,4 +1,4 @@
-import { Clock3, MessageCircle, Save, SlidersHorizontal } from "lucide-react";
+import { Clock3, MessageCircle, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { loadSettings, updateResearchSources, type ResearchSourcesInput } from "@/api";
@@ -20,6 +20,7 @@ type ResearchForm = {
   newsProviders: string;
   blogsEnabled: boolean;
   substackUrls: string;
+  rssUrls: string;
 };
 
 const EMPTY_RESEARCH: ResearchForm = {
@@ -31,6 +32,7 @@ const EMPTY_RESEARCH: ResearchForm = {
   newsProviders: "bloomberg, reuters, google-news, hackernews",
   blogsEnabled: true,
   substackUrls: "",
+  rssUrls: "",
 };
 
 export function SettingsPage() {
@@ -69,7 +71,7 @@ export function SettingsPage() {
   const metrics: MetricSpec[] = [
     ["X list", research.listId ? "Configured" : "Not set", research.xEnabled ? "enabled" : "paused", research.listId && research.xEnabled ? "good" : research.xEnabled ? "warn" : "muted"],
     ["News", research.newsEnabled ? "Enabled" : "Paused", `${splitList(research.newsProviders).length} providers`, research.newsEnabled ? "good" : "muted"],
-    ["Blogs", research.blogsEnabled ? "Enabled" : "Paused", `${splitList(research.substackUrls).length} substacks`, research.blogsEnabled ? "good" : "muted"],
+    ["Blogs", research.blogsEnabled ? "Enabled" : "Paused", `${splitList(research.substackUrls).length + splitList(research.rssUrls).length} sources`, research.blogsEnabled ? "good" : "muted"],
     ["Social cadence", `${stringFromJson(scheduler.social_refresh_seconds, "1800")}s`, "X pull interval", "info"],
   ];
 
@@ -80,7 +82,7 @@ export function SettingsPage() {
     const payload: ResearchSourcesInput = {
       x: { enabled: research.xEnabled, list_id: research.listId, priority_handles: splitList(research.priorityHandles), limit: research.xLimit },
       news: { enabled: research.newsEnabled, providers: splitList(research.newsProviders) },
-      blogs: { enabled: research.blogsEnabled, substack_urls: splitList(research.substackUrls) },
+      blogs: { enabled: research.blogsEnabled, substack_urls: splitList(research.substackUrls), rss_urls: splitList(research.rssUrls) },
     };
     try {
       const saved = await updateResearchSources(payload);
@@ -106,6 +108,12 @@ export function SettingsPage() {
       {error ? <InlineNotice tone="bad">{error}</InlineNotice> : null}
 
       <ResearchSourcesCard value={research} loaded={settingsReady} saving={savingSources} onChange={setResearchDraft} onSave={() => void saveSources()} />
+      <SourceInventory
+        rows={settings.sources?.rows ?? []}
+        draft={research}
+        loaded={settingsReady}
+        onRemove={(row) => setResearchDraft(removeConfiguredSource(research, row))}
+      />
 
       <RuntimePanel scheduler={scheduler} />
     </WorkspacePage>
@@ -183,7 +191,78 @@ function ResearchSourcesCard({
           <Field label="Substack URLs" detail="Comma- or newline-separated Substack publication URLs.">
             <Input value={value.substackUrls} onChange={(event) => onChange({ ...value, substackUrls: event.target.value })} placeholder="https://www.example.substack.com" />
           </Field>
+          <Field label="RSS URLs" detail="Comma- or newline-separated RSS/Atom feed URLs for non-Substack sites.">
+            <Input value={value.rssUrls} onChange={(event) => onChange({ ...value, rssUrls: event.target.value })} placeholder="https://example.com/feed.xml" />
+          </Field>
         </div>
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function SourceInventory({
+  rows,
+  draft,
+  loaded,
+  onRemove,
+}: {
+  rows: Record<string, unknown>[];
+  draft: ResearchForm;
+  loaded: boolean;
+  onRemove: (row: Record<string, unknown>) => void;
+}) {
+  const draftRows = useMemo(() => mergeDraftSources(rows, draft), [rows, draft]);
+  return (
+    <DataTableFrame title="Configured Source Inventory" action={<StatusBadge tone={loaded ? "info" : "muted"}>{draftRows.length} configured</StatusBadge>}>
+      <table className="w-full min-w-[860px] text-sm">
+        <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
+          <tr>
+            <th className="px-3 py-3">Source</th>
+            <th className="px-3 py-3">Kind</th>
+            <th className="px-3 py-3">Latest</th>
+            <th className="px-3 py-3">Items</th>
+            <th className="px-3 py-3">Tickers</th>
+            <th className="px-3 py-3">Runs</th>
+            <th className="px-3 py-3">Config</th>
+            <th className="px-3 py-3 text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {draftRows.length ? draftRows.map((row, index) => {
+            const status = stringFromJson(row.latest_status, "configured");
+            const removable = booleanFromJson(row.removable, true);
+            return (
+              <tr key={`${stringFromJson(row.config_path, "source")}:${stringFromJson(row.value, String(index))}`} className="border-b border-border align-top hover:bg-accent/40">
+                <td className="px-3 py-3">
+                  <div className="font-medium">{stringFromJson(row.label, "Source")}</div>
+                  <div className="mt-1 max-w-[260px] break-all text-xs text-muted-foreground">{stringFromJson(row.value, "")}</div>
+                </td>
+                <td className="px-3 py-3"><StatusBadge tone="muted">{titleLabel(stringFromJson(row.kind, "source"))}</StatusBadge></td>
+                <td className="px-3 py-3">
+                  <StatusBadge tone={toneFromText(status)}>{titleLabel(status)}</StatusBadge>
+                  <div className="mt-1 text-xs text-muted-foreground">{shortDate(row.latest_finished_at)}</div>
+                </td>
+                <td className="px-3 py-3 tabular-nums">{numberFromJson(row.latest_item_count, 0)}</td>
+                <td className="px-3 py-3 tabular-nums">{numberFromJson(row.latest_ticker_count, 0)}</td>
+                <td className="px-3 py-3 tabular-nums">{numberFromJson(row.observed_run_count, 0)}</td>
+                <td className="px-3 py-3 text-xs text-muted-foreground">{stringFromJson(row.config_path, "")}</td>
+                <td className="px-3 py-3 text-right">
+                  <Button type="button" size="sm" variant="outline" disabled={!loaded || !removable} onClick={() => onRemove(row)}>
+                    <Trash2 />
+                    Delete
+                  </Button>
+                </td>
+              </tr>
+            );
+          }) : (
+            <tr>
+              <td colSpan={8} className="px-3 py-8 text-center text-muted-foreground">No configured research sources.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+        Delete removes the source from the editable config draft. Use Save sources to persist the change.
       </div>
     </DataTableFrame>
   );
@@ -256,7 +335,79 @@ function researchFromSettings(value: unknown): ResearchForm {
     newsProviders: joinList(news.providers, EMPTY_RESEARCH.newsProviders),
     blogsEnabled: booleanFromJson(blogs.enabled, EMPTY_RESEARCH.blogsEnabled),
     substackUrls: joinList(blogs.substack_urls, ""),
+    rssUrls: joinList(blogs.rss_urls, ""),
   };
+}
+
+function removeConfiguredSource(form: ResearchForm, row: Record<string, unknown>): ResearchForm {
+  const value = stringFromJson(row.value, "");
+  const path = stringFromJson(row.config_path, "");
+  if (!value) return form;
+  if (path.endsWith(".list_id")) return { ...form, listId: "" };
+  if (path.endsWith(".priority_handles")) return { ...form, priorityHandles: removeFromList(form.priorityHandles, value) };
+  if (path.endsWith(".providers")) return { ...form, newsProviders: removeFromList(form.newsProviders, value) };
+  if (path.endsWith(".substack_urls")) return { ...form, substackUrls: removeFromList(form.substackUrls, value) };
+  if (path.endsWith(".rss_urls")) return { ...form, rssUrls: removeFromList(form.rssUrls, value) };
+  return form;
+}
+
+function mergeDraftSources(rows: Record<string, unknown>[], form: ResearchForm): Record<string, unknown>[] {
+  const byKey = new Map(rows.map((row) => [`${stringFromJson(row.config_path, "")}:${stringFromJson(row.value, "")}`, row]));
+  const ensure = (configPath: string, values: string[], kind: string, family: string) => {
+    for (const value of values) {
+      const key = `${configPath}:${value}`;
+      if (byKey.has(key)) continue;
+      byKey.set(key, {
+        source_id: "",
+        family,
+        kind,
+        label: kind === "x_handle" ? `@${value}` : hostLabel(value),
+        value,
+        config_path: configPath,
+        removable: true,
+        enabled: true,
+        latest_status: "unsaved",
+        latest_item_count: 0,
+        latest_ticker_count: 0,
+        observed_run_count: 0,
+      });
+    }
+  };
+  if (form.listId) ensure("research_sources.x.list_id", [form.listId], "x_list", "x");
+  ensure("research_sources.x.priority_handles", splitList(form.priorityHandles), "x_handle", "x");
+  ensure("research_sources.news.providers", splitList(form.newsProviders), "news_provider", "news");
+  ensure("research_sources.blogs.substack_urls", splitList(form.substackUrls), "substack", "blog");
+  ensure("research_sources.blogs.rss_urls", splitList(form.rssUrls), "rss", "blog");
+  return Array.from(byKey.values()).filter((row) => {
+    const value = stringFromJson(row.value, "");
+    const path = stringFromJson(row.config_path, "");
+    if (path.endsWith(".list_id")) return form.listId === value;
+    if (path.endsWith(".priority_handles")) return splitList(form.priorityHandles).includes(value);
+    if (path.endsWith(".providers")) return splitList(form.newsProviders).includes(value);
+    if (path.endsWith(".substack_urls")) return splitList(form.substackUrls).includes(value);
+    if (path.endsWith(".rss_urls")) return splitList(form.rssUrls).includes(value);
+    return true;
+  });
+}
+
+function removeFromList(value: string, target: string): string {
+  return splitList(value).filter((item) => item !== target).join(", ");
+}
+
+function hostLabel(value: string): string {
+  try {
+    return new URL(value).host.replace(/^www\./, "") || value;
+  } catch {
+    return value;
+  }
+}
+
+function shortDate(value: unknown): string {
+  const text = stringFromJson(value, "");
+  if (!text) return "";
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return parsed.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function splitList(value: string): string[] {

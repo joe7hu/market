@@ -142,18 +142,39 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     payload = settings_payload(
         {
             "database": {"duckdb_path": "data/test.duckdb"},
+            "research_sources": {
+                "x": {"enabled": True, "list_id": "123", "priority_handles": ["balajis"]},
+                "news": {"enabled": True, "providers": ["bloomberg"]},
+                "blogs": {"enabled": True, "substack_urls": ["https://example.substack.com"], "rss_urls": ["https://example.com/feed"]},
+            },
             "agents": {
                 "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "timeout_seconds": 180, "limit": 8},
                 "option_postmortem": {"enabled": False, "command": "market-codex-option-postmortem-agent", "timeout_seconds": 120, "limit": 2},
             },
         },
-        PanelData(status=DataStatus(True, "ok", "test"), tables={}),
+        PanelData(
+            status=DataStatus(True, "ok", "test"),
+            tables={
+                "source_runs": [
+                    {"source_id": "news_bloomberg", "status": "ok", "capability": "news", "finished_at": "2026-06-15T10:00:00", "item_count": 20, "ticker_count": 3},
+                    {"source_id": "blog_example_com", "status": "failed", "capability": "rss", "finished_at": "2026-06-15T11:00:00", "item_count": 0, "ticker_count": 0, "failure_detail": "bad feed"},
+                ]
+            },
+        ),
     )
 
     assert payload["agents"]["config"]["option_thesis"]["limit"] == 8
     assert payload["agents"]["runtime"]["option_thesis"]["active"] is True
     assert payload["agents"]["runtime"]["option_postmortem"]["status"] == "paused"
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
+    sources = payload["sources"]["rows"]
+    assert len(sources) == 5
+    bloomberg = next(row for row in sources if row["source_id"] == "news_bloomberg")
+    assert bloomberg["latest_status"] == "ok"
+    assert bloomberg["latest_item_count"] == 20
+    rss = next(row for row in sources if row["value"] == "https://example.com/feed")
+    assert rss["kind"] == "rss"
+    assert rss["latest_status"] == "failed"
 
 
 def test_update_agent_settings_config_rewrites_only_agents_block(tmp_path) -> None:
@@ -223,6 +244,7 @@ disclosures:
         {
             "x": {"enabled": True, "list_id": "1734567890", "priority_handles": "@balajis, karpathy, karpathy", "limit": 40},
             "news": {"enabled": False, "providers": ["bloomberg", "reuters"]},
+            "blogs": {"enabled": True, "substack_urls": ["https://example.substack.com"], "rss_urls": ["https://example.com/feed"]},
         },
     )
 
@@ -233,6 +255,8 @@ disclosures:
     assert "balajis" in text and "karpathy" in text
     assert text.count("karpathy") == 1
     assert "limit: 40" in text
+    assert "https://example.substack.com" in text
+    assert "https://example.com/feed" in text
     assert "disclosures:" in text
 
 

@@ -81,6 +81,7 @@ export type TickerPayload = {
 export type SettingsPayload = {
   status?: ApiStatus;
   config?: Record<string, JsonValue>;
+  sources?: TablePayload;
   agents?: {
     config?: Record<string, JsonValue>;
     runtime?: Record<string, JsonValue>;
