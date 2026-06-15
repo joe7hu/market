@@ -189,6 +189,9 @@ def watchlist_section_payload(
         f"{prefix}_valuations": _rows_for_symbols(rows_for_table("valuations"), symbols),
         f"{prefix}_screener": _rows_for_symbols(rows_for_table("screener"), symbols),
         f"{prefix}_decision_queue": _rows_for_symbols(rows_for_table("decision_queue"), symbols),
+        f"{prefix}_research_packets": _rows_for_symbols(rows_for_table("research_packets"), symbols),
+        f"{prefix}_memos": _rows_for_symbols(rows_for_table("ticker_memos"), symbols),
+        f"{prefix}_thesis_monitor": _rows_for_symbols(rows_for_table("thesis_monitor"), symbols),
         f"{prefix}_portfolio": _rows_for_symbols(rows_for_table("portfolio"), symbols),
         f"{prefix}_options": _rows_for_symbols(rows_for_table("options_ticker_signals"), symbols),
     }

@@ -5,7 +5,7 @@ import type { Tone } from "@/ui/tone";
 import { rows } from "@/utils";
 import type { MetricSpec } from "@/views/workspacePage";
 
-export type DatasetProfileId = "watchlist" | "sources" | "superinvestors" | "market" | "research" | "filings" | "calendar";
+export type DatasetProfileId = "watchlist" | "sources" | "superinvestors" | "market" | "filings" | "calendar";
 
 export type DatasetSection = {
   title: string;
@@ -100,23 +100,6 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
       ["Context", "Market Context", "macro and valuation backdrop", "info"],
       ["Technicals", "Technicals", "trend features loaded", "good"],
       ["Earnings Setups", "Earnings Setups", "event timing", "info"],
-    ],
-  },
-  research: {
-    title: "Research Queue",
-    eyebrow: "Opportunities",
-    subtitle: "Names to accept, reject, watch, or research next.",
-    sections: [
-      { title: "Idea Queue", getRows: (data) => rows(data.decisionQueue) },
-      { title: "Ranked Opportunities", getRows: (data) => rows(data.opportunitiesRanked) },
-      { title: "Opportunity Evidence", getRows: (data) => rows(data.opportunitySources) },
-      { title: "Research Packets", getRows: (data) => rows(data.researchPackets) },
-      { title: "Memos", getRows: (data) => rows(data.memos) },
-    ],
-    metricLabels: [
-      ["Ideas", "Idea Queue", "accept, reject, watch", "good"],
-      ["Research Packets", "Research Packets", "evidence packets ready", "info"],
-      ["Memos", "Memos", "stored decision writeups", "info"],
     ],
   },
   filings: {

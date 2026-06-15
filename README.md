@@ -162,7 +162,7 @@ screenshot/free-form strategy into structured legs.
 The web app defaults to `/today`, a dense operational brief that answers what
 changed, what matters, what should be reviewed or ignored, and what is blocked
 by stale or missing evidence. Navigation is organized around Today, Portfolio
-Risk, Research Queue, Thesis Monitor, Filings, Calendar, Health, and Settings.
+Risk, Watchlist, Options Radar, Thesis Monitor, Filings, Calendar, Health, and Settings.
 Broker, paper-order, and TradingView-style charting surfaces are hidden unless
 their providers are explicitly enabled; Market should not duplicate charting,
 screening, or execution platforms. The valuation endpoint is a low-confidence

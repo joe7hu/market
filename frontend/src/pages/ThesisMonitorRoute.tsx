@@ -4,7 +4,7 @@ import { ThesisMonitorPage } from "../views/thesisMonitor";
 
 export function ThesisMonitorRoute() {
   const { data, openTicker } = useMarketData();
-  usePanelScope("research");
+  usePanelScope("thesis-monitor");
 
   return <ThesisMonitorPage data={data} onOpenTicker={openTicker} />;
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from contextlib import contextmanager
 from functools import lru_cache
@@ -16,15 +17,30 @@ import duckdb
 from investment_panel.core.schema import SCHEMA_SQL
 
 
+_CONNECT_LOCK = threading.RLock()
+
+
 def connect(path: str | Path, read_only: bool = False, retries: int = 30, delay_seconds: float = 1.0) -> duckdb.DuckDBPyConnection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            return duckdb.connect(str(db_path), read_only=read_only)
-        except duckdb.IOException as exc:
-            if "Could not set lock on file" not in str(exc) or attempt >= retries:
+            with _CONNECT_LOCK:
+                return duckdb.connect(str(db_path), read_only=read_only)
+        except duckdb.Error as exc:
+            message = str(exc)
+            # DuckDB caches one database instance per file per process: a second
+            # connection must use the same configuration as the first. When this
+            # process already holds a read-write connection (a refresh job or the
+            # scheduler), a read-only open is rejected with this error. Read-write
+            # is the only valid mode here, so fall back to it rather than failing
+            # the read. (The reverse — downgrading a writer to read-only — is never
+            # safe, so we only retry the read-only -> read-write direction.)
+            if read_only and "different configuration than existing connections" in message:
+                with _CONNECT_LOCK:
+                    return duckdb.connect(str(db_path), read_only=False)
+            if not (isinstance(exc, duckdb.IOException) and "Could not set lock on file" in message) or attempt >= retries:
                 raise
             last_error = exc
             time.sleep(delay_seconds)

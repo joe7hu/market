@@ -61,6 +61,10 @@ export type WatchlistRow = {
   optionsExpectedMovePct: number;
   optionsSkewSignal: string;
   optionsSpreadQuality: string;
+  researchStatus: "review" | "packet" | "memo" | "none";
+  researchLabel: string;
+  researchDetail: string;
+  researchEvidenceCount: number;
 };
 
 export type WatchlistViewModel = {
@@ -94,7 +98,10 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const fundamentalBySymbol = indexRows([...rows(data.fundamentals), ...rows(data.watchlistWatchedFundamentals), ...rows(data.watchlistUnwatchedFundamentals)]);
   const marketValuationBySymbol = indexRows(rows(data.marketValuationCharts));
   const optionsBySymbol = indexRows([...rows(data.optionsTickerSignals), ...rows(data.watchlistWatchedOptions), ...rows(data.watchlistUnwatchedOptions)]);
-  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, optionsBySymbol, localStates));
+  const researchPacketBySymbol = latestRows([...rows(data.researchPackets), ...rows(data.watchlistWatchedResearchPackets), ...rows(data.watchlistUnwatchedResearchPackets)]);
+  const memoBySymbol = latestRows([...rows(data.memos), ...rows(data.watchlistWatchedMemos), ...rows(data.watchlistUnwatchedMemos)]);
+  const thesisBySymbol = latestRows([...rows(data.thesisMonitor), ...rows(data.watchlistWatchedThesisMonitor), ...rows(data.watchlistUnwatchedThesisMonitor)]);
+  const allRows = screenRows.map((row) => buildWatchlistRow(row, quoteBySymbol, technicalBySymbol, valuationBySymbol, screenerBySymbol, fundamentalBySymbol, marketValuationBySymbol, optionsBySymbol, researchPacketBySymbol, memoBySymbol, thesisBySymbol, localStates));
   const rowsWithSymbols = assignRelativeStrengthRanks(allRows.filter((row) => row.symbol));
   const counts = tabCounts(rowsWithSymbols);
   const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
@@ -122,7 +129,7 @@ function filtersAreActive(filters: WatchlistFilters): boolean {
   return Boolean(filters.query.trim() || filters.minRating || filters.maxForwardPe !== null || filters.minRoic !== null);
 }
 
-function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, optionsBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
+function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>, technicalBySymbol: Map<string, RowRecord>, valuationBySymbol: Map<string, RowRecord>, screenerBySymbol: Map<string, RowRecord>, fundamentalBySymbol: Map<string, RowRecord>, marketValuationBySymbol: Map<string, RowRecord>, optionsBySymbol: Map<string, RowRecord>, researchPacketBySymbol: Map<string, RowRecord>, memoBySymbol: Map<string, RowRecord>, thesisBySymbol: Map<string, RowRecord>, localStates: Record<string, WatchState | undefined>): WatchlistRow {
   const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
   const quote = quoteBySymbol.get(symbol);
   const technical = technicalBySymbol.get(symbol);
@@ -131,6 +138,9 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const fundamental = fundamentalBySymbol.get(symbol);
   const marketValuation = marketValuationBySymbol.get(symbol);
   const options = optionsBySymbol.get(symbol);
+  const researchPacket = researchPacketBySymbol.get(symbol);
+  const memo = memoBySymbol.get(symbol);
+  const thesis = thesisBySymbol.get(symbol);
   const screenerMetrics = objectField(screener, ["metrics"]);
   const fundamentalMetrics = objectField(fundamental, ["metrics"]);
   const valuationAssumptions = objectField(valuation, ["assumptions"]);
@@ -214,6 +224,42 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     optionsExpectedMovePct: numberField(options, ["expected_move_pct"], Number.NaN),
     optionsSkewSignal: textField(options, ["skew_signal"], "unknown"),
     optionsSpreadQuality: textField(options, ["spread_quality"], "unknown"),
+    ...researchSignal(researchPacket, memo, thesis),
+  };
+}
+
+function researchSignal(researchPacket: RowRecord | undefined, memo: RowRecord | undefined, thesis: RowRecord | undefined): Pick<WatchlistRow, "researchStatus" | "researchLabel" | "researchDetail" | "researchEvidenceCount"> {
+  const needsReview = Boolean(thesis?.needs_review);
+  const evidenceCount = firstFinite([numberField(researchPacket, ["evidence_count"], Number.NaN), numberField(thesis, ["evidence_count"], Number.NaN), 0]);
+  if (needsReview) {
+    return {
+      researchStatus: "review",
+      researchLabel: "Review",
+      researchDetail: textField(thesis, ["review_reason"], "Thesis needs review."),
+      researchEvidenceCount: evidenceCount,
+    };
+  }
+  if (memo) {
+    return {
+      researchStatus: "memo",
+      researchLabel: "Memo",
+      researchDetail: textField(memo, ["report_type"], "Decision memo available."),
+      researchEvidenceCount: evidenceCount,
+    };
+  }
+  if (researchPacket) {
+    return {
+      researchStatus: "packet",
+      researchLabel: textField(researchPacket, ["conviction", "decision"], "Packet"),
+      researchDetail: textField(researchPacket, ["decision"], "Research packet ready."),
+      researchEvidenceCount: evidenceCount,
+    };
+  }
+  return {
+    researchStatus: "none",
+    researchLabel: "None",
+    researchDetail: "No packet or thesis review row loaded.",
+    researchEvidenceCount: 0,
   };
 }
 
@@ -288,6 +334,19 @@ function latestValuations(inputRows: RowRecord[]): Map<string, RowRecord> {
     const existing = bySymbol.get(symbol);
     if (!symbol) continue;
     if (!existing || textField(row, ["method"]).includes("blended")) bySymbol.set(symbol, row);
+  }
+  return bySymbol;
+}
+
+function latestRows(inputRows: RowRecord[]): Map<string, RowRecord> {
+  const bySymbol = new Map<string, RowRecord>();
+  for (const row of inputRows) {
+    const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
+    if (!symbol) continue;
+    const existing = bySymbol.get(symbol);
+    if (!existing || textField(row, ["created_at", "updated_at", "as_of", "last_reviewed"]) > textField(existing, ["created_at", "updated_at", "as_of", "last_reviewed"])) {
+      bySymbol.set(symbol, row);
+    }
   }
   return bySymbol;
 }

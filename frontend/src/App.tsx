@@ -9,7 +9,6 @@ import { MarketRoute } from "./pages/MarketRoute";
 import { NotFoundRoute } from "./pages/NotFoundRoute";
 import { OptionsRadarRoute } from "./pages/OptionsRadarRoute";
 import { PortfolioRoute } from "./pages/PortfolioRoute";
-import { ResearchRoute } from "./pages/ResearchRoute";
 import { SettingsRoute } from "./pages/SettingsRoute";
 import { SourcesRoute } from "./pages/SourcesRoute";
 import { SuperinvestorsRoute } from "./pages/SuperinvestorsRoute";
@@ -31,10 +30,10 @@ export function App() {
           <Route path="sources" element={<SourcesRoute />} />
           <Route path="superinvestors" element={<SuperinvestorsRoute />} />
           <Route path="market" element={<MarketRoute />} />
-          <Route path="opportunities" element={<Navigate to="/research-queue" replace />} />
+          <Route path="opportunities" element={<Navigate to="/watchlist" replace />} />
           <Route path="portfolio" element={<PortfolioRoute />} />
-          <Route path="research" element={<Navigate to="/research-queue" replace />} />
-          <Route path="research-queue" element={<ResearchRoute />} />
+          <Route path="research" element={<Navigate to="/watchlist" replace />} />
+          <Route path="research-queue" element={<Navigate to="/watchlist" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />

@@ -82,6 +82,7 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
               <ColumnHeader id="optionsIv" />
               <ColumnHeader id="optionsMove" className="text-right" />
               <ColumnHeader id="optionsSkew" />
+              <ColumnHeader id="research" />
               <ColumnHeader id="sma20" className="text-center" />
               <ColumnHeader id="sma50" className="text-center" />
               <ColumnHeader id="sma200" className="text-center" />
@@ -115,6 +116,7 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
                 <td className="px-2 py-2"><OptionsIvRegime regime={row.optionsIvRegime} /></td>
                 <td className="px-2 py-2 text-right tabular-nums">{formatPercent(row.optionsExpectedMovePct, true)}</td>
                 <td className="px-2 py-2"><OptionsSkew signal={row.optionsSkewSignal} /></td>
+                <td className="px-2 py-2"><ResearchSignal row={row} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma20Up} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma50Up} /></td>
                 <td className="px-2 py-2 text-center"><MaFlag state={row.ma200Up} /></td>
@@ -125,5 +127,23 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
         </table>
       </DataTableFrame>
     </TooltipProvider>
+  );
+}
+
+function ResearchSignal({ row }: { row: WatchlistRow }) {
+  const tone =
+    row.researchStatus === "review"
+      ? "border-amber-300 bg-amber-50 text-amber-800"
+      : row.researchStatus === "memo"
+        ? "border-green-300 bg-green-50 text-green-800"
+        : row.researchStatus === "packet"
+          ? "border-blue-300 bg-blue-50 text-blue-800"
+          : "border-border bg-muted text-muted-foreground";
+  const evidence = row.researchEvidenceCount ? ` · ${row.researchEvidenceCount.toFixed(0)} ev` : "";
+  return (
+    <div className="max-w-44 text-xs leading-5" title={row.researchDetail}>
+      <span className={cn("inline-flex rounded border px-1.5 py-0.5 font-medium", tone)}>{row.researchLabel}</span>
+      {evidence ? <span className="ml-1 text-muted-foreground">{evidence}</span> : null}
+    </div>
   );
 }

@@ -95,6 +95,10 @@ export const columnHelp = {
     label: "Skew",
     detail: "25-delta put IV minus call IV. Put premium means downside options are priced richer than upside calls.",
   },
+  research: {
+    label: "Research",
+    detail: "Compact research state for this ticker: thesis-review flags, available packets or memos, and packet evidence count. Open the ticker dossier for full bull/bear/why-now detail.",
+  },
   sma20: {
     label: "20SMA",
     detail: "Whether price is above the 20-day simple moving average. Good for short-term timing; a break below can flag a failed entry.",

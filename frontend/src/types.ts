@@ -184,6 +184,12 @@ export type PanelData = {
   watchlistUnwatchedScreener: TablePayload;
   watchlistWatchedDecisionQueue: TablePayload;
   watchlistUnwatchedDecisionQueue: TablePayload;
+  watchlistWatchedResearchPackets: TablePayload;
+  watchlistUnwatchedResearchPackets: TablePayload;
+  watchlistWatchedMemos: TablePayload;
+  watchlistUnwatchedMemos: TablePayload;
+  watchlistWatchedThesisMonitor: TablePayload;
+  watchlistUnwatchedThesisMonitor: TablePayload;
   watchlistWatchedPortfolio: TablePayload;
   watchlistUnwatchedPortfolio: TablePayload;
   watchlistWatchedOptions: TablePayload;
@@ -305,6 +311,12 @@ export type PanelEndpoint =
   | "watchlistUnwatchedScreener"
   | "watchlistWatchedDecisionQueue"
   | "watchlistUnwatchedDecisionQueue"
+  | "watchlistWatchedResearchPackets"
+  | "watchlistUnwatchedResearchPackets"
+  | "watchlistWatchedMemos"
+  | "watchlistUnwatchedMemos"
+  | "watchlistWatchedThesisMonitor"
+  | "watchlistUnwatchedThesisMonitor"
   | "watchlistWatchedPortfolio"
   | "watchlistUnwatchedPortfolio"
   | "watchlistWatchedOptions"
