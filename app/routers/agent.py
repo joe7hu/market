@@ -20,7 +20,9 @@ def agent_overview() -> dict[str, Any]:
     agents = deps.config_to_dict(app_config)["agents"]
     db_path = app_config.database.duckdb_path
     deps.init_db(db_path)
-    with deps.db(db_path, read_only=True) as con:
+    # NOTE: read_only must match the always-on writer connection's config — DuckDB
+    # rejects a different-config connection to the same file within the process.
+    with deps.db(db_path, read_only=False) as con:
         queue = _queue_stats(con)
         runs = deps.query_rows(con, "SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 50")
         cost = _cost_summary(con)
@@ -50,10 +52,11 @@ def analyze_ticker(payload: deps.AgentAnalyzeInput, request: Request, background
     deps.init_db(db_path)
     with deps.db(db_path, read_only=False) as con:
         req = build_ondemand_request(con, ticker, payload.prompt, option_agent)
-    # Forced consolidated pass (runs regardless of auto-run), picks up the new request.
-    job = deps.start_refresh_job("run_option_agents_force", db_path)
+    # On-demand pass: runs only the user-requested ticker(s), records an agent_runs
+    # row (trigger=ondemand) and the resulting thesis — like the auto-run pass.
+    job = deps.start_refresh_job("run_option_agents_ondemand", db_path)
     if job.get("created"):
-        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents_force", db_path)
+        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents_ondemand", db_path)
     deps._invalidate_context_cache()
     return {"ticker": ticker, "request_id": req["request_id"], "job": job}
 

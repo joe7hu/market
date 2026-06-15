@@ -163,8 +163,8 @@ agents:
     timeout_seconds: 180
     limit: 4
   option_agent:
-    enabled: true
-    command: ''
+    enabled: false
+    command: market-codex-option-agent
     timeout_seconds: 180
     thesis_limit: 8
     postmortem_limit: 4

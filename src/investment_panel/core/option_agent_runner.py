@@ -148,6 +148,7 @@ def run_consolidated_option_agents(
     trigger: str = "scheduled",
     run_ticker: str = "",
     custom_prompt: str = "",
+    ondemand_only: bool = False,
 ) -> dict[str, Any]:
     """Single batched pass: one agent invocation covers thesis + postmortem.
 
@@ -163,6 +164,12 @@ def run_consolidated_option_agents(
 
     thesis_rows = _open_request_rows(con, "agent_thesis_request", strategy_version=strategy_version, limit=limit_thesis)
     postmortem_rows = _open_request_rows(con, "agent_postmortem_request", strategy_version=strategy_version, limit=limit_postmortem)
+    if ondemand_only:
+        # Process only user-requested on-demand thesis requests (no postmortems).
+        thesis_rows = [row for row in thesis_rows if str(row.get("event_id") or "").startswith("ondemand:")]
+        postmortem_rows = []
+        if not run_ticker:
+            run_ticker = ",".join(sorted({str(row.get("ticker") or "").upper() for row in thesis_rows if row.get("ticker")}))
     if not thesis_rows and not postmortem_rows:
         return {"enabled": True, "skipped_reason": "no_open_requests", "attempted": 0, "accepted": 0, "failed": 0}
 

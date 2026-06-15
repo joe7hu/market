@@ -43,6 +43,7 @@ export function AgentPage() {
   const [busy, setBusy] = useState<string>("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [pending, setPending] = useState<{ runsBefore: number; label: string } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -55,6 +56,28 @@ export function AgentPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // While a run is pending, poll until a new agent_runs row lands (confirms success).
+  useEffect(() => {
+    if (!pending) return;
+    let tries = 0;
+    const id = window.setInterval(() => {
+      tries += 1;
+      void refresh();
+      if (tries >= 60) setPending(null); // ~4 min safety cap
+    }, 4000);
+    return () => window.clearInterval(id);
+  }, [pending, refresh]);
+
+  useEffect(() => {
+    if (!pending || !data) return;
+    if (data.runs.length > pending.runsBefore) {
+      const latest = data.runs[0];
+      const cost = Number(latest?.est_cost_usd ?? 0).toFixed(4);
+      setMessage(`✓ ${pending.label}: run ${latest?.status ?? "done"} — ${latest?.thesis_accepted ?? 0}/${latest?.thesis_attempted ?? 0} thesis saved, $${cost}.`);
+      setPending(null);
+    }
+  }, [data, pending]);
 
   const live = useMemo(() => formFromConfig(data?.config ?? {}), [data?.config]);
   const form = draft ?? live;
@@ -85,8 +108,10 @@ export function AgentPage() {
     setError("");
     setMessage("");
     try {
+      const runsBefore = data?.runs.length ?? 0;
       await startRefreshJob(FORCE_JOB);
-      setMessage("Agent run started.");
+      setMessage("Queue run started — processing all open requests…");
+      setPending({ runsBefore, label: "Queue run" });
       await refresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to start agent run");
@@ -102,8 +127,10 @@ export function AgentPage() {
     setError("");
     setMessage("");
     try {
-      const result = await analyzeTicker(symbol, prompt.trim() || undefined);
-      setMessage(`Queued ${symbol} for analysis (request ${result.request_id.slice(0, 12)}…). Run started.`);
+      const runsBefore = data?.runs.length ?? 0;
+      await analyzeTicker(symbol, prompt.trim() || undefined);
+      setMessage(`Analyzing ${symbol}… this runs in the background and will appear in Run history below.`);
+      setPending({ runsBefore, label: `${symbol} analysis` });
       setTicker("");
       setPrompt("");
       await refresh();
@@ -131,12 +158,13 @@ export function AgentPage() {
       subtitle="Full control over how the option agent analyzes each ticker — config, on-demand runs, context, and cost."
       metrics={metrics}
       actions={
-        <Button type="button" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? "Run the consolidated agent now (independent of auto-run)" : "Set the agent command first"}>
+        <Button type="button" variant="outline" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? `Run all ${queue?.total_open ?? 0} open queued requests now` : "Set the agent command first"}>
           {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-          {running ? "Running" : "Run now"}
+          {running ? "Running" : `Run queue (${queue?.total_open ?? 0})`}
         </Button>
       }
     >
+      {pending ? <Notice tone="info"><span className="inline-flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> {pending.label} running… confirming in Run history below.</span></Notice> : null}
       {message ? <Notice tone="good">{message}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
 
@@ -144,8 +172,9 @@ export function AgentPage() {
       <DataTableFrame title="On-demand analysis">
         <div className="space-y-3 p-4">
           <p className="text-sm text-muted-foreground">
-            Analyze any ticker now — even one without an option candidate. The agent receives the full per-ticker context; an optional
-            custom prompt is appended to the default instructions.
+            Analyze <strong>one ticker</strong> now — even one without an option candidate. The agent receives the full per-ticker context
+            (an optional custom prompt is appended), the thesis is saved to the DB, and the run appears in Run history below. (The header
+            <em> Run queue</em> button instead processes <strong>all</strong> currently open requests.)
           </p>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
             <div className="lg:w-40">
