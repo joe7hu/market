@@ -95,6 +95,12 @@ export type OptionAgentSettingsInput = {
   timeout_seconds?: number;
   thesis_limit?: number;
   postmortem_limit?: number;
+  provider?: string;
+  model?: string;
+  reasoning_effort?: string;
+  auto_run_seconds?: number;
+  max_runs_per_day?: number;
+  context_sources?: Record<string, boolean>;
 };
 
 export type AgentSettingsInput = {
@@ -242,6 +248,47 @@ export async function updateAgentSettings(payload: AgentSettingsInput): Promise<
 
 export async function updateResearchSources(payload: ResearchSourcesInput): Promise<SettingsPayload> {
   return patchJson<SettingsPayload>("/api/settings/research-sources", payload);
+}
+
+// --- Agent control plane (GET /api/agent, POST /api/agent/analyze) -----------
+
+export type AgentRun = {
+  id?: string;
+  started_at?: string;
+  finished_at?: string;
+  trigger?: string;
+  ticker?: string | null;
+  provider?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  tokens_estimated?: boolean;
+  est_cost_usd?: number;
+  thesis_attempted?: number;
+  thesis_accepted?: number;
+  postmortem_attempted?: number;
+  postmortem_accepted?: number;
+  status?: string;
+  custom_prompt?: string | null;
+};
+
+export type AgentCostWindow = { runs: number; input_tokens: number; output_tokens: number; est_cost_usd: number };
+
+export type AgentOverview = {
+  config: Record<string, unknown>;
+  pricing: Record<string, { input_per_1m?: number; output_per_1m?: number }>;
+  queue: { thesis_open: number; postmortem_open: number; total_open: number; oldest_open_at?: string | null };
+  runs: AgentRun[];
+  cost: { today: AgentCostWindow; last_7d: AgentCostWindow };
+  scheduler: { agent_refresh_seconds: number };
+};
+
+export async function loadAgent(): Promise<AgentOverview> {
+  return getJson<AgentOverview>("/api/agent");
+}
+
+export async function analyzeTicker(ticker: string, prompt?: string): Promise<{ ticker: string; request_id: string; job: RefreshJob }> {
+  return sendJson("/api/agent/analyze", "POST", { ticker, prompt });
 }
 
 export async function promoteStrategyMutation(proposalId: string, approvedBy = "joe"): Promise<StrategyPromotionResult> {

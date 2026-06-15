@@ -43,10 +43,10 @@ from app.data_access import (
 )
 from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, refresh_job_rows, run_refresh_job, start_refresh_job
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
-from investment_panel.core.config import load_config as load_core_config
-from investment_panel.core.db import db, init_db
+from investment_panel.core.config import config_to_dict, load_config as load_core_config
+from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.option_agent_postmortem import AgentPostmortemValidationError, upsert_agent_postmortem
-from investment_panel.core.option_agent_thesis import AgentThesisValidationError, refresh_option_agent_work, upsert_agent_thesis
+from investment_panel.core.option_agent_thesis import AgentThesisValidationError, build_ondemand_agent_request, refresh_option_agent_work, upsert_agent_thesis
 from investment_panel.core.options_radar import (
     DEFAULT_STRATEGY_VERSION,
     StrategyPromotionError,
@@ -103,6 +103,12 @@ class OptionAgentSettingsInput(BaseModel):
     timeout_seconds: int | None = None
     thesis_limit: int | None = None
     postmortem_limit: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    auto_run_seconds: int | None = None
+    max_runs_per_day: int | None = None
+    context_sources: dict[str, bool] | None = None
 
 
 class AgentSettingsInput(BaseModel):
@@ -135,6 +141,11 @@ class ResearchSourcesInput(BaseModel):
     x: ResearchXSettingsInput | None = None
     news: ResearchNewsSettingsInput | None = None
     blogs: ResearchBlogsSettingsInput | None = None
+
+
+class AgentAnalyzeInput(BaseModel):
+    ticker: str
+    prompt: str | None = None
 
 
 class TradeJournalInput(BaseModel):

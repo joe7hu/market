@@ -97,6 +97,15 @@ def job_intervals() -> dict[str, int]:
     # (e.g. to rely solely on the launchd premarket job, which only runs when the app
     # is down).
     agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 86400, allow_zero=True)
+    # A config override (Agent page) takes precedence over the env default when set.
+    try:
+        from investment_panel.core.config import load_config
+
+        configured = int(load_config().agents.option_agent.auto_run_seconds or 0)
+        if configured > 0:
+            agent_seconds = configured
+    except Exception:  # noqa: BLE001 - config is best-effort; fall back to the env value
+        pass
     if agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
     # Live opencli social (X) ingestion — conservative ~30 min by default; 0 disables.

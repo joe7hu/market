@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.option_agent_postmortem import materialize_agent_postmortem_strategy_proposals, upsert_agent_postmortem
@@ -138,13 +141,21 @@ def run_consolidated_option_agents(
     limit_postmortem: int = 4,
     timeout_seconds: int = 180,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    provider: str = "",
+    model: str = "",
+    reasoning_effort: str = "",
+    pricing: dict[str, Any] | None = None,
+    trigger: str = "scheduled",
+    run_ticker: str = "",
+    custom_prompt: str = "",
 ) -> dict[str, Any]:
     """Single batched pass: one agent invocation covers thesis + postmortem.
 
     Gathers all open requests, builds ONE payload (shared guardrails + both
     schemas), invokes the command exactly once, and dispatches the structured
     outputs back through the existing upsert paths. No-op when there are no open
-    requests, so the cost is paid only when there is work.
+    requests, so the cost is paid only when there is work. Records one row in
+    ``agent_runs`` with token usage + estimated cost for the Agent page.
     """
 
     if not command:
@@ -163,21 +174,37 @@ def run_consolidated_option_agents(
     }
 
     attempted = len(thesis_rows) + len(postmortem_rows)
+    started_at = datetime.now(UTC)
+    env = _agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort)
     try:
-        output = _invoke_agent_command(command, payload, timeout_seconds=timeout_seconds)
+        output = _invoke_agent_command(command, payload, timeout_seconds=timeout_seconds, env=env)
     except Exception as exc:
         for table, row in [("agent_thesis_request", r) for r in thesis_rows] + [("agent_postmortem_request", r) for r in postmortem_rows]:
             _mark_request_failed(con, table, str(row["request_id"]), exc)
+        _record_agent_run(
+            con, started_at=started_at, trigger=trigger, ticker=run_ticker, custom_prompt=custom_prompt,
+            meta={}, pricing=pricing, status="failed",
+            thesis_attempted=len(thesis_rows), thesis_accepted=0,
+            postmortem_attempted=len(postmortem_rows), postmortem_accepted=0, error=str(exc),
+        )
         return {"enabled": True, "attempted": attempted, "accepted": 0, "failed": attempted, "error": str(exc)}
 
     thesis_out = output.get("thesis") if isinstance(output.get("thesis"), list) else []
     postmortem_out = output.get("postmortem") if isinstance(output.get("postmortem"), list) else []
+    meta = output.get("_meta") if isinstance(output.get("_meta"), dict) else {}
 
     thesis_accepted, thesis_failures = _dispatch_batch_outputs(
         con, thesis_rows, thesis_out, table_name="agent_thesis_request", upsert=upsert_agent_thesis
     )
     postmortem_accepted, postmortem_failures = _dispatch_batch_outputs(
         con, postmortem_rows, postmortem_out, table_name="agent_postmortem_request", upsert=upsert_agent_postmortem
+    )
+
+    run_record = _record_agent_run(
+        con, started_at=started_at, trigger=trigger, ticker=run_ticker, custom_prompt=custom_prompt,
+        meta=meta, pricing=pricing, status="ok",
+        thesis_attempted=len(thesis_rows), thesis_accepted=thesis_accepted,
+        postmortem_attempted=len(postmortem_rows), postmortem_accepted=postmortem_accepted,
     )
 
     followup: dict[str, Any] = {}
@@ -194,8 +221,94 @@ def run_consolidated_option_agents(
         "thesis": {"attempted": len(thesis_rows), "accepted": thesis_accepted, "failures": thesis_failures},
         "postmortem": {"attempted": len(postmortem_rows), "accepted": postmortem_accepted, "failures": postmortem_failures},
         "strategy_version": strategy_version,
+        "run": run_record,
         **followup,
     }
+
+
+def _agent_env(*, provider: str, model: str, reasoning_effort: str) -> dict[str, str]:
+    """Env overrides passed to the worker subprocess from config (no global env writes)."""
+
+    env: dict[str, str] = {}
+    if provider:
+        env["MARKET_OPTION_AGENT_PROVIDER"] = provider
+    if model:
+        # The worker reads provider-specific model vars; set both so either path picks it up.
+        env["MARKET_CODEX_MODEL"] = model
+        env["MARKET_OPENAI_MODEL"] = model
+    if reasoning_effort:
+        env["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
+    return env
+
+
+def estimate_agent_cost(meta: dict[str, Any], pricing: dict[str, Any] | None) -> float:
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    table = pricing or {}
+    model = str(meta.get("model") or "")
+    rates = table.get(model) or table.get("default") or {}
+    in_rate = float(rates.get("input_per_1m") or 0.0)
+    out_rate = float(rates.get("output_per_1m") or 0.0)
+    return round(input_tokens / 1_000_000 * in_rate + output_tokens / 1_000_000 * out_rate, 6)
+
+
+def _record_agent_run(
+    con: Any,
+    *,
+    started_at: datetime,
+    trigger: str,
+    ticker: str,
+    custom_prompt: str,
+    meta: dict[str, Any],
+    pricing: dict[str, Any] | None,
+    status: str,
+    thesis_attempted: int,
+    thesis_accepted: int,
+    postmortem_attempted: int,
+    postmortem_accepted: int,
+    error: str = "",
+) -> dict[str, Any]:
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    est_cost = estimate_agent_cost(meta, pricing)
+    row = {
+        "id": f"{started_at.strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}",
+        "started_at": started_at,
+        "finished_at": datetime.now(UTC),
+        "trigger": trigger,
+        "ticker": ticker or None,
+        "provider": str(meta.get("provider") or ""),
+        "model": str(meta.get("model") or ""),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "tokens_estimated": bool(meta.get("estimated", False)),
+        "est_cost_usd": est_cost,
+        "thesis_attempted": thesis_attempted,
+        "thesis_accepted": thesis_accepted,
+        "postmortem_attempted": postmortem_attempted,
+        "postmortem_accepted": postmortem_accepted,
+        "status": status,
+        "custom_prompt": custom_prompt or None,
+        "raw": json_dumps({"meta": meta, "error": error} if error else {"meta": meta}),
+    }
+    con.execute(
+        """
+        INSERT INTO agent_runs
+        (id, started_at, finished_at, trigger, ticker, provider, model, input_tokens, output_tokens,
+         tokens_estimated, est_cost_usd, thesis_attempted, thesis_accepted, postmortem_attempted,
+         postmortem_accepted, status, custom_prompt, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            row["id"], row["started_at"], row["finished_at"], row["trigger"], row["ticker"], row["provider"],
+            row["model"], row["input_tokens"], row["output_tokens"], row["tokens_estimated"], row["est_cost_usd"],
+            row["thesis_attempted"], row["thesis_accepted"], row["postmortem_attempted"], row["postmortem_accepted"],
+            row["status"], row["custom_prompt"], row["raw"],
+        ],
+    )
+    return {k: (v if not isinstance(v, datetime) else v.isoformat()) for k, v in row.items() if k != "raw"}
 
 
 def _dispatch_batch_outputs(
@@ -336,7 +449,7 @@ def _agent_request_payload(row: dict[str, Any], *, output_schema: dict[str, Any]
     }
 
 
-def _invoke_agent_command(command: str, payload: dict[str, Any], *, timeout_seconds: int) -> dict[str, Any]:
+def _invoke_agent_command(command: str, payload: dict[str, Any], *, timeout_seconds: int, env: dict[str, str] | None = None) -> dict[str, Any]:
     try:
         completed = subprocess.run(
             shlex.split(command),
@@ -345,6 +458,7 @@ def _invoke_agent_command(command: str, payload: dict[str, Any], *, timeout_seco
             capture_output=True,
             timeout=timeout_seconds,
             check=False,
+            env=({**os.environ, **env} if env else None),
         )
     except subprocess.TimeoutExpired as exc:
         raise ExternalOptionAgentError(f"agent command timed out after {timeout_seconds}s") from exc

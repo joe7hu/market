@@ -152,18 +152,6 @@ research_sources:
     rss_urls: []
 
 agents:
-  # Local commands read one request JSON from stdin and return structured JSON.
-  # The thesis worker runs through the signed-in Codex OAuth session by default;
-  # deterministic code still owns option math, validation, and trade gates.
-  #
-  # Scheduler env knobs (app/scheduler.py):
-  #   MARKET_AGENT_REFRESH_SECONDS   in-process agent thesis/postmortem cadence.
-  #                                  Default 86400 (daily, on). 0 disables. The
-  #                                  runner caps requests per pass and no-ops when
-  #                                  there are no new FIRE/SETUP candidates.
-  #   MARKET_RADAR_REFRESH_SECONDS   fast fresh-signal loop (default 900).
-  #   MARKET_SOURCE_REFRESH_SECONDS  option-chain pull (default 3600; 0 disables).
-  #   MARKET_LEARNING_REFRESH_SECONDS heavy learning/calibration pass (default 21600).
   option_thesis:
     enabled: false
     command: market-codex-option-thesis-agent
@@ -174,15 +162,34 @@ agents:
     command: market-codex-option-postmortem-agent
     timeout_seconds: 180
     limit: 4
-  # Unified single-pass agent: one LLM/codex call covers all open thesis +
-  # postmortem requests (max token savings). When enabled+command set, the runner
-  # uses this instead of the separate thesis/postmortem commands above.
   option_agent:
     enabled: false
     command: market-codex-option-agent
     timeout_seconds: 240
     thesis_limit: 8
     postmortem_limit: 4
+    provider: codex
+    model: ''
+    reasoning_effort: ''
+    auto_run_seconds: 0
+    max_runs_per_day: 1
+    # Per-ticker context fed to each run; toggle off to trim prompt tokens.
+    context_sources:
+      fundamentals: true
+      technicals: true
+      ownership: true
+      news: true
+      social_signals: true
+      catalysts: true
+      portfolio: true
+      decision: true
+  pricing:
+    default:
+      input_per_1m: 1.25
+      output_per_1m: 10.0
+    gpt-5.2:
+      input_per_1m: 1.25
+      output_per_1m: 10.0
 disclosures:
   # Add normalized public disclosure CSVs here to build scalable trader
   # replica portfolios. Expected columns include trader_name, symbol,

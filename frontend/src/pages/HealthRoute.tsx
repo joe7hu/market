@@ -6,15 +6,11 @@ import { useMarketData } from "../marketData";
 import { Button } from "@/components/ui/button";
 import { buildFlowStages, DataFlowDiagram } from "@/views/health/dataFlow";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
-import {
-  agentSchedulerSeconds,
-  buildCategories,
-  buildFamilyHealth,
-  collectTopErrors,
-} from "@/views/health/aggregate";
+import { buildCategories, buildFamilyHealth, collectTopErrors } from "@/views/health/aggregate";
 import { catalogToneCounts, groupCatalogByFamily, parseSourceCatalog } from "@/views/health/catalog";
+import { Link } from "react-router-dom";
+
 import { useRefreshJobs } from "@/views/health/useRefreshJobs";
-import { AgentControlPanel } from "@/views/health/agentPanels";
 import { TriggerPanel } from "@/views/health/triggerPanels";
 import { CatalogControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
@@ -31,7 +27,6 @@ export function HealthRoute() {
   const categories = useMemo(() => buildCategories(data), [data]);
   const families = useMemo(() => buildFamilyHealth(categories), [categories]);
   const flowStages = useMemo(() => buildFlowStages(families), [families]);
-  const schedulerAgentSeconds = useMemo(() => agentSchedulerSeconds(data), [data]);
   const topErrors = useMemo(() => collectTopErrors(categories, data, jobs.rows), [categories, data, jobs.rows]);
 
   // Authoritative catalog (primary/fallback/cadence) drives the top-level view.
@@ -95,7 +90,10 @@ export function HealthRoute() {
         jobs={jobs}
       />
 
-      <AgentControlPanel data={data} jobs={jobs} schedulerSeconds={schedulerAgentSeconds} onChanged={() => void reload()} />
+      <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+        <span className="text-sm text-muted-foreground">The option agent has its own control plane — config, on-demand runs, context, and cost.</span>
+        <Link to="/agent" className="text-sm font-medium text-primary hover:underline">Manage the option agent →</Link>
+      </div>
 
       <details className="overflow-hidden rounded-xl border border-border bg-card">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-lg font-semibold">

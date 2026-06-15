@@ -643,6 +643,27 @@ CREATE TABLE IF NOT EXISTS agent_postmortem (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    started_at TIMESTAMP,
+    finished_at TIMESTAMP,
+    trigger TEXT,
+    ticker TEXT,
+    provider TEXT,
+    model TEXT,
+    input_tokens BIGINT,
+    output_tokens BIGINT,
+    tokens_estimated BOOLEAN,
+    est_cost_usd DOUBLE,
+    thesis_attempted INTEGER,
+    thesis_accepted INTEGER,
+    postmortem_attempted INTEGER,
+    postmortem_accepted INTEGER,
+    status TEXT,
+    custom_prompt TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS candidate_event (
     event_id TEXT PRIMARY KEY,
     snapshot_time TIMESTAMP,

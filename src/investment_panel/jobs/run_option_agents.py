@@ -28,6 +28,11 @@ def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRAT
                     limit_postmortem=option_agent.postmortem_limit,
                     timeout_seconds=option_agent.timeout_seconds,
                     strategy_version=strategy_version,
+                    provider=option_agent.provider,
+                    model=option_agent.model,
+                    reasoning_effort=option_agent.reasoning_effort,
+                    pricing=config.agents.pricing,
+                    trigger="scheduled",
                 ),
             }
         else:

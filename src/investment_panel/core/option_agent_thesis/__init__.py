@@ -18,6 +18,8 @@ from investment_panel.core.option_agent_thesis.dbutil import (
 from investment_panel.core.option_agent_thesis.requests import (
     agent_thesis_prompt,
     build_agent_thesis_request,
+    build_ondemand_agent_request,
+    build_ticker_agent_context,
     refresh_agent_thesis_requests,
     refresh_option_agent_work,
     retire_superseded_agent_thesis_requests,
@@ -41,6 +43,8 @@ __all__ = [
     "agent_thesis_prompt",
     "attach_agent_theses_to_candidates",
     "build_agent_thesis_request",
+    "build_ondemand_agent_request",
+    "build_ticker_agent_context",
     "build_agent_thesis_validation",
     "decode_json_fields",
     "first_row",
