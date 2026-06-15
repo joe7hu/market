@@ -510,6 +510,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         arco=arco,
         market_data=market_data,
         data_sources=data_sources,
+        research_sources=research_sources,
         event_sources=event_sources,
         analysis=analysis,
         agents=agents,

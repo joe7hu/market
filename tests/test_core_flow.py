@@ -1068,6 +1068,39 @@ nas:
     assert config.nas.status_dir == tmp_path / "nas" / "status"
 
 
+def test_config_loads_research_sources(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+research_sources:
+  x:
+    enabled: true
+    list_id: "2066531259283656729"
+    priority_handles: [balajis, karpathy]
+    limit: 30
+    account_fetch_cap: 1
+  news:
+    enabled: false
+    providers: [reuters]
+    limit: 12
+  blogs:
+    enabled: true
+    substack_urls: ["https://example.com/feed"]
+    rss_urls: []
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.research_sources.x.list_id == "2066531259283656729"
+    assert config.research_sources.x.priority_handles == ["balajis", "karpathy"]
+    assert config.research_sources.x.account_fetch_cap == 1
+    assert config.research_sources.news.enabled is False
+    assert config.research_sources.news.providers == ["reuters"]
+    assert config.research_sources.blogs.substack_urls == ["https://example.com/feed"]
+
+
 def test_config_allows_runtime_duckdb_override(tmp_path: Path, monkeypatch) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
