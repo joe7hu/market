@@ -22,6 +22,21 @@ import type { UseRefreshJobs } from "@/views/health/useRefreshJobs";
 
 const AGENT_JOB = "run_option_agents";
 
+// Mirrors the per-ticker bundle assembled in build_agent_thesis_request (backend).
+const AGENT_CONTEXT_INPUTS = [
+  "Option candidate",
+  "Instrument / sector",
+  "Stock + option features",
+  "Fundamentals",
+  "Technicals",
+  "Ownership / 13F",
+  "News",
+  "X / social + blog signals",
+  "Portfolio position",
+  "Decision grade",
+  "Catalysts / earnings",
+];
+
 type ControlForm = { enabled: boolean; thesisLimit: number; postmortemLimit: number; timeoutSeconds: number };
 
 export function AgentControlPanel({
@@ -128,6 +143,16 @@ export function AgentControlPanel({
           <p className="mt-2 text-xs text-muted-foreground">
             One batched pass covers all open thesis + postmortem requests in a single call. Caps bound spend per run; persisted to config.yaml.
           </p>
+          <div className="mt-3">
+            <div className="text-[11px] font-medium uppercase text-muted-foreground">Each per-ticker run ingests</div>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {AGENT_CONTEXT_INPUTS.map((input) => (
+                <span key={input} className="rounded-md border border-border bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {input}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Granular status */}

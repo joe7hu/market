@@ -62,6 +62,10 @@ def test_agent_thesis_request_includes_business_and_fundamental_context(tmp_path
     assert context["instrument"]["category"] == "physical AI robotics"
     assert context["fundamentals"]["form_type"] == "10-Q"
     assert context["fundamentals"]["metrics"]["gross_margin"] == 0.19
+    # The full per-ticker bundle is assembled in one run (keys present even when a
+    # given source has no rows yet), not just option/candidate data.
+    for key in ("technicals", "ownership_and_disclosures", "portfolio_position", "decision", "catalysts", "earnings", "news", "source_signals"):
+        assert key in context, f"agent context missing {key}"
 
 
 def test_agent_thesis_queue_keeps_only_current_top_ranked_candidates_open(tmp_path) -> None:
