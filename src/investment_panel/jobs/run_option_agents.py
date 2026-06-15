@@ -12,18 +12,19 @@ from investment_panel.core.option_agent_runner import run_consolidated_option_ag
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION
 
 
-def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRATEGY_VERSION, force: bool = False) -> dict[str, Any]:
+def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRATEGY_VERSION, force: bool = False, ondemand: bool = False) -> dict[str, Any]:
     """Run the option agent.
 
-    ``enabled`` is the *auto-run* (scheduled) toggle. ``force=True`` is the manual /
-    on-demand path: it runs the consolidated agent whenever a command is configured,
-    regardless of ``enabled`` — so on-demand analysis does not depend on auto-run.
+    ``enabled`` is the *auto-run* (scheduled) toggle. ``force=True`` is the manual
+    full-queue path; ``ondemand=True`` runs only user-requested on-demand tickers.
+    Both run whenever a command is configured, regardless of ``enabled`` — so manual
+    and on-demand runs do not depend on auto-run.
     """
 
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     option_agent = config.agents.option_agent
-    use_consolidated = bool(option_agent.command) and (option_agent.enabled or force)
+    use_consolidated = bool(option_agent.command) and (option_agent.enabled or force or ondemand)
     with db(config.database.duckdb_path, read_only=False) as con:
         if use_consolidated:
             # Consolidated single-pass: one LLM/codex call covers thesis + postmortem.
@@ -40,7 +41,8 @@ def run(config_path: str | None = None, *, strategy_version: str = DEFAULT_STRAT
                     model=option_agent.model,
                     reasoning_effort=option_agent.reasoning_effort,
                     pricing=config.agents.pricing,
-                    trigger="manual" if force else "scheduled",
+                    trigger="ondemand" if ondemand else "manual" if force else "scheduled",
+                    ondemand_only=ondemand,
                 ),
             }
         else:

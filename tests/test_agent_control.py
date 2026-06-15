@@ -53,6 +53,38 @@ def test_consolidated_run_records_tokens_and_cost(tmp_path, monkeypatch) -> None
     assert row["provider"] == "openai" and row["model"] == "gpt-5.2"
 
 
+def test_ondemand_only_processes_just_ondemand_requests(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "od.duckdb"
+    init_db(db_path)
+    captured: dict[str, Any] = {}
+
+    def fake_invoke(command: str, payload: dict[str, Any], *, timeout_seconds: int, env=None) -> dict[str, Any]:
+        captured["payload"] = payload
+        return {
+            "thesis": [{"ticker": "NVDA", "core_thesis": "x", "evidence_refs": []}],
+            "postmortem": [],
+            "_meta": {"provider": "openai", "model": "gpt-5.2", "usage": {"input_tokens": 1, "output_tokens": 1}},
+        }
+
+    monkeypatch.setattr(runner_mod, "_invoke_agent_command", fake_invoke)
+    monkeypatch.setattr(runner_mod, "upsert_agent_thesis", lambda con, output: None)
+    monkeypatch.setattr(runner_mod, "_refresh_after_agent_theses", lambda con, *, strategy_version: {})
+
+    insert = (
+        "INSERT INTO agent_thesis_request (request_id, created_at, ticker, event_id, strategy_version, priority_score, status, prompt, context, raw)"
+        " VALUES (?, now(), ?, ?, ?, ?, 'open', ?, ?, ?)"
+    )
+    with db(db_path, read_only=False) as con:
+        con.execute(insert, ["r1", "AAPL", "evt-aapl", DEFAULT_STRATEGY_VERSION, 5.0, "p", json_dumps({}), json_dumps({})])
+        con.execute(insert, ["r2", "NVDA", "ondemand:NVDA:20260615T0000", DEFAULT_STRATEGY_VERSION, 100.0, "p", json_dumps({}), json_dumps({})])
+        run_consolidated_option_agents(con, command="fake", ondemand_only=True, trigger="ondemand", pricing={})
+        runs = query_rows(con, "SELECT trigger, ticker FROM agent_runs")
+
+    sent = captured["payload"]["thesis"]
+    assert len(sent) == 1 and sent[0]["request"]["ticker"] == "NVDA", "only the on-demand ticker is sent"
+    assert runs and runs[0]["trigger"] == "ondemand" and runs[0]["ticker"] == "NVDA"
+
+
 def test_estimate_cost_falls_back_to_default_pricing() -> None:
     meta = {"model": "unknown-model", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}}
     assert estimate_agent_cost(meta, {"default": {"input_per_1m": 2.0, "output_per_1m": 5.0}}) == 2.0
