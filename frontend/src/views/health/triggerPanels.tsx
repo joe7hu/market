@@ -8,11 +8,15 @@ import { JOB_CATALOG, jobDef, type JobGroup } from "@/views/health/dataFlow";
 import { formatDateTime } from "@/views/health/format";
 import type { UseRefreshJobs } from "@/views/health/useRefreshJobs";
 
-export function TriggerPanel({ jobs }: { jobs: UseRefreshJobs }) {
-  const available = jobs.allowlist.length ? jobs.allowlist : Object.keys(JOB_CATALOG);
+export function TriggerPanel({ jobs, excludeJobs }: { jobs: UseRefreshJobs; excludeJobs?: Set<string> }) {
+  // Per-category ingestion jobs are launched from the Data Sources catalog, so
+  // hide those here and keep only orchestration jobs (full pipeline, synthesis,
+  // agent) plus any ingestion job not owned by a catalog category.
+  const exclude = excludeJobs ?? new Set<string>();
+  const available = (jobs.allowlist.length ? jobs.allowlist : Object.keys(JOB_CATALOG)).filter((name: string) => !exclude.has(name));
   const groups: Array<{ id: JobGroup; label: string }> = [
     { id: "full", label: "Full Pipeline" },
-    { id: "ingestion", label: "Ingestion (pull sources)" },
+    { id: "ingestion", label: "Ingestion (not in catalog)" },
     { id: "synthesis", label: "Synthesis (recompute signals)" },
   ];
 
