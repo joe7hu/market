@@ -333,6 +333,14 @@ def _compact_opportunity_contract(detail: dict[str, Any]) -> dict[str, Any]:
         "spread_pct": raw.get("spread_pct"),
         "open_interest": raw.get("open_interest"),
         "volume": raw.get("volume"),
+        # Greeks, so the opportunity read-model carries the same contract detail as
+        # candidate_event (sourced from _opportunity_candidate_detail's raw blob).
+        "delta": raw.get("delta"),
+        "gamma": raw.get("gamma"),
+        "theta": raw.get("theta"),
+        "vega": raw.get("vega"),
+        "iv": raw.get("iv"),
+        "iv_percentile": raw.get("iv_percentile"),
         # EV asymmetry + catalyst proximity: the per-ticker signals the UI ranks/reads on.
         "ev_multiple": ev.get("ev_multiple"),
         "p_2x": ev.get("p_2x"),
