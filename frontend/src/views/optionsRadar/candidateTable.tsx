@@ -8,7 +8,7 @@ import {Input } from "@/components/ui/input";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
-import {listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
+import {formatMoney, listField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
 import {moneyField, formatRatio, formatScore, formatShortDate, formatNumber } from "../optionsRadarFormat";
 import {recordField, listFromRecord, stringFromRecord, numberFromRecord } from "../optionsRadarData";
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";
@@ -258,6 +258,7 @@ export function CandidateEventsTable({
                   </Cell>
                   <Cell className="text-right tabular-nums">
                     <div>{moneyField(row, ["premium_mid"])}</div>
+                    <BidAsk row={row} />
                     <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
                   </Cell>
                   <Cell className="text-right tabular-nums">
@@ -357,6 +358,7 @@ export function CandidateMobileCard({
         <InlineMetric label="10x Price" value={moneyField(row, ["required_10x_price"])} />
         <InlineMetric label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
       </div>
+      <div className="mt-2"><BidAsk row={row} label="Bid×Ask" /></div>
 
       <div className="mt-3 space-y-3">
         <MobileSection label="Signal Evidence"><CandidateSignalEvidence row={row} /></MobileSection>
@@ -446,9 +448,25 @@ export function ContractGreeks({ row }: { row: RowRecord }) {
   if (Number.isFinite(ivPercentile)) parts.push(`IVR ${formatNumber(ivPercentile, 0)}`);
   if (Number.isFinite(spread)) parts.push(`Spr ${formatRatio(spread)}`);
   if (Number.isFinite(openInterest)) parts.push(`OI ${formatNumber(openInterest, 0)}`);
-  if (Number.isFinite(volume)) parts.push(`Vol ${formatNumber(volume, 0)}`);
+  // Volume is frequently 0 on far-dated LEAPs; only show it when there is real flow.
+  if (Number.isFinite(volume) && volume > 0) parts.push(`Vol ${formatNumber(volume, 0)}`);
   if (!parts.length) return null;
   return <div className="mt-1 font-mono text-[11px] leading-5 text-muted-foreground tabular-nums">{parts.join("  ·  ")}</div>;
+}
+
+// Bid × ask for the contract — the prices a trader actually places a limit order
+// against, alongside the option mid. Null when the chain snapshot lacks a quote.
+export function BidAsk({ row, label }: { row: RowRecord; label?: string }) {
+  const raw = recordField(row, "raw");
+  const bid = numberFromRecord(raw, "bid");
+  const ask = numberFromRecord(raw, "ask");
+  if (!Number.isFinite(bid) || !Number.isFinite(ask)) return null;
+  return (
+    <div className="text-xs text-muted-foreground">
+      {label ? <span className="mr-2 font-semibold uppercase">{label}</span> : null}
+      {formatMoney(bid)} × {formatMoney(ask)}
+    </div>
+  );
 }
 
 export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
