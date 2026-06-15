@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from investment_panel.core.decision import (MARKET_CLOSE, MARKET_TZ, is_market_open, is_us_market_day)
+from investment_panel.core.decision import (MARKET_CLOSE, MARKET_OPEN, MARKET_TZ, is_market_open, is_us_market_day)
 
 def _parse_utc(value: Any) -> datetime | None:
     """Parse a snapshot timestamp into a tz-aware UTC datetime (naive == UTC)."""
@@ -51,3 +51,31 @@ def display_snapshot_time(snapshot_times: list[str], now: datetime | None = None
         return times[-1]
     rth = [t for t in times if snapshot_is_rth(t)]
     return rth[-1] if rth else times[-1]
+
+
+def newest_snapshot_time(snapshot_times: list[str]) -> str | None:
+    """Chronologically newest snapshot, tz-aware (string max is unsafe across
+    mixed naive/aware ISO timestamps)."""
+
+    times = [t for t in snapshot_times if t]
+    if not times:
+        return None
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    return max(times, key=lambda value: _parse_utc(value) or floor)
+
+
+def snapshot_session_label(snapshot_time: Any) -> str:
+    """Classify a capture as 'regular', 'premarket', 'after-hours', or 'weekend'.
+
+    Lets the UI show the freshest snapshot we have while flagging that it was
+    captured outside regular trading hours (so it never silently looks stale)."""
+
+    parsed = _parse_utc(snapshot_time)
+    if not parsed:
+        return ""
+    if snapshot_is_rth(snapshot_time):
+        return "regular"
+    local = parsed.astimezone(MARKET_TZ)
+    if not is_us_market_day(local.date()):
+        return "weekend"
+    return "premarket" if local.time() < MARKET_OPEN else "after-hours"

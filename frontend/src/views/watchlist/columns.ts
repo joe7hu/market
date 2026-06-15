@@ -81,15 +81,15 @@ export const columnHelp = {
   },
   optionsStatus: {
     label: "Opt",
-    detail: "TradingView-derived options summary status. Loaded means chain quotes, IV, and Greeks exist; OI and volume-based positioning are not part of TradingView V1.",
+    detail: "Options summary status from the latest option-chain pull (Robinhood when available, else TradingView/IBKR). Loaded means chain quotes, IV, and Greeks exist.",
   },
   optionsIv: {
     label: "Opt IV",
-    detail: "Nearest usable expiry ATM implied volatility bucket from TradingView option-chain IV.",
+    detail: "Nearest usable expiry ATM implied volatility bucket from the latest option-chain IV.",
   },
   optionsMove: {
     label: "Opt Move",
-    detail: "Nearest usable expiry expected move from the ATM call plus put mid price divided by spot.",
+    detail: "Nearest usable expiry expected move as a percent of spot — the ATM call+put straddle when both legs are quoted, otherwise IV-implied (spot × ATM IV × √(dte/365)) when quotes are thin (e.g. premarket).",
   },
   optionsSkew: {
     label: "Skew",

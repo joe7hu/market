@@ -115,6 +115,7 @@ class RobinhoodConfig:
     strikes_around_spot: int = 12
     quote_batch_size: int = 20
     collect_puts: bool = False
+    near_term_dte: int = 35
 
 
 @dataclass(frozen=True)
@@ -398,6 +399,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 strikes_around_spot=int(robinhood_raw.get("strikes_around_spot", 12)),
                 quote_batch_size=int(robinhood_raw.get("quote_batch_size", 20)),
                 collect_puts=bool(robinhood_raw.get("collect_puts", False)),
+                near_term_dte=int(robinhood_raw.get("near_term_dte", 35)),
             ),
             moomoo=MoomooConfig(
                 enabled=bool(moomoo_raw.get("enabled", False)),
@@ -602,6 +604,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                     "strikes_around_spot": config.data_sources.brokers.robinhood.strikes_around_spot,
                     "quote_batch_size": config.data_sources.brokers.robinhood.quote_batch_size,
                     "collect_puts": config.data_sources.brokers.robinhood.collect_puts,
+                    "near_term_dte": config.data_sources.brokers.robinhood.near_term_dte,
                 },
                 "moomoo": {
                     "enabled": config.data_sources.brokers.moomoo.enabled,

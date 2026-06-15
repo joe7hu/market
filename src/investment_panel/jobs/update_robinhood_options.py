@@ -15,6 +15,7 @@ from typing import Any
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db, json_dumps
 from investment_panel.core.free_sources import option_symbols, store_options_chain
+from investment_panel.core.options_intelligence import refresh_options_intelligence
 from investment_panel.core.robinhood_options import (
     RobinhoodAuthRequired,
     RobinhoodClient,
@@ -115,11 +116,18 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         return {**result, "status_path": str(status_path) if status_path else None}
 
     stored = 0
+    signal_symbols: list[str] = []
     with db(config.database.duckdb_path) as con:
         for quote in collected.get("quotes") or []:
             _upsert_robinhood_quote(con, quote)
         for symbol, rows in collected["rows"].items():
             stored += store_options_chain(con, symbol, collected["observed_at"], rows, source="robinhood")
+            signal_symbols.append(symbol)
+        # Build the per-ticker option intelligence the watchlist reads from the same
+        # Robinhood chains the radar uses, so both surfaces share one (fresher) source
+        # instead of the watchlist showing stale TradingView-only signals.
+        if signal_symbols:
+            refresh_options_intelligence(con, signal_symbols, source="robinhood")
 
     result = {
         "provider": "robinhood",

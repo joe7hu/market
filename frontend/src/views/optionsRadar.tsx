@@ -5,8 +5,8 @@ import {PanelData, RowRecord } from "@/types";
 import {displayField, numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
-import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf, tierOf, isServiceRepair } from "./optionsRadar/helpers";
-import {RadarSummaryStrip, RadarAlertPanel } from "./optionsRadar/summary";
+import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
+import {RadarAlertPanel } from "./optionsRadar/summary";
 import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
@@ -73,17 +73,13 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestThesisValidationByEvent = useMemo(() => latestValidationBy(thesisValidations, "candidate_event_id"), [thesisValidations]);
   const latestAgentThesisByTicker = useMemo(() => latestBy(agentTheses, "ticker", "created_at"), [agentTheses]);
 
-  const opportunityCount = numberField(radarSummary, ["opportunity_rows_current"], opportunityCandidates.length);
   const opportunityTickerCount = numberField(radarSummary, ["opportunity_tickers_current"], opportunityTickers.length);
   const scannedTickerCount = numberField(radarSummary, ["scanned_tickers_current"], 0);
   const fireCount = numberField(radarSummary, ["fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "FIRE"));
   const setupCount = numberField(radarSummary, ["setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
-  const exceptionalCount = numberField(radarSummary, ["exceptional_opportunities_current"], countWhere(currentOpportunityRows, (row) => tierOf(row) === "Exceptional"));
-  const researchCount = numberField(radarSummary, ["research_opportunities_current"], countWhere(currentOpportunityRows, (row) => tierOf(row) === "Research"));
-  const repairCount = numberField(radarSummary, ["repair_opportunities_current"], countWhere(currentOpportunityRows, (row) => isServiceRepair(row)));
-  const groupedOpportunityCount = exceptionalCount + researchCount + repairCount || currentOpportunityRows.length;
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"]);
+  const snapshotLabel = textField(radarSummary, ["latest_snapshot_label"]);
   const latestStrategy = strategyVersions[0];
 
   async function handlePromoteProposal(proposalId: string) {
@@ -122,30 +118,20 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             const badge = sessionBadge(marketSession, frozenToRth, latestSnapshot);
             return <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>;
           })()}
-          <StatusBadge tone="muted">{latestSnapshot ? `Snapshot ${formatDate(latestSnapshot)}` : "No snapshots"}</StatusBadge>
           <StatusBadge tone="info">{displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy")}</StatusBadge>
         </div>
       }
     >
       <RadarAlertPanel alerts={radarAlerts} acknowledgingAlert={acknowledgingAlert} onAcknowledge={handleAcknowledgeAlert} />
-      <RadarSummaryStrip
-        opportunityCount={opportunityCount}
-        opportunityTickerCount={opportunityTickerCount}
-        scannedTickerCount={scannedTickerCount}
-        fireCount={fireCount}
-        setupCount={setupCount}
-        exceptionalCount={exceptionalCount}
-        researchCount={researchCount}
-        repairCount={repairCount}
-        groupedOpportunityCount={groupedOpportunityCount}
-        />
       <SignalBriefPanel
         rows={currentOpportunityRows}
         fireCount={fireCount}
         setupCount={setupCount}
+        scannedTickerCount={scannedTickerCount}
+        opportunityTickerCount={opportunityTickerCount}
         latestSnapshot={latestSnapshot}
+        snapshotLabel={snapshotLabel}
         latestCandidateTime={latestCandidateTime}
-        optionThesisAgent={optionThesisAgent}
         onOpenTicker={onOpenTicker}
       />
       <div className="flex w-fit rounded-md border border-border bg-muted p-1">

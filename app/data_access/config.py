@@ -20,11 +20,24 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def repo_root() -> Path:
+    """Repository root (one level above the ``app/`` package).
+
+    ``project_root()`` resolves to the ``app/`` package directory, but
+    ``config.yaml`` and the default ``data/`` directory live at the repo root.
+    Relative paths from config must resolve here so the app process reads and
+    writes the same DuckDB file the read path (which resolves against the repo
+    root via ``Path.cwd()``) uses — otherwise writes land in a stray
+    ``app/data/investment.duckdb`` while reads serve the real one.
+    """
+    return project_root().parent
+
+
 
 
 def _database_path(config: dict[str, Any]) -> Path:
     db_path = Path(config.get("database", {}).get("duckdb_path", "data/investment.duckdb"))
-    return db_path if db_path.is_absolute() else project_root() / db_path
+    return db_path if db_path.is_absolute() else repo_root() / db_path
 
 
 
@@ -38,7 +51,7 @@ def database_path(config: dict[str, Any]) -> Path:
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load config.yaml when PyYAML is installed; fall back to sensible defaults."""
 
-    config_path = Path(path) if path else project_root() / "config.yaml"
+    config_path = Path(path) if path else repo_root() / "config.yaml"
     defaults: dict[str, Any] = {
         "database": {"duckdb_path": "data/investment.duckdb"},
         "nas": {

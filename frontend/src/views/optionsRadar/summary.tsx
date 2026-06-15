@@ -1,52 +1,11 @@
-// Radar summary strip + alert panel.
+// Radar alert panel.
 
 import {AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import {StatusBadge } from "@/components/market/workstation";
 import {Button } from "@/components/ui/button";
-import {cn } from "@/lib/utils";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
 import {displayField, textField, titleLabel } from "../rowFormat";
-import {toneText } from "../optionsRadarTone";
-
-export function RadarSummaryStrip({
-  opportunityCount,
-  opportunityTickerCount,
-  scannedTickerCount,
-  fireCount,
-  setupCount,
-  exceptionalCount,
-  researchCount,
-  repairCount,
-  groupedOpportunityCount,
-}: {
-  opportunityCount: number;
-  opportunityTickerCount: number;
-  scannedTickerCount: number;
-  fireCount: number;
-  setupCount: number;
-  exceptionalCount: number;
-  researchCount: number;
-  repairCount: number;
-  groupedOpportunityCount: number;
-}) {
-  const items: Array<[string, string, Tone]> = [
-    ["Trade-Ready", exceptionalCount.toLocaleString(), exceptionalCount ? "good" : "muted"],
-    ["Research", researchCount.toLocaleString(), researchCount ? "info" : "muted"],
-    ["Data Blocked", repairCount.toLocaleString(), repairCount ? "bad" : "good"],
-    ["Coverage", `${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} tickers`, scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"],
-  ];
-  return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-      {items.map(([label, value, tone]) => (
-        <div key={label} className="rounded-md border border-border bg-card px-3 py-2">
-          <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
-          <div className={cn("mt-1 text-sm font-semibold tabular-nums", toneText(tone))}>{value}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 export function RadarAlertPanel({
   alerts,

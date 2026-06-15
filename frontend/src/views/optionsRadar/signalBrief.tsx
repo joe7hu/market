@@ -18,19 +18,27 @@ export function SignalBriefPanel({
   rows,
   fireCount,
   setupCount,
+  scannedTickerCount,
+  opportunityTickerCount,
   latestSnapshot,
+  snapshotLabel,
   latestCandidateTime,
-  optionThesisAgent,
   onOpenTicker,
 }: {
   rows: RowRecord[];
   fireCount: number;
   setupCount: number;
+  scannedTickerCount: number;
+  opportunityTickerCount: number;
   latestSnapshot: string;
+  snapshotLabel: string;
   latestCandidateTime: string;
-  optionThesisAgent: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
 }) {
+  const offHours = Boolean(snapshotLabel) && snapshotLabel !== "regular";
+  const snapshotText = latestSnapshot
+    ? `Option data ${formatDate(latestSnapshot)}${offHours ? ` (${snapshotLabel})` : ""}`
+    : "No option data";
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
   const repairRows = rows.filter(isServiceRepair);
@@ -54,8 +62,9 @@ export function SignalBriefPanel({
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
             {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
+            <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} with setups`}</StatusBadge>
             <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
-            <StatusBadge tone="muted">{latestSnapshot ? `Option data ${formatDate(latestSnapshot)}` : "No option data"}</StatusBadge>
+            <StatusBadge tone={offHours ? "warn" : "muted"}>{snapshotText}</StatusBadge>
           </div>
           {strongest ? (
             <div className="mt-4">
@@ -76,7 +85,7 @@ export function SignalBriefPanel({
             <p className="mt-4 text-sm text-muted-foreground">No current opportunity read model is available for this radar run.</p>
           )}
         </div>
-        <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
           <BriefCallout
             label="Decision Impact"
             tone={decisionTone}
@@ -86,11 +95,6 @@ export function SignalBriefPanel({
             label={repairRows.length ? "Data Blocker" : "Main Blocker"}
             tone={repairRows.length ? "bad" : topBlockers.length ? "warn" : "good"}
             value={repairRows.length ? summarizeReasons(dataFailures, "Data contract is clean.") : summarizeReasons(topBlockers, "Strict gates are clean.")}
-          />
-          <BriefCallout
-            label="Agent Cadence"
-            tone={optionThesisAgent.active ? "info" : "muted"}
-            value={`Runs once premarket; batch limit ${optionThesisAgent.limit}. Hourly refresh stays deterministic.`}
           />
         </div>
       </div>

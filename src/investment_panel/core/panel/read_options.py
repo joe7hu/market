@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.options_radar import display_snapshot_time, market_session
+from investment_panel.core.options_radar import display_snapshot_time, market_session, newest_snapshot_time, snapshot_session_label
 
 from investment_panel.core.panel.coerce import _iso_or_none, decode_fields
 from investment_panel.core.panel.disclosures import _compact_empty_fields
@@ -88,6 +88,9 @@ def options_ticker_signals(con: Any) -> list[dict[str, Any]]:
                put_call_iv_skew, spread_quality, liquidity_score, hedge_summary,
                income_summary, unavailable_signals, raw
         FROM options_ticker_signals
+        -- One row per symbol: the freshest signal regardless of provider, so the
+        -- watchlist follows whichever source (Robinhood/TradingView) pulled last.
+        QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ORDER BY as_of DESC, symbol
         LIMIT 500
         """,
@@ -117,14 +120,17 @@ class RadarDisplayContext:
     candidate_time: str | None
     market_session: str
     frozen_to_last_rth: bool
+    snapshot_label: str
 
 
 def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
-    """Session-aware 'current' snapshot + candidate times for the radar views.
+    """'Current' snapshot + candidate times for the radar views.
 
-    During RTH this is the newest data; when the market is closed it freezes on
-    the last regular-hours snapshot so the radar shows the last tradeable state
-    instead of an off-hours volume=0 capture.
+    The raw-chain "Option data" badge shows the newest snapshot we have (even an
+    off-hours capture) so the page reflects the freshest pull rather than looking
+    days stale; the UI labels it premarket/after-hours via ``snapshot_label``.
+    The candidate/opportunity grain still freezes to the last regular-hours run
+    so the opportunity gates are not driven by an off-hours volume=0 capture.
     """
 
     def iso(value: Any) -> str:
@@ -138,7 +144,7 @@ def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
     # no regular-hours snapshot exists yet (e.g. the market has been closed since
     # the last refresh).
     opps = [iso(r["snapshot_time"]) for r in query_rows(con, "SELECT DISTINCT snapshot_time FROM option_radar_opportunity WHERE snapshot_time IS NOT NULL")]
-    return display_snapshot_time(snaps), display_snapshot_time(opps)
+    return newest_snapshot_time(snaps), display_snapshot_time(opps)
 
 
 def radar_display_context(con: Any) -> RadarDisplayContext:
@@ -152,6 +158,7 @@ def radar_display_context(con: Any) -> RadarDisplayContext:
         candidate_time=display_candidate,
         market_session=session,
         frozen_to_last_rth=frozen,
+        snapshot_label=snapshot_session_label(display_snap),
     )
 
 
@@ -252,6 +259,7 @@ def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = N
     for row in rows:
         row["market_session"] = context.market_session
         row["frozen_to_last_rth"] = context.frozen_to_last_rth
+        row["latest_snapshot_label"] = context.snapshot_label
     return [_compact_empty_fields(row) for row in rows]
 
 

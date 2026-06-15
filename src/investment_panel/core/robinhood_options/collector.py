@@ -141,6 +141,7 @@ def collect_robinhood_option_chains(
     strikes_around_spot: int | None = None,
     collect_puts: bool | None = None,
     quote_batch_size: int | None = None,
+    near_term_dte: int | None = None,
 ) -> dict[str, Any]:
     """Collect option rows from Robinhood for Market's radar universe."""
 
@@ -166,6 +167,7 @@ def collect_robinhood_option_chains(
     strikes_around_spot = max(1, int(strikes_around_spot if strikes_around_spot is not None else getattr(config, "strikes_around_spot", 12)))
     collect_puts = bool(collect_puts if collect_puts is not None else getattr(config, "collect_puts", False))
     quote_batch_size = max(1, min(20, int(quote_batch_size if quote_batch_size is not None else getattr(config, "quote_batch_size", 20))))
+    near_term_dte = int(near_term_dte if near_term_dte is not None else getattr(config, "near_term_dte", 35))
 
     quote_rows = _fetch_equity_quotes(client, symbols)
     result["quotes"] = quote_rows
@@ -184,6 +186,7 @@ def collect_robinhood_option_chains(
                 strikes_around_spot=strikes_around_spot,
                 collect_puts=collect_puts,
                 quote_batch_size=quote_batch_size,
+                near_term_dte=near_term_dte,
             )
         except Exception as exc:  # noqa: BLE001 - keep the rest of the universe moving
             result["errors"].append(f"{symbol}:{exc}")
@@ -259,6 +262,32 @@ def select_robinhood_expiries(
     return [expiry for _dte, expiry in candidates[:max_per_symbol]]
 
 
+def select_near_term_expiry(
+    expiration_dates: list[str],
+    *,
+    today: date,
+    target_dte: int,
+    min_dte: int = 14,
+    max_dte: int = 90,
+) -> str | None:
+    """Pick the one expiry closest to ``target_dte`` within a near-term window.
+
+    The radar pulls LEAP expiries; the watchlist's expected-move/skew read is far
+    more useful from a near-term expiry, so we add a single ~monthly expiry."""
+
+    candidates: list[tuple[int, str]] = []
+    for raw in expiration_dates:
+        try:
+            dte = (date.fromisoformat(str(raw)[:10]) - today).days
+        except (TypeError, ValueError):
+            continue
+        if min_dte <= dte <= max_dte:
+            candidates.append((abs(dte - target_dte), str(raw)[:10]))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
 def _collect_symbol(
     client: RobinhoodClient,
     symbol: str,
@@ -271,18 +300,24 @@ def _collect_symbol(
     strikes_around_spot: int,
     collect_puts: bool,
     quote_batch_size: int,
+    near_term_dte: int = 0,
 ) -> list[dict[str, Any]]:
     chains = _payload_list(client.get_option_chains(symbol), "chains")
     rows: list[dict[str, Any]] = []
     for chain in chains:
         chain_id = str(chain.get("id") or "")
+        expiration_dates = [str(expiry) for expiry in chain.get("expiration_dates") or []]
         expiries = select_robinhood_expiries(
-            [str(expiry) for expiry in chain.get("expiration_dates") or []],
+            expiration_dates,
             today=today,
             min_dte=min_dte,
             max_dte=max_dte,
             max_per_symbol=max_expiries,
         )
+        if near_term_dte > 0:
+            near_term = select_near_term_expiry(expiration_dates, today=today, target_dte=near_term_dte)
+            if near_term and near_term not in expiries:
+                expiries = [near_term, *expiries]
         for expiry in expiries:
             for option_type in (["call", "put"] if collect_puts else ["call"]):
                 instruments = _fetch_instruments(client, chain_id=chain_id, expiration=expiry, option_type=option_type)

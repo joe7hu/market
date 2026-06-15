@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from statistics import mean
 from typing import Any
 
 from investment_panel.core.db import json_dumps, query_rows
+
+
+def _expiry_dte(expiry: Any, reference: Any = None) -> int | None:
+    """Calendar days to expiry; used when the chain rows carry no ``dte``."""
+
+    try:
+        exp = datetime.fromisoformat(str(expiry)[:10]).date()
+    except (TypeError, ValueError):
+        return None
+    try:
+        ref = datetime.fromisoformat(str(reference)[:10]).date() if reference else datetime.utcnow().date()
+    except (TypeError, ValueError):
+        ref = datetime.utcnow().date()
+    return (exp - ref).days
+
+
+def _iv_implied_move(spot: float | None, atm_iv: float | None, dte: int | None) -> float | None:
+    """Expected absolute move ≈ spot × IV × √(dte/365).
+
+    A robust fallback for the ATM-straddle expected move when one leg is
+    unquoted (common premarket / after-hours, when puts have no live mid)."""
+
+    if not spot or atm_iv is None or not dte or dte <= 0:
+        return None
+    return spot * atm_iv * math.sqrt(dte / 365.0)
 
 
 TRADINGVIEW_UNAVAILABLE_SIGNALS = [
@@ -19,6 +45,25 @@ TRADINGVIEW_UNAVAILABLE_SIGNALS = [
     {"signal": "max_pain", "reason": "Max pain requires open interest by strike."},
     {"signal": "unusual_volume", "reason": "Unusual volume requires live or historical contract volume."},
 ]
+
+# Positioning signals this builder does not derive for ANY provider (no
+# wall/GEX math here yet), but which are not a raw-data gap for Robinhood/IBKR.
+_UNCOMPUTED_POSITIONING_SIGNALS = [s for s in TRADINGVIEW_UNAVAILABLE_SIGNALS if s["signal"] not in {"open_interest", "volume"}]
+
+
+def unavailable_signals_for_source(source: str | None) -> list[dict[str, Any]]:
+    """Source-aware list of signals the watchlist option summary can't show.
+
+    TradingView's chain lacks open interest and contract volume; Robinhood/IBKR
+    provide both, so only the still-uncomputed positioning signals apply there."""
+
+    return TRADINGVIEW_UNAVAILABLE_SIGNALS if str(source or "").lower() == "tradingview" else _UNCOMPUTED_POSITIONING_SIGNALS
+
+
+def _provider_limitation_note(source: str | None) -> str:
+    if str(source or "").lower() == "tradingview":
+        return "TradingView V1 lacks OI/volume, so positioning walls are not calculated."
+    return "Positioning walls (GEX/max-pain) are not calculated from this snapshot yet."
 
 
 def record_tradingview_options_capabilities(con: Any, observed_at: str | None = None) -> None:
@@ -170,7 +215,12 @@ def build_expiry_signal(
     atm_iv = _average([_number(row.get("iv")) for row in atm_rows])
     atm_call = _best_at_strike(calls, atm_strike)
     atm_put = _best_at_strike(puts, atm_strike)
+    dte = _integer(expiry_meta.get("dte") if expiry_meta else rows[0].get("dte"))
+    if dte is None:
+        dte = _expiry_dte(expiry, max((str(row.get("observed_at") or "") for row in rows), default=None))
     expected_move = _sum_present(_number((atm_call or {}).get("mid")), _number((atm_put or {}).get("mid")))
+    if expected_move is None:
+        expected_move = _iv_implied_move(spot, atm_iv, dte)
     expected_move_pct = expected_move / spot if expected_move is not None and spot else None
     call_25 = _closest_by_delta(calls, 0.25)
     put_25 = _closest_by_delta(puts, -0.25)
@@ -185,14 +235,14 @@ def build_expiry_signal(
     as_of = max(str(row.get("observed_at") or "") for row in rows if row.get("observed_at")) or datetime.utcnow().isoformat()
     raw = {
         "atm_contracts": [_contract_label(row) for row in atm_rows],
-        "capability_note": "OI and volume signals intentionally unavailable for TradingView V1.",
+        "capability_note": _provider_limitation_note(source),
     }
     return {
         "symbol": symbol,
         "expiry": expiry,
         "as_of": as_of,
         "source": source,
-        "dte": _integer(expiry_meta.get("dte") if expiry_meta else rows[0].get("dte")),
+        "dte": dte,
         "spot": spot,
         "contract_count": _integer(expiry_meta.get("contracts_count")) if expiry_meta else None,
         "chain_rows": len(rows),
@@ -209,7 +259,7 @@ def build_expiry_signal(
         "hedge_put_mid": _number((hedge_put or {}).get("mid")),
         "covered_call_strike": _number((covered_call or {}).get("strike")),
         "covered_call_mid": _number((covered_call or {}).get("mid")),
-        "unavailable_signals": TRADINGVIEW_UNAVAILABLE_SIGNALS,
+        "unavailable_signals": unavailable_signals_for_source(source),
         "raw": raw,
     }
 
@@ -242,11 +292,11 @@ def build_ticker_signal(symbol: str, source: str, expiry_signals: list[dict[str,
         "liquidity_score": _number(selected.get("liquidity_score")),
         "hedge_summary": _contract_summary("Put", hedge_strike, hedge_mid, selected.get("nearest_expiry") or selected.get("expiry")),
         "income_summary": _contract_summary("Call", call_strike, call_mid, selected.get("nearest_expiry") or selected.get("expiry")),
-        "unavailable_signals": TRADINGVIEW_UNAVAILABLE_SIGNALS,
+        "unavailable_signals": unavailable_signals_for_source(source),
         "raw": {
             "expiry_count": len(expiry_signals),
             "selected_expiry": selected.get("expiry"),
-            "provider_limitation": "TradingView V1 lacks OI/volume, so positioning walls are not calculated.",
+            "provider_limitation": _provider_limitation_note(source),
         },
     }
 

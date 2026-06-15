@@ -92,11 +92,16 @@ data_sources:
       callback_port: 8765
       readonly: true
       timeout_seconds: 30
-      max_symbols: 40
+      max_symbols: 80
       max_expiries: 2
       strikes_around_spot: 12
       quote_batch_size: 20
-      collect_puts: false
+      # Collect puts too: the watchlist option summary needs put quotes to compute
+      # expected move (ATM call+put) and put/call IV skew. ~2x chain volume per scan.
+      collect_puts: true
+      # Also pull one ~monthly expiry (in addition to the LEAP radar expiries) so the
+      # watchlist's Opt Move/Skew reflect a near-term horizon, not a 1-year LEAP. 0 disables.
+      near_term_dte: 35
     moomoo:
       enabled: false
       host: 127.0.0.1
