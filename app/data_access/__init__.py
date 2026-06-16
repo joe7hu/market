@@ -7,7 +7,7 @@ from app.data_access.payloads import _runtime_metadata
 from app.data_access.types import DataStatus, PanelData, SETUP_INSTRUCTIONS
 from app.data_access.config import database_path, load_config, project_root, tables_for_scope
 from app.data_access.coerce import jsonable, normalize_rows
-from app.data_access.mutations import delete_portfolio_position, delete_watchlist_symbol, populate_watchlist_symbol_data, save_portfolio_position, save_watchlist_symbol
+from app.data_access.mutations import delete_portfolio_position, delete_watchlist_symbol, mark_thesis_reviewed, populate_watchlist_symbol_data, save_portfolio_position, save_thesis, save_watchlist_symbol
 from app.data_access.loaders import load_market_panel_data, load_panel_data, load_panel_scope_data, load_table_panel_data, load_ticker_panel_data, panel_contract_payload
 from app.data_access.payloads import dashboard_payload, panel_snapshot_payload, signals_payload, status_payload, table_payload, ticker_payload, watchlist_section_payload
 from app.data_access.decision_brief import GATE_LABELS, ticker_decision_brief
@@ -31,12 +31,14 @@ __all__ = [
     "load_panel_scope_data",
     "load_table_panel_data",
     "load_ticker_panel_data",
+    "mark_thesis_reviewed",
     "normalize_rows",
     "panel_contract_payload",
     "panel_snapshot_payload",
     "populate_watchlist_symbol_data",
     "project_root",
     "save_portfolio_position",
+    "save_thesis",
     "save_watchlist_symbol",
     "settings_payload",
     "signals_payload",

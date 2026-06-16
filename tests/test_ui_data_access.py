@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import duckdb
+import pytest
 
 from app import data_access
 
@@ -546,6 +547,53 @@ def test_save_and_delete_portfolio_position(tmp_path) -> None:
 
     assert deleted == {"symbol": "NVDA", "deleted": True}
     assert panel_data.rows("portfolio") == []
+
+
+def test_save_thesis_records_content_and_clears_stale(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "thesis.duckdb")}, "watchlist": [{"symbol": "NVDA"}]}
+
+    saved = data_access.save_thesis(
+        config,
+        "nvda",
+        {
+            "thesis": "AI accelerator leader with durable datacenter demand.",
+            "why": "Owned for AI infrastructure exposure.",
+            "invalidation": "Below $95 the setup breaks.",
+            "invalidation_price": 95,
+            "evidence_links": ["https://example.com/nvda"],
+        },
+    )
+
+    assert saved["symbol"] == "NVDA"
+    assert saved["thesis"]["core_thesis"].startswith("AI accelerator")
+    assert saved["thesis"]["last_reviewed"]
+
+    from investment_panel.core.db import db
+    from investment_panel.core.thesis_monitor import thesis_monitor_rows
+
+    with db(config["database"]["duckdb_path"]) as con:
+        rows = thesis_monitor_rows(con, [{"symbol": "NVDA"}])
+    nvda = next(row for row in rows if row["symbol"] == "NVDA")
+    assert nvda["source"] == "theses"
+    assert nvda["stale_thesis"] is False
+    assert nvda.get("needs_review", False) is False
+    assert nvda["invalidation_price"] == 95
+
+
+def test_save_thesis_requires_thesis_text(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "thesis-empty.duckdb")}}
+    with pytest.raises(ValueError):
+        data_access.save_thesis(config, "NVDA", {"thesis": "   "})
+
+
+def test_mark_thesis_reviewed_stamps_review_date(tmp_path) -> None:
+    config = {"database": {"duckdb_path": str(tmp_path / "review.duckdb")}, "watchlist": [{"symbol": "MU"}]}
+
+    data_access.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
+    reviewed = data_access.mark_thesis_reviewed(config, "mu")
+
+    assert reviewed["symbol"] == "MU"
+    assert reviewed["last_reviewed"]
 
 
 def test_delete_config_watchlist_symbol_persists_unwatch_override(tmp_path) -> None:

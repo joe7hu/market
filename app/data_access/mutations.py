@@ -1,7 +1,8 @@
 """Portfolio and watchlist write operations."""
 
 from __future__ import annotations
-from datetime import date, datetime
+import json
+from datetime import UTC, date, datetime
 from typing import Any, Iterable
 
 from app.data_access.config import _database_path
@@ -256,3 +257,99 @@ def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, 
         )
         refresh_decision_read_models(con, config.get("watchlist", []))
     return {"symbol": normalized, "deleted": True}
+
+
+def _load_thesis_json(con: Any, symbol: str) -> dict[str, Any]:
+    row = con.execute("SELECT thesis_json FROM theses WHERE symbol = ?", [symbol]).fetchone()
+    if not row or not row[0]:
+        return {}
+    try:
+        parsed = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _persist_thesis(config: dict[str, Any], symbol: str, thesis: dict[str, Any]) -> None:
+    from investment_panel.core.db import db, init_db
+    from investment_panel.core.decision import refresh_decision_read_models
+
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO theses (symbol, thesis_json, updated_at)
+            VALUES (?, ?, now())
+            """,
+            [symbol, json.dumps(thesis)],
+        )
+        refresh_decision_read_models(con, config.get("watchlist", []))
+
+
+def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """Author or update the structured thesis content for a symbol.
+
+    Merges supplied fields onto any existing thesis_json and stamps last_reviewed
+    so the monitor can leave the stale/needs-review state once content exists.
+    """
+
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+    thesis_text = str(fields.get("thesis") or "").strip()
+    why = str(fields.get("why") or "").strip()
+    invalidation = str(fields.get("invalidation") or "").strip()
+    if not thesis_text:
+        raise ValueError("thesis is required")
+
+    from investment_panel.core.db import db, init_db
+
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        thesis = _load_thesis_json(con, normalized)
+
+    thesis["core_thesis"] = thesis_text
+    if why:
+        thesis["why_owned_watched"] = why
+    if invalidation:
+        thesis["invalidation"] = invalidation
+    invalidation_price = fields.get("invalidation_price")
+    if invalidation_price not in (None, ""):
+        try:
+            thesis["invalidation_price"] = float(invalidation_price)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalidation_price must be a number") from exc
+    status = str(fields.get("status") or "").strip().lower()
+    if status:
+        thesis["status"] = status
+    evidence_links = fields.get("evidence_links")
+    if isinstance(evidence_links, list):
+        cleaned = [str(link).strip() for link in evidence_links if str(link).strip()]
+        if cleaned:
+            thesis["evidence_links"] = cleaned
+    thesis["last_reviewed"] = datetime.now(UTC).isoformat()
+
+    _persist_thesis(config, normalized, thesis)
+    return {"symbol": normalized, "thesis": thesis}
+
+
+def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+    """Stamp the thesis last_reviewed date so an audited thesis leaves the queue."""
+
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+
+    from investment_panel.core.db import db, init_db
+
+    db_path = _database_path(config)
+    init_db(db_path)
+    with db(db_path, read_only=False) as con:
+        thesis = _load_thesis_json(con, normalized)
+    reviewed_at = datetime.now(UTC).isoformat()
+    thesis["last_reviewed"] = reviewed_at
+
+    _persist_thesis(config, normalized, thesis)
+    return {"symbol": normalized, "last_reviewed": reviewed_at}

@@ -33,7 +33,9 @@ from app.data_access import (
     populate_watchlist_symbol_data,
     delete_portfolio_position,
     delete_watchlist_symbol,
+    mark_thesis_reviewed,
     save_portfolio_position,
+    save_thesis,
     save_watchlist_symbol,
     settings_payload,
     signals_payload,
@@ -82,6 +84,15 @@ class WatchlistSymbolInput(BaseModel):
     name: str | None = None
     asset_class: str = "equity"
     notes: str = ""
+
+
+class ThesisInput(BaseModel):
+    thesis: str
+    why: str = ""
+    invalidation: str = ""
+    invalidation_price: float | None = None
+    status: str | None = None
+    evidence_links: list[str] | None = None
 
 
 class PaperOrderInput(BaseModel):

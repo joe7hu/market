@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from investment_panel.core.db import db, init_db
-from investment_panel.core.thesis_monitor import thesis_monitor_rows
+from investment_panel.core.thesis_monitor import _invalidation_price, thesis_monitor_rows
 
 
 def test_thesis_monitor_flags_stale_owned_position_near_invalidation(tmp_path: Path) -> None:
@@ -101,3 +101,46 @@ def test_thesis_monitor_creates_watchlist_audit_row_without_thesis(tmp_path: Pat
     assert mu["invalidation"].startswith("No invalidation rule loaded")
     assert mu["evidence_links"] == ["local:watchlist:MU"]
     assert {"thesis", "why_owned_watched", "invalidation", "last_reviewed"}.issubset(set(mu["structured_fields_missing"]))
+
+
+def test_thesis_monitor_enriches_from_agent_thesis(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    created = datetime.now(UTC).isoformat()
+
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO agent_thesis (
+                thesis_id, ticker, created_at, agent_version, bull_target_price,
+                bull_target_date, base_target_price, core_thesis, required_proofs,
+                invalidation_conditions, catalysts, catalyst_summary, bear_case,
+                confidence, evidence_refs, raw
+            ) VALUES (
+                'th1', 'SOFI', ?, 'v1', 18.0,
+                current_date, 14.0, 'Fintech inflection on lending margin recovery.',
+                '["Net interest margin expands","Charge-offs stabilize"]',
+                '["Loses bank charter advantage below $7"]',
+                '[]', 'Q3 print', 'Funding cost shock re-rates the multiple.',
+                0.62, '["https://example.com/sofi"]', '{}'
+            )
+            """,
+            [created],
+        )
+        rows = thesis_monitor_rows(con, [{"symbol": "SOFI"}])
+
+    sofi = next(row for row in rows if row["symbol"] == "SOFI")
+    assert sofi["source"] == "agent_thesis"
+    assert sofi["thesis"].startswith("Fintech inflection")
+    assert "bank charter" in sofi["invalidation"]
+    assert sofi["invalidation_price"] == 7
+    assert sofi["evidence_links"] == ["https://example.com/sofi"]
+    assert sofi["agent_confidence"] == 0.62
+    assert sofi["agent_bear_case"].startswith("Funding cost shock")
+    assert "thesis" not in sofi["structured_fields_missing"]
+
+
+def test_invalidation_price_prefers_keyword_over_target() -> None:
+    assert _invalidation_price({}, "Price target $300; invalidation below $95.") == 95
+    assert _invalidation_price({}, "Trim into strength near $300.") == 300
+    assert _invalidation_price({"invalidation_price": 88}, "below $95") == 88

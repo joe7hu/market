@@ -14,7 +14,18 @@ from investment_panel.core.decision import canonical_quote_rows
 
 THESIS_STALE_DAYS = 45
 INVALIDATION_NEAR_PCT = 10.0
-PRICE_RE = re.compile(r"(?:\$|below\s+\$?|under\s+\$?|stop(?:\s+at)?\s+\$?|invalidation(?:\s+at)?\s+\$?)([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+# Prefer a price that is explicitly anchored to an invalidation keyword. A bare
+# "$300 price target" should never be mistaken for the invalidation level.
+INVALIDATION_PRICE_RE = re.compile(
+    r"(?:below|under|stop(?:\s+loss)?(?:\s+at)?|invalidat\w*(?:\s+at)?)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
+BARE_PRICE_RE = re.compile(r"\$\s*([0-9]+(?:\.[0-9]+)?)")
+# Keys that must survive field compaction so downstream consumers can rely on
+# them being present even when falsey (e.g. needs_review == False).
+_ALWAYS_KEEP_FIELDS = frozenset(
+    {"symbol", "owned", "watched", "needs_review", "stale_thesis"}
+)
 
 
 def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -25,6 +36,7 @@ def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None 
         return []
     thesis_rows = _theses_by_symbol(con)
     birdclaw = _birdclaw_by_symbol(con)
+    agent_theses = _agent_theses_by_symbol(con)
     quotes = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
     decisions = _decisions_by_symbol(con)
     portfolio = {str(row.get("symbol") or "").upper(): row for row in brokers.effective_portfolio_rows(con)}
@@ -35,16 +47,19 @@ def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None 
         stored = thesis_rows.get(symbol, {})
         thesis_json = _json_obj(stored.get("thesis_json"))
         evidence = birdclaw.get(symbol, [])
+        agent = agent_theses.get(symbol, {})
         decision = decisions.get(symbol, {})
         quote = quotes.get(symbol, {})
         owned = symbol in portfolio
         watched = symbol in watchlist
         updated_at = _parse_dt(stored.get("updated_at"))
         last_reviewed = _last_reviewed(thesis_json, updated_at)
-        raw_thesis = _first_text(thesis_json, ("thesis", "core_thesis", "summary", "claim")) or _first_evidence_summary(evidence)
+        stored_thesis = _first_text(thesis_json, ("thesis", "core_thesis", "summary", "claim"))
+        has_stored_content = bool(stored_thesis)
+        raw_thesis = stored_thesis or _agent_thesis_text(agent) or _first_evidence_summary(evidence)
         raw_why = _first_text(thesis_json, ("why_owned_watched", "why_owned", "why_watched", "why", "rationale", "why_now"))
-        raw_invalidation = _text_or_join(thesis_json.get("invalidation") or thesis_json.get("invalidation_criteria") or thesis_json.get("risk_trigger"))
-        evidence_links = _evidence_links(thesis_json, evidence) or _fallback_evidence_links(symbol, stored, evidence, decision)
+        raw_invalidation = _text_or_join(thesis_json.get("invalidation") or thesis_json.get("invalidation_criteria") or thesis_json.get("risk_trigger")) or _agent_invalidation_text(agent)
+        evidence_links = _evidence_links(thesis_json, evidence) or _agent_evidence_links(agent) or _fallback_evidence_links(symbol, stored, evidence, decision)
         status = _status(thesis_json, owned, watched)
         latest_price = _float(quote.get("price") or decision.get("latest_quote"))
         thesis = raw_thesis or _fallback_thesis(symbol, owned, watched, decision)
@@ -74,7 +89,7 @@ def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None 
                     "status": status,
                     "owned": owned,
                     "watched": watched,
-                    "source": "theses" if stored else "arco_thesis" if evidence else "portfolio_watchlist",
+                    "source": _thesis_source(has_stored_content, agent, evidence),
                     "updated_at": updated_at,
                     "stale_thesis": stale_thesis,
                     "stale_reason": stale_reason,
@@ -91,6 +106,11 @@ def thesis_monitor_rows(con: Any, config_watchlist: list[dict[str, Any]] | None 
                     "evidence_count": len(evidence_links),
                     "raw_thesis": thesis_json,
                     "structured_fields_missing": _structured_fields_missing(raw_thesis, raw_why, raw_invalidation, last_reviewed),
+                    "agent_confidence": _float(agent.get("confidence")) if agent else None,
+                    "agent_required_proofs": _string_list(agent.get("required_proofs")) if agent else [],
+                    "agent_bear_case": str(agent.get("bear_case") or "").strip() if agent else "",
+                    "agent_bull_target_price": _float(agent.get("bull_target_price")) if agent else None,
+                    "agent_base_target_price": _float(agent.get("base_target_price")) if agent else None,
                 }
             )
         )
@@ -133,6 +153,72 @@ def _birdclaw_by_symbol(con: Any) -> dict[str, list[dict[str, Any]]]:
     for row in rows:
         grouped.setdefault(str(row.get("symbol") or "").upper(), []).append(row)
     return grouped
+
+
+def _agent_theses_by_symbol(con: Any) -> dict[str, dict[str, Any]]:
+    """Latest option-agent thesis per ticker, enriching monitored symbols.
+
+    Agent theses are falsifiable hypotheses (core_thesis, invalidation_conditions,
+    targets, evidence_refs) and are the richest structured thesis source in the
+    system. They enrich existing monitored symbols only; they never add new
+    symbols to the monitor (radar candidates are not owned/watched names).
+    """
+
+    try:
+        rows = query_rows(
+            con,
+            """
+            SELECT ticker, core_thesis, required_proofs, invalidation_conditions,
+                   catalysts, catalyst_summary, bear_case, confidence, evidence_refs,
+                   bull_target_price, base_target_price, created_at
+            FROM agent_thesis
+            QUALIFY row_number() OVER (PARTITION BY ticker ORDER BY created_at DESC) = 1
+            """,
+        )
+    except Exception:
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        symbol = str(row.get("ticker") or "").upper()
+        if not symbol:
+            continue
+        decoded = dict(row)
+        decoded["required_proofs"] = _json_list(decoded.get("required_proofs"))
+        decoded["invalidation_conditions"] = _json_list(decoded.get("invalidation_conditions"))
+        decoded["catalysts"] = _json_list(decoded.get("catalysts"))
+        decoded["evidence_refs"] = _json_list(decoded.get("evidence_refs"))
+        output[symbol] = decoded
+    return output
+
+
+def _agent_thesis_text(agent: dict[str, Any]) -> str:
+    return str(agent.get("core_thesis") or "").strip()
+
+
+def _agent_invalidation_text(agent: dict[str, Any]) -> str:
+    return _text_or_join(agent.get("invalidation_conditions"))
+
+
+def _agent_evidence_links(agent: dict[str, Any]) -> list[str]:
+    links: list[str] = []
+    for item in agent.get("evidence_refs") or []:
+        if isinstance(item, str) and item.strip():
+            links.append(item.strip())
+        elif isinstance(item, dict):
+            link = str(item.get("url") or item.get("source_url") or item.get("href") or item.get("ref") or "").strip()
+            if link:
+                links.append(link)
+    return list(dict.fromkeys(links))
+
+
+def _thesis_source(has_stored_content: bool, agent: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
+    if has_stored_content:
+        return "theses"
+    if agent:
+        return "agent_thesis"
+    if evidence:
+        return "arco_thesis"
+    return "portfolio_watchlist"
 
 
 def _decisions_by_symbol(con: Any) -> dict[str, dict[str, Any]]:
@@ -273,9 +359,13 @@ def _invalidation_price(thesis: dict[str, Any], invalidation: str) -> float | No
         value = _float(thesis.get(key))
         if value and value > 0:
             return value
-    match = PRICE_RE.search(invalidation or "")
-    if match:
-        return _float(match.group(1))
+    text = invalidation or ""
+    keyword_match = INVALIDATION_PRICE_RE.search(text)
+    if keyword_match:
+        return _float(keyword_match.group(1))
+    bare_match = BARE_PRICE_RE.search(text)
+    if bare_match:
+        return _float(bare_match.group(1))
     return None
 
 
@@ -344,6 +434,11 @@ def _json_obj(value: Any) -> dict[str, Any]:
         return {}
 
 
+def _string_list(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else _json_list(value)
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
 def _json_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -385,4 +480,8 @@ def _float(value: Any) -> float | None:
 
 
 def _compact_empty_fields(row: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in row.items() if value not in (None, "", [], {})}
+    return {
+        key: value
+        for key, value in row.items()
+        if key in _ALWAYS_KEEP_FIELDS or value not in (None, "", [], {})
+    }

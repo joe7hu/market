@@ -151,7 +151,7 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function sendJson<T>(path: string, method: "POST" | "DELETE", body?: unknown): Promise<T> {
+async function sendJson<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
     cache: "no-store",
@@ -328,6 +328,23 @@ export async function savePortfolioPosition(position: PortfolioPositionInput): P
 export async function deletePortfolioPosition(symbol: string): Promise<TablePayload> {
   const payload = await sendJson<{ portfolio: TablePayload }>(`/api/portfolio/positions/${encodeURIComponent(symbol)}`, "DELETE");
   return payload.portfolio;
+}
+
+export type ThesisInput = {
+  thesis: string;
+  why?: string;
+  invalidation?: string;
+  invalidation_price?: number | null;
+  status?: string | null;
+  evidence_links?: string[];
+};
+
+export async function saveThesis(symbol: string, input: ThesisInput): Promise<void> {
+  await sendJson<{ thesis: unknown }>(`/api/theses/${encodeURIComponent(symbol)}`, "PUT", input);
+}
+
+export async function markThesisReviewed(symbol: string): Promise<void> {
+  await sendJson<{ review: unknown }>(`/api/theses/${encodeURIComponent(symbol)}/review`, "POST");
 }
 
 export async function runAgentReview(): Promise<TablePayload> {
