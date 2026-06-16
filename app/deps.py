@@ -9,6 +9,7 @@ logic — add a router under `app/routers/` instead.
 from __future__ import annotations
 
 import json
+import inspect
 import time
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -36,6 +37,7 @@ from app.data_access import (
     save_watchlist_symbol,
     settings_payload,
     signals_payload,
+    status_payload,
     table_payload,
     ticker_payload,
     update_agent_settings_config,
@@ -158,20 +160,35 @@ class TradeJournalInput(BaseModel):
 
 
 def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | None = None) -> tuple[dict[str, Any], Any]:
+    config = load_config()
+    config_key = str(database_path(config))
+    now = time.monotonic()
     with _CONTEXT_LOCK:
-        config = load_config()
-        config_key = str(database_path(config))
-        now = time.monotonic()
         entries = _CONTEXT_CACHE.setdefault("entries", {})
         cached = entries.get(cache_key)
         if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
             return cached["value"]
-        active_loader = loader or load_panel_data
-        value = (config, active_loader(config))
+
+    active_loader = loader or _load_panel_data_without_repairs
+    value = (config, active_loader(config))
+
+    with _CONTEXT_LOCK:
+        entries = _CONTEXT_CACHE.setdefault("entries", {})
         entries[cache_key] = {"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS}
         if cache_key == "full":
             _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
         return value
+
+
+def _load_panel_data_without_repairs(active_config: dict[str, Any]) -> Any:
+    parameters = inspect.signature(load_panel_data).parameters
+    if "ensure_decision_models" not in parameters:
+        return load_panel_data(active_config)
+    return load_panel_data(
+        active_config,
+        ensure_decision_models=False,
+        ensure_source_models=False,
+    )
 
 
 def _table_payload(table_name: str) -> dict[str, Any]:

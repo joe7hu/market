@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 from typing import Any, Iterator
 
@@ -352,6 +353,50 @@ def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     assert calls == ["feed_signals"]
     assert response.json()["rows"] == [{"id": "feed-1", "title": "Scoped feed"}]
+
+
+def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "cache-lock.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    cached = PanelData(status=DataStatus(True, "cached", "test"), tables={"signals": [{"id": "cached"}]})
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    cached_returned = threading.Event()
+    errors: list[BaseException] = []
+
+    app_deps._context(loader=lambda _config: cached)
+
+    def slow_loader(_config: dict[str, object]) -> PanelData:
+        slow_started.set()
+        release_slow.wait(timeout=5)
+        return PanelData(status=DataStatus(True, "slow", "test"), tables={})
+
+    def run_slow_context() -> None:
+        try:
+            app_deps._context(cache_key="slow", loader=slow_loader)
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    slow_thread = threading.Thread(target=run_slow_context)
+    slow_thread.start()
+    assert slow_started.wait(timeout=1)
+
+    def read_cached_context() -> None:
+        try:
+            _, panel_data = app_deps._context()
+            assert panel_data is cached
+            cached_returned.set()
+        except BaseException as exc:  # pragma: no cover - threaded assertion capture
+            errors.append(exc)
+
+    cached_thread = threading.Thread(target=read_cached_context)
+    cached_thread.start()
+    assert cached_returned.wait(timeout=0.5)
+
+    release_slow.set()
+    slow_thread.join(timeout=1)
+    cached_thread.join(timeout=1)
+    assert not errors
 
 
 def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp_path, monkeypatch) -> None:

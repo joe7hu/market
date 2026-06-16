@@ -187,7 +187,7 @@ def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:
     assert panel_data.rows("source_freshness") == []
 
 
-def test_source_table_loader_requests_source_repair_without_decision_repair(monkeypatch) -> None:
+def test_source_table_loader_uses_read_only_panel_load(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
     def fake_helper(config: dict[str, object], table_names: tuple[str, ...], ensure_decision_models: bool, ensure_source_models: bool) -> dict[str, object]:
@@ -208,7 +208,7 @@ def test_source_table_loader_requests_source_repair_without_decision_repair(monk
         {
             "table_names": ("source_items",),
             "ensure_decision_models": False,
-            "ensure_source_models": True,
+            "ensure_source_models": False,
         }
     ]
 

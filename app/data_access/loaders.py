@@ -3,10 +3,7 @@
 from __future__ import annotations
 from typing import Any, Iterable
 from app.panel_contracts import (
-    DECISION_REPAIR_TABLES,
-    SOURCE_REPAIR_TABLES,
     panel_contract_payload as contract_panel_payload,
-    tables_for_scope as contract_tables_for_scope,
 )
 from investment_panel.core.panel import (
     load_panel_data as core_load_panel_data,
@@ -69,8 +66,8 @@ def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelDat
     return load_panel_data(
         config,
         table_names=scope_tables,
-        ensure_decision_models=bool(set(scope_tables) & DECISION_REPAIR_TABLES),
-        ensure_source_models=bool(set(scope_tables) & SOURCE_REPAIR_TABLES),
+        ensure_decision_models=False,
+        ensure_source_models=False,
     )
 
 
@@ -82,8 +79,8 @@ def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> Pan
     return load_panel_data(
         config,
         table_names=(table_name,),
-        ensure_decision_models=table_name in DECISION_REPAIR_TABLES,
-        ensure_source_models=table_name in SOURCE_REPAIR_TABLES,
+        ensure_decision_models=False,
+        ensure_source_models=False,
     )
 
 

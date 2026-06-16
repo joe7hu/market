@@ -12,8 +12,14 @@ router = APIRouter()
 
 @router.get("/api/status")
 def status() -> dict[str, Any]:
-    config, panel_data = deps._context()
-    return deps.settings_payload(config, panel_data)["status"]
+    config = deps.load_config()
+    panel_data = deps.load_panel_data(
+        config,
+        table_names=("source_health",),
+        ensure_decision_models=False,
+        ensure_source_models=False,
+    )
+    return deps.status_payload(panel_data)
 
 
 @router.get("/api/panel-contract")
