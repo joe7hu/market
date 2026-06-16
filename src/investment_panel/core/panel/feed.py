@@ -11,7 +11,7 @@ from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 from investment_panel.core.panel.coerce import _date_text, _dict_from_value, _is_generic_source_signal, _normalize_symbol_token, _number_from_any, _optional_number, _plain_text, _ratio, _string_list, _symbols_from_text, _symbols_from_value
 from investment_panel.core.panel.metrics import _free_cash_flow, _is_watch_universe, _metric_number, _metric_number_present, _pe_from_fundamentals, _ps_from_fundamentals, _quality_score, _rank_percentiles, _roic_from_fundamentals, _star_rating, _universe_next_action, _valuation_percentiles_by_symbol, _value_signal, _watch_sort
-from investment_panel.core.panel.sources import _countercase, _disclosure_investor_source_rows, _expanded_disclosure_positions, _news_provider_source_rows, _primary_symbol, _provider_source_rows, _research_report_source_rows, _source_count_rows, _source_event_countercase, _source_event_next_action, _source_event_thesis, _source_family_counts, _source_family_for_name, _source_sentiment, _thesis_author_source_rows
+from investment_panel.core.panel.sources import _countercase, _disclosure_investor_source_rows, _expanded_disclosure_positions, _feed_source_family, _news_provider_source_rows, _primary_symbol, _provider_source_rows, _research_report_source_rows, _source_count_rows, _source_event_countercase, _source_event_next_action, _source_event_thesis, _source_family_counts, _source_family_for_name, _source_sentiment, _thesis_author_source_rows
 from investment_panel.core.panel.technicals import technicals
 from investment_panel.core.panel.disclosures import _compact_empty_fields, disclosures
 from investment_panel.core.panel.read_equity import decision_queue, discovered_universe, portfolio
@@ -335,6 +335,8 @@ def _source_feed_events(
                 "date": _date_text(row.get("published_at")),
                 "source": str(row.get("provider") or row.get("source") or "News"),
                 "source_type": "news",
+                "source_family": _feed_source_family("news", str(row.get("provider") or row.get("source") or "")),
+                "sentiment": sentiment,
                 "title": title,
                 "symbols": symbols,
                 "primary_symbol": primary,
@@ -374,6 +376,8 @@ def _source_feed_events(
                 "date": _date_text(row.get("created_at") or first_evidence.get("date")),
                 "source": str(row.get("author") or "Arco / Birdclaw"),
                 "source_type": "socials",
+                "source_family": "thesis",
+                "sentiment": _source_sentiment(title, thesis_text),
                 "title": title,
                 "symbols": [symbol],
                 "primary_symbol": symbol,
@@ -406,6 +410,8 @@ def _source_feed_events(
                 "date": _date_text(row.get("filed_date") or row.get("event_date")),
                 "source": investor,
                 "source_type": "filing",
+                "source_family": "filing",
+                "sentiment": sentiment,
                 "title": f"{investor} {action.lower()} disclosed positions",
                 "action": action,
                 "symbols": [symbol],
@@ -441,6 +447,8 @@ def _source_feed_events(
                 "date": _date_text(row.get("created_at")),
                 "source": "Market research packet",
                 "source_type": "research",
+                "source_family": "research",
+                "sentiment": "neutral",
                 "title": f"{symbol} {str(row.get('report_type') or 'research').replace('_', ' ')}",
                 "symbols": [symbol],
                 "primary_symbol": symbol,
@@ -474,6 +482,8 @@ def _source_feed_events(
                 "date": _date_text(row.get("observed_at")),
                 "source": str(row.get("source_name") or row.get("source_id") or "Source signal"),
                 "source_type": str(row.get("signal_type") or "source_signal"),
+                "source_family": _feed_source_family(str(row.get("signal_type") or "source_signal"), str(row.get("source_name") or row.get("source_id") or "")),
+                "sentiment": str(row.get("sentiment") or "neutral"),
                 "title": title,
                 "symbols": [symbol],
                 "primary_symbol": symbol,
@@ -539,6 +549,7 @@ def _group_feed_events(
                 "next_action": event.get("next_action"),
                 "freshness": event.get("freshness"),
                 "severity": event.get("severity"),
+                "sentiment": event.get("sentiment"),
             }
             context_key = json.dumps(context, sort_keys=True, default=str)
             if context_key not in group["_context_keys"]:

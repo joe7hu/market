@@ -1014,6 +1014,57 @@ def test_feed_signals_group_canonical_source_signals_by_source_item(tmp_path) ->
     assert {context["symbol"] for context in grouped[0]["ticker_contexts"]} == {"NVDA", "MSFT"}
 
 
+def test_feed_signals_skip_common_word_ticker_false_positives(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        # related_symbols is empty, so the title is mined against the known
+        # universe. "Low" / "On" must not be tagged as LOW / ON tickers.
+        con.execute(
+            "INSERT INTO news_items VALUES ('n1', '2026-05-29T12:00:00Z', 'Bloomberg', 'Oil Falls to Three-Month Low as Output Comes Back On', ?, 'https://example.com/n1', 'tradingview', '{}')",
+            [json.dumps([])],
+        )
+        # A cashtag keeps the same word working as a real ticker.
+        con.execute(
+            "INSERT INTO news_items VALUES ('n2', '2026-05-29T12:00:00Z', 'Bloomberg', 'Lowe''s guidance: $LOW raises buyback', ?, 'https://example.com/n2', 'tradingview', '{}')",
+            [json.dumps([])],
+        )
+
+        rows = feed_signals(con, [{"symbol": "LOW"}, {"symbol": "ON"}])
+
+    assert not any(row["id"] == "news:n1" for row in rows)
+    cashtag = next(row for row in rows if row["id"] == "news:n2")
+    assert cashtag["symbols"] == ["LOW"]
+
+
+def test_feed_signals_carry_source_family_and_sentiment(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            "INSERT INTO news_items VALUES ('news1', '2026-05-29T12:00:00Z', 'Reuters', 'Microsoft beats and shares rally', ?, 'https://example.com/news1', 'tradingview', '{}')",
+            [json.dumps(["NASDAQ:MSFT"])],
+        )
+        con.execute(
+            "INSERT INTO news_items VALUES ('memo1', '2026-05-28T12:00:00Z', 'Howard Marks', 'On MSFT and the limits of optimism', ?, 'https://example.com/memo1', 'rss', '{}')",
+            [json.dumps(["NASDAQ:MSFT"])],
+        )
+        con.execute(
+            "INSERT INTO news_items VALUES ('blog1', '2026-05-27T12:00:00Z', 'Stratechery', 'MSFT downgrade risk in the cloud', ?, 'https://example.com/blog1', 'rss', '{}')",
+            [json.dumps(["NASDAQ:MSFT"])],
+        )
+
+        rows = feed_signals(con, [{"symbol": "MSFT"}])
+
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["news:news1"]["source_family"] == "news"
+    assert by_id["news:news1"]["sentiment"] == "bullish"
+    assert by_id["news:memo1"]["source_family"] == "memo"
+    assert by_id["news:blog1"]["source_family"] == "blog"
+    assert by_id["news:blog1"]["sentiment"] == "bearish"
+    assert by_id["news:news1"]["ticker_contexts"][0]["sentiment"] == "bullish"
+
+
 def test_ownership_consensus_expands_13f_holdings_into_weighted_ticker_rows(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)

@@ -51,14 +51,32 @@ def _symbols_from_value(value: Any) -> list[str]:
 
 
 
+# Short, all-caps English words that collide with real tickers (e.g. LOW=Lowe's,
+# ON=ON Semi, HIT, ALL=Allstate). A bare appearance in prose is almost always the
+# English word, so we only accept these as tickers when they are cashtagged
+# ($LOW) or carry an exchange prefix (NYSE:LOW).
+_TICKER_WORD_STOPLIST = {
+    "A", "ALL", "AN", "AND", "ANY", "ARE", "AS", "AT", "BE", "BIG", "BUT", "BY",
+    "CAN", "DD", "DO", "FOR", "GO", "GOOD", "HAS", "HE", "HIT", "IF", "IN", "IS",
+    "IT", "ITS", "KEY", "LOW", "NEW", "NO", "NOT", "NOW", "OF", "OFF", "ON", "ONE",
+    "OR", "OUT", "OWN", "PAY", "REAL", "RUN", "SEE", "SO", "TO", "TOP", "TWO", "UP",
+    "US", "WE", "WELL",
+}
+
+
 def _symbols_from_text(value: Any, known_symbols: set[str]) -> list[str]:
     text = str(value or "").upper()
     symbols = []
     for symbol in sorted(known_symbols, key=len, reverse=True):
         if not symbol or len(symbol) < 2:
             continue
-        if re.search(rf"(?<![A-Z0-9]){re.escape(symbol)}(?![A-Z0-9])", text):
-            symbols.append(symbol)
+        if not re.search(rf"(?<![A-Z0-9]){re.escape(symbol)}(?![A-Z0-9])", text):
+            continue
+        if symbol in _TICKER_WORD_STOPLIST and not re.search(
+            rf"(?:\$|[A-Z]+:){re.escape(symbol)}(?![A-Z0-9])", text
+        ):
+            continue
+        symbols.append(symbol)
     return symbols
 
 

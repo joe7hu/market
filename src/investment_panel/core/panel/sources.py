@@ -368,6 +368,43 @@ def _source_family_for_name(name: str) -> str:
     return name.split(":")[0]
 
 
+# Provider/author names whose news_items rows are long-form blog/newsletter or
+# investor-memo content rather than wire news. Sourced from the canonical source
+# inventory in core.source_ingestion.definitions; kept here as a small literal so
+# the feed read model does not import the (heavier) ingestion package.
+_MEMO_SOURCE_HINTS = ("howard marks", "oaktree", "memo", "berkshire", "shareholder letter")
+_BLOG_SOURCE_HINTS = (
+    "stratechery", "not boring", "semianalysis", "citrini", "capital wars",
+    "michael burry", "benedict evans", "chamath", "avc", "substack", "newsletter",
+    "blog", "the diff", "net interest",
+)
+
+
+def _feed_source_family(source_type: str, source_name: str) -> str:
+    """Coarse, UI-facing family used to facet the source feed.
+
+    Returns one of: ``filing``, ``thesis``, ``research``, ``memo``, ``blog``, ``news``.
+    Filings/13F, theses, and research carry their own ``source_type``; only the
+    ``news`` bucket is refined into memo/blog/news by inspecting the provider name.
+    """
+
+    kind = str(source_type or "").lower()
+    if kind == "filing":
+        return "filing"
+    if kind in {"thesis", "socials"}:
+        return "thesis"
+    if kind == "research":
+        return "research"
+    name = str(source_name or "").lower()
+    if kind == "news":
+        if any(hint in name for hint in _MEMO_SOURCE_HINTS):
+            return "memo"
+        if any(hint in name for hint in _BLOG_SOURCE_HINTS):
+            return "blog"
+        return "news"
+    return kind or "news"
+
+
 
 
 def source_rows(source_key: str, title: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
