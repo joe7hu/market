@@ -23,6 +23,22 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
     assert rows[0]["summary"] == {"ok": True, "rows": 3}
 
 
+def test_refresh_job_rows_falls_back_to_read_only_when_writer_config_conflicts(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
+    job = refresh_jobs.run_refresh_job("unit_refresh", db_path)
+
+    def fail_init(_db_path):
+        raise RuntimeError("Connection Error: different configuration than existing connections")
+
+    monkeypatch.setattr(refresh_jobs, "init_db", fail_init)
+
+    rows = refresh_jobs.refresh_job_rows(db_path)
+
+    assert rows[0]["id"] == job["id"]
+    assert rows[0]["status"] == "succeeded"
+
+
 def test_retention_prunes_old_operational_rows_without_dropping_latest(tmp_path) -> None:
     db_path = tmp_path / "jobs.duckdb"
     init_db(db_path)
@@ -106,6 +122,21 @@ def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None
 
     assert result["status"] == "succeeded"
     assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
+
+
+def test_update_market_environment_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.update_market_environment,
+        "run",
+        lambda config_path: {"job": "update_market_environment", "config_path": config_path},
+    )
+
+    result = refresh_jobs.run_refresh_job("update_market_environment", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {"job": "update_market_environment", "config_path": "config.yaml"}
 
 
 def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:

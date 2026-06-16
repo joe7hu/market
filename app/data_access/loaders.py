@@ -1,6 +1,7 @@
 """Panel read-model loading and scope selection."""
 
 from __future__ import annotations
+from datetime import date, datetime
 from typing import Any, Iterable
 from app.panel_contracts import (
     panel_contract_payload as contract_panel_payload,
@@ -134,14 +135,19 @@ def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
     except Exception as exc:
         return _empty_market_panel_data(f"Market read models are unavailable: {exc}", "core-error")
     ready = any(tables.values())
+    freshness = _market_freshness(tables)
+    status_source = "duckdb-stale" if freshness.get("status") == "stale" else "duckdb"
+    message = "Loaded market environment data."
+    if freshness.get("status") == "stale":
+        message = f"Loaded market environment data, but broad-market inputs are stale: {freshness.get('reason')}"
     return PanelData(
         status=DataStatus(
             ready=ready,
-            message="Loaded market environment data." if ready else "No market environment rows are loaded yet.",
-            source="duckdb",
+            message=message if ready else "No market environment rows are loaded yet.",
+            source=status_source,
         ),
         tables=tables,
-        metadata={},
+        metadata={"market_freshness": freshness},
     )
 
 
@@ -155,3 +161,57 @@ def _empty_market_panel_data(message: str, source: str) -> PanelData:
         },
         metadata={"setup_instructions": SETUP_INSTRUCTIONS},
     )
+
+
+def _market_freshness(tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    today = date.today()
+    reference_date = _max_row_date(tables.get("market_valuation_reference_charts") or [], ("latest_date", "as_of", "date"))
+    asset_date = _max_row_date(tables.get("market_environment_assets") or [], ("as_of", "date"))
+    checks = {
+        "valuation_reference": _freshness_check(reference_date, today, max_age_days=1),
+        "asset_matrix": _freshness_check(asset_date, today, max_age_days=1),
+    }
+    stale = {name: check for name, check in checks.items() if check["status"] == "stale"}
+    unknown = {name: check for name, check in checks.items() if check["status"] == "unknown"}
+    if stale:
+        status = "stale"
+        reason = "; ".join(f"{name} latest {check['latest_date']} is {check['age_days']}d old" for name, check in stale.items())
+    elif unknown:
+        status = "unknown"
+        reason = "Market freshness dates are not loaded."
+    else:
+        status = "fresh"
+        reason = "Broad-market inputs are within freshness windows."
+    return {"status": status, "as_of": today.isoformat(), "reason": reason, "checks": checks}
+
+
+def _freshness_check(value: date | None, today: date, *, max_age_days: int) -> dict[str, Any]:
+    if value is None:
+        return {"status": "unknown", "latest_date": None, "age_days": None, "max_age_days": max_age_days}
+    age_days = (today - value).days
+    return {
+        "status": "stale" if age_days > max_age_days else "fresh",
+        "latest_date": value.isoformat(),
+        "age_days": age_days,
+        "max_age_days": max_age_days,
+    }
+
+
+def _max_row_date(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> date | None:
+    dates = [_date_value(row.get(key)) for row in rows for key in keys]
+    valid_dates = [value for value in dates if value is not None]
+    return max(valid_dates) if valid_dates else None
+
+
+def _date_value(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date()
+    except ValueError:
+        return None

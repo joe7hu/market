@@ -34,22 +34,38 @@ import {
 } from "./format";
 import { DEFAULT_MARKET_PERIODS, FORWARD_PE_PERIODS } from "./types";
 
-export function MarketEnvironmentPanel({ rows, referenceRows, assetRows }: { rows: RowRecord[]; referenceRows: RowRecord[]; assetRows: RowRecord[] }) {
+export function MarketEnvironmentPanel({
+  rows,
+  referenceRows,
+  assetRows,
+  freshness,
+}: {
+  rows: RowRecord[];
+  referenceRows: RowRecord[];
+  assetRows: RowRecord[];
+  freshness?: { status: string; reason: string };
+}) {
   const score = weightedDriverScore(rows);
   const valuation = rows.find((row) => textField(row, ["category"]) === "Valuation");
   const trend = rows.find((row) => textField(row, ["category"]) === "Price Trend");
   const breadth = rows.find((row) => textField(row, ["category"]) === "Market Breadth");
   const risk = rows.find((row) => textField(row, ["category"]) === "Risk Appetite");
+  const freshnessStatus = freshness?.status ?? "";
+  const freshnessVariant = freshnessStatus === "stale" ? "destructive" : freshnessStatus === "fresh" ? "secondary" : "outline";
 
   return (
     <Card className="min-w-0">
       <CardHeader className="flex-row items-start justify-between gap-3 p-4 pb-2">
         <div>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Gauge className="size-4 text-muted-foreground" />
-            Market Environment
-          </CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Gauge className="size-4 text-muted-foreground" />
+              Market Environment
+            </CardTitle>
+            {freshnessStatus ? <Badge variant={freshnessVariant}>{titleCase(freshnessStatus)}</Badge> : null}
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">Broad market inputs only: valuation, trend, breadth, risk appetite, and leadership.</p>
+          {freshness?.reason ? <p className="mt-1 text-xs text-muted-foreground">{freshness.reason}</p> : null}
         </div>
         <ScorePill value={score} posture={postureFromScore(score)} />
       </CardHeader>

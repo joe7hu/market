@@ -1,9 +1,11 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from app import data_access
+from investment_panel.core.db import db, init_db
 
 
 def test_empty_database_returns_duckdb_status(tmp_path) -> None:
@@ -177,6 +179,38 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert market_tables["market_valuation_reference_charts"]["count"] == 1
     assert market_tables["market_environment_assets"]["count"] == 1
     assert market_tables["market_environment_model"]["count"] == 1
+
+
+def test_market_panel_status_reports_stale_broad_market_inputs(tmp_path) -> None:
+    db_path = tmp_path / "market-stale.duckdb"
+    stale_date = date.today() - timedelta(days=3)
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO market_valuation_metric_points
+            (metric, as_of, label, value, suffix, higher_is_better, source, source_url)
+            VALUES ('sp500_forward_pe', ?, 'S&P 500 Forward P/E', 21.5, 'x', false, 'test', 'https://example.com')
+            """,
+            [stale_date],
+        )
+        con.execute(
+            """
+            INSERT INTO market_environment_asset_snapshots
+            (symbol, as_of, group_name, name, price, return_1d, return_ytd, return_1w,
+             return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up, sma_50_up,
+             sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w, color, source, raw)
+            VALUES ('SPY', ?, 'Market', 'S&P 500 ETF', 600, 0.1, 5, 1, 2, 12, 1, true, true, true, true, true, true, 90, 'green', 'test', '{}')
+            """,
+            [stale_date],
+        )
+
+    panel_data = data_access.load_market_panel_data({"database": {"duckdb_path": str(db_path)}})
+
+    assert panel_data.status.ready is True
+    assert panel_data.status.source == "duckdb-stale"
+    assert panel_data.metadata["market_freshness"]["status"] == "stale"
+    assert panel_data.metadata["market_freshness"]["checks"]["asset_matrix"]["latest_date"] == stale_date.isoformat()
 
 
 def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:

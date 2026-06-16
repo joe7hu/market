@@ -23,6 +23,7 @@ from investment_panel.jobs import (
     update_event_calendar,
     update_free_sources,
     update_ibkr_options,
+    update_market_environment,
     update_research_sources,
     update_robinhood_options,
     update_social_sources,
@@ -40,6 +41,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "premarket_options_intelligence": lambda config_path: premarket_options_intelligence.run(config_path),
     "update_arco_data": lambda config_path: update_arco_data.run(config_path),
     "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
+    "update_market_environment": lambda config_path: update_market_environment.run(config_path),
     # Radar-focused source pull for the continuous scheduler: TradingView option
     # chains/quotes plus yfinance option liquidity (open interest / volume), which
     # the radar data contract requires for trade-readiness. The equity-price
@@ -84,9 +86,15 @@ ALLOWLIST: dict[str, JobRunner] = {
 
 
 def refresh_job_rows(db_path: Any) -> list[dict[str, Any]]:
-    init_db(db_path)
-    mark_stale_running_jobs(db_path)
-    with db(db_path, read_only=False) as con:
+    try:
+        init_db(db_path)
+        mark_stale_running_jobs(db_path)
+        read_only = False
+    except Exception as exc:
+        if "different configuration than existing connections" not in str(exc):
+            raise
+        read_only = True
+    with db(db_path, read_only=read_only) as con:
         rows = query_rows(
             con,
             """
