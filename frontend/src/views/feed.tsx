@@ -1,4 +1,4 @@
-import { Minus, RefreshCw, Search, TrendingDown, TrendingUp } from "lucide-react";
+import { Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { EmptyState, EvidenceList, StatusBadge } from "@/components/market/workstation";
@@ -29,9 +29,9 @@ const FAMILY_LABELS: Record<string, string> = {
 const FAMILY_ORDER = ["news", "blog", "memo", "thesis", "research", "filing", "podcast", "transcript"];
 
 export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }: { data: PanelData; lastRefresh: Date | null; loading: boolean; onRefresh: () => void; onOpenTicker: OpenTicker }) {
-  const [query, setQuery] = useState("");
   const [family, setFamily] = useState("all");
-  const [ticker, setTicker] = useState("all");
+  const [source, setSource] = useState("all");
+  const [tickerQuery, setTickerQuery] = useState("");
 
   const feedCards = useMemo(() => sourceFeedCards(rows(data.feedSignals)), [data.feedSignals]);
 
@@ -43,6 +43,17 @@ export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }
 
   const families = useMemo(() => FAMILY_ORDER.filter((key) => familyCounts[key]), [familyCounts]);
 
+  // Individual sources available within the current family, ranked by volume — so
+  // the source can be picked from a list instead of typed.
+  const sourceOptions = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const row of feedCards) {
+      if (family !== "all" && cardFamily(row) !== family) continue;
+      for (const name of cardSources(row)) counts[name] = (counts[name] ?? 0) + 1;
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [feedCards, family]);
+
   const tickers = useMemo(() => {
     const seen = new Set<string>();
     for (const row of feedCards) for (const symbol of symbolList(row)) seen.add(symbol);
@@ -50,14 +61,19 @@ export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }
   }, [feedCards]);
 
   const visibleCards = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const tq = tickerQuery.trim().toUpperCase();
     return feedCards.filter((row) => {
       if (family !== "all" && cardFamily(row) !== family) return false;
-      if (ticker !== "all" && !symbolList(row).includes(ticker)) return false;
-      if (normalized && !feedSearchText(row).includes(normalized)) return false;
+      if (source !== "all" && !cardSources(row).includes(source)) return false;
+      if (tq && !symbolList(row).some((symbol) => symbol.includes(tq))) return false;
       return true;
     });
-  }, [feedCards, family, ticker, query]);
+  }, [feedCards, family, source, tickerQuery]);
+
+  const pickFamily = (key: string) => {
+    setFamily(key);
+    setSource("all");
+  };
 
   return (
     <WorkspacePage
@@ -66,25 +82,34 @@ export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }
       subtitle="Source-backed theses, countercases, and evidence from news, blogs, memos, research, filings, and 13F ownership inputs."
       actions={
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          <Select value={ticker} onValueChange={setTicker}>
-            <SelectTrigger className="sm:w-40" aria-label="Filter feed by ticker"><SelectValue placeholder="Ticker" /></SelectTrigger>
+          <Select value={source} onValueChange={setSource}>
+            <SelectTrigger className="sm:w-56" aria-label="Pick a source"><SelectValue placeholder="Source" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All tickers</SelectItem>
-              {tickers.map((symbol) => <SelectItem key={symbol} value={symbol}>{symbol}</SelectItem>)}
+              <SelectItem value="all">All sources ({feedCards.length})</SelectItem>
+              {sourceOptions.map(([name, count]) => <SelectItem key={name} value={name}>{name} ({count})</SelectItem>)}
             </SelectContent>
           </Select>
-          <div className="relative min-w-0 sm:w-72">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter source feed" aria-label="Filter source feed" />
+          <div className="min-w-0 sm:w-44">
+            <Input
+              list="feed-ticker-options"
+              value={tickerQuery}
+              onChange={(event) => setTickerQuery(event.target.value.toUpperCase())}
+              placeholder="Ticker…"
+              aria-label="Filter by ticker"
+              autoComplete="off"
+            />
+            <datalist id="feed-ticker-options">
+              {tickers.map((symbol) => <option key={symbol} value={symbol} />)}
+            </datalist>
           </div>
           <Button type="button" variant="outline" onClick={onRefresh}><RefreshCw className={loading ? "animate-spin" : ""} /> Refresh</Button>
         </div>
       }
     >
       <div className="mb-4 flex flex-wrap gap-1.5">
-        <FamilyChip label={`All (${feedCards.length})`} active={family === "all"} onClick={() => setFamily("all")} />
+        <FamilyChip label={`All (${feedCards.length})`} active={family === "all"} onClick={() => pickFamily("all")} />
         {families.map((key) => (
-          <FamilyChip key={key} label={`${FAMILY_LABELS[key] ?? titleLabel(key)} (${familyCounts[key]})`} active={family === key} onClick={() => setFamily(key)} />
+          <FamilyChip key={key} label={`${FAMILY_LABELS[key] ?? titleLabel(key)} (${familyCounts[key]})`} active={family === key} onClick={() => pickFamily(key)} />
         ))}
       </div>
       {visibleCards.length ? (
@@ -105,11 +130,18 @@ function FamilyChip({ label, active, onClick }: { label: string; active: boolean
 }
 
 function SentimentMark({ sentiment, className }: { sentiment: Sentiment; className?: string }) {
-  if (sentiment === "neutral") return <Minus className={cn("size-3.5 text-muted-foreground", className)} aria-label="Neutral" />;
+  if (sentiment === "neutral") return <Minus className={cn("size-4 text-muted-foreground", className)} aria-label="Neutral" />;
   const bullish = sentiment === "bullish";
   const Icon = bullish ? TrendingUp : TrendingDown;
-  return <Icon className={cn("size-3.5", bullish ? "text-emerald-600" : "text-red-600", className)} aria-label={bullish ? "Bullish" : "Bearish"} />;
+  return <Icon className={cn("size-4", bullish ? "text-emerald-600" : "text-red-600", className)} aria-label={bullish ? "Bullish" : "Bearish"} />;
 }
+
+// Sentiment-tinted classes so the bull/bear read on each ticker chip is obvious.
+const SENTIMENT_CHIP: Record<Sentiment, string> = {
+  bullish: "border-emerald-300 text-emerald-700 hover:bg-emerald-50",
+  bearish: "border-red-300 text-red-700 hover:bg-red-50",
+  neutral: "",
+};
 
 function FeedSignalCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: OpenTicker }) {
   const symbols = symbolList(row);
@@ -136,12 +168,15 @@ function FeedSignalCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: O
       <h2 className="text-base font-semibold leading-6">{title}</h2>
       {symbols.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {symbols.map((symbol) => (
-            <Button key={symbol} type="button" variant="outline" size="sm" className="gap-1" onClick={() => onOpenTicker(symbol)}>
-              {symbol}
-              <SentimentMark sentiment={sentimentBySymbol[symbol] ?? sentiment} />
-            </Button>
-          ))}
+          {symbols.map((symbol) => {
+            const symbolSentimentValue = sentimentBySymbol[symbol] ?? sentiment;
+            return (
+              <Button key={symbol} type="button" variant="outline" size="sm" className={cn("gap-1", SENTIMENT_CHIP[symbolSentimentValue])} onClick={() => onOpenTicker(symbol)}>
+                <SentimentMark sentiment={symbolSentimentValue} />
+                {symbol}
+              </Button>
+            );
+          })}
         </div>
       ) : null}
       <div className="mt-4 space-y-4 text-sm leading-6">
@@ -186,6 +221,15 @@ function cardFamily(row: RowRecord): string {
   return "news";
 }
 
+// Grouped cards expose every contributing source in `sources`; single cards only
+// carry `source` (which may be a "X +N" rollup label, so prefer the array).
+function cardSources(row: RowRecord): string[] {
+  const list = listField(row, ["sources"]);
+  if (list.length) return list;
+  const single = textField(row, ["source"]);
+  return single ? [single] : [];
+}
+
 function normalizeSentiment(value: string): Sentiment {
   const text = value.toLowerCase();
   if (text === "bullish" || text === "good") return "bullish";
@@ -212,18 +256,6 @@ function symbolSentiment(row: RowRecord): Record<string, Sentiment> {
     }
   }
   return result;
-}
-
-function feedSearchText(row: RowRecord): string {
-  return [
-    textField(row, ["title"]),
-    textField(row, ["source"]),
-    textField(row, ["source_type"]),
-    textField(row, ["source_family"]),
-    fullField(row, ["thesis"], ""),
-    fullField(row, ["antithesis"], ""),
-    symbolList(row).join(" "),
-  ].join(" ").toLowerCase();
 }
 
 function feedDateLabel(value: string): string {
