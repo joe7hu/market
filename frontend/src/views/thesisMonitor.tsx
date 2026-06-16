@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { AlertTriangle, CheckCircle2, Newspaper } from "lucide-react";
 
 import { markThesisReviewed, saveThesis } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,15 @@ const GRID_LIMIT = 32;
 
 export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: PanelData; onOpenTicker: (symbol: string) => void; onReload: () => Promise<void> }) {
   const viewModel = buildThesisMonitorViewModel(data);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const focusSymbol = (searchParams.get("symbol") ?? "").toUpperCase();
+  const viewFeed = (symbol: string) => navigate(`/feed?ticker=${encodeURIComponent(symbol)}`);
+
+  const matchesFocus = (row: RowRecord) => !focusSymbol || symbolList(row).includes(focusSymbol);
+  const cards = viewModel.monitorRows.filter(matchesFocus);
+  const reviewQueue = viewModel.needsReview.filter(matchesFocus);
+  const invalidationWatch = viewModel.invalidationWatch.filter(matchesFocus);
 
   return (
     <section>
@@ -25,6 +35,13 @@ export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: Pane
         subtitle="Owned and watched names that need a thesis refresh, contradiction check, or invalidation review."
       />
 
+      {focusSymbol ? (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-4 py-2 text-sm">
+          <span>Focused on <strong>{focusSymbol}</strong> from the source feed.{cards.length ? "" : ` ${focusSymbol} is not a monitored (owned/watched) position.`}</span>
+          <Button type="button" size="sm" variant="outline" onClick={() => setSearchParams({}, { replace: true })}>Show all</Button>
+        </div>
+      ) : null}
+
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <MetricTile label="Needs Review" value={viewModel.needsReview.length} caption="thesis review reasons" tone={viewModel.needsReview.length ? "warn" : "good"} />
         <MetricTile label="Incomplete" value={viewModel.incomplete.length} caption="missing thesis fields" tone={viewModel.incomplete.length ? "warn" : "good"} />
@@ -33,25 +50,25 @@ export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: Pane
         <MetricTile label="Invalidation Watch" value={viewModel.invalidationWatch.length} caption="price near or through stop" tone={viewModel.invalidationWatch.length ? "info" : "muted"} />
       </div>
 
-      {viewModel.monitorRows.length ? (
+      {cards.length ? (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
           <div className="space-y-3">
-            {viewModel.monitorRows.slice(0, CARD_LIMIT).map((row, index) => (
-              <ThesisCard key={textField(row, ["symbol"], `row-${index}`)} row={row} onOpenTicker={onOpenTicker} onReload={onReload} />
+            {cards.slice(0, CARD_LIMIT).map((row, index) => (
+              <ThesisCard key={textField(row, ["symbol"], `row-${index}`)} row={row} onOpenTicker={onOpenTicker} onViewFeed={viewFeed} onReload={onReload} />
             ))}
-            <Overflow shown={Math.min(CARD_LIMIT, viewModel.monitorRows.length)} total={viewModel.monitorRows.length} noun="monitored names" />
+            <Overflow shown={Math.min(CARD_LIMIT, cards.length)} total={cards.length} noun="monitored names" />
           </div>
           <div className="space-y-4">
-            <QueuePanel title="Review Queue" rows={viewModel.needsReview} empty="No thesis or contradiction reviews are active." onOpenTicker={onOpenTicker} />
-            <QueuePanel title="Invalidation Watch" rows={viewModel.invalidationWatch} empty="No invalidation triggers are active." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Review Queue" rows={reviewQueue} empty="No thesis or contradiction reviews are active." onOpenTicker={onOpenTicker} />
+            <QueuePanel title="Invalidation Watch" rows={invalidationWatch} empty="No invalidation triggers are active." onOpenTicker={onOpenTicker} />
           </div>
         </div>
       ) : (
-        <EmptyState icon={AlertTriangle} title="No thesis monitor loaded" detail="Refresh this page before using it for portfolio review." />
+        <EmptyState icon={AlertTriangle} title={focusSymbol ? `No monitored thesis for ${focusSymbol}` : "No thesis monitor loaded"} detail={focusSymbol ? "This name is not in your owned or watched set. Clear the focus to see all monitored theses." : "Refresh this page before using it for portfolio review."} />
       )}
 
       <div className="mt-4">
-        <DataGridSection title="Structured Thesis Fields" rows={(viewModel.monitorRows.length ? viewModel.monitorRows : viewModel.thesisRows).slice(0, GRID_LIMIT)} onOpenTicker={onOpenTicker} />
+        <DataGridSection title="Structured Thesis Fields" rows={(cards.length ? cards : viewModel.thesisRows).slice(0, GRID_LIMIT)} onOpenTicker={onOpenTicker} />
       </div>
     </section>
   );
@@ -62,7 +79,7 @@ function Overflow({ shown, total, noun }: { shown: number; total: number; noun: 
   return <p className="px-1 text-xs text-muted-foreground">Showing {shown} of {total} {noun}.</p>;
 }
 
-function ThesisCard({ row, onOpenTicker, onReload }: { row: RowRecord; onOpenTicker: (symbol: string) => void; onReload: () => Promise<void> }) {
+function ThesisCard({ row, onOpenTicker, onViewFeed, onReload }: { row: RowRecord; onOpenTicker: (symbol: string) => void; onViewFeed: (symbol: string) => void; onReload: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +136,7 @@ function ThesisCard({ row, onOpenTicker, onReload }: { row: RowRecord; onOpenTic
           {error ? <div className="text-red-700">{error}</div> : null}
           <div className="flex flex-wrap gap-2 pt-1">
             <Button type="button" size="sm" variant="outline" disabled={!primarySymbol} onClick={() => primarySymbol && onOpenTicker(primarySymbol)}>Open</Button>
+            <Button type="button" size="sm" variant="outline" className="gap-1" disabled={!primarySymbol} onClick={() => primarySymbol && onViewFeed(primarySymbol)}><Newspaper className="size-3.5" /> Source feed</Button>
             <Button type="button" size="sm" variant="secondary" disabled={!primarySymbol || busy} onClick={() => runAction(() => markThesisReviewed(primarySymbol))}>Mark reviewed</Button>
             <Button type="button" size="sm" variant="ghost" disabled={!primarySymbol} onClick={() => setEditing((value) => !value)}>{editing ? "Cancel" : "Edit thesis"}</Button>
           </div>

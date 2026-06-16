@@ -1,5 +1,6 @@
-import { Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { ClipboardCheck, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { EmptyState, EvidenceList, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ const FAMILY_LABELS: Record<string, string> = {
   news: "News",
   blog: "Blog",
   memo: "Memo",
-  thesis: "Theses",
+  thesis: "Source theses",
   research: "Research",
   filing: "Filings & 13F",
   podcast: "Podcasts",
@@ -29,9 +30,13 @@ const FAMILY_LABELS: Record<string, string> = {
 const FAMILY_ORDER = ["news", "blog", "memo", "thesis", "research", "filing", "podcast", "transcript"];
 
 export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }: { data: PanelData; lastRefresh: Date | null; loading: boolean; onRefresh: () => void; onOpenTicker: OpenTicker }) {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [family, setFamily] = useState("all");
   const [source, setSource] = useState("all");
-  const [tickerQuery, setTickerQuery] = useState("");
+  // Seed the ticker filter from ?ticker= so thesis-monitor can deep-link here.
+  const [tickerQuery, setTickerQuery] = useState(() => (searchParams.get("ticker") ?? "").toUpperCase());
+  const reviewThesis = (symbol: string) => navigate(`/thesis-monitor?symbol=${encodeURIComponent(symbol)}`);
 
   const feedCards = useMemo(() => sourceFeedCards(rows(data.feedSignals)), [data.feedSignals]);
 
@@ -114,7 +119,7 @@ export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }
       </div>
       {visibleCards.length ? (
         <div className="grid gap-4 xl:grid-cols-2">
-          {visibleCards.map((row, index) => <FeedSignalCard key={textField(row, ["id"], `feed-${index}`)} row={row} onOpenTicker={onOpenTicker} />)}
+          {visibleCards.map((row, index) => <FeedSignalCard key={textField(row, ["id"], `feed-${index}`)} row={row} onOpenTicker={onOpenTicker} onReviewThesis={reviewThesis} />)}
         </div>
       ) : (
         <EmptyState title="No source cards loaded" detail={lastRefresh ? "No source-backed thesis cards match this filter." : "Refresh the feed to load source-backed cards."} />
@@ -143,8 +148,9 @@ const SENTIMENT_CHIP: Record<Sentiment, string> = {
   neutral: "",
 };
 
-function FeedSignalCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: OpenTicker }) {
+function FeedSignalCard({ row, onOpenTicker, onReviewThesis }: { row: RowRecord; onOpenTicker: OpenTicker; onReviewThesis: (symbol: string) => void }) {
   const symbols = symbolList(row);
+  const primarySymbol = textField(row, ["primary_symbol"]) || symbols[0] || "";
   const title = textField(row, ["title"], "Source update");
   const source = textField(row, ["source"], "Source");
   const familyLabel = FAMILY_LABELS[cardFamily(row)] ?? titleLabel(textField(row, ["source_type"], "source"));
@@ -186,6 +192,13 @@ function FeedSignalCard({ row, onOpenTicker }: { row: RowRecord; onOpenTicker: O
         {nextAction && <FeedBlock label="Next">{nextAction}</FeedBlock>}
         {evidence.length ? <FeedBlock label="Evidence"><EvidenceList items={evidence.map(evidenceNode)} /></FeedBlock> : null}
       </div>
+      {primarySymbol ? (
+        <div className="mt-3 flex justify-end">
+          <Button type="button" size="sm" variant="ghost" className="h-7 gap-1 text-xs text-muted-foreground" onClick={() => onReviewThesis(primarySymbol)}>
+            <ClipboardCheck className="size-3.5" /> Review thesis: {primarySymbol}
+          </Button>
+        </div>
+      ) : null}
     </article>
   );
 }
