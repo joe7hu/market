@@ -1,10 +1,11 @@
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from app import data_access
+from investment_panel.core.panel import market_freshness
 from investment_panel.core.db import db, init_db
 
 
@@ -211,6 +212,36 @@ def test_market_panel_status_reports_stale_broad_market_inputs(tmp_path) -> None
     assert panel_data.status.source == "duckdb-stale"
     assert panel_data.metadata["market_freshness"]["status"] == "stale"
     assert panel_data.metadata["market_freshness"]["checks"]["asset_matrix"]["latest_date"] == stale_date.isoformat()
+    assert panel_data.metadata["market_freshness"]["checks"]["valuation_reference"]["series"]["sp500_forward_pe"]["status"] == "stale"
+
+
+def test_market_freshness_distinguishes_off_market_hours_from_stale() -> None:
+    tables = {
+        "market_valuation_reference_charts": [{"metric": "sp500_forward_pe", "latest_date": "2026-06-12"}],
+        "market_environment_assets": [{"symbol": "SPY", "as_of": "2026-06-12"}],
+    }
+
+    freshness = market_freshness(tables, now=datetime(2026, 6, 15, 12, 0, tzinfo=UTC))
+
+    assert freshness["status"] == "off_market_hours"
+    assert freshness["market_phase"] == "premarket"
+    assert freshness["expected_date"] == "2026-06-12"
+    assert freshness["checks"]["valuation_reference"]["series"]["sp500_forward_pe"]["status"] == "off_market_hours"
+
+
+def test_market_freshness_marks_missed_completed_session_stale() -> None:
+    tables = {
+        "market_valuation_reference_charts": [{"metric": "equity_risk_premium", "latest_date": "2026-06-12"}],
+        "market_environment_assets": [{"symbol": "SPY", "as_of": "2026-06-14"}],
+    }
+
+    freshness = market_freshness(tables, now=datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
+
+    assert freshness["status"] == "stale"
+    assert freshness["market_phase"] == "premarket"
+    assert freshness["expected_date"] == "2026-06-15"
+    assert freshness["checks"]["valuation_reference"]["series"]["equity_risk_premium"]["status"] == "stale"
+    assert freshness["checks"]["asset_matrix"]["status"] == "stale"
 
 
 def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:

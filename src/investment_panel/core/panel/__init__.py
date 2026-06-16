@@ -9,6 +9,7 @@ from investment_panel.core.panel.sources import source_rows
 from investment_panel.core.panel.technicals import average_true_range_pct, one_month_bar_points, one_month_volume_bar_points, period_bar_points, period_return, relative_volume, sampled_price_points, technical_price_history, technicals, trailing_return, true_range_pct_points
 from investment_panel.core.panel.disclosures import disclosures, enrich_13f_disclosure_rows, holding_key, sorted_13f_holdings
 from investment_panel.core.panel.market_environment import MarketDisplayContext, market_context, market_display_context, market_environment_assets, market_environment_model, market_valuation_charts, market_valuation_reference_charts
+from investment_panel.core.panel.market_freshness import market_freshness
 from investment_panel.core.panel.feed import feed_signals, ownership_consensus, source_consensus, universe_screen
 from investment_panel.core.panel.read_equity import candidate_source_evidence, candidates, catalysts, confidence_to_number, decision_queue, decision_readiness, discovered_universe, opportunities_ranked, opportunity_source_counts, opportunity_sources, portfolio, source_freshness, symbol_decision_snapshots, theses, top_source_label
 from investment_panel.core.panel.read_market_data import analyst_estimates, correlations, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, provider_runs, quotes, screener, sepa, source_health, valuations
@@ -72,6 +73,7 @@ __all__ = [
     "market_display_context",
     "market_environment_assets",
     "market_environment_model",
+    "market_freshness",
     "market_valuation_charts",
     "market_valuation_reference_charts",
     "missed_winner_event",

@@ -109,6 +109,29 @@ def test_refresh_job_marks_failed_summary_as_failed(tmp_path, monkeypatch) -> No
     assert rows[0]["summary"]["ok"] is False
 
 
+def test_refresh_job_failure_message_includes_source_errors(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    monkeypatch.setitem(
+        refresh_jobs.ALLOWLIST,
+        "unit_refresh",
+        lambda _config_path: {
+            "ok": False,
+            "status": "failed",
+            "source_errors": [
+                {"name": "store_munger_market_metrics", "error": "500"},
+                {"name": "store_equity_risk_premium_metric", "error": "504"},
+            ],
+        },
+    )
+
+    job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
+    result = refresh_jobs.execute_refresh_job(job["id"], "unit_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "failed"
+    rows = refresh_jobs.refresh_job_rows(db_path)
+    assert rows[0]["error"] == "Refresh failed for sources: store_munger_market_metrics, store_equity_risk_premium_metric"
+
+
 def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 

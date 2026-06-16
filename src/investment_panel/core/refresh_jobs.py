@@ -253,6 +253,15 @@ def summary_failure_message(summary: Any) -> str | None:
     error = summary.get("error")
     if isinstance(error, str) and error:
         return error
+    source_errors = summary.get("source_errors")
+    if isinstance(source_errors, list):
+        failed_sources = [
+            str(item.get("name") or "").strip()
+            for item in source_errors
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        if failed_sources:
+            return f"Refresh failed for sources: {', '.join(failed_sources[:3])}"
     failed_step = summary.get("failedStep")
     if isinstance(failed_step, str) and failed_step:
         return f"Refresh failed at {failed_step}"

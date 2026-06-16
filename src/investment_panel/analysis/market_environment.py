@@ -32,10 +32,11 @@ MULTPL_VALUATION_METRICS = {
 }
 
 
-def store_market_environment_sources(con: Any) -> int:
+def store_market_environment_sources(con: Any, *, return_details: bool = False) -> int | dict[str, Any]:
     """Persist public broad-market model inputs used by /market."""
 
     count = 0
+    sources: list[dict[str, Any]] = []
     for loader in (
         store_munger_market_metrics,
         store_multpl_valuation_metrics,
@@ -43,10 +44,16 @@ def store_market_environment_sources(con: Any) -> int:
         store_equity_risk_premium_metric,
         store_fullstack_market_model,
     ):
+        loader_name = loader.__name__
         try:
-            count += loader(con)
-        except (httpx.HTTPError, ValueError):
+            row_count = loader(con)
+            count += row_count
+            sources.append({"name": loader_name, "status": "ok", "rows": row_count})
+        except (httpx.HTTPError, ValueError) as exc:
+            sources.append({"name": loader_name, "status": "failed", "rows": 0, "error": str(exc)})
             continue
+    if return_details:
+        return {"rows": count, "sources": sources, "errors": [source for source in sources if source["status"] == "failed"]}
     return count
 
 

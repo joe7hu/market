@@ -9,6 +9,7 @@ from typing import Any
 from investment_panel.analysis.market_environment import store_market_environment_sources
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
+from investment_panel.core.panel import market_environment_assets, market_freshness, market_valuation_reference_charts
 from investment_panel.core.status import write_source_status
 
 
@@ -16,11 +17,23 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
-        market_environment_rows = store_market_environment_sources(con)
+        source_result = store_market_environment_sources(con, return_details=True)
+        tables = {
+            "market_valuation_reference_charts": market_valuation_reference_charts(con),
+            "market_environment_assets": market_environment_assets(con),
+        }
+        freshness = market_freshness(tables)
+    market_environment_rows = int(source_result["rows"])
+    source_errors = list(source_result["errors"])
+    job_ok = freshness["status"] in {"fresh", "off_market_hours"} and not source_errors
     result = {
         "database": str(config.database.duckdb_path),
         "market_environment_rows": market_environment_rows,
-        "status": "ok",
+        "sources": source_result["sources"],
+        "source_errors": source_errors,
+        "freshness": freshness,
+        "status": "ok" if job_ok else "failed",
+        "ok": job_ok,
     }
     status_path = write_source_status(
         config,

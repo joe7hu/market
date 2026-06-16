@@ -25,6 +25,7 @@ from investment_panel.core.panel import (
     valuations,
 )
 from investment_panel.core.source_ingestion.read_models import source_detail_payload
+from investment_panel.analysis import market_environment
 from investment_panel.analysis.market_environment import parse_fred_ten_year_yield_csv, parse_fullstack_market_model_csv, parse_history_of_market_forward_pe_json, parse_multpl_valuation_table
 
 
@@ -479,6 +480,26 @@ def test_parse_fred_ten_year_yield_csv_uses_latest_monthly_observation() -> None
     rows = parse_fred_ten_year_yield_csv(csv_text)
 
     assert rows == {"2026-05": 4.40}
+
+
+def test_store_market_environment_sources_reports_partial_source_failures(monkeypatch) -> None:
+    def ok_loader(_con):
+        return 2
+
+    def failed_loader(_con):
+        raise ValueError("upstream unavailable")
+
+    monkeypatch.setattr(market_environment, "store_munger_market_metrics", ok_loader)
+    monkeypatch.setattr(market_environment, "store_multpl_valuation_metrics", failed_loader)
+    monkeypatch.setattr(market_environment, "store_history_of_market_forward_pe_metric", ok_loader)
+    monkeypatch.setattr(market_environment, "store_equity_risk_premium_metric", ok_loader)
+    monkeypatch.setattr(market_environment, "store_fullstack_market_model", ok_loader)
+
+    result = market_environment.store_market_environment_sources(object(), return_details=True)
+
+    assert result["rows"] == 8
+    assert result["sources"][1]["status"] == "failed"
+    assert result["errors"] == [{"name": "failed_loader", "status": "failed", "rows": 0, "error": "upstream unavailable"}]
 
 
 def test_market_reference_and_asset_rows_drive_comprehensive_environment_model(tmp_path) -> None:
