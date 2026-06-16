@@ -23,8 +23,10 @@ const FAMILY_LABELS: Record<string, string> = {
   thesis: "Theses",
   research: "Research",
   filing: "Filings & 13F",
+  podcast: "Podcasts",
+  transcript: "Transcripts",
 };
-const FAMILY_ORDER = ["news", "blog", "memo", "thesis", "research", "filing"];
+const FAMILY_ORDER = ["news", "blog", "memo", "thesis", "research", "filing", "podcast", "transcript"];
 
 export function FeedPage({ data, lastRefresh, loading, onRefresh, onOpenTicker }: { data: PanelData; lastRefresh: Date | null; loading: boolean; onRefresh: () => void; onOpenTicker: OpenTicker }) {
   const [query, setQuery] = useState("");

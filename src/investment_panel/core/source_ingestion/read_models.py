@@ -47,7 +47,7 @@ def source_registry_rows(con: Any) -> list[dict[str, Any]]:
 
 def source_item_rows(con: Any, source_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
     sql = """
-        SELECT i.*, r.source_name
+        SELECT i.*, r.source_name, r.source_family
         FROM source_items i
         LEFT JOIN source_registry r ON r.source_id = i.source_id
     """

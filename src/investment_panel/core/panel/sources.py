@@ -380,12 +380,25 @@ _BLOG_SOURCE_HINTS = (
 )
 
 
+# source_items.source_kind / source_registry.source_family values that carry
+# long-form editorial text the feed should surface and let the user navigate.
+_LONGFORM_TEXT_FAMILIES = {
+    "blog", "newsletter", "memo", "podcast", "transcript",
+    "rss_or_blog", "blog_or_social_bridge",
+}
+
+
+def _is_longform_text_family(family: str) -> bool:
+    return str(family or "").lower() in _LONGFORM_TEXT_FAMILIES
+
+
 def _feed_source_family(source_type: str, source_name: str) -> str:
     """Coarse, UI-facing family used to facet the source feed.
 
-    Returns one of: ``filing``, ``thesis``, ``research``, ``memo``, ``blog``, ``news``.
-    Filings/13F, theses, and research carry their own ``source_type``; only the
-    ``news`` bucket is refined into memo/blog/news by inspecting the provider name.
+    Returns one of: ``filing``, ``thesis``, ``research``, ``memo``, ``blog``,
+    ``podcast``, ``transcript``, ``news``. Filings/13F, theses, and research carry
+    their own ``source_type``; the ``news`` and long-form (blog/newsletter/…)
+    buckets are refined into memo/blog/news by inspecting the provider name.
     """
 
     kind = str(source_type or "").lower()
@@ -395,13 +408,15 @@ def _feed_source_family(source_type: str, source_name: str) -> str:
         return "thesis"
     if kind == "research":
         return "research"
+    if kind in {"podcast", "transcript"}:
+        return kind
     name = str(source_name or "").lower()
-    if kind == "news":
+    if kind == "news" or _is_longform_text_family(kind):
         if any(hint in name for hint in _MEMO_SOURCE_HINTS):
             return "memo"
         if any(hint in name for hint in _BLOG_SOURCE_HINTS):
             return "blog"
-        return "news"
+        return "blog" if _is_longform_text_family(kind) else "news"
     return kind or "news"
 
 

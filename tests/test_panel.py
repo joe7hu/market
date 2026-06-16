@@ -1065,6 +1065,35 @@ def test_feed_signals_carry_source_family_and_sentiment(tmp_path) -> None:
     assert by_id["news:news1"]["ticker_contexts"][0]["sentiment"] == "bullish"
 
 
+def test_feed_signals_surface_blog_and_memo_source_items(tmp_path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        for source_id, source_name, family in [
+            ("stratechery", "Stratechery", "blog"),
+            ("howard_marks", "Howard Marks", "newsletter"),
+        ]:
+            con.execute(
+                "INSERT INTO source_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [source_id, source_name, family, family, "market", True, "public_feed", "public", None, None, "{}", "2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z"],
+            )
+        con.execute(
+            "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ["blog-1", "stratechery", "run-b", "blog", "Microsoft and the next platform", "https://stratechery.com/p/1", "Ben Thompson", "2026-06-06T02:00:00Z", "2026-06-06T02:00:00Z", "Why MSFT's distribution wins.", json.dumps(["MSFT"]), "[]", "{}", "blog-1", "public"],
+        )
+        con.execute(
+            "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ["memo-1", "howard_marks", "run-m", "newsletter", "On risk and MSFT optimism", "https://oaktree.com/memo/1", "Howard Marks", "2026-06-05T02:00:00Z", "2026-06-05T02:00:00Z", "A cautious read on MSFT valuation.", json.dumps(["MSFT"]), "[]", "{}", "memo-1", "public"],
+        )
+
+        rows = feed_signals(con, [{"symbol": "MSFT"}])
+
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["source_item:blog-1"]["source_family"] == "blog"
+    assert by_id["source_item:blog-1"]["symbols"] == ["MSFT"]
+    assert by_id["source_item:memo-1"]["source_family"] == "memo"
+
+
 def test_ownership_consensus_expands_13f_holdings_into_weighted_ticker_rows(tmp_path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
