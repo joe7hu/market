@@ -22,7 +22,7 @@ from investment_panel.core.options_radar.features_surface import (refresh_stock_
 from investment_panel.core.options_radar.marks import (refresh_candidate_event_attributions, refresh_candidate_event_marks)
 from investment_panel.core.options_radar.opportunities import (refresh_option_radar_opportunities)
 from investment_panel.core.options_radar.registration import (candidate_strategy_versions, register_default_strategy, register_strategy_families)
-from investment_panel.core.options_radar.shadow import (apply_shadow_trade_exits, create_shadow_trades, mark_shadow_trades, refresh_shadow_trade_marks)
+from investment_panel.core.options_radar.shadow import (apply_shadow_trade_exits, create_exploration_shadow_trades, create_shadow_trades, mark_shadow_trades, refresh_shadow_trade_marks)
 from investment_panel.core.options_radar.snapshots import (persist_option_snapshots, persist_spread_snapshots)
 from investment_panel.core.options_radar.state import (refresh_radar_state_transitions)
 from investment_panel.core.options_radar.strategy_backtest import (refresh_strategy_cohort_results)
@@ -78,6 +78,7 @@ def refresh_options_radar(
         }
     if include_learning:
         shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
+        exploration_rows = create_exploration_shadow_trades(con, strategy_version=strategy_version)
         marked_rows = mark_shadow_trades(con)
         mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
         candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
@@ -89,7 +90,7 @@ def refresh_options_radar(
         missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
         proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
     else:
-        shadow_rows = marked_rows = mark_rows = candidate_mark_rows = candidate_attribution_rows = 0
+        shadow_rows = exploration_rows = marked_rows = mark_rows = candidate_mark_rows = candidate_attribution_rows = 0
         transition_rows = exited_rows = attribution_rows = missed_rows = proposal_rows = 0
         calibration_bins = 0
     if include_agent_work:
@@ -119,6 +120,7 @@ def refresh_options_radar(
         "candidate_events": candidate_rows,
         **agent_work,
         "shadow_trades": shadow_rows,
+        "exploration_shadow_trades": exploration_rows,
         "shadow_trades_marked": marked_rows,
         "shadow_trade_marks": mark_rows,
         "candidate_event_marks": candidate_mark_rows,

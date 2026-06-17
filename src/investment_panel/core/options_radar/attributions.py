@@ -12,6 +12,7 @@ from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERS
 from investment_panel.core.options_radar.dbutil import (_compact_snapshot, _source_filter, _symbol_filter)
 from investment_panel.core.options_radar.indicators import (_diff)
 from investment_panel.core.options_radar.strategy_common import (_attribution_label, _missed_filter_reason, _proposed_family)
+from investment_panel.core.options_radar.strategy_outcomes import (realized_exit_return)
 
 def refresh_option_attributions(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
     trades = query_rows(
@@ -218,12 +219,19 @@ def build_missed_winner(con: Any, contract_id: str, snapshots: list[dict[str, An
     entry_mid = _number(entry.get("mid"))
     if entry_mid is None or entry_mid <= 0:
         return None
-    winner = max(usable[1:], key=lambda row: _number(row.get("mid")) or 0)
+    # A genuine missed winner has to have been *capturable*, not just a one-mark paper
+    # spike. Score the contract on its realizable trailing-stop exit so we only propose
+    # loosening a gate for a winner a trader could actually have realized.
+    returns = [(_iso(row.get("snapshot_time")), (_number(row.get("mid")) or 0) / entry_mid - 1) for row in usable]
+    realized = realized_exit_return(returns)
+    if realized is None:
+        return None
+    realized_time, max_return = realized
+    if max_return < 4.0:
+        return None
+    winner = next((row for row in usable if _iso(row.get("snapshot_time")) == realized_time), usable[-1])
     winner_mid = _number(winner.get("mid"))
     if winner_mid is None:
-        return None
-    max_return = winner_mid / entry_mid - 1
-    if max_return < 4.0:
         return None
     fire_rows = query_rows(
         con,

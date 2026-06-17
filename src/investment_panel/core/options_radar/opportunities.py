@@ -12,7 +12,7 @@ from investment_panel.core.options_radar.coerce import (_average, _integer, _iso
 from investment_panel.core.options_radar.constants import (DATA_CONTRACT_READY, DEFAULT_STRATEGY_VERSION, MIN_SNAPSHOT_PREMIUM_COVERAGE, SERVICE_BUG_TIER)
 from investment_panel.core.options_radar.dbutil import (_symbol_filter)
 from investment_panel.core.options_radar.opportunity_contract import (_compact_opportunity_contract, _entry_zone, _extreme_opportunity_blockers, _kill_switch, _market_cap, _opportunity_data_contract, _opportunity_top_reasons, _position_sizing_band, _revenue_growth, _why_now, tier_rank)
-from investment_panel.core.options_radar.opportunity_scoring import (_opportunity_scores)
+from investment_panel.core.options_radar.opportunity_scoring import (_opportunity_scores, load_cohort_priors)
 from investment_panel.core.options_radar.regime import (_qqq_above_200d)
 from investment_panel.core.options_radar.scoring import (_theme_watch_matches)
 from investment_panel.core.options_radar.strategy_outcomes import (_value_counts)
@@ -136,10 +136,11 @@ def refresh_option_radar_opportunities(
     for row in rows:
         grouped[_normalize_symbol(row.get("ticker"))].append(row)
 
+    cohort_priors = load_cohort_priors(con, strategy_version)
     built = [
         opportunity
         for ticker, candidate_rows in grouped.items()
-        if (opportunity := build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version))
+        if (opportunity := build_option_radar_opportunity(con, ticker, candidate_rows, strategy_version, cohort_priors=cohort_priors))
     ]
     # Preserve the last-good opportunities if the latest snapshot built none — a
     # single bad snapshot (e.g. an off-hours pull of all near-term/REJECT
@@ -225,12 +226,16 @@ def build_option_radar_opportunity(
     ticker: str,
     candidate_rows: list[dict[str, Any]],
     strategy_version: str,
+    *,
+    cohort_priors: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     snapshot_time = _iso(candidate_rows[0].get("snapshot_time")) if candidate_rows else ""
     source_context = _source_signal_context(con, ticker, snapshot_time)
     qqq_above = _qqq_above_200d(con, snapshot_time, {})
     calibration = load_conviction_calibration(con, strategy_version)
-    details = [_opportunity_candidate_detail(row, source_context=source_context, qqq_above_200d=qqq_above, calibration=calibration) for row in candidate_rows]
+    if cohort_priors is None:
+        cohort_priors = load_cohort_priors(con, strategy_version)
+    details = [_opportunity_candidate_detail(row, source_context=source_context, qqq_above_200d=qqq_above, calibration=calibration, cohort_priors=cohort_priors) for row in candidate_rows]
     details = [detail for detail in details if detail]
     if not details:
         return None
@@ -337,6 +342,7 @@ def _opportunity_candidate_detail(
     source_context: dict[str, Any],
     qqq_above_200d: bool | None,
     calibration: dict[str, Any] | None = None,
+    cohort_priors: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     snapshot_time = _iso(row.get("snapshot_time"))
     raw = _json(row.get("raw"))
@@ -344,7 +350,7 @@ def _opportunity_candidate_detail(
     hard_rejects = [str(item) for item in raw.get("hard_rejects", []) if item] if isinstance(raw.get("hard_rejects"), list) else []
     positives = [str(item) for item in raw.get("positives", []) if item] if isinstance(raw.get("positives"), list) else []
     validation = _opportunity_validation(row)
-    scores = _opportunity_scores(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, calibration=calibration)
+    scores = _opportunity_scores(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, calibration=calibration, cohort_priors=cohort_priors)
     blockers = _extreme_opportunity_blockers(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d, scores=scores)
     data_contract = _opportunity_data_contract(row, validation=validation, source_context=source_context, qqq_above_200d=qqq_above_200d)
     conviction = scores["conviction_score"]

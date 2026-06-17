@@ -59,7 +59,11 @@ def _candidate_ev(row: dict[str, Any], *, option_type: str, dte: int | None) -> 
     # best free precursor of an outlier move, so a high flow_score lifts tail width up
     # to +60%. This is the single point a future paid flow feed plugs into.
     flow_score = _number(row.get("flow_score"))
-    tail_multiplier = 1.0 + (min(100.0, max(0.0, flow_score)) / 100.0) * 0.6 if flow_score is not None else 1.0
+    # The free OI/volume flow proxy is an *unvalidated* tail widener — and it already
+    # earns a separate gate positive — so cap its EV-tail boost conservatively (+30% max,
+    # was +60%). It inflates P(2x/5x/10x) directly; calibration only corrects what realized
+    # data has seen, so an over-eager prior would ride uncorrected until then.
+    tail_multiplier = 1.0 + (min(100.0, max(0.0, flow_score)) / 100.0) * 0.3 if flow_score is not None else 1.0
     inputs = EVInputs(
         option_type=option_type if option_type in {"call", "put"} else "call",
         spot=spot,
@@ -90,24 +94,31 @@ def _setup_score(row: dict[str, Any]) -> float:
     rs60 = _number(row.get("rs_vs_qqq_60d"))
     atr_pct = _number(row.get("atr_pct"))
 
-    components: list[float] = []
+    # Weighted components rather than an equal-weight mean over whatever happens to be
+    # present: a candidate carrying only ATR shouldn't get a setup score equal to its ATR
+    # component alone. Weights reflect how much each says about a breakout setup; the score
+    # renormalizes over present weights so scores stay comparable across candidates.
+    components: list[tuple[float, float]] = []  # (weight, value)
     if price is not None and breakout and breakout > 0:
         # 1.0 = at the breakout; reward proximity from ~0.85x upward, cap above.
-        components.append(max(0.0, min(100.0, (price / breakout - 0.85) / 0.15 * 100.0)))
-    if base_len is not None:
-        components.append(max(0.0, min(100.0, base_len / 120.0 * 100.0)))
-    if volume_ratio is not None:
-        # Contraction (ratio < 1) is constructive; 0.6x -> 100, 1.2x -> 0.
-        components.append(max(0.0, min(100.0, (1.2 - volume_ratio) / 0.6 * 100.0)))
+        components.append((0.30, max(0.0, min(100.0, (price / breakout - 0.85) / 0.15 * 100.0))))
     if rs20 is not None or rs60 is not None:
         rs = max(rs20 or 0.0, rs60 or 0.0)
-        components.append(max(0.0, min(100.0, (rs * 100.0 + 10.0) / 0.2)))
+        components.append((0.25, max(0.0, min(100.0, (rs * 100.0 + 10.0) / 0.2))))
+    if volume_ratio is not None:
+        # Contraction (ratio < 1) is constructive; 0.6x -> 100, 1.2x -> 0.
+        components.append((0.20, max(0.0, min(100.0, (1.2 - volume_ratio) / 0.6 * 100.0))))
     if atr_pct is not None:
-        components.append(max(0.0, min(100.0, (0.06 - atr_pct) / 0.06 * 100.0)))
+        components.append((0.15, max(0.0, min(100.0, (0.06 - atr_pct) / 0.06 * 100.0))))
+    if base_len is not None:
+        components.append((0.10, max(0.0, min(100.0, base_len / 120.0 * 100.0))))
 
-    if not components:
+    # Below two components the rich read is too noisy to trust; fall back to the binary
+    # above/below-MA50 read the old gate used.
+    if len(components) < 2:
         return 100.0 if (price or 0) >= (_number(row.get("ma_50")) or 10**9) else 45.0
-    return round(sum(components) / len(components), 2)
+    total_weight = sum(weight for weight, _value in components)
+    return round(sum(weight * value for weight, value in components) / total_weight, 2)
 
 
 def _candidate_score(

@@ -148,7 +148,10 @@ def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[s
     proposed = _strategy_outcomes(con, rows, proposal["proposed_strategy_version"], proposed_params)
     lookback_start = min(_iso(row["snapshot_time"]) for row in rows)
     lookback_end = max(_iso(row["snapshot_time"]) for row in rows)
-    significance = _strategy_arm_significance(baseline, proposed, key="2x")
+    # Test significance on the same metric the verdict claims to improve (5x is the
+    # primary win threshold the proposals target), not a looser 2x proxy. 5x events are
+    # rarer, so this honestly blocks more often on insufficient sample.
+    significance = _strategy_arm_significance(baseline, proposed, key="5x")
     ordered_rows = sorted(rows, key=lambda r: _iso(r.get("snapshot_time")))
     walk_forward = _walk_forward_folds(
         ordered_rows,

@@ -5,9 +5,38 @@ from __future__ import annotations
 from typing import Any
 
 from investment_panel.analysis.option_ev import (ev_score)
+from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.calibration import (calibrated_p2x)
 from investment_panel.core.options_radar.coerce import (_integer, _json, _number)
+from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 from investment_panel.core.options_radar.scoring import (_theme_watch_matches, _theme_watch_score)
+from investment_panel.core.options_radar.strategy_outcomes import (_cohort_labels)
+
+
+def load_cohort_priors(con: Any, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[tuple[str, str], dict[str, Any]]:
+    """Load *significant* realized cohort edges so scoring can use what the learning loop
+    measured instead of treating ``learning_score`` as a constant. Keyed by
+    ``(cohort_type, cohort_value)``; only cohorts that cleared the diagnostic significance
+    gate (n>=20 and Wilson-lower-bound>=10% on the realizable 2x hit rate) are kept."""
+
+    rows = query_rows(
+        con,
+        "SELECT cohort_type, cohort_value, candidate_count, hit_rate_2x, hit_rate_5x, raw "
+        "FROM strategy_cohort_result WHERE strategy_version = ?",
+        [strategy_version],
+    )
+    priors: dict[tuple[str, str], dict[str, _Any]] = {}
+    for row in rows:
+        significance = _json(row.get("raw")).get("significance") or {}
+        if not significance.get("significant"):
+            continue
+        key = (str(row.get("cohort_type") or ""), str(row.get("cohort_value") or ""))
+        priors[key] = {
+            "hit_rate_2x": _number(row.get("hit_rate_2x")) or 0.0,
+            "hit_rate_5x": _number(row.get("hit_rate_5x")) or 0.0,
+            "n": _integer(row.get("candidate_count")) or 0,
+        }
+    return priors
 
 def _opportunity_scores(
     row: dict[str, Any],
@@ -16,6 +45,7 @@ def _opportunity_scores(
     source_context: dict[str, Any],
     qqq_above_200d: bool | None,
     calibration: dict[str, Any] | None = None,
+    cohort_priors: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     required_move = _number(row.get("required_move_pct"))
     convexity = _number(row.get("convexity_score")) or 0.0
@@ -48,7 +78,7 @@ def _opportunity_scores(
     dte_score = 45.0 if dte is None else max(0.0, min(100.0, 100.0 - abs(dte - 540) / 540 * 70.0))
     quality_score = 100.0 if quality_status == "ok" else 55.0 if quality_status == "caution" else 10.0
     survivability = min(100.0, dte_score * 0.40 + liquidity * 0.30 + quality_score * 0.30)
-    learning = _learning_score(row)
+    learning = _learning_score(row, cohort_priors=cohort_priors, qqq_above_200d=qqq_above_200d)
     theme_bonus = _theme_watch_score(_theme_watch_matches(row)) * 0.60
     base_conviction = (
         asymmetry * 0.24
@@ -128,11 +158,31 @@ def _catalyst_validation_score(validation: dict[str, Any]) -> float:
     return 20.0
 
 
-def _learning_score(row: dict[str, Any]) -> float:
-    # Cohort rows are currently diagnostic. Until a cohort is joined directly,
-    # keep this neutral so learning can improve ranking without hiding fresh setups.
+def _learning_score(
+    row: dict[str, Any],
+    *,
+    cohort_priors: dict[tuple[str, str], dict[str, Any]] | None = None,
+    qqq_above_200d: bool | None = None,
+) -> float:
+    """Map the candidate's cohorts (setup type, IV/liquidity regime, market regime, …) to
+    the realized hit rates the learning loop measured for those cohorts, so a setup that
+    historically produced exitable winners ranks above one that did not. Falls back to the
+    legacy neutral prior when no *significant* cohort covers this candidate — fresh setups
+    are never hidden, only nudged by evidence."""
+
     raw = _json(row.get("raw"))
     positives = raw.get("positives") if isinstance(raw.get("positives"), list) else []
-    if "10x_math_inside_cap" in positives and "premium_inside_buy_under" in positives:
-        return 60.0
-    return 50.0
+    neutral = 60.0 if ("10x_math_inside_cap" in positives and "premium_inside_buy_under" in positives) else 50.0
+    if not cohort_priors:
+        return neutral
+    labels = _cohort_labels(row, {"raw": raw}, qqq_above_200d)
+    edges = [
+        prior["hit_rate_2x"]
+        for label in labels
+        if (prior := cohort_priors.get((str(label.get("type")), str(label.get("value"))))) is not None
+    ]
+    if not edges:
+        return neutral
+    # Significant cohorts only reach here; their realized 2x hit rate (0..1) maps straight
+    # to a 0..100 learning score, averaged when several cohorts cover the candidate.
+    return round(max(0.0, min(100.0, sum(edges) / len(edges) * 100.0)), 2)

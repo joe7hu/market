@@ -12,6 +12,16 @@ from typing import Any
 
 DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
 MIN_FORWARD_TEST_DAYS = 30
+# Trailing-stop give-back used to turn a peak-mark series into a realizable exit return.
+# A move must hold within this fraction of its running peak gain to be "captured"; a
+# one-mark spike that collapses trails out near the breach instead of crediting the high.
+# This is what makes hit-rates / calibration measure exitable wins, not paper highs.
+REALIZED_EXIT_TRAIL_FRAC = 0.35
+# Epsilon-exploration of SETUP (near-miss) candidates: shadow-trade this fraction of them
+# so the learning loop sees realized outcomes from the rejected region, but only once the
+# SETUP population clears the floor (keeps thin unit/edge tapes from fabricating trades).
+EXPLORATION_SAMPLE_RATE = 0.12
+EXPLORATION_MIN_POPULATION = 10
 DEFAULT_OPTION_RISK_FREE_RATE = 0.045
 MIN_OPTION_MODEL_DTE_DAYS = 1
 MIN_OPTION_MODEL_IV = 0.0001

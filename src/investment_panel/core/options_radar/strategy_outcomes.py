@@ -8,9 +8,51 @@ from investment_panel.analysis.stats import (two_proportion_significant, wilson_
 from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.candidates import (build_candidate_event)
 from investment_panel.core.options_radar.coerce import (_average, _elapsed_days, _elapsed_hours, _integer, _iso, _json_or_list, _median, _number)
-from investment_panel.core.options_radar.constants import (MIN_FORWARD_TEST_DAYS)
+from investment_panel.core.options_radar.constants import (MIN_FORWARD_TEST_DAYS, REALIZED_EXIT_TRAIL_FRAC)
 from investment_panel.core.options_radar.regime import (_qqq_above_200d)
 from investment_panel.core.options_radar.strategy_common import (_latest_attribution_labels)
+
+
+def realized_exit_return(returns: list[tuple[Any, float]], *, trail_frac: float = REALIZED_EXIT_TRAIL_FRAC) -> tuple[Any, float] | None:
+    """Trailing-stop realized exit over a mark series of ``(time, return_vs_entry)``.
+
+    The honest *capturable* outcome: an option that spikes to 3x on a single mark and
+    immediately collapses trails out near its breach mark instead of being credited the
+    spike high (the old peak-mark basis counted that as a clean 5x win). Once the running
+    return retraces ``trail_frac`` of its peak gain the trade is considered exited at that
+    mark's value; a never-stopped series realizes at its last observed mark.
+
+    Returns ``(exit_time, realized_return)`` or ``None`` for an empty series.
+    """
+
+    if not returns:
+        return None
+    peak = returns[0][1]
+    for mark_time, value in returns:
+        if value > peak:
+            peak = value
+        if peak > 0 and value <= peak * (1.0 - trail_frac):
+            return mark_time, value
+    return returns[-1]
+
+
+def _realized_series(returns: list[tuple[Any, float]], *, trail_frac: float = REALIZED_EXIT_TRAIL_FRAC) -> list[float]:
+    """Point-in-time realized return for each mark: the open mark-to-market until the
+    trailing stop fires, then the locked exit value for every subsequent mark. The final
+    element equals :func:`realized_exit_return` over the full series, so the latest stored
+    mark carries the event's capturable outcome without ever peeking at the future."""
+
+    peak: float | None = None
+    locked: float | None = None
+    out: list[float] = []
+    for _mark_time, value in returns:
+        if locked is None:
+            if peak is None or value > peak:
+                peak = value
+            if peak > 0 and value <= peak * (1.0 - trail_frac):
+                locked = value
+        out.append(locked if locked is not None else value)
+    return out
 
 def _historical_candidate_rows(con: Any) -> list[dict[str, Any]]:
     return query_rows(
@@ -96,6 +138,8 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
     returns = [(snapshot_time, (mid or 0) / entry - 1) for snapshot_time, mid in marks]
     max_time, max_return = max(returns, key=lambda item: item[1])
     _min_time, max_drawdown = min(returns, key=lambda item: item[1])
+    realized_exit = realized_exit_return(returns)
+    realized_time, realized_return = realized_exit if realized_exit else (None, max_return)
     last_observation_time = marks[-1][0]
     observation_hours = _elapsed_hours(event["snapshot_time"], last_observation_time)
     time_to_2x = _first_hit_days(event["snapshot_time"], returns, 1.0)
@@ -108,6 +152,8 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
         "entry_time": event["snapshot_time"],
         "entry_price": entry,
         "max_return_seen": max_return,
+        "realized_return": realized_return,
+        "realized_exit_time": realized_time,
         "max_drawdown_seen": max_drawdown,
         "time_to_2x": time_to_2x,
         "time_to_5x": time_to_5x,
@@ -131,13 +177,21 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             "hit_rate_10x": 0.0,
             "false_positive_rate": 0.0,
             "median_max_return": None,
+            "median_realized_return": None,
             "median_max_drawdown": None,
             "average_time_to_2x": None,
             "outcomes": [],
         }
-    hit_2x = [row for row in outcomes if row["max_return_seen"] >= 1.0]
-    hit_5x = [row for row in outcomes if row["max_return_seen"] >= 4.0]
-    hit_10x = [row for row in outcomes if row["max_return_seen"] >= 9.0]
+    # Hit rates are computed on the realizable trailing-stop exit, not the paper peak,
+    # so a spike that immediately collapses is not counted as a win and the
+    # false-positive rate reflects what a trader could actually have captured.
+    def _realized(row: dict[str, Any]) -> float:
+        value = row.get("realized_return")
+        return float(value) if value is not None else float(row["max_return_seen"])
+
+    hit_2x = [row for row in outcomes if _realized(row) >= 1.0]
+    hit_5x = [row for row in outcomes if _realized(row) >= 4.0]
+    hit_10x = [row for row in outcomes if _realized(row) >= 9.0]
     time_to_2x = [row["time_to_2x"] for row in hit_2x if row.get("time_to_2x") is not None]
     return {
         "candidate_count": count,
@@ -146,6 +200,7 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "hit_rate_10x": len(hit_10x) / count,
         "false_positive_rate": 1 - (len(hit_2x) / count),
         "median_max_return": _median([row["max_return_seen"] for row in outcomes]),
+        "median_realized_return": _median([_realized(row) for row in outcomes]),
         "median_max_drawdown": _median([row["max_drawdown_seen"] for row in outcomes]),
         "average_time_to_2x": _average([float(value) for value in time_to_2x]) if time_to_2x else None,
         "outcomes": outcomes[:50],
@@ -234,7 +289,11 @@ def _backtest_verdict(
     improves_5x = float(proposed.get("hit_rate_5x") or 0) > float(baseline.get("hit_rate_5x") or 0)
     baseline_false = float(baseline.get("false_positive_rate") or 0)
     proposed_false = float(proposed.get("false_positive_rate") or 0)
-    allowed_false_positive = 1.0 if int(baseline.get("candidate_count") or 0) == 0 else min(1.0, baseline_false + 0.25)
+    # Recall-biased ratchet guard: every missed winner proposes loosening the gate that
+    # filtered it, so without a tight precision floor the loop drifts toward more false
+    # signals. Allow only a small (5pp) rise in the *realizable* false-positive rate. The
+    # slack is meaningful now that false positives are measured on exitable outcomes.
+    allowed_false_positive = 1.0 if int(baseline.get("candidate_count") or 0) == 0 else min(1.0, baseline_false + 0.05)
     if not ((improves_10x or improves_5x) and proposed_false <= allowed_false_positive):
         return "fail"
     # The improvement must be statistically significant and hold out-of-sample-in-time.

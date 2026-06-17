@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from typing import Any
 
 from investment_panel.core.db import (json_dumps, query_rows)
 from investment_panel.core.source_ingestion.utils import (stable_id)
 from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer, _iso, _json, _normalize_symbol, _number)
-from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
+from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION, EXPLORATION_MIN_POPULATION, EXPLORATION_SAMPLE_RATE)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta)
-from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _return_at_horizon)
+from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
 
-def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
-    rows = query_rows(
+
+def _candidate_events_with_thesis(con: Any, strategy_version: str, *, state: str) -> list[dict[str, Any]]:
+    """Candidate events in ``state`` joined to their latest thesis validation (candidate-
+    scoped, falling back to legacy ticker-scoped). Shared by the FIRE shadow-entry path
+    and the SETUP exploration path so both apply the same thesis gating."""
+
+    return query_rows(
         con,
         """
         WITH candidate_validation AS (
@@ -43,44 +49,88 @@ def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_V
         LEFT JOIN legacy_ticker_validation lv
           ON lv.ticker = ce.ticker
          AND lv.strategy_version = ce.strategy_version
-        WHERE ce.strategy_version = ? AND ce.state = 'FIRE'
+        WHERE ce.strategy_version = ? AND ce.state = ?
         ORDER BY ce.snapshot_time
         """,
-        [strategy_version, strategy_version, strategy_version],
+        [strategy_version, strategy_version, strategy_version, state],
     )
+
+
+def _exploration_sampled(event_id: Any, sample_rate: float) -> bool:
+    """Deterministic per-event epsilon sample in [0, sample_rate): stable across runs so a
+    candidate is either always or never an exploration pick (no run-to-run churn)."""
+
+    digest = hashlib.sha1(str(event_id).encode("utf-8")).hexdigest()
+    return (int(digest[:8], 16) % 10_000) / 10_000.0 < sample_rate
+
+
+def _insert_shadow_trade(con: Any, row: dict[str, Any], *, authority: str, created_from: str) -> int:
+    trade_id = stable_id("shadow_trade", row["event_id"])
+    before = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
+    con.execute(
+        """
+        INSERT OR IGNORE INTO shadow_trade
+        (trade_id, event_id, entry_time, entry_price_assumption, exit_time, exit_price,
+         status, max_return_seen, max_drawdown_seen, time_to_2x, time_to_5x, time_to_10x,
+         exit_reason, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            trade_id,
+            row["event_id"],
+            row["snapshot_time"],
+            _number(row["premium_fill_assumption"]),
+            None,
+            None,
+            "open",
+            0.0,
+            0.0,
+            None,
+            None,
+            None,
+            None,
+            json_dumps({"authority": authority, "created_from": created_from}),
+        ],
+    )
+    after = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
+    return int(after) - int(before)
+
+
+def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+    rows = _candidate_events_with_thesis(con, strategy_version, state="FIRE")
     count = 0
     for row in rows:
         if _thesis_validation_blocks_entry(row):
             continue
-        trade_id = stable_id("shadow_trade", row["event_id"])
-        before = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
-        con.execute(
-            """
-            INSERT OR IGNORE INTO shadow_trade
-            (trade_id, event_id, entry_time, entry_price_assumption, exit_time, exit_price,
-             status, max_return_seen, max_drawdown_seen, time_to_2x, time_to_5x, time_to_10x,
-             exit_reason, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                trade_id,
-                row["event_id"],
-                row["snapshot_time"],
-                _number(row["premium_fill_assumption"]),
-                None,
-                None,
-                "open",
-                0.0,
-                0.0,
-                None,
-                None,
-                None,
-                None,
-                json_dumps({"authority": "shadow_only", "created_from": "candidate_event"}),
-            ],
-        )
-        after = query_rows(con, "SELECT count(*) AS count FROM shadow_trade WHERE trade_id = ?", [trade_id])[0]["count"]
-        count += int(after) - int(before)
+        count += _insert_shadow_trade(con, row, authority="shadow_only", created_from="candidate_event")
+    return count
+
+
+def create_exploration_shadow_trades(
+    con: Any,
+    *,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    sample_rate: float = EXPLORATION_SAMPLE_RATE,
+    min_population: int = EXPLORATION_MIN_POPULATION,
+) -> int:
+    """Epsilon-exploration: shadow-trade a deterministic sample of SETUP (near-miss)
+    candidates the gates did *not* fire, so the learning loop observes realized outcomes
+    from the rejected region instead of only ever seeing contracts that passed every gate
+    (the classic 'you only learn about what you selected' bias). Tagged
+    ``shadow_exploration`` and only run once the SETUP population clears a floor, so it
+    never fabricates trades from a thin tape — and FIRE-only cohort/backtest metrics stay
+    unpolluted."""
+
+    rows = _candidate_events_with_thesis(con, strategy_version, state="SETUP")
+    if len(rows) < min_population:
+        return 0
+    count = 0
+    for row in rows:
+        if not _exploration_sampled(row["event_id"], sample_rate):
+            continue
+        if _thesis_validation_blocks_entry(row):
+            continue
+        count += _insert_shadow_trade(con, row, authority="shadow_exploration", created_from="setup_candidate_event")
     return count
 
 
@@ -289,9 +339,11 @@ def build_shadow_trade_marks(trade: dict[str, Any], snapshots: list[dict[str, An
         return []
     entry_time = _iso(trade.get("entry_time"))
     entry_delta = _bounded_abs_delta(clean_snapshots[0].get("delta"))
+    full_returns = [(_iso(row.get("snapshot_time")), _number(row.get("mid")) / entry_price - 1) for row in clean_snapshots]
+    realized_path = _realized_series(full_returns)
     returns: list[tuple[Any, float]] = []
     marks: list[dict[str, Any]] = []
-    for snapshot in clean_snapshots:
+    for index, snapshot in enumerate(clean_snapshots):
         mark_price = _number(snapshot.get("mid"))
         if mark_price is None:
             continue
@@ -300,6 +352,7 @@ def build_shadow_trade_marks(trade: dict[str, Any], snapshots: list[dict[str, An
         returns.append((mark_time, current_return))
         values = [value for _time, value in returns]
         mark_delta = _bounded_abs_delta(snapshot.get("delta"))
+        realized_return = realized_path[index]
         worthless_change = None if entry_delta is None or mark_delta is None else entry_delta - mark_delta
         marks.append(
             {
@@ -331,6 +384,8 @@ def build_shadow_trade_marks(trade: dict[str, Any], snapshots: list[dict[str, An
                 "raw": {
                     "authority": "shadow_validation_only",
                     "return_horizon_method": "first_snapshot_at_or_after_horizon",
+                    "realized_exit_return": realized_return,
+                    "realized_exit_basis": "trailing_stop_capturable",
                     "expired_worthless_probability_proxy": "abs(entry_delta)-abs(mark_delta)",
                     "entry_delta_abs": entry_delta,
                     "mark_delta_abs": mark_delta,

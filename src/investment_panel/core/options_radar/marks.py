@@ -11,7 +11,7 @@ from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer,
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta, _diff)
 from investment_panel.core.options_radar.strategy_common import (_attribution_label)
-from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _return_at_horizon)
+from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
 
 def refresh_candidate_event_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
     events = query_rows(
@@ -90,9 +90,13 @@ def build_candidate_event_marks(event: dict[str, Any], snapshots: list[dict[str,
         return []
     alert_time = _iso(event.get("snapshot_time"))
     entry_delta = _bounded_abs_delta(clean_snapshots[0].get("delta"))
+    # Point-in-time realizable return per mark (trailing-stop exit); the latest mark
+    # carries the event's capturable outcome that calibration reads.
+    full_returns = [(_iso(row.get("snapshot_time")), _number(row.get("mid")) / entry_price - 1) for row in clean_snapshots]
+    realized_path = _realized_series(full_returns)
     returns: list[tuple[Any, float]] = []
     marks: list[dict[str, Any]] = []
-    for snapshot in clean_snapshots:
+    for index, snapshot in enumerate(clean_snapshots):
         mark_price = _number(snapshot.get("mid"))
         if mark_price is None:
             continue
@@ -101,6 +105,7 @@ def build_candidate_event_marks(event: dict[str, Any], snapshots: list[dict[str,
         returns.append((mark_time, current_return))
         values = [value for _time, value in returns]
         mark_delta = _bounded_abs_delta(snapshot.get("delta"))
+        realized_return = realized_path[index]
         marks.append(
             {
                 "mark_id": stable_id("candidate_event_mark", event.get("event_id"), mark_time),
@@ -132,6 +137,8 @@ def build_candidate_event_marks(event: dict[str, Any], snapshots: list[dict[str,
                     "candidate_state": str(event.get("state") or "").upper(),
                     "trigger_reason": event.get("trigger_reason"),
                     "return_horizon_method": "first_snapshot_at_or_after_horizon",
+                    "realized_exit_return": realized_return,
+                    "realized_exit_basis": "trailing_stop_capturable",
                     "entry_delta_abs": entry_delta,
                     "mark_delta_abs": mark_delta,
                 },

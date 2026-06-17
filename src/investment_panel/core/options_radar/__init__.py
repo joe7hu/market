@@ -51,4 +51,5 @@ from investment_panel.core.options_radar.strategy_outcomes import (  # noqa: F40
     _backtest_verdict,
     _strategy_arm_significance,
     _walk_forward_folds,
+    realized_exit_return,
 )

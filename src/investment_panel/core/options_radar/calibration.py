@@ -12,8 +12,23 @@ from investment_panel.core.options_radar.coerce import (_elapsed_days, _json, _n
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 
 MIN_CALIBRATION_MATURE_DAYS = 60
-MIN_CALIBRATION_MATURE_OBS = 30
+# Activation floor for the calibration *flag*. Lowered from 30: per-bin Bayesian
+# shrinkage (below) keeps a small-sample map honest, so it no longer takes a hard
+# 30-observation cliff before the map does anything useful.
+MIN_CALIBRATION_MATURE_OBS = 15
+# Pseudo-count strength for shrinking each bin's realized rate toward its predicted
+# mean. At n << this the bin map ≈ the model's own prediction (no spurious edge); as
+# n grows the empirical rate takes over. This removes the identity-until-N cliff and
+# lets calibration improve continuously instead of switching on all at once.
+CALIBRATION_PRIOR_STRENGTH = 20.0
 CALIBRATION_SUMMARY_BIN = -1
+
+
+def _shrink(succ: float, n: int, prior_mean: float, *, strength: float = CALIBRATION_PRIOR_STRENGTH) -> float:
+    """Beta-style shrinkage of a realized rate toward ``prior_mean`` (the bin's predicted
+    probability) with ``strength`` pseudo-observations."""
+
+    return (succ + strength * prior_mean) / (n + strength)
 
 
 def build_conviction_calibration(
@@ -24,9 +39,11 @@ def build_conviction_calibration(
 ) -> tuple[list[dict[str, Any]], list[tuple[float, float]], bool]:
     """Bin predicted P(2x) against realized outcomes and fit a monotone calibration map.
 
-    ``samples`` are ``(predicted_p2x, outcome_2x, outcome_5x)`` over mature events.
-    Returns ``(bin_rows, calibration_map, calibrated)``. ``calibrated`` is False (=>
-    identity map, UI labels "uncalibrated") until ``min_mature`` observations exist.
+    ``samples`` are ``(predicted_p2x, outcome_2x, outcome_5x)`` over mature events, where
+    the outcomes are the *realizable* (trailing-stop) hits, not paper peaks. Returns
+    ``(bin_rows, calibration_map, calibrated)``. The map is fit on shrunk per-bin rates so
+    it is well-behaved at small n; ``calibrated`` flips True once ``min_mature``
+    observations exist (until then the loader keeps the identity map).
     """
 
     clean = [(p, o2, o5) for p, o2, o5 in samples if p is not None and o2 is not None]
@@ -48,6 +65,7 @@ def build_conviction_calibration(
         succ2 = sum(m[1] for m in members)
         realized2 = succ2 / n
         realized5 = sum(m[2] for m in members) / n
+        shrunk2 = _shrink(succ2, n, predicted)
         lo, hi = wilson_interval(succ2, n)
         bin_rows.append(
             {
@@ -57,13 +75,16 @@ def build_conviction_calibration(
                 "n": n,
                 "predicted_p2x": round(predicted, 6),
                 "realized_p2x": round(realized2, 6),
+                "shrunk_p2x": round(shrunk2, 6),
                 "realized_p5x": round(realized5, 6),
                 "wilson_lo": round(lo, 6),
                 "wilson_hi": round(hi, 6),
                 "brier": brier_score([(m[0], m[1]) for m in members]),
             }
         )
-        map_points.append((predicted, realized2, n))
+        # Fit the monotone map on the shrunk rate so a tiny, lucky bin can't claim a huge
+        # calibrated lift; isotonic regression then enforces monotonicity across bins.
+        map_points.append((predicted, shrunk2, n))
     calibration_map = [(x, y) for x, y, _w in isotonic_increasing(map_points)]
     return bin_rows, calibration_map, calibrated
 
@@ -81,7 +102,8 @@ def refresh_conviction_calibration(con: Any, *, strategy_version: str = DEFAULT_
             QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY mark_time DESC) = 1
         )
         SELECT ce.event_id, ce.snapshot_time, ce.raw AS event_raw,
-               m.mark_time, m.time_to_2x, m.time_to_5x, m.max_return_since_alert
+               m.mark_time, m.time_to_2x, m.time_to_5x, m.max_return_since_alert,
+               m.raw AS mark_raw
         FROM candidate_event ce
         JOIN latest_mark m ON m.event_id = ce.event_id
         WHERE ce.strategy_version = ?
@@ -97,9 +119,13 @@ def refresh_conviction_calibration(con: Any, *, strategy_version: str = DEFAULT_
         predicted = _number(ev.get("p_2x"))
         if predicted is None:
             continue
-        peak = _number(row.get("max_return_since_alert")) or 0.0
-        outcome_2x = 1 if (row.get("time_to_2x") is not None or peak >= 1.0) else 0
-        outcome_5x = 1 if (row.get("time_to_5x") is not None or peak >= 4.0) else 0
+        # Calibrate against the realizable trailing-stop exit, falling back to the paper
+        # peak only when an older mark predates the realized field. Predicted P(2x) thus
+        # learns to mean "probability of an exitable double", not "ever printed 2x".
+        realized = _number(_json(row.get("mark_raw")).get("realized_exit_return"))
+        basis = realized if realized is not None else (_number(row.get("max_return_since_alert")) or 0.0)
+        outcome_2x = 1 if basis >= 1.0 else 0
+        outcome_5x = 1 if basis >= 4.0 else 0
         samples.append((predicted, outcome_2x, outcome_5x))
 
     bin_rows, calibration_map, calibrated = build_conviction_calibration(samples)
