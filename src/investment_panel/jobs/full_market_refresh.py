@@ -29,6 +29,11 @@ from investment_panel.jobs import (
 
 StepRunner = Callable[[], dict[str, Any]]
 
+# Steps that run *after* data ingestion and don't affect data freshness. A
+# failure here (e.g. a NAS snapshot upload) must not mask the fact that the
+# panel's data was refreshed successfully.
+HOUSEKEEPING_STEPS = frozenset({"retention_prune", "database_snapshot"})
+
 
 @dataclass(frozen=True)
 class RefreshStep:
@@ -53,11 +58,13 @@ def run(
 
     for step in refresh_steps(config, config_path, online_check=online_check, max_filings=max_filings, fetch_holdings=fetch_holdings):
         step_started = time.perf_counter()
+        category = "housekeeping" if step.name in HOUSEKEEPING_STEPS else "data"
         try:
             result = step.runner()
             step_results.append(
                 {
                     "name": step.name,
+                    "category": category,
                     "ok": True,
                     "durationSeconds": round(time.perf_counter() - step_started, 3),
                     "result": result,
@@ -68,6 +75,7 @@ def run(
             step_results.append(
                 {
                     "name": step.name,
+                    "category": category,
                     "ok": False,
                     "durationSeconds": round(time.perf_counter() - step_started, 3),
                     "error": str(exc),
@@ -121,15 +129,23 @@ def full_refresh_payload(
     failed_step: str | None,
 ) -> dict[str, Any]:
     ok = failed_step is None and all(step.get("ok") for step in steps)
+    # Data freshness tracks only the ingestion steps, independent of the
+    # housekeeping tail (snapshot/prune). A snapshot failure leaves the panel's
+    # data fully refreshed, so the UI should still show a fresh-at timestamp.
+    data_steps = [step for step in steps if step.get("name") not in HOUSEKEEPING_STEPS]
+    data_ok = all(step.get("ok") for step in data_steps)
+    finished_at = utc_now()
     return {
         "ok": ok,
         "status": "ok" if ok else "failed",
+        "dataOk": data_ok,
+        "dataFinishedAt": finished_at if data_ok else None,
         "source": "market-mini",
         "job": "full_market_refresh",
         "origin": "autonomous_collector",
         "database": str(config.database.duckdb_path),
         "startedAt": started_at,
-        "finishedAt": utc_now(),
+        "finishedAt": finished_at,
         "failedStep": failed_step,
         "steps": steps,
     }

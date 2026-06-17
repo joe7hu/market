@@ -6,6 +6,9 @@ import { WatchlistPage } from "@/views/watchlist";
 const CANDIDATE_PAGE_SIZE = 80;
 const WATCHLIST_REFRESH_JOB = "full_market_refresh";
 const POLL_INTERVAL_MS = 5000;
+// Pull fresh rows + the latest refresh status on a timer so a tab left open
+// reflects the backend scheduler's periodic refreshes without a manual click.
+const AUTO_REFRESH_INTERVAL_MS = 120000;
 
 export type WatchlistRefreshStatus = "idle" | "starting" | "running" | "succeeded" | "failed";
 
@@ -102,6 +105,17 @@ export function WatchlistRoute() {
     return () => window.clearInterval(intervalId);
   }, [refreshJobStatus, refreshStatus]);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      // While a manual refresh is in flight the running-poll above already
+      // reloads on success; avoid double-loading and clobbering its state.
+      if (refreshStatus === "starting" || refreshStatus === "running") return;
+      void refreshJobStatus(null).catch(() => undefined);
+      void loadWatchlist().catch(() => undefined);
+    }, AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [loadWatchlist, refreshJobStatus, refreshStatus]);
+
   return (
     <WatchlistPage
       data={data}
@@ -124,8 +138,9 @@ function latestFullRefreshJob(jobs: RefreshJob[]): RefreshJob | null {
 
 function latestRefreshFinishedAt(payload: RefreshJobsPayload, latestJob: RefreshJob | null): Date | null {
   const fromJob = latestJob?.status === "succeeded" && !refreshFailureMessage(latestJob) ? parseDate(latestJob.finished_at) : null;
-  const fromStatus = (payload.latest_status?.job === WATCHLIST_REFRESH_JOB || payload.latest_status?.finishedAt) && payload.latest_status?.ok !== false && payload.latest_status?.status !== "failed"
-    ? parseDate(payload.latest_status?.finishedAt)
+  const status = payload.latest_status;
+  const fromStatus = status && statusDataIsFresh(status) && (status.job === WATCHLIST_REFRESH_JOB || status.dataFinishedAt || status.finishedAt)
+    ? parseDate(status.dataFinishedAt ?? status.finishedAt)
     : null;
   if (fromJob && fromStatus) {
     return fromJob.getTime() >= fromStatus.getTime() ? fromJob : fromStatus;
@@ -133,9 +148,18 @@ function latestRefreshFinishedAt(payload: RefreshJobsPayload, latestJob: Refresh
   return fromJob ?? fromStatus ?? null;
 }
 
+// Data freshness ignores the housekeeping tail (snapshot/prune): a snapshot
+// failure still leaves the panel's data refreshed. Prefer the backend's dataOk
+// flag and fall back to the overall outcome for older status payloads.
+function statusDataIsFresh(status: NonNullable<RefreshJobsPayload["latest_status"]>): boolean {
+  if (typeof status.dataOk === "boolean") return status.dataOk;
+  return status.ok !== false && status.status !== "failed";
+}
+
 function latestStatusIsNewerThanJob(payload: RefreshJobsPayload, job: RefreshJob): boolean {
-  if (payload.latest_status?.ok === false || payload.latest_status?.status === "failed") return false;
-  const statusFinishedAt = parseDate(payload.latest_status?.finishedAt);
+  const status = payload.latest_status;
+  if (!status || !statusDataIsFresh(status)) return false;
+  const statusFinishedAt = parseDate(status.dataFinishedAt ?? status.finishedAt);
   if (!statusFinishedAt) return false;
   const jobTime = parseDate(job.finished_at) ?? parseDate(job.started_at);
   return Boolean(jobTime && statusFinishedAt.getTime() > jobTime.getTime());
@@ -144,6 +168,9 @@ function latestStatusIsNewerThanJob(payload: RefreshJobsPayload, job: RefreshJob
 function refreshFailureMessage(job: RefreshJob): string | null {
   const summary = isRecord(job.summary) ? job.summary : null;
   if (!summary) return null;
+  // Data refreshed successfully; only the housekeeping tail failed — not a
+  // watchlist-facing failure.
+  if (summary.dataOk === true) return null;
   const ok = summary.ok;
   const status = summary.status;
   if (ok !== false && status !== "failed") return null;

@@ -27,6 +27,10 @@ export type RefreshJobsPayload = {
   latest_status?: {
     ok?: boolean;
     status?: string;
+    // Data freshness independent of the housekeeping tail (snapshot/prune): a
+    // failed snapshot still leaves the panel's data fully refreshed.
+    dataOk?: boolean;
+    dataFinishedAt?: string | null;
     startedAt?: string;
     finishedAt?: string;
     failedStep?: string | null;

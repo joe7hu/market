@@ -244,9 +244,35 @@ def _full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None
     if not status_path.exists():
         return None
     try:
-        return json.loads(status_path.read_text(encoding="utf-8"))
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
     except Exception:
         return None
+    return _with_data_freshness(payload)
+
+
+# Housekeeping steps run after data ingestion and don't affect data freshness;
+# mirror the orchestrator so a snapshot/prune failure never hides fresh data.
+_HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
+
+
+def _with_data_freshness(payload: dict[str, Any]) -> dict[str, Any]:
+    """Backfill dataOk/dataFinishedAt for status files written before the split."""
+
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("dataOk") is not None:
+        return payload
+    steps = payload.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return payload
+    data_ok = all(
+        step.get("ok")
+        for step in steps
+        if isinstance(step, dict) and step.get("name") not in _HOUSEKEEPING_REFRESH_STEPS
+    )
+    payload["dataOk"] = data_ok
+    payload["dataFinishedAt"] = payload.get("finishedAt") if data_ok else None
+    return payload
 
 
 def _require_local_request(request: Request) -> None:

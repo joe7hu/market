@@ -70,6 +70,68 @@ def test_full_market_refresh_runs_existing_jobs_in_order(tmp_path: Path, monkeyp
     assert status["ok"] is True
 
 
+def test_housekeeping_failure_keeps_data_fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = write_config(tmp_path)
+
+    def ok_run(name: str):
+        return lambda *_args, **_kwargs: {"job": name}
+
+    monkeypatch.setattr(full_market_refresh.update_arco_data, "run", ok_run("arco_import"))
+    monkeypatch.setattr(full_market_refresh.daily_screen, "run", ok_run("daily_screen"))
+    monkeypatch.setattr(full_market_refresh.update_free_sources, "run", ok_run("free_sources_and_analyses"))
+    monkeypatch.setattr(full_market_refresh.refresh_options_radar, "run", ok_run("options_radar"))
+    monkeypatch.setattr(full_market_refresh.run_option_agents, "run", ok_run("option_agents"))
+    monkeypatch.setattr(full_market_refresh.update_broker_sources, "run", ok_run("broker_sources"))
+    monkeypatch.setattr(full_market_refresh.update_disclosures, "run", ok_run("disclosures"))
+    monkeypatch.setattr(full_market_refresh.update_event_calendar, "run", ok_run("event_calendar"))
+    monkeypatch.setattr(full_market_refresh, "prune_operational_tables", lambda *_args, **_kwargs: {"refresh_jobs": 0})
+
+    def fail_snapshot(*_args, **_kwargs):
+        raise RuntimeError("nas offline")
+
+    monkeypatch.setattr(full_market_refresh.snapshot_database, "run", fail_snapshot)
+
+    # Production runs the daily refresh with continue_on_error so the housekeeping
+    # tail can fail without aborting; the overall run is failed but data is fresh.
+    result = full_market_refresh.run(str(config_path), continue_on_error=True)
+
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert result["failedStep"] == "database_snapshot"
+    assert result["dataOk"] is True
+    assert result["dataFinishedAt"] == result["finishedAt"]
+    snapshot_step = next(step for step in result["steps"] if step["name"] == "database_snapshot")
+    assert snapshot_step["category"] == "housekeeping"
+    assert snapshot_step["ok"] is False
+
+
+def test_data_step_failure_marks_data_not_fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = write_config(tmp_path)
+
+    def ok_run(name: str):
+        return lambda *_args, **_kwargs: {"job": name}
+
+    monkeypatch.setattr(full_market_refresh.update_arco_data, "run", ok_run("arco_import"))
+    monkeypatch.setattr(full_market_refresh.update_free_sources, "run", ok_run("free_sources_and_analyses"))
+    monkeypatch.setattr(full_market_refresh.refresh_options_radar, "run", ok_run("options_radar"))
+    monkeypatch.setattr(full_market_refresh.run_option_agents, "run", ok_run("option_agents"))
+    monkeypatch.setattr(full_market_refresh.update_broker_sources, "run", ok_run("broker_sources"))
+    monkeypatch.setattr(full_market_refresh.update_disclosures, "run", ok_run("disclosures"))
+    monkeypatch.setattr(full_market_refresh.update_event_calendar, "run", ok_run("event_calendar"))
+    monkeypatch.setattr(full_market_refresh, "prune_operational_tables", lambda *_args, **_kwargs: {"refresh_jobs": 0})
+    monkeypatch.setattr(full_market_refresh.snapshot_database, "run", ok_run("database_snapshot"))
+
+    def fail_daily(*_args, **_kwargs):
+        raise RuntimeError("screen failed")
+
+    monkeypatch.setattr(full_market_refresh.daily_screen, "run", fail_daily)
+
+    result = full_market_refresh.run(str(config_path), continue_on_error=True)
+
+    assert result["dataOk"] is False
+    assert result["dataFinishedAt"] is None
+
+
 def test_full_market_refresh_records_failed_step_before_reraising(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = write_config(tmp_path)
 
