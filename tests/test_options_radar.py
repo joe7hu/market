@@ -75,6 +75,110 @@ def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> Non
     ]
 
 
+def test_options_radar_runs_learning_and_opportunities_for_deep_otm_family(tmp_path) -> None:
+    db_path = tmp_path / "radar-deep-family.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "NVDA", slope=0.35)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute(
+            "INSERT INTO quotes_intraday VALUES ('NVDA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
+        )
+        store_options_chain(
+            con,
+            "NVDA",
+            "2026-06-02T19:00:00Z",
+            [
+                option_row(
+                    "2027-09-18",
+                    240,
+                    "call",
+                    1.2,
+                    1.3,
+                    0.75,
+                    0.10,
+                    "OPRA:NVDA270918C240",
+                    dte=473,
+                    volume=0,
+                    open_interest=120,
+                ),
+                option_row(
+                    "2027-09-18",
+                    260,
+                    "call",
+                    1.8,
+                    2.2,
+                    1.40,
+                    0.08,
+                    "OPRA:NVDA270918C260",
+                    dte=473,
+                    volume=0,
+                    open_interest=80,
+                ),
+            ],
+        )
+
+        result = refresh_options_radar(con, ["NVDA"])
+        deep_candidate = query_rows(
+            con,
+            """
+            SELECT state, trigger_reason
+            FROM candidate_event
+            WHERE contract_id = 'OPRA:NVDA270918C240'
+              AND strategy_version = 'deep_otm_lottery_call_v1'
+            """,
+        )[0]
+        primary_candidate = query_rows(
+            con,
+            """
+            SELECT state, trigger_reason
+            FROM candidate_event
+            WHERE contract_id = 'OPRA:NVDA270918C240'
+              AND strategy_version = ?
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )[0]
+        deep_trade = query_rows(
+            con,
+            """
+            SELECT st.status
+            FROM shadow_trade st
+            JOIN candidate_event ce ON ce.event_id = st.event_id
+            WHERE ce.contract_id = 'OPRA:NVDA270918C240'
+              AND ce.strategy_version = 'deep_otm_lottery_call_v1'
+            """,
+        )
+        deep_marks = query_rows(
+            con,
+            """
+            SELECT candidate_state
+            FROM candidate_event_mark
+            WHERE contract_id = 'OPRA:NVDA270918C240'
+              AND strategy_version = 'deep_otm_lottery_call_v1'
+            """,
+        )
+        deep_opportunity = query_rows(
+            con,
+            """
+            SELECT primary_contract_id
+            FROM option_radar_opportunity
+            WHERE ticker = 'NVDA'
+              AND strategy_version = 'deep_otm_lottery_call_v1'
+            """,
+        )
+
+    assert result["shadow_trades"] >= 1
+    assert result["candidate_event_marks"] >= 1
+    assert result["option_radar_opportunities"] >= 1
+    assert deep_candidate["state"] == "FIRE"
+    assert "delta_in_range" in deep_candidate["trigger_reason"]
+    assert primary_candidate["state"] == "REJECT"
+    assert "delta_outside_strategy_range" in primary_candidate["trigger_reason"]
+    assert deep_trade == [{"status": "open"}]
+    assert deep_marks == [{"candidate_state": "FIRE"}]
+    assert deep_opportunity == [{"primary_contract_id": "OPRA:NVDA270918C240"}]
+
+
 def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without_evidence(tmp_path) -> None:
     db_path = tmp_path / "radar-opportunity-blocked.duckdb"
     init_db(db_path)
@@ -1028,20 +1132,30 @@ def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:
 
         result = refresh_options_radar(con, ["TSLA"])
         attribution = query_rows(con, "SELECT * FROM option_attribution")[0]
-        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution")[0]
+        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
         first_trade = query_rows(con, "SELECT * FROM shadow_trade ORDER BY entry_time LIMIT 1")[0]
-        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
+        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark WHERE strategy_version = ? ORDER BY mark_time", [DEFAULT_STRATEGY_VERSION])
         marks = query_rows(con, "SELECT * FROM shadow_trade_mark ORDER BY mark_time")
-        transitions = query_rows(con, "SELECT state, previous_state, trigger_reason FROM radar_state_transition WHERE contract_id = 'OPRA:TSLA270918C120' ORDER BY snapshot_time")
+        transitions = query_rows(
+            con,
+            """
+            SELECT state, previous_state, trigger_reason
+            FROM radar_state_transition
+            WHERE contract_id = 'OPRA:TSLA270918C120'
+              AND strategy_version = ?
+            ORDER BY snapshot_time
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
         cohorts = query_rows(con, "SELECT * FROM strategy_cohort_result")
         setup_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_type = 'setup_type'")[0]
         market_cohort = query_rows(con, "SELECT * FROM strategy_cohort_result WHERE cohort_value = 'qqq_above_200d'")[0]
 
     assert result["option_attributions"] == 1
-    assert result["candidate_event_attributions"] == 1
-    assert result["candidate_event_marks"] == 3
+    assert result["candidate_event_attributions"] >= 1
+    assert result["candidate_event_marks"] >= 3
     assert result["shadow_trade_marks"] == 2
-    assert result["radar_state_transitions"] == 2
+    assert result["radar_state_transitions"] >= 2
     assert result["strategy_cohorts"] >= 4
     assert attribution["trade_id"] == first_trade["trade_id"]
     assert attribution["label"] == "good_convexity"
@@ -1151,8 +1265,10 @@ def test_hard_red_team_validation_invalidates_and_closes_shadow_trade(tmp_path) 
             SELECT state, previous_state, trigger_reason
             FROM radar_state_transition
             WHERE contract_id = 'OPRA:TSLA270918C120'
+              AND strategy_version = ?
             ORDER BY snapshot_time
             """,
+            [DEFAULT_STRATEGY_VERSION],
         )
         trades = query_rows(con, "SELECT status, exit_time, exit_price, exit_reason, raw FROM shadow_trade ORDER BY entry_time")
         validation = query_rows(con, "SELECT state, red_team_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
@@ -1273,20 +1389,29 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
         )
 
         result = refresh_options_radar(con, ["RBLX"])
-        missed = query_rows(con, "SELECT * FROM missed_winner_event")[0]
-        proposal = query_rows(con, "SELECT * FROM strategy_mutation_proposal")[0]
-        backtest = query_rows(con, "SELECT * FROM strategy_backtest_result")[0]
-        forward = query_rows(con, "SELECT * FROM strategy_forward_test_result")[0]
-        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark ORDER BY mark_time")
-        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution")[0]
-        trades = query_rows(con, "SELECT * FROM shadow_trade")
+        missed = query_rows(con, "SELECT * FROM missed_winner_event WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        proposal = query_rows(con, "SELECT * FROM strategy_mutation_proposal WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        backtest = query_rows(con, "SELECT * FROM strategy_backtest_result WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        forward = query_rows(con, "SELECT * FROM strategy_forward_test_result WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        candidate_marks = query_rows(con, "SELECT * FROM candidate_event_mark WHERE strategy_version = ? ORDER BY mark_time", [DEFAULT_STRATEGY_VERSION])
+        candidate_attribution = query_rows(con, "SELECT * FROM candidate_event_attribution WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        trades = query_rows(
+            con,
+            """
+            SELECT st.*
+            FROM shadow_trade st
+            JOIN candidate_event ce ON ce.event_id = st.event_id
+            WHERE ce.strategy_version = ?
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
 
-    assert result["candidate_event_marks"] == 3
-    assert result["candidate_event_attributions"] == 1
-    assert result["missed_winners"] == 1
-    assert result["strategy_mutation_proposals"] == 1
-    assert result["strategy_backtests"] == 1
-    assert result["strategy_forward_tests"] == 1
+    assert result["candidate_event_marks"] >= 3
+    assert result["candidate_event_attributions"] >= 1
+    assert result["missed_winners"] >= 1
+    assert result["strategy_mutation_proposals"] >= 1
+    assert result["strategy_backtests"] >= 1
+    assert result["strategy_forward_tests"] >= 1
     assert trades == []
     assert missed["winner_threshold"] == "10x"
     best_candidate_mark = max(candidate_marks, key=lambda row: row["max_return_since_alert"])

@@ -22,7 +22,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 
-from investment_panel.core.free_sources.constants import RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO
+from investment_panel.core.free_sources.constants import RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_LOTTERY_CALL_STRIKE_OTM_LO
 
 # IBKR tick types we read. Live model greeks arrive as tickType 13; delayed model
 # greeks as 83. Open interest for a contract arrives as 27 (call) / 28 (put).
@@ -85,8 +85,9 @@ def select_leap_call_strikes(
 
     The baseline family still gates delta around 0.20-0.45, but the forward-test
     deep-OTM sleeve needs 0.05-0.20 delta strikes that often live 1.8-3.0x spot.
-    Bias the scan to the out-of-the-money band and sample it evenly. Falls back
-    to nearest-spot when spot is unknown or the band is empty.
+    Preserve the configured strike budget for each zone so widening the frontier
+    does not thin the baseline band. Falls back to nearest-spot when spot is
+    unknown or the band is empty.
     """
 
     valid = sorted(s for s in strikes if s and s > 0)
@@ -94,15 +95,28 @@ def select_leap_call_strikes(
         return []
     if spot is None or spot <= 0:
         return select_strikes_around_spot(valid, spot, count)
-    band = [s for s in valid if otm_lo * spot <= s <= otm_hi * spot]
-    if not band:
+    baseline_hi = min(RADAR_BASELINE_CALL_STRIKE_OTM_HI, otm_hi)
+    baseline = [s for s in valid if otm_lo * spot <= s <= baseline_hi * spot]
+    lottery = []
+    if otm_hi > baseline_hi:
+        lottery_lo = max(RADAR_LOTTERY_CALL_STRIKE_OTM_LO, baseline_hi)
+        lottery = [s for s in valid if lottery_lo * spot < s <= otm_hi * spot]
+    picked = sorted({
+        *_sample_evenly(baseline, count),
+        *_sample_evenly(lottery, count),
+    })
+    if not picked:
         return select_strikes_around_spot(valid, spot, count)
-    if len(band) <= count:
-        return band
-    # Evenly sample `count` strikes across the OTM band.
-    step = (len(band) - 1) / (count - 1) if count > 1 else 0
-    picked = sorted({band[round(i * step)] for i in range(count)})
     return picked
+
+
+def _sample_evenly(values: list[float], count: int) -> list[float]:
+    if count <= 0 or not values:
+        return []
+    if len(values) <= count:
+        return values
+    step = (len(values) - 1) / (count - 1) if count > 1 else 0
+    return sorted({values[round(i * step)] for i in range(count)})
 
 
 def select_term_structure_expiries(

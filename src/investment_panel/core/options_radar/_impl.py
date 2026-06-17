@@ -52,6 +52,7 @@ def refresh_options_radar(
 
     register_default_strategy(con, strategy_version)
     register_strategy_families(con)
+    strategy_versions = candidate_strategy_versions(con, strategy_version)
     snapshot_rows = persist_option_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
     spread_snapshot_rows = persist_spread_snapshots(con, symbols=symbols, source=source, snapshot_time=snapshot_time)
     fast_snapshot_time = None if include_learning else snapshot_time or _latest_option_snapshot_time(con, symbols=symbols, source=source)
@@ -63,7 +64,7 @@ def refresh_options_radar(
     # (each shadow-traded on its own strategy_version).
     candidate_rows = sum(
         generate_candidate_events(con, symbols=symbols, strategy_version=version, source=source, snapshot_time=fast_snapshot_time)
-        for version in candidate_strategy_versions(con, strategy_version)
+        for version in strategy_versions
     )
     if include_agent_work:
         from investment_panel.core.option_agent_thesis import refresh_option_agent_work
@@ -77,18 +78,18 @@ def refresh_options_radar(
             "agent_thesis_validations": 0,
         }
     if include_learning:
-        shadow_rows = create_shadow_trades(con, strategy_version=strategy_version)
-        exploration_rows = create_exploration_shadow_trades(con, strategy_version=strategy_version)
+        shadow_rows = sum(create_shadow_trades(con, strategy_version=version) for version in strategy_versions)
+        exploration_rows = sum(create_exploration_shadow_trades(con, strategy_version=version) for version in strategy_versions)
         marked_rows = mark_shadow_trades(con)
-        mark_rows = refresh_shadow_trade_marks(con, strategy_version=strategy_version)
-        candidate_mark_rows = refresh_candidate_event_marks(con, strategy_version=strategy_version)
-        calibration_bins = refresh_conviction_calibration(con, strategy_version=strategy_version)
-        candidate_attribution_rows = refresh_candidate_event_attributions(con, strategy_version=strategy_version)
-        transition_rows = refresh_radar_state_transitions(con, strategy_version=strategy_version)
-        exited_rows = apply_shadow_trade_exits(con, strategy_version=strategy_version)
-        attribution_rows = refresh_option_attributions(con, strategy_version=strategy_version)
-        missed_rows = detect_missed_winners(con, symbols=symbols, strategy_version=strategy_version, source=source)
-        proposal_rows = generate_strategy_mutation_proposals(con, strategy_version=strategy_version)
+        mark_rows = sum(refresh_shadow_trade_marks(con, strategy_version=version) for version in strategy_versions)
+        candidate_mark_rows = sum(refresh_candidate_event_marks(con, strategy_version=version) for version in strategy_versions)
+        calibration_bins = sum(refresh_conviction_calibration(con, strategy_version=version) for version in strategy_versions)
+        candidate_attribution_rows = sum(refresh_candidate_event_attributions(con, strategy_version=version) for version in strategy_versions)
+        transition_rows = sum(refresh_radar_state_transitions(con, strategy_version=version) for version in strategy_versions)
+        exited_rows = sum(apply_shadow_trade_exits(con, strategy_version=version) for version in strategy_versions)
+        attribution_rows = sum(refresh_option_attributions(con, strategy_version=version) for version in strategy_versions)
+        missed_rows = sum(detect_missed_winners(con, symbols=symbols, strategy_version=version, source=source) for version in strategy_versions)
+        proposal_rows = sum(generate_strategy_mutation_proposals(con, strategy_version=version) for version in strategy_versions)
     else:
         shadow_rows = exploration_rows = marked_rows = mark_rows = candidate_mark_rows = candidate_attribution_rows = 0
         transition_rows = exited_rows = attribution_rows = missed_rows = proposal_rows = 0
@@ -103,13 +104,22 @@ def refresh_options_radar(
             "agent_postmortem_strategy_proposals": 0,
         }
     if include_learning:
-        evaluation_rows = refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
-        cohort_rows = refresh_strategy_cohort_results(con, strategy_version=strategy_version)
+        evaluation_rows = _sum_count_dicts(
+            refresh_strategy_proposal_evaluations(con, strategy_version=version)
+            for version in strategy_versions
+        )
+        cohort_rows = sum(refresh_strategy_cohort_results(con, strategy_version=version) for version in strategy_versions)
     else:
         evaluation_rows = {}
         cohort_rows = 0
-    opportunity_rows = refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=strategy_version)
-    alert_rows = refresh_radar_alerts(con, strategy_version=strategy_version, symbols=symbols, resolve_all=symbols is None)
+    opportunity_rows = sum(
+        refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=version)
+        for version in strategy_versions
+    )
+    alert_rows = sum(
+        refresh_radar_alerts(con, strategy_version=version, symbols=symbols, resolve_all=symbols is None)
+        for version in strategy_versions
+    )
     return {
         "option_snapshots": snapshot_rows,
         "spread_snapshots": spread_snapshot_rows,
@@ -153,3 +163,11 @@ def _latest_option_snapshot_time(con: Any, symbols: list[str] | None = None, *, 
     )
     value = rows[0].get("snapshot_time") if rows else None
     return _iso(value) if value else None
+
+
+def _sum_count_dicts(rows: Any) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for row in rows:
+        for key, value in row.items():
+            totals[key] = totals.get(key, 0) + int(value or 0)
+    return totals

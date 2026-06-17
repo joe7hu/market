@@ -19,6 +19,7 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core import fundamentals as fundamentals_core
 from investment_panel.core.fundamentals import cik_from_sec_filing_url, metrics_from_company_facts
 from investment_panel.core.free_sources import (
+    convexity_option_symbols,
     filter_chain_rows_around_spot,
     infer_event_date,
     option_chain_strikes_around_spot,
@@ -461,11 +462,72 @@ def test_default_option_symbols_include_convexity_discovery_sleeve(tmp_path: Pat
             VALUES ('LOTTO', current_date, 92, 'stage_2_advancing', 'strong_setup', '{}', '{}')
             """
         )
+        con.execute(
+            """
+            INSERT INTO prices_daily VALUES
+            ('LOTTO', current_date - 1, 90, 92, 88, 90, 1000000, 'test'),
+            ('LOTTO', current_date, 100, 102, 98, 100, 1000000, 'test')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO options_expiries VALUES
+            ('LOTTO', current_date + 365, 365, 120, current_timestamp, 'tradingview', '{}')
+            """
+        )
 
         symbols = option_symbols(con, config)
 
     assert symbols == ["KEEP", "DQ", "LOTTO", "SEPA"]
     assert "FALLBACK" not in symbols
+
+
+def test_convexity_option_symbols_require_fresh_data_and_current_option_coverage(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(tradingview=SimpleNamespace(options_symbols=[], option_scan_limit=5)),
+        watchlist=[],
+    )
+    with db(db_path) as con:
+        for symbol in ("FRESH", "STALE", "NOOPT"):
+            upsert_instrument(con, {"symbol": symbol, "name": symbol, "asset_class": "equity"})
+            con.execute(
+                """
+                INSERT INTO prices_daily VALUES
+                (?, current_date - 1, 90, 92, 88, 90, 1000000, 'test'),
+                (?, current_date, 100, 102, 98, 100, 1000000, 'test')
+                """,
+                [symbol, symbol],
+            )
+            con.execute(
+                """
+                INSERT INTO liquidity_metrics
+                VALUES (?, current_date, 'A', 1000000, 25000000, NULL, NULL, NULL, '{}')
+                """,
+                [symbol],
+            )
+        con.execute(
+            """
+            INSERT INTO technical_features VALUES
+            ('FRESH', current_date, '{"return_20d":0.42,"return_60d":0.95,"drawdown_from_high":-0.38}'),
+            ('NOOPT', current_date, '{"return_20d":0.41,"return_60d":0.90,"drawdown_from_high":-0.35}'),
+            ('STALE', current_date - 120, '{"return_20d":0.90,"return_60d":1.20,"drawdown_from_high":-0.60}')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO options_expiries VALUES
+            ('FRESH', current_date + 365, 365, 120, current_timestamp, 'tradingview', '{}'),
+            ('STALE', current_date + 365, 365, 120, current_timestamp, 'tradingview', '{}')
+            """
+        )
+
+        symbols = convexity_option_symbols(con, 5)
+
+    assert "FRESH" in symbols
+    assert "STALE" not in symbols
+    assert "NOOPT" not in symbols
 
 
 def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> None:
@@ -754,7 +816,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
         rows = query_rows(con, "SELECT expiry, count(*) AS count FROM options_chain GROUP BY expiry ORDER BY expiry")
 
     assert quote_calls == ["TSLA"]
-    assert chain_calls == [("2026-06-05", 6), ("2027-06-02", 24), ("2028-11-18", 24)]
+    assert chain_calls == [("2026-06-05", 6), ("2027-06-02", 48), ("2028-11-18", 48)]
     assert result["target_symbols"] == ["TSLA"]
     assert result["chain_expiries"] == 3
     assert result["radar_chain_expiries"] == 2

@@ -110,14 +110,16 @@ def refresh_radar_alerts(
         SELECT alert_type, coalesce(event_id, '') AS event_id, coalesce(contract_id, '') AS contract_id
         FROM radar_alert
         WHERE created_at >= current_timestamp - INTERVAL '{RADAR_ALERT_DEDUP_HOURS} hours'
+          AND strategy_version = ?
           AND (acknowledged_at IS NULL OR resolution_reason = 'manual_ack')
         """,
+        [strategy_version],
     )
     created_at = datetime.utcnow().isoformat()
     alerts = [alert for opportunity in rows for alert in _radar_alerts_for_opportunity(opportunity, created_at)]
     current_identities = {(alert["alert_type"], alert["event_id"] or "", alert["contract_id"] or "") for alert in alerts}
     resolve_symbols = None if resolve_all else set(clean_symbols)
-    _resolve_stale_radar_alerts(con, current_identities, resolved_at=created_at, symbols=resolve_symbols)
+    _resolve_stale_radar_alerts(con, current_identities, strategy_version=strategy_version, resolved_at=created_at, symbols=resolve_symbols)
 
     seen = {(str(row.get("alert_type") or ""), str(row.get("event_id") or ""), str(row.get("contract_id") or "")) for row in recent}
     count = 0
@@ -129,13 +131,14 @@ def refresh_radar_alerts(
         con.execute(
             """
             INSERT OR REPLACE INTO radar_alert
-            (alert_id, created_at, alert_type, ticker, contract_id, event_id,
+            (alert_id, created_at, strategy_version, alert_type, ticker, contract_id, event_id,
              severity, title, detail, acknowledged_at, resolution_reason, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 alert["alert_id"],
                 alert["created_at"],
+                strategy_version,
                 alert["alert_type"],
                 alert["ticker"],
                 alert["contract_id"],
@@ -156,6 +159,7 @@ def _resolve_stale_radar_alerts(
     con: Any,
     current_identities: set[tuple[str, str, str]],
     *,
+    strategy_version: str,
     resolved_at: str,
     symbols: set[str] | None,
 ) -> None:
@@ -173,9 +177,10 @@ def _resolve_stale_radar_alerts(
         SELECT alert_id, alert_type, coalesce(event_id, '') AS event_id, coalesce(contract_id, '') AS contract_id
         FROM radar_alert
         WHERE acknowledged_at IS NULL
+          AND strategy_version = ?
         {symbol_filter}
         """,
-        params,
+        [strategy_version, *params],
     )
     for alert in active:
         alert_type = str(alert.get("alert_type") or "")

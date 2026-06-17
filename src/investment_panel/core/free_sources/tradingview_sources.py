@@ -11,7 +11,7 @@ from investment_panel.providers import OpenCliError, OpenCliRateLimitError, Open
 from investment_panel.core.free_sources.constants import OPTION_RATE_LIMIT_CIRCUIT_BREAKER
 from investment_panel.core.free_sources.coerce import stable_id, unique_symbols
 from investment_panel.core.free_sources.provenance import record_provider_run, record_source_health
-from investment_panel.core.free_sources.options import equity_symbols, option_chain_strikes_around_spot, option_symbols, selected_option_expiries, tradingview_search_symbols, tradingview_symbol_candidates
+from investment_panel.core.free_sources.options import equity_symbols, filter_chain_rows_around_spot, latest_option_scan_spot, option_chain_strikes_around_spot, option_symbols, selected_option_expiries, tradingview_search_symbols, tradingview_symbol_candidates
 from investment_panel.core.free_sources.store import store_alert_rows, store_chart_state_rows, store_expiries, store_news_rows, store_options_chain, store_screener_rows, store_symbol_search_rows, store_watchlist_rows, upsert_quote
 
 
@@ -123,6 +123,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
             result["expiries"] += store_expiries(con, symbol, observed_at, expiries)
             selected_expiries = selected_option_expiries(expiries, observed_at)
             if selected_expiries:
+                spot = latest_option_scan_spot(con, symbol)
                 symbol_chain_rows = 0
                 any_chain_error = False
                 for expiry in selected_expiries:
@@ -132,6 +133,9 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                         observed_at,
                         configured=config.data_sources.tradingview.strikes_around_spot,
                     )
+                    fetch_strikes_around_spot = strikes_around_spot
+                    if strikes_around_spot > config.data_sources.tradingview.strikes_around_spot:
+                        fetch_strikes_around_spot = strikes_around_spot * 2
                     chain = []
                     chain_error = False
                     for candidate in tradingview_symbol_candidates(symbol):
@@ -139,7 +143,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                             chain = provider.options_chain(
                                 candidate,
                                 str(expiry),
-                                strikes_around_spot=strikes_around_spot,
+                                strikes_around_spot=fetch_strikes_around_spot,
                             )
                         except OpenCliError as exc:
                             chain_error = True
@@ -147,6 +151,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                             continue
                         if chain:
                             break
+                    chain = filter_chain_rows_around_spot(chain, spot, strikes_around_spot)
                     stored_chain_rows = store_options_chain(con, symbol, observed_at, chain)
                     result["chains"] += stored_chain_rows
                     if stored_chain_rows:

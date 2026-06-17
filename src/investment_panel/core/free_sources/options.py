@@ -6,7 +6,7 @@ from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.decision import effective_watchlist
 
-from investment_panel.core.free_sources.constants import OPTION_SCAN_LIMIT, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_MAX_DTE, RADAR_MAX_EXPIRIES_PER_SYMBOL, RADAR_MIN_DTE, RADAR_STRIKES_AROUND_SPOT
+from investment_panel.core.free_sources.constants import OPTION_SCAN_LIMIT, RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_MAX_DTE, RADAR_MAX_EXPIRIES_PER_SYMBOL, RADAR_MIN_DTE, RADAR_LOTTERY_CALL_STRIKE_OTM_LO, RADAR_STRIKES_AROUND_SPOT
 from investment_panel.core.free_sources.coerce import _dte_from_expiry, _radar_expiry_targets, _unique_strings, as_float, as_int, normalize_symbol, unique_symbols
 
 
@@ -129,19 +129,28 @@ def convexity_option_symbols(con: Any, limit: int) -> list[str]:
         con,
         """
         WITH latest_technical AS (
-            SELECT symbol, features
+            SELECT symbol, date AS technical_date, features
             FROM technical_features
+            WHERE date >= CURRENT_DATE - INTERVAL 45 DAY
             QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY date DESC) = 1
         ),
         latest_liquidity AS (
-            SELECT symbol, avg_dollar_volume
+            SELECT symbol, as_of AS liquidity_date, avg_dollar_volume
             FROM liquidity_metrics
+            WHERE as_of >= CURRENT_DATE - INTERVAL 45 DAY
             QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
         ),
         latest_sepa AS (
-            SELECT symbol, score AS sepa_score, stage, verdict
+            SELECT symbol, as_of AS sepa_date, score AS sepa_score, stage, verdict
             FROM sepa_analyses
+            WHERE as_of >= CURRENT_DATE - INTERVAL 90 DAY
             QUALIFY row_number() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
+        ),
+        latest_option_coverage AS (
+            SELECT symbol, max(observed_at) AS option_seen_at, max(expiry) AS latest_option_expiry
+            FROM options_expiries
+            WHERE contracts_count IS NULL OR contracts_count > 0
+            GROUP BY symbol
         ),
         priced AS (
             SELECT
@@ -155,6 +164,7 @@ def convexity_option_symbols(con: Any, limit: int) -> list[str]:
         price_stats AS (
             SELECT
                 symbol,
+                max(date) AS latest_price_date,
                 stddev_samp(
                     CASE
                         WHEN recency_rank <= 64 AND prev_close > 0
@@ -164,6 +174,10 @@ def convexity_option_symbols(con: Any, limit: int) -> list[str]:
                 ) * sqrt(252) AS realized_vol_63d
             FROM priced
             GROUP BY symbol
+        ),
+        coverage_state AS (
+            SELECT count(*) AS covered_symbols
+            FROM latest_option_coverage
         ),
         scored AS (
             SELECT
@@ -184,11 +198,17 @@ def convexity_option_symbols(con: Any, limit: int) -> list[str]:
                       END
                     + COALESCE(ls.sepa_score, 0.0) * 0.10
                 ) AS convexity_score,
-                COALESCE(ll.avg_dollar_volume, 0.0) AS avg_dollar_volume
+                COALESCE(ll.avg_dollar_volume, 0.0) AS avg_dollar_volume,
+                ps.latest_price_date,
+                loc.option_seen_at,
+                loc.latest_option_expiry,
+                cs.covered_symbols
             FROM instruments i
+            CROSS JOIN coverage_state cs
             LEFT JOIN latest_technical tf ON tf.symbol = i.symbol
             LEFT JOIN latest_liquidity ll ON ll.symbol = i.symbol
             LEFT JOIN latest_sepa ls ON ls.symbol = i.symbol
+            LEFT JOIN latest_option_coverage loc ON loc.symbol = i.symbol
             LEFT JOIN price_stats ps ON ps.symbol = i.symbol
             WHERE i.asset_class IN ('equity', 'etf')
               AND i.symbol NOT LIKE '%-USD'
@@ -197,6 +217,14 @@ def convexity_option_symbols(con: Any, limit: int) -> list[str]:
         FROM scored
         WHERE convexity_score > 0
           AND avg_dollar_volume >= 5000000
+          AND latest_price_date >= CURRENT_DATE - INTERVAL 45 DAY
+          AND (
+              covered_symbols = 0
+              OR (
+                  option_seen_at >= CURRENT_TIMESTAMP - INTERVAL 90 DAY
+                  AND latest_option_expiry >= CURRENT_DATE + INTERVAL 30 DAY
+              )
+          )
         ORDER BY convexity_score DESC, avg_dollar_volume DESC, symbol
         LIMIT ?
         """,
@@ -360,19 +388,34 @@ def filter_chain_rows_around_spot(rows: list[dict[str, Any]], spot: float | None
             filtered.extend(grouped_rows)
             continue
         if option_type == "call" and strikes_around_spot >= RADAR_STRIKES_AROUND_SPOT:
-            band = [
+            baseline = [
                 (strike, row)
                 for strike, row in usable
-                if RADAR_CALL_STRIKE_OTM_LO * spot <= strike <= RADAR_CALL_STRIKE_OTM_HI * spot
+                if RADAR_CALL_STRIKE_OTM_LO * spot <= strike <= RADAR_BASELINE_CALL_STRIKE_OTM_HI * spot
             ]
-            if band:
-                if len(band) <= strikes_around_spot:
-                    filtered.extend(row for _strike, row in sorted(band, key=lambda item: float(item[0])))
-                    continue
-                step = (len(band) - 1) / (strikes_around_spot - 1) if strikes_around_spot > 1 else 0
-                picked = {round(index * step) for index in range(strikes_around_spot)}
-                filtered.extend(row for _strike, row in sorted((band[index] for index in picked), key=lambda item: float(item[0])))
+            lottery = [
+                (strike, row)
+                for strike, row in usable
+                if RADAR_LOTTERY_CALL_STRIKE_OTM_LO * spot < strike <= RADAR_CALL_STRIKE_OTM_HI * spot
+            ]
+            sampled = [
+                *_sample_strike_rows_evenly(baseline, strikes_around_spot),
+                *_sample_strike_rows_evenly(lottery, strikes_around_spot),
+            ]
+            if sampled:
+                filtered.extend(row for _strike, row in sorted(sampled, key=lambda item: float(item[0])))
                 continue
         nearest = sorted(usable, key=lambda item: abs(float(item[0]) - spot))[:max_rows_per_type]
         filtered.extend(row for _strike, row in sorted(nearest, key=lambda item: float(item[0])))
     return filtered
+
+
+def _sample_strike_rows_evenly(rows: list[tuple[float, dict[str, Any]]], count: int) -> list[tuple[float, dict[str, Any]]]:
+    ordered = sorted(rows, key=lambda item: float(item[0]))
+    if count <= 0 or not ordered:
+        return []
+    if len(ordered) <= count:
+        return ordered
+    step = (len(ordered) - 1) / (count - 1) if count > 1 else 0
+    picked = {round(index * step) for index in range(count)}
+    return [ordered[index] for index in sorted(picked)]
