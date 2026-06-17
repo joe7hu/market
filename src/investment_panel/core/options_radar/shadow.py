@@ -10,6 +10,7 @@ from investment_panel.core.db import (json_dumps, query_rows)
 from investment_panel.core.source_ingestion.utils import (stable_id)
 from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer, _iso, _json, _normalize_symbol, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION, EXPLORATION_MIN_POPULATION, EXPLORATION_SAMPLE_RATE)
+from investment_panel.core.options_radar.dbutil import (_max_mark_time_by_key, _max_snapshot_time_by_contract, _needs_remark)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta)
 from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
 
@@ -273,8 +274,14 @@ def refresh_shadow_trade_marks(con: Any, *, strategy_version: str = DEFAULT_STRA
         """,
         [strategy_version],
     )
+    # Incremental: only re-mark a trade whose contract has a snapshot newer than the
+    # trade's latest stored mark (shadow_trade_mark is append-only, keyed per trade_id).
+    snapshot_max = _max_snapshot_time_by_contract(con)
+    mark_max = _max_mark_time_by_key(con, "shadow_trade_mark", strategy_version, key="trade_id")
     count = 0
     for trade in trades:
+        if not _needs_remark(snapshot_max.get(trade["contract_id"]), mark_max.get(trade["trade_id"])):
+            continue
         snapshots = query_rows(
             con,
             """

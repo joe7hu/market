@@ -3,6 +3,7 @@ scoring, and epsilon-exploration of near-miss setups."""
 
 from __future__ import annotations
 
+from investment_panel.core.db import db, init_db
 from investment_panel.core.options_radar import (
     build_conviction_calibration,
     realized_exit_return,
@@ -10,6 +11,7 @@ from investment_panel.core.options_radar import (
 from investment_panel.core.options_radar.opportunity_scoring import _learning_score
 from investment_panel.core.options_radar.shadow import _exploration_sampled
 from investment_panel.core.options_radar.strategy_outcomes import _realized_series
+from investment_panel.core.panel.read_learning import exploration_gate_report
 
 
 def _series(values: list[float]) -> list[tuple[str, float]]:
@@ -71,3 +73,29 @@ def test_exploration_sampling_is_deterministic_and_bounded() -> None:
     assert sampled == [e for e in ids if _exploration_sampled(e, 0.12)]
     assert 0.08 < len(sampled) / len(ids) < 0.16
     assert all(not _exploration_sampled(e, 0.0) for e in ids[:50])
+
+
+def _add_trade(con, trade_id: str, authority: str, realized: float) -> None:
+    con.execute(
+        "INSERT INTO shadow_trade (trade_id, event_id, entry_time, status, raw) VALUES (?, ?, '2026-01-01', 'open', ?)",
+        [trade_id, f"e-{trade_id}", f'{{"authority": "{authority}"}}'],
+    )
+    con.execute(
+        "INSERT INTO shadow_trade_mark (mark_id, trade_id, mark_time, max_return_since_alert, raw) VALUES (?, ?, '2026-03-01', ?, ?)",
+        [f"m-{trade_id}", trade_id, realized, f'{{"realized_exit_return": {realized}}}'],
+    )
+
+
+def test_exploration_gate_report_quantifies_gate_value(tmp_path) -> None:
+    init_db(tmp_path / "gate.duckdb")
+    with db(tmp_path / "gate.duckdb") as con:
+        _add_trade(con, "f1", "shadow_only", 1.5)   # FIRE win (>=2x realizable)
+        _add_trade(con, "f2", "shadow_only", 0.1)   # FIRE dud
+        _add_trade(con, "x1", "shadow_exploration", 0.2)  # rejected setup, dud
+        report = {row["bucket"]: row for row in exploration_gate_report(con)}
+    assert report["fire"]["n"] == 2
+    assert report["fire"]["hit_rate_2x"] == 0.5
+    assert report["exploration"]["n"] == 1
+    assert report["exploration"]["hit_rate_2x"] == 0.0
+    # Gates select winners the rejected region didn't produce -> positive edge.
+    assert report["fire"]["gate_edge_2x"] == 0.5

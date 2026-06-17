@@ -1503,3 +1503,40 @@ def option_row(
         "vega": vega,
         "symbol": symbol,
     }
+
+
+def test_candidate_event_marks_rebuild_incrementally(tmp_path) -> None:
+    db_path = tmp_path / "radar-incremental-marks.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        seed_prices(con, "TSLA", slope=0.12)
+        seed_prices(con, "QQQ", start_price=100, slope=0.02)
+        con.execute("INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')")
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-02T19:00:00Z",
+            [option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250)],
+        )
+        first = refresh_options_radar(con, ["TSLA"])
+        marks_after_first = query_rows(con, "SELECT count(*) AS c FROM candidate_event_mark")[0]["c"]
+
+        # No new option data -> the learning pass must not re-mark anything, but the
+        # already-built marks stay in place (no DELETE-all churn).
+        second = refresh_options_radar(con, ["TSLA"])
+        marks_after_second = query_rows(con, "SELECT count(*) AS c FROM candidate_event_mark")[0]["c"]
+
+        # A fresh snapshot lands -> only the contract with new data is re-marked.
+        con.execute("INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-03T19:00:00Z', 112, 1, 1, 'USD', 'tradingview', '{}')")
+        store_options_chain(
+            con,
+            "TSLA",
+            "2026-06-03T19:00:00Z",
+            [option_row("2027-09-18", 120, "call", 9.0, 10.0, 0.28, 0.38, "OPRA:TSLA270918C120", volume=45, open_interest=275)],
+        )
+        third = refresh_options_radar(con, ["TSLA"])
+
+    assert first["candidate_event_marks"] >= 1
+    assert second["candidate_event_marks"] == 0  # nothing new to mark
+    assert marks_after_second == marks_after_first  # existing marks preserved
+    assert third["candidate_event_marks"] >= 1  # the updated contract re-marked

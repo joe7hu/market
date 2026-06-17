@@ -11,7 +11,9 @@ from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer,
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta, _diff)
 from investment_panel.core.options_radar.strategy_common import (_attribution_label)
+from investment_panel.core.options_radar.dbutil import (_max_mark_time_by_key, _max_snapshot_time_by_contract, _needs_remark)
 from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
+
 
 def refresh_candidate_event_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
     events = query_rows(
@@ -24,9 +26,16 @@ def refresh_candidate_event_marks(con: Any, *, strategy_version: str = DEFAULT_S
         """,
         [strategy_version],
     )
-    con.execute("DELETE FROM candidate_event_mark WHERE strategy_version = ?", [strategy_version])
+    # Incremental: marks are append-only (mark_id is stable per (event, mark_time)), so we
+    # only rebuild an event whose contract has a snapshot newer than its latest stored
+    # mark. The old DELETE-all + reprocess-every-event scan was the learning pass's main
+    # cost; this skips the (large) stable tail and keeps INSERT OR REPLACE idempotent.
+    snapshot_max = _max_snapshot_time_by_contract(con)
+    mark_max = _max_mark_time_by_key(con, "candidate_event_mark", strategy_version)
     count = 0
     for event in events:
+        if not _needs_remark(snapshot_max.get(event["contract_id"]), mark_max.get(event["event_id"])):
+            continue
         snapshots = query_rows(
             con,
             """

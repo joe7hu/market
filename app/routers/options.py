@@ -271,3 +271,8 @@ def strategy_forward_tests() -> dict[str, Any]:
 @router.get("/api/strategy-cohorts")
 def strategy_cohorts() -> dict[str, Any]:
     return deps._table_payload("strategy_cohort_result")
+
+
+@router.get("/api/exploration-gate-report")
+def exploration_gate_report() -> dict[str, Any]:
+    return deps._table_payload("exploration_gate_report")

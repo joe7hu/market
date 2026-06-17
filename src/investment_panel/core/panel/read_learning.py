@@ -1,12 +1,25 @@
 """Learning-loop read accessors (agents, strategy, shadow, attribution)."""
 
 from __future__ import annotations
+import json
 from typing import Any
 from investment_panel.core.db import db, init_db, query_rows
 
 from investment_panel.core.panel.coerce import decode_fields
 from investment_panel.core.panel.disclosures import _compact_empty_fields
 from investment_panel.core.panel.read_options import RadarDisplayContext, _radar_current_candidate_time
+
+
+def _loads(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 
@@ -449,6 +462,65 @@ def strategy_forward_test_result(con: Any) -> list[dict[str, Any]]:
     return [_compact_empty_fields(decode_fields(row, ("metrics", "raw"))) for row in rows]
 
 
+
+
+def _exploration_bucket_summary(name: str, values: list[float]) -> dict[str, Any]:
+    n = len(values)
+    if n == 0:
+        return {"bucket": name, "n": 0, "hit_rate_2x": 0.0, "hit_rate_5x": 0.0, "median_realized_return": None}
+    ordered = sorted(values)
+    mid = n // 2
+    median = ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return {
+        "bucket": name,
+        "n": n,
+        "hit_rate_2x": round(sum(1 for v in values if v >= 1.0) / n, 4),
+        "hit_rate_5x": round(sum(1 for v in values if v >= 4.0) / n, 4),
+        "median_realized_return": round(median, 4),
+    }
+
+
+def exploration_gate_report(con: Any) -> list[dict[str, Any]]:
+    """Are the gates actually adding value? Compares the realizable (trailing-stop) hit
+    rates of FIRE shadow trades against the epsilon-exploration sample of SETUP near-misses
+    the gates rejected. ``gate_edge_2x`` = FIRE 2x-rate minus exploration 2x-rate: a large
+    positive edge means the gates are selecting winners; ~0 (or negative) means the gate
+    that rejected those setups is not earning its keep and is a candidate to loosen. Two
+    rows (``fire``, ``exploration``); ``gate_edge_2x`` is null until both arms have data."""
+
+    rows = query_rows(
+        con,
+        """
+        WITH latest_mark AS (
+            SELECT trade_id, raw, max_return_since_alert,
+                   row_number() OVER (PARTITION BY trade_id ORDER BY mark_time DESC) AS rn
+            FROM shadow_trade_mark
+        )
+        SELECT st.trade_id, st.raw AS trade_raw, st.max_return_seen,
+               lm.raw AS mark_raw, lm.max_return_since_alert
+        FROM shadow_trade st
+        LEFT JOIN latest_mark lm ON lm.trade_id = st.trade_id AND lm.rn = 1
+        """,
+    )
+    buckets: dict[str, list[float]] = {"fire": [], "exploration": []}
+    for row in rows:
+        authority = _loads(row.get("trade_raw")).get("authority")
+        bucket = "exploration" if authority == "shadow_exploration" else "fire"
+        realized = _loads(row.get("mark_raw")).get("realized_exit_return")
+        if realized is None:
+            realized = row.get("max_return_since_alert")
+        if realized is None:
+            realized = row.get("max_return_seen")
+        if realized is None:
+            continue
+        buckets[bucket].append(float(realized))
+    summaries = {name: _exploration_bucket_summary(name, values) for name, values in buckets.items()}
+    both_armed = summaries["fire"]["n"] > 0 and summaries["exploration"]["n"] > 0
+    gate_edge = round(summaries["fire"]["hit_rate_2x"] - summaries["exploration"]["hit_rate_2x"], 4) if both_armed else None
+    out: list[dict[str, Any]] = []
+    for name in ("fire", "exploration"):
+        out.append({**summaries[name], "gate_edge_2x": gate_edge})
+    return out
 
 
 def strategy_cohort_result(con: Any) -> list[dict[str, Any]]:

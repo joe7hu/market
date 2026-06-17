@@ -38,6 +38,33 @@ def _strategy_parameters(con: Any, strategy_version: str) -> dict[str, Any]:
     return {**DEFAULT_STRATEGY_PARAMETERS, **_json(rows[0].get("parameters"))}
 
 
+def _max_snapshot_time_by_contract(con: Any) -> dict[str, Any]:
+    return {
+        str(row.get("contract_id")): row.get("max_snapshot")
+        for row in query_rows(con, "SELECT contract_id, max(snapshot_time) AS max_snapshot FROM option_snapshot GROUP BY contract_id")
+    }
+
+
+def _max_mark_time_by_key(con: Any, table: str, strategy_version: str, *, key: str = "event_id") -> dict[str, Any]:
+    return {
+        str(row.get(key)): row.get("max_mark")
+        for row in query_rows(con, f"SELECT {key}, max(mark_time) AS max_mark FROM {table} WHERE strategy_version = ? GROUP BY {key}", [strategy_version])
+    }
+
+
+def _needs_remark(latest_snapshot: Any, latest_mark: Any) -> bool:
+    """Incremental-marking trigger: rebuild a series only when option data has landed
+    since its latest stored mark. A snapshot newer than the latest mark is necessarily
+    at/after entry (marks start at entry), so a contract-level snapshot max is a correct,
+    cheap signal. No marks yet -> always (re)build; new data -> rebuild; otherwise skip."""
+
+    if latest_mark is None:
+        return True
+    if latest_snapshot is None:
+        return False
+    return _iso(latest_snapshot) > _iso(latest_mark)
+
+
 def _compact_snapshot(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "snapshot_time": _iso(row.get("snapshot_time")),
