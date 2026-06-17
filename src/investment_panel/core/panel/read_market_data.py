@@ -106,8 +106,20 @@ def fundamentals(con: Any, symbols: list[str] | set[str] | tuple[str, ...] | Non
     where_clause = ""
     params: list[Any] = []
     if normalized_symbols:
+        # Per-symbol load (e.g. the ticker dossier) keeps every period so the
+        # consumer can compute year-over-year growth; the symbol filter keeps
+        # the row count small.
         where_clause = f"WHERE upper(symbol) IN ({', '.join(['?'] * len(normalized_symbols))})"
         params.extend(normalized_symbols)
+        qualify_clause = ""
+        row_limit = 200
+    else:
+        # Global load (watchlist, feed) keeps only the latest filing per symbol
+        # and matches the row cap of quotes()/screener(). Without the dedup,
+        # crypto's dense daily snapshots sort to the top by filing_date and
+        # crowd equity quarterly filings out of the cap entirely.
+        qualify_clause = "QUALIFY row_number() OVER (PARTITION BY upper(symbol) ORDER BY filing_date DESC NULLS LAST) = 1"
+        row_limit = 1000
     rows = query_rows(
         con,
         f"""
@@ -122,8 +134,9 @@ def fundamentals(con: Any, symbols: list[str] | set[str] | tuple[str, ...] | Non
             FROM crypto_fundamentals
         )
         {where_clause}
+        {qualify_clause}
         ORDER BY filing_date DESC, symbol
-        LIMIT 200
+        LIMIT {row_limit}
         """,
         params,
     )
@@ -254,10 +267,36 @@ def earnings_setups(con: Any) -> list[dict[str, Any]]:
 
 
 
-def valuations(con: Any) -> list[dict[str, Any]]:
+def valuations(con: Any, symbols: list[str] | set[str] | tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+    normalized_symbols = sorted({str(symbol or "").upper() for symbol in (symbols or []) if str(symbol or "").strip()})
+    where_clause = ""
+    params: list[Any] = []
+    if normalized_symbols:
+        # Per-symbol load (e.g. the ticker dossier) keeps every method for the
+        # latest as_of so the dossier can show DCF/relative/blended side by side.
+        where_clause = f"WHERE upper(symbol) IN ({', '.join(['?'] * len(normalized_symbols))})"
+        params.extend(normalized_symbols)
+        qualify_clause = "QUALIFY dense_rank() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1"
+        row_limit = 200
+    else:
+        # Global load (watchlist, feed) keeps one representative row per symbol
+        # (preferring the blended method, matching the UI's selection). Without
+        # the per-symbol dedup the multi-method rows plus the upside ordering
+        # crowd low-upside megacaps out of the row cap entirely.
+        qualify_clause = """QUALIFY row_number() OVER (
+            PARTITION BY symbol
+            ORDER BY as_of DESC,
+                     CASE method
+                       WHEN 'blended_dcf_relative' THEN 0
+                       WHEN 'dcf_base_case' THEN 1
+                       WHEN 'relative_revenue_multiple' THEN 2
+                       ELSE 3
+                     END
+        ) = 1"""
+        row_limit = 1000
     rows = query_rows(
         con,
-        """
+        f"""
         WITH valuation_history AS (
             SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics,
                    CASE
@@ -266,15 +305,17 @@ def valuations(con: Any) -> list[dict[str, Any]]:
                      ELSE NULL
                    END AS own_history_percentile
             FROM valuation_models
+            {where_clause}
         )
         SELECT symbol, as_of, method, fair_value, upside_pct, assumptions, diagnostics,
                own_history_percentile,
                own_history_percentile AS valuation_percentile_own_history
         FROM valuation_history
-        QUALIFY dense_rank() OVER (PARTITION BY symbol ORDER BY as_of DESC) = 1
+        {qualify_clause}
         ORDER BY as_of DESC, upside_pct DESC NULLS LAST
-        LIMIT 200
+        LIMIT {row_limit}
         """,
+        params,
     )
     return [decode_fields(row, ("assumptions", "diagnostics")) for row in rows]
 

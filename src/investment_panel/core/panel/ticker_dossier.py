@@ -70,7 +70,7 @@ TICKER_DOSSIER_LOADERS: dict[str, TickerLoader] = {
     "analyst_estimates": lambda con, _watchlist, symbol: analyst_estimates(con, symbols=[symbol]),
     "earnings": _filtered(earnings),
     "earnings_setups": _filtered(earnings_setups),
-    "valuations": _filtered(valuations),
+    "valuations": lambda con, _watchlist, symbol: valuations(con, symbols=[symbol]),
     "technicals": lambda con, _watchlist, symbol: technicals(con, symbols=[symbol]),
     "research_packets": _filtered(research_packets),
     "exposure_clusters": _filtered(exposure_clusters),
