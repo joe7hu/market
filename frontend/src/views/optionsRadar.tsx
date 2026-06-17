@@ -9,7 +9,7 @@ import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOppor
 import {RadarAlertPanel } from "./optionsRadar/summary";
 import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
-import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
+import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, ExplorationGatePanel, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
 
@@ -39,6 +39,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateMarks = rows(data.candidateEventMark);
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
+  const explorationGate = rows(data.explorationGateReport);
   const opportunityRows = rows(data.optionRadarOpportunity);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
@@ -162,6 +163,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           postmortems={postmortems}
         />
         <StrategyExplainer strategy={latestStrategy} />
+        <ExplorationGatePanel rows={explorationGate} />
         <CohortResultsTable rows={cohortResults} />
         {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
         {postmortems.length ? <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} /> : null}

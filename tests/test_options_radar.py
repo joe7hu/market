@@ -1379,7 +1379,7 @@ def test_strategy_promotion_requires_backtest_forward_test_and_human_approval(tm
             [proposal_id],
         )[0]
 
-    assert promoted == "leap_10x_momentum_lottery_proposed_v1"
+    assert promoted == "leap_10x_momentum_lottery__delta_max_delta_min"
     assert strategy == {"strategy_version": promoted, "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
     assert proposal["status"] == "promoted"
     assert proposal["human_approval_status"] == "approved"

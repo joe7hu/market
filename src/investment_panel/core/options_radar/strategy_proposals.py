@@ -76,7 +76,15 @@ def build_strategy_mutation_proposal(row: dict[str, Any], strategy_version: str)
     if not changes:
         return None
     family = str(row.get("proposed_strategy_family") or "leap_10x_variant")
-    proposed_version = f"{family}_proposed_v1"
+    # Key the promotable version on the actual parameter delta, not just the family.
+    # Several distinct filter reasons map to the same family (e.g. open_interest / volume
+    # / spread -> leap_10x_liquidity_watch) with *different* loosenings; a flat
+    # "{family}_proposed_v1" made them all promote into one version string, so the last
+    # promotion silently overwrote the others' parameters. The change-set suffix gives
+    # each distinct loosening its own version while collapsing genuinely identical ones.
+    effective_changes = {key: value for key, value in changes.items() if key != "candidate_note"}
+    variant_suffix = "_".join(sorted(effective_changes)) or "variant"
+    proposed_version = f"{family}__{variant_suffix}"
     missed_count = int(row.get("missed_count") or 0)
     best_return = _number(row.get("best_return")) or 0.0
     missed_ids = _list_value(row.get("missed_ids"))

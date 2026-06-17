@@ -54,6 +54,72 @@ export function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; 
   );
 }
 
+export function ExplorationGatePanel({ rows }: { rows: RowRecord[] }) {
+  const byBucket = new Map(rows.map((row) => [textField(row, ["bucket"]), row]));
+  const fire = byBucket.get("fire");
+  const exploration = byBucket.get("exploration");
+  const fireN = fire ? numberField(fire, ["n"], 0) : 0;
+  const explorationN = exploration ? numberField(exploration, ["n"], 0) : 0;
+  if (!fireN && !explorationN) {
+    return (
+      <EmptyState
+        title="No gate evidence yet"
+        detail="Gate value appears once both FIRE and exploration (rejected near-miss) shadow trades have realized outcomes."
+        icon={BrainCircuit}
+      />
+    );
+  }
+  const edge = fire ? numberField(fire, ["gate_edge_2x"], Number.NaN) : Number.NaN;
+  const hasEdge = Number.isFinite(edge);
+  const edgeTone: Tone = !hasEdge ? "muted" : edge >= 0.15 ? "good" : edge <= 0 ? "bad" : "warn";
+  const edgeLabel = !hasEdge
+    ? "Collecting both arms"
+    : edge <= 0
+      ? "Gate not earning its keep"
+      : edge >= 0.15
+        ? "Gate selecting winners"
+        : "Marginal gate edge";
+  const buckets: Array<[string, RowRecord | undefined]> = [
+    ["FIRE (passed gates)", fire],
+    ["Exploration (rejected setups)", exploration],
+  ];
+  return (
+    <section className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Gate Value (Exploration)</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-muted-foreground">
+            Compares the realizable (trailing-stop) 2x hit rate of fired candidates against an
+            epsilon-sample of the SETUP near-misses the gates rejected. A large positive edge means
+            the gates are selecting winners; ~0 or negative means a gate is rejecting just as many
+            realizable winners and is a candidate to loosen.
+          </p>
+        </div>
+        <div className="text-right">
+          <StatusBadge tone={edgeTone}>{edgeLabel}</StatusBadge>
+          <div className={cn("mt-1 text-lg font-semibold tabular-nums", toneText(edgeTone))}>
+            {hasEdge ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pts` : "-"}
+          </div>
+          <div className="text-[10px] uppercase text-muted-foreground">gate edge (2x)</div>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-2 md:grid-cols-2">
+        {buckets.map(([label, row]) => (
+          <div key={label} className="rounded-md border border-border/70 bg-background px-3 py-2">
+            <div className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</div>
+            <div className="mt-2 flex items-baseline justify-between gap-2">
+              <MetricPill label="Trades" value={row ? numberField(row, ["n"], 0).toLocaleString() : "0"} />
+              <MetricPill label="2x rate" value={row ? formatRatio(numberField(row, ["hit_rate_2x"], Number.NaN)) : "-"} />
+              <MetricPill label="5x rate" value={row ? formatRatio(numberField(row, ["hit_rate_5x"], Number.NaN)) : "-"} />
+              <MetricPill label="Median" value={row ? formatMultiple(numberField(row, ["median_realized_return"], Number.NaN)) : "-"} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function LearningProgressPanel({
   opportunities,
   latestMarkByEvent,

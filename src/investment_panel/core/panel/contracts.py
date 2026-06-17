@@ -276,6 +276,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "strategy_backtest_result",
         "strategy_forward_test_result",
         "strategy_cohort_result",
+        "exploration_gate_report",
         "agent_thesis",
         "agent_thesis_request",
         "agent_thesis_validation",

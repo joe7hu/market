@@ -76,6 +76,7 @@ export function emptyPanelData(): PanelData {
     strategyBacktestResult: EMPTY_TABLE,
     strategyForwardTestResult: EMPTY_TABLE,
     strategyCohortResult: EMPTY_TABLE,
+    explorationGateReport: EMPTY_TABLE,
     news: EMPTY_TABLE,
     tradingviewSymbolSearch: EMPTY_TABLE,
     tradingviewWatchlists: EMPTY_TABLE,

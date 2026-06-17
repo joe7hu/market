@@ -11,6 +11,7 @@ from investment_panel.core.options_radar import (
 from investment_panel.core.options_radar.opportunity_scoring import _learning_score
 from investment_panel.core.options_radar.shadow import _exploration_sampled
 from investment_panel.core.options_radar.strategy_outcomes import _realized_series
+from investment_panel.core.options_radar.strategy_proposals import build_strategy_mutation_proposal
 from investment_panel.core.panel.read_learning import exploration_gate_report
 
 
@@ -99,3 +100,18 @@ def test_exploration_gate_report_quantifies_gate_value(tmp_path) -> None:
     assert report["exploration"]["hit_rate_2x"] == 0.0
     # Gates select winners the rejected region didn't produce -> positive edge.
     assert report["fire"]["gate_edge_2x"] == 0.5
+
+
+def test_same_family_proposals_do_not_collide_on_version() -> None:
+    # open_interest, volume and spread missed-winners all map to the liquidity_watch
+    # family with *different* loosenings; each must get its own promotable version so a
+    # later promotion can't overwrite an earlier one's parameters.
+    versions = {
+        reason: build_strategy_mutation_proposal(
+            {"filter_reason": reason, "proposed_strategy_family": "leap_10x_liquidity_watch", "missed_count": 1, "best_return": 5.0, "missed_ids": []},
+            "leap_10x_reversal_v1",
+        )["proposed_strategy_version"]
+        for reason in ("open_interest_below_threshold", "volume_below_threshold", "spread_above_fire_threshold")
+    }
+    assert len(set(versions.values())) == 3
+    assert all(v.startswith("leap_10x_liquidity_watch__") for v in versions.values())

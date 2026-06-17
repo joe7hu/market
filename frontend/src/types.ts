@@ -144,6 +144,7 @@ export type PanelData = {
   strategyBacktestResult: TablePayload;
   strategyForwardTestResult: TablePayload;
   strategyCohortResult: TablePayload;
+  explorationGateReport: TablePayload;
   news: TablePayload;
   tradingviewSymbolSearch: TablePayload;
   tradingviewWatchlists: TablePayload;
@@ -271,6 +272,7 @@ export type PanelEndpoint =
   | "strategyBacktestResult"
   | "strategyForwardTestResult"
   | "strategyCohortResult"
+  | "explorationGateReport"
   | "news"
   | "tradingviewSymbolSearch"
   | "tradingviewWatchlists"

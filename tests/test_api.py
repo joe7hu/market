@@ -692,7 +692,7 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     payload = response.json()
     assert payload["status"] == "promoted"
     assert payload["proposal_id"] == proposal_id
-    assert payload["strategy_version"] == "leap_10x_momentum_lottery_proposed_v1"
+    assert payload["strategy_version"] == "leap_10x_momentum_lottery__delta_max_delta_min"
     with db(db_path) as con:
         proposal = query_rows(
             con,
