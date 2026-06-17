@@ -2,37 +2,53 @@ import type { AppModel, Holding } from "@/model";
 import type { PanelData, RowRecord } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { rows } from "@/utils";
-import { textField } from "@/views/rowFormat";
+import { numberField, textField } from "@/views/rowFormat";
 
 export type TodayCategory = {
   key: string;
   title: string;
-  shortTitle: string;
+  subtitle: string;
   tone: Tone;
   dot: string;
 };
 
+// Lanes match the backend daily_brief categories 1:1, in the order they read on the page.
 export const todayCategories: TodayCategory[] = [
-  { key: "top_portfolio_changes", title: "Portfolio Changes", shortTitle: "Portfolio", tone: "info", dot: "bg-blue-600" },
-  { key: "top_risks", title: "Risks", shortTitle: "Risk", tone: "warn", dot: "bg-amber-500" },
-  { key: "top_opportunities", title: "Opportunities / Research", shortTitle: "Research", tone: "good", dot: "bg-green-600" },
-  { key: "blocked_stale_items", title: "Action Checks", shortTitle: "Checks", tone: "bad", dot: "bg-red-600" },
+  { key: "decide_now", title: "Decide now", subtitle: "Candidates, risks, and thesis reviews that want an action today", tone: "warn", dot: "bg-amber-500" },
+  { key: "whats_changed", title: "What changed", subtitle: "Fresh source-backed signals on names you own or watch", tone: "info", dot: "bg-blue-600" },
+  { key: "catalysts", title: "This week", subtitle: "Scheduled catalysts in the next two weeks", tone: "good", dot: "bg-violet-600" },
+  { key: "portfolio_pulse", title: "Portfolio pulse", subtitle: "Biggest movers and concentration in your book", tone: "info", dot: "bg-emerald-600" },
 ];
 
 export type TodayViewModel = {
-  title: string;
-  briefRows: RowRecord[];
-  categoryCounts: Map<string, number>;
+  decideNow: RowRecord[];
+  whatsChanged: RowRecord[];
+  catalysts: RowRecord[];
+  portfolioPulse: RowRecord[];
+  hero: RowRecord | null;
   largestHolding: Holding | undefined;
   portfolioPnl: number;
   portfolioPnlPct: number;
+  decisionsDue: number;
+  sourceUpdates: number;
   needsReview: number;
-  topAction: string;
+  briefCount: number;
 };
+
+function byCategory(briefRows: RowRecord[], key: string): RowRecord[] {
+  return briefRows
+    .filter((row) => textField(row, ["category"]) === key)
+    .sort((a, b) => numberField(b, ["score"], 0) - numberField(a, ["score"], 0));
+}
 
 export function buildTodayViewModel(data: PanelData, model: AppModel): TodayViewModel {
   const briefRows = rows(data.dailyBrief);
-  const categoryCounts = new Map(todayCategories.map((category) => [category.key, briefRows.filter((row) => textField(row, ["category"]) === category.key).length]));
+  const decideNow = byCategory(briefRows, "decide_now");
+  const whatsChanged = byCategory(briefRows, "whats_changed");
+  // Catalysts read best on a time axis: soonest first.
+  const catalysts = byCategory(briefRows, "catalysts").sort((a, b) => numberField(a, ["days_until"], 999) - numberField(b, ["days_until"], 999));
+  const portfolioPulse = byCategory(briefRows, "portfolio_pulse");
+
   const pricedHoldings = model.holdings.filter((holding) => holding.hasMarketValue);
   const largestHolding = pricedHoldings.slice().sort((a, b) => b.weight - a.weight)[0];
   const portfolioPnl = model.holdings.reduce((total, holding) => total + holding.unrealizedPnl, 0);
@@ -41,16 +57,20 @@ export function buildTodayViewModel(data: PanelData, model: AppModel): TodayView
     const value = textField(row, ["needs_review"]).toLowerCase();
     return value === "yes" || value === "true";
   }).length;
-  const topAction = briefRows[0] ? textField(briefRows[0], ["next_action", "nextAction"], "Review the top decision brief item.") : "Load the daily brief before changing sizing.";
 
   return {
-    title: briefRows[0] ? textField(briefRows[0], ["title"], "Today") : "Today",
-    briefRows,
-    categoryCounts,
+    decideNow,
+    whatsChanged,
+    catalysts,
+    portfolioPulse,
+    // The single most important thing on the page: the top-scored thing to decide.
+    hero: decideNow[0] ?? whatsChanged[0] ?? null,
     largestHolding,
     portfolioPnl,
     portfolioPnlPct,
+    decisionsDue: decideNow.length,
+    sourceUpdates: whatsChanged.length,
     needsReview,
-    topAction,
+    briefCount: briefRows.length,
   };
 }

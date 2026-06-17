@@ -1,18 +1,28 @@
-"""Daily attention brief read model for the /today surface."""
+"""Daily attention brief read model for the /today surface.
+
+The brief is organised into four lanes that map 1:1 to the Today page sections:
+
+- ``whats_changed``   — fresh source-backed signals (news/blog/memo/thesis/13F)
+                        touching owned or watched names, from ``feed_signals``.
+- ``decide_now``      — things that want a decision today: act-grade decision-queue
+                        candidates, portfolio risk cards, and thesis contradictions.
+- ``catalysts``       — scheduled catalysts inside the next two weeks, with days-until.
+- ``portfolio_pulse`` — biggest owned movers plus a concentration check.
+"""
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from investment_panel.core import brokers
 from investment_panel.core.db import query_rows
-from investment_panel.core.decision import canonical_quote_rows
+from investment_panel.core.decision import canonical_quote_rows, manual_watchlist_rows
 from investment_panel.core.portfolio_intelligence import portfolio_risk_cards, review_actions
+from investment_panel.core.thesis_monitor import thesis_monitor_rows
 
 
-STALE_STATUSES = {"failed", "missing", "stale", "degraded"}
 ACTIONABLE_GRADES = {"act", "research"}
 OPERATIONAL_NOISE_GATES = {
     "liquidity_unknown",
@@ -25,147 +35,254 @@ OPERATIONAL_NOISE_GATES = {
     "stale_quote",
 }
 OPERATIONAL_RISK_CARD_IDS = {"stale-owned-quotes"}
+# Concentration is re-homed to the portfolio-pulse lane (with a richer card), so
+# skip the equivalent risk card here to avoid showing the same fact twice.
+CONCENTRATION_RISK_CARD_IDS = {"largest-position"}
+CONCENTRATION_WARN_WEIGHT = 30.0
 CATEGORY_LIMITS = {
-    "top_portfolio_changes": 5,
-    "top_risks": 6,
-    "top_opportunities": 6,
-    "blocked_stale_items": 4,
+    "whats_changed": 6,
+    "decide_now": 8,
+    "catalysts": 8,
+    "portfolio_pulse": 5,
+}
+CATEGORY_ORDER = {
+    "whats_changed": 0,
+    "decide_now": 1,
+    "catalysts": 2,
+    "portfolio_pulse": 3,
 }
 
 
 def daily_brief(con: Any) -> list[dict[str, Any]]:
     """Return a ranked, cross-model daily brief for the Today page."""
 
+    book = _book(con)
     items: list[dict[str, Any]] = []
-    items.extend(_portfolio_change_items(con))
-    items.extend(_risk_items(con))
-    items.extend(_opportunity_items(con))
-    items.extend(_calendar_items(con))
+    items.extend(_source_delta_items(con, book))
+    items.extend(_decide_now_items(con, book))
+    items.extend(_catalyst_items(con, book))
+    items.extend(_portfolio_pulse_items(con, book))
     return _category_limited_items(_rank_items(_dedupe(items)))
 
 
-def _portfolio_change_items(con: Any) -> list[dict[str, Any]]:
-    quotes = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
-    holdings = brokers.effective_portfolio_rows(con)
-    priced: list[dict[str, Any]] = []
-    for row in holdings:
-        symbol = str(row.get("symbol") or "").upper()
-        quote = quotes.get(symbol, {})
-        price = _float(row.get("market_price")) or _float(quote.get("price"))
-        quantity = _float(row.get("quantity")) or 0.0
-        avg_cost = _float(row.get("avg_cost") or row.get("average_cost")) or 0.0
-        market_value = _float(row.get("market_value"))
-        if market_value is None and price is not None:
-            market_value = quantity * price
-        if market_value is None:
-            market_value = quantity * avg_cost
-        change_pct = _float(quote.get("change_pct"))
-        change_abs = _float(quote.get("change_abs"))
-        day_change_value = quantity * change_abs if change_abs is not None else None
-        priced.append(
-            {
-                "symbol": symbol,
-                "market_value": market_value or 0.0,
-                "change_pct": change_pct,
-                "day_change_value": day_change_value,
-                "quote_freshness": quote.get("freshness_status") or "missing",
-                "quote_source": quote.get("source"),
-                "price": price,
-            }
-        )
+class _Book:
+    """The investor's position context: owned weights + the watchlist set.
 
-    total = sum(float(row.get("market_value") or 0.0) for row in priced)
-    output = []
-    for row in sorted(priced, key=lambda item: abs(float(item.get("day_change_value") or 0.0)) + abs(float(item.get("change_pct") or 0.0)), reverse=True)[:5]:
-        symbol = row["symbol"]
-        weight = _weight(float(row.get("market_value") or 0.0), total)
-        change_pct = _float(row.get("change_pct"))
-        day_change_value = _float(row.get("day_change_value"))
-        quote_freshness = str(row.get("quote_freshness") or "missing")
-        missing_change = change_pct is None and day_change_value is None
+    Every card is framed against this so the page reads as *your* book, not a
+    generic market feed — owned names carry their weight, watched names are
+    flagged, and unrelated symbols can be filtered out.
+    """
+
+    def __init__(self, weights: dict[str, float], watched: set[str]) -> None:
+        self.weights = weights
+        self.watched = watched
+        self.owned = set(weights)
+
+    def relevance(self, symbols: list[str]) -> dict[str, Any]:
+        owned = [symbol for symbol in symbols if symbol in self.owned]
+        watched = [symbol for symbol in symbols if symbol in self.watched and symbol not in self.owned]
+        weight = sum(self.weights.get(symbol, 0.0) for symbol in owned)
+        if owned:
+            label = f"Owned {weight:.1f}%" if weight else "Owned"
+        elif watched:
+            label = "Watchlist"
+        else:
+            label = ""
+        return {"owned": owned, "watched": watched, "weight": weight, "label": label}
+
+    def bonus(self, symbols: list[str]) -> float:
+        """Score lift proportional to owned weight, so decisions about real money
+        outrank watchlist housekeeping (a 64%-of-book risk beats a watch-name's
+        stale thesis)."""
+
+        weight = sum(self.weights.get(symbol, 0.0) for symbol in symbols if symbol in self.owned)
+        return min(20.0, weight * 0.25)
+
+
+def _book(con: Any) -> _Book:
+    priced, total = _priced_holdings(con)
+    weights = {row["symbol"]: _weight(float(row.get("market_value") or 0.0), total) for row in priced if row.get("symbol")}
+    watched = {str(row.get("symbol") or "").upper() for row in manual_watchlist_rows(con) if row.get("symbol")}
+    return _Book(weights, watched)
+
+
+# --------------------------------------------------------------------------- #
+# Lane 1: what changed (source deltas)
+# --------------------------------------------------------------------------- #
+
+
+def _source_delta_items(con: Any, book: _Book) -> list[dict[str, Any]]:
+    # ``panel`` imports this module transitively, so import the feed read model
+    # lazily (by call time the package is fully initialised) to dodge a cycle.
+    from investment_panel.core.panel import feed_signals
+
+    output: list[dict[str, Any]] = []
+    for row in feed_signals(con):
+        # A "baseline" disclosure is a full holdings snapshot, not a change, and a
+        # generic "disclosed" rollup carries no direction — neither is news.
+        if str(row.get("action") or "").lower() in {"baseline", "disclosed"}:
+            continue
+        relevance = book.relevance(_symbols(row))
+        # Only surface source moves that touch the investor's book — owned first,
+        # then watched. A 24-ticker disclosure becomes "the names you hold".
+        if not relevance["owned"] and not relevance["watched"]:
+            continue
+        display_symbols = relevance["owned"] + relevance["watched"]
+        sentiment = str(row.get("sentiment") or "neutral").lower()
+        owned = bool(relevance["owned"])
+        if owned and sentiment == "bearish":
+            severity = "warn"
+        elif sentiment == "bullish":
+            severity = "good"
+        elif sentiment == "bearish":
+            severity = "bad"
+        else:
+            severity = "info"
+        family = str(row.get("source_family") or row.get("source_type") or "source")
+        source_name = str(row.get("source") or _format_gate(family))
         output.append(
             _item(
-                category="top_portfolio_changes",
-                item_id=f"portfolio-change:{symbol}",
-                title=f"{symbol} moved portfolio exposure",
-                reason=_portfolio_change_reason(symbol, weight, change_pct, day_change_value, missing_change),
-                evidence=[
-                    f"{weight:.1f}% portfolio weight",
-                    _pct_evidence("quote change", change_pct),
-                    _money_evidence("estimated day P/L", day_change_value),
-                ],
-                blocker="None",
-                next_action=f"Open {symbol} only if the move changes the hold/add/trim rule; otherwise leave it alone.",
-                symbols=[symbol],
-                score=80 + min(20, abs(change_pct or 0) * 2 + min(10, weight / 5)),
-                severity="info",
-                source_models=["portfolio", "quotes"],
+                category="whats_changed",
+                item_id=f"source-delta:{row.get('id') or row.get('title')}",
+                title=str(row.get("title") or "Source update"),
+                reason=str(row.get("thesis") or row.get("portfolio_relevance") or ""),
+                stats=[source_name, _date_label(row.get("date"))],
+                symbols=display_symbols,
+                context=relevance["label"],
+                score=58 + float(row.get("score") or 0) * 0.3 + (15 if owned else 0) + (8 if sentiment in {"bullish", "bearish"} else 0),
+                severity=severity,
+                source_models=[f"feed:{family}"],
+                sentiment=sentiment,
+                antithesis=str(row.get("antithesis") or "").strip(),
+                as_of=row.get("date"),
             )
         )
+    return output[:12]
+
+
+# --------------------------------------------------------------------------- #
+# Lane 2: decide now (opportunities + risks + thesis contradictions)
+# --------------------------------------------------------------------------- #
+
+
+def _decide_now_items(con: Any, book: _Book) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    output.extend(_opportunity_items(con, book))
+    output.extend(_risk_items(con, book))
+    output.extend(_thesis_contradiction_items(con, book))
     return output
 
 
-def _risk_items(con: Any) -> list[dict[str, Any]]:
-    actions_by_card = {str(row.get("source_card_id") or ""): row for row in review_actions(con)}
+def _opportunity_items(con: Any, book: _Book) -> list[dict[str, Any]]:
+    primary = []
+    for row in _decision_queue(con):
+        action = str(row.get("action_grade") or "").lower()
+        blockers = _list(row.get("blocking_gates"))
+        if action not in ACTIONABLE_GRADES or blockers:
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        reasons = _list(row.get("inclusion_reasons"))
+        grade = str(row.get("action_grade") or "Watch")
+        stats = [grade.upper()]
+        window = str(row.get("catalyst_window") or "").strip()
+        if window:
+            stats.append(f"Catalyst {window}")
+        liquidity = str(row.get("liquidity_grade") or "").strip()
+        if liquidity:
+            stats.append(f"Liquidity {liquidity}")
+        relevance = book.relevance([symbol])
+        primary.append(
+            _item(
+                category="decide_now",
+                item_id=f"opportunity:{symbol}",
+                title=f"{symbol} — {grade} candidate",
+                reason=reasons[0] if reasons else str(row.get("source_cluster") or "Ranked by the decision queue."),
+                stats=stats,
+                symbols=[symbol],
+                context=relevance["label"] or "New idea",
+                score=72 + min(25, _float(row.get("action_score")) or _float(row.get("score")) or 0) + book.bonus([symbol]),
+                severity="good" if action == "act" else "watch",
+                source_models=["decision_queue"],
+                as_of=row.get("as_of"),
+            )
+        )
+    return primary[:8]
+
+
+def _risk_items(con: Any, book: _Book) -> list[dict[str, Any]]:
     output = []
     for card in portfolio_risk_cards(con)[:8]:
         symbols = _symbols(card)
         card_id = str(card.get("card_id") or card.get("risk_type") or "risk")
-        if card_id in OPERATIONAL_RISK_CARD_IDS:
+        if card_id in OPERATIONAL_RISK_CARD_IDS or card_id in CONCENTRATION_RISK_CARD_IDS:
             continue
-        action = actions_by_card.get(card_id, {})
+        relevance = book.relevance(symbols)
         output.append(
             _item(
-                category="top_risks",
+                category="decide_now",
                 item_id=f"risk:{card_id}",
                 title=str(card.get("title") or "Portfolio risk"),
                 reason=_decision_copy(str(card.get("summary") or "Portfolio risk card requires review.")),
-                evidence=_decision_evidence(_list(card.get("evidence"))) or [str(card.get("impact") or "portfolio risk")],
-                blocker=_risk_blocker(card),
-                next_action=_decision_copy(str(action.get("suggested_next_step") or card.get("next_step") or card.get("review_action") or "Review the risk card.")),
+                stats=_substantive(_decision_evidence(_list(card.get("evidence")))) or [str(card.get("impact") or "portfolio risk")],
                 symbols=symbols,
-                score=_float(card.get("score")) or 60,
-                severity=str(card.get("severity") or "watch"),
+                context=relevance["label"],
+                score=(_float(card.get("score")) or 60) + book.bonus(symbols),
+                severity=str(card.get("severity") or "warn"),
                 source_models=_list(card.get("source_models")) or ["portfolio_risk_cards"],
             )
         )
     return output
 
 
-def _opportunity_items(con: Any) -> list[dict[str, Any]]:
-    primary = []
-    for row in _decision_queue(con):
-        action = str(row.get("action_grade") or "").lower()
-        blockers = _list(row.get("blocking_gates"))
-        decision_blockers = _decision_blockers(blockers)
+def _thesis_contradiction_items(con: Any, book: _Book) -> list[dict[str, Any]]:
+    output = []
+    for row in thesis_monitor_rows(con, []):
+        if not row.get("needs_review"):
+            continue
+        flags = _list(row.get("contradiction_flags"))
+        stale = bool(row.get("stale_thesis"))
+        if not flags and not stale:
+            continue
         symbol = str(row.get("symbol") or "").upper()
-        reasons = _list(row.get("inclusion_reasons"))
-        evidence_count = int(row.get("evidence_count") or 0)
-        freshness = str(row.get("freshness_status") or "unknown")
-        item = _item(
-            category="top_opportunities",
-            item_id=f"opportunity:{symbol}",
-            title=f"{symbol} is a {row.get('action_grade') or 'Watch'} review candidate",
-            reason=reasons[0] if reasons else str(row.get("source_cluster") or "Decision queue ranked this symbol."),
-            evidence=[
-                f"rank {row.get('rank') or '-'}",
-                f"score {_number_label(row.get('score'))}",
-                f"{evidence_count} evidence rows",
-            ],
-            blocker=", ".join(_format_gate(gate) for gate in decision_blockers) if decision_blockers else "None",
-            next_action=_opportunity_next_action(row, decision_blockers),
-            symbols=[symbol],
-            score=70 + min(25, _float(row.get("action_score")) or _float(row.get("score")) or 0),
-            severity="good" if action == "act" and not decision_blockers else "watch",
-            source_models=["decision_queue"],
-            as_of=row.get("as_of"),
+        owned = bool(row.get("owned"))
+        last = _float(row.get("latest_price"))
+        exit_price = _float(row.get("invalidation_price"))
+        exit_dist = _float(row.get("invalidation_distance_pct"))
+        signal = str(row.get("decision_action") or "").strip()
+        stats: list[str] = []
+        if last is not None:
+            stats.append(f"Last ${last:,.0f}")
+        if signal:
+            stats.append(f"Signal {signal}")
+        if exit_price is not None:
+            stats.append(f"Exit ${exit_price:,.0f}" + (f" ({exit_dist:+.0f}%)" if exit_dist is not None else ""))
+        elif stale:
+            # The missing level is itself the finding for an owned name.
+            stats.append("No written exit rule")
+        relevance = book.relevance([symbol])
+        output.append(
+            _item(
+                category="decide_now",
+                item_id=f"thesis-review:{symbol}",
+                title=f"{symbol} — thesis at risk",
+                reason=_decision_copy(str(row.get("review_reason") or "Thesis is stale or contradicted by current data.")),
+                stats=stats or [_decision_copy(flag) for flag in flags] or [str(row.get("stale_reason") or "thesis review")],
+                symbols=[symbol],
+                context=relevance["label"] or ("Owned" if owned else "Watchlist"),
+                score=76 + book.bonus([symbol]) + len(flags) * 3,
+                severity="warn",
+                source_models=["thesis_monitor"],
+            )
         )
-        if action in ACTIONABLE_GRADES and not blockers:
-            primary.append(item)
-    return primary[:8]
+    return output[:6]
 
 
-def _calendar_items(con: Any) -> list[dict[str, Any]]:
+# --------------------------------------------------------------------------- #
+# Lane 3: this week (catalyst timeline, framed by your exposure)
+# --------------------------------------------------------------------------- #
+
+
+def _catalyst_items(con: Any, book: _Book) -> list[dict[str, Any]]:
     rows = query_rows(
         con,
         """
@@ -183,88 +300,112 @@ def _calendar_items(con: Any) -> list[dict[str, Any]]:
         SELECT *
         FROM calendar_rows
         ORDER BY event_date ASC, importance DESC NULLS LAST, symbol
-        LIMIT 8
+        LIMIT 60
         """,
     )
-    output = []
+    # Only catalysts on names the investor actually holds or watches — a wall of
+    # foreign-exchange earnings they don't own is noise, not signal. When there's
+    # nothing on their book, the lane honestly shows empty.
+    mine: list[dict[str, Any]] = []
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
-        event = str(row.get("event") or "Scheduled event")
-        output.append(
-            _item(
-                category="top_opportunities",
-                item_id=f"calendar:{symbol or 'market'}:{row.get('event_date')}:{event}",
-                title=f"{symbol or 'Market'} catalyst on {row.get('event_date')}",
-                reason=event,
-                evidence=[
-                    f"date {row.get('event_date')}",
-                    str(row.get("expected_impact") or "calendar row"),
-                    f"source {row.get('source') or 'local'}",
-                    f"verification {row.get('verification_status') or 'unknown'}",
-                ],
-                blocker="Tentative or watch status" if str(row.get("verification_status") or "").lower() in {"watch", "tentative"} else "None",
-                next_action=f"Before {row.get('event_date')}, decide what would change the thesis or position size.",
-                symbols=[symbol] if symbol else [],
-                score=72 if str(row.get("importance") or "").lower() == "high" else 62,
-                severity="watch" if str(row.get("importance") or "").lower() == "high" else "info",
-                source_models=["catalysts", "earnings_events"],
-                as_of=row.get("event_date"),
-            )
-        )
-    return output
-
-
-def _blocked_items(con: Any) -> list[dict[str, Any]]:
-    output = []
-    for row in _decision_queue(con):
-        blockers = _list(row.get("blocking_gates"))
-        decision_blockers = _decision_blockers(blockers)
-        if not decision_blockers:
+        if not symbol:
             continue
-        symbol = str(row.get("symbol") or "").upper()
+        relevance = book.relevance([symbol])
+        if not (relevance["owned"] or relevance["watched"]):
+            continue
+        mine.append(_catalyst_item(row, symbol, relevance))
+    return mine[:8]
+
+
+def _catalyst_item(row: dict[str, Any], symbol: str, relevance: dict[str, Any]) -> dict[str, Any]:
+    event = str(row.get("event") or "Scheduled event")
+    days_until = _days_until(row.get("event_date"))
+    high = str(row.get("importance") or "").lower() == "high"
+    held = bool(relevance["owned"] or relevance["watched"])
+    exposure = relevance["label"] or "Not held"
+    impact = str(row.get("expected_impact") or "").strip()
+    stats = [_due_label(days_until, row.get("event_date")), exposure]
+    if impact and impact.lower() != "upcoming earnings event":
+        stats.append(impact)
+    return _item(
+        category="catalysts",
+        item_id=f"catalyst:{symbol or 'market'}:{row.get('event_date')}:{event}",
+        title=f"{symbol or 'Market'} — {event}",
+        reason=impact or event,
+        stats=stats,
+        symbols=[symbol] if symbol else [],
+        context=exposure,
+        # Sooner, higher-importance, and held names rank first within the lane.
+        score=80 - min(60, max(0, days_until if days_until is not None else 14) * 3) + (8 if high else 0) + (12 if held else 0),
+        severity="warn" if (high and held) else "info",
+        source_models=["catalysts", "earnings_events"],
+        days_until=days_until,
+        as_of=row.get("event_date"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Lane 4: portfolio pulse (movers + concentration)
+# --------------------------------------------------------------------------- #
+
+
+def _portfolio_pulse_items(con: Any, book: _Book) -> list[dict[str, Any]]:
+    priced, total = _priced_holdings(con)
+    output: list[dict[str, Any]] = []
+    for row in sorted(priced, key=lambda item: abs(float(item.get("day_change_value") or 0.0)) + abs(float(item.get("change_pct") or 0.0)), reverse=True)[:5]:
+        symbol = row["symbol"]
+        weight = _weight(float(row.get("market_value") or 0.0), total)
+        change_pct = _float(row.get("change_pct"))
+        day_change_value = _float(row.get("day_change_value"))
+        missing_change = change_pct is None and day_change_value is None
+        stats: list[str] = []
+        if change_pct is not None:
+            stats.append(f"{change_pct:+.1f}% today")
+        if day_change_value is not None:
+            stats.append(f"{_signed_money(day_change_value)} P/L")
+        stats.append(f"{weight:.0f}% of book")
         output.append(
             _item(
-                category="blocked_stale_items",
-                item_id=f"blocked-decision:{symbol}",
-                title=f"{symbol} needs a decision input",
-                reason=_blocker_reason(symbol, decision_blockers, row),
-                evidence=[
-                    f"{row.get('evidence_count') or 0} evidence rows",
-                ],
-                blocker=", ".join(_format_gate(gate) for gate in decision_blockers),
-                next_action=_opportunity_next_action(row, decision_blockers),
+                category="portfolio_pulse",
+                item_id=f"portfolio-change:{symbol}",
+                title=f"{symbol} {_move_label(change_pct, day_change_value)}",
+                reason="" if not missing_change else f"{symbol} has no current quote, so today's P/L scan is incomplete.",
+                stats=stats,
                 symbols=[symbol],
-                score=70 + len(decision_blockers) * 4,
-                severity="watch",
-                source_models=["decision_queue", "source_freshness"],
-                as_of=row.get("as_of"),
+                context=f"Owned {weight:.1f}%",
+                score=80 + min(20, abs(change_pct or 0) * 2 + min(10, weight / 5)),
+                severity="warn" if missing_change else "good" if (change_pct or 0) >= 0 else "bad",
+                source_models=["portfolio", "quotes"],
+                sentiment="bullish" if (change_pct or 0) > 0 else "bearish" if (change_pct or 0) < 0 else "neutral",
             )
         )
-    return output[:10]
 
-
-def _thesis_gap_items(con: Any) -> list[dict[str, Any]]:
-    output = []
-    for card in portfolio_risk_cards(con):
-        if str(card.get("risk_type") or "") not in {"thesis_gap", "catalyst_gap"}:
-            continue
-        symbols = _symbols(card)
-        output.append(
-            _item(
-                category="blocked_stale_items",
-                item_id=f"thesis-gap:{card.get('risk_type')}:{'-'.join(symbols[:4])}",
-                title=str(card.get("title") or "Owned thesis gap"),
-                reason=str(card.get("summary") or "Owned position lacks enough thesis/catalyst evidence."),
-                evidence=_list(card.get("evidence")) or ["owned position evidence gap"],
-                blocker=str(card.get("trigger") or "Missing thesis or catalyst support"),
-                next_action=str(card.get("next_step") or "Write the missing thesis/catalyst row before adding exposure."),
-                symbols=symbols,
-                score=66,
-                severity=str(card.get("severity") or "watch"),
-                source_models=["theses", "catalysts", "portfolio_risk_cards"],
+    if priced and total:
+        top = max(priced, key=lambda item: float(item.get("market_value") or 0.0))
+        weight = _weight(float(top.get("market_value") or 0.0), total)
+        if weight >= CONCENTRATION_WARN_WEIGHT:
+            symbol = top["symbol"]
+            output.append(
+                _item(
+                    category="portfolio_pulse",
+                    item_id="concentration",
+                    title=f"{symbol} is {weight:.0f}% of your book",
+                    reason=f"A single-name drawdown in {symbol} moves the whole book; size against your concentration limit.",
+                    stats=[f"{weight:.0f}% of book", f"${float(top.get('market_value') or 0.0):,.0f}"],
+                    symbols=[symbol],
+                    context=f"Owned {weight:.1f}%",
+                    score=86,
+                    severity="warn",
+                    source_models=["portfolio"],
+                )
             )
-        )
     return output
+
+
+# --------------------------------------------------------------------------- #
+# Shared helpers
+# --------------------------------------------------------------------------- #
 
 
 def _decision_queue(con: Any) -> list[dict[str, Any]]:
@@ -289,37 +430,9 @@ def _decision_queue(con: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _stale_sources(con: Any) -> list[dict[str, Any]]:
-    return query_rows(
-        con,
-        """
-        SELECT source_key, source_type, provider, last_observed_at, freshness_status, status, detail, checked_at
-        FROM source_freshness
-        WHERE COALESCE(docs_only, false) = false
-          AND lower(COALESCE(freshness_status, status, '')) IN ('failed', 'missing', 'stale', 'degraded')
-        ORDER BY
-          CASE lower(COALESCE(freshness_status, status, ''))
-            WHEN 'failed' THEN 0
-            WHEN 'missing' THEN 1
-            WHEN 'stale' THEN 2
-            ELSE 3
-          END,
-          checked_at DESC NULLS LAST,
-          source_key
-        LIMIT 8
-        """,
-    )
-
-
 def _rank_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    category_order = {
-        "top_portfolio_changes": 0,
-        "top_risks": 1,
-        "top_opportunities": 2,
-        "blocked_stale_items": 3,
-    }
     counters: dict[str, int] = {}
-    ranked = sorted(items, key=lambda item: (category_order.get(str(item.get("category")), 9), -float(item.get("score") or 0), str(item.get("title") or "")))
+    ranked = sorted(items, key=lambda item: (CATEGORY_ORDER.get(str(item.get("category")), 9), -float(item.get("score") or 0), str(item.get("title") or "")))
     for item in ranked:
         category = str(item.get("category") or "brief")
         counters[category] = counters.get(category, 0) + 1
@@ -355,13 +468,15 @@ def _item(
     item_id: str,
     title: str,
     reason: str,
-    evidence: list[str],
-    blocker: str,
-    next_action: str,
+    stats: list[str],
     score: float,
     severity: str,
     symbols: list[str] | None = None,
+    context: str | None = None,
     source_models: list[str] | None = None,
+    sentiment: str | None = None,
+    antithesis: str | None = None,
+    days_until: int | None = None,
     as_of: Any = None,
 ) -> dict[str, Any]:
     symbols = [symbol for symbol in (symbols or []) if symbol]
@@ -372,53 +487,89 @@ def _item(
         "title": title,
         "symbol": symbols[0] if symbols else None,
         "symbols": symbols,
-        "reason": reason or "Backend read model selected this item for today's brief.",
-        "evidence": [item for item in evidence if item and item != "-"],
-        "blocker": blocker or "None",
-        "next_action": next_action or "Review the source rows before acting.",
+        # Position relevance ("Owned 6.2%" / "Watchlist") — the first thing a
+        # power investor reads to know whether this touches their money.
+        "context": context or "",
+        "reason": reason or "",
+        # Short, numeric, decision-relevant facts rendered as a stat row.
+        "stats": _substantive([item for item in stats if item and item != "-"]),
+        "antithesis": antithesis or "",
         "score": round(float(score or 0), 2),
         "severity": severity or "info",
+        "sentiment": sentiment or "",
+        "days_until": days_until,
         "source_models": source_models or [],
         "as_of": as_of or datetime.now(UTC),
     }
 
 
-def _portfolio_change_reason(symbol: str, weight: float, change_pct: float | None, day_change_value: float | None, missing_change: bool) -> str:
-    if missing_change:
-        return f"{symbol} is owned at {weight:.1f}% but has no current move row, so the daily P/L scan is incomplete."
-    return f"{symbol} drives the portfolio scan because it is {weight:.1f}% of priced exposure."
+def _move_label(change_pct: float | None, day_change_value: float | None) -> str:
+    if change_pct is None and day_change_value is None:
+        return "has no current quote"
+    direction = "up" if (change_pct or 0) >= 0 else "down"
+    if change_pct is not None:
+        return f"{direction} {abs(change_pct):.1f}% today"
+    return f"moved {direction} today"
 
 
-def _risk_blocker(card: dict[str, Any]) -> str:
-    risk_type = str(card.get("risk_type") or "")
-    if risk_type == "data_freshness":
-        return "Stale owned quote coverage"
-    if risk_type == "thesis_gap":
-        return "Missing falsifiable owned-position thesis"
-    if risk_type == "catalyst_gap":
-        return "Missing catalyst/review path"
-    return "None"
+def _priced_holdings(con: Any) -> tuple[list[dict[str, Any]], float]:
+    """Owned positions with market value and today's move — shared by the pulse
+    lane and the position-context book so the two never disagree."""
+
+    quotes = {str(row.get("symbol") or "").upper(): row for row in canonical_quote_rows(con)}
+    priced: list[dict[str, Any]] = []
+    for row in brokers.effective_portfolio_rows(con):
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        quote = quotes.get(symbol, {})
+        price = _float(row.get("market_price")) or _float(quote.get("price"))
+        quantity = _float(row.get("quantity")) or 0.0
+        avg_cost = _float(row.get("avg_cost") or row.get("average_cost")) or 0.0
+        market_value = _float(row.get("market_value"))
+        if market_value is None and price is not None:
+            market_value = quantity * price
+        if market_value is None:
+            market_value = quantity * avg_cost
+        change_abs = _float(quote.get("change_abs"))
+        priced.append(
+            {
+                "symbol": symbol,
+                "market_value": market_value or 0.0,
+                "change_pct": _float(quote.get("change_pct")),
+                "day_change_value": quantity * change_abs if change_abs is not None else None,
+            }
+        )
+    total = sum(float(row.get("market_value") or 0.0) for row in priced)
+    return priced, total
 
 
-def _opportunity_next_action(row: dict[str, Any], blockers: list[str]) -> str:
-    symbol = str(row.get("symbol") or "").upper()
-    if blockers:
-        return f"Clear {', '.join(_format_gate(gate) for gate in blockers[:2])} for {symbol} before making a decision."
-    action = str(row.get("action_grade") or "Watch")
-    if action.lower() == "act":
-        return f"Open {symbol}, verify risk sizing, and decide add/hold/pass."
-    if action.lower() == "research":
-        return f"Research {symbol}; fill the highest-impact missing evidence before any sizing decision."
-    return f"Keep {symbol} on watch unless a catalyst or source refresh changes the decision grade."
+def _substantive(stats: list[str]) -> list[str]:
+    """Drop operational meta (rank/score/coverage %) that isn't an investment fact."""
+
+    noise = ("rank ", "score ", "evidence rows", "% affected", "affected", "verification ", "source ")
+    out = []
+    for item in stats:
+        lowered = item.lower()
+        if any(lowered.startswith(prefix) or prefix in lowered for prefix in noise):
+            continue
+        out.append(item)
+    return out
+
+
+def _signed_money(value: float) -> str:
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.0f}"
+
+
+def _date_label(value: Any) -> str:
+    target = _as_date(value)
+    return target.strftime("%b %-d") if target else ""
 
 
 def _format_gate(value: Any) -> str:
     text = str(value or "").replace("_", " ").strip()
     return text[:1].upper() + text[1:] if text else "Unknown gate"
-
-
-def _decision_blockers(blockers: list[str]) -> list[str]:
-    return [gate for gate in blockers if str(gate or "").lower() not in OPERATIONAL_NOISE_GATES]
 
 
 def _decision_evidence(evidence: list[str]) -> list[str]:
@@ -439,14 +590,37 @@ def _decision_copy(value: str) -> str:
     return value.replace("invalidation", "exit rule").replace("Invalidation", "Exit rule")
 
 
-def _blocker_reason(symbol: str, blockers: list[str], row: dict[str, Any]) -> str:
-    normalized = {str(gate).lower() for gate in blockers}
-    if "chart_extended_without_thesis" in normalized:
-        return f"{symbol} has an extended setup without a written thesis explaining why it is still worth attention."
-    if "thesis_missing" in normalized or "missing_thesis" in normalized:
-        return f"{symbol} needs a written thesis before it can become a sizing decision."
-    reasons = _list(row.get("inclusion_reasons"))
-    return reasons[0] if reasons else "A decision input is missing before this can become an action."
+def _due_label(days_until: int | None, event_date: Any) -> str:
+    if days_until is None:
+        return f"date {event_date}"
+    if days_until <= 0:
+        return "due today"
+    if days_until == 1:
+        return "due tomorrow"
+    return f"in {days_until} days"
+
+
+def _days_until(value: Any) -> int | None:
+    target = _as_date(value)
+    if target is None:
+        return None
+    # Compare against the local date so this lines up with DuckDB ``current_date``
+    # (session-local) used by the catalyst query — otherwise an evening-UTC roll
+    # over shows today's events as "-1 / due yesterday".
+    return (target - datetime.now().date()).days
+
+
+def _as_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value[:10]).date()
+        except ValueError:
+            return None
+    return None
 
 
 def _symbols(row: dict[str, Any]) -> list[str]:
@@ -486,16 +660,3 @@ def _float(value: Any) -> float | None:
 
 def _weight(value: float, total: float) -> float:
     return (value / total) * 100 if total else 0.0
-
-
-def _number_label(value: Any) -> str:
-    parsed = _float(value)
-    return f"{parsed:.1f}" if parsed is not None else "-"
-
-
-def _pct_evidence(label: str, value: float | None) -> str:
-    return f"{label} {value:+.2f}%" if value is not None else f"{label} missing"
-
-
-def _money_evidence(label: str, value: float | None) -> str:
-    return f"{label} ${value:,.0f}" if value is not None else f"{label} unknown"

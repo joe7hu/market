@@ -196,7 +196,7 @@ export function StatusBadge({ tone = "muted", children }: { tone?: Tone; childre
 }
 
 export type DecisionCardProps = {
-  title: string;
+  title: ReactNode;
   status?: ReactNode;
   reason?: ReactNode;
   evidence?: ReactNode;
