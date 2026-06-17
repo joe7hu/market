@@ -22,6 +22,8 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 
+from investment_panel.core.free_sources.constants import RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO
+
 # IBKR tick types we read. Live model greeks arrive as tickType 13; delayed model
 # greeks as 83. Open interest for a contract arrives as 27 (call) / 28 (put).
 # Volume is 8 (live) / 74 (delayed). Prices: bid/ask/last 1/2/4 live, 66/67/68
@@ -76,16 +78,15 @@ def select_leap_call_strikes(
     spot: float | None,
     count: int,
     *,
-    otm_lo: float = 1.0,
-    otm_hi: float = 1.6,
+    otm_lo: float = RADAR_CALL_STRIKE_OTM_LO,
+    otm_hi: float = RADAR_CALL_STRIKE_OTM_HI,
 ) -> list[float]:
-    """Pick OTM call strikes spanning the 10x LEAP delta zone (~0.20-0.45).
+    """Pick OTM call strikes spanning the baseline and lottery 10x LEAP zones.
 
-    For a 1-2 year call, that delta band lives in strikes roughly ``spot`` to
-    ``1.6 * spot``. Picking ATM strikes (delta ~0.55+) would just get rejected by
-    the strategy's delta gate, so bias the scan to the out-of-the-money band and
-    sample it evenly. Falls back to nearest-spot when spot is unknown or the band
-    is empty.
+    The baseline family still gates delta around 0.20-0.45, but the forward-test
+    deep-OTM sleeve needs 0.05-0.20 delta strikes that often live 1.8-3.0x spot.
+    Bias the scan to the out-of-the-money band and sample it evenly. Falls back
+    to nearest-spot when spot is unknown or the band is empty.
     """
 
     valid = sorted(s for s in strikes if s and s > 0)

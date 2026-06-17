@@ -58,14 +58,14 @@ def test_select_strikes_around_spot_handles_unknown_spot() -> None:
 
 
 def test_select_leap_call_strikes_targets_otm_band() -> None:
-    # 10x LEAP calls want OTM strikes (delta ~0.20-0.45), not ATM. Spot 100 ->
-    # band [100, 160]. ATM (100) and below should not dominate; picks stay OTM.
-    strikes = [float(s) for s in range(50, 205, 5)]  # 50..200
+    # 10x LEAP calls want OTM strikes. The baseline uses the 0.20-0.45 delta
+    # zone, while the lottery sleeve needs deeper strikes out toward 3x spot.
+    strikes = [float(s) for s in range(50, 305, 5)]  # 50..300
     out = select_leap_call_strikes(strikes, spot=100.0, count=6)
     assert out == sorted(out)
-    assert all(100.0 <= s <= 160.0 for s in out)  # within the OTM band
+    assert all(100.0 <= s <= 300.0 for s in out)  # within the widened OTM band
     assert len(out) == 6
-    assert max(out) > 120.0  # genuinely reaches into OTM, not clustered at ATM
+    assert max(out) >= 250.0  # reaches the deep-OTM lottery frontier
 
 
 def test_select_leap_call_strikes_falls_back_when_band_empty() -> None:

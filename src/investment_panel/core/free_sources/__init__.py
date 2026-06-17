@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from investment_panel.core.free_sources.yfinance_sources import _yfinance_enrichment_status
 
-from investment_panel.core.free_sources.constants import OPTION_RATE_LIMIT_CIRCUIT_BREAKER, OPTION_SCAN_LIMIT, RADAR_MAX_DTE, RADAR_MAX_EXPIRIES_PER_SYMBOL, RADAR_MIN_DTE, RADAR_STRIKES_AROUND_SPOT, YFINANCE_OPTION_THROTTLE_SECONDS
+from investment_panel.core.free_sources.constants import OPTION_RATE_LIMIT_CIRCUIT_BREAKER, OPTION_SCAN_LIMIT, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_MAX_DTE, RADAR_MAX_EXPIRIES_PER_SYMBOL, RADAR_MIN_DTE, RADAR_STRIKES_AROUND_SPOT, YFINANCE_OPTION_THROTTLE_SECONDS
 from investment_panel.core.free_sources.coerce import as_float, as_int, first_date_value, infer_event_date, normalize_symbol, parse_json_object, stable_id, unique_symbols
 from investment_panel.core.free_sources.provenance import record_provider_run, record_source_health
 from investment_panel.core.free_sources.options import equity_symbols, filter_chain_rows_around_spot, latest_option_scan_spot, latest_tradingview_option_chain_expiries, option_chain_strikes_around_spot, option_scan_limit, option_symbols, selected_option_expiries, tradingview_search_symbols, tradingview_symbol_candidates
@@ -15,6 +15,8 @@ from investment_panel.core.free_sources.yfinance_sources import record_yfinance_
 __all__ = [
     "OPTION_RATE_LIMIT_CIRCUIT_BREAKER",
     "OPTION_SCAN_LIMIT",
+    "RADAR_CALL_STRIKE_OTM_HI",
+    "RADAR_CALL_STRIKE_OTM_LO",
     "RADAR_MAX_DTE",
     "RADAR_MAX_EXPIRIES_PER_SYMBOL",
     "RADAR_MIN_DTE",

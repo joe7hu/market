@@ -19,6 +19,7 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core import fundamentals as fundamentals_core
 from investment_panel.core.fundamentals import cik_from_sec_filing_url, metrics_from_company_facts
 from investment_panel.core.free_sources import (
+    filter_chain_rows_around_spot,
     infer_event_date,
     option_chain_strikes_around_spot,
     option_symbols,
@@ -422,6 +423,51 @@ def test_default_option_symbols_include_manual_watchlist_before_limit(tmp_path: 
     assert len(symbols) == 3
 
 
+def test_default_option_symbols_include_convexity_discovery_sleeve(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    config = SimpleNamespace(
+        data_sources=SimpleNamespace(tradingview=SimpleNamespace(options_symbols=[], option_scan_limit=4)),
+        watchlist=[{"symbol": "KEEP", "asset_class": "equity"}],
+    )
+    with db(db_path) as con:
+        for symbol in ("KEEP", "DQ", "SEPA", "LOTTO", "FALLBACK"):
+            upsert_instrument(con, {"symbol": symbol, "name": symbol, "asset_class": "equity"})
+        con.execute(
+            """
+            INSERT INTO decision_queue
+            (symbol, as_of, rank, action_grade, score, decision_score, action_score)
+            VALUES ('DQ', current_timestamp, 1, 'Watch', 70, 70, 70)
+            """
+        )
+        con.execute(
+            "INSERT INTO candidates VALUES ('sepa1', current_date, 'SEPA', 80, '{}', '[]', 'research')"
+        )
+        con.execute(
+            """
+            INSERT INTO technical_features VALUES
+            ('LOTTO', current_date, '{"return_20d":0.42,"return_60d":0.95,"drawdown_from_high":-0.38}')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO liquidity_metrics
+            VALUES ('LOTTO', current_date, 'A', 1000000, 25000000, NULL, NULL, NULL, '{}')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO sepa_analyses
+            VALUES ('LOTTO', current_date, 92, 'stage_2_advancing', 'strong_setup', '{}', '{}')
+            """
+        )
+
+        symbols = option_symbols(con, config)
+
+    assert symbols == ["KEEP", "DQ", "LOTTO", "SEPA"]
+    assert "FALLBACK" not in symbols
+
+
 def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> None:
     db_path = tmp_path / "investment.duckdb"
     init_db(db_path)
@@ -452,7 +498,7 @@ def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> Non
                     "open_interest": 140,
                     "symbol": f"RBLX{expiry.replace('-', '')}C{strike}",
                 }
-                for strike in [70, 80, 90, 100, 110, 120, 130]
+                for strike in [70, 80, 90, 100, 110, 120, 130, 200, 300]
             ]
 
     with db(db_path) as con:
@@ -473,9 +519,9 @@ def test_yfinance_options_refresh_persists_primary_chains(tmp_path: Path) -> Non
     assert result["options_expiries"] == 3
     assert result["options_chain_expiries"] == 3
     assert result["options_chain_symbols"] == 1
-    assert result["options_chains"] == 19
+    assert result["options_chains"] == 17
     assert expiries == [{"symbol": "RBLX", "source": "yfinance", "rows": 3}]
-    assert chains == [{"symbol": "RBLX", "source": "yfinance", "rows": 19, "min_strike": 70.0, "max_strike": 130.0}]
+    assert chains == [{"symbol": "RBLX", "source": "yfinance", "rows": 17, "min_strike": 80.0, "max_strike": 300.0}]
 
 
 def _liquidity_chain_rows(expiry: str) -> list[dict[str, object]]:
@@ -625,6 +671,28 @@ def test_option_chain_strikes_around_spot_widens_only_radar_leaps() -> None:
     assert near_term == 6
     assert leap == 24
     assert far_leap == 24
+
+
+def test_filter_chain_rows_around_spot_keeps_deep_otm_radar_calls() -> None:
+    rows = [
+        {"expiry": "2027-06-02", "strike": float(strike), "type": "call"}
+        for strike in range(50, 325, 25)
+    ]
+    rows.extend(
+        {"expiry": "2027-06-02", "strike": float(strike), "type": "put"}
+        for strike in range(50, 175, 25)
+    )
+
+    filtered = filter_chain_rows_around_spot(rows, spot=100.0, strikes_around_spot=2)
+    filtered_call_strikes = [
+        row["strike"]
+        for row in filter_chain_rows_around_spot(rows, spot=100.0, strikes_around_spot=24)
+        if row["type"] == "call"
+    ]
+
+    assert max(row["strike"] for row in filtered if row["type"] == "call") < 250.0
+    assert min(filtered_call_strikes) >= 100.0
+    assert max(filtered_call_strikes) >= 300.0
 
 
 def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path, monkeypatch) -> None:

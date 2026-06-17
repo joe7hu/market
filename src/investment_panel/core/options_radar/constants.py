@@ -126,6 +126,25 @@ STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
         "require_price_above_ma50": True,
         "require_rs_improving": False,
     },
+    "deep_otm_lottery_call_v1": {
+        **DEFAULT_STRATEGY_PARAMETERS,
+        "strategy_name": "deep_otm_lottery_call",
+        "strategy_family": "deep_otm_lottery_call",
+        "option_type": "call",
+        "delta_min": 0.05,
+        "delta_max": 0.20,
+        "dte_min": 365,
+        "dte_max": 900,
+        "max_spread_pct": 0.35,
+        "reject_spread_pct": 0.55,
+        "min_open_interest": 25,
+        "min_volume": 0,
+        "max_required_move_pct": 4.00,
+        "max_iv_percentile": 85.0,
+        "reject_iv_percentile": 95.0,
+        "require_price_above_ma50": False,
+        "require_rs_improving": True,
+    },
 }
 
 # option_type markers that the radar treats as call-like (direction = +1) when building
