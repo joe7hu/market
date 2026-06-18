@@ -852,6 +852,21 @@ def test_symbol_search_rows_persist_canonical_market_identity(tmp_path: Path) ->
     assert rows == [{"symbol": "BFLY", "primary_exchange": "NYSE", "tradingview_symbol": "NYSE:BFLY", "source": "tradingview_symbol_search"}]
 
 
+def test_symbol_search_rows_ignore_unqualified_rows_without_exchange(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        free_sources_core.store_symbol_search_rows(
+            con,
+            "BFLY",
+            "2026-06-18T13:41:21Z",
+            [{"symbol": "BFLY", "description": "Butterfly Network", "type": "stock", "exchange": ""}],
+        )
+        rows = query_rows(con, "SELECT symbol, tradingview_symbol FROM instrument_market_identity WHERE symbol = 'BFLY'")
+
+    assert rows == []
+
+
 def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:
     class ErroringOptionsProvider:
         def __init__(self, _runner: object) -> None:

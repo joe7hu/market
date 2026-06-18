@@ -20,7 +20,12 @@ def best_tradingview_symbol(symbol: str, rows: list[dict[str, Any]]) -> str:
         candidate_symbol = explicit.split(":")[-1].upper()
         if candidate_symbol != normalized:
             continue
-        tv_symbol = explicit.upper() if ":" in explicit else f"{exchange}:{row_symbol}".upper()
+        if ":" in explicit:
+            tv_symbol = explicit.upper()
+        elif exchange:
+            tv_symbol = f"{exchange}:{row_symbol}".upper()
+        else:
+            continue
         if ":" not in tv_symbol:
             continue
         instrument_type = _text(row.get("instrument_type") or row.get("type") or raw.get("type")).lower()
