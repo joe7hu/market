@@ -26,6 +26,7 @@ from investment_panel.core.coercion import (
     string_list,
 )
 from investment_panel.core.panel.coerce import _normalize_symbol_token
+from investment_panel.core.tradingview_identity import best_tradingview_symbol
 
 # Single source of truth for which read-model tables feed each dossier section.
 # Used to compute per-section coverage instead of two divergent family maps.
@@ -122,12 +123,13 @@ def build_identity(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> dict
     universe = _first(tables, "universe_screen", "discovered_universe")
     candidate = _first(tables, "candidates", "signals")
     fundamentals = _first(tables, "fundamentals")
+    market_identity = _first(tables, "instrument_market_identity")
     return {
         "symbol": symbol,
         "name": _text(universe.get("name") or candidate.get("name")) or symbol,
         "sector": _text(universe.get("sector") or fundamentals.get("sector") or candidate.get("category")),
         "asset_class": _text(universe.get("asset_class") or candidate.get("asset_class")) or "equity",
-        "exchange": _text(universe.get("exchange") or fundamentals.get("exchange")),
+        "exchange": _text(market_identity.get("primary_exchange") or universe.get("exchange") or fundamentals.get("exchange")),
         "watch_state": _text(universe.get("watch_state")),
         "tradingview_symbol": _tradingview_symbol(symbol, tables),
         "coverage": {"status": "live" if (universe or candidate) else "missing", "rows": 0, "sources": []},
@@ -468,11 +470,15 @@ def _option_expiry_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _tradingview_symbol(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> str:
     normalized = symbol.upper()
+    for row in tables.get("instrument_market_identity") or []:
+        explicit = _text(row.get("tradingview_symbol"))
+        if ":" in explicit:
+            return explicit.upper()
     for row in tables.get("tradingview_chart_state") or []:
         explicit = _text(row.get("symbol"))
         if ":" in explicit:
             return explicit.upper()
-    search_symbol = _best_tradingview_search_symbol(normalized, tables.get("tradingview_symbol_search") or [])
+    search_symbol = best_tradingview_symbol(normalized, tables.get("tradingview_symbol_search") or [])
     if search_symbol:
         return search_symbol
     for row in tables.get("quotes") or []:
@@ -484,38 +490,6 @@ def _tradingview_symbol(symbol: str, tables: dict[str, list[dict[str, Any]]]) ->
     if normalized in {"SPY", "QQQ"}:
         return f"AMEX:{normalized}"
     return normalized
-
-
-def _best_tradingview_search_symbol(symbol: str, rows: list[dict[str, Any]]) -> str:
-    candidates: list[tuple[tuple[int, int, int], str]] = []
-    for index, row in enumerate(rows):
-        exchange = _text(row.get("exchange"))
-        row_symbol = _text(row.get("symbol") or row.get("ticker"))
-        raw_symbol = _text(parse_json_dict(row.get("raw")).get("symbol"))
-        explicit = raw_symbol if ":" in raw_symbol else row_symbol
-        if not explicit:
-            continue
-        candidate_symbol = explicit.split(":")[-1].upper()
-        if candidate_symbol != symbol:
-            continue
-        tv_symbol = explicit.upper() if ":" in explicit else f"{exchange}:{row_symbol}".upper()
-        if ":" not in tv_symbol:
-            continue
-        instrument_type = _text(row.get("instrument_type") or parse_json_dict(row.get("raw")).get("type")).lower()
-        type_rank = 0 if instrument_type in {"stock", "dr", "fund", "etf"} else 10
-        exchange_rank = {
-            "NYSE": 0,
-            "NASDAQ": 1,
-            "AMEX": 2,
-            "NYSEARCA": 3,
-            "ARCA": 3,
-            "OTC": 8,
-            "BOATS": 20,
-            "CBOE": 30,
-            "FINRA": 40,
-        }.get(exchange.upper(), 15)
-        candidates.append(((type_rank, exchange_rank, index), tv_symbol))
-    return min(candidates, default=((0, 0, 0), ""))[1]
 
 
 def _is_expired(row: dict[str, Any]) -> bool:

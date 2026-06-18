@@ -77,6 +77,24 @@ def test_ticker_payload_resolves_tradingview_exchange_from_search_rows() -> None
     assert payload["dossier"]["identity"]["tradingview_symbol"] == "NYSE:BFLY"
 
 
+def test_ticker_payload_prefers_persisted_market_identity() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}],
+            "instrument_market_identity": [{"symbol": "BFLY", "primary_exchange": "NYSE", "tradingview_symbol": "NYSE:BFLY"}],
+            "tradingview_symbol_search": [
+                {"query": "BFLY", "symbol": "BFLY", "instrument_type": "stock", "exchange": "BOATS"},
+            ],
+        },
+    )
+
+    payload = data_access.ticker_payload(panel_data, "bfly")
+
+    assert payload["dossier"]["identity"]["exchange"] == "NYSE"
+    assert payload["dossier"]["identity"]["tradingview_symbol"] == "NYSE:BFLY"
+
+
 def test_ticker_payload_does_not_guess_nasdaq_without_exchange_data() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),

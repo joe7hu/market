@@ -22,6 +22,19 @@ def tradingview_symbol_search(con: Any) -> list[dict[str, Any]]:
     return [decode_fields(row, ("raw",)) for row in rows]
 
 
+def instrument_market_identity(con: Any) -> list[dict[str, Any]]:
+    rows = query_rows(
+        con,
+        """
+        SELECT symbol, primary_exchange, tradingview_symbol, provider, observed_at, source, raw
+        FROM instrument_market_identity
+        ORDER BY observed_at DESC, symbol
+        LIMIT 1000
+        """,
+    )
+    return [decode_fields(row, ("raw",)) for row in rows]
+
+
 
 
 def tradingview_watchlists(con: Any) -> list[dict[str, Any]]:

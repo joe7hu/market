@@ -831,6 +831,25 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
     ]
 
 
+def test_symbol_search_rows_persist_canonical_market_identity(tmp_path: Path) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        free_sources_core.store_symbol_search_rows(
+            con,
+            "BFLY",
+            "2026-06-18T13:41:21Z",
+            [
+                {"symbol": "BOATS:BFLY", "description": "Butterfly Network", "type": "stock", "exchange": "BOATS", "country": "US", "currency": "USD"},
+                {"symbol": "CBOE:BFLY", "description": "CBOE S&P 500 Iron Butterfly Index", "type": "index", "exchange": "CBOE", "country": "US"},
+                {"symbol": "NYSE:BFLY", "description": "Butterfly Network", "type": "stock", "exchange": "NYSE", "country": "US", "currency": "USD"},
+            ],
+        )
+        rows = query_rows(con, "SELECT symbol, primary_exchange, tradingview_symbol, source FROM instrument_market_identity WHERE symbol = 'BFLY'")
+
+    assert rows == [{"symbol": "BFLY", "primary_exchange": "NYSE", "tradingview_symbol": "NYSE:BFLY", "source": "tradingview_symbol_search"}]
+
+
 def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:
     class ErroringOptionsProvider:
         def __init__(self, _runner: object) -> None:

@@ -32,7 +32,7 @@ from investment_panel.core.panel.feed import feed_signals, ownership_consensus, 
 from investment_panel.core.panel.read_equity import candidates, catalysts, decision_queue, decision_readiness, discovered_universe, opportunities_ranked, opportunity_sources, portfolio, source_freshness, theses
 from investment_panel.core.panel.read_market_data import analyst_estimates, correlations, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, provider_runs, quotes, screener, sepa, source_health, valuations
 from investment_panel.core.panel.read_research import reports, research_packets, trader_profiles
-from investment_panel.core.panel.read_tradingview import tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
+from investment_panel.core.panel.read_tradingview import instrument_market_identity, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
 from investment_panel.core.panel.read_options import option_features, option_radar_opportunity, option_radar_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
 from investment_panel.core.panel.read_learning import agent_postmortem, agent_postmortem_request, agent_thesis, agent_thesis_request, agent_thesis_validation, candidate_event, candidate_event_attribution, candidate_event_mark, conviction_calibration, exploration_gate_report, missed_winner_event, option_attribution, radar_alert, radar_state_transition, shadow_trade, shadow_trade_mark, strategy_backtest_result, strategy_cohort_result, strategy_forward_test_result, strategy_mutation_proposal, trade_journal, vol_surface_features
 
@@ -108,6 +108,7 @@ READ_MODELS: dict[str, ReadLoader] = {
     "strategy_cohort_result": lambda ctx: strategy_cohort_result(ctx.con),
     "exploration_gate_report": lambda ctx: exploration_gate_report(ctx.con),
     "news": lambda ctx: news(ctx.con),
+    "instrument_market_identity": lambda ctx: instrument_market_identity(ctx.con),
     "tradingview_symbol_search": lambda ctx: tradingview_symbol_search(ctx.con),
     "tradingview_watchlists": lambda ctx: tradingview_watchlists(ctx.con),
     "tradingview_alerts": lambda ctx: tradingview_alerts(ctx.con),

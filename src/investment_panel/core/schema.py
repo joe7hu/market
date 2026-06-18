@@ -949,6 +949,16 @@ CREATE TABLE IF NOT EXISTS tradingview_symbol_search (
     raw JSON
 );
 
+CREATE TABLE IF NOT EXISTS instrument_market_identity (
+    symbol TEXT PRIMARY KEY,
+    primary_exchange TEXT,
+    tradingview_symbol TEXT,
+    provider TEXT,
+    observed_at TIMESTAMP,
+    source TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS tradingview_watchlists (
     id TEXT,
     observed_at TIMESTAMP,

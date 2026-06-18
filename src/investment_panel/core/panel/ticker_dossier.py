@@ -16,7 +16,7 @@ from investment_panel.core.panel.read_equity import candidates, catalysts, decis
 from investment_panel.core.panel.read_market_data import analyst_estimates, correlations, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, quotes, sepa, valuations
 from investment_panel.core.panel.read_options import options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals
 from investment_panel.core.panel.read_research import reports, research_packets
-from investment_panel.core.panel.read_tradingview import tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
+from investment_panel.core.panel.read_tradingview import instrument_market_identity, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
 from investment_panel.core.panel.technicals import technicals
 
 
@@ -59,6 +59,7 @@ TICKER_DOSSIER_LOADERS: dict[str, TickerLoader] = {
     "options_expiry_signals": _filtered(options_expiry_signals),
     "options_ticker_signals": _filtered(options_ticker_signals),
     "news": _filtered(news),
+    "instrument_market_identity": _filtered(instrument_market_identity),
     "tradingview_symbol_search": _filtered(tradingview_symbol_search),
     "tradingview_watchlists": _filtered(tradingview_watchlists),
     "tradingview_alerts": _filtered(tradingview_alerts),

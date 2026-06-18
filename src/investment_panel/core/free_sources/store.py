@@ -6,6 +6,7 @@ from typing import Any
 from investment_panel.core.db import json_dumps, query_rows
 
 from investment_panel.core.free_sources.coerce import as_float, as_int, normalize_symbol, parse_json_object, stable_id
+from investment_panel.core.tradingview_identity import best_tradingview_symbol, primary_exchange
 
 
 
@@ -218,8 +219,6 @@ def store_expiries(con: Any, symbol: str, observed_at: str, rows: list[dict[str,
     return count
 
 
-
-
 def store_options_chain(con: Any, symbol: str, observed_at: str, rows: list[dict[str, Any]], *, source: str = "tradingview") -> int:
     count = 0
     normalized_symbol = normalize_symbol(symbol)
@@ -324,7 +323,33 @@ def store_symbol_search_rows(con: Any, query: str, observed_at: str, rows: list[
             ],
         )
         count += 1
+    _store_instrument_market_identity(con, query, observed_at, rows)
     return count
+
+
+def _store_instrument_market_identity(con: Any, query: str, observed_at: str, rows: list[dict[str, Any]]) -> None:
+    symbol = normalize_symbol(query)
+    if not symbol:
+        return
+    tradingview_symbol = best_tradingview_symbol(symbol, rows)
+    if not tradingview_symbol:
+        return
+    con.execute(
+        """
+        INSERT OR REPLACE INTO instrument_market_identity
+        (symbol, primary_exchange, tradingview_symbol, provider, observed_at, source, raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            symbol,
+            primary_exchange(tradingview_symbol),
+            tradingview_symbol,
+            "tradingview",
+            observed_at,
+            "tradingview_symbol_search",
+            json_dumps({"query": query.upper(), "rows": rows}),
+        ],
+    )
 
 
 

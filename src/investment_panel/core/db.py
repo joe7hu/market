@@ -15,6 +15,7 @@ import duckdb
 
 
 from investment_panel.core.schema import SCHEMA_SQL
+from investment_panel.core.tradingview_identity import best_tradingview_symbol, primary_exchange
 
 
 _CONNECT_LOCK = threading.RLock()
@@ -58,6 +59,7 @@ def _migrate_schema(con: duckdb.DuckDBPyConnection) -> None:
     # it, then apply data backfills that are not column additions.
     _reconcile_columns_to_ddl(con)
     con.execute("UPDATE manual_watchlist SET watch_state = 'watched' WHERE watch_state IS NULL OR watch_state = ''")
+    _backfill_instrument_market_identity(con)
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +100,56 @@ def _reconcile_columns_to_ddl(con: duckdb.DuckDBPyConnection) -> None:
         for name, col_type in ddl_columns.items():
             if name not in existing:
                 con.execute(f'ALTER TABLE {table} ADD COLUMN "{name}" {col_type}')
+
+
+def _backfill_instrument_market_identity(con: duckdb.DuckDBPyConnection) -> None:
+    existing = {row[0] for row in con.execute("SELECT symbol FROM instrument_market_identity").fetchall()}
+    rows = con.execute(
+        """
+        SELECT query, observed_at, symbol, description, instrument_type, exchange, country, currency, raw
+        FROM tradingview_symbol_search
+        ORDER BY query, observed_at DESC
+        """
+    ).fetchall()
+    grouped: dict[str, dict[str, Any]] = {}
+    for query, observed_at, symbol, description, instrument_type, exchange, country, currency, raw in rows:
+        normalized = str(query or symbol or "").strip().upper()
+        if not normalized or normalized in existing:
+            continue
+        group = grouped.setdefault(normalized, {"observed_at": observed_at, "rows": []})
+        if observed_at != group["observed_at"]:
+            continue
+        group["rows"].append(
+            {
+                "symbol": symbol,
+                "description": description,
+                "instrument_type": instrument_type,
+                "exchange": exchange,
+                "country": country,
+                "currency": currency,
+                "raw": raw,
+            }
+        )
+    for symbol, group in grouped.items():
+        tradingview_symbol = best_tradingview_symbol(symbol, group["rows"])
+        if not tradingview_symbol:
+            continue
+        con.execute(
+            """
+            INSERT OR REPLACE INTO instrument_market_identity
+            (symbol, primary_exchange, tradingview_symbol, provider, observed_at, source, raw)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                symbol,
+                primary_exchange(tradingview_symbol),
+                tradingview_symbol,
+                "tradingview",
+                group["observed_at"],
+                "tradingview_symbol_search_backfill",
+                json.dumps({"query": symbol, "rows": group["rows"]}, ensure_ascii=False, default=str),
+            ],
+        )
 
 
 @contextmanager
