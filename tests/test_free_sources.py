@@ -766,7 +766,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
             pass
 
         def status(self) -> list[dict[str, object]]:
-            return [{"connected": False}]
+            return [{"connected": True}]
 
         def quote(self, _symbol: str) -> dict[str, object]:
             quote_calls.append(_symbol)
@@ -805,6 +805,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
                 screener_limit=0,
                 news_limit=0,
                 strikes_around_spot=6,
+                chart_state_enabled=False,
                 personal_surfaces_enabled=False,
             ),
         ),
@@ -821,6 +822,7 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
     assert quote_calls == ["TSLA"]
     assert chain_calls == [("2026-06-05", 6), ("2027-06-02", 48), ("2028-11-18", 48)]
     assert result["target_symbols"] == ["TSLA"]
+    assert result["search_rows"] == 1
     assert result["chain_expiries"] == 3
     assert result["radar_chain_expiries"] == 2
     assert result["chains"] == 3

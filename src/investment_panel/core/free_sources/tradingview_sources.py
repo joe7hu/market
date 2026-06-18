@@ -82,6 +82,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
             except OpenCliError as exc:
                 result["news_error"] = str(exc)
         if tradingview_ready:
+            search_rows_before_personal = int(result.get("search_rows", 0) or 0)
             personal_result = update_tradingview_personal_surfaces(
                 con,
                 config,
@@ -91,6 +92,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
                 search_symbols=[] if target_symbols else None,
             )
             result.update(personal_result)
+            result["search_rows"] = search_rows_before_personal + int(personal_result.get("search_rows", 0) or 0)
         else:
             result["personal_surfaces"] = "skipped_cdp_not_connected"
         requested_options_symbols = target_symbols or option_symbols(con, config)
