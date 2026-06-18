@@ -20,6 +20,14 @@ export function featuredAssetRows(inputRows: RowRecord[]): RowRecord[] {
     .slice(0, 48);
 }
 
+export function latestAssetMatrixDate(rows: RowRecord[]): string {
+  return rows
+    .map((row) => textField(row, ["as_of", "date"]).slice(0, 10))
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? "";
+}
+
 export function assetRowClass(rows: RowRecord[], row: RowRecord, index: number): string {
   const group = textField(row, ["group_name"]);
   const previous = index > 0 ? textField(rows[index - 1], ["group_name"]) : "";

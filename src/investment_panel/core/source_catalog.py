@@ -43,7 +43,8 @@ class DataCategory:
 
 # Cadence seconds mirror the scheduler defaults so the two cannot drift:
 #   MARKET_RADAR_REFRESH_SECONDS (900), MARKET_SOURCE_REFRESH_SECONDS (3600),
-#   MARKET_SOCIAL_REFRESH_SECONDS (1800), MARKET_RESEARCH_REFRESH_SECONDS (3600).
+#   MARKET_SOCIAL_REFRESH_SECONDS (1800), MARKET_RESEARCH_REFRESH_SECONDS (3600),
+#   MARKET_ENVIRONMENT_REFRESH_SECONDS (3600).
 SOURCE_CATALOG: list[DataCategory] = [
     DataCategory(
         id="options",

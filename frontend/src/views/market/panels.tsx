@@ -23,6 +23,7 @@ import {
   filterMetricPeriod,
   formatMetricValue,
   formatScore,
+  latestAssetMatrixDate,
   metricHistoryPoints,
   normalizeScore,
   percentileTone,
@@ -203,6 +204,7 @@ function ReferenceValuationCard({ row }: { row: RowRecord }) {
 
 export function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
   const featured = featuredAssetRows(rows);
+  const latestAsOf = latestAssetMatrixDate(rows);
   if (!featured.length) {
     return (
       <Card>
@@ -219,7 +221,10 @@ export function MarketAssetMatrix({ rows }: { rows: RowRecord[] }) {
           <Activity className="size-4 text-muted-foreground" />
           Market Environment Asset Matrix
         </CardTitle>
-        <Badge variant="outline">{rows.length} rows</Badge>
+        <div className="flex flex-wrap justify-end gap-2">
+          {latestAsOf ? <Badge variant="secondary">As of {latestAsOf}</Badge> : null}
+          <Badge variant="outline">{rows.length} rows</Badge>
+        </div>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0">
         <table className="w-full min-w-[1260px] text-sm">

@@ -5,13 +5,14 @@ radar is refreshed here on a timer instead of by an external launchd job that
 skipped whenever the app was running. Closing the browser does not stop this:
 it lives in the long-running uvicorn process, not the frontend.
 
-Two cadences, both agent-free (Codex thesis/postmortem workers stay on the
-daily premarket job):
+Core market-data cadences run here so they continue while the app is open:
 
 - ``update_free_sources`` pulls fresh option chains / quotes (rate-limited
   upstream, so it runs on a slower cadence).
 - ``refresh_options_radar_deterministic`` rematerializes option math, gates,
   ranking, and opportunities from whatever chains are present (cheap, frequent).
+- ``update_market_environment`` keeps the broad-market valuation charts and
+  asset matrix current for the Market page.
 
 Job execution reuses ``run_refresh_job``, which records job rows and refuses to
 start a second copy of a job that is already running, so overlapping ticks (or
@@ -32,6 +33,7 @@ from investment_panel.core.refresh_jobs import run_refresh_job
 logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
+STAGGER_SECONDS = 5.0
 _TRUTHY_OFF = {"0", "false", "off", "no"}
 
 
@@ -120,31 +122,45 @@ def job_intervals() -> dict[str, int]:
     research_seconds = _env_int("MARKET_RESEARCH_REFRESH_SECONDS", 3600, allow_zero=True)
     if research_seconds > 0:
         intervals["update_research_sources"] = research_seconds
+    # Broad-market valuation and asset-matrix inputs for /market. These are small
+    # enough to refresh hourly and need to run while the API owns the DuckDB writer.
+    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 3600, allow_zero=True)
+    if market_environment_seconds > 0:
+        intervals["update_market_environment"] = market_environment_seconds
     return intervals
 
 
 async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None:
     intervals = job_intervals()
-    warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20)
+    warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20, allow_zero=True)
     logger.info("market scheduler starting (warmup=%ss, intervals=%s)", warmup, intervals)
 
     # Stagger first runs after warmup so the source pull lands before the first
     # deterministic rematerialization, and the two jobs do not contend at t0.
     start = time.monotonic() + warmup
-    next_due: dict[str, float] = {job: start + offset * 5.0 for offset, job in enumerate(intervals)}
+    next_due: dict[str, float] = {job: start + offset * STAGGER_SECONDS for offset, job in enumerate(intervals)}
+    in_flight: dict[str, asyncio.Task] = {}
 
     try:
         while True:
             now = time.monotonic()
+            for job, task in list(in_flight.items()):
+                if task.done():
+                    in_flight.pop(job, None)
             for job, interval in intervals.items():
-                if now >= next_due.get(job, 0.0):
-                    await _dispatch(job, db_path, config_path)
-                    # Schedule the next run from completion, never from start, so a
-                    # long job cannot create a backlog of overlapping runs.
+                if now >= next_due.get(job, 0.0) and job not in in_flight:
+                    in_flight[job] = asyncio.create_task(_dispatch(job, db_path, config_path))
+                    # Schedule from dispatch while each job stays single-flight.
+                    # This prevents a long radar/source job from starving unrelated
+                    # freshness jobs such as update_market_environment.
                     next_due[job] = time.monotonic() + interval
             await asyncio.sleep(TICK_SECONDS)
     except asyncio.CancelledError:
         logger.info("market scheduler stopping")
+        for task in in_flight.values():
+            task.cancel()
+        if in_flight:
+            await asyncio.gather(*in_flight.values(), return_exceptions=True)
         raise
 
 

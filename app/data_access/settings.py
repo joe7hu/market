@@ -218,6 +218,7 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
             "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
             "social_refresh_seconds": os.environ.get("MARKET_SOCIAL_REFRESH_SECONDS", "1800"),
             "research_refresh_seconds": os.environ.get("MARKET_RESEARCH_REFRESH_SECONDS", "3600"),
+            "market_environment_refresh_seconds": os.environ.get("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600"),
             "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
         },
         "model_overrides": {

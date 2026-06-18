@@ -275,6 +275,7 @@ function RuntimePanel({ scheduler }: { scheduler: Record<string, unknown> }) {
     ["Learning refresh", stringFromJson(scheduler.learning_refresh_seconds, "21600"), "heavy deterministic learning cadence"],
     ["Social refresh", stringFromJson(scheduler.social_refresh_seconds, "1800"), "X / social pull cadence"],
     ["Research refresh", stringFromJson(scheduler.research_refresh_seconds, "3600"), "news / blogs pull cadence"],
+    ["Market environment", stringFromJson(scheduler.market_environment_refresh_seconds, "3600"), "valuation and asset-matrix cadence"],
     ["Radar source", stringFromJson(scheduler.radar_option_source, "robinhood"), "option source used by scheduler"],
   ];
   return (
