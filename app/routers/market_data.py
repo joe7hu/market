@@ -30,6 +30,11 @@ def tradingview_symbol_search() -> dict[str, Any]:
     return deps._table_payload("tradingview_symbol_search")
 
 
+@router.get("/api/instrument-market-identity")
+def instrument_market_identity() -> dict[str, Any]:
+    return deps._table_payload("instrument_market_identity")
+
+
 @router.get("/api/tradingview-watchlists")
 def tradingview_watchlists() -> dict[str, Any]:
     return deps._table_payload("tradingview_watchlists")

@@ -430,6 +430,7 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
     assert "decision_queue" in contract["ticker_tables"]
     assert "ticker_data_sources" not in contract["ticker_tables"]
     assert contract["endpoint_tables"]["feed"] == "feed_signals"
+    assert contract["endpoint_tables"]["instrument-market-identity"] == "instrument_market_identity"
     assert contract["endpoint_tables"]["watchlist/symbols"] == "manual_watchlist"
 
 
