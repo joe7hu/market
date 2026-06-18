@@ -64,6 +64,7 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
         if target_symbols:
             result["screener_rows"] = 0
             result["news_items"] = 0
+            result.update(_update_tradingview_search(con, provider, run_id, observed_at, target_symbols))
         else:
             # Screener/news are discovery surfaces, not the radar's lifeblood.
             # Isolate their failures (notably scanner 429s) so a rate-limited
@@ -81,7 +82,14 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
             except OpenCliError as exc:
                 result["news_error"] = str(exc)
         if tradingview_ready:
-            personal_result = update_tradingview_personal_surfaces(con, config, provider, run_id, observed_at)
+            personal_result = update_tradingview_personal_surfaces(
+                con,
+                config,
+                provider,
+                run_id,
+                observed_at,
+                search_symbols=[] if target_symbols else None,
+            )
             result.update(personal_result)
         else:
             result["personal_surfaces"] = "skipped_cdp_not_connected"
@@ -185,6 +193,40 @@ def update_tradingview_sources(con: Any, config: AppConfig, symbols: list[str] |
     return result
 
 
+def _update_tradingview_search(
+    con: Any,
+    provider: TradingViewProvider,
+    run_id: str,
+    observed_at: str,
+    symbols: list[str],
+) -> dict[str, Any]:
+    search_targets = unique_symbols(symbols)
+    result: dict[str, Any] = {"search_rows": 0}
+    errors: list[str] = []
+    for symbol in search_targets:
+        try:
+            search_rows = provider.search(symbol, limit=5)
+            result["search_rows"] += store_symbol_search_rows(con, symbol, observed_at, search_rows)
+        except OpenCliError as exc:
+            errors.append(f"search:{symbol}:{exc}")
+    if search_targets:
+        status = "ok" if not errors else "partial"
+        record_provider_run(
+            con,
+            stable_id(f"{run_id}:search"),
+            "tradingview",
+            "search",
+            observed_at,
+            status,
+            f"{result['search_rows']} search rows across {len(search_targets)} symbols",
+            {"symbols": search_targets, "rows": result["search_rows"], "errors": errors[:10]},
+        )
+    if errors:
+        result["search_errors"] = errors[:10]
+        result["search_error_count"] = len(errors)
+    return result
+
+
 
 
 def update_tradingview_personal_surfaces(
@@ -193,6 +235,7 @@ def update_tradingview_personal_surfaces(
     provider: TradingViewProvider,
     run_id: str,
     observed_at: str,
+    search_symbols: list[str] | None = None,
 ) -> dict[str, Any]:
     """Refresh read-only TradingView surfaces that require the desktop session."""
 
@@ -230,24 +273,11 @@ def update_tradingview_personal_surfaces(
         except OpenCliError as exc:
             record_error("chart-state", exc)
 
-    search_symbols = tradingview_search_symbols(con, config)
-    for symbol in search_symbols:
-        try:
-            search_rows = provider.search(symbol, limit=5)
-            result["search_rows"] += store_symbol_search_rows(con, symbol, observed_at, search_rows)
-        except OpenCliError as exc:
-            record_error(f"search:{symbol}", exc)
-    if search_symbols:
-        record_provider_run(
-            con,
-            stable_id(f"{run_id}:search"),
-            "tradingview",
-            "search",
-            observed_at,
-            "ok" if not any(error.startswith("search:") for error in errors) else "partial",
-            f"{result['search_rows']} search rows across {len(search_symbols)} symbols",
-            {"symbols": search_symbols, "rows": result["search_rows"]},
-        )
+    search_targets = tradingview_search_symbols(con, config) if search_symbols is None else search_symbols
+    search_result = _update_tradingview_search(con, provider, run_id, observed_at, search_targets)
+    result["search_rows"] = search_result["search_rows"]
+    for error in search_result.get("search_errors", []):
+        errors.append(error)
 
     if config.data_sources.tradingview.personal_surfaces_enabled:
         try:

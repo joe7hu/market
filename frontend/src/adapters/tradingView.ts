@@ -4,9 +4,10 @@ import { textField } from "@/views/rowFormat";
 export function resolveTradingViewSymbol(symbol: string, ticker: TickerPayload | null): string {
   const resolved = textField(ticker?.dossier?.identity, ["tradingview_symbol"]);
   if (resolved) return resolved.toUpperCase();
-  // Exchange-qualification (-USD, SPY/QQQ on AMEX, etc.) is the backend's job via
-  // identity.tradingview_symbol; fall back to a plain default only when it's absent.
-  return `NASDAQ:${symbol.toUpperCase()}`;
+  // Exchange qualification is the backend's job via identity.tradingview_symbol.
+  // If that field is absent, keep the widget symbol unqualified instead of
+  // guessing an exchange.
+  return symbol.toUpperCase();
 }
 
 export function tradingViewEmbedUrl(tradingViewSymbol: string): string {

@@ -778,6 +778,9 @@ def test_tradingview_options_refresh_fetches_radar_leap_expiries(tmp_path: Path,
         def news(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, object]]:
             raise AssertionError("targeted options refresh should not run news")
 
+        def search(self, query: str, limit: int = 10) -> list[dict[str, object]]:
+            return [{"symbol": query, "description": "Tesla", "type": "stock", "exchange": "NASDAQ"}]
+
         def options_expiries(self, _symbol: str) -> list[dict[str, object]]:
             return [
                 {"expiry": "2026-06-05", "dte": 3, "contracts_count": 120},

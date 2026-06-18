@@ -116,11 +116,11 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     from investment_panel.analysis.valuation import store_valuation_models
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import refresh_decision_read_models
-    from investment_panel.core.free_sources import store_yfinance_market_snapshot, update_instrument_from_yfinance
+    from investment_panel.core.free_sources import update_yfinance_sources
+    from investment_panel.core.free_sources.tradingview_sources import update_tradingview_sources
     from investment_panel.core.prices import fetch_prices, upsert_prices
     from investment_panel.core.scoring import score_and_store
     from investment_panel.core.technicals import compute_and_store
-    from investment_panel.providers.yfinance_provider import YFinanceProvider, YFinanceUnavailable
 
     db_path = _database_path(config)
     market_data = config.get("market_data", {})
@@ -142,6 +142,8 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
         "price_rows": 0,
         "technical_rows": 0,
         "market_snapshots": 0,
+        "yfinance": {"status": "skipped"},
+        "tradingview": {"status": "skipped"},
         "valuation_rows": 0,
         "scored": 0,
         "errors": {},
@@ -167,16 +169,24 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
 
         if asset_class in {"equity", "etf"} and yfinance_config.get("enabled", True):
             try:
-                provider = YFinanceProvider()
-                info = provider.info(normalized)
-                update_instrument_from_yfinance(con, normalized, info)
-                observed_at = datetime.utcnow().isoformat()
-                run_id = f"watchlist:{normalized}:{observed_at}"
-                result["market_snapshots"] = 1 if store_yfinance_market_snapshot(con, run_id, normalized, observed_at, info) else 0
-            except YFinanceUnavailable as exc:
-                result["errors"]["yfinance"] = str(exc)
+                result["yfinance"] = update_yfinance_sources(
+                    con,
+                    _targeted_refresh_config(config, normalized, asset_class),
+                    symbols=[normalized],
+                )
+                result["market_snapshots"] = int(result["yfinance"].get("market_snapshots", 0) or 0)
             except Exception as exc:  # pragma: no cover - provider boundary
                 result["errors"]["yfinance"] = f"{type(exc).__name__}: {exc}"
+
+        if asset_class in {"equity", "etf"} and _tradingview_enabled(data_sources):
+            try:
+                result["tradingview"] = update_tradingview_sources(
+                    con,
+                    _targeted_refresh_config(config, normalized, asset_class),
+                    symbols=[normalized],
+                )
+            except Exception as exc:  # pragma: no cover - provider boundary
+                result["errors"]["tradingview"] = f"{type(exc).__name__}: {exc}"
 
         try:
             result["valuation_rows"] = store_valuation_models(con, [normalized])
@@ -198,6 +208,55 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     elif result["errors"]:
         result["status"] = "partial"
     return result
+
+
+def _tradingview_enabled(data_sources: dict[str, Any]) -> bool:
+    tradingview = data_sources.get("tradingview")
+    return isinstance(tradingview, dict) and bool(tradingview.get("enabled"))
+
+
+def _targeted_refresh_config(config: dict[str, Any], symbol: str, asset_class: str | None):
+    from pathlib import Path
+
+    from investment_panel.core.config import (
+        AppConfig,
+        DataSourcesConfig,
+        DatabaseConfig,
+        OpenCliConfig,
+        TradingViewConfig,
+    )
+
+    data_sources = config.get("data_sources", {}) if isinstance(config.get("data_sources"), dict) else {}
+    opencli_raw = data_sources.get("opencli", {}) if isinstance(data_sources.get("opencli"), dict) else {}
+    tradingview_raw = data_sources.get("tradingview", {}) if isinstance(data_sources.get("tradingview"), dict) else {}
+
+    return AppConfig(
+        database=DatabaseConfig(duckdb_path=Path(_database_path(config))),
+        data_sources=DataSourcesConfig(
+            opencli=OpenCliConfig(
+                enabled=bool(opencli_raw.get("enabled", True)),
+                command=str(opencli_raw.get("command") or "opencli"),
+                timeout_seconds=int(opencli_raw.get("timeout_seconds", 25)),
+            ),
+            tradingview=TradingViewConfig(
+                enabled=True,
+                options_symbols=list(tradingview_raw.get("options_symbols") or []),
+                search_symbols=list(tradingview_raw.get("search_symbols") or []),
+                watchlist_colors=list(tradingview_raw.get("watchlist_colors") or ["red", "orange", "yellow", "green", "blue", "purple"]),
+                alert_types=list(tradingview_raw.get("alert_types") or ["active", "triggered", "offline"]),
+                personal_surfaces_enabled=bool(tradingview_raw.get("personal_surfaces_enabled", True)),
+                chart_state_enabled=bool(tradingview_raw.get("chart_state_enabled", True)),
+                screener_limit=int(tradingview_raw.get("screener_limit", 50)),
+                news_limit=int(tradingview_raw.get("news_limit", 50)),
+                strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
+                option_scan_limit=int(tradingview_raw.get("option_scan_limit", 80)),
+            ),
+        ),
+        watchlist=[
+            *list(config.get("watchlist") or []),
+            {"symbol": symbol, "asset_class": asset_class or "equity"},
+        ],
+    )
 
 
 

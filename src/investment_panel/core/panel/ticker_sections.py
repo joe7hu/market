@@ -472,13 +472,9 @@ def _tradingview_symbol(symbol: str, tables: dict[str, list[dict[str, Any]]]) ->
         explicit = _text(row.get("symbol"))
         if ":" in explicit:
             return explicit.upper()
-    for row in tables.get("tradingview_symbol_search") or []:
-        exchange = _text(row.get("exchange"))
-        row_symbol = _text(row.get("symbol") or row.get("ticker"))
-        if exchange and row_symbol and ":" not in row_symbol:
-            return f"{exchange}:{row_symbol}".upper()
-        if ":" in row_symbol:
-            return row_symbol.upper()
+    search_symbol = _best_tradingview_search_symbol(normalized, tables.get("tradingview_symbol_search") or [])
+    if search_symbol:
+        return search_symbol
     for row in tables.get("quotes") or []:
         raw_symbol = _text(parse_json_dict(row.get("raw")).get("symbol"))
         if ":" in raw_symbol:
@@ -487,7 +483,39 @@ def _tradingview_symbol(symbol: str, tables: dict[str, list[dict[str, Any]]]) ->
         return f"COINBASE:{normalized.replace('-USD', 'USD')}"
     if normalized in {"SPY", "QQQ"}:
         return f"AMEX:{normalized}"
-    return f"NASDAQ:{normalized}"
+    return normalized
+
+
+def _best_tradingview_search_symbol(symbol: str, rows: list[dict[str, Any]]) -> str:
+    candidates: list[tuple[tuple[int, int, int], str]] = []
+    for index, row in enumerate(rows):
+        exchange = _text(row.get("exchange"))
+        row_symbol = _text(row.get("symbol") or row.get("ticker"))
+        raw_symbol = _text(parse_json_dict(row.get("raw")).get("symbol"))
+        explicit = raw_symbol if ":" in raw_symbol else row_symbol
+        if not explicit:
+            continue
+        candidate_symbol = explicit.split(":")[-1].upper()
+        if candidate_symbol != symbol:
+            continue
+        tv_symbol = explicit.upper() if ":" in explicit else f"{exchange}:{row_symbol}".upper()
+        if ":" not in tv_symbol:
+            continue
+        instrument_type = _text(row.get("instrument_type") or parse_json_dict(row.get("raw")).get("type")).lower()
+        type_rank = 0 if instrument_type in {"stock", "dr", "fund", "etf"} else 10
+        exchange_rank = {
+            "NYSE": 0,
+            "NASDAQ": 1,
+            "AMEX": 2,
+            "NYSEARCA": 3,
+            "ARCA": 3,
+            "OTC": 8,
+            "BOATS": 20,
+            "CBOE": 30,
+            "FINRA": 40,
+        }.get(exchange.upper(), 15)
+        candidates.append(((type_rank, exchange_rank, index), tv_symbol))
+    return min(candidates, default=((0, 0, 0), ""))[1]
 
 
 def _is_expired(row: dict[str, Any]) -> bool:

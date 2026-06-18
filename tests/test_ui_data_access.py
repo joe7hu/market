@@ -59,6 +59,35 @@ def test_ticker_payload_matches_symbol() -> None:
     assert dossier["thesis"]["coverage"]["status"] == "live"
 
 
+def test_ticker_payload_resolves_tradingview_exchange_from_search_rows() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}],
+            "tradingview_symbol_search": [
+                {"query": "BFLY", "symbol": "BFLY", "description": "Butterfly Network", "instrument_type": "stock", "exchange": "BOATS"},
+                {"query": "BFLY", "symbol": "BFLY", "description": "CBOE S&P 500 Iron Butterfly Index", "instrument_type": "index", "exchange": "CBOE"},
+                {"query": "BFLY", "symbol": "BFLY", "description": "Butterfly Network", "instrument_type": "stock", "exchange": "NYSE"},
+            ],
+        },
+    )
+
+    payload = data_access.ticker_payload(panel_data, "bfly")
+
+    assert payload["dossier"]["identity"]["tradingview_symbol"] == "NYSE:BFLY"
+
+
+def test_ticker_payload_does_not_guess_nasdaq_without_exchange_data() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={"universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}]},
+    )
+
+    payload = data_access.ticker_payload(panel_data, "bfly")
+
+    assert payload["dossier"]["identity"]["tradingview_symbol"] == "BFLY"
+
+
 def test_ticker_payload_organizes_sections_for_deep_links() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
@@ -736,11 +765,17 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     config = {
         "database": {"duckdb_path": str(tmp_path / "populate-watchlist.duckdb")},
         "market_data": {"lookback_days": 30, "mode": "online"},
-        "data_sources": {"yfinance": {"enabled": False}},
+        "data_sources": {
+            "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},
+            "tradingview": {"enabled": True},
+            "yfinance": {"enabled": True},
+        },
         "scoring": {"weights": {"technical": 1.0}},
         "watchlist": [],
     }
     data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
+    yfinance_symbols = []
+    tradingview_symbols = []
 
     def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
         assert symbol == "XYZ"
@@ -760,11 +795,35 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     monkeypatch.setattr("investment_panel.core.scoring.score_and_store", lambda con, symbols, weights: [{"symbol": symbol} for symbol in symbols])
     monkeypatch.setattr("investment_panel.core.decision.refresh_decision_read_models", lambda con, watchlist: {"status": "decision_models_refreshed"})
 
+    def update_yfinance_sources(_con, app_config, symbols):
+        yfinance_symbols.extend(symbols)
+        assert str(app_config.database.duckdb_path).endswith("populate-watchlist.duckdb")
+        return {"status": "ok", "market_snapshots": 1, "estimates": 1, "earnings": 1}
+
+    def update_tradingview_sources(_con, app_config, symbols):
+        tradingview_symbols.extend(symbols)
+        assert str(app_config.database.duckdb_path).endswith("populate-watchlist.duckdb")
+        return {"status": "ok", "search_rows": 1}
+
+    monkeypatch.setattr(
+        "investment_panel.core.free_sources.update_yfinance_sources",
+        update_yfinance_sources,
+    )
+    monkeypatch.setattr(
+        "investment_panel.core.free_sources.tradingview_sources.update_tradingview_sources",
+        update_tradingview_sources,
+    )
+
     result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "ok"
     assert result["price_rows"] == 2
     assert result["technical_rows"] == 1
+    assert result["yfinance"] == {"status": "ok", "market_snapshots": 1, "estimates": 1, "earnings": 1}
+    assert result["market_snapshots"] == 1
+    assert yfinance_symbols == ["XYZ"]
+    assert result["tradingview"] == {"status": "ok", "search_rows": 1}
+    assert tradingview_symbols == ["XYZ"]
     assert result["valuation_rows"] == 2
     assert result["scored"] == 1
     assert result["decision_models"] == {"status": "decision_models_refreshed"}
