@@ -103,18 +103,59 @@ def _reconcile_columns_to_ddl(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _backfill_instrument_market_identity(con: duckdb.DuckDBPyConnection) -> None:
-    existing = {row[0] for row in con.execute("SELECT symbol FROM instrument_market_identity").fetchall()}
+    missing_count = con.execute(
+        """
+        WITH search_symbols AS (
+            SELECT DISTINCT upper(regexp_replace(CAST(COALESCE(query, symbol) AS VARCHAR), '^.*:', '')) AS symbol
+            FROM tradingview_symbol_search
+            WHERE COALESCE(query, symbol) IS NOT NULL
+        )
+        SELECT count(*)
+        FROM search_symbols s
+        LEFT JOIN instrument_market_identity i ON i.symbol = s.symbol
+        WHERE i.symbol IS NULL
+        """
+    ).fetchone()[0]
+    if not missing_count:
+        return
     rows = con.execute(
         """
-        SELECT query, observed_at, symbol, description, instrument_type, exchange, country, currency, raw
-        FROM tradingview_symbol_search
-        ORDER BY query, observed_at DESC
+        WITH search_rows AS (
+            SELECT
+                upper(regexp_replace(CAST(COALESCE(query, symbol) AS VARCHAR), '^.*:', '')) AS normalized_symbol,
+                query,
+                observed_at,
+                symbol,
+                description,
+                instrument_type,
+                exchange,
+                country,
+                currency,
+                raw
+            FROM tradingview_symbol_search
+            WHERE COALESCE(query, symbol) IS NOT NULL
+        ),
+        latest_missing AS (
+            SELECT s.normalized_symbol, max(s.observed_at) AS observed_at
+            FROM search_rows s
+            LEFT JOIN instrument_market_identity i ON i.symbol = s.normalized_symbol
+            WHERE i.symbol IS NULL
+            GROUP BY s.normalized_symbol
+        )
+        SELECT s.query, s.observed_at, s.symbol, s.description, s.instrument_type, s.exchange, s.country, s.currency, s.raw
+        FROM search_rows s
+        JOIN latest_missing latest
+          ON latest.normalized_symbol = s.normalized_symbol
+         AND latest.observed_at = s.observed_at
+        ORDER BY s.normalized_symbol
         """
     ).fetchall()
     grouped: dict[str, dict[str, Any]] = {}
     for query, observed_at, symbol, description, instrument_type, exchange, country, currency, raw in rows:
         normalized = str(query or symbol or "").strip().upper()
-        if not normalized or normalized in existing:
+        if ":" in normalized:
+            normalized = normalized.split(":")[-1]
+        if not normalized:
             continue
         group = grouped.setdefault(normalized, {"observed_at": observed_at, "rows": []})
         if observed_at != group["observed_at"]:
