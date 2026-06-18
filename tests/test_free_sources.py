@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -865,6 +866,96 @@ def test_symbol_search_rows_ignore_unqualified_rows_without_exchange(tmp_path: P
         rows = query_rows(con, "SELECT symbol, tradingview_symbol FROM instrument_market_identity WHERE symbol = 'BFLY'")
 
     assert rows == []
+
+
+def test_init_db_backfills_instrument_market_identity_from_existing_search_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "old-search.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE tradingview_symbol_search (
+                id TEXT PRIMARY KEY,
+                query TEXT,
+                observed_at TIMESTAMP,
+                symbol TEXT,
+                description TEXT,
+                instrument_type TEXT,
+                exchange TEXT,
+                country TEXT,
+                currency TEXT,
+                source TEXT,
+                raw JSON
+            )
+            """
+        )
+        rows = [
+            ("old-nyse", "BFLY", "2026-06-17T13:41:21Z", "BFLY", "Butterfly Network", "stock", "NYSE", "US", "USD", "tradingview", '{"symbol":"NYSE:BFLY","type":"stock","exchange":"NYSE"}'),
+            ("new-boats", "BFLY", "2026-06-18T13:41:21Z", "BFLY", "Butterfly Network", "stock", "BOATS", "US", "USD", "tradingview", '{"symbol":"BOATS:BFLY","type":"stock","exchange":"BOATS"}'),
+            ("new-nyse", "BFLY", "2026-06-18T13:41:21Z", "BFLY", "Butterfly Network", "stock", "NYSE", "US", "USD", "tradingview", '{"symbol":"NYSE:BFLY","type":"stock","exchange":"NYSE"}'),
+            ("new-cboe", "BFLY", "2026-06-18T13:41:21Z", "BFLY", "Iron Butterfly Index", "index", "CBOE", "US", "", "tradingview", '{"symbol":"CBOE:BFLY","type":"index","exchange":"CBOE"}'),
+        ]
+        con.executemany("INSERT INTO tradingview_symbol_search VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    finally:
+        con.close()
+
+    init_db(db_path)
+    with db(db_path) as con:
+        identity_rows = query_rows(con, "SELECT symbol, primary_exchange, tradingview_symbol, source FROM instrument_market_identity WHERE symbol = 'BFLY'")
+
+    assert identity_rows == [{"symbol": "BFLY", "primary_exchange": "NYSE", "tradingview_symbol": "NYSE:BFLY", "source": "tradingview_symbol_search_backfill"}]
+
+
+def test_init_db_does_not_clobber_existing_instrument_market_identity(tmp_path: Path) -> None:
+    db_path = tmp_path / "existing-identity.duckdb"
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE tradingview_symbol_search (
+                id TEXT PRIMARY KEY,
+                query TEXT,
+                observed_at TIMESTAMP,
+                symbol TEXT,
+                description TEXT,
+                instrument_type TEXT,
+                exchange TEXT,
+                country TEXT,
+                currency TEXT,
+                source TEXT,
+                raw JSON
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE instrument_market_identity (
+                symbol TEXT PRIMARY KEY,
+                primary_exchange TEXT,
+                tradingview_symbol TEXT,
+                provider TEXT,
+                observed_at TIMESTAMP,
+                source TEXT,
+                raw JSON
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO tradingview_symbol_search VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("search", "BFLY", "2026-06-18T13:41:21Z", "BFLY", "Butterfly Network", "stock", "NYSE", "US", "USD", "tradingview", '{"symbol":"NYSE:BFLY","type":"stock","exchange":"NYSE"}'),
+        )
+        con.execute(
+            "INSERT INTO instrument_market_identity VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("BFLY", "MANUAL", "MANUAL:BFLY", "manual", "2026-06-18T13:00:00Z", "test", "{}"),
+        )
+    finally:
+        con.close()
+
+    init_db(db_path)
+    with db(db_path) as con:
+        identity_rows = query_rows(con, "SELECT symbol, primary_exchange, tradingview_symbol, provider, source FROM instrument_market_identity WHERE symbol = 'BFLY'")
+
+    assert identity_rows == [{"symbol": "BFLY", "primary_exchange": "MANUAL", "tradingview_symbol": "MANUAL:BFLY", "provider": "manual", "source": "test"}]
 
 
 def test_options_provider_error_does_not_clear_existing_signal(tmp_path: Path, monkeypatch) -> None:
