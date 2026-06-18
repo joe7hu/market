@@ -18,6 +18,7 @@ from investment_panel.core.source_ingestion.live.common import (
     LiveFetchResult,
     extract_symbols,
     normalize_published,
+    record_live_fetch_failure,
     record_live_run,
 )
 from investment_panel.core.source_ingestion.utils import slug, stable_id
@@ -33,9 +34,9 @@ def fetch_substack(con: Any, runner: OpenCliRunner, url: str, *, known: set[str]
     try:
         payload = runner.read_json(["substack", "publication", url])
     except OpenCliRateLimitError as exc:
-        return _record(result, "rate_limited", exc, con, capability="substack", run_key=url, rate_limited=True)
+        return record_live_fetch_failure(con, result, exc, capability="substack", run_key=url, status="rate_limited", rate_limited=True)
     except Exception as exc:  # noqa: BLE001
-        return _record(result, "failed", exc, con, capability="substack", run_key=url)
+        return record_live_fetch_failure(con, result, exc, capability="substack", run_key=url)
 
     _ingest_posts(con, ensure_list(payload), result, source_id=source_id, source_url=url, known=known)
     record_live_run(con, result, capability="substack", run_key=url)
@@ -54,7 +55,7 @@ def fetch_web_rss(con: Any, runner: OpenCliRunner, url: str, *, known: set[str] 
     try:
         posts = _fetch_feed_posts(url)
     except Exception as exc:  # noqa: BLE001
-        return _record(result, "failed", exc, con, capability="rss", run_key=url)
+        return record_live_fetch_failure(con, result, exc, capability="rss", run_key=url)
     _ingest_posts(con, posts, result, source_id=source_id, source_url=url, known=known)
     record_live_run(con, result, capability="rss", run_key=url)
     return result
@@ -185,20 +186,3 @@ def _normalize_feed_date(value: str) -> str:
         return parsedate_to_datetime(value).isoformat()
     except (TypeError, ValueError):
         return value
-
-
-def _record(
-    result: LiveFetchResult,
-    status: str,
-    exc: Exception,
-    con: Any,
-    *,
-    capability: str,
-    run_key: Any,
-    rate_limited: bool = False,
-) -> LiveFetchResult:
-    result.status = status
-    result.error = str(exc)
-    result.rate_limited = rate_limited
-    record_live_run(con, result, capability=capability, run_key=run_key)
-    return result

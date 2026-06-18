@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 import time
 from typing import Any
@@ -328,6 +329,134 @@ def test_recommendation_safety_gates_and_paper_order_audit_trail(tmp_path: Path)
         orders = query_rows(con, "SELECT status, audit_trail FROM broker_paper_orders ORDER BY created_at")
         assert {row["status"] for row in orders} == {"staged", "blocked"}
         assert all("paper_order_stage_requested" in row["audit_trail"] for row in orders)
+
+
+def test_recommendations_block_paper_staging_without_usable_quote(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    now = datetime.now(UTC)
+    with db(config.database.duckdb_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO decision_queue
+            (symbol, as_of, rank, action_grade, decision_bucket, score,
+             discovery_score, decision_score, action_score, freshness_status,
+             quote_freshness, daily_analysis_freshness, filing_freshness,
+             thesis_freshness, overall_decision_freshness, source_cluster,
+             evidence_count, raw_source_rows, independent_source_count,
+             evidence_items_count, primary_evidence_count, inclusion_reasons,
+             blocking_gates, decision_basis, latest_quote, latest_quote_at,
+             latest_observed_at, next_event_at, catalyst_window, liquidity_grade,
+             portfolio_impact, invalidation)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "NOQUOTE",
+                now,
+                1,
+                "Act",
+                "Act",
+                95.0,
+                90.0,
+                95.0,
+                95.0,
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "arco_thesis",
+                3,
+                3,
+                2,
+                3,
+                1,
+                '["source backed setup"]',
+                "[]",
+                '{"summary":"NOQUOTE has an actionable setup but no quote.","source_counts":{"arco_thesis":1,"sepa":1},"evidence_count":3,"primary_evidence_count":1,"asset_class":"equity","freshness":{"quote_freshness":"fresh","daily_analysis_freshness":"fresh"}}',
+                None,
+                None,
+                now,
+                None,
+                "",
+                "A",
+                "{}",
+                "",
+            ],
+        )
+        build_and_persist_agent_recommendations(con, config.data_sources.brokers.policy)
+        rec = query_rows(con, "SELECT status, action, blockers, paper_order_preview FROM broker_agent_recommendations WHERE symbol = 'NOQUOTE'")[0]
+
+    assert rec["status"] == "blocked"
+    assert rec["action"] == "block"
+    assert "missing_usable_quote" in rec["blockers"]
+    assert json.loads(rec["paper_order_preview"])["limit_price"] is None
+
+
+def test_monitor_recommendations_without_quote_stay_monitor(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config = load_config(config_path)
+    init_db(config.database.duckdb_path)
+    now = datetime.now(UTC)
+    with db(config.database.duckdb_path, read_only=False) as con:
+        con.execute(
+            """
+            INSERT OR REPLACE INTO decision_queue
+            (symbol, as_of, rank, action_grade, decision_bucket, score,
+             discovery_score, decision_score, action_score, freshness_status,
+             quote_freshness, daily_analysis_freshness, filing_freshness,
+             thesis_freshness, overall_decision_freshness, source_cluster,
+             evidence_count, raw_source_rows, independent_source_count,
+             evidence_items_count, primary_evidence_count, inclusion_reasons,
+             blocking_gates, decision_basis, latest_quote, latest_quote_at,
+             latest_observed_at, next_event_at, catalyst_window, liquidity_grade,
+             portfolio_impact, invalidation)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                "WATCH",
+                now,
+                1,
+                "Watch",
+                "Watch",
+                55.0,
+                55.0,
+                55.0,
+                55.0,
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "fresh",
+                "arco_thesis",
+                3,
+                3,
+                2,
+                3,
+                1,
+                '["source backed watch item"]',
+                "[]",
+                '{"summary":"WATCH is a monitor-only setup.","source_counts":{"arco_thesis":1,"sepa":1},"evidence_count":3,"primary_evidence_count":1,"asset_class":"equity","freshness":{"quote_freshness":"fresh","daily_analysis_freshness":"fresh"}}',
+                None,
+                None,
+                now,
+                None,
+                "",
+                "A",
+                "{}",
+                "",
+            ],
+        )
+        build_and_persist_agent_recommendations(con, config.data_sources.brokers.policy)
+        rec = query_rows(con, "SELECT status, action, blockers, paper_order_preview FROM broker_agent_recommendations WHERE symbol = 'WATCH'")[0]
+
+    assert rec["status"] == "monitor"
+    assert rec["action"] == "monitor"
+    assert "missing_usable_quote" not in rec["blockers"]
+    assert json.loads(rec["paper_order_preview"])["limit_price"] is None
 
 
 def test_broker_api_routes_smoke(tmp_path: Path, monkeypatch: Any) -> None:

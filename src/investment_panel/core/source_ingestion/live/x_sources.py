@@ -18,6 +18,7 @@ from investment_panel.core.source_ingestion.live.common import (
     LiveFetchResult,
     existing_source_item_ids,
     extract_symbols,
+    record_live_fetch_failure,
     record_live_run,
 )
 from investment_panel.core.source_ingestion.raw_sources.constants import BIRDCLAW_TWEETS_SOURCE_ID
@@ -45,9 +46,9 @@ def fetch_x_list(
     try:
         payload = runner.read_json(["twitter", "list-tweets", str(list_id), "--limit", str(limit)])
     except OpenCliRateLimitError as exc:
-        return _rate_limited(result, exc, con, capability="x_list", run_key=list_id)
+        return record_live_fetch_failure(con, result, exc, capability="x_list", run_key=list_id, status="rate_limited", rate_limited=True)
     except Exception as exc:  # noqa: BLE001 - any fetch failure records a failed run
-        return _failed(result, exc, con, capability="x_list", run_key=list_id)
+        return record_live_fetch_failure(con, result, exc, capability="x_list", run_key=list_id)
 
     _ingest_tweets(con, ensure_list(payload), result, known=known)
     record_live_run(con, result, capability="x_list", run_key=list_id)
@@ -73,9 +74,9 @@ def fetch_x_account(
     try:
         payload = runner.read_json(["twitter", "tweets", clean_handle, "--limit", str(limit)])
     except OpenCliRateLimitError as exc:
-        return _rate_limited(result, exc, con, capability="x_account", run_key=clean_handle)
+        return record_live_fetch_failure(con, result, exc, capability="x_account", run_key=clean_handle, status="rate_limited", rate_limited=True)
     except Exception as exc:  # noqa: BLE001
-        return _failed(result, exc, con, capability="x_account", run_key=clean_handle)
+        return record_live_fetch_failure(con, result, exc, capability="x_account", run_key=clean_handle)
 
     _ingest_tweets(con, ensure_list(payload), result, known=known)
     record_live_run(con, result, capability="x_account", run_key=clean_handle)
@@ -158,18 +159,3 @@ def _tweet_text(tweet: dict[str, Any]) -> str:
     if isinstance(quoted, dict):
         parts.append(str(quoted.get("text") or ""))
     return " ".join(part for part in parts if part)
-
-
-def _rate_limited(result: LiveFetchResult, exc: Exception, con: Any, *, capability: str, run_key: Any) -> LiveFetchResult:
-    result.status = "rate_limited"
-    result.rate_limited = True
-    result.error = str(exc)
-    record_live_run(con, result, capability=capability, run_key=run_key)
-    return result
-
-
-def _failed(result: LiveFetchResult, exc: Exception, con: Any, *, capability: str, run_key: Any) -> LiveFetchResult:
-    result.status = "failed"
-    result.error = str(exc)
-    record_live_run(con, result, capability=capability, run_key=run_key)
-    return result

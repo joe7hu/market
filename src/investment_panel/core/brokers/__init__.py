@@ -10,7 +10,8 @@ from investment_panel.core.brokers.moomoo import MoomooProvider, moomoo_capabili
 from investment_panel.core.brokers.persistence import clear_broker_account_read_models, persist_broker_quote_rows, persist_broker_snapshot, record_provider_run, record_source_health
 from investment_panel.core.brokers.read_models import agent_recommendations, broker_accounts, broker_market_snapshots, broker_positions, broker_scanner_signals, broker_status_rows, decode_broker_row, effective_portfolio_rows, paper_orders
 from investment_panel.core.brokers.policy import manual_account_proxy, policy_checks
-from investment_panel.core.brokers.recommendations import build_agent_recommendations, build_and_persist_agent_recommendations, entry_trigger_for, recommendation_evidence, recommendation_portfolio_impact, risk_reward_for, setup_type_for, stage_paper_order, target_for
+from investment_panel.core.brokers.recommendation_decisions import entry_trigger_for, recommendation_evidence, recommendation_portfolio_impact, risk_reward_for, setup_type_for, target_for
+from investment_panel.core.brokers.recommendations import build_agent_recommendations, build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.brokers.service import broker_sync_symbols, run, update_broker_sources
 
 __all__ = [

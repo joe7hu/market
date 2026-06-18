@@ -17,6 +17,7 @@ from investment_panel.core.source_ingestion.live.common import (
     LiveFetchResult,
     extract_symbols,
     normalize_published,
+    record_live_fetch_failure,
     record_live_run,
 )
 from investment_panel.core.source_ingestion.utils import slug, stable_id
@@ -44,16 +45,9 @@ def fetch_news(con: Any, runner: OpenCliRunner, provider: str, *, limit: int = 3
     try:
         payload = runner.read_json(command)
     except OpenCliRateLimitError as exc:
-        result.status = "rate_limited"
-        result.rate_limited = True
-        result.error = str(exc)
-        record_live_run(con, result, capability="news", run_key=provider)
-        return result
+        return record_live_fetch_failure(con, result, exc, capability="news", run_key=provider, status="rate_limited", rate_limited=True)
     except Exception as exc:  # noqa: BLE001
-        result.status = "failed"
-        result.error = str(exc)
-        record_live_run(con, result, capability="news", run_key=provider)
-        return result
+        return record_live_fetch_failure(con, result, exc, capability="news", run_key=provider)
 
     rows = ensure_list(payload)
     news_rows = _to_news_rows(rows, provider, known)

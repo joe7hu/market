@@ -117,6 +117,25 @@ def record_live_run(con: Any, result: LiveFetchResult, *, capability: str, run_k
     )
 
 
+def record_live_fetch_failure(
+    con: Any,
+    result: LiveFetchResult,
+    exc: Exception,
+    *,
+    capability: str,
+    run_key: Any,
+    status: str = "failed",
+    rate_limited: bool = False,
+) -> LiveFetchResult:
+    """Mark and persist a failed live fetch."""
+
+    result.status = status
+    result.error = str(exc)
+    result.rate_limited = rate_limited
+    record_live_run(con, result, capability=capability, run_key=run_key)
+    return result
+
+
 def existing_source_item_ids(con: Any, item_ids: list[str]) -> set[str]:
     """Return the subset of item_ids already present in source_items (dedupe)."""
 

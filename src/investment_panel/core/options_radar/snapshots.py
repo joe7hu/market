@@ -5,12 +5,13 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from investment_panel.core.db import (json_dumps, query_rows)
+from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.coerce import (_coalesce_number, _days_to_expiration, _integer, _iso, _json, _normalize_symbol, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_OPTION_RISK_FREE_RATE)
 from investment_panel.core.options_radar.dbutil import (_contract_id, _source_filter, _symbol_filter)
 from investment_panel.core.options_radar.greeks import (_option_model_dte, _option_model_iv, _resolve_option_greeks)
 from investment_panel.core.options_radar.indicators import (_premium_mid, _spread_pct)
+from investment_panel.core.options_radar.snapshot_rows import insert_option_snapshot_row
 
 def persist_option_snapshots(
     con: Any,
@@ -140,38 +141,32 @@ def persist_option_snapshots(
                     "effective_iv": _option_model_iv(iv),
                     "effective_dte": _option_model_dte(dte),
                 }
-        con.execute(
-            """
-            INSERT OR REPLACE INTO option_snapshot
-            (snapshot_time, ticker, underlying_price, expiration, strike, option_type, bid, ask, mid,
-             last, volume, open_interest, iv, delta, gamma, theta, vega, dte, spread_pct,
-             data_source, contract_id, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                snapshot_at,
-                ticker,
-                underlying_price,
-                expiration,
-                strike,
-                option_type,
-                bid,
-                ask,
-                mid,
-                _coalesce_number(raw, "last", "last_price", "close"),
-                _coalesce_number(raw, "volume", "vol"),
-                _coalesce_number(raw, "open_interest", "openInterest", "oi"),
-                iv,
-                greek_resolution["delta"],
-                greek_resolution["gamma"],
-                greek_resolution["theta"],
-                greek_resolution["vega"],
-                dte,
-                _spread_pct(bid, ask, mid),
-                data_source,
-                contract_id,
-                json_dumps(raw),
-            ],
+        insert_option_snapshot_row(
+            con,
+            {
+                "snapshot_time": snapshot_at,
+                "ticker": ticker,
+                "underlying_price": underlying_price,
+                "expiration": expiration,
+                "strike": strike,
+                "option_type": option_type,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+                "last": _coalesce_number(raw, "last", "last_price", "close"),
+                "volume": _coalesce_number(raw, "volume", "vol"),
+                "open_interest": _coalesce_number(raw, "open_interest", "openInterest", "oi"),
+                "iv": iv,
+                "delta": greek_resolution["delta"],
+                "gamma": greek_resolution["gamma"],
+                "theta": greek_resolution["theta"],
+                "vega": greek_resolution["vega"],
+                "dte": dte,
+                "spread_pct": _spread_pct(bid, ask, mid),
+                "data_source": data_source,
+                "contract_id": contract_id,
+                "raw": raw,
+            },
         )
         count += 1
     return count
@@ -304,38 +299,6 @@ def persist_spread_snapshots(
             spread = build_spread_snapshot_row(long_leg, short_leg)
             if spread is None:
                 continue
-            con.execute(
-                """
-                INSERT OR REPLACE INTO option_snapshot
-                (snapshot_time, ticker, underlying_price, expiration, strike, option_type, bid, ask, mid,
-                 last, volume, open_interest, iv, delta, gamma, theta, vega, dte, spread_pct,
-                 data_source, contract_id, raw)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    spread["snapshot_time"],
-                    spread["ticker"],
-                    spread["underlying_price"],
-                    spread["expiration"],
-                    spread["strike"],
-                    spread["option_type"],
-                    spread["bid"],
-                    spread["ask"],
-                    spread["mid"],
-                    spread["last"],
-                    spread["volume"],
-                    spread["open_interest"],
-                    spread["iv"],
-                    spread["delta"],
-                    spread["gamma"],
-                    spread["theta"],
-                    spread["vega"],
-                    spread["dte"],
-                    spread["spread_pct"],
-                    spread["data_source"],
-                    spread["contract_id"],
-                    json_dumps(spread["raw"]),
-                ],
-            )
+            insert_option_snapshot_row(con, spread)
             count += 1
     return count
