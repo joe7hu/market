@@ -314,3 +314,94 @@ def test_opportunity_refresh_preserves_last_good_when_latest_builds_none(tmp_pat
 
     assert built == 0  # nothing fresh built
     assert any(r["opportunity_id"] == "opp-1" for r in survivors)  # last-good preserved, not wiped
+
+
+def test_explicit_opportunity_snapshot_refresh_preserves_other_snapshots(tmp_path, monkeypatch) -> None:
+    import importlib
+
+    from investment_panel.core.db import db, init_db, query_rows
+    from investment_panel.core.options_radar import refresh_option_radar_opportunities
+
+    opportunities_module = importlib.import_module("investment_panel.core.options_radar.opportunities")
+
+    def fake_build_opportunity(con, ticker, candidate_rows, strategy_version, *, cohort_priors=None):
+        snapshot_time = candidate_rows[0]["snapshot_time"]
+        snapshot_id = snapshot_time.isoformat() if hasattr(snapshot_time, "isoformat") else str(snapshot_time)
+        return {
+            "opportunity_id": f"rebuilt-{ticker}-{snapshot_id}",
+            "snapshot_time": snapshot_id,
+            "ticker": ticker,
+            "strategy_version": strategy_version,
+            "tier": "Research",
+            "primary_event_id": candidate_rows[0]["event_id"],
+            "primary_contract_id": candidate_rows[0]["contract_id"],
+            "primary_state": "SETUP",
+            "conviction_score": 80.0,
+            "asymmetry_score": 75.0,
+            "entry_quality_score": 70.0,
+            "catalyst_score": 65.0,
+            "evidence_score": 60.0,
+            "regime_score": 55.0,
+            "survivability_score": 50.0,
+            "learning_score": 45.0,
+            "required_move_pct": 0.5,
+            "premium_mid": 1.0,
+            "premium_fill_assumption": 1.05,
+            "required_10x_price": 125.0,
+            "buy_under": 1.2,
+            "entry_zone": "test",
+            "max_loss_assumption": 1.05,
+            "position_sizing_band": "test",
+            "data_contract_status": "ready",
+            "data_contract_failures": [],
+            "data_contract_satisfied": [],
+            "service_repair_jobs": [],
+            "service_repair_summary": "",
+            "why_now": "test",
+            "kill_switch": "test",
+            "top_reasons": [],
+            "blockers": [],
+            "quality_status": "ok",
+            "quality_flags": [],
+            "evidence_refs": [],
+            "alternative_contracts": [],
+            "raw": {},
+        }
+
+    monkeypatch.setattr(opportunities_module, "load_cohort_priors", lambda con, strategy_version: {})
+    monkeypatch.setattr(opportunities_module, "build_option_radar_opportunity", fake_build_opportunity)
+
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier, primary_state)
+            VALUES
+                ('old-display-nvda', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', ?, 'Watch', 'WATCH'),
+                ('newer-amd', TIMESTAMP '2026-06-10 15:00:00', 'AMD', ?, 'Research', 'SETUP')
+            """,
+            [DEFAULT_STRATEGY_VERSION, DEFAULT_STRATEGY_VERSION],
+        )
+        con.execute(
+            """
+            INSERT INTO candidate_event
+                (event_id, snapshot_time, ticker, contract_id, strategy_version, state)
+            VALUES ('ev-nvda', TIMESTAMP '2026-06-09 15:00:00', 'NVDA', 'OPRA:NVDA270918C150', ?, 'SETUP')
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+
+        built = refresh_option_radar_opportunities(
+            con,
+            strategy_version=DEFAULT_STRATEGY_VERSION,
+            read_snapshot="2026-06-09T15:00:00Z",
+        )
+        opportunities = query_rows(con, "SELECT opportunity_id, ticker FROM option_radar_opportunity ORDER BY ticker, opportunity_id")
+
+    assert built == 1
+    assert opportunities == [
+        {"opportunity_id": "newer-amd", "ticker": "AMD"},
+        {"opportunity_id": "rebuilt-NVDA-2026-06-09T15:00:00", "ticker": "NVDA"},
+    ]

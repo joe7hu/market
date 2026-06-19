@@ -22,11 +22,16 @@ def refresh_option_radar_opportunities(
     symbols: list[str] | None = None,
     *,
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    read_snapshot: str | None = None,
 ) -> int:
     """Materialize the brutally selective first-screen opportunity read model."""
 
-    symbol_filter = _symbol_filter(symbols, table_alias="ce", column="ticker")
-    read_snapshot = _radar_read_snapshot_time(con, strategy_version, symbols)
+    clean_symbols = [_normalize_symbol(symbol) for symbol in symbols or [] if symbol]
+    if symbols and not clean_symbols:
+        return 0
+    symbol_filter = _symbol_filter(clean_symbols if symbols else None, table_alias="ce", column="ticker")
+    explicit_read_snapshot = read_snapshot is not None
+    read_snapshot = read_snapshot or _radar_read_snapshot_time(con, strategy_version, symbols)
     if read_snapshot is None:
         return 0
     rows = query_rows(
@@ -148,15 +153,21 @@ def refresh_option_radar_opportunities(
     if not built:
         return 0
 
-    if symbols:
-        clean_symbols = [_normalize_symbol(symbol) for symbol in symbols if symbol]
+    delete_conditions = ["strategy_version = ?"]
+    delete_params: list[Any] = [strategy_version]
+    if explicit_read_snapshot:
+        delete_conditions.append("snapshot_time = TRY_CAST(? AS TIMESTAMP)")
+        delete_params.append(read_snapshot)
+
+    if clean_symbols:
         placeholders = ", ".join("?" for _ in clean_symbols)
-        con.execute(
-            f"DELETE FROM option_radar_opportunity WHERE strategy_version = ? AND ticker IN ({placeholders})",
-            [strategy_version, *clean_symbols],
-        )
-    else:
-        con.execute("DELETE FROM option_radar_opportunity WHERE strategy_version = ?", [strategy_version])
+        delete_conditions.append(f"ticker IN ({placeholders})")
+        delete_params.extend(clean_symbols)
+
+    con.execute(
+        f"DELETE FROM option_radar_opportunity WHERE {' AND '.join(delete_conditions)}",
+        delete_params,
+    )
 
     count = 0
     for opportunity in built:
@@ -239,7 +250,7 @@ def build_option_radar_opportunity(
     details = [detail for detail in details if detail]
     if not details:
         return None
-    details.sort(key=lambda item: (tier_rank(str(item["tier"])), -float(item["conviction_score"]), _number(item.get("required_move_pct")) or 99.0))
+    details = _rank_opportunity_details(details)
     primary = details[0]
     snapshot_time = _iso(primary["snapshot_time"])
     alternatives = [_compact_opportunity_contract(detail) for detail in details[1:6]]
@@ -291,8 +302,99 @@ def build_option_radar_opportunity(
             "data_contract_failures": primary["data_contract_failures"],
             "service_repair_jobs": primary["service_repair_jobs"],
             "primary_detail": _compact_opportunity_contract(primary),
+            "selection_policy": "money_objective_primary",
+            "money_objective_score": primary["money_objective_score"],
         },
     }
+
+
+def _rank_opportunity_details(details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank contracts by expected money outcome, not by the expiry bucket they happen
+    to occupy.
+
+    Expiry still matters through the EV engine, survivability, spreads, and liquidity,
+    but no calendar date gets a direct preference. Data-contract health remains the
+    first guardrail because an untradeable quote should not beat a usable one just
+    because its model output is flashy.
+    """
+
+    ranked: list[dict[str, Any]] = []
+    for detail in details:
+        enriched = dict(detail)
+        enriched["money_objective_score"] = _money_objective_score(enriched)
+        ranked.append(enriched)
+    ranked.sort(
+        key=lambda item: (
+            _readiness_rank(item),
+            -float(item["money_objective_score"]),
+            tier_rank(str(item["tier"])),
+            -float(item["conviction_score"]),
+            _number(item.get("required_move_pct")) or 99.0,
+            str(item.get("contract_id") or ""),
+        )
+    )
+    return ranked
+
+
+def _money_objective_score(detail: dict[str, Any]) -> float:
+    """0-100 score for the contract most likely to pay us.
+
+    This deliberately uses EV and hit-probabilities as the center of gravity,
+    with entry/liquidity/survivability as execution guardrails. DTE is not scored
+    directly here; it only affects the EV model and survivability component.
+    """
+
+    raw = detail.get("raw") if isinstance(detail.get("raw"), dict) else {}
+    ev = raw.get("ev") if isinstance(raw.get("ev"), dict) else {}
+    ev_multiple = _number(ev.get("ev_multiple"))
+    p_2x = _number(ev.get("p_2x"))
+    p_5x = _number(ev.get("p_5x"))
+    p_10x = _number(ev.get("p_10x"))
+    spread = _number(raw.get("spread_pct"))
+    liquidity = _liquidity_component(raw)
+
+    ev_edge = 45.0 if ev_multiple is None else max(0.0, min(100.0, 35.0 + (ev_multiple - 1.0) * 32.5))
+    hit_profile = (
+        (p_2x if p_2x is not None else 0.0) * 45.0
+        + (p_5x if p_5x is not None else 0.0) * 90.0
+        + (p_10x if p_10x is not None else 0.0) * 140.0
+    )
+    hit_score = max(0.0, min(100.0, hit_profile))
+
+    entry = _number(detail.get("entry_quality_score")) or 0.0
+    survivability = _number(detail.get("survivability_score")) or 0.0
+    conviction = _number(detail.get("conviction_score")) or 0.0
+    spread_score = 45.0 if spread is None else max(0.0, min(100.0, 100.0 - spread * 360.0))
+    state_bonus = {"FIRE": 6.0, "SETUP": 2.0, "WATCH": -10.0}.get(str(detail.get("state") or "").upper(), -4.0)
+
+    score = (
+        ev_edge * 0.30
+        + hit_score * 0.25
+        + entry * 0.15
+        + liquidity * 0.10
+        + survivability * 0.10
+        + conviction * 0.05
+        + spread_score * 0.05
+        + state_bonus
+    )
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+def _readiness_rank(detail: dict[str, Any]) -> int:
+    status = str(detail.get("data_contract_status") or "")
+    if status == DATA_CONTRACT_READY:
+        return 0
+    if str(detail.get("tier") or "") != SERVICE_BUG_TIER:
+        return 1
+    return 2
+
+
+def _liquidity_component(raw: dict[str, Any]) -> float:
+    open_interest = _number(raw.get("open_interest"))
+    volume = _number(raw.get("volume"))
+    oi_score = 45.0 if open_interest is None else max(0.0, min(100.0, open_interest / 10.0))
+    volume_score = 35.0 if volume is None else max(0.0, min(100.0, volume * 4.0))
+    return oi_score * 0.70 + volume_score * 0.30
 
 
 def _snapshot_premium_coverage(con: Any, snapshot_time: str, *, symbols: list[str] | None = None) -> float | None:

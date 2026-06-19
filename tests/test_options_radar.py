@@ -15,6 +15,7 @@ from investment_panel.core.options_radar import (
     refresh_option_radar_opportunities,
     refresh_options_radar,
 )
+from investment_panel.core.options_radar.opportunities import _rank_opportunity_details
 
 
 def test_options_radar_persists_fire_candidate_and_shadow_trade(tmp_path) -> None:
@@ -202,6 +203,59 @@ def test_option_radar_opportunity_groups_one_primary_contract_and_blocks_without
     assert "thesis_synthesis_sync_gap" in failures
     assert repair_jobs == ["update_free_sources", "update_arco_data", "run_option_agents", "refresh_options_radar"]
     assert len(alternatives) == 1
+
+
+def test_opportunity_primary_selection_optimizes_money_not_nearest_expiry() -> None:
+    near = opportunity_detail(
+        "near",
+        expiration="2027-06-17",
+        dte=365,
+        ev_multiple=1.25,
+        p_2x=0.20,
+        p_5x=0.04,
+        p_10x=0.01,
+        conviction_score=82,
+    )
+    farther = opportunity_detail(
+        "farther",
+        expiration="2028-01-21",
+        dte=583,
+        ev_multiple=2.80,
+        p_2x=0.48,
+        p_5x=0.18,
+        p_10x=0.06,
+        conviction_score=76,
+    )
+
+    ranked = _rank_opportunity_details([near, farther])
+
+    assert ranked[0]["contract_id"] == "farther"
+    assert ranked[0]["money_objective_score"] > ranked[1]["money_objective_score"]
+
+
+def test_opportunity_primary_selection_keeps_data_readiness_as_guardrail() -> None:
+    broken_but_flashy = opportunity_detail(
+        "broken",
+        expiration="2028-01-21",
+        dte=583,
+        ev_multiple=4.0,
+        p_2x=0.70,
+        p_5x=0.35,
+        p_10x=0.15,
+        data_contract_status="repair_required",
+        tier="Service Bug",
+    )
+    usable = opportunity_detail(
+        "usable",
+        expiration="2027-06-17",
+        dte=365,
+        ev_multiple=1.20,
+        p_2x=0.18,
+        p_5x=0.03,
+        p_10x=0.0,
+    )
+
+    assert _rank_opportunity_details([broken_but_flashy, usable])[0]["contract_id"] == "usable"
 
 
 def test_options_radar_skips_degraded_snapshot_instead_of_collapsing(tmp_path) -> None:
@@ -1627,6 +1681,49 @@ def option_row(
         "theta": theta,
         "vega": vega,
         "symbol": symbol,
+    }
+
+
+def opportunity_detail(
+    contract_id: str,
+    *,
+    expiration: str,
+    dte: int,
+    ev_multiple: float,
+    p_2x: float,
+    p_5x: float,
+    p_10x: float,
+    conviction_score: float = 75.0,
+    data_contract_status: str = "ready",
+    tier: str = "Research",
+) -> dict[str, object]:
+    return {
+        "event_id": f"event-{contract_id}",
+        "snapshot_time": "2026-06-17T17:50:06",
+        "ticker": "TEST",
+        "contract_id": contract_id,
+        "state": "SETUP",
+        "tier": tier,
+        "conviction_score": conviction_score,
+        "entry_quality_score": 78.0,
+        "survivability_score": 78.0,
+        "required_move_pct": 1.5,
+        "premium_mid": 5.0,
+        "buy_under": 8.0,
+        "data_contract_status": data_contract_status,
+        "raw": {
+            "expiration": expiration,
+            "dte": dte,
+            "spread_pct": 0.08,
+            "open_interest": 600,
+            "volume": 20,
+            "ev": {
+                "ev_multiple": ev_multiple,
+                "p_2x": p_2x,
+                "p_5x": p_5x,
+                "p_10x": p_10x,
+            },
+        },
     }
 
 

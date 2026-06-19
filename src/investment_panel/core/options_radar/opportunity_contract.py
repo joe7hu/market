@@ -321,6 +321,7 @@ def _compact_opportunity_contract(detail: dict[str, Any]) -> dict[str, Any]:
         "state": detail.get("state"),
         "tier": detail.get("tier"),
         "conviction_score": detail.get("conviction_score"),
+        "money_objective_score": detail.get("money_objective_score"),
         "required_move_pct": detail.get("required_move_pct"),
         "premium_mid": detail.get("premium_mid"),
         "buy_under": detail.get("buy_under"),

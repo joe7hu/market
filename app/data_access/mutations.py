@@ -116,8 +116,7 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     from investment_panel.analysis.valuation import store_valuation_models
     from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import refresh_decision_read_models
-    from investment_panel.core.free_sources import update_yfinance_sources
-    from investment_panel.core.free_sources.tradingview_sources import update_tradingview_sources
+    from investment_panel.core.free_sources import update_tradingview_sources, update_yfinance_sources
     from investment_panel.core.prices import fetch_prices, upsert_prices
     from investment_panel.core.scoring import score_and_store
     from investment_panel.core.technicals import compute_and_store

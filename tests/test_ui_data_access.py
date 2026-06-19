@@ -829,7 +829,7 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         update_yfinance_sources,
     )
     monkeypatch.setattr(
-        "investment_panel.core.free_sources.tradingview_sources.update_tradingview_sources",
+        "investment_panel.core.free_sources.update_tradingview_sources",
         update_tradingview_sources,
     )
 
