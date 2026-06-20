@@ -22,7 +22,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 
-from investment_panel.core.free_sources import RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_LOTTERY_CALL_STRIKE_OTM_LO
+from investment_panel.core.option_scan import RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_LOTTERY_CALL_STRIKE_OTM_LO
 
 # IBKR tick types we read. Live model greeks arrive as tickType 13; delayed model
 # greeks as 83. Open interest for a contract arrives as 27 (call) / 28 (put).

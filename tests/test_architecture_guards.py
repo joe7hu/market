@@ -90,15 +90,6 @@ FACADE_PACKAGES = [
 # are grandfathered. (importing_file, imported_module) -> reason / fix direction.
 # Shrink this set over time; do not add to it without a real reason.
 FACADE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
-    # Re-export gaps: clean fix is to expose these from core/panel/__init__.py
-    # and switch the import to the facade.
-    ("app/panel_contracts.py", "investment_panel.core.panel.contracts"):
-        "thin re-export shim (import *) — fold into the panel facade",
-    # Layering smells: worth a real fix, not just a re-export.
-    ("src/investment_panel/core/robinhood_options/collector.py", "investment_panel.core.free_sources.coerce"):
-        "cross-package internal import — prefer core/coercion.py",
-    ("src/investment_panel/core/robinhood_options/collector.py", "investment_panel.core.free_sources.constants"):
-        "cross-package internal import — move shared RADAR_*_DTE constants to a shared home",
 }
 
 

@@ -5,8 +5,18 @@ from typing import Any
 from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.core.decision import effective_watchlist
+from investment_panel.core.option_scan import (
+    RADAR_BASELINE_CALL_STRIKE_OTM_HI,
+    RADAR_CALL_STRIKE_OTM_HI,
+    RADAR_CALL_STRIKE_OTM_LO,
+    RADAR_LOTTERY_CALL_STRIKE_OTM_LO,
+    RADAR_MAX_DTE,
+    RADAR_MAX_EXPIRIES_PER_SYMBOL,
+    RADAR_MIN_DTE,
+    RADAR_STRIKES_AROUND_SPOT,
+)
 
-from investment_panel.core.free_sources.constants import OPTION_SCAN_LIMIT, RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_MAX_DTE, RADAR_MAX_EXPIRIES_PER_SYMBOL, RADAR_MIN_DTE, RADAR_LOTTERY_CALL_STRIKE_OTM_LO, RADAR_STRIKES_AROUND_SPOT
+from investment_panel.core.free_sources.constants import OPTION_SCAN_LIMIT
 from investment_panel.core.free_sources.coerce import _dte_from_expiry, _radar_expiry_targets, _unique_strings, as_float, as_int, normalize_symbol, unique_symbols
 
 

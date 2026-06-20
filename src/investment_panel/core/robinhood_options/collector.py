@@ -15,9 +15,10 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from investment_panel.core.free_sources.coerce import as_float, as_int
-from investment_panel.core.free_sources.constants import RADAR_MAX_DTE, RADAR_MIN_DTE
+from investment_panel.core.coercion import to_finite_float as as_float
+from investment_panel.core.coercion import to_int_or_none as as_int
 from investment_panel.core.ibkr_options import select_leap_call_strikes, select_leap_put_strikes
+from investment_panel.core.option_scan import RADAR_MAX_DTE, RADAR_MIN_DTE
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 
 
