@@ -1,8 +1,8 @@
 """API payload builders for panel views."""
 
 from __future__ import annotations
-import os
 from typing import Any
+from app.scheduler import scheduler_status
 from app.panel_contracts import panel_contract_payload as contract_panel_payload
 from investment_panel.core.panel import (
     build_ticker_dossier,
@@ -62,16 +62,7 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
             "deterministic_cadence": "hourly",
             "agent_cadence": "daily_premarket",
         },
-        "scheduler": {
-            "agent_refresh_seconds": os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0"),
-            "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
-            "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
-            "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
-            "social_refresh_seconds": os.environ.get("MARKET_SOCIAL_REFRESH_SECONDS", "1800"),
-            "research_refresh_seconds": os.environ.get("MARKET_RESEARCH_REFRESH_SECONDS", "3600"),
-            "market_environment_refresh_seconds": os.environ.get("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600"),
-            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
-        },
+        "scheduler": scheduler_status(config),
     }
 
 

@@ -43,6 +43,7 @@ def test_frontend_snapshot_keys_cover_backend_panel_manifest() -> None:
     api_panel_data = Path("frontend/src/apiPanelData.ts").read_text(encoding="utf-8")
     assert "const TABLE_KEYS" not in api_panel_data
     assert "function tableKeyFor(apiKey: string)" in api_panel_data
+    assert "panelDataKeys" not in api_panel_data
     assert "ticker_memos: \"memos\"" in api_panel_data
     overrides = {
         table_name: panel_contracts.frontend_key_for_table(table_name)

@@ -40,8 +40,8 @@ export function WatchlistPage({
     sort: "rank",
   });
   const viewModel = useMemo(() => buildWatchlistViewModel(data, filters, {}), [data, filters]);
-  const loadedUnwatchedCount = data.watchlistUnwatched.rows?.length ?? 0;
-  const totalUnwatchedCount = data.watchlistUnwatched.count ?? loadedUnwatchedCount;
+  const loadedUnwatchedCount = data.watchlistUnwatched?.rows?.length ?? 0;
+  const totalUnwatchedCount = data.watchlistUnwatched?.count ?? loadedUnwatchedCount;
   const canLoadMoreUnwatched = loadedUnwatchedCount < totalUnwatchedCount;
 
   const updateFilter = <K extends keyof WatchlistFilters>(key: K, value: WatchlistFilters[K]) => setFilters((current) => ({ ...current, [key]: value }));

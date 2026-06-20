@@ -98,6 +98,21 @@ def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
     assert intervals["run_option_agents"] == 86400  # daily by default (Phase 2c)
 
 
+def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.delenv("MARKET_AGENT_REFRESH_SECONDS", raising=False)
+    status = scheduler.scheduler_status(
+        {"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 123}}}
+    )
+
+    assert status["agent_refresh_seconds"] == "123"
+    assert status["radar_refresh_seconds"] == "900"
+    assert status["source_refresh_seconds"] == "3600"
+    assert status["learning_refresh_seconds"] == "21600"
+    assert status["market_environment_refresh_seconds"] == "3600"
+    assert status["jobs"]["run_option_agents"] == 123
+
+
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_AGENT_REFRESH_SECONDS", "0")

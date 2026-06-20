@@ -218,8 +218,8 @@ export function validationHistoryForThesis(thesis: RowRecord | undefined, byThes
   return legacy ? [legacy] : [];
 }
 
-export function rows(table: TablePayload): RowRecord[] {
-  return table.rows ?? [];
+export function rows(table: TablePayload | undefined): RowRecord[] {
+  return table?.rows ?? [];
 }
 
 export const OPPORTUNITY_STATES = new Set(["FIRE", "SETUP", "WATCH", "HOLD", "TRIM"]);
@@ -450,4 +450,3 @@ export function oldestDate(items: RowRecord[], key: string): string {
   }
   return oldest;
 }
-

@@ -56,7 +56,7 @@ def scheduler_enabled() -> bool:
     return os.environ.get("MARKET_SCHEDULER_ENABLED", "1").strip().lower() not in _TRUTHY_OFF
 
 
-def job_intervals() -> dict[str, int]:
+def job_intervals(config: Any | None = None) -> dict[str, int]:
     """Job name -> minimum seconds between runs.
 
     The deterministic refresh is the continuous loop (cheap, in-process, no DB
@@ -103,11 +103,9 @@ def job_intervals() -> dict[str, int]:
     agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 86400, allow_zero=True)
     auto_run_enabled = True
     try:
-        from investment_panel.core.config import load_config
-
-        option_agent = load_config().agents.option_agent
-        auto_run_enabled = bool(option_agent.enabled)
-        configured = int(option_agent.auto_run_seconds or 0)
+        option_agent = _option_agent_config(config)
+        auto_run_enabled = bool(_config_value(option_agent, "enabled", True))
+        configured = int(_config_value(option_agent, "auto_run_seconds", 0) or 0)
         if configured > 0:
             agent_seconds = configured
     except Exception:  # noqa: BLE001 - config is best-effort; fall back to the env value
@@ -128,6 +126,48 @@ def job_intervals() -> dict[str, int]:
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
     return intervals
+
+
+def scheduler_status(config: Any | None = None) -> dict[str, Any]:
+    """Expose the actual scheduler plan in the shape the UI already consumes."""
+
+    intervals = job_intervals(config)
+    option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
+    return {
+        "enabled": os.environ.get("MARKET_SCHEDULER_ENABLED", "1"),
+        "jobs": intervals,
+        "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
+        "radar_refresh_seconds": str(_first_interval(intervals, "refresh_options_radar_signal")),
+        "source_refresh_seconds": str(_first_interval(intervals, "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
+        "learning_refresh_seconds": str(intervals.get("refresh_options_radar_deterministic", 0)),
+        "social_refresh_seconds": str(intervals.get("update_social_sources", 0)),
+        "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
+        "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
+        "radar_option_source": option_source,
+    }
+
+
+def _first_interval(intervals: dict[str, int], *prefixes: str) -> int:
+    for prefix in prefixes:
+        for job, seconds in intervals.items():
+            if job.startswith(prefix):
+                return seconds
+    return 0
+
+
+def _option_agent_config(config: Any | None) -> Any:
+    if config is None:
+        from investment_panel.core.config import load_config
+
+        config = load_config()
+    agents = _config_value(config, "agents", {})
+    return _config_value(agents, "option_agent", {})
+
+
+def _config_value(source: Any, key: str, default: Any = None) -> Any:
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
 
 
 async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None:

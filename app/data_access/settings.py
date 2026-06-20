@@ -6,6 +6,7 @@ import re
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
 from app.data_access.payloads import _runtime_metadata, status_payload
 from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
@@ -209,17 +210,7 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "config": jsonable(agents),
         "runtime": _runtime_metadata(config).get("agents", {}),
-        "scheduler": {
-            "enabled": os.environ.get("MARKET_SCHEDULER_ENABLED", "1"),
-            "agent_refresh_seconds": os.environ.get("MARKET_AGENT_REFRESH_SECONDS", "0"),
-            "radar_refresh_seconds": os.environ.get("MARKET_RADAR_REFRESH_SECONDS", "900"),
-            "source_refresh_seconds": os.environ.get("MARKET_SOURCE_REFRESH_SECONDS", "3600"),
-            "learning_refresh_seconds": os.environ.get("MARKET_LEARNING_REFRESH_SECONDS", "21600"),
-            "social_refresh_seconds": os.environ.get("MARKET_SOCIAL_REFRESH_SECONDS", "1800"),
-            "research_refresh_seconds": os.environ.get("MARKET_RESEARCH_REFRESH_SECONDS", "3600"),
-            "market_environment_refresh_seconds": os.environ.get("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600"),
-            "radar_option_source": os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood"),
-        },
+        "scheduler": scheduler_status(config),
         "model_overrides": {
             "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),
             "codex_reasoning_effort": os.environ.get("MARKET_CODEX_REASONING_EFFORT", ""),

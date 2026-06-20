@@ -107,7 +107,7 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const visibleRows = rowsWithSymbols.filter((row) => filterRow(row, filters));
   const watchedRows = sortRows(visibleRows.filter((row) => isWatched(row)), filters.sort);
   const unwatchedRows = sortRows(visibleRows.filter((row) => !isWatched(row)), filters.sort);
-  const totalUnwatchedCount = data.watchlistUnwatched.count ?? counts.unwatched;
+  const totalUnwatchedCount = data.watchlistUnwatched?.count ?? counts.unwatched;
   const displayCounts = filtersAreActive(filters) ? counts : { ...counts, unwatched: Math.max(counts.unwatched, totalUnwatchedCount) };
 
   return {

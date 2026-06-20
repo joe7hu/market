@@ -30,9 +30,6 @@ SIZE_ALLOWLIST = {
     "src/investment_panel/core/schema.py": (
         "Single DDL string by design — see docs/schema-ddl-architecture-decision.md"
     ),
-    "src/investment_panel/core/source_ingestion/canonical.py": (
-        "769 lines, marginally over — split candidate, not a true monolith"
-    ),
 }
 
 
