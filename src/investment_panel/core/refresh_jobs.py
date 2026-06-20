@@ -24,6 +24,7 @@ from investment_panel.jobs import (
     update_free_sources,
     update_ibkr_options,
     update_market_environment,
+    update_preopen_daily_brief,
     update_research_sources,
     update_robinhood_options,
     update_social_sources,
@@ -42,6 +43,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_arco_data": lambda config_path: update_arco_data.run(config_path),
     "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
     "update_market_environment": lambda config_path: update_market_environment.run(config_path),
+    "update_preopen_daily_brief": lambda config_path: update_preopen_daily_brief.run(config_path),
     # Radar-focused source pull for the continuous scheduler: TradingView option
     # chains/quotes plus yfinance option liquidity (open interest / volume), which
     # the radar data contract requires for trade-readiness. The equity-price

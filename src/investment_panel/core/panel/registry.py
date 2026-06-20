@@ -20,6 +20,7 @@ from investment_panel.core import brokers
 from investment_panel.core.daily_brief import daily_brief
 from investment_panel.core.decision import manual_watchlist_rows
 from investment_panel.core.portfolio_intelligence import correlation_edges, exposure_clusters, portfolio_risk_cards, review_actions
+from investment_panel.core.preopen_brief import preopen_daily_brief_rows
 from investment_panel.core.signals import signal_rows
 from investment_panel.core.sources import source_item_rows, source_registry_rows, source_run_rows, source_ticker_ranking_rows, ticker_source_signal_rows
 from investment_panel.core.thesis_monitor import thesis_monitor_rows
@@ -132,6 +133,7 @@ READ_MODELS: dict[str, ReadLoader] = {
     "agent_recommendations": lambda ctx: brokers.agent_recommendations(ctx.con),
     "paper_orders": lambda ctx: brokers.paper_orders(ctx.con),
     "daily_brief": lambda ctx: daily_brief(ctx.con),
+    "preopen_daily_brief": lambda ctx: preopen_daily_brief_rows(ctx.con),
     "feed_signals": lambda ctx: feed_signals(ctx.con, ctx.active_watchlist),
     "universe_screen": lambda ctx: universe_screen(ctx.con, ctx.active_watchlist),
     "source_consensus": lambda ctx: source_consensus(ctx.con),

@@ -125,6 +125,11 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 3600, allow_zero=True)
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
+    # Pre-open macro / key-events brief for /today. The job is cheap if the LLM is
+    # disabled or unavailable because it persists a deterministic fallback.
+    preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 86400, allow_zero=True)
+    if preopen_brief_seconds > 0:
+        intervals["update_preopen_daily_brief"] = preopen_brief_seconds
     return intervals
 
 
@@ -143,6 +148,7 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "social_refresh_seconds": str(intervals.get("update_social_sources", 0)),
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
         "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
+        "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief", 0)),
         "radar_option_source": option_source,
     }
 

@@ -168,6 +168,7 @@ export type KnownPanelTables = {
   brokerScannerSignals: TablePayload;
   agentRecommendations: TablePayload;
   paperOrders: TablePayload;
+  preopenDailyBrief: TablePayload;
   dailyBrief: TablePayload;
   feedSignals: TablePayload;
   universeScreen: TablePayload;

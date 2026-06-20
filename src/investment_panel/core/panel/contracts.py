@@ -51,6 +51,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_thesis_validation",
         "ticker_memos",
         "opportunity_sources",
+        "preopen_daily_brief",
         "daily_brief",
         "exposure_clusters",
         "correlation_edges",

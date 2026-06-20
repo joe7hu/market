@@ -21,6 +21,7 @@ export const todayCategories: TodayCategory[] = [
 ];
 
 export type TodayViewModel = {
+  preopenBrief: RowRecord | null;
   decideNow: RowRecord[];
   whatsChanged: RowRecord[];
   catalysts: RowRecord[];
@@ -42,6 +43,7 @@ function byCategory(briefRows: RowRecord[], key: string): RowRecord[] {
 }
 
 export function buildTodayViewModel(data: PanelData, model: AppModel): TodayViewModel {
+  const preopenBrief = rows(data.preopenDailyBrief)[0] ?? null;
   const briefRows = rows(data.dailyBrief);
   const decideNow = byCategory(briefRows, "decide_now");
   const whatsChanged = byCategory(briefRows, "whats_changed");
@@ -59,6 +61,7 @@ export function buildTodayViewModel(data: PanelData, model: AppModel): TodayView
   }).length;
 
   return {
+    preopenBrief,
     decideNow,
     whatsChanged,
     catalysts,

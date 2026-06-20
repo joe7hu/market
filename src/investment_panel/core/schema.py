@@ -1123,6 +1123,30 @@ CREATE TABLE IF NOT EXISTS market_environment_asset_snapshots (
     PRIMARY KEY(symbol, as_of, group_name, source)
 );
 
+CREATE TABLE IF NOT EXISTS preopen_daily_brief (
+    brief_date DATE PRIMARY KEY,
+    generated_at TIMESTAMP,
+    session TEXT,
+    status TEXT,
+    model_name TEXT,
+    model_version TEXT,
+    reasoning_effort TEXT,
+    headline TEXT,
+    macro_regime TEXT,
+    narrative TEXT,
+    opening_scenario TEXT,
+    qqq_path TEXT,
+    qqq_forecast JSON,
+    key_events JSON,
+    watch_items JSON,
+    risks JSON,
+    context JSON,
+    backtest JSON,
+    source_models JSON,
+    error TEXT,
+    raw JSON
+);
+
 CREATE TABLE IF NOT EXISTS options_payoff_scenarios (
     id TEXT PRIMARY KEY,
     symbol TEXT,

@@ -103,6 +103,7 @@ def _normalize_panel_data(raw_data: Any) -> PanelData:
             "broker_scanner_signals",
             "agent_recommendations",
             "paper_orders",
+            "preopen_daily_brief",
             "daily_brief",
             "feed_signals",
             "universe_screen",

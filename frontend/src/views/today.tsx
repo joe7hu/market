@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
-import type { PanelData, RowRecord } from "@/types";
+import type { JsonValue, PanelData, RowRecord } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, toneFromText, type Tone } from "./rowFormat";
 
@@ -18,6 +18,8 @@ type TodayPageProps = {
   onRefresh: () => void;
   onOpenTicker: (symbol: string) => void;
 };
+
+type JsonObject = { [key: string]: JsonValue };
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
 
@@ -55,6 +57,8 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
         />
       </div>
 
+      <PreopenBrief row={vm.preopenBrief} />
+
       {hasBrief ? (
         <>
           <HeroDecision row={vm.hero} onOpenTicker={onOpenTicker} />
@@ -70,6 +74,66 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
         <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
       )}
     </section>
+  );
+}
+
+function PreopenBrief({ row }: { row: RowRecord | null }) {
+  if (!row) return null;
+  const forecast = recordField(row, "qqq_forecast");
+  const backtest = recordField(row, "backtest");
+  const events = recordList(row, "key_events");
+  const risks = listField(row, ["risks"]);
+  const watchItems = listField(row, ["watch_items"]);
+  const bias = String(forecast.bias ?? "neutral");
+  const forecastStats = [
+    moneyStat("Expected", forecast.expected_close),
+    moneyStat("Support", forecast.support),
+    moneyStat("Resistance", forecast.resistance),
+    pctStat("Move", forecast.expected_return_pct),
+    pctStat("Backtest MAE", backtest.mae_pct),
+    pctStat("Range hit", backtest.range_hit_rate_pct),
+  ].filter(Boolean) as string[];
+
+  return (
+    <div className="mb-6 rounded-lg border border-border bg-card p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase text-muted-foreground">Pre-open macro brief</p>
+          <h2 className="mt-1 text-lg font-semibold leading-6">{textField(row, ["headline"], "Market open brief")}</h2>
+        </div>
+        <StatusBadge tone={bias === "bullish" ? "good" : bias === "bearish" ? "bad" : "info"}>{bias}</StatusBadge>
+      </div>
+      <p className="text-sm leading-6 text-muted-foreground">{textField(row, ["macro_regime"])}</p>
+      <p className="mt-2 text-sm leading-6 text-foreground">{textField(row, ["narrative"])}</p>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="rounded-md border border-border p-3">
+          <p className="text-sm font-semibold">QQQ path</p>
+          {forecastStats.length ? <StatRow stats={forecastStats} className="mt-2" /> : null}
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{textField(row, ["qqq_path"])}</p>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">{textField(row, ["opening_scenario"])}</p>
+        </div>
+        <div className="rounded-md border border-border p-3">
+          <p className="text-sm font-semibold">Key events</p>
+          {events.length ? (
+            <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+              {events.slice(0, 4).map((event, index) => (
+                <li key={String(event.id ?? index)} className="leading-5">
+                  {String(event.event_date ?? "")} {String(event.event ?? "")}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground">No high-priority macro events loaded.</p>
+          )}
+        </div>
+      </div>
+      {watchItems.length || risks.length ? (
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <BulletList title="Watch" rows={watchItems} />
+          <BulletList title="Risks" rows={risks} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -221,6 +285,40 @@ function StatRow({ stats, className }: { stats: string[]; className?: string }) 
       ))}
     </div>
   );
+}
+
+function BulletList({ title, rows }: { title: string; rows: string[] }) {
+  if (!rows.length) return null;
+  return (
+    <div className="rounded-md border border-border p-3">
+      <p className="text-sm font-semibold">{title}</p>
+      <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+        {rows.slice(0, 4).map((row, index) => (
+          <li key={index} className="leading-5">{row}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function recordField(row: RowRecord, key: string): JsonObject {
+  const value = row[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+function recordList(row: RowRecord, key: string): JsonObject[] {
+  const value = row[key];
+  return Array.isArray(value) ? value.filter((item): item is JsonObject => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
+}
+
+function moneyStat(label: string, value: unknown): string | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? `${label} ${formatMoney(parsed)}` : null;
+}
+
+function pctStat(label: string, value: unknown): string | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? `${label} ${formatPct(parsed)}` : null;
 }
 
 function ContextChip({ context, sentiment, tone }: { context: string; sentiment: Sentiment; tone: Tone }) {

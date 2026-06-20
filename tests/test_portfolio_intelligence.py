@@ -107,21 +107,20 @@ def test_daily_brief_ranks_backend_attention_items(tmp_path) -> None:
         rows = daily_brief(con)
 
     categories = {row["category"] for row in rows}
-    assert "top_portfolio_changes" in categories
-    assert "top_risks" in categories
-    assert "top_opportunities" in categories
-    assert "blocked_stale_items" not in categories
-    assert all(row["reason"] for row in rows)
-    assert all(row["evidence"] for row in rows)
-    assert all(row["blocker"] for row in rows)
-    assert all(row["next_action"] for row in rows)
-    assert any(row["category"] == "top_opportunities" and row["symbol"] == "NVDA" for row in rows)
-    assert all("Daily analysis rows are stale" not in row["blocker"] for row in rows)
+    assert "portfolio_pulse" in categories
+    assert "decide_now" in categories
+    assert "whats_changed" in categories
+    assert "catalysts" in categories
+    assert all(row["title"] for row in rows)
+    assert all(row["stats"] or row["reason"] for row in rows)
+    assert all(row["source_models"] for row in rows)
+    assert any(row["category"] == "decide_now" and row["symbol"] == "NVDA" for row in rows)
+    assert all("Daily analysis rows are stale" not in " ".join(row["stats"]) for row in rows)
 
 
 def test_daily_brief_limits_each_category_instead_of_global_starvation() -> None:
     items = []
-    for category in ["top_portfolio_changes", "top_risks", "top_opportunities", "blocked_stale_items"]:
+    for category in ["decide_now", "whats_changed", "catalysts", "portfolio_pulse"]:
         for index in range(10):
             items.append(
                 {
@@ -136,12 +135,12 @@ def test_daily_brief_limits_each_category_instead_of_global_starvation() -> None
     counts = {category: sum(1 for row in rows if row["category"] == category) for category in {row["category"] for row in rows}}
 
     assert counts == {
-        "top_portfolio_changes": 5,
-        "top_risks": 6,
-        "top_opportunities": 6,
-        "blocked_stale_items": 4,
+        "decide_now": 8,
+        "whats_changed": 6,
+        "catalysts": 8,
+        "portfolio_pulse": 5,
     }
-    assert rows[-1]["category"] == "blocked_stale_items"
+    assert rows[-1]["category"] == "portfolio_pulse"
 
 
 def seed_portfolio_risk_inputs(con) -> None:
