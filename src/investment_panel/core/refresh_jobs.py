@@ -44,6 +44,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
     "update_market_environment": lambda config_path: update_market_environment.run(config_path),
     "update_preopen_daily_brief": lambda config_path: update_preopen_daily_brief.run(config_path),
+    "update_preopen_daily_brief_scheduled": lambda config_path: update_preopen_daily_brief.run(config_path, scheduled=True),
     # Radar-focused source pull for the continuous scheduler: TradingView option
     # chains/quotes plus yfinance option liquidity (open interest / volume), which
     # the radar data contract requires for trade-readiness. The equity-price

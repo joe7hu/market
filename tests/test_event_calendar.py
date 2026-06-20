@@ -7,6 +7,7 @@ from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.event_calendar import (
     MarketEvent,
     delete_legacy_requested_week_events,
+    fetch_bls_release_schedules,
     geopolitical_event_from_report,
     parse_bls_schedule_rows,
     parse_fed_calendar_text,
@@ -131,6 +132,72 @@ event_sources:
     with db(config.database.duckdb_path, read_only=True) as con:
         health = query_rows(con, "SELECT * FROM source_health WHERE source = 'event_calendar'")
     assert health[0]["status"] == "disabled"
+
+
+def test_event_calendar_job_fetches_official_calendar_rows(tmp_path: Path, monkeypatch) -> None:
+    class Response:
+        text = """
+        Reference Month Release Date Release Time
+        April 2026 May 12, 2026 08:30 AM
+        May 2026 Jun. 10, 2026 08:30 AM
+        """
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    calls: list[str] = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        return Response()
+
+    monkeypatch.setattr("investment_panel.core.event_calendar.httpx.get", fake_get)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+database:
+  duckdb_path: {tmp_path / "investment.duckdb"}
+nas:
+  status_dir: {tmp_path / "status"}
+event_sources:
+  enabled: true
+  bls_enabled: true
+  dol_enabled: true
+  federal_reserve_enabled: true
+  treasury_enabled: false
+  sec_enabled: false
+  watchlist_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    result = run_event_calendar(str(config_path))
+
+    assert result["status"] == "ok"
+    assert result["events"] >= 18
+    assert result["source_errors"] == []
+    assert len(calls) == 4
+
+    config = load_config(config_path)
+    with db(config.database.duckdb_path, read_only=True) as con:
+        rows = query_rows(con, "SELECT source, source_url FROM catalysts ORDER BY source, event_date")
+    assert {"bls", "dol_weekly_claims", "federal_reserve"}.issubset({row["source"] for row in rows})
+    assert all(row["source_url"] for row in rows)
+
+
+def test_fetch_bls_release_schedules_records_source_errors(monkeypatch) -> None:
+    def fake_get(*_args, **_kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr("investment_panel.core.event_calendar.httpx.get", fake_get)
+
+    events, errors = fetch_bls_release_schedules(user_agent="test-agent")
+
+    assert events
+    assert events[0].verification_status == "confirmed_fallback"
+    assert len(errors) == 4
+    assert "network down" in errors[0]["error"]
 
 
 def test_event_calendar_cleanup_removes_legacy_hardcoded_rows(tmp_path: Path) -> None:

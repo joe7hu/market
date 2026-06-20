@@ -8,14 +8,24 @@ from typing import Any
 
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
-from investment_panel.core.preopen_brief import refresh_preopen_daily_brief
+from investment_panel.core.preopen_brief import refresh_preopen_daily_brief, should_run_scheduled_preopen_brief
 from investment_panel.core.status import write_source_status
 
 
-def run(config_path: str | None = None) -> dict[str, Any]:
+def run(config_path: str | None = None, *, scheduled: bool = False) -> dict[str, Any]:
     config = load_config(config_path)
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path, read_only=False) as con:
+        if scheduled:
+            should_run, gate = should_run_scheduled_preopen_brief(con)
+            if not should_run:
+                return {
+                    "database": str(config.database.duckdb_path),
+                    "status": "skipped",
+                    "ok": True,
+                    "scheduled": True,
+                    **gate,
+                }
         brief = refresh_preopen_daily_brief(con)
     result = {
         "database": str(config.database.duckdb_path),
@@ -27,6 +37,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         "event_count": len(brief["key_events"]),
         "source_models": brief["source_models"],
         "error": brief.get("error") or "",
+        "scheduled": scheduled,
         "ok": brief["status"] in {"ok", "deterministic_fallback"},
     }
     status_path = write_source_status(

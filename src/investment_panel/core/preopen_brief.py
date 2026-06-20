@@ -7,11 +7,12 @@ instead of hiding them inside prose.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 import json
 import os
 from statistics import mean, pstdev
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -22,6 +23,9 @@ from investment_panel.jobs.openai_option_agent import DEFAULT_BASE_URL, OpenAIOp
 DEFAULT_PREOPEN_MODEL = "gpt-5.5"
 DEFAULT_REASONING_EFFORT = "medium"
 FORECAST_MODEL_VERSION = "qqq_preopen_stat_ensemble_v1"
+MARKET_TZ = ZoneInfo("America/New_York")
+PREOPEN_START = time(5, 0)
+PREOPEN_END = time(9, 30)
 
 
 BRIEF_SCHEMA: dict[str, Any] = {
@@ -114,13 +118,16 @@ def persist_preopen_daily_brief(con: Any, payload: dict[str, Any]) -> None:
 
 
 def build_preopen_context(con: Any, target_date: date | None = None) -> dict[str, Any]:
-    target = target_date or date.today()
-    qqq_history = _price_history(con, "QQQ", before=target + timedelta(days=1), limit=280)
+    now = _market_now()
+    target = target_date or now.date()
+    # Pre-open forecasts may be regenerated manually later in the day, but the
+    # model must stay point-in-time: use only bars strictly before the session.
+    qqq_history = _price_history(con, "QQQ", before=target, limit=280)
     forecast = qqq_preopen_forecast(qqq_history)
     return {
         "brief_date": target.isoformat(),
         "generated_at": datetime.now(UTC).isoformat(),
-        "session": _session_label(datetime.now()),
+        "session": _session_label(now),
         "qqq_forecast": forecast,
         "backtest": backtest_qqq_preopen_model(qqq_history),
         "key_events": _key_events(con, target),
@@ -396,10 +403,50 @@ def _latest_source_runs(con: Any) -> list[dict[str, Any]]:
     )
 
 
+def should_run_scheduled_preopen_brief(con: Any, now: datetime | None = None) -> tuple[bool, dict[str, Any]]:
+    local_now = _market_now(now)
+    today = local_now.date()
+    if local_now.weekday() >= 5:
+        return False, {"reason": "market_closed_weekend", "brief_date": today.isoformat()}
+    if not _in_preopen_window(local_now):
+        return False, {
+            "reason": "outside_preopen_window",
+            "brief_date": today.isoformat(),
+            "window": f"{PREOPEN_START.strftime('%H:%M')}-{PREOPEN_END.strftime('%H:%M')} America/New_York",
+            "now": local_now.isoformat(),
+        }
+    existing = query_rows(
+        con,
+        """
+        SELECT brief_date, generated_at, session, status
+        FROM preopen_daily_brief
+        WHERE brief_date = ? AND session = 'pre_open'
+        LIMIT 1
+        """,
+        [today],
+    )
+    if existing:
+        return False, {"reason": "preopen_brief_already_generated", "brief_date": today.isoformat(), "existing": existing[0]}
+    return True, {"reason": "preopen_window_open", "brief_date": today.isoformat(), "now": local_now.isoformat()}
+
+
+def _market_now(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(MARKET_TZ)
+    if current.tzinfo is None:
+        return current.replace(tzinfo=MARKET_TZ)
+    return current.astimezone(MARKET_TZ)
+
+
+def _in_preopen_window(now: datetime) -> bool:
+    current = now.time()
+    return PREOPEN_START <= current < PREOPEN_END
+
+
 def _session_label(now: datetime) -> str:
-    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+    local_now = _market_now(now)
+    if _in_preopen_window(local_now):
         return "pre_open"
-    if now.hour < 16:
+    if local_now.time() < time(16, 0):
         return "regular_session"
     return "post_close"
 

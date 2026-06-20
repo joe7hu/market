@@ -196,6 +196,7 @@ class EventSourcesConfig:
     enabled: bool = False
     seed_requested_week: bool = False
     bls_enabled: bool = True
+    dol_enabled: bool = True
     federal_reserve_enabled: bool = True
     treasury_enabled: bool = True
     sec_enabled: bool = True
@@ -453,6 +454,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         enabled=bool(event_sources_raw.get("enabled", False)),
         seed_requested_week=bool(event_sources_raw.get("seed_requested_week", False)),
         bls_enabled=bool(event_sources_raw.get("bls_enabled", True)),
+        dol_enabled=bool(event_sources_raw.get("dol_enabled", True)),
         federal_reserve_enabled=bool(event_sources_raw.get("federal_reserve_enabled", True)),
         treasury_enabled=bool(event_sources_raw.get("treasury_enabled", True)),
         sec_enabled=bool(event_sources_raw.get("sec_enabled", True)),
@@ -630,6 +632,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "enabled": config.event_sources.enabled,
             "seed_requested_week": config.event_sources.seed_requested_week,
             "bls_enabled": config.event_sources.bls_enabled,
+            "dol_enabled": config.event_sources.dol_enabled,
             "federal_reserve_enabled": config.event_sources.federal_reserve_enabled,
             "treasury_enabled": config.event_sources.treasury_enabled,
             "sec_enabled": config.event_sources.sec_enabled,

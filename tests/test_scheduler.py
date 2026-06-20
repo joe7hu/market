@@ -76,7 +76,7 @@ def test_signal_loop_always_scheduled(monkeypatch) -> None:
     assert intervals["update_robinhood_options"] == 3600
     assert intervals["refresh_options_radar_deterministic"] == 21600  # heavy learning, slow cadence
     assert intervals["update_market_environment"] == 3600
-    assert intervals["update_preopen_daily_brief"] == 86400
+    assert intervals["update_preopen_daily_brief_scheduled"] == 300
 
 
 def test_market_environment_refresh_can_be_disabled(monkeypatch) -> None:
@@ -90,7 +90,7 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "0")
     intervals = scheduler.job_intervals()
-    assert "update_preopen_daily_brief" not in intervals
+    assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
 def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
@@ -119,7 +119,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["source_refresh_seconds"] == "3600"
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "3600"
-    assert status["preopen_brief_refresh_seconds"] == "86400"
+    assert status["preopen_brief_refresh_seconds"] == "300"
     assert status["jobs"]["run_option_agents"] == 123
 
 
@@ -197,3 +197,4 @@ def test_deterministic_radar_job_is_allowlisted() -> None:
     assert "refresh_options_radar_signal_robinhood" in ALLOWLIST
     assert "update_market_environment" in ALLOWLIST
     assert "update_preopen_daily_brief" in ALLOWLIST
+    assert "update_preopen_daily_brief_scheduled" in ALLOWLIST

@@ -118,11 +118,11 @@ data_sources:
       earnings_blackout_days: 2
 
 event_sources:
-  # Disabled until backed by live source fetchers. Legacy hardcoded seed rows
-  # are removed by the event-calendar job.
-  enabled: false
+  # Official-source macro calendar rows used by /today's pre-open brief.
+  enabled: true
   seed_requested_week: false
   bls_enabled: true
+  dol_enabled: true
   federal_reserve_enabled: true
   treasury_enabled: true
   sec_enabled: true
