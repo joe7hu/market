@@ -6,16 +6,16 @@ from app.panel_contracts import (
     panel_contract_payload as contract_panel_payload,
 )
 from investment_panel.core.panel import (
+    load_market_panel_data as core_load_market_panel_data,
     load_panel_data as core_load_panel_data,
     load_ticker_dossier_data as core_load_ticker_dossier_data,
 )
 
 from app.data_access.types import DataStatus, PanelData, SETUP_INSTRUCTIONS
-from app.data_access.config import _database_path, load_config, tables_for_scope
+from app.data_access.config import load_config, tables_for_scope
 from app.data_access.coerce import _is_empty
 from app.data_access.normalize import _normalize_panel_data
 from app.data_access.payloads import _runtime_metadata
-from investment_panel.core.panel import market_freshness
 
 
 
@@ -116,44 +116,10 @@ def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
     """Load only the broad-market tables required by the Market page."""
 
     active_config = config or load_config()
-    from investment_panel.core.panel.read_session import panel_read_session
-    from investment_panel.core.panel import market_environment_assets, market_environment_model, market_valuation_reference_charts
-
-    db_path = _database_path(active_config)
     try:
-        with panel_read_session(db_path, needs_write=False) as con:
-            if con is None:
-                return _empty_market_panel_data(
-                    "DuckDB database does not exist yet. Run a refresh job to initialize it.",
-                    "duckdb-missing",
-                )
-            tables = {
-                "market_valuation_reference_charts": market_valuation_reference_charts(con),
-                "market_environment_assets": market_environment_assets(con),
-                "market_environment_model": market_environment_model(con, [], include_exposure=False),
-            }
+        return _normalize_panel_data(core_load_market_panel_data(active_config))
     except Exception as exc:
         return _empty_market_panel_data(f"Market read models are unavailable: {exc}", "core-error")
-    ready = any(tables.values())
-    freshness = market_freshness(tables)
-    status_source = {
-        "stale": "duckdb-stale",
-        "off_market_hours": "duckdb-off-market-hours",
-    }.get(str(freshness.get("status")), "duckdb")
-    message = "Loaded market environment data."
-    if freshness.get("status") == "stale":
-        message = f"Loaded market environment data, but broad-market inputs are stale: {freshness.get('reason')}"
-    elif freshness.get("status") == "off_market_hours":
-        message = f"Loaded market environment data; {freshness.get('reason')}"
-    return PanelData(
-        status=DataStatus(
-            ready=ready,
-            message=message if ready else "No market environment rows are loaded yet.",
-            source=status_source,
-        ),
-        tables=tables,
-        metadata={"market_freshness": freshness},
-    )
 
 
 def _empty_market_panel_data(message: str, source: str) -> PanelData:

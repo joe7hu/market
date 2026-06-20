@@ -17,6 +17,8 @@ from investment_panel.core.decision import effective_watchlist, refresh_decision
 from investment_panel.core.sources import ensure_canonical_sources
 
 from investment_panel.core.panel.registry import ReadContext, load_read_models
+from investment_panel.core.panel.market_environment import market_environment_assets, market_environment_model, market_valuation_reference_charts
+from investment_panel.core.panel.market_freshness import market_freshness
 from investment_panel.core.panel.read_equity import symbol_decision_snapshots
 from investment_panel.core.panel.read_options import radar_display_context
 from investment_panel.core.panel.read_session import panel_read_session
@@ -195,6 +197,59 @@ def load_ticker_dossier_data(
         "source": "duckdb",
         "metadata": {"config": config_to_dict(app_config), "decision_refresh": readiness},
         "tables": tables,
+    }
+
+
+def load_market_panel_data(config: dict[str, Any] | AppConfig | None = None) -> dict[str, Any]:
+    """Load the broad-market read models required by the Market page."""
+
+    app_config, db_path, _ = _resolve_config(config)
+    with panel_read_session(db_path, needs_write=False) as con:
+        if con is None:
+            return _empty_market_panel_data(
+                app_config,
+                "DuckDB database does not exist yet. Run a refresh job to initialize it.",
+                "duckdb-missing",
+            )
+        tables = {
+            "market_valuation_reference_charts": market_valuation_reference_charts(con),
+            "market_environment_assets": market_environment_assets(con),
+            "market_environment_model": market_environment_model(con, [], include_exposure=False),
+        }
+    ready = any(tables.values())
+    freshness = market_freshness(tables)
+    status_source = {
+        "stale": "duckdb-stale",
+        "off_market_hours": "duckdb-off-market-hours",
+    }.get(str(freshness.get("status")), "duckdb")
+    message = "Loaded market environment data."
+    if freshness.get("status") == "stale":
+        message = f"Loaded market environment data, but broad-market inputs are stale: {freshness.get('reason')}"
+    elif freshness.get("status") == "off_market_hours":
+        message = f"Loaded market environment data; {freshness.get('reason')}"
+    return {
+        "ready": ready,
+        "message": message if ready else "No market environment rows are loaded yet.",
+        "source": status_source,
+        "metadata": {"config": config_to_dict(app_config), "market_freshness": freshness},
+        "tables": tables,
+    }
+
+
+def _empty_market_panel_data(app_config: AppConfig, message: str, source: str) -> dict[str, Any]:
+    return {
+        "ready": False,
+        "message": message,
+        "source": source,
+        "metadata": {
+            "config": config_to_dict(app_config),
+            "setup_instructions": "Run `uv run investment-panel` or the documented refresh jobs to initialize DuckDB.",
+        },
+        "tables": {
+            "market_valuation_reference_charts": [],
+            "market_environment_assets": [],
+            "market_environment_model": [],
+        },
     }
 
 

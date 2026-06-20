@@ -95,10 +95,6 @@ FACADE_PACKAGES = [
 FACADE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
     # Re-export gaps: clean fix is to expose these from core/panel/__init__.py
     # and switch the import to the facade.
-    ("app/data_access/loaders.py", "investment_panel.core.panel.read_session"):
-        "re-export panel_read_session from the panel facade",
-    ("app/data_access/payloads.py", "investment_panel.core.panel.payloads"):
-        "re-export payload builders from the panel facade",
     ("app/panel_contracts.py", "investment_panel.core.panel.contracts"):
         "thin re-export shim (import *) — fold into the panel facade",
     # Layering smells: worth a real fix, not just a re-export.

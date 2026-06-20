@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.data_access.settings import _sanitize_option_agent_settings
+from investment_panel.core.config import update_agent_settings_config
 from investment_panel.core import option_agent_runner as runner_mod
 from investment_panel.core.db import db, init_db, json_dumps, query_rows
 from investment_panel.core.option_agent_runner import estimate_agent_cost, run_consolidated_option_agents
@@ -113,25 +113,32 @@ def test_context_sources_toggle_omits_disabled_sources(tmp_path) -> None:
     assert "candidate_event" in ctx  # core context is always present
 
 
-def test_option_agent_sanitizer_accepts_and_filters_new_fields() -> None:
-    clean = _sanitize_option_agent_settings(
+def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -> None:
+    cfg = tmp_path / "config.yaml"
+    update_agent_settings_config(
+        cfg,
         {
-            "provider": "openai",
-            "model": "gpt-5.2",
-            "reasoning_effort": "high",
-            "auto_run_seconds": 3600,
-            "max_runs_per_day": 4,
-            "context_sources": {"news": False, "bogus": True},
-        }
+            "option_agent": {
+                "provider": "openai",
+                "model": "gpt-5.2",
+                "reasoning_effort": "high",
+                "auto_run_seconds": 3600,
+                "max_runs_per_day": 4,
+                "context_sources": {"news": False, "bogus": True},
+            }
+        },
     )
+    import yaml
+
+    clean = yaml.safe_load(cfg.read_text())["agents"]["option_agent"]
     assert clean["provider"] == "openai" and clean["model"] == "gpt-5.2"
     assert clean["reasoning_effort"] == "high"
     assert clean["context_sources"] == {"news": False}  # unknown key filtered out
 
 
-def test_option_agent_sanitizer_rejects_bad_provider() -> None:
+def test_option_agent_settings_update_rejects_bad_provider(tmp_path) -> None:
     with pytest.raises(ValueError):
-        _sanitize_option_agent_settings({"provider": "anthropic"})
+        update_agent_settings_config(tmp_path / "config.yaml", {"option_agent": {"provider": "anthropic"}})
 
 
 def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> None:
@@ -195,8 +202,6 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
 
 
 def test_partial_context_sources_patch_merges_existing(tmp_path) -> None:
-    from app.data_access.settings import update_agent_settings_config
-
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         "agents:\n  option_agent:\n    context_sources:\n      news: true\n      fundamentals: true\n",

@@ -4,11 +4,12 @@ from __future__ import annotations
 import os
 from typing import Any
 from app.panel_contracts import panel_contract_payload as contract_panel_payload
-from investment_panel.core.panel.payloads import (
+from investment_panel.core.panel import (
+    build_ticker_dossier,
     dashboard_payload as core_dashboard_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
+    ticker_payload_tables,
 )
-from investment_panel.core.panel import build_ticker_dossier, ticker_payload_tables
 from investment_panel.core.option_agent_thesis import DEFAULT_AGENT_THESIS_REQUEST_LIMIT
 
 from app.data_access.types import PanelData

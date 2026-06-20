@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]

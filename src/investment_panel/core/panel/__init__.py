@@ -17,8 +17,10 @@ from investment_panel.core.panel.read_research import reports, research_packets,
 from investment_panel.core.panel.read_tradingview import instrument_market_identity, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
 from investment_panel.core.panel.read_options import option_features, option_radar_opportunity, option_radar_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
 from investment_panel.core.panel.read_learning import agent_postmortem, agent_postmortem_request, agent_thesis, agent_thesis_request, agent_thesis_validation, candidate_event, candidate_event_attribution, candidate_event_mark, conviction_calibration, missed_winner_event, option_attribution, radar_alert, radar_state_transition, shadow_trade, shadow_trade_mark, strategy_backtest_result, strategy_cohort_result, strategy_forward_test_result, strategy_mutation_proposal, trade_journal, vol_surface_features
+from investment_panel.core.panel.payloads import dashboard_payload, panel_snapshot_payload
+from investment_panel.core.panel.read_session import panel_read_session
 from investment_panel.core.panel.registry import READ_MODELS, ReadContext, load_read_models, read_model_names
-from investment_panel.core.panel.snapshot import DECISION_READ_MODEL_TABLES, DECISION_REFRESH_LOCK, decision_readiness_snapshot, ensure_decision_read_models, get_panel_snapshot, load_panel_data, load_ticker_dossier_data
+from investment_panel.core.panel.snapshot import DECISION_READ_MODEL_TABLES, DECISION_REFRESH_LOCK, decision_readiness_snapshot, ensure_decision_read_models, get_panel_snapshot, load_market_panel_data, load_panel_data, load_ticker_dossier_data
 from investment_panel.core.panel.ticker_dossier import ticker_payload_tables
 from investment_panel.core.panel.ticker_sections import build_ticker_dossier
 
@@ -54,6 +56,7 @@ __all__ = [
     "decision_readiness_snapshot",
     "decode_fields",
     "decode_json_value",
+    "dashboard_payload",
     "disclosures",
     "discovered_universe",
     "earnings",
@@ -68,6 +71,7 @@ __all__ = [
     "holding_key",
     "liquidity",
     "load_panel_data",
+    "load_market_panel_data",
     "load_ticker_dossier_data",
     "market_context",
     "market_display_context",
@@ -96,6 +100,8 @@ __all__ = [
     "options_provider_capabilities",
     "options_ticker_signals",
     "ownership_consensus",
+    "panel_read_session",
+    "panel_snapshot_payload",
     "period_bar_points",
     "period_return",
     "portfolio",
