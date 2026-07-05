@@ -231,7 +231,7 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
 
 def test_market_panel_status_reports_stale_broad_market_inputs(tmp_path) -> None:
     db_path = tmp_path / "market-stale.duckdb"
-    stale_date = date.today() - timedelta(days=3)
+    stale_date = date.today() - timedelta(days=10)
     init_db(db_path)
     with db(db_path) as con:
         con.execute(

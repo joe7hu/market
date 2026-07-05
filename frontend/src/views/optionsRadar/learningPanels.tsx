@@ -21,13 +21,16 @@ export function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; 
 
   return (
     <DataTableFrame title={<SectionTitle title="Missed Winners" count={rows.length} />}>
-      <table className="w-full min-w-[1160px] text-sm">
+      <table className="w-full min-w-[1420px] text-sm">
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
             <Head>Ticker</Head>
             <Head>Threshold</Head>
-            <Head className="text-right">Max Return</Head>
+            <Head className="text-right">Exit Return</Head>
+            <Head className="text-right">Peak</Head>
+            <Head>Window</Head>
             <Head>Filter Reason</Head>
+            <Head>Caveats</Head>
             <Head>Strategy Family</Head>
             <Head className="text-right">Entry</Head>
             <Head className="text-right">Winner</Head>
@@ -36,12 +39,30 @@ export function MissedWinnersTable({ rows, onOpenTicker }: { rows: RowRecord[]; 
         <tbody>
           {rows.slice(0, 80).map((row) => {
             const ticker = textField(row, ["ticker"]);
+            const flags = jsonArrayField(row, "tradability_flags").map((item) => String(item)).filter(Boolean);
+            const elapsedHours = numberField(row, ["winner_elapsed_hours"], Number.NaN);
+            const snapshotCount = numberField(row, ["snapshot_count"], Number.NaN);
+            const windowLabel = Number.isFinite(elapsedHours)
+              ? `${elapsedHours < 24 ? `${formatNumber(elapsedHours, 1)}h` : `${formatNumber(elapsedHours / 24, 1)}d`} | ${Number.isFinite(snapshotCount) ? snapshotCount.toLocaleString() : "-"} marks`
+              : formatDate(textField(row, ["first_snapshot_time"]));
             return (
               <tr key={textField(row, ["missed_id"], `${ticker}-${textField(row, ["contract_id"])}`)} className="border-b border-border align-top transition-colors hover:bg-accent/40">
                 <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
                 <Cell><StatusBadge tone={textField(row, ["winner_threshold"]).toLowerCase() === "10x" ? "bad" : "warn"}>{displayField(row, ["winner_threshold"])}</StatusBadge></Cell>
                 <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["max_return_seen"], Number.NaN))}</Cell>
+                <Cell className="text-right tabular-nums">{formatMultiple(numberField(row, ["observed_peak_return"], Number.NaN))}</Cell>
+                <Cell className="tabular-nums">
+                  <div>{windowLabel}</div>
+                  <div className="text-xs text-muted-foreground">{formatDate(textField(row, ["first_snapshot_time"]))} -&gt; {formatDate(textField(row, ["winner_snapshot_time"]))}</div>
+                </Cell>
                 <Cell className="max-w-[360px]"><Truncated>{displayField(row, ["filter_reason"])}</Truncated></Cell>
+                <Cell className="max-w-[260px]">
+                  {flags.length ? (
+                    <Truncated>{flags.slice(0, 4).map(titleLabel).join(", ")}{flags.length > 4 ? ` +${flags.length - 4}` : ""}</Truncated>
+                  ) : (
+                    <StatusBadge tone="good">Clean</StatusBadge>
+                  )}
+                </Cell>
                 <Cell className="max-w-[240px]"><Truncated>{displayField(row, ["proposed_strategy_family"])}</Truncated></Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["entry_price_assumption"])}</Cell>
                 <Cell className="text-right tabular-nums">{moneyField(row, ["winner_price"])}</Cell>
@@ -362,4 +383,3 @@ export function PostmortemInsightCard({ row, onOpenTicker }: { row: RowRecord; o
     </article>
   );
 }
-

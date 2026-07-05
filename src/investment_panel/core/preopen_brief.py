@@ -369,7 +369,7 @@ def _key_events(con: Any, target: date) -> list[dict[str, Any]]:
 
 def _market_environment(con: Any) -> list[dict[str, Any]]:
     try:
-        from investment_panel.core.panel.market_environment import market_environment_model
+        from investment_panel.core.panel import market_environment_model
 
         return market_environment_model(con, [], include_exposure=False)[:10]
     except Exception:  # noqa: BLE001 - context should degrade, not block the brief

@@ -7,7 +7,7 @@ from typing import Any
 
 from investment_panel.core.db import (json_dumps, query_rows)
 from investment_panel.core.source_ingestion.utils import (stable_id)
-from investment_panel.core.options_radar.coerce import (_elapsed_days, _iso, _normalize_symbol, _number)
+from investment_panel.core.options_radar.coerce import (_elapsed_days, _elapsed_hours, _iso, _json, _normalize_symbol, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 from investment_panel.core.options_radar.dbutil import (_compact_snapshot, _source_filter, _symbol_filter)
 from investment_panel.core.options_radar.indicators import (_diff)
@@ -249,17 +249,22 @@ def build_missed_winner(con: Any, contract_id: str, snapshots: list[dict[str, An
     candidate_rows = query_rows(
         con,
         """
-        SELECT state, trigger_reason, raw
+        SELECT event_id, snapshot_time, state, score, trigger_reason, raw
         FROM candidate_event
         WHERE contract_id = ? AND strategy_version = ?
         ORDER BY snapshot_time
-        LIMIT 1
         """,
         [contract_id, strategy_version],
     )
-    filter_reason = _missed_filter_reason(candidate_rows[0] if candidate_rows else None)
+    first_candidate = candidate_rows[0] if candidate_rows else None
+    filter_reason = _missed_filter_reason(first_candidate)
     threshold = "10x" if max_return >= 9.0 else "5x"
     proposed_family = _proposed_family(filter_reason)
+    winner_time = _iso(winner.get("snapshot_time"))
+    observed_peak_time, observed_peak_return = max(returns, key=lambda item: item[1])
+    candidate_context = _missed_winner_candidate_context(candidate_rows, winner_time=winner_time)
+    entry_quality = _snapshot_quality(entry, role="entry")
+    winner_quality = _snapshot_quality(winner, role="winner")
     return {
         "missed_id": stable_id("missed_winner", strategy_version, contract_id, entry["snapshot_time"], winner["snapshot_time"], threshold),
         "detected_at": datetime.utcnow().isoformat(),
@@ -275,8 +280,122 @@ def build_missed_winner(con: Any, contract_id: str, snapshots: list[dict[str, An
         "filter_reason": filter_reason,
         "proposed_strategy_family": proposed_family,
         "raw": {
-            "candidate_state": candidate_rows[0].get("state") if candidate_rows else "missing_candidate",
+            "outcome_basis": "trailing_stop_realized_exit",
+            "realized_exit_return": max_return,
+            "realized_exit_snapshot_time": realized_time,
+            "observed_peak_return": observed_peak_return,
+            "observed_peak_snapshot_time": observed_peak_time,
+            "observed_window": {
+                "snapshot_count": len(usable),
+                "first_snapshot_time": _iso(entry.get("snapshot_time")),
+                "last_snapshot_time": _iso(usable[-1].get("snapshot_time")),
+                "winner_elapsed_days": _elapsed_days(entry.get("snapshot_time"), winner.get("snapshot_time")),
+                "winner_elapsed_hours": _elapsed_hours(entry.get("snapshot_time"), winner.get("snapshot_time")),
+                "source_count": len({str(row.get("data_source") or "") for row in usable if row.get("data_source")}),
+                "data_sources": sorted({str(row.get("data_source") or "") for row in usable if row.get("data_source")}),
+            },
+            "return_path": _return_path(usable, entry_mid),
+            "candidate_state": first_candidate.get("state") if first_candidate else "missing_candidate",
+            "candidate_context": candidate_context,
+            "entry_quality": entry_quality,
+            "winner_quality": winner_quality,
+            "tradability_flags": sorted(set([*entry_quality["flags"], *winner_quality["flags"]])),
             "first_snapshot": _compact_snapshot(entry),
             "winner_snapshot": _compact_snapshot(winner),
         },
     }
+
+
+def _missed_winner_candidate_context(candidate_rows: list[dict[str, Any]], *, winner_time: str | None) -> dict[str, Any]:
+    if not candidate_rows:
+        return {
+            "event_count": 0,
+            "first_state": "missing_candidate",
+            "last_state_before_winner": None,
+            "best_state_before_winner": None,
+            "first_filter_reason": "no_candidate_event",
+            "hard_rejects": [],
+            "blockers": [],
+        }
+    ordered = sorted(candidate_rows, key=lambda row: _iso(row.get("snapshot_time")))
+    before_winner = [row for row in ordered if not winner_time or _iso(row.get("snapshot_time")) <= winner_time]
+    first = ordered[0]
+    first_raw = _json(first.get("raw"))
+    hard_rejects = first_raw.get("hard_rejects") if isinstance(first_raw.get("hard_rejects"), list) else []
+    blockers = first_raw.get("blockers") if isinstance(first_raw.get("blockers"), list) else []
+    state_rank = {"FIRE": 0, "SETUP": 1, "WATCH": 2, "REJECT": 3}
+    best = min(before_winner or ordered, key=lambda row: state_rank.get(str(row.get("state") or ""), 9))
+    last = (before_winner or ordered)[-1]
+    return {
+        "event_count": len(ordered),
+        "first_event_id": first.get("event_id"),
+        "first_snapshot_time": _iso(first.get("snapshot_time")),
+        "first_state": first.get("state"),
+        "first_score": _number(first.get("score")),
+        "first_trigger_reason": first.get("trigger_reason"),
+        "first_filter_reason": _missed_filter_reason(first),
+        "hard_rejects": [str(item) for item in hard_rejects if item],
+        "blockers": [str(item) for item in blockers if item],
+        "last_state_before_winner": last.get("state"),
+        "last_score_before_winner": _number(last.get("score")),
+        "best_state_before_winner": best.get("state"),
+        "best_score_before_winner": _number(best.get("score")),
+    }
+
+
+def _snapshot_quality(row: dict[str, Any], *, role: str) -> dict[str, Any]:
+    mid = _number(row.get("mid"))
+    spread = _number(row.get("spread_pct"))
+    volume = _number(row.get("volume"))
+    open_interest = _number(row.get("open_interest"))
+    flags: list[str] = []
+    if mid is None or mid <= 0:
+        flags.append(f"{role}_missing_mid")
+    elif mid < 0.05:
+        flags.append(f"{role}_penny_mid")
+    if spread is None:
+        flags.append(f"{role}_missing_spread")
+    elif spread > 1.0:
+        flags.append(f"{role}_wide_spread")
+    if volume is None:
+        flags.append(f"{role}_missing_volume")
+    elif volume <= 0:
+        flags.append(f"{role}_zero_volume")
+    if open_interest is None:
+        flags.append(f"{role}_missing_open_interest")
+    elif open_interest < 25:
+        flags.append(f"{role}_low_open_interest")
+    return {
+        "mid": mid,
+        "spread_pct": spread,
+        "volume": volume,
+        "open_interest": open_interest,
+        "flags": flags,
+    }
+
+
+def _return_path(snapshots: list[dict[str, Any]], entry_mid: float) -> list[dict[str, Any]]:
+    if entry_mid <= 0:
+        return []
+    if len(snapshots) <= 12:
+        selected = snapshots
+    else:
+        selected = [*snapshots[:4], *snapshots[-4:]]
+        selected.extend(
+            row
+            for row in sorted(snapshots[4:-4], key=lambda item: (_number(item.get("mid")) or 0), reverse=True)[:4]
+            if row not in selected
+        )
+        selected = sorted(selected, key=lambda row: _iso(row.get("snapshot_time")))
+    return [
+        {
+            "snapshot_time": _iso(row.get("snapshot_time")),
+            "mid": _number(row.get("mid")),
+            "return": ((_number(row.get("mid")) or 0) / entry_mid - 1),
+            "underlying_price": _number(row.get("underlying_price")),
+            "spread_pct": _number(row.get("spread_pct")),
+            "volume": _number(row.get("volume")),
+            "open_interest": _number(row.get("open_interest")),
+        }
+        for row in selected
+    ]

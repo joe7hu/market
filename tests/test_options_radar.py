@@ -1444,6 +1444,7 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
 
         result = refresh_options_radar(con, ["RBLX"])
         missed = query_rows(con, "SELECT * FROM missed_winner_event WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
+        missed_raw = json.loads(missed["raw"]) if isinstance(missed["raw"], str) else missed["raw"]
         proposal = query_rows(con, "SELECT * FROM strategy_mutation_proposal WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
         backtest = query_rows(con, "SELECT * FROM strategy_backtest_result WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
         forward = query_rows(con, "SELECT * FROM strategy_forward_test_result WHERE strategy_version = ?", [DEFAULT_STRATEGY_VERSION])[0]
@@ -1477,6 +1478,14 @@ def test_options_radar_detects_missed_winner_and_requires_gated_strategy_proposa
     assert candidate_attribution["option_return"] >= 9.0
     assert missed["filter_reason"] == "delta_outside_strategy_range"
     assert missed["proposed_strategy_family"] == "leap_10x_momentum_lottery"
+    assert missed_raw["outcome_basis"] == "trailing_stop_realized_exit"
+    assert missed_raw["observed_window"]["snapshot_count"] == 2
+    assert missed_raw["candidate_context"]["first_state"] == "REJECT"
+    assert missed_raw["candidate_context"]["first_filter_reason"] == "delta_outside_strategy_range"
+    assert missed_raw["entry_quality"]["volume"] == 25
+    assert missed_raw["winner_quality"]["open_interest"] == 450
+    assert missed_raw["return_path"][0]["return"] == 0
+    assert missed_raw["return_path"][-1]["return"] >= 9.0
     # Honest validation: a single synthetic missed winner gives the walk-forward
     # backtest no historical candidate base, so the proposal correctly fails the
     # backtest gate rather than advancing. The gating metadata still records that a

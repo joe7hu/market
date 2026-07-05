@@ -81,7 +81,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   const latestSnapshot = textField(radarSummary, ["latest_snapshot_time"]);
   const snapshotLabel = textField(radarSummary, ["latest_snapshot_label"]);
-  const latestStrategy = strategyVersions[0];
+  const displayStrategyVersion = textField(radarSummary, ["strategy_version"]);
+  const latestStrategy = strategyVersions.find((row) => textField(row, ["strategy_version"]) === displayStrategyVersion) ?? strategyVersions[0];
 
   async function handlePromoteProposal(proposalId: string) {
     if (!proposalId || promotingProposal) return;
@@ -183,4 +184,3 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     </WorkspacePage>
   );
 }
-

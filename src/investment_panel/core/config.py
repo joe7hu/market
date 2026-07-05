@@ -209,7 +209,6 @@ class AnalysisConfig:
     correlation_lookback_days: int = 180
     max_correlation_peers: int = 8
 
-
 @dataclass(frozen=True)
 class AgentCommandConfig:
     enabled: bool = False

@@ -29,6 +29,7 @@ def test_job_intervals_default_to_robinhood_source(monkeypatch) -> None:
 
 def test_ibkr_source_fallback_via_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_RADAR_OPTION_SOURCE", "ibkr")
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     intervals = scheduler.job_intervals()
     assert "update_ibkr_options" in intervals
     assert "refresh_options_radar_signal_ibkr" in intervals
@@ -37,6 +38,7 @@ def test_ibkr_source_fallback_via_env(monkeypatch) -> None:
 
 def test_free_source_fallback_via_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_RADAR_OPTION_SOURCE", "free")
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     intervals = scheduler.job_intervals()
     assert "update_free_sources_radar" in intervals
     assert "refresh_options_radar_signal" in intervals
@@ -45,6 +47,7 @@ def test_free_source_fallback_via_env(monkeypatch) -> None:
 
 def test_job_intervals_ignore_invalid_env(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "not-a-number")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "-5")
     intervals = scheduler.job_intervals()
@@ -55,15 +58,17 @@ def test_job_intervals_ignore_invalid_env(monkeypatch) -> None:
 def test_source_pull_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "0")
+    monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     intervals = scheduler.job_intervals()
     assert "update_robinhood_options" not in intervals
     # The continuous fresh-signal loop must remain regardless.
     assert "refresh_options_radar_signal_robinhood" in intervals
 
 
-def test_signal_loop_always_scheduled(monkeypatch) -> None:
+def test_radar_freshness_loops_default_on_in_app_process(monkeypatch) -> None:
     for var in (
         "MARKET_RADAR_OPTION_SOURCE",
+        "MARKET_IN_PROCESS_HEAVY_REFRESH",
         "MARKET_RADAR_REFRESH_SECONDS",
         "MARKET_SOURCE_REFRESH_SECONDS",
         "MARKET_LEARNING_REFRESH_SECONDS",
@@ -74,9 +79,18 @@ def test_signal_loop_always_scheduled(monkeypatch) -> None:
     intervals = scheduler.job_intervals()
     assert intervals["refresh_options_radar_signal_robinhood"] == 900
     assert intervals["update_robinhood_options"] == 3600
-    assert intervals["refresh_options_radar_deterministic"] == 21600  # heavy learning, slow cadence
+    assert "refresh_options_radar_deterministic" not in intervals
     assert intervals["update_market_environment"] == 3600
     assert intervals["update_preopen_daily_brief_scheduled"] == 300
+
+
+def test_heavy_refresh_loops_can_be_enabled_for_app_process(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
+    intervals = scheduler.job_intervals()
+    assert intervals["refresh_options_radar_signal_robinhood"] == 900
+    assert intervals["update_robinhood_options"] == 3600
+    assert intervals["refresh_options_radar_deterministic"] == 21600
 
 
 def test_market_environment_refresh_can_be_disabled(monkeypatch) -> None:
@@ -96,6 +110,7 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
 def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
     for var in ("MARKET_RADAR_OPTION_SOURCE", "MARKET_AGENT_REFRESH_SECONDS"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     import investment_panel.core.config as config
 
     monkeypatch.setattr(
@@ -110,6 +125,7 @@ def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
 def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.delenv("MARKET_AGENT_REFRESH_SECONDS", raising=False)
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     status = scheduler.scheduler_status(
         {"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 123}}}
     )
@@ -132,6 +148,7 @@ def test_agent_pass_can_be_disabled(monkeypatch) -> None:
 
 def test_learning_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     monkeypatch.setenv("MARKET_LEARNING_REFRESH_SECONDS", "0")
     intervals = scheduler.job_intervals()
     assert "refresh_options_radar_deterministic" not in intervals

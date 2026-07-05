@@ -12,6 +12,7 @@ from app import deps as api_deps
 from app import main as api_main
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.decision import build_source_freshness, classify_freshness, symbol_freshness_detail
+from investment_panel.core.decision.service import refresh_decision_read_models
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.source_ingestion.health import record_verified_sources
 from investment_panel.core.sources import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, source_ingestion_audit
@@ -525,6 +526,7 @@ def test_decision_grade_api_contract_routes_smoke(
 ) -> None:
     db_path = seed_decision_fixture(tmp_path)
     monkeypatch.setattr(api_deps, "load_config", lambda: config_for(db_path))
+    api_main._invalidate_context_cache()
     client = TestClient(api_main.app)
 
     response = client.get(path)
@@ -680,6 +682,7 @@ def seed_decision_fixture(tmp_path: Path) -> Path:
             "INSERT INTO provider_runs VALUES ('run-yf', 'yfinance', 'earnings', ?, ?, 'failed', 'calendar fetch failed', '{}')",
             [stale, stale],
         )
+        refresh_decision_read_models(con, config_for(db_path))
     return db_path
 
 

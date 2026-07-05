@@ -52,6 +52,23 @@ def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
     return value
 
 
+def _env_int_optional(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value if value > 0 else 0
+
+
+def _heavy_refresh_enabled() -> bool:
+    return os.environ.get("MARKET_IN_PROCESS_HEAVY_REFRESH", "0").strip().lower() not in _TRUTHY_OFF
+
+
 def scheduler_enabled() -> bool:
     return os.environ.get("MARKET_SCHEDULER_ENABLED", "1").strip().lower() not in _TRUTHY_OFF
 
@@ -77,19 +94,29 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     else:
         signal_job, source_job = "refresh_options_radar_signal_robinhood", "update_robinhood_options"
 
-    # Fast fresh-signal rematerialization (no heavy learning pass) — runs often so
-    # the radar reflects the latest chains and ranking quickly without reprocessing
-    # the full event-sourced history each cycle.
-    intervals: dict[str, int] = {signal_job: _env_int("MARKET_RADAR_REFRESH_SECONDS", 900)}
-    # Source pull (option chains). Hourly by default; 0 disables (e.g. rely on the
-    # daily full_market_refresh for source freshness).
-    source_seconds = _env_int("MARKET_SOURCE_REFRESH_SECONDS", 3600, allow_zero=True)
+    heavy_refresh = _heavy_refresh_enabled()
+    intervals: dict[str, int] = {}
+    # Fast fresh-signal rematerialization keeps /options-radar on the latest
+    # usable chain snapshot while the API owns the DuckDB writer.
+    radar_seconds = _env_int_optional("MARKET_RADAR_REFRESH_SECONDS")
+    if radar_seconds is None:
+        radar_seconds = 900
+    if radar_seconds > 0:
+        intervals[signal_job] = radar_seconds
+    # Source pull (option chains). The external hourly job skips when the app is
+    # active, so this must run in-process by default or the radar can freeze on
+    # days-old data. Set MARKET_SOURCE_REFRESH_SECONDS=0 to disable explicitly.
+    source_seconds = _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS")
+    if source_seconds is None:
+        source_seconds = 3600
     if source_seconds > 0:
         intervals[source_job] = source_seconds
     # Full deterministic refresh incl. learning/attribution/cohorts — heavy, so it
     # runs on a slow cadence (default 6h). 0 disables (daily full_market_refresh
     # also covers it).
-    learning_seconds = _env_int("MARKET_LEARNING_REFRESH_SECONDS", 21600, allow_zero=True)
+    learning_seconds = _env_int_optional("MARKET_LEARNING_REFRESH_SECONDS")
+    if learning_seconds is None:
+        learning_seconds = 21600 if heavy_refresh else 0
     if learning_seconds > 0:
         intervals["refresh_options_radar_deterministic"] = learning_seconds
     # Daily agent thesis/postmortem pass (Codex workers, LLM-backed). Default daily
@@ -100,7 +127,9 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     # is down).
     # Auto-run is the scheduled pass: it requires the agent's `enabled` (auto-run)
     # toggle. On-demand runs use a separate forced job and are never scheduled here.
-    agent_seconds = _env_int("MARKET_AGENT_REFRESH_SECONDS", 86400, allow_zero=True)
+    agent_seconds = _env_int_optional("MARKET_AGENT_REFRESH_SECONDS")
+    if agent_seconds is None:
+        agent_seconds = 86400 if heavy_refresh else 0
     auto_run_enabled = True
     try:
         option_agent = _option_agent_config(config)
@@ -113,11 +142,15 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
     # Live opencli social (X) ingestion — conservative ~30 min by default; 0 disables.
-    social_seconds = _env_int("MARKET_SOCIAL_REFRESH_SECONDS", 1800, allow_zero=True)
+    social_seconds = _env_int_optional("MARKET_SOCIAL_REFRESH_SECONDS")
+    if social_seconds is None:
+        social_seconds = 1800 if heavy_refresh else 0
     if social_seconds > 0:
         intervals["update_social_sources"] = social_seconds
     # Live opencli research (news + blogs) ingestion — hourly by default; 0 disables.
-    research_seconds = _env_int("MARKET_RESEARCH_REFRESH_SECONDS", 3600, allow_zero=True)
+    research_seconds = _env_int_optional("MARKET_RESEARCH_REFRESH_SECONDS")
+    if research_seconds is None:
+        research_seconds = 3600 if heavy_refresh else 0
     if research_seconds > 0:
         intervals["update_research_sources"] = research_seconds
     # Broad-market valuation and asset-matrix inputs for /market. These are small
@@ -141,6 +174,7 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
     return {
         "enabled": os.environ.get("MARKET_SCHEDULER_ENABLED", "1"),
+        "heavy_refresh_enabled": "1" if _heavy_refresh_enabled() else "0",
         "jobs": intervals,
         "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
         "radar_refresh_seconds": str(_first_interval(intervals, "refresh_options_radar_signal")),

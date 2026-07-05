@@ -7,7 +7,7 @@ from investment_panel.core.db import db, init_db, query_rows
 
 from investment_panel.core.panel.coerce import decode_fields
 from investment_panel.core.panel.disclosures import _compact_empty_fields
-from investment_panel.core.panel.read_options import RadarDisplayContext, _radar_current_candidate_time
+from investment_panel.core.panel.read_options import RadarDisplayContext, _radar_current_candidate_time, radar_display_strategy_version
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -27,6 +27,7 @@ def agent_thesis(con: Any, radar_context: RadarDisplayContext | None = None) -> 
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -34,6 +35,7 @@ def agent_thesis(con: Any, radar_context: RadarDisplayContext | None = None) -> 
             SELECT DISTINCT ticker
             FROM candidate_event
             WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+              AND strategy_version = ?
               AND state != 'REJECT'
         )
         SELECT thesis_id, ticker, created_at, agent_version, bull_target_price,
@@ -45,7 +47,7 @@ def agent_thesis(con: Any, radar_context: RadarDisplayContext | None = None) -> 
         ORDER BY created_at DESC, ticker
         LIMIT 500
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("required_proofs", "invalidation_conditions", "catalysts", "evidence_refs", "raw"))) for row in rows]
 
@@ -56,6 +58,7 @@ def agent_thesis_request(con: Any, radar_context: RadarDisplayContext | None = N
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -63,6 +66,7 @@ def agent_thesis_request(con: Any, radar_context: RadarDisplayContext | None = N
             SELECT event_id
             FROM candidate_event
             WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+              AND strategy_version = ?
               AND state != 'REJECT'
         )
         SELECT request_id, created_at, ticker, event_id, strategy_version,
@@ -75,7 +79,7 @@ def agent_thesis_request(con: Any, radar_context: RadarDisplayContext | None = N
                  created_at DESC
         LIMIT 500
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("context", "raw"))) for row in rows]
 
@@ -86,6 +90,7 @@ def agent_thesis_validation(con: Any, radar_context: RadarDisplayContext | None 
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -93,6 +98,7 @@ def agent_thesis_validation(con: Any, radar_context: RadarDisplayContext | None 
             SELECT event_id
             FROM candidate_event
             WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+              AND strategy_version = ?
               AND state != 'REJECT'
         )
         SELECT validation_id, thesis_id, ticker, strategy_version,
@@ -106,7 +112,7 @@ def agent_thesis_validation(con: Any, radar_context: RadarDisplayContext | None 
         ORDER BY validation_date DESC NULLS LAST, validated_at DESC, ticker
         LIMIT 500
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("red_team_flags", "evidence_refs", "raw"))) for row in rows]
 
@@ -153,6 +159,7 @@ def candidate_event(con: Any, radar_context: RadarDisplayContext | None = None) 
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -162,6 +169,7 @@ def candidate_event(con: Any, radar_context: RadarDisplayContext | None = None) 
                quality_status, quality_flags, raw
         FROM candidate_event
         WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+          AND strategy_version = ?
           AND state != 'REJECT'
         ORDER BY CASE state WHEN 'FIRE' THEN 0 WHEN 'SETUP' THEN 1 WHEN 'WATCH' THEN 2 ELSE 3 END,
                  score DESC NULLS LAST,
@@ -169,7 +177,7 @@ def candidate_event(con: Any, radar_context: RadarDisplayContext | None = None) 
                  contract_id
         LIMIT 2000
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("quality_flags", "raw"))) for row in rows]
 
@@ -217,6 +225,7 @@ def candidate_event_mark(con: Any, radar_context: RadarDisplayContext | None = N
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -224,6 +233,7 @@ def candidate_event_mark(con: Any, radar_context: RadarDisplayContext | None = N
             SELECT event_id
             FROM candidate_event
             WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+              AND strategy_version = ?
               AND state != 'REJECT'
         )
         SELECT mark_id, event_id, contract_id, ticker, strategy_version,
@@ -237,7 +247,7 @@ def candidate_event_mark(con: Any, radar_context: RadarDisplayContext | None = N
         ORDER BY mark_time DESC, ticker, contract_id
         LIMIT 1000
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
@@ -248,6 +258,7 @@ def candidate_event_attribution(con: Any, radar_context: RadarDisplayContext | N
     current = _radar_current_candidate_time(con, radar_context)
     if not current:
         return []
+    strategy_version = radar_context.strategy_version if radar_context else radar_display_strategy_version(con)
     rows = query_rows(
         con,
         """
@@ -255,6 +266,7 @@ def candidate_event_attribution(con: Any, radar_context: RadarDisplayContext | N
             SELECT event_id
             FROM candidate_event
             WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP)
+              AND strategy_version = ?
               AND state != 'REJECT'
         )
         SELECT attribution_id, event_id, contract_id, ticker, strategy_version,
@@ -267,7 +279,7 @@ def candidate_event_attribution(con: Any, radar_context: RadarDisplayContext | N
         ORDER BY snapshot_time DESC, ticker, contract_id
         LIMIT 1000
         """,
-        [current],
+        [current, strategy_version],
     )
     return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
 
@@ -400,7 +412,22 @@ def missed_winner_event(con: Any) -> list[dict[str, Any]]:
         LIMIT 1000
         """,
     )
-    return [_compact_empty_fields(decode_fields(row, ("raw",))) for row in rows]
+    out = []
+    for row in rows:
+        decoded = _compact_empty_fields(decode_fields(row, ("raw",)))
+        raw = _loads(decoded.get("raw"))
+        observed = _loads(raw.get("observed_window"))
+        candidate = _loads(raw.get("candidate_context"))
+        decoded["outcome_basis"] = raw.get("outcome_basis") or "trailing_stop_realized_exit"
+        decoded["observed_peak_return"] = raw.get("observed_peak_return")
+        decoded["winner_elapsed_hours"] = observed.get("winner_elapsed_hours")
+        decoded["snapshot_count"] = observed.get("snapshot_count")
+        decoded["candidate_event_count"] = candidate.get("event_count")
+        decoded["candidate_best_state"] = candidate.get("best_state_before_winner")
+        decoded["tradability_flag_count"] = len(raw.get("tradability_flags") or [])
+        decoded["tradability_flags"] = raw.get("tradability_flags") or []
+        out.append(_compact_empty_fields(decoded))
+    return out
 
 
 

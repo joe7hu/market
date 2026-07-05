@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.options_radar import display_snapshot_time, market_session, newest_snapshot_time, snapshot_session_label
+from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, display_snapshot_time, market_session, newest_snapshot_time, snapshot_session_label
 
 from investment_panel.core.panel.coerce import _iso_or_none, decode_fields
 from investment_panel.core.panel.disclosures import _compact_empty_fields
@@ -121,9 +121,43 @@ class RadarDisplayContext:
     market_session: str
     frozen_to_last_rth: bool
     snapshot_label: str
+    strategy_version: str
 
 
-def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
+def radar_display_strategy_version(con: Any) -> str:
+    """Strategy version the radar UI should render.
+
+    Candidate generation may run several shadow/forward-test strategies for
+    learning, but the user-facing radar should show one decision surface. Prefer
+    an explicitly promoted strategy, then active, then the deterministic default.
+    """
+
+    rows = query_rows(
+        con,
+        """
+        SELECT strategy_version
+        FROM option_strategy_versions
+        ORDER BY CASE
+                   WHEN status = 'promoted' THEN 0
+                   WHEN status = 'active' THEN 1
+                   WHEN strategy_version = ? THEN 2
+                   WHEN status = 'shadow' THEN 3
+                   WHEN status = 'forward_test' THEN 4
+                   ELSE 5
+                 END,
+                 promoted_at DESC NULLS LAST,
+                 created_at DESC NULLS LAST,
+                 strategy_version
+        LIMIT 1
+        """,
+        [DEFAULT_STRATEGY_VERSION],
+    )
+    if not rows:
+        return DEFAULT_STRATEGY_VERSION
+    return str(rows[0].get("strategy_version") or DEFAULT_STRATEGY_VERSION)
+
+
+def _radar_display_times(con: Any, strategy_version: str) -> tuple[str | None, str | None]:
     """'Current' snapshot + candidate times for the radar views.
 
     The raw-chain "Option data" badge shows the newest snapshot we have (even an
@@ -143,12 +177,22 @@ def _radar_display_times(con: Any) -> tuple[str | None, str | None]:
     # show zero opportunities. display_snapshot_time falls back to the newest when
     # no regular-hours snapshot exists yet (e.g. the market has been closed since
     # the last refresh).
-    opps = [iso(r["snapshot_time"]) for r in query_rows(con, "SELECT DISTINCT snapshot_time FROM option_radar_opportunity WHERE snapshot_time IS NOT NULL")]
+    opps = [
+        iso(r["snapshot_time"])
+        for r in query_rows(
+            con,
+            "SELECT DISTINCT snapshot_time FROM option_radar_opportunity WHERE snapshot_time IS NOT NULL AND strategy_version = ?",
+            [strategy_version],
+        )
+    ]
+    if not opps:
+        opps = [iso(r["snapshot_time"]) for r in query_rows(con, "SELECT DISTINCT snapshot_time FROM option_radar_opportunity WHERE snapshot_time IS NOT NULL")]
     return newest_snapshot_time(snaps), display_snapshot_time(opps)
 
 
 def radar_display_context(con: Any) -> RadarDisplayContext:
-    display_snap, display_candidate = _radar_display_times(con)
+    strategy_version = radar_display_strategy_version(con)
+    display_snap, display_candidate = _radar_display_times(con, strategy_version)
     session = market_session()
     newest = query_rows(con, "SELECT max(snapshot_time) AS t FROM candidate_event")
     newest_time = newest[0]["t"] if newest else None
@@ -159,6 +203,7 @@ def radar_display_context(con: Any) -> RadarDisplayContext:
         market_session=session,
         frozen_to_last_rth=frozen,
         snapshot_label=snapshot_session_label(display_snap),
+        strategy_version=strategy_version,
     )
 
 
@@ -178,10 +223,9 @@ def _radar_current_candidate_time(con: Any, radar_context: RadarDisplayContext |
     return (radar_context or radar_display_context(con)).candidate_time
 
 
-
-
 def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
     context = radar_context or radar_display_context(con)
+    strategy_version = context.strategy_version
     rows = query_rows(
         con,
         """
@@ -190,6 +234,9 @@ def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = N
         ),
         latest_candidates AS (
             SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
+        ),
+        display_strategy AS (
+            SELECT ? AS strategy_version
         )
         SELECT
             (SELECT snapshot_time FROM latest_snapshot) AS latest_snapshot_time,
@@ -203,63 +250,73 @@ def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = N
                 SELECT count(DISTINCT ticker)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state != 'REJECT'
             ) AS opportunity_tickers_current,
             (
                 SELECT count(*)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state != 'REJECT'
             ) AS opportunity_rows_current,
             (
                 SELECT count(*)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state = 'FIRE'
             ) AS fire_rows_current,
             (
                 SELECT count(*)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state = 'SETUP'
             ) AS setup_rows_current,
             (
                 SELECT count(*)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state = 'WATCH'
             ) AS watch_rows_current,
             (
                 SELECT count(*)
                 FROM candidate_event
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND state = 'REJECT'
             ) AS reject_rows_current,
             (
                 SELECT count(*)
                 FROM option_radar_opportunity
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND tier = 'Exceptional'
             ) AS exceptional_opportunities_current,
             (
                 SELECT count(*)
                 FROM option_radar_opportunity
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND tier = 'Service Bug'
             ) AS repair_opportunities_current,
             (
                 SELECT count(*)
                 FROM option_radar_opportunity
                 WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+                  AND strategy_version = (SELECT strategy_version FROM display_strategy)
                   AND tier = 'Research'
             ) AS research_opportunities_current
         """,
-        [context.snapshot_time, context.candidate_time],
+        [context.snapshot_time, context.candidate_time, strategy_version],
     )
     for row in rows:
         row["market_session"] = context.market_session
         row["frozen_to_last_rth"] = context.frozen_to_last_rth
         row["latest_snapshot_label"] = context.snapshot_label
+        row["strategy_version"] = strategy_version
     return [_compact_empty_fields(row) for row in rows]
 
 
@@ -267,11 +324,15 @@ def option_radar_summary(con: Any, radar_context: RadarDisplayContext | None = N
 
 def option_radar_opportunity(con: Any, radar_context: RadarDisplayContext | None = None) -> list[dict[str, Any]]:
     context = radar_context or radar_display_context(con)
+    strategy_version = context.strategy_version
     rows = query_rows(
         con,
         """
         WITH latest_candidates AS (
             SELECT TRY_CAST(? AS TIMESTAMP) AS snapshot_time
+        ),
+        display_strategy AS (
+            SELECT ? AS strategy_version
         )
         SELECT opportunity_id, snapshot_time, ticker, strategy_version, tier,
                primary_event_id, primary_contract_id, primary_state,
@@ -286,13 +347,14 @@ def option_radar_opportunity(con: Any, radar_context: RadarDisplayContext | None
                quality_flags, evidence_refs, alternative_contracts, raw
         FROM option_radar_opportunity
         WHERE snapshot_time = (SELECT snapshot_time FROM latest_candidates)
+          AND strategy_version = (SELECT strategy_version FROM display_strategy)
         ORDER BY CASE tier WHEN 'Exceptional' THEN 0 WHEN 'Research' THEN 1 WHEN 'Watch' THEN 2 WHEN 'Service Bug' THEN 3 ELSE 4 END,
                  conviction_score DESC NULLS LAST,
                  required_move_pct ASC NULLS LAST,
                  ticker
         LIMIT 500
         """,
-        [context.candidate_time],
+        [context.candidate_time, strategy_version],
     )
     return [
         _compact_empty_fields(

@@ -113,7 +113,12 @@ def refresh_options_radar(
         evaluation_rows = {}
         cohort_rows = 0
     opportunity_rows = sum(
-        refresh_option_radar_opportunities(con, symbols=symbols, strategy_version=version)
+        refresh_option_radar_opportunities(
+            con,
+            symbols=symbols,
+            strategy_version=version,
+            read_snapshot=fast_snapshot_time,
+        )
         for version in strategy_versions
     )
     alert_rows = sum(

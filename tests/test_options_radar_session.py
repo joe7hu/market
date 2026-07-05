@@ -405,3 +405,151 @@ def test_explicit_opportunity_snapshot_refresh_preserves_other_snapshots(tmp_pat
         {"opportunity_id": "newer-amd", "ticker": "AMD"},
         {"opportunity_id": "rebuilt-NVDA-2026-06-09T15:00:00", "ticker": "NVDA"},
     ]
+
+
+def test_signal_refresh_scopes_opportunities_to_fast_snapshot(monkeypatch) -> None:
+    import investment_panel.core.options_radar._impl as impl
+
+    calls: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(impl, "register_default_strategy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(impl, "register_strategy_families", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(impl, "candidate_strategy_versions", lambda *_args, **_kwargs: ["v1", "v2"])
+    monkeypatch.setattr(impl, "persist_option_snapshots", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "persist_spread_snapshots", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "_latest_option_snapshot_time", lambda *_args, **_kwargs: "2026-06-09T15:00:00")
+    monkeypatch.setattr(impl, "refresh_option_features", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "refresh_option_flow_features", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "refresh_stock_features_for_option_snapshots", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "refresh_vol_surface_features", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "generate_candidate_events", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(impl, "refresh_radar_alerts", lambda *_args, **_kwargs: 0)
+
+    def fake_refresh_opportunities(*_args, strategy_version: str, read_snapshot: str | None = None, **_kwargs) -> int:
+        calls.append((strategy_version, read_snapshot))
+        return 0
+
+    monkeypatch.setattr(impl, "refresh_option_radar_opportunities", fake_refresh_opportunities)
+
+    impl.refresh_options_radar(object(), strategy_version="v1", source="robinhood", include_agent_work=False, include_learning=False)
+
+    assert calls == [("v1", "2026-06-09T15:00:00"), ("v2", "2026-06-09T15:00:00")]
+
+
+def test_options_radar_panel_renders_one_display_strategy(tmp_path) -> None:
+    from app.data_access import load_panel_scope_data
+    from investment_panel.core.db import db, init_db
+
+    db_path = tmp_path / "one-display-strategy.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_strategy_versions
+                (strategy_version, strategy_name, version, created_at, status)
+            VALUES
+                (?, 'default', 1, TIMESTAMP '2026-06-01 12:00:00', 'shadow'),
+                ('breakdown_put_v1', 'breakdown', 1, TIMESTAMP '2026-06-01 12:01:00', 'forward_test')
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+        con.execute(
+            """
+            INSERT INTO option_snapshot
+                (snapshot_time, ticker, underlying_price, expiration, strike, option_type, bid, ask, mid, data_source, contract_id)
+            VALUES
+                (TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 100, DATE '2027-09-17', 120, 'call', 2.9, 3.1, 3.0, 'test', 'c-default')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO candidate_event
+                (event_id, snapshot_time, ticker, contract_id, strategy_version, state, score)
+            VALUES
+                ('ev-default', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 'c-default', ?, 'FIRE', 90),
+                ('ev-forward', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 'c-forward', 'breakdown_put_v1', 'FIRE', 95)
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state, conviction_score)
+            VALUES
+                ('opp-default', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', ?, 'Research',
+                 'ev-default', 'c-default', 'FIRE', 80),
+                ('opp-forward', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 'breakdown_put_v1', 'Research',
+                 'ev-forward', 'c-forward', 'FIRE', 90)
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+
+    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+
+    assert [row["strategy_version"] for row in panel.rows("option_radar_opportunity")] == [DEFAULT_STRATEGY_VERSION]
+    assert [row["strategy_version"] for row in panel.rows("candidate_event")] == [DEFAULT_STRATEGY_VERSION]
+    assert panel.rows("option_radar_summary")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
+
+
+def test_options_radar_panel_falls_back_to_display_strategy_last_good_snapshot(tmp_path) -> None:
+    from app.data_access import load_panel_scope_data
+    from investment_panel.core.db import db, init_db
+
+    db_path = tmp_path / "display-strategy-last-good.duckdb"
+    init_db(db_path)
+    with db(db_path) as con:
+        con.execute(
+            """
+            INSERT INTO option_strategy_versions
+                (strategy_version, strategy_name, version, created_at, status)
+            VALUES
+                (?, 'default', 1, TIMESTAMP '2026-06-01 12:00:00', 'shadow'),
+                ('breakdown_put_v1', 'breakdown', 1, TIMESTAMP '2026-06-01 12:01:00', 'forward_test')
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+        con.execute(
+            """
+            INSERT INTO option_snapshot
+                (snapshot_time, ticker, underlying_price, expiration, strike, option_type, bid, ask, mid, data_source, contract_id)
+            VALUES
+                (TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 100, DATE '2027-09-17', 120, 'call', 2.9, 3.1, 3.0, 'test', 'c-default'),
+                (TIMESTAMP '2026-06-10 15:00:00', 'AMD', 100, DATE '2027-09-17', 120, 'put', 2.9, 3.1, 3.0, 'test', 'c-forward')
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO candidate_event
+                (event_id, snapshot_time, ticker, contract_id, strategy_version, state, score)
+            VALUES
+                ('ev-default', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', 'c-default', ?, 'FIRE', 90),
+                ('ev-forward', TIMESTAMP '2026-06-10 15:00:00', 'AMD', 'c-forward', 'breakdown_put_v1', 'FIRE', 95)
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+        con.execute(
+            """
+            INSERT INTO option_radar_opportunity
+                (opportunity_id, snapshot_time, ticker, strategy_version, tier,
+                 primary_event_id, primary_contract_id, primary_state, conviction_score)
+            VALUES
+                ('opp-default', TIMESTAMP '2026-06-09 15:00:00', 'TSLA', ?, 'Research',
+                 'ev-default', 'c-default', 'FIRE', 80),
+                ('opp-forward', TIMESTAMP '2026-06-10 15:00:00', 'AMD', 'breakdown_put_v1', 'Research',
+                 'ev-forward', 'c-forward', 'FIRE', 90)
+            """,
+            [DEFAULT_STRATEGY_VERSION],
+        )
+
+    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+
+    assert [(row["ticker"], row["strategy_version"]) for row in panel.rows("option_radar_opportunity")] == [
+        ("TSLA", DEFAULT_STRATEGY_VERSION)
+    ]
+    assert [(row["ticker"], row["strategy_version"]) for row in panel.rows("candidate_event")] == [
+        ("TSLA", DEFAULT_STRATEGY_VERSION)
+    ]
+    summary = panel.rows("option_radar_summary")[0]
+    assert summary["latest_candidate_time"] == "2026-06-09T15:00:00"
+    assert summary["strategy_version"] == DEFAULT_STRATEGY_VERSION
