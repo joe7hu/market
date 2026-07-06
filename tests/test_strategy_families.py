@@ -14,6 +14,7 @@ from investment_panel.core.options_radar import (
 
 BREAKDOWN = STRATEGY_FAMILY_PRESETS["breakdown_put_v1"]
 CATALYST = STRATEGY_FAMILY_PRESETS["catalyst_call_v1"]
+SHORT_DATED_LOTTERY = STRATEGY_FAMILY_PRESETS["short_dated_lottery_call_v1"]
 DEEP_LOTTERY = STRATEGY_FAMILY_PRESETS["deep_otm_lottery_call_v1"]
 
 
@@ -95,6 +96,32 @@ def _deep_lottery_row(**overrides) -> dict:
     return row
 
 
+def _short_dated_lottery_row(**overrides) -> dict:
+    row = {
+        "snapshot_time": "2026-06-10T14:00:00",
+        "contract_id": "NVDA_C_SHORT_LOTTO",
+        "ticker": "NVDA",
+        "option_type": "call",
+        "underlying_price": 100.0,
+        "strike": 130.0,
+        "mid": 0.35,
+        "dte": 21,
+        "delta": 0.08,
+        "iv": 0.70,
+        "spread_pct": 0.18,
+        "open_interest": 250,
+        "volume": 25,
+        "iv_percentile": 80.0,
+        "required_move_10x_pct": 2.5,
+        "price": 100.0,
+        "ma_50": 105.0,
+        "rs_vs_qqq_20d": 0.12,
+        "stock_features_raw": json.dumps({"rv_60d": 0.85}),
+    }
+    row.update(overrides)
+    return row
+
+
 def test_breakdown_put_accepts_put_and_mirrors_stock_gates():
     event = build_candidate_event(_put_row(), "breakdown_put_v1", BREAKDOWN)
     assert event is not None
@@ -135,6 +162,29 @@ def test_deep_otm_lottery_call_accepts_low_delta_leaps():
     assert event["raw"]["strategy_family"] == "deep_otm_lottery_call"
 
 
+def test_short_dated_lottery_call_accepts_low_delta_short_dated_calls():
+    event = build_candidate_event(_short_dated_lottery_row(), "short_dated_lottery_call_v1", SHORT_DATED_LOTTERY)
+
+    assert event is not None
+    assert "dte_outside_strategy_range" not in event["trigger_reason"]
+    assert "delta_outside_strategy_range" not in event["trigger_reason"]
+    assert "spread_usable" in event["trigger_reason"]
+    assert event["raw"]["strategy_family"] == "short_dated_lottery_call"
+
+
+def test_short_dated_lottery_call_keeps_strict_liquidity_gates():
+    event = build_candidate_event(
+        _short_dated_lottery_row(spread_pct=0.55, open_interest=10, volume=0),
+        "short_dated_lottery_call_v1",
+        SHORT_DATED_LOTTERY,
+    )
+
+    assert event is not None
+    assert "spread_reject" in event["trigger_reason"]
+    assert "open_interest_below_threshold" in event["trigger_reason"]
+    assert "volume_below_threshold" in event["trigger_reason"]
+
+
 def test_register_families_and_version_list(tmp_path):
     from investment_panel.core.db import db, init_db, query_rows
 
@@ -150,5 +200,6 @@ def test_register_families_and_version_list(tmp_path):
     assert written == len(STRATEGY_FAMILY_PRESETS)
     assert versions[0] == DEFAULT_STRATEGY_VERSION  # primary first
     assert "catalyst_call_v1" in versions and "breakdown_put_v1" in versions
+    assert "short_dated_lottery_call_v1" in versions
     assert "deep_otm_lottery_call_v1" in versions
     assert rows[0]["status"] == "forward_test"

@@ -8,6 +8,8 @@ from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.coerce import (_json)
 
 def _proposed_family(filter_reason: str) -> str:
+    if "dte_outside_strategy_range" in filter_reason:
+        return "short_dated_lottery_call"
     if "delta" in filter_reason:
         return "leap_10x_momentum_lottery"
     if "iv" in filter_reason:
@@ -20,6 +22,15 @@ def _proposed_family(filter_reason: str) -> str:
 
 
 def _proposal_parameter_changes(filter_reason: str) -> dict[str, Any]:
+    if "dte_outside_strategy_range" in filter_reason:
+        return {
+            "dte_min": 2,
+            "dte_max": 45,
+            "delta_min": 0.01,
+            "delta_max": 0.20,
+            "max_required_move_pct": 5.0,
+            "candidate_note": "test short-dated low-delta lottery sleeve separately with strict liquidity gates",
+        }
     if "delta_outside_strategy_range" in filter_reason:
         return {"delta_min": 0.10, "delta_max": 0.45, "candidate_note": "test lower-delta lottery sleeve separately"}
     if "iv_percentile" in filter_reason:

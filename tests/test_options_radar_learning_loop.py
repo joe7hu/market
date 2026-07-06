@@ -11,6 +11,7 @@ from investment_panel.core.options_radar import (
 from investment_panel.core.options_radar.opportunity_scoring import _learning_score
 from investment_panel.core.options_radar.shadow import _exploration_sampled
 from investment_panel.core.options_radar.strategy_outcomes import _realized_series
+from investment_panel.core.options_radar.strategy_common import _proposed_family
 from investment_panel.core.options_radar.strategy_proposals import build_strategy_mutation_proposal
 from investment_panel.core.panel.read_learning import exploration_gate_report
 
@@ -115,3 +116,29 @@ def test_same_family_proposals_do_not_collide_on_version() -> None:
     }
     assert len(set(versions.values())) == 3
     assert all(v.startswith("leap_10x_liquidity_watch__") for v in versions.values())
+
+
+def test_dte_missed_winners_propose_short_dated_lottery_sleeve() -> None:
+    proposal = build_strategy_mutation_proposal(
+        {
+            "filter_reason": "dte_outside_strategy_range",
+            "proposed_strategy_family": _proposed_family("dte_outside_strategy_range"),
+            "missed_count": 12,
+            "best_return": 8.0,
+            "missed_ids": ["missed-1"],
+        },
+        "leap_10x_reversal_v1",
+    )
+
+    assert proposal is not None
+    assert proposal["proposed_strategy_version"].startswith("short_dated_lottery_call__")
+    assert proposal["proposed_parameter_changes"] == {
+        "dte_min": 2,
+        "dte_max": 45,
+        "delta_min": 0.01,
+        "delta_max": 0.20,
+        "max_required_move_pct": 5.0,
+        "candidate_note": "test short-dated low-delta lottery sleeve separately with strict liquidity gates",
+    }
+    assert proposal["requires_backtest"] is True
+    assert proposal["requires_forward_test"] is True
