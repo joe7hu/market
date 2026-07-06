@@ -11,7 +11,9 @@ from investment_panel.core.db import (json_dumps, query_rows)
 from investment_panel.core.options_radar.coerce import (_elapsed_days, _json, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 
-MIN_CALIBRATION_MATURE_DAYS = 60
+MIN_CALIBRATION_MATURE_DAYS = 20
+SHORT_HORIZON_CALIBRATION_MATURE_DAYS = 5
+CATALYST_CALIBRATION_MATURE_DAYS = 10
 # Activation floor for the calibration *flag*. Lowered from 30: per-bin Bayesian
 # shrinkage (below) keeps a small-sample map honest, so it no longer takes a hard
 # 30-observation cliff before the map does anything useful.
@@ -112,10 +114,11 @@ def refresh_conviction_calibration(con: Any, *, strategy_version: str = DEFAULT_
     )
     samples: list[tuple[float, int, int]] = []
     for row in rows:
-        observed_days = _elapsed_days(row.get("snapshot_time"), row.get("mark_time"))
-        if observed_days is None or observed_days < MIN_CALIBRATION_MATURE_DAYS:
-            continue
         ev = _json(row.get("event_raw")).get("ev") or {}
+        event_raw = _json(row.get("event_raw"))
+        observed_days = _elapsed_days(row.get("snapshot_time"), row.get("mark_time"))
+        if observed_days is None or observed_days < _calibration_mature_days(event_raw):
+            continue
         predicted = _number(ev.get("p_2x"))
         if predicted is None:
             continue
@@ -177,6 +180,16 @@ def refresh_conviction_calibration(con: Any, *, strategy_version: str = DEFAULT_
         ],
     )
     return written
+
+
+def _calibration_mature_days(event_raw: dict[str, Any]) -> int:
+    family = str(event_raw.get("strategy_family") or "")
+    dte = _number(event_raw.get("dte"))
+    if family.startswith("short_dated_lottery") or (dte is not None and dte <= 45):
+        return SHORT_HORIZON_CALIBRATION_MATURE_DAYS
+    if family == "catalyst_call":
+        return CATALYST_CALIBRATION_MATURE_DAYS
+    return MIN_CALIBRATION_MATURE_DAYS
 
 
 def load_conviction_calibration(con: Any, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:

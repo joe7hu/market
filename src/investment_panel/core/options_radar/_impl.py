@@ -8,6 +8,7 @@ wires them together. The package ``__init__`` re-exports the full public surface
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
 from investment_panel.core.db import (query_rows)
@@ -154,6 +155,51 @@ def refresh_options_radar(
     }
 
 
+def refresh_options_radar_learning_marks(
+    con: Any,
+    *,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    recent_days: int = 10,
+    include_calibration: bool = False,
+) -> dict[str, int]:
+    """Cheap incremental learning pass for live short-horizon feedback."""
+
+    register_default_strategy(con, strategy_version)
+    register_strategy_families(con)
+    strategy_versions = candidate_strategy_versions(con, strategy_version)
+    cutoff = _recent_candidate_cutoff(con, days=recent_days)
+    shadow_rows = sum(create_shadow_trades(con, strategy_version=version, min_snapshot_time=cutoff) for version in strategy_versions)
+    exploration_rows = sum(
+        create_exploration_shadow_trades(con, strategy_version=version, min_snapshot_time=cutoff)
+        for version in strategy_versions
+    )
+    marked_rows = mark_shadow_trades(con)
+    mark_rows = sum(refresh_shadow_trade_marks(con, strategy_version=version, min_entry_time=cutoff) for version in strategy_versions)
+    candidate_mark_rows = sum(
+        refresh_candidate_event_marks(
+            con,
+            strategy_version=version,
+            min_snapshot_time=cutoff,
+            states=("FIRE", "SETUP", "WATCH"),
+        )
+        for version in strategy_versions
+    )
+    calibration_bins = (
+        sum(refresh_conviction_calibration(con, strategy_version=version) for version in strategy_versions)
+        if include_calibration
+        else 0
+    )
+    return {
+        "recent_days": recent_days,
+        "shadow_trades": shadow_rows,
+        "exploration_shadow_trades": exploration_rows,
+        "shadow_trades_marked": marked_rows,
+        "shadow_trade_marks": mark_rows,
+        "candidate_event_marks": candidate_mark_rows,
+        "conviction_calibration_bins": calibration_bins,
+    }
+
+
 def _latest_option_snapshot_time(con: Any, symbols: list[str] | None = None, *, source: str | None = None) -> str | None:
     symbol_filter = _symbol_filter(symbols, table_alias="s", column="ticker")
     source_filter = _source_filter(source, table_alias="s", column="data_source")
@@ -168,6 +214,21 @@ def _latest_option_snapshot_time(con: Any, symbols: list[str] | None = None, *, 
     )
     value = rows[0].get("snapshot_time") if rows else None
     return _iso(value) if value else None
+
+
+def _recent_candidate_cutoff(con: Any, *, days: int) -> str | None:
+    rows = query_rows(con, "SELECT max(snapshot_time) AS snapshot_time FROM candidate_event")
+    value = rows[0].get("snapshot_time") if rows else None
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        latest = value
+    else:
+        text = _iso(value)
+        if not text:
+            return None
+        latest = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return (latest - timedelta(days=max(1, int(days)))).isoformat()
 
 
 def _sum_count_dicts(rows: Any) -> dict[str, int]:

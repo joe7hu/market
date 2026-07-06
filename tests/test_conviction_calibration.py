@@ -91,3 +91,35 @@ def test_refresh_skips_immature_events(tmp_path):
         loaded = load_conviction_calibration(con, DEFAULT_STRATEGY_VERSION)
 
     assert loaded["calibrated"] is False  # no mature observations
+
+
+def test_short_dated_events_calibrate_after_five_days(tmp_path):
+    from investment_panel.core.db import db, init_db
+
+    init_db(tmp_path / "short-cal.duckdb")
+    with db(tmp_path / "short-cal.duckdb") as con:
+        for i in range(20):
+            eid = f"short{i}"
+            predicted = 0.2 if i % 2 == 0 else 0.8
+            hit = 1 if i % 2 == 1 else 0
+            con.execute(
+                "INSERT INTO candidate_event (event_id, snapshot_time, ticker, contract_id, strategy_version, state, raw) "
+                "VALUES (?, '2026-01-01T14:00:00', 'NVDA', ?, ?, 'FIRE', ?)",
+                [
+                    eid,
+                    f"short-c{i}",
+                    DEFAULT_STRATEGY_VERSION,
+                    json.dumps({"strategy_family": "short_dated_lottery_call", "dte": 21, "ev": {"p_2x": predicted}}),
+                ],
+            )
+            con.execute(
+                "INSERT INTO candidate_event_mark (mark_id, event_id, strategy_version, mark_time, max_return_since_alert, raw) "
+                "VALUES (?, ?, ?, '2026-01-06T14:00:00', ?, ?)",
+                [f"short-m{i}", eid, DEFAULT_STRATEGY_VERSION, 1.2 if hit else 0.1, json.dumps({"realized_exit_return": 1.2 if hit else 0.1})],
+            )
+
+        written = refresh_conviction_calibration(con, strategy_version=DEFAULT_STRATEGY_VERSION)
+        loaded = load_conviction_calibration(con, DEFAULT_STRATEGY_VERSION)
+
+    assert written >= 2
+    assert loaded["calibrated"] is True

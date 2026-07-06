@@ -12,7 +12,7 @@ from investment_panel.core.source_ingestion.utils import (stable_id)
 from investment_panel.core.options_radar.coerce import (_elapsed_days, _iso, _json_or_list, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION, MIN_FORWARD_TEST_DAYS)
 from investment_panel.core.options_radar.dbutil import (_strategy_parameters)
-from investment_panel.core.options_radar.strategy_outcomes import (_backtest_verdict, _cohort_definition, _forward_test_verdict, _historical_candidate_rows, _outcome_metrics, _proposed_strategy_parameters, _strategy_arm_significance, _strategy_outcome_records, _strategy_outcomes, _value_counts, _walk_forward_folds)
+from investment_panel.core.options_radar.strategy_outcomes import (_backtest_verdict, _cohort_definition, _forward_test_verdict, _historical_candidate_rows, _outcome_metrics, _proposed_strategy_parameters, _strategy_arm_significance, _strategy_outcome_records, _strategy_outcomes, _strategy_validation_objective, _value_counts, _walk_forward_folds)
 
 def refresh_strategy_cohort_results(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
     con.execute("DELETE FROM strategy_cohort_result WHERE strategy_version = ?", [strategy_version])
@@ -144,21 +144,30 @@ def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[s
         return None
     base_params = _strategy_parameters(con, proposal["strategy_version"])
     proposed_params = _proposed_strategy_parameters(base_params, proposal.get("proposed_parameter_changes"))
+    objective = _strategy_validation_objective(proposed_params)
     baseline = _strategy_outcomes(con, rows, proposal["strategy_version"], base_params)
     proposed = _strategy_outcomes(con, rows, proposal["proposed_strategy_version"], proposed_params)
     lookback_start = min(_iso(row["snapshot_time"]) for row in rows)
     lookback_end = max(_iso(row["snapshot_time"]) for row in rows)
-    # Test significance on the same metric the verdict claims to improve (5x is the
-    # primary win threshold the proposals target), not a looser 2x proxy. 5x events are
-    # rarer, so this honestly blocks more often on insufficient sample.
-    significance = _strategy_arm_significance(baseline, proposed, key="5x")
+    # Test significance on the same metric the verdict claims to improve. LEAPs use the
+    # multibagger objective; short-dated sleeves use fast observed-return metrics.
+    significance = _strategy_arm_significance(baseline, proposed, key=objective["significance_key"])
     ordered_rows = sorted(rows, key=lambda r: _iso(r.get("snapshot_time")))
     walk_forward = _walk_forward_folds(
         ordered_rows,
         lambda slice_rows: _strategy_outcomes(con, slice_rows, proposal["strategy_version"], base_params),
         lambda slice_rows: _strategy_outcomes(con, slice_rows, proposal["proposed_strategy_version"], proposed_params),
+        primary_key=objective["primary_key"],
+        secondary_key=objective["secondary_key"],
     )
-    validation_verdict = _backtest_verdict(baseline, proposed, significance=significance, walk_forward=walk_forward)
+    validation_verdict = _backtest_verdict(
+        baseline,
+        proposed,
+        significance=significance,
+        walk_forward=walk_forward,
+        primary_key=objective["primary_key"],
+        secondary_key=objective["secondary_key"],
+    )
     verdict = "fail" if validation_verdict == "insufficient_sample" else validation_verdict
     return {
         "backtest_id": stable_id("strategy_backtest_result", proposal["proposal_id"], lookback_start, lookback_end),
@@ -183,6 +192,7 @@ def build_strategy_backtest_result(con: Any, proposal: dict[str, Any]) -> dict[s
             "proposal_changes": _json_or_list(proposal.get("proposed_parameter_changes")),
             "promotion_gate": "backtest_only_never_promotes",
             "validation": "walk_forward_oos_in_time + two_proportion_significance",
+            "objective": objective,
             "validation_verdict": validation_verdict,
         },
     }
@@ -234,12 +244,19 @@ def build_strategy_forward_test_result(con: Any, proposal: dict[str, Any]) -> di
         forward_rows = rows[-1:]
     base_params = _strategy_parameters(con, proposal["strategy_version"])
     proposed_params = _proposed_strategy_parameters(base_params, proposal.get("proposed_parameter_changes"))
+    objective = _strategy_validation_objective(proposed_params)
     baseline = _strategy_outcomes(con, forward_rows, proposal["strategy_version"], base_params)
     proposed = _strategy_outcomes(con, forward_rows, proposal["proposed_strategy_version"], proposed_params)
     forward_start = min(_iso(row["snapshot_time"]) for row in forward_rows)
     forward_end = max(_iso(row["snapshot_time"]) for row in forward_rows)
     days_observed = max(0, _elapsed_days(forward_start, forward_end) or 0)
-    verdict = _forward_test_verdict(baseline, proposed, days_observed)
+    verdict = _forward_test_verdict(
+        baseline,
+        proposed,
+        days_observed,
+        primary_key=objective["primary_key"],
+        min_forward_days=int(objective["min_forward_days"]),
+    )
     status = "complete" if verdict in {"pass", "fail"} else "active"
     return {
         "forward_test_id": stable_id("strategy_forward_test_result", proposal["proposal_id"], forward_start, forward_end),
@@ -261,7 +278,7 @@ def build_strategy_forward_test_result(con: Any, proposal: dict[str, Any]) -> di
         "status": status,
         "verdict": verdict,
         "metrics": {"baseline": baseline, "proposed": proposed},
-        "raw": {"min_forward_test_days": MIN_FORWARD_TEST_DAYS, "promotion_gate": "forward_shadow_comparison_required"},
+        "raw": {"min_forward_test_days": objective["min_forward_days"], "objective": objective, "promotion_gate": "forward_shadow_comparison_required"},
     }
 
 

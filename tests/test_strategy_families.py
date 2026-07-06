@@ -173,6 +173,18 @@ def test_short_dated_lottery_call_accepts_low_delta_short_dated_calls():
     assert event["raw"]["strategy_family"] == "short_dated_lottery_call"
 
 
+def test_short_dated_lottery_call_does_not_wait_for_rs_confirmation():
+    event = build_candidate_event(
+        _short_dated_lottery_row(rs_vs_qqq_20d=-0.08),
+        "short_dated_lottery_call_v1",
+        SHORT_DATED_LOTTERY,
+    )
+
+    assert event is not None
+    assert "rs_vs_qqq_20d_negative" not in event["trigger_reason"]
+    assert event["state"] == "FIRE"
+
+
 def test_short_dated_lottery_call_keeps_strict_liquidity_gates():
     event = build_candidate_event(
         _short_dated_lottery_row(spread_pct=0.55, open_interest=10, volume=0),

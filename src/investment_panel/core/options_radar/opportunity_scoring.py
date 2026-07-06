@@ -25,7 +25,7 @@ def load_cohort_priors(con: Any, strategy_version: str = DEFAULT_STRATEGY_VERSIO
         "FROM strategy_cohort_result WHERE strategy_version = ?",
         [strategy_version],
     )
-    priors: dict[tuple[str, str], dict[str, _Any]] = {}
+    priors: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         significance = _json(row.get("raw")).get("significance") or {}
         if not significance.get("significant"):

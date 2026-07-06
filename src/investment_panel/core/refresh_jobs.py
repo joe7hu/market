@@ -72,6 +72,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     # reliable source='ibkr' chains only (clean OI/volume/greeks, no peer conflict).
     "refresh_options_radar_signal_ibkr": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="ibkr"),
     "refresh_options_radar_signal_robinhood": lambda config_path: refresh_options_radar.run_signal_only(config_path, source="robinhood"),
+    "refresh_options_radar_learning_marks": lambda config_path: refresh_options_radar.run_learning_marks(config_path),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
     # Manual run: forces the consolidated agent over the full open queue whenever a
     # command is configured, independent of the auto-run (enabled) toggle.

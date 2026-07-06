@@ -8,10 +8,30 @@ from investment_panel.core.options_radar import (
     _strategy_arm_significance,
     _walk_forward_folds,
 )
+from investment_panel.core.options_radar.strategy_outcomes import _forward_test_verdict, _strategy_validation_objective
 
 
 def _outcomes(n, hr2=0.0, hr5=0.0, hr10=0.0, fp=0.0):
-    return {"candidate_count": n, "hit_rate_2x": hr2, "hit_rate_5x": hr5, "hit_rate_10x": hr10, "false_positive_rate": fp}
+    return {
+        "candidate_count": n,
+        "hit_rate_2x": hr2,
+        "hit_rate_5x": hr5,
+        "hit_rate_10x": hr10,
+        "false_positive_rate": fp,
+        "observed_1d_count": n,
+        "observed_5d_count": n,
+        "observed_20d_count": n,
+        "hit_rate_1d_25pct": 0.0,
+        "hit_rate_5d_50pct": 0.0,
+        "hit_rate_20d_2x": 0.0,
+        "fast_hit_rate_2x_5d": 0.0,
+    }
+
+
+def _short_outcomes(n, h5=0.0, fast=0.0, fp=0.0):
+    row = _outcomes(n, fp=fp)
+    row.update({"hit_rate_5d_50pct": h5, "fast_hit_rate_2x_5d": fast})
+    return row
 
 
 def test_significance_flags_insufficient_and_significant():
@@ -56,6 +76,42 @@ def test_walk_forward_majority_of_folds():
         lambda r: _outcomes(len(r), hr5=0.2),
     )
     assert wf2["pass"] is False
+
+
+def test_short_horizon_objective_uses_fast_return_metrics():
+    objective = _strategy_validation_objective(
+        {"strategy_family": "short_dated_lottery_call", "dte_max": 45}
+    )
+    assert objective["primary_key"] == "5d_50pct"
+    assert objective["min_forward_days"] == 5
+
+    base = _short_outcomes(100, h5=0.10, fast=0.02)
+    prop = _short_outcomes(100, h5=0.40, fast=0.10)
+    sig = _strategy_arm_significance(base, prop, key=objective["significance_key"])
+    wf = {"evaluable": True, "pass": True}
+
+    assert _backtest_verdict(
+        base,
+        prop,
+        significance=sig,
+        walk_forward=wf,
+        primary_key=objective["primary_key"],
+        secondary_key=objective["secondary_key"],
+    ) == "pass"
+    assert _forward_test_verdict(
+        base,
+        prop,
+        days_observed=4,
+        primary_key=objective["primary_key"],
+        min_forward_days=objective["min_forward_days"],
+    ) == "collecting_data"
+    assert _forward_test_verdict(
+        base,
+        prop,
+        days_observed=5,
+        primary_key=objective["primary_key"],
+        min_forward_days=objective["min_forward_days"],
+    ) == "pass"
 
 
 def test_market_regime_two_dimensional(tmp_path):

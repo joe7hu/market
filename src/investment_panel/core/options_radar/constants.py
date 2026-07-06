@@ -12,6 +12,8 @@ from typing import Any
 
 DEFAULT_STRATEGY_VERSION = "leap_10x_reversal_v1"
 MIN_FORWARD_TEST_DAYS = 30
+SHORT_HORIZON_FORWARD_TEST_DAYS = 5
+CATALYST_FORWARD_TEST_DAYS = 10
 # Trailing-stop give-back used to turn a peak-mark series into a realizable exit return.
 # A move must hold within this fraction of its running peak gain to be "captured"; a
 # one-mark spike that collapses trails out near the breach instead of crediting the high.
@@ -147,7 +149,9 @@ STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
         "reject_spread_pct": 0.40,
         "min_open_interest": 100,
         "min_volume": 1,
-        "require_rs_improving": True,
+        # Short-dated convexity can work before 20d relative strength confirms; keep
+        # liquidity strict but do not force a LEAP-style RS reclaim gate.
+        "require_rs_improving": False,
     },
     "short_dated_lottery_call_spread_v1": {
         **DEFAULT_STRATEGY_PARAMETERS,
@@ -158,7 +162,7 @@ STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
         "reject_spread_pct": 0.40,
         "min_open_interest": 100,
         "min_volume": 1,
-        "require_rs_improving": True,
+        "require_rs_improving": False,
     },
     "deep_otm_lottery_call_v1": {
         **DEFAULT_STRATEGY_PARAMETERS,

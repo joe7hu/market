@@ -147,6 +147,21 @@ def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None
     assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
 
 
+def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+
+    monkeypatch.setattr(
+        refresh_jobs.refresh_options_radar,
+        "run_learning_marks",
+        lambda config_path: {"job": "refresh_options_radar_learning_marks", "config_path": config_path},
+    )
+
+    result = refresh_jobs.run_refresh_job("refresh_options_radar_learning_marks", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"] == {"job": "refresh_options_radar_learning_marks", "config_path": "config.yaml"}
+
+
 def test_update_market_environment_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 

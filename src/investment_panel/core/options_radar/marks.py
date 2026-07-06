@@ -11,31 +11,50 @@ from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer,
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta, _diff)
 from investment_panel.core.options_radar.strategy_common import (_attribution_label)
-from investment_panel.core.options_radar.dbutil import (_max_mark_time_by_key, _max_snapshot_time_by_contract, _needs_remark)
 from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
 
 
-def refresh_candidate_event_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+def refresh_candidate_event_marks(
+    con: Any,
+    *,
+    strategy_version: str = DEFAULT_STRATEGY_VERSION,
+    min_snapshot_time: str | None = None,
+    states: tuple[str, ...] | None = None,
+) -> int:
+    state_filter = ""
+    state_params: list[str] = []
+    if states:
+        placeholders = ", ".join("?" for _ in states)
+        state_filter = f"AND ce.state IN ({placeholders})"
+        state_params = [str(state).upper() for state in states]
     events = query_rows(
         con,
-        """
-        SELECT *
-        FROM candidate_event
-        WHERE strategy_version = ?
-        ORDER BY snapshot_time, ticker, contract_id
+        f"""
+        WITH snapshot_max AS (
+            SELECT contract_id, max(snapshot_time) AS max_snapshot_time
+            FROM option_snapshot
+            GROUP BY contract_id
+        ),
+        mark_max AS (
+            SELECT event_id, max(mark_time) AS max_mark_time
+            FROM candidate_event_mark
+            WHERE strategy_version = ?
+            GROUP BY event_id
+        )
+        SELECT ce.*
+        FROM candidate_event ce
+        JOIN snapshot_max sm ON sm.contract_id = ce.contract_id
+        LEFT JOIN mark_max mm ON mm.event_id = ce.event_id
+        WHERE ce.strategy_version = ?
+          AND (? IS NULL OR ce.snapshot_time >= TRY_CAST(? AS TIMESTAMP))
+          {state_filter}
+          AND (mm.max_mark_time IS NULL OR sm.max_snapshot_time > mm.max_mark_time)
+        ORDER BY ce.snapshot_time, ce.ticker, ce.contract_id
         """,
-        [strategy_version],
+        [strategy_version, strategy_version, min_snapshot_time, min_snapshot_time, *state_params],
     )
-    # Incremental: marks are append-only (mark_id is stable per (event, mark_time)), so we
-    # only rebuild an event whose contract has a snapshot newer than its latest stored
-    # mark. The old DELETE-all + reprocess-every-event scan was the learning pass's main
-    # cost; this skips the (large) stable tail and keeps INSERT OR REPLACE idempotent.
-    snapshot_max = _max_snapshot_time_by_contract(con)
-    mark_max = _max_mark_time_by_key(con, "candidate_event_mark", strategy_version)
     count = 0
     for event in events:
-        if not _needs_remark(snapshot_max.get(event["contract_id"]), mark_max.get(event["event_id"])):
-            continue
         snapshots = query_rows(
             con,
             """

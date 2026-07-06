@@ -10,12 +10,11 @@ from investment_panel.core.db import (json_dumps, query_rows)
 from investment_panel.core.source_ingestion.utils import (stable_id)
 from investment_panel.core.options_radar.coerce import (_elapsed_days, _integer, _iso, _json, _normalize_symbol, _number)
 from investment_panel.core.options_radar.constants import (DEFAULT_STRATEGY_VERSION, EXPLORATION_MIN_POPULATION, EXPLORATION_SAMPLE_RATE)
-from investment_panel.core.options_radar.dbutil import (_max_mark_time_by_key, _max_snapshot_time_by_contract, _needs_remark)
 from investment_panel.core.options_radar.indicators import (_bounded_abs_delta)
 from investment_panel.core.options_radar.strategy_outcomes import (_first_hit_days, _realized_series, _return_at_horizon)
 
 
-def _candidate_events_with_thesis(con: Any, strategy_version: str, *, state: str) -> list[dict[str, Any]]:
+def _candidate_events_with_thesis(con: Any, strategy_version: str, *, state: str, min_snapshot_time: str | None = None) -> list[dict[str, Any]]:
     """Candidate events in ``state`` joined to their latest thesis validation (candidate-
     scoped, falling back to legacy ticker-scoped). Shared by the FIRE shadow-entry path
     and the SETUP exploration path so both apply the same thesis gating."""
@@ -51,9 +50,10 @@ def _candidate_events_with_thesis(con: Any, strategy_version: str, *, state: str
           ON lv.ticker = ce.ticker
          AND lv.strategy_version = ce.strategy_version
         WHERE ce.strategy_version = ? AND ce.state = ?
+          AND (? IS NULL OR ce.snapshot_time >= TRY_CAST(? AS TIMESTAMP))
         ORDER BY ce.snapshot_time
         """,
-        [strategy_version, strategy_version, strategy_version, state],
+        [strategy_version, strategy_version, strategy_version, state, min_snapshot_time, min_snapshot_time],
     )
 
 
@@ -97,8 +97,8 @@ def _insert_shadow_trade(con: Any, row: dict[str, Any], *, authority: str, creat
     return int(after) - int(before)
 
 
-def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
-    rows = _candidate_events_with_thesis(con, strategy_version, state="FIRE")
+def create_shadow_trades(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION, min_snapshot_time: str | None = None) -> int:
+    rows = _candidate_events_with_thesis(con, strategy_version, state="FIRE", min_snapshot_time=min_snapshot_time)
     count = 0
     for row in rows:
         if _thesis_validation_blocks_entry(row):
@@ -113,6 +113,7 @@ def create_exploration_shadow_trades(
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
     sample_rate: float = EXPLORATION_SAMPLE_RATE,
     min_population: int = EXPLORATION_MIN_POPULATION,
+    min_snapshot_time: str | None = None,
 ) -> int:
     """Epsilon-exploration: shadow-trade a deterministic sample of SETUP (near-miss)
     candidates the gates did *not* fire, so the learning loop observes realized outcomes
@@ -122,7 +123,7 @@ def create_exploration_shadow_trades(
     never fabricates trades from a thin tape — and FIRE-only cohort/backtest metrics stay
     unpolluted."""
 
-    rows = _candidate_events_with_thesis(con, strategy_version, state="SETUP")
+    rows = _candidate_events_with_thesis(con, strategy_version, state="SETUP", min_snapshot_time=min_snapshot_time)
     if len(rows) < min_population:
         return 0
     count = 0
@@ -259,10 +260,21 @@ def mark_shadow_trades(con: Any) -> int:
     return count
 
 
-def refresh_shadow_trade_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> int:
+def refresh_shadow_trade_marks(con: Any, *, strategy_version: str = DEFAULT_STRATEGY_VERSION, min_entry_time: str | None = None) -> int:
     trades = query_rows(
         con,
         """
+        WITH snapshot_max AS (
+            SELECT contract_id, max(snapshot_time) AS max_snapshot_time
+            FROM option_snapshot
+            GROUP BY contract_id
+        ),
+        mark_max AS (
+            SELECT trade_id, max(mark_time) AS max_mark_time
+            FROM shadow_trade_mark
+            WHERE strategy_version = ?
+            GROUP BY trade_id
+        )
         SELECT
             st.*,
             ce.contract_id,
@@ -270,18 +282,16 @@ def refresh_shadow_trade_marks(con: Any, *, strategy_version: str = DEFAULT_STRA
             ce.strategy_version
         FROM shadow_trade st
         JOIN candidate_event ce ON ce.event_id = st.event_id
+        JOIN snapshot_max sm ON sm.contract_id = ce.contract_id
+        LEFT JOIN mark_max mm ON mm.trade_id = st.trade_id
         WHERE ce.strategy_version = ?
+          AND (? IS NULL OR st.entry_time >= TRY_CAST(? AS TIMESTAMP))
+          AND (mm.max_mark_time IS NULL OR sm.max_snapshot_time > mm.max_mark_time)
         """,
-        [strategy_version],
+        [strategy_version, strategy_version, min_entry_time, min_entry_time],
     )
-    # Incremental: only re-mark a trade whose contract has a snapshot newer than the
-    # trade's latest stored mark (shadow_trade_mark is append-only, keyed per trade_id).
-    snapshot_max = _max_snapshot_time_by_contract(con)
-    mark_max = _max_mark_time_by_key(con, "shadow_trade_mark", strategy_version, key="trade_id")
     count = 0
     for trade in trades:
-        if not _needs_remark(snapshot_max.get(trade["contract_id"]), mark_max.get(trade["trade_id"])):
-            continue
         snapshots = query_rows(
             con,
             """

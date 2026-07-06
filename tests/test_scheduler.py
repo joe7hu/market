@@ -79,6 +79,7 @@ def test_radar_freshness_loops_default_on_in_app_process(monkeypatch) -> None:
     intervals = scheduler.job_intervals()
     assert intervals["refresh_options_radar_signal_robinhood"] == 900
     assert intervals["update_robinhood_options"] == 3600
+    assert "refresh_options_radar_learning_marks" not in intervals
     assert "refresh_options_radar_deterministic" not in intervals
     assert intervals["update_market_environment"] == 3600
     assert intervals["update_preopen_daily_brief_scheduled"] == 300
@@ -133,6 +134,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["agent_refresh_seconds"] == "123"
     assert status["radar_refresh_seconds"] == "900"
     assert status["source_refresh_seconds"] == "3600"
+    assert status["learning_mark_refresh_seconds"] == "0"
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "3600"
     assert status["preopen_brief_refresh_seconds"] == "300"
@@ -153,6 +155,13 @@ def test_learning_refresh_can_be_disabled(monkeypatch) -> None:
     intervals = scheduler.job_intervals()
     assert "refresh_options_radar_deterministic" not in intervals
     assert "refresh_options_radar_signal_robinhood" in intervals  # fast loop stays
+
+
+def test_learning_mark_refresh_can_be_enabled_explicitly(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.setenv("MARKET_LEARNING_MARK_REFRESH_SECONDS", "1800")
+    intervals = scheduler.job_intervals()
+    assert intervals["refresh_options_radar_learning_marks"] == 1800
 
 
 def test_dispatch_invokes_run_refresh_job(monkeypatch) -> None:

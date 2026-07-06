@@ -111,6 +111,14 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         source_seconds = 3600
     if source_seconds > 0:
         intervals[source_job] = source_seconds
+    # Incremental marks refresh for short-horizon learning. Default off in the normal
+    # browser API process because option-source/signal jobs already contend for the
+    # single DuckDB writer at startup; enable explicitly when running a learning pass.
+    learning_mark_seconds = _env_int_optional("MARKET_LEARNING_MARK_REFRESH_SECONDS")
+    if learning_mark_seconds is None:
+        learning_mark_seconds = 0
+    if learning_mark_seconds > 0:
+        intervals["refresh_options_radar_learning_marks"] = learning_mark_seconds
     # Full deterministic refresh incl. learning/attribution/cohorts — heavy, so it
     # runs on a slow cadence (default 6h). 0 disables (daily full_market_refresh
     # also covers it).
@@ -179,6 +187,7 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
         "radar_refresh_seconds": str(_first_interval(intervals, "refresh_options_radar_signal")),
         "source_refresh_seconds": str(_first_interval(intervals, "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
+        "learning_mark_refresh_seconds": str(intervals.get("refresh_options_radar_learning_marks", 0)),
         "learning_refresh_seconds": str(intervals.get("refresh_options_radar_deterministic", 0)),
         "social_refresh_seconds": str(intervals.get("update_social_sources", 0)),
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),

@@ -8,7 +8,12 @@ from investment_panel.analysis.stats import (two_proportion_significant, wilson_
 from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.candidates import (build_candidate_event)
 from investment_panel.core.options_radar.coerce import (_average, _elapsed_days, _elapsed_hours, _integer, _iso, _json_or_list, _median, _number)
-from investment_panel.core.options_radar.constants import (MIN_FORWARD_TEST_DAYS, REALIZED_EXIT_TRAIL_FRAC)
+from investment_panel.core.options_radar.constants import (
+    CATALYST_FORWARD_TEST_DAYS,
+    MIN_FORWARD_TEST_DAYS,
+    REALIZED_EXIT_TRAIL_FRAC,
+    SHORT_HORIZON_FORWARD_TEST_DAYS,
+)
 from investment_panel.core.options_radar.regime import (_qqq_above_200d)
 from investment_panel.core.options_radar.strategy_common import (_latest_attribution_labels)
 
@@ -145,6 +150,10 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
     time_to_2x = _first_hit_days(event["snapshot_time"], returns, 1.0)
     time_to_5x = _first_hit_days(event["snapshot_time"], returns, 4.0)
     time_to_10x = _first_hit_days(event["snapshot_time"], returns, 9.0)
+    return_1d = _return_at_horizon(event["snapshot_time"], returns, 1, last_observation_time)
+    return_5d = _return_at_horizon(event["snapshot_time"], returns, 5, last_observation_time)
+    return_20d = _return_at_horizon(event["snapshot_time"], returns, 20, last_observation_time)
+    return_60d = _return_at_horizon(event["snapshot_time"], returns, 60, last_observation_time)
     drawdown_before_2x = _drawdown_before_threshold(returns, 1.0)
     return {
         "event_id": event["event_id"],
@@ -158,6 +167,10 @@ def _hypothetical_outcome(con: Any, event: dict[str, Any]) -> dict[str, Any] | N
         "time_to_2x": time_to_2x,
         "time_to_5x": time_to_5x,
         "time_to_10x": time_to_10x,
+        "return_1d": return_1d,
+        "return_5d": return_5d,
+        "return_20d": return_20d,
+        "return_60d": return_60d,
         "drawdown_before_2x": drawdown_before_2x,
         "timing_label": _timing_label(time_to_2x, max_drawdown, drawdown_before_2x),
         "max_return_time": max_time,
@@ -180,6 +193,17 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
             "median_realized_return": None,
             "median_max_drawdown": None,
             "average_time_to_2x": None,
+            "observed_1d_count": 0,
+            "observed_5d_count": 0,
+            "observed_20d_count": 0,
+            "observed_60d_count": 0,
+            "hit_rate_1d_25pct": 0.0,
+            "hit_rate_5d_50pct": 0.0,
+            "hit_rate_5d_100pct": 0.0,
+            "hit_rate_20d_2x": 0.0,
+            "fast_hit_rate_2x_5d": 0.0,
+            "median_return_1d": None,
+            "median_return_5d": None,
             "outcomes": [],
         }
     # Hit rates are computed on the realizable trailing-stop exit, not the paper peak,
@@ -193,6 +217,15 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     hit_5x = [row for row in outcomes if _realized(row) >= 4.0]
     hit_10x = [row for row in outcomes if _realized(row) >= 9.0]
     time_to_2x = [row["time_to_2x"] for row in hit_2x if row.get("time_to_2x") is not None]
+    observed_1d = [row for row in outcomes if row.get("return_1d") is not None]
+    observed_5d = [row for row in outcomes if row.get("return_5d") is not None]
+    observed_20d = [row for row in outcomes if row.get("return_20d") is not None]
+    observed_60d = [row for row in outcomes if row.get("return_60d") is not None]
+    observed_fast_5d = [row for row in outcomes if (_number(row.get("observation_days")) or 0) >= 5]
+
+    def _rate(rows: list[dict[str, Any]], predicate) -> float:
+        return sum(1 for row in rows if predicate(row)) / len(rows) if rows else 0.0
+
     return {
         "candidate_count": count,
         "hit_rate_2x": len(hit_2x) / count,
@@ -203,20 +236,49 @@ def _outcome_metrics(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
         "median_realized_return": _median([_realized(row) for row in outcomes]),
         "median_max_drawdown": _median([row["max_drawdown_seen"] for row in outcomes]),
         "average_time_to_2x": _average([float(value) for value in time_to_2x]) if time_to_2x else None,
+        "observed_1d_count": len(observed_1d),
+        "observed_5d_count": len(observed_5d),
+        "observed_20d_count": len(observed_20d),
+        "observed_60d_count": len(observed_60d),
+        "hit_rate_1d_25pct": _rate(observed_1d, lambda row: (_number(row.get("return_1d")) or 0.0) >= 0.25),
+        "hit_rate_5d_50pct": _rate(observed_5d, lambda row: (_number(row.get("return_5d")) or 0.0) >= 0.50),
+        "hit_rate_5d_100pct": _rate(observed_5d, lambda row: (_number(row.get("return_5d")) or 0.0) >= 1.0),
+        "hit_rate_20d_2x": _rate(observed_20d, lambda row: (_number(row.get("return_20d")) or 0.0) >= 1.0),
+        "fast_hit_rate_2x_5d": _rate(observed_fast_5d, lambda row: row.get("time_to_2x") is not None and int(row["time_to_2x"]) <= 5),
+        "median_return_1d": _median([row["return_1d"] for row in observed_1d]),
+        "median_return_5d": _median([row["return_5d"] for row in observed_5d]),
         "outcomes": outcomes[:50],
     }
 
 
+def _metric_rate(outcomes: dict[str, Any], key: str) -> float:
+    if key.startswith("fast_"):
+        return float(outcomes.get(key) or outcomes.get(f"{key}") or 0)
+    return float(outcomes.get(f"hit_rate_{key}") or 0)
+
+
+def _metric_denominator(outcomes: dict[str, Any], key: str) -> int:
+    if key.startswith("1d_"):
+        return int(outcomes.get("observed_1d_count") or 0)
+    if key.startswith("5d_") or key == "fast_hit_rate_2x_5d":
+        return int(outcomes.get("observed_5d_count") or 0)
+    if key.startswith("20d_"):
+        return int(outcomes.get("observed_20d_count") or 0)
+    if key.startswith("60d_"):
+        return int(outcomes.get("observed_60d_count") or 0)
+    return int(outcomes.get("candidate_count") or 0)
+
+
 def _hit_success_count(outcomes: dict[str, Any], key: str) -> int:
-    n = int(outcomes.get("candidate_count") or 0)
-    return round(float(outcomes.get(f"hit_rate_{key}") or 0) * n)
+    n = _metric_denominator(outcomes, key)
+    return round(_metric_rate(outcomes, key) * n)
 
 
 def _strategy_arm_significance(baseline: dict[str, Any], proposed: dict[str, Any], *, key: str = "2x", min_per_arm: int = 20) -> dict[str, Any]:
     """Two-proportion significance + Wilson intervals for proposed vs baseline hit rate."""
 
-    bn = int(baseline.get("candidate_count") or 0)
-    pn = int(proposed.get("candidate_count") or 0)
+    bn = _metric_denominator(baseline, key)
+    pn = _metric_denominator(proposed, key)
     bs = _hit_success_count(baseline, key)
     ps = _hit_success_count(proposed, key)
     blo, bhi = wilson_interval(bs, bn)
@@ -240,6 +302,8 @@ def _walk_forward_folds(
     proposed_fn,
     *,
     folds: int = 3,
+    primary_key: str = "5x",
+    secondary_key: str | None = "10x",
 ) -> dict[str, Any]:
     """Split rows into ``folds`` sequential time slices and require the proposed params
     to beat baseline out-of-sample-in-time in a majority of folds. ``baseline_fn`` /
@@ -257,16 +321,17 @@ def _walk_forward_folds(
         slice_rows = ordered_rows[lo:hi]
         base = baseline_fn(slice_rows)
         prop = proposed_fn(slice_rows)
-        beats = (float(prop.get("hit_rate_5x") or 0) > float(base.get("hit_rate_5x") or 0)) or (
-            float(prop.get("hit_rate_10x") or 0) > float(base.get("hit_rate_10x") or 0)
-        )
+        beats = _metric_rate(prop, primary_key) > _metric_rate(base, primary_key)
+        if secondary_key:
+            beats = beats or _metric_rate(prop, secondary_key) > _metric_rate(base, secondary_key)
         improved += 1 if beats else 0
         results.append(
             {
                 "fold": i,
                 "n": len(slice_rows),
-                "baseline_hit_rate_5x": base.get("hit_rate_5x"),
-                "proposed_hit_rate_5x": prop.get("hit_rate_5x"),
+                "primary_key": primary_key,
+                "baseline_primary_rate": _metric_rate(base, primary_key),
+                "proposed_primary_rate": _metric_rate(prop, primary_key),
                 "beats": beats,
             }
         )
@@ -279,14 +344,16 @@ def _backtest_verdict(
     *,
     significance: dict[str, Any] | None = None,
     walk_forward: dict[str, Any] | None = None,
+    primary_key: str = "5x",
+    secondary_key: str | None = "10x",
 ) -> str:
     if int(proposed.get("candidate_count") or 0) == 0:
         return "fail"
     # Honest validation: not enough observations to claim anything -> block, don't pass.
     if significance is not None and significance.get("insufficient_sample"):
         return "insufficient_sample"
-    improves_10x = float(proposed.get("hit_rate_10x") or 0) > float(baseline.get("hit_rate_10x") or 0)
-    improves_5x = float(proposed.get("hit_rate_5x") or 0) > float(baseline.get("hit_rate_5x") or 0)
+    improves_primary = _metric_rate(proposed, primary_key) > _metric_rate(baseline, primary_key)
+    improves_secondary = secondary_key is not None and _metric_rate(proposed, secondary_key) > _metric_rate(baseline, secondary_key)
     baseline_false = float(baseline.get("false_positive_rate") or 0)
     proposed_false = float(proposed.get("false_positive_rate") or 0)
     # Recall-biased ratchet guard: every missed winner proposes loosening the gate that
@@ -294,7 +361,7 @@ def _backtest_verdict(
     # signals. Allow only a small (5pp) rise in the *realizable* false-positive rate. The
     # slack is meaningful now that false positives are measured on exitable outcomes.
     allowed_false_positive = 1.0 if int(baseline.get("candidate_count") or 0) == 0 else min(1.0, baseline_false + 0.05)
-    if not ((improves_10x or improves_5x) and proposed_false <= allowed_false_positive):
+    if not ((improves_primary or improves_secondary) and proposed_false <= allowed_false_positive):
         return "fail"
     # The improvement must be statistically significant and hold out-of-sample-in-time.
     if significance is not None and not significance.get("significant"):
@@ -304,14 +371,51 @@ def _backtest_verdict(
     return "pass"
 
 
-def _forward_test_verdict(baseline: dict[str, Any], proposed: dict[str, Any], days_observed: int) -> str:
-    if days_observed < MIN_FORWARD_TEST_DAYS:
+def _forward_test_verdict(
+    baseline: dict[str, Any],
+    proposed: dict[str, Any],
+    days_observed: int,
+    *,
+    primary_key: str = "5x",
+    min_forward_days: int = MIN_FORWARD_TEST_DAYS,
+) -> str:
+    if days_observed < min_forward_days:
         return "collecting_data"
     if int(proposed.get("candidate_count") or 0) == 0:
         return "fail"
-    if float(proposed.get("hit_rate_5x") or 0) >= float(baseline.get("hit_rate_5x") or 0):
+    if _metric_denominator(baseline, primary_key) == 0 or _metric_denominator(proposed, primary_key) == 0:
+        return "collecting_data"
+    if _metric_rate(proposed, primary_key) >= _metric_rate(baseline, primary_key):
         return "pass"
     return "fail"
+
+
+def _strategy_validation_objective(strategy: dict[str, Any]) -> dict[str, Any]:
+    family = str(strategy.get("strategy_family") or strategy.get("strategy_name") or "")
+    dte_max = _integer(strategy.get("dte_max")) or 0
+    if family.startswith("short_dated_lottery") or dte_max <= 45:
+        return {
+            "name": "short_horizon",
+            "primary_key": "5d_50pct",
+            "secondary_key": "fast_hit_rate_2x_5d",
+            "significance_key": "5d_50pct",
+            "min_forward_days": SHORT_HORIZON_FORWARD_TEST_DAYS,
+        }
+    if family == "catalyst_call":
+        return {
+            "name": "catalyst_swing",
+            "primary_key": "20d_2x",
+            "secondary_key": "5d_50pct",
+            "significance_key": "5d_50pct",
+            "min_forward_days": CATALYST_FORWARD_TEST_DAYS,
+        }
+    return {
+        "name": "leap_multibagger",
+        "primary_key": "5x",
+        "secondary_key": "10x",
+        "significance_key": "5x",
+        "min_forward_days": MIN_FORWARD_TEST_DAYS,
+    }
 
 
 def _first_hit_days(entry_time: Any, returns: list[tuple[Any, float]], threshold: float) -> int | None:

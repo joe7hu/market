@@ -49,7 +49,9 @@ from investment_panel.core.options_radar.regime import _market_regime  # noqa: F
 from investment_panel.core.options_radar.scoring import _setup_score  # noqa: F401
 from investment_panel.core.options_radar.strategy_outcomes import (  # noqa: F401
     _backtest_verdict,
+    _forward_test_verdict,
     _strategy_arm_significance,
+    _strategy_validation_objective,
     _walk_forward_folds,
     realized_exit_return,
 )
