@@ -6,9 +6,12 @@ from typing import Any
 
 from investment_panel.core.db import (query_rows)
 from investment_panel.core.options_radar.coerce import (_json)
+from investment_panel.core.options_radar.constants import (SHORT_DATED_LOTTERY_COMMON_PARAMETERS)
 
-def _proposed_family(filter_reason: str) -> str:
+def _proposed_family(filter_reason: str, *, option_type: str | None = None) -> str:
     if "dte_outside_strategy_range" in filter_reason:
+        if option_type == "call_spread":
+            return "short_dated_lottery_call_spread"
         return "short_dated_lottery_call"
     if "delta" in filter_reason:
         return "leap_10x_momentum_lottery"
@@ -21,14 +24,15 @@ def _proposed_family(filter_reason: str) -> str:
     return "leap_10x_variant"
 
 
-def _proposal_parameter_changes(filter_reason: str) -> dict[str, Any]:
+def _proposal_parameter_changes(filter_reason: str, *, option_type: str | None = None) -> dict[str, Any]:
     if "dte_outside_strategy_range" in filter_reason:
+        option_type = option_type or "call"
+        family = _proposed_family(filter_reason, option_type=option_type)
         return {
-            "dte_min": 2,
-            "dte_max": 45,
-            "delta_min": 0.01,
-            "delta_max": 0.20,
-            "max_required_move_pct": 5.0,
+            "strategy_name": family,
+            "strategy_family": family,
+            "option_type": option_type,
+            **SHORT_DATED_LOTTERY_COMMON_PARAMETERS,
             "candidate_note": "test short-dated low-delta lottery sleeve separately with strict liquidity gates",
         }
     if "delta_outside_strategy_range" in filter_reason:

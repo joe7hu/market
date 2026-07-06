@@ -259,7 +259,8 @@ def build_missed_winner(con: Any, contract_id: str, snapshots: list[dict[str, An
     first_candidate = candidate_rows[0] if candidate_rows else None
     filter_reason = _missed_filter_reason(first_candidate)
     threshold = "10x" if max_return >= 9.0 else "5x"
-    proposed_family = _proposed_family(filter_reason)
+    option_type = str(entry.get("option_type") or "").strip().lower() or None
+    proposed_family = _proposed_family(filter_reason, option_type=option_type)
     winner_time = _iso(winner.get("snapshot_time"))
     observed_peak_time, observed_peak_return = max(returns, key=lambda item: item[1])
     candidate_context = _missed_winner_candidate_context(candidate_rows, winner_time=winner_time)

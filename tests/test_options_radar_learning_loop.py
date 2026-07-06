@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from investment_panel.core.db import db, init_db
 from investment_panel.core.options_radar import (
+    SHORT_DATED_LOTTERY_COMMON_PARAMETERS,
     build_conviction_calibration,
     realized_exit_return,
 )
@@ -133,12 +134,31 @@ def test_dte_missed_winners_propose_short_dated_lottery_sleeve() -> None:
     assert proposal is not None
     assert proposal["proposed_strategy_version"].startswith("short_dated_lottery_call__")
     assert proposal["proposed_parameter_changes"] == {
-        "dte_min": 2,
-        "dte_max": 45,
-        "delta_min": 0.01,
-        "delta_max": 0.20,
-        "max_required_move_pct": 5.0,
+        "strategy_name": "short_dated_lottery_call",
+        "strategy_family": "short_dated_lottery_call",
+        "option_type": "call",
+        **SHORT_DATED_LOTTERY_COMMON_PARAMETERS,
         "candidate_note": "test short-dated low-delta lottery sleeve separately with strict liquidity gates",
     }
     assert proposal["requires_backtest"] is True
     assert proposal["requires_forward_test"] is True
+
+
+def test_dte_call_spread_misses_propose_call_spread_lottery_sleeve() -> None:
+    family = _proposed_family("dte_outside_strategy_range", option_type="call_spread")
+    proposal = build_strategy_mutation_proposal(
+        {
+            "filter_reason": "dte_outside_strategy_range",
+            "proposed_strategy_family": family,
+            "missed_count": 12,
+            "best_return": 8.0,
+            "missed_ids": ["missed-1"],
+        },
+        "leap_10x_reversal_v1",
+    )
+
+    assert proposal is not None
+    assert proposal["proposed_strategy_version"].startswith("short_dated_lottery_call_spread__")
+    assert proposal["proposed_parameter_changes"]["strategy_family"] == "short_dated_lottery_call_spread"
+    assert proposal["proposed_parameter_changes"]["option_type"] == "call_spread"
+    assert proposal["proposed_parameter_changes"]["dte_max"] == 45

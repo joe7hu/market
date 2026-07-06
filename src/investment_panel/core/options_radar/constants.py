@@ -72,6 +72,18 @@ DEFAULT_STRATEGY_PARAMETERS: dict[str, Any] = {
     "fill_slippage_pct": 0.03,
 }
 
+SHORT_DATED_LOTTERY_COMMON_PARAMETERS: dict[str, Any] = {
+    "delta_min": 0.01,
+    "delta_max": 0.20,
+    "dte_min": 2,
+    "dte_max": 45,
+    "max_spread_pct": 0.20,
+    "max_required_move_pct": 5.0,
+    "max_iv_percentile": 85.0,
+    "reject_iv_percentile": 95.0,
+    "require_price_above_ma50": False,
+}
+
 # Additional archetype families (Phase 3). Each is a full parameter set layered over
 # the defaults; they register as 'forward_test' so they shadow-trade before earning UI
 # prominence. Gate flags absent from the defaults (requires_catalyst,
@@ -131,18 +143,21 @@ STRATEGY_FAMILY_PRESETS: dict[str, dict[str, Any]] = {
         "strategy_name": "short_dated_lottery_call",
         "strategy_family": "short_dated_lottery_call",
         "option_type": "call",
-        "delta_min": 0.01,
-        "delta_max": 0.20,
-        "dte_min": 2,
-        "dte_max": 45,
-        "max_spread_pct": 0.20,
+        **SHORT_DATED_LOTTERY_COMMON_PARAMETERS,
         "reject_spread_pct": 0.40,
         "min_open_interest": 100,
         "min_volume": 1,
-        "max_required_move_pct": 5.0,
-        "max_iv_percentile": 85.0,
-        "reject_iv_percentile": 95.0,
-        "require_price_above_ma50": False,
+        "require_rs_improving": True,
+    },
+    "short_dated_lottery_call_spread_v1": {
+        **DEFAULT_STRATEGY_PARAMETERS,
+        "strategy_name": "short_dated_lottery_call_spread",
+        "strategy_family": "short_dated_lottery_call_spread",
+        "option_type": "call_spread",
+        **SHORT_DATED_LOTTERY_COMMON_PARAMETERS,
+        "reject_spread_pct": 0.40,
+        "min_open_interest": 100,
+        "min_volume": 1,
         "require_rs_improving": True,
     },
     "deep_otm_lottery_call_v1": {

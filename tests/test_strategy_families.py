@@ -15,6 +15,7 @@ from investment_panel.core.options_radar import (
 BREAKDOWN = STRATEGY_FAMILY_PRESETS["breakdown_put_v1"]
 CATALYST = STRATEGY_FAMILY_PRESETS["catalyst_call_v1"]
 SHORT_DATED_LOTTERY = STRATEGY_FAMILY_PRESETS["short_dated_lottery_call_v1"]
+SHORT_DATED_LOTTERY_SPREAD = STRATEGY_FAMILY_PRESETS["short_dated_lottery_call_spread_v1"]
 DEEP_LOTTERY = STRATEGY_FAMILY_PRESETS["deep_otm_lottery_call_v1"]
 
 
@@ -185,6 +186,20 @@ def test_short_dated_lottery_call_keeps_strict_liquidity_gates():
     assert "volume_below_threshold" in event["trigger_reason"]
 
 
+def test_short_dated_lottery_call_spread_accepts_short_dated_debit_spreads():
+    event = build_candidate_event(
+        _short_dated_lottery_row(option_type="call_spread"),
+        "short_dated_lottery_call_spread_v1",
+        SHORT_DATED_LOTTERY_SPREAD,
+    )
+
+    assert event is not None
+    assert "strategy_only_tracks_call_spreads" not in event["trigger_reason"]
+    assert "dte_outside_strategy_range" not in event["trigger_reason"]
+    assert "delta_outside_strategy_range" not in event["trigger_reason"]
+    assert event["raw"]["strategy_family"] == "short_dated_lottery_call_spread"
+
+
 def test_register_families_and_version_list(tmp_path):
     from investment_panel.core.db import db, init_db, query_rows
 
@@ -201,5 +216,6 @@ def test_register_families_and_version_list(tmp_path):
     assert versions[0] == DEFAULT_STRATEGY_VERSION  # primary first
     assert "catalyst_call_v1" in versions and "breakdown_put_v1" in versions
     assert "short_dated_lottery_call_v1" in versions
+    assert "short_dated_lottery_call_spread_v1" in versions
     assert "deep_otm_lottery_call_v1" in versions
     assert rows[0]["status"] == "forward_test"
