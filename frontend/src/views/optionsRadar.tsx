@@ -1,12 +1,11 @@
 import {useMemo, useState } from "react";
-import {acknowledgeRadarAlert, promoteStrategyMutation } from "@/api";
+import {promoteStrategyMutation } from "@/api";
 import {StatusBadge } from "@/components/market/workstation";
 import {PanelData, RowRecord } from "@/types";
 import {displayField, numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
 import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
-import {RadarAlertPanel } from "./optionsRadar/summary";
 import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, ExplorationGatePanel, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
@@ -24,7 +23,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const [activeTab, setActiveTab] = useState<"signals" | "learning">("signals");
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
-  const [acknowledgingAlert, setAcknowledgingAlert] = useState<string | null>(null);
   const candidates = rows(data.candidateEvent);
   const radarAlerts = rows(data.radarAlert);
   const missedWinners = rows(data.missedWinnerEvent);
@@ -98,17 +96,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     }
   }
 
-  async function handleAcknowledgeAlert(alertId: string) {
-    if (!alertId || acknowledgingAlert) return;
-    setAcknowledgingAlert(alertId);
-    try {
-      await acknowledgeRadarAlert(alertId);
-      await onRefresh();
-    } finally {
-      setAcknowledgingAlert(null);
-    }
-  }
-
   return (
     <WorkspacePage
       eyebrow="Options Radar"
@@ -124,9 +111,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </div>
       }
     >
-      <RadarAlertPanel alerts={radarAlerts} acknowledgingAlert={acknowledgingAlert} onAcknowledge={handleAcknowledgeAlert} />
       <SignalBriefPanel
         rows={currentOpportunityRows}
+        activeAlertCount={radarAlerts.length}
         fireCount={fireCount}
         setupCount={setupCount}
         scannedTickerCount={scannedTickerCount}

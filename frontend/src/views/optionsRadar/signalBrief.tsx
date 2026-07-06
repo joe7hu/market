@@ -16,6 +16,7 @@ import {BriefCallout, InsightLine, MetricBox } from "./shared";
 
 export function SignalBriefPanel({
   rows,
+  activeAlertCount,
   fireCount,
   setupCount,
   scannedTickerCount,
@@ -26,6 +27,7 @@ export function SignalBriefPanel({
   onOpenTicker,
 }: {
   rows: RowRecord[];
+  activeAlertCount: number;
   fireCount: number;
   setupCount: number;
   scannedTickerCount: number;
@@ -63,6 +65,7 @@ export function SignalBriefPanel({
             <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
             {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
             <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} with setups`}</StatusBadge>
+            {activeAlertCount ? <StatusBadge tone="warn">{activeAlertCount.toLocaleString()} active alert{activeAlertCount === 1 ? "" : "s"}</StatusBadge> : null}
             <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
             <StatusBadge tone={offHours ? "warn" : "muted"}>{snapshotText}</StatusBadge>
           </div>
@@ -181,5 +184,4 @@ export function StrategyExplainer({ strategy }: { strategy: RowRecord | undefine
     </section>
   );
 }
-
 
