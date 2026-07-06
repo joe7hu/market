@@ -23,18 +23,27 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const dataRef = useRef(data);
+  const inFlightScopesRef = useRef(new Map<string, Promise<void>>());
   dataRef.current = data;
 
   const loadScope = useCallback(async (scope: PanelScope, options?: PanelScopeOptions) => {
-    setLoading(true);
-    try {
-      const nextData = await loadPanelScope(scope, dataRef.current, options);
-      dataRef.current = nextData;
-      setData(nextData);
-      setLastRefresh(new Date());
-    } finally {
-      setLoading(false);
-    }
+    const requestKey = `${scope}:${JSON.stringify(options ?? {})}`;
+    const inFlight = inFlightScopesRef.current.get(requestKey);
+    if (inFlight) return inFlight;
+    const request = (async () => {
+      setLoading(true);
+      try {
+        const nextData = await loadPanelScope(scope, dataRef.current, options);
+        dataRef.current = nextData;
+        setData(nextData);
+        setLastRefresh(new Date());
+      } finally {
+        inFlightScopesRef.current.delete(requestKey);
+        setLoading(false);
+      }
+    })();
+    inFlightScopesRef.current.set(requestKey, request);
+    return request;
   }, []);
 
   const openTicker = useCallback((symbol: string) => {

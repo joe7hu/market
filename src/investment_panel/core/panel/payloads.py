@@ -17,6 +17,23 @@ from investment_panel.core.panel.coerce import _symbols_from_value
 RowsForTable = Callable[[str], list[dict[str, Any]]]
 
 
+SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
+    "options-radar": {
+        "missed_winner_event": 80,
+        "strategy_backtest_result": 100,
+        "strategy_forward_test_result": 100,
+    },
+}
+
+SCOPED_TABLE_COMPACT_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "options-radar": {
+        "missed_winner_event": frozenset({"raw"}),
+        "strategy_backtest_result": frozenset({"metrics", "raw"}),
+        "strategy_forward_test_result": frozenset({"metrics"}),
+    },
+}
+
+
 DASHBOARD_ROW_KEYS = (
     ("decision_queue", "decision_queue", 12),
     ("decision_readiness", "decision_readiness", 12),
@@ -161,7 +178,7 @@ def panel_snapshot_payload(
         "scope": scope,
         "status": status,
         "dashboard": dashboard_payload(status, rows_for_table) if scope == "dashboard" else None,
-        "tables": {name: _table_payload(rows_for_table(name)) for name in selected},
+        "tables": {name: _scoped_table_payload(scope, name, rows_for_table(name)) for name in selected},
     }
 
 
@@ -269,8 +286,33 @@ def watchlist_universe_rows(rows_for_table: RowsForTable) -> list[dict[str, Any]
     return rows
 
 
+def _scoped_table_payload(scope: str, table_name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return rows sized for a page scope while preserving the full read-model count."""
+
+    total_count = len(rows)
+    limit = SCOPED_TABLE_ROW_LIMITS.get(scope, {}).get(table_name)
+    scoped_rows = rows[:limit] if limit is not None else rows
+    compacted = [_compact_scoped_row(scope, table_name, row) for row in scoped_rows]
+    payload: dict[str, Any] = {"rows": compacted, "count": total_count}
+    if limit is not None:
+        payload["limit"] = limit
+    return payload
+
+
 def _table_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"rows": rows, "count": len(rows)}
+
+
+def _compact_scoped_row(scope: str, table_name: str, row: dict[str, Any]) -> dict[str, Any]:
+    excluded = SCOPED_TABLE_COMPACT_FIELDS.get(scope, {}).get(table_name)
+    if not excluded:
+        return row
+    compacted = {key: value for key, value in row.items() if key not in excluded}
+    if table_name == "strategy_forward_test_result":
+        raw = row.get("raw")
+        if isinstance(raw, dict) and "min_forward_test_days" in raw:
+            compacted["raw"] = {"min_forward_test_days": raw["min_forward_test_days"]}
+    return compacted
 
 
 def _is_active_watchlist_row(row: dict[str, Any]) -> bool:

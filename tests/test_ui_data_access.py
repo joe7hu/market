@@ -434,6 +434,64 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
     assert contract["endpoint_tables"]["watchlist/symbols"] == "manual_watchlist"
 
 
+def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
+    panel_data = data_access.PanelData(
+        status=data_access.DataStatus(True, "ok", "test"),
+        tables={
+            "option_radar_summary": [{"strategy_version": "v1"}],
+            "option_radar_opportunity": [{"opportunity_id": "opp-1"}],
+            "candidate_event": [{"event_id": "event-1"}],
+            "missed_winner_event": [
+                {
+                    "missed_id": f"missed-{index}",
+                    "ticker": "NVDA",
+                    "raw": {"sample_path": ["x" * 1000]},
+                }
+                for index in range(120)
+            ],
+            "strategy_backtest_result": [
+                {
+                    "backtest_id": f"backtest-{index}",
+                    "proposal_id": f"proposal-{index}",
+                    "metrics": {"sample_outcomes": ["x" * 1000]},
+                    "raw": {"debug": "x" * 1000},
+                }
+                for index in range(140)
+            ],
+            "strategy_forward_test_result": [
+                {
+                    "forward_test_id": f"forward-{index}",
+                    "proposal_id": f"proposal-{index}",
+                    "metrics": {"sample_outcomes": ["x" * 1000]},
+                    "raw": {"min_forward_test_days": 5, "debug": "x" * 1000},
+                }
+                for index in range(140)
+            ],
+        },
+    )
+
+    payload = data_access.panel_snapshot_payload(panel_data, "options-radar")
+    tables = payload["tables"]
+
+    assert tables["missed_winner_event"]["count"] == 120
+    assert len(tables["missed_winner_event"]["rows"]) == 80
+    assert "raw" not in tables["missed_winner_event"]["rows"][0]
+    assert tables["strategy_backtest_result"]["count"] == 140
+    assert len(tables["strategy_backtest_result"]["rows"]) == 100
+    assert "metrics" not in tables["strategy_backtest_result"]["rows"][0]
+    assert "raw" not in tables["strategy_backtest_result"]["rows"][0]
+    assert tables["strategy_forward_test_result"]["count"] == 140
+    assert len(tables["strategy_forward_test_result"]["rows"]) == 100
+    assert "metrics" not in tables["strategy_forward_test_result"]["rows"][0]
+    assert tables["strategy_forward_test_result"]["rows"][0]["raw"] == {"min_forward_test_days": 5}
+
+    research_payload = data_access.panel_snapshot_payload(panel_data, "research")
+
+    assert "raw" in research_payload["tables"]["missed_winner_event"]["rows"][0]
+    assert "metrics" in research_payload["tables"]["strategy_backtest_result"]["rows"][0]
+    assert "raw" in research_payload["tables"]["strategy_backtest_result"]["rows"][0]
+
+
 def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
     panel_data = data_access.PanelData(
         status=data_access.DataStatus(True, "ok", "test"),
