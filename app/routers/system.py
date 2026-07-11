@@ -13,7 +13,7 @@ router = APIRouter()
 @router.get("/api/refresh-jobs")
 def refresh_jobs() -> dict[str, Any]:
     config = deps.load_config()
-    rows = deps.refresh_job_rows(deps.database_path(config))
+    rows = deps.refresh_job_rows(deps.database_url(config))
     return {"rows": rows, "count": len(rows), "allowlist": sorted(deps.ALLOWLIST), "latest_status": deps._full_market_refresh_status(config)}
 
 
@@ -22,7 +22,7 @@ def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
     try:
-        result = deps.run_refresh_job(job_name, deps.database_path(config), "config.yaml")
+        result = deps.run_refresh_job(job_name, deps.database_url(config), "config.yaml")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
@@ -33,13 +33,13 @@ def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
 def launch_refresh_job_background(job_name: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
+    database_url = deps.database_url(config)
     try:
-        job = deps.start_refresh_job(job_name, db_path)
+        job = deps.start_refresh_job(job_name, database_url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if job.get("created"):
-        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], job_name, db_path)
+        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], job_name, database_url)
     return job
 
 

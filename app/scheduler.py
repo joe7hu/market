@@ -1,19 +1,9 @@
 """In-process continuous refresh scheduler.
 
-The API process already owns the DuckDB writer, so the deterministic options
-radar is refreshed here on a timer instead of by an external launchd job that
-skipped whenever the app was running. Closing the browser does not stop this:
-it lives in the long-running uvicorn process, not the frontend.
-
-Refresh cadences are available here, but default off in the browser API process
-because DuckDB blocks readers while a writer is active. Use the
-``MARKET_*_REFRESH_SECONDS`` env vars to opt into in-process refreshes for an
-unattended runtime; manual and launchd jobs remain the safer path for normal
-interactive browsing.
-
-Job execution records refresh rows before handing heavy work to a subprocess;
-the refresh-job table still refuses to start a second copy of a job that is
-already running, so overlapping ticks cannot pile up duplicate refreshes.
+Closing the browser does not stop this scheduler: it lives in the long-running
+API process. Each due job is handed to a subprocess, while PostgreSQL job rows
+and a partial unique index provide cross-process single-flight execution.
+Independent jobs can run concurrently without blocking API readers.
 """
 
 from __future__ import annotations
@@ -24,7 +14,6 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
 from investment_panel.core.refresh_jobs import finish_refresh_job_failed, start_refresh_job
@@ -240,7 +229,7 @@ def _initial_delay_seconds(job: str, interval: int, offset: int) -> float:
     return float(offset * STAGGER_SECONDS)
 
 
-async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None:
+async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     intervals = job_intervals()
     warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20, allow_zero=True)
     logger.info("market scheduler starting (warmup=%ss, intervals=%s)", warmup, intervals)
@@ -277,7 +266,7 @@ async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None
         raise
 
 
-async def _dispatch(job: str, db_path: Path, config_path: str) -> None:
+async def _dispatch(job: str, db_path: str, config_path: str) -> None:
     try:
         started: Any = await asyncio.to_thread(start_refresh_job, job, db_path)
         if isinstance(started, dict) and started.get("created"):
@@ -296,7 +285,7 @@ async def _dispatch(job: str, db_path: Path, config_path: str) -> None:
         logger.info("scheduled job %s -> %s", job, status)
 
 
-async def _execute_started_refresh_job(job: str, job_id: str, db_path: Path, config_path: str) -> dict[str, Any]:
+async def _execute_started_refresh_job(job: str, job_id: str, db_path: str, config_path: str) -> dict[str, Any]:
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

@@ -6,6 +6,13 @@ from datetime import UTC, datetime, timedelta
 from investment_panel.core.db import db, init_db
 from investment_panel.core import refresh_jobs
 from investment_panel.core.retention import prune_operational_tables
+import psycopg
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _postgresql_job_authority(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARKET_DATABASE_URL", migrated_postgres_dsn)
 
 
 def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None:
@@ -24,15 +31,10 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
     assert rows[0]["summary"] == {"ok": True, "rows": 3}
 
 
-def test_refresh_job_rows_falls_back_to_read_only_when_writer_config_conflicts(tmp_path, monkeypatch) -> None:
+def test_refresh_job_rows_reads_completed_postgresql_job(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     job = refresh_jobs.run_refresh_job("unit_refresh", db_path)
-
-    def fail_init(_db_path, **_kwargs):
-        raise RuntimeError("Connection Error: different configuration than existing connections")
-
-    monkeypatch.setattr(refresh_jobs, "init_db", fail_init)
 
     rows = refresh_jobs.refresh_job_rows(db_path)
 
@@ -40,15 +42,10 @@ def test_refresh_job_rows_falls_back_to_read_only_when_writer_config_conflicts(t
     assert rows[0]["status"] == "succeeded"
 
 
-def test_refresh_job_rows_returns_running_sidecar_when_duckdb_is_locked(tmp_path, monkeypatch) -> None:
+def test_refresh_job_rows_returns_running_postgresql_job(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
-
-    def fail_init(_db_path, **_kwargs):
-        raise RuntimeError('IO Error: Could not set lock on file "jobs.duckdb": Conflicting lock is held')
-
-    monkeypatch.setattr(refresh_jobs, "init_db", fail_init)
 
     rows = refresh_jobs.refresh_job_rows(db_path)
 
@@ -360,20 +357,14 @@ def test_run_refresh_job_does_not_execute_existing_running_job(tmp_path, monkeyp
     assert rows[0]["status"] == "running"
 
 
-def test_stale_running_jobs_are_marked_failed(tmp_path) -> None:
+def test_stale_running_jobs_are_marked_failed(tmp_path, migrated_postgres_dsn: str) -> None:
     db_path = tmp_path / "jobs.duckdb"
-    init_db(db_path)
     stale_started = datetime.now(UTC) - timedelta(hours=4)
-    with db(db_path, read_only=False) as con:
-        con.execute(
-            """
-            INSERT INTO refresh_jobs (id, job_name, status, started_at, finished_at, error, summary)
-            VALUES ('stale-job', 'full_market_refresh', 'running', ?, NULL, NULL, '{}')
-            """,
-            [stale_started],
-        )
+    job = refresh_jobs.start_refresh_job("full_market_refresh", db_path)
+    with psycopg.connect(migrated_postgres_dsn) as con:
+        con.execute("UPDATE ops.job_run SET started_at = %s WHERE id = %s", [stale_started, job["id"]])
 
     rows = refresh_jobs.refresh_job_rows(db_path)
-    assert rows[0]["id"] == "stale-job"
+    assert rows[0]["id"] == job["id"]
     assert rows[0]["status"] == "failed"
     assert "did not finish" in (rows[0]["error"] or "")

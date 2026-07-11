@@ -54,9 +54,10 @@ def analyze_ticker(payload: deps.AgentAnalyzeInput, request: Request, background
         req = build_ondemand_request(con, ticker, payload.prompt, option_agent)
     # On-demand pass: runs only the user-requested ticker(s), records an agent_runs
     # row (trigger=ondemand) and the resulting thesis — like the auto-run pass.
-    job = deps.start_refresh_job("run_option_agents_ondemand", db_path)
+    database_url = app_config.database.url
+    job = deps.start_refresh_job("run_option_agents_ondemand", database_url)
     if job.get("created"):
-        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents_ondemand", db_path)
+        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], "run_option_agents_ondemand", database_url)
     deps._invalidate_context_cache()
     return {"ticker": ticker, "request_id": req["request_id"], "job": job}
 

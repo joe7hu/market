@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import traceback
 from typing import Any, Callable
-from uuid import uuid4
-
-from investment_panel.core.db import db, init_db, json_dumps, query_rows
+from investment_panel.core.config import load_config
+from investment_panel.database.authority import database_url, runtime_for_url
+from investment_panel.database.jobs import JobRepository
 from investment_panel.jobs import (
     daily_screen,
     full_market_refresh,
@@ -41,69 +40,6 @@ JobRunner = Callable[[str | None], dict[str, Any]]
 JOB_TIMEOUT_SECONDS: dict[str, int] = {
     "options_radar_hard_refresh": 5400,
 }
-
-
-def _runtime_dir(db_path: Any) -> Path:
-    path = Path(db_path)
-    return path.parent / ".refresh-jobs"
-
-
-def _runtime_path(db_path: Any, job_id: str) -> Path:
-    return _runtime_dir(db_path) / f"{job_id}.json"
-
-
-def _write_runtime_job(db_path: Any, row: dict[str, Any]) -> None:
-    job_id = str(row.get("id") or "").strip()
-    if not job_id:
-        return
-    runtime_dir = _runtime_dir(db_path)
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    path = _runtime_path(db_path, job_id)
-    existing: dict[str, Any] = {}
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                existing = loaded
-        except Exception:
-            existing = {}
-    path.write_text(json_dumps({**existing, **row}), encoding="utf-8")
-
-
-def _remove_runtime_job(db_path: Any, job_id: str) -> None:
-    try:
-        _runtime_path(db_path, job_id).unlink()
-    except FileNotFoundError:
-        pass
-
-
-def _runtime_job_rows(db_path: Any) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    runtime_dir = _runtime_dir(db_path)
-    if not runtime_dir.exists():
-        return rows
-    for path in runtime_dir.glob("*.json"):
-        try:
-            row = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if isinstance(row, dict):
-            row["summary"] = parse_json(row.get("summary"))
-            rows.append(row)
-    return sorted(rows, key=lambda row: str(row.get("started_at") or ""), reverse=True)
-
-
-def _merge_runtime_rows(rows: list[dict[str, Any]], runtime_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged = {str(row.get("id")): row for row in rows if row.get("id")}
-    for row in runtime_rows:
-        job_id = str(row.get("id") or "")
-        if job_id and job_id not in merged:
-            merged[job_id] = row
-    return sorted(merged.values(), key=lambda row: str(row.get("started_at") or ""), reverse=True)[:50]
-
-
-def _is_duckdb_lock_error(exc: Exception) -> bool:
-    return "Could not set lock on file" in str(exc)
 
 
 def _job_timeout_seconds(job_name: str) -> int | None:
@@ -202,93 +138,13 @@ ALLOWLIST: dict[str, JobRunner] = {
 
 
 def refresh_job_rows(db_path: Any) -> list[dict[str, Any]]:
-    runtime_rows = _runtime_job_rows(db_path)
-    try:
-        init_db(db_path, retries=0)
-        mark_stale_running_jobs(db_path, retries=0)
-        read_only = False
-    except Exception as exc:
-        if _is_duckdb_lock_error(exc):
-            return runtime_rows
-        if "different configuration than existing connections" not in str(exc):
-            raise
-        read_only = True
-    try:
-        con_context = db(db_path, read_only=read_only, retries=0)
-        with con_context as con:
-            rows = query_rows(
-                con,
-                """
-                SELECT id, job_name, status, started_at, finished_at, error, summary
-                FROM refresh_jobs
-                ORDER BY started_at DESC
-                LIMIT 50
-                """,
-            )
-    except Exception as exc:
-        if _is_duckdb_lock_error(exc):
-            return runtime_rows
-        raise
-    for row in rows:
-        row["summary"] = parse_json(row.get("summary"))
-    return _merge_runtime_rows(rows, runtime_rows)
-
-
-def _update_refresh_job_failed(con: Any, job_id: str, error: str, summary: Any | None = None) -> None:
-    con.execute(
-        """
-        UPDATE refresh_jobs
-        SET status = 'failed', finished_at = ?, error = ?, summary = ?
-        WHERE id = ?
-        """,
-        [datetime.now(UTC), error, json_dumps(summary if summary is not None else {"error": error}), job_id],
-    )
-
-
-def _update_refresh_job_succeeded(con: Any, job_id: str, summary: Any) -> None:
-    con.execute(
-        """
-        UPDATE refresh_jobs
-        SET status = 'succeeded', finished_at = ?, error = NULL, summary = ?
-        WHERE id = ?
-        """,
-        [datetime.now(UTC), json_dumps(summary), job_id],
-    )
-
-
-def _refresh_job_row(con: Any, job_id: str) -> dict[str, Any] | None:
-    rows = query_rows(
-        con,
-        """
-        SELECT id, job_name, status, started_at, finished_at, error, summary
-        FROM refresh_jobs
-        WHERE id = ?
-        """,
-        [job_id],
-    )
-    if not rows:
-        return None
-    row = rows[0]
-    row["summary"] = parse_json(row.get("summary"))
-    return row
+    repository = _job_repository(db_path)
+    repository.mark_stale()
+    return repository.rows()
 
 
 def fail_running_jobs(db_path: Any, reason: str) -> int:
-    init_db(db_path)
-    finished_at = datetime.now(UTC)
-    with db(db_path, read_only=False) as con:
-        result = con.execute(
-            """
-            UPDATE refresh_jobs
-            SET status = 'failed', finished_at = ?, error = ?, summary = ?
-            WHERE status = 'running'
-            """,
-            [finished_at, reason, json_dumps({"error": reason})],
-        )
-        count = int(result.fetchone()[0] if result.description else 0)
-    for row in _runtime_job_rows(db_path):
-        _remove_runtime_job(db_path, str(row.get("id") or ""))
-    return count
+    return _job_repository(db_path).fail_all_running(reason)
 
 
 def mark_stale_running_jobs(
@@ -297,29 +153,7 @@ def mark_stale_running_jobs(
     stale_after: timedelta = timedelta(hours=3),
     retries: int = 30,
 ) -> int:
-    cutoff = datetime.now(UTC) - stale_after
-    reason = f"Refresh job did not finish within {stale_after}."
-    with db(db_path, read_only=False, retries=retries) as con:
-        result = con.execute(
-            """
-            UPDATE refresh_jobs
-            SET status = 'failed', finished_at = ?, error = ?, summary = ?
-            WHERE status = 'running'
-              AND started_at < ?
-            """,
-            [datetime.now(UTC), reason, json_dumps({"error": reason}), cutoff],
-        )
-        count = int(result.fetchone()[0] if result.description else 0)
-    if count:
-        for row in _runtime_job_rows(db_path):
-            started_at = row.get("started_at")
-            try:
-                started = datetime.fromisoformat(str(started_at))
-            except (TypeError, ValueError):
-                continue
-            if started < cutoff:
-                _remove_runtime_job(db_path, str(row.get("id") or ""))
-    return count
+    return _job_repository(db_path).mark_stale(stale_after=stale_after)
 
 
 def start_refresh_job(job_name: str, db_path: Any) -> dict[str, Any]:
@@ -327,37 +161,7 @@ def start_refresh_job(job_name: str, db_path: Any) -> dict[str, Any]:
         allowed = ", ".join(sorted(ALLOWLIST))
         raise ValueError(f"refresh job is not allowlisted: {job_name}. Allowed jobs: {allowed}")
 
-    init_db(db_path)
-    mark_stale_running_jobs(db_path)
-    job_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{job_name}-{uuid4().hex[:8]}"
-    started_at = datetime.now(UTC)
-    with db(db_path, read_only=False) as con:
-        existing = query_rows(
-            con,
-            """
-            SELECT id, job_name, status, started_at
-            FROM refresh_jobs
-            WHERE job_name = ?
-              AND status = 'running'
-            ORDER BY started_at DESC
-            LIMIT 1
-            """,
-            [job_name],
-        )
-        if existing:
-            existing_row = {**existing[0], "created": False}
-            _write_runtime_job(db_path, {**existing_row, "summary": {}})
-            return existing_row
-        con.execute(
-            """
-            INSERT INTO refresh_jobs (id, job_name, status, started_at, finished_at, error, summary)
-            VALUES (?, ?, 'running', ?, NULL, NULL, '{}')
-            """,
-            [job_id, job_name, started_at],
-        )
-    job = {"id": job_id, "job_name": job_name, "status": "running", "started_at": started_at, "created": True, "summary": {}}
-    _write_runtime_job(db_path, job)
-    return job
+    return _job_repository(db_path).start(job_name)
 
 
 def execute_refresh_job(
@@ -371,47 +175,27 @@ def execute_refresh_job(
     if job_name not in ALLOWLIST:
         allowed = ", ".join(sorted(ALLOWLIST))
         raise ValueError(f"refresh job is not allowlisted: {job_name}. Allowed jobs: {allowed}")
-    _write_runtime_job(db_path, {"id": job_id, "job_name": job_name, "status": "running", "summary": {}})
+    repository = _job_repository(db_path, config_path)
     try:
         summary = ALLOWLIST[job_name](config_path)
     except Exception as exc:
         error = f"{exc}\n{traceback.format_exc()}"
-        with db(db_path, read_only=False) as con:
-            _update_refresh_job_failed(con, job_id, error, {"error": str(exc)})
-            row = _refresh_job_row(con, job_id)
-        if row:
-            _write_runtime_job(db_path, row)
-        _remove_runtime_job(db_path, job_id)
+        repository.finish(job_id, "failed", error=error, summary={"error": str(exc)})
         if raise_on_error:
             raise
         return {"id": job_id, "job_name": job_name, "status": "failed", "error": str(exc)}
 
     failure = summary_failure_message(summary)
     if failure:
-        with db(db_path, read_only=False) as con:
-            _update_refresh_job_failed(con, job_id, failure, summary)
-            row = _refresh_job_row(con, job_id)
-        if row:
-            _write_runtime_job(db_path, row)
-        _remove_runtime_job(db_path, job_id)
+        repository.finish(job_id, "failed", error=failure, summary=summary)
         return {"id": job_id, "job_name": job_name, "status": "failed", "error": failure, "summary": summary}
 
-    with db(db_path, read_only=False) as con:
-        _update_refresh_job_succeeded(con, job_id, summary)
-        row = _refresh_job_row(con, job_id)
-    if row:
-        _write_runtime_job(db_path, row)
-    _remove_runtime_job(db_path, job_id)
+    repository.finish(job_id, "succeeded", summary=summary)
     return {"id": job_id, "job_name": job_name, "status": "succeeded", "summary": summary}
 
 
 def finish_refresh_job_failed(job_id: str, job_name: str, db_path: Any, error: str) -> dict[str, Any]:
-    with db(db_path, read_only=False) as con:
-        _update_refresh_job_failed(con, job_id, error)
-        row = _refresh_job_row(con, job_id)
-    if row:
-        _write_runtime_job(db_path, row)
-    _remove_runtime_job(db_path, job_id)
+    _job_repository(db_path).finish(job_id, "failed", error=error)
     return {"id": job_id, "job_name": job_name, "status": "failed", "error": error}
 
 
@@ -442,7 +226,7 @@ def execute_refresh_job_subprocess(
             check=False,
             timeout=timeout_seconds,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         return finish_refresh_job_failed(
             job_id,
             job_name,
@@ -472,15 +256,14 @@ def run_refresh_job(job_name: str, db_path: Any, config_path: str | None = "conf
     return execute_refresh_job(job["id"], job_name, db_path, config_path)
 
 
-def parse_json(value: Any) -> Any:
-    if isinstance(value, (dict, list)):
-        return value
-    if not value:
-        return {}
-    try:
-        return json.loads(value)
-    except Exception:
-        return {}
+def _job_repository(database: Any, config_path: str | None = "config.yaml") -> JobRepository:
+    if isinstance(database, str) and database.startswith(("postgresql://", "postgresql+psycopg://")):
+        dsn = database
+    elif isinstance(database, dict) or getattr(database, "database", None) is not None:
+        dsn = database_url(database)
+    else:
+        dsn = load_config(config_path).database.url
+    return JobRepository(runtime_for_url(dsn))
 
 
 def summary_failure_message(summary: Any) -> str | None:

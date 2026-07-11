@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from app.data_access import (
     database_path,
+    database_url,
     dashboard_payload,
     load_config,
     load_market_panel_data,
@@ -317,9 +318,9 @@ def _invalidate_context_cache() -> None:
     _CONTEXT_CACHE.update({"entries": {}, "expires_at": 0.0, "config_key": None, "value": None})
 
 
-def _execute_background_refresh_job(job_id: str, job_name: str, db_path: Path) -> None:
+def _execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
     try:
-        execute_refresh_job_subprocess(job_id, job_name, db_path, "config.yaml")
+        execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
     finally:
         _invalidate_context_cache()
 

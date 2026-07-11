@@ -30,11 +30,11 @@ from app.deps import _invalidate_context_cache, _require_local_request  # noqa: 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    fail_running_jobs(db_path, "Server restarted before refresh job completed.")
+    database_url = deps.database_url(config)
+    fail_running_jobs(database_url, "Server restarted before refresh job completed.")
     scheduler_task: asyncio.Task | None = None
     if scheduler_enabled():
-        scheduler_task = asyncio.create_task(run_scheduler(db_path))
+        scheduler_task = asyncio.create_task(run_scheduler(database_url))
     else:
         logging.getLogger("market.scheduler").info("market scheduler disabled via MARKET_SCHEDULER_ENABLED")
     try:

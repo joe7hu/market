@@ -563,7 +563,12 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     assert "allowlisted" in response.text
 
 
-def test_refresh_jobs_exposes_options_radar_job() -> None:
+def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        app_deps,
+        "load_config",
+        lambda _path=None: {"database": {"url": migrated_postgres_dsn}},
+    )
     client = TestClient(app)
     response = client.get("/api/refresh-jobs")
 
