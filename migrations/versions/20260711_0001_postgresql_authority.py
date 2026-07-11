@@ -485,7 +485,6 @@ SCHEMA_DDL = [
         decision_id UUID PRIMARY KEY REFERENCES analysis.decision(id) ON DELETE CASCADE,
         maturity_state TEXT NOT NULL,
         observed_through TIMESTAMPTZ,
-        current_return DOUBLE PRECISION,
         return_1d DOUBLE PRECISION,
         return_5d DOUBLE PRECISION,
         return_20d DOUBLE PRECISION,
@@ -602,8 +601,7 @@ SCHEMA_DDL = [
         title TEXT NOT NULL,
         expected_impact TEXT,
         notes TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (market_event_id)
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
     """

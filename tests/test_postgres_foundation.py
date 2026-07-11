@@ -58,6 +58,29 @@ def test_migration_round_trip_removes_only_market_schemas(postgres_dsn: str) -> 
     assert schemas == []
 
 
+def test_existing_0001_database_upgrades_to_outcome_and_catalyst_constraints(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn, "20260711_0001")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        before = connection.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = 'analysis' AND table_name = 'option_outcome' AND column_name = 'current_return'"
+        ).fetchone()[0]
+    assert before == 0
+
+    upgrade_database(postgres_dsn)
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        after = connection.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = 'analysis' AND table_name = 'option_outcome' AND column_name = 'current_return'"
+        ).fetchone()[0]
+        constraint = connection.execute(
+            "SELECT count(*) FROM information_schema.table_constraints "
+            "WHERE constraint_schema = 'app' AND table_name = 'catalyst' "
+            "AND constraint_name = 'uq_app_catalyst_market_event'"
+        ).fetchone()[0]
+    assert (after, constraint) == (1, 1)
+
+
 def test_runtime_commits_writes_and_serves_read_only_transactions(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn, min_size=1, max_size=2)
     runtime.open()
