@@ -10,10 +10,202 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
 from investment_panel.database.brokers import broker_status_rows
 from investment_panel.database.agents import AgentRepository
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
 
 
 DIRECT_QUERIES: dict[str, str] = {
+    "discovered_universe": """
+        SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
+               instrument.asset_class, instrument.category,
+               watchlist.watch_state, watchlist.notes,
+               (position.instrument_id IS NOT NULL) AS is_owned
+        FROM catalog.instrument instrument
+        LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
+        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
+        WHERE watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
+        ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
+    """,
+    "universe_screen": """
+        SELECT instrument.symbol, instrument.name, instrument.asset_class, instrument.category,
+               quote.price, quote.observed_at, watchlist.watch_state,
+               CASE WHEN position.instrument_id IS NOT NULL THEN 'owned' ELSE 'watchlist' END AS universe_source,
+               COALESCE(option_summary.actionable_count, 0) AS option_opportunities
+        FROM catalog.instrument instrument
+        LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
+        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
+        LEFT JOIN LATERAL (
+            SELECT price, observed_at FROM raw.quote
+            WHERE instrument_id = instrument.id ORDER BY observed_at DESC LIMIT 1
+        ) quote ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) AS actionable_count FROM analysis.decision
+            WHERE instrument_id = instrument.id AND kind = 'option' AND state <> 'REJECT'
+        ) option_summary ON true
+        WHERE watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
+        ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
+    """,
+    "technicals": """
+        WITH ranked AS (
+            SELECT instrument.symbol, bar.observed_at, bar.close, bar.volume,
+                   row_number() OVER (PARTITION BY instrument.id ORDER BY bar.observed_at DESC) AS rn
+            FROM raw.price_bar bar JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+            WHERE bar.interval = '1d'
+        )
+        SELECT symbol, max(observed_at) AS as_of,
+               max(close) FILTER (WHERE rn = 1) AS price,
+               avg(close) FILTER (WHERE rn <= 20) AS sma_20,
+               avg(close) FILTER (WHERE rn <= 50) AS sma_50,
+               avg(close) FILTER (WHERE rn <= 200) AS sma_200,
+               avg(volume) FILTER (WHERE rn <= 20) AS average_volume_20d,
+               CASE WHEN avg(close) FILTER (WHERE rn <= 50) > 0
+                    THEN max(close) FILTER (WHERE rn = 1) / (avg(close) FILTER (WHERE rn <= 50)) - 1 END AS distance_from_sma_50
+        FROM ranked WHERE rn <= 200 GROUP BY symbol ORDER BY symbol
+    """,
+    "valuations": """
+        SELECT DISTINCT ON (instrument.id, observation.metric_set)
+               instrument.symbol, observation.metric_set, observation.period_end,
+               observation.observed_at, observation.values, observation.source_id AS source
+        FROM raw.fundamental_observation observation
+        JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        ORDER BY instrument.id, observation.metric_set, observation.observed_at DESC
+    """,
+    "liquidity": """
+        SELECT instrument.symbol,
+               max(quote.observed_at) AS as_of,
+               avg((quote.ask - quote.bid) / NULLIF(quote.mid, 0)) AS average_option_spread_pct,
+               sum(COALESCE(quote.open_interest, 0)) AS total_open_interest,
+               sum(COALESCE(quote.volume, 0)) AS total_option_volume,
+               count(*) AS contracts
+        FROM raw.option_quote quote
+        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+        JOIN LATERAL (
+            SELECT max(snapshot.observed_at) AS observed_at FROM raw.option_snapshot snapshot
+            JOIN raw.option_quote latest_quote ON latest_quote.snapshot_id = snapshot.id
+            JOIN catalog.option_contract latest_contract ON latest_contract.id = latest_quote.contract_id
+            WHERE latest_contract.underlying_instrument_id = instrument.id
+        ) latest ON latest.observed_at = quote.observed_at
+        GROUP BY instrument.symbol ORDER BY instrument.symbol
+    """,
+    "earnings": """
+        SELECT event.id::text, instrument.symbol, event.starts_at, event.title AS event,
+               event.importance, event.verification_status, event.source_url, event.details
+        FROM raw.market_event event
+        LEFT JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
+        WHERE event.event_kind = 'earnings' ORDER BY event.starts_at
+    """,
+    "analyst_estimates": """
+        SELECT instrument.symbol, observation.period_end, observation.observed_at,
+               observation.values, observation.source_id AS source
+        FROM raw.fundamental_observation observation
+        JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        WHERE observation.metric_set IN ('analyst_estimates', 'consensus')
+        ORDER BY observation.observed_at DESC
+    """,
+    "research_packets": """
+        SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
+               item.title, item.summary, item.url AS source_url, item.source_id AS source,
+               item.metadata
+        FROM raw.content_item_instrument link
+        JOIN raw.content_item item ON item.id = link.content_item_id
+        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+        ORDER BY item.observed_at DESC LIMIT 500
+    """,
+    "source_freshness": """
+        SELECT source.id AS source_id, source.name, source.family, source.kind,
+               run.status, run.finished_at AS refreshed_at, run.failure_detail,
+               run.item_count, run.instrument_count AS ticker_count,
+               CASE WHEN run.finished_at IS NULL THEN 'missing'
+                    WHEN run.finished_at < now() - interval '2 days' THEN 'stale'
+                    ELSE 'fresh' END AS freshness_status
+        FROM ingest.source source
+        LEFT JOIN LATERAL (
+            SELECT status, finished_at, failure_detail, item_count, instrument_count
+            FROM ingest.run WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1
+        ) run ON true ORDER BY source.family, source.id
+    """,
+    "source_ticker_rankings": """
+        SELECT instrument.symbol AS ticker, instrument.symbol,
+               count(*) AS source_item_count, count(DISTINCT item.source_id) AS source_count,
+               max(item.observed_at) AS latest_evidence_at
+        FROM raw.content_item_instrument link
+        JOIN raw.content_item item ON item.id = link.content_item_id
+        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+        GROUP BY instrument.symbol ORDER BY source_count DESC, source_item_count DESC
+    """,
+    "source_consensus": """
+        SELECT instrument.symbol AS ticker, instrument.symbol,
+               count(*) AS evidence_count, count(DISTINCT item.source_id) AS source_count,
+               array_agg(DISTINCT item.kind) AS evidence_kinds,
+               max(item.observed_at) AS latest_evidence_at
+        FROM raw.content_item_instrument link
+        JOIN raw.content_item item ON item.id = link.content_item_id
+        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+        GROUP BY instrument.symbol ORDER BY source_count DESC, evidence_count DESC
+    """,
+    "ownership_consensus": """
+        SELECT disclosure.trader_name, disclosure.filer_name, disclosure.event_date,
+               disclosure.filed_date, holding->>'symbol' AS symbol,
+               holding->>'name' AS issuer, (holding->>'value_thousands')::bigint AS value_thousands,
+               disclosure.source_url, disclosure.details->>'accession_number' AS accession_number
+        FROM raw.disclosure disclosure
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(disclosure.details->'holdings', '[]'::jsonb)) holding
+        WHERE disclosure.source_type = '13f' AND holding->>'symbol' IS NOT NULL
+        ORDER BY disclosure.event_date DESC, value_thousands DESC
+    """,
+    "options_provider_capabilities": """
+        SELECT id AS provider, name, enabled, capabilities, updated_at
+        FROM ingest.source WHERE capabilities ? 'option_quotes' ORDER BY id
+    """,
+    "options_ticker_signals": """
+        SELECT instrument.symbol AS ticker, instrument.symbol, decision.state,
+               count(*) AS contract_count, max(decision.score) AS best_score,
+               max(decision.as_of) AS as_of
+        FROM analysis.decision decision
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        WHERE decision.kind = 'option' GROUP BY instrument.symbol, decision.state
+        ORDER BY best_score DESC
+    """,
+    "options_payoff_scenarios": """
+        SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
+               contract.expiration, contract.strike, contract.option_type,
+               option_decision.premium_mid, option_decision.buy_under,
+               feature.required_2x_price, feature.required_5x_price,
+               feature.required_10x_price, feature.required_move_pct
+        FROM analysis.option_decision option_decision
+        JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+        JOIN analysis.option_feature feature
+          ON feature.run_id = decision.run_id AND feature.contract_id = option_decision.contract_id
+        JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY decision.as_of DESC, decision.rank
+    """,
+    "shadow_trade": """
+        SELECT trade.id::text, trade.decision_id::text AS candidate_event_id,
+               instrument.symbol AS ticker, trade.entry_at, trade.entry_price,
+               trade.exit_at, trade.exit_price, trade.status, trade.metrics
+        FROM analysis.shadow_trade trade
+        JOIN analysis.decision decision ON decision.id = trade.decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY trade.entry_at DESC
+    """,
+    "strategy_backtest_result": """
+        SELECT evaluation.id::text, strategy.strategy_key AS strategy_version,
+               evaluation.evaluated_at, evaluation.period_start, evaluation.period_end,
+               evaluation.verdict, evaluation.metrics, evaluation.evidence AS raw
+        FROM analysis.strategy_evaluation evaluation
+        JOIN analysis.strategy_revision strategy ON strategy.id = evaluation.strategy_revision_id
+        WHERE evaluation.evaluation_type = 'backtest' ORDER BY evaluation.evaluated_at DESC
+    """,
+    "strategy_forward_test_result": """
+        SELECT evaluation.id::text, strategy.strategy_key AS strategy_version,
+               evaluation.evaluated_at, evaluation.period_start, evaluation.period_end,
+               evaluation.verdict, evaluation.metrics, evaluation.evidence AS raw
+        FROM analysis.strategy_evaluation evaluation
+        JOIN analysis.strategy_revision strategy ON strategy.id = evaluation.strategy_revision_id
+        WHERE evaluation.evaluation_type IN ('forward_test', 'shadow') ORDER BY evaluation.evaluated_at DESC
+    """,
     "quotes": """
         SELECT DISTINCT ON (instrument.id) instrument.symbol, quote.observed_at,
                quote.price, quote.change_pct, quote.change_abs, quote.currency,
@@ -277,6 +469,122 @@ DIRECT_QUERIES: dict[str, str] = {
         GROUP BY strategy.strategy_key, decision.state
         ORDER BY strategy.strategy_key, decision.state
     """,
+    "instrument_market_identity": """
+        SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
+               instrument.asset_class, instrument.category, instrument.sector, instrument.industry,
+               alias.exchange, alias.currency, alias.provider, alias.external_symbol,
+               alias.metadata, instrument.updated_at
+        FROM catalog.instrument instrument
+        LEFT JOIN LATERAL (
+            SELECT * FROM catalog.instrument_alias
+            WHERE instrument_id = instrument.id ORDER BY id LIMIT 1
+        ) alias ON true ORDER BY instrument.symbol
+    """,
+    "vol_surface_features": """
+        SELECT instrument.symbol AS ticker, contract.expiration,
+               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'call') AS call_iv,
+               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'put') AS put_iv,
+               avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'put')
+                 - avg(quote.provider_iv) FILTER (WHERE contract.option_type = 'call') AS put_call_skew,
+               max(quote.observed_at) AS as_of, count(*) AS contracts
+        FROM raw.option_quote quote
+        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+        GROUP BY instrument.symbol, contract.expiration
+        ORDER BY as_of DESC, instrument.symbol, contract.expiration
+    """,
+    "exploration_gate_report": """
+        SELECT run.id::text AS analysis_run_id, strategy.strategy_key AS strategy_version,
+               instrument.symbol AS ticker, summary.gate_code,
+               summary.reject_count, summary.sampled_decision_keys, run.started_at
+        FROM analysis.reject_summary summary
+        JOIN analysis.run run ON run.id = summary.run_id
+        LEFT JOIN analysis.strategy_revision strategy ON strategy.id = summary.strategy_revision_id
+        LEFT JOIN catalog.instrument instrument ON instrument.id = summary.instrument_id
+        ORDER BY run.started_at DESC, summary.reject_count DESC
+    """,
+    "strategy_mutation_proposal": """
+        SELECT task.id::text AS proposal_id, task.created_at, task.updated_at,
+               task.status, task.request, task.result AS raw, task.validation
+        FROM analysis.agent_task task
+        WHERE task.task_kind IN ('strategy_mutation_proposal', 'legacy_strategy_mutation_proposal')
+        ORDER BY task.created_at DESC
+    """,
+    "missed_winner_event": """
+        SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
+               decision.as_of AS snapshot_time, outcome.observed_through,
+               outcome.current_return, outcome.peak_return AS max_return_since_alert,
+               CASE WHEN outcome.peak_return >= 9 THEN '10x'
+                    WHEN outcome.peak_return >= 4 THEN '5x' ELSE '2x' END AS outcome_type
+        FROM analysis.option_outcome outcome
+        JOIN analysis.decision decision ON decision.id = outcome.decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        WHERE outcome.peak_return >= 1 ORDER BY outcome.peak_return DESC
+    """,
+    "radar_state_transition": """
+        SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
+               decision.as_of AS transitioned_at, decision.state AS to_state,
+               lag(decision.state) OVER (
+                   PARTITION BY option_decision.contract_id ORDER BY decision.as_of
+               ) AS from_state, decision.score
+        FROM analysis.decision decision
+        JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY decision.as_of DESC
+    """,
+    "correlations": """
+        WITH returns AS (
+            SELECT instrument.id, instrument.symbol, bar.trading_date,
+                   bar.close / lag(bar.close) OVER (
+                       PARTITION BY instrument.id ORDER BY bar.trading_date
+                   ) - 1 AS daily_return
+            FROM raw.price_bar bar
+            JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+            WHERE bar.interval = '1d' AND bar.trading_date >= current_date - 200
+        )
+        SELECT left_side.symbol, right_side.symbol AS peer_symbol,
+               corr(left_side.daily_return, right_side.daily_return) AS correlation,
+               count(*) AS observations
+        FROM returns left_side JOIN returns right_side
+          ON right_side.trading_date = left_side.trading_date AND right_side.id > left_side.id
+        WHERE left_side.daily_return IS NOT NULL AND right_side.daily_return IS NOT NULL
+        GROUP BY left_side.symbol, right_side.symbol HAVING count(*) >= 20
+        ORDER BY abs(corr(left_side.daily_return, right_side.daily_return)) DESC LIMIT 500
+    """,
+}
+
+
+MODEL_ALIASES = {
+    "screener": "universe_screen",
+    "signals": "ticker_source_signals",
+    "source_catalog": "sources",
+    "earnings_setups": "earnings",
+    "stock_features": "technicals",
+    "sepa": "technicals",
+    "ticker_memos": "research_packets",
+    "opportunity_sources": "ticker_source_signals",
+    "options_expiry_signals": "options_expiries",
+    "shadow_trade_mark": "candidate_event_mark",
+    "correlation_edges": "correlations",
+    "exposure_clusters": "correlations",
+    "symbol_decision_snapshot": "symbol_decision_snapshots",
+}
+
+RETIRED_EMPTY_MODELS = {
+    "etf_premiums",
+    "tradingview_symbol_search",
+    "tradingview_watchlists",
+    "tradingview_alerts",
+    "tradingview_chart_state",
+}
+
+WATCHLIST_COMPAT_MODELS = {
+    f"watchlist_{state}{suffix}"
+    for state in ("watched", "unwatched")
+    for suffix in (
+        "", "_decision_queue", "_fundamentals", "_memos", "_options", "_portfolio",
+        "_quotes", "_research_packets", "_screener", "_technicals", "_thesis_monitor", "_valuations",
+    )
 }
 
 
@@ -320,25 +628,37 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
         tables["broker_status"] = broker_status_rows(runtime)
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
+    query_cache: dict[str, list[dict[str, Any]]] = {}
     with runtime.read() as connection:
         for name in requested:
             if name in tables:
                 continue
-            query = DIRECT_QUERIES.get(name)
+            alias = MODEL_ALIASES.get(name)
+            query = DIRECT_QUERIES.get(alias or name)
             if query:
-                tables[name] = [dict(row) for row in connection.execute(query).fetchall()]
+                cache_key = alias or name
+                if cache_key not in query_cache:
+                    query_cache[cache_key] = [dict(row) for row in connection.execute(query).fetchall()]
+                tables[name] = query_cache[cache_key]
+            elif alias in PUBLICATION_MODELS:
+                tables[name] = AnalysisRepository(runtime).publication_rows("today", alias)
             elif name in PUBLICATION_MODELS:
                 tables[name] = []
             else:
                 tables[name] = []
-    supported = set(DIRECT_QUERIES) | PUBLICATION_MODELS | SPECIAL_MODELS | AGENT_MODELS
+    supported = (
+        set(DIRECT_QUERIES) | PUBLICATION_MODELS | SPECIAL_MODELS | AGENT_MODELS
+        | set(MODEL_ALIASES) | RETIRED_EMPTY_MODELS | WATCHLIST_COMPAT_MODELS
+    )
     unavailable = sorted(name for name in requested if name not in supported)
+    retired = sorted(name for name in requested if name in RETIRED_EMPTY_MODELS or name in WATCHLIST_COMPAT_MODELS)
     metadata = {
         "database": "postgresql",
         "schema_revision": HEAD_REVISION,
         "loaded_at": datetime.now(UTC).isoformat(),
         "table_count": len(requested),
         "unavailable_models": unavailable,
+        "retired_models": retired,
         "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata

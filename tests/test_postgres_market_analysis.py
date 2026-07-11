@@ -42,5 +42,10 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         assert panel.status.ready is True
         assert len(panel.rows("market_environment_assets")) == 2
         assert len(panel.rows("market_environment_model")) == 4
+        complete = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "dashboard")
+        assert complete.status.ready is True
+        assert complete.metadata["unavailable_models"] == []
+        assert {row["symbol"] for row in complete.rows("technicals")} == {"SPY", "QQQ"}
+        assert len(complete.rows("correlations")) == 1
     finally:
         runtime.close()

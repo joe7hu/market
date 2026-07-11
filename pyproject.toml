@@ -57,6 +57,9 @@ market-codex-option-postmortem-agent = "investment_panel.jobs.openai_option_agen
 market-openai-option-agent = "investment_panel.jobs.openai_option_agent:main_agent"
 market-codex-option-agent = "investment_panel.jobs.openai_option_agent:main_codex_agent"
 market-full-refresh = "investment_panel.jobs.full_market_refresh:main"
+market-daily-screen = "investment_panel.jobs.full_market_refresh:main"
+market-refresh-decision-models = "investment_panel.jobs.postgres_refresh:main_publish"
+market-update-preopen-daily-brief = "investment_panel.jobs.postgres_refresh:main_preopen"
 
 [build-system]
 requires = ["hatchling"]

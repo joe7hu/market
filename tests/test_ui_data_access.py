@@ -25,14 +25,22 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
     assert panel_data.rows("candidates") == []
 
 
-def test_unported_postgresql_model_is_explicitly_unavailable(migrated_postgres_dsn: str) -> None:
+def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
     panel_data = data_access.load_table_panel_data(
         {"database": {"url": migrated_postgres_dsn}}, "technicals"
     )
 
-    assert panel_data.status.ready is False
-    assert panel_data.status.source == "postgresql-partial"
-    assert panel_data.metadata["unavailable_models"] == ["technicals"]
+    assert panel_data.status.ready is True
+    assert panel_data.status.source == "postgresql"
+    assert panel_data.metadata["unavailable_models"] == []
+    assert panel_data.rows("technicals") == []
+
+
+def test_complete_contract_has_no_unavailable_postgresql_models(migrated_postgres_dsn: str) -> None:
+    panel_data = data_access.load_panel_data({"database": {"url": migrated_postgres_dsn}})
+
+    assert panel_data.status.ready is True
+    assert panel_data.metadata["unavailable_models"] == []
 
 
 def test_load_config_honors_market_database_url_override(tmp_path, monkeypatch) -> None:

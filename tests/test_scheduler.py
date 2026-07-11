@@ -126,12 +126,12 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
     assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
-def test_postgresql_market_refresh_is_scheduled_but_legacy_preopen_job_is_not(monkeypatch) -> None:
+def test_postgresql_market_and_preopen_refreshes_are_scheduled(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600")
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "300")
     intervals = scheduler.job_intervals()
     assert intervals["update_market_environment"] == 3600
-    assert "update_preopen_daily_brief_scheduled" not in intervals
+    assert intervals["update_preopen_daily_brief_scheduled"] == 300
 
 
 def test_agent_pass_on_by_default_daily(monkeypatch) -> None:

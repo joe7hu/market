@@ -14,6 +14,53 @@ from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.jobs import refresh_options_radar, run_option_agents
 
 
+def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
+    """Rebuild deterministic publications from the latest normalized facts."""
+
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
+    options = refresh_options_radar.run_deterministic_only(config_path)
+    outcomes = OutcomeRepository(runtime).refresh()
+    today = refresh_today_publication(runtime)
+    market = refresh_market_publication(runtime)
+    status = "ok" if all(str(row.get("status")) == "ok" for row in (today, market)) else "partial"
+    return {
+        "status": status,
+        "database": "postgresql",
+        "options_radar": options,
+        "outcomes": outcomes,
+        "today": today,
+        "market": market,
+    }
+
+
+def scheduled_preopen(config_path: str | None = None, *, now: datetime | None = None) -> dict[str, Any]:
+    """Publish once in the New York premarket window; otherwise skip cheaply."""
+
+    from zoneinfo import ZoneInfo
+
+    reference = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/New_York"))
+    if reference.weekday() >= 5 or not (4 <= reference.hour < 10):
+        return {"status": "skipped", "ok": True, "database": "postgresql", "reason": "outside_premarket_window"}
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
+    with runtime.read() as connection:
+        already_published = connection.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM app.publication
+                WHERE scope = 'today' AND status = 'published'
+                  AND published_at::date = %s
+            ) AS published
+            """,
+            [reference.date()],
+        ).fetchone()["published"]
+    if already_published:
+        return {"status": "skipped", "ok": True, "database": "postgresql", "reason": "already_published"}
+    result = refresh_today_publication(runtime, now=reference.astimezone(UTC))
+    return {"ok": result.get("status") == "ok", "database": "postgresql", **result}
+
+
 def premarket(config_path: str | None = None) -> dict[str, Any]:
     """Publish the daily decision snapshot from already-ingested raw facts."""
 
@@ -112,3 +159,23 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         "warning_steps": warnings,
         "steps": results,
     }
+
+
+def main_publish() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    args = parser.parse_args()
+    print(json.dumps(publish_decisions(args.config), indent=2, default=str))
+
+
+def main_preopen() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config.yaml")
+    args = parser.parse_args()
+    print(json.dumps(scheduled_preopen(args.config), indent=2, default=str))

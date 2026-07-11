@@ -164,6 +164,9 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
+    preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0, allow_zero=True)
+    if preopen_brief_seconds > 0:
+        intervals["update_preopen_daily_brief_scheduled"] = preopen_brief_seconds
     return intervals
 
 
