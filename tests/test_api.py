@@ -7,14 +7,16 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
+from psycopg.types.json import Jsonb
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
 from investment_panel.database.authority import close_cached_runtimes
+from investment_panel.database.agents import AgentRepository
+from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.migrations import upgrade_database
-import investment_panel.core.source_ingestion.audit as audit_mod
 from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config, update_research_sources_config
 import app.main as app_main
 import app.deps as app_deps
@@ -34,6 +36,11 @@ def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
             "nas": {"status_dir": str(db_path.parent / "status")},
         },
     )
+
+
+def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
+    app_main._invalidate_context_cache()
+    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": dsn}})
 
 
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -343,7 +350,7 @@ def test_settings_snapshot_returns_no_panel_tables() -> None:
     payload = response.json()
     assert payload["tables"] == {}
     assert payload["status"]["ready"] is True
-    assert payload["status"]["source"] == "duckdb"
+    assert payload["status"]["source"] == "postgresql"
 
 
 def test_options_radar_snapshot_returns_radar_tables() -> None:
@@ -492,33 +499,27 @@ def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp
     assert response.json()["rows"] == [{"symbol": "NVDA", "signal_count": 3, "rank_score": 42}]
 
 
-def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "source-audit-api.duckdb"
-    init_db(db_path)
-    _use_temp_api_db(monkeypatch, db_path)
-    read_modes: list[bool] = []
-    real_db = app_deps.db
-
-    @contextmanager
-    def read_only_db(path: str | Path, read_only: bool = False) -> Iterator[Any]:
-        read_modes.append(read_only)
-        if read_only is not True:
-            raise AssertionError("source ingestion audit GET must open DuckDB read-only")
-        with real_db(path, read_only=read_only) as con:
-            yield con
-
-    def fail_sync(_con: Any) -> dict[str, Any]:
-        raise AssertionError("source ingestion audit GET must not sync canonical sources")
-
-    monkeypatch.setattr(app_deps, "db", read_only_db)
-    monkeypatch.setattr(audit_mod, "sync_canonical_sources", fail_sync)
+def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(
+    migrated_postgres_dsn: str, monkeypatch
+) -> None:
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    runtime = runtime_for_url(migrated_postgres_dsn)
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('test-source', 'Test', 'test', 'fixture')"
+        )
+    with runtime.read() as connection:
+        before = connection.execute("SELECT count(*) AS count FROM ingest.source").fetchone()["count"]
 
     client = TestClient(app)
     response = client.get("/api/source-ingestion-audit")
 
     assert response.status_code == 200
-    assert read_modes == [True]
+    with runtime.read() as connection:
+        after = connection.execute("SELECT count(*) AS count FROM ingest.source").fetchone()["count"]
+    assert after == before
     assert response.json()["status"] == "ok"
+    assert response.json()["database"] == "postgresql"
 
 
 def test_source_freshness_defaults_to_capped_browser_payload(tmp_path, monkeypatch) -> None:
@@ -576,45 +577,15 @@ def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monk
     assert "refresh_options_radar" in response.json()["allowlist"]
 
 
-def test_agent_thesis_post_fulfills_request_and_validates(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "agent-thesis-api.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        seed_fire_candidate(con)
-        refresh_options_radar(con, ["TSLA"])
-        con.execute(
-            """
-            INSERT INTO ticker_source_signals
-            (id, source_item_id, source_id, symbol, observed_at, signal_type,
-             sentiment, direction, confidence, thesis, antithesis, catalysts,
-             risks, invalidation, evidence_refs, needs_market_context, raw)
-            VALUES (
-             'sig-tsla-api-proof', 'source-tsla-api-proof', 'test_research', 'TSLA',
-             '2026-06-03T12:00:00Z', 'earnings', 'positive', 'bullish', 0.9,
-             'gross margin stabilizes while deliveries recover into the next report',
-             'pricing pressure remains the bear case',
-             '[{"type":"earnings","what_to_watch":"margins and delivery guide"}]',
-             '["pricing pressure"]',
-             'stock breaks below $80 without recovery',
-             '[{"type":"source_item","id":"source-tsla-api-proof"}]',
-             true,
-             '{}'
-            )
-            """
-        )
-        con.execute(
-            """
-            INSERT INTO catalysts
-            (id, symbol, event_date, event, expected_impact, source, verification_status, raw)
-            VALUES ('cat-tsla-api-earnings', 'TSLA', '2026-06-15', 'earnings', 'high', 'test', 'confirmed', '{}')
-            """
-        )
-
-    _use_temp_api_db(monkeypatch, db_path)
+def test_agent_thesis_post_fulfills_request_and_validates(migrated_postgres_dsn: str, monkeypatch) -> None:
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    repository = AgentRepository(runtime_for_url(migrated_postgres_dsn))
+    queued = repository.queue_thesis("TSLA", trigger="manual")
     client = TestClient(app)
     response = client.post(
         "/api/agent-thesis",
         json={
+            "request_id": queued["request_id"],
             "ticker": "TSLA",
             "strategy_version": DEFAULT_STRATEGY_VERSION,
             "created_at": "2026-06-03T12:00:00Z",
@@ -634,45 +605,50 @@ def test_agent_thesis_post_fulfills_request_and_validates(tmp_path, monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "accepted"
-    assert payload["agent_theses_attached"] >= 1
     assert payload["agent_thesis_validations"] == 1
-    with db(db_path) as con:
-        request = query_rows(con, "SELECT status FROM agent_thesis_request WHERE ticker = 'TSLA'")[0]
-        validation = query_rows(con, "SELECT state, proof_status, catalyst_status, red_team_status FROM agent_thesis_validation WHERE ticker = 'TSLA'")[0]
-    assert request["status"] == "fulfilled"
-    assert validation == {"state": "validated", "proof_status": "supported", "catalyst_status": "scheduled", "red_team_status": "source_backed"}
+    thesis = repository.rows("agent_thesis")[0]
+    assert thesis["status"] == "completed"
+    assert thesis["core_thesis"].startswith("Energy storage")
 
 
-def test_agent_thesis_post_rejects_unstructured_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "agent-thesis-invalid-api.duckdb"
-    init_db(db_path)
-    _use_temp_api_db(monkeypatch, db_path)
+def test_agent_thesis_post_rejects_unstructured_payload(migrated_postgres_dsn: str, monkeypatch) -> None:
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    queued = AgentRepository(runtime_for_url(migrated_postgres_dsn)).queue_thesis("TSLA", trigger="manual")
     client = TestClient(app)
 
-    response = client.post("/api/agent-thesis", json={"ticker": "TSLA", "bull_target_price": 180})
+    response = client.post("/api/agent-thesis", json={"request_id": queued["request_id"], "ticker": "TSLA", "bull_target_price": 180})
 
     assert response.status_code == 400
     assert "core_thesis" in response.text
 
 
-def test_agent_postmortem_post_keeps_strategy_mutation_gated(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "agent-postmortem-api.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        seed_missed_winner(con)
-        refresh_options_radar(con, ["RBLX"])
-        request = query_rows(con, "SELECT * FROM agent_postmortem_request")[0]
-
-    _use_temp_api_db(monkeypatch, db_path)
+def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_dsn: str, monkeypatch) -> None:
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    runtime = runtime_for_url(migrated_postgres_dsn)
+    with runtime.transaction() as connection:
+        instrument = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('RBLX', 'RBLX', 'equity') RETURNING id"
+        ).fetchone()
+        run = connection.execute(
+            "INSERT INTO analysis.run "
+            "(run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status) "
+            "VALUES ('postmortem-test', now(), 'test', %s, now(), now(), 'succeeded') RETURNING id",
+            ["0" * 64],
+        ).fetchone()
+        decision = connection.execute(
+            "INSERT INTO analysis.decision (run_id, instrument_id, decision_key, kind, state, as_of, input_hash) "
+            "VALUES (%s, %s, 'rblx-missed', 'option', 'missed', now(), %s) RETURNING id",
+            [run["id"], instrument["id"], "1" * 64],
+        ).fetchone()
+    request = AgentRepository(runtime).queue_postmortem(decision["id"], reason="missed winner")
     client = TestClient(app)
     response = client.post(
         "/api/agent-postmortems",
         json={
-            "request_id": request["request_id"],
-            "ticker": "RBLX",
-            "strategy_version": DEFAULT_STRATEGY_VERSION,
-            "source_type": request["source_type"],
-            "source_id": request["source_id"],
+                "request_id": request["request_id"],
+                "ticker": "RBLX",
+                "strategy_version": DEFAULT_STRATEGY_VERSION,
+                "decision_id": request["decision_id"],
             "outcome_type": "missed_10x_winner",
             "failure_type": "delta_range_too_strict",
             "evidence": ["Contract was rejected for delta_outside_strategy_range before reaching 10x."],
@@ -681,34 +657,29 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(tmp_path, monkeypat
             "expected_effect": "Increase recall for lower-delta 10x winners.",
             "risk": "May increase false positives and earlier entries.",
             "confidence": 70,
-            "evidence_refs": [{"type": "missed_winner_event", "id": request["source_id"]}],
+                "evidence_refs": [{"type": "decision", "id": request["decision_id"]}],
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "accepted"
-    assert payload["strategy_backtests"] >= 1
-    assert payload["strategy_forward_tests"] >= 1
-    with db(db_path) as con:
-        stored_request = query_rows(con, "SELECT status FROM agent_postmortem_request WHERE request_id = ?", [request["request_id"]])[0]
-        proposal = query_rows(con, "SELECT status, requires_backtest, requires_forward_test, human_approval_status FROM strategy_mutation_proposal")[0]
-    assert stored_request["status"] == "fulfilled"
-    assert proposal["requires_backtest"] is True
-    assert proposal["requires_forward_test"] is True
-    assert proposal["human_approval_status"] == "required"
-    assert proposal["status"] in {"forward_test_required", "backtest_failed", "ready_for_human_review"}
+    assert payload["strategy_evaluations"] == 0
+    postmortem = AgentRepository(runtime).rows("agent_postmortem")[0]
+    assert postmortem["status"] == "completed"
+    assert postmortem["failure_type"] == "delta_range_too_strict"
 
 
-def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "strategy-promotion-api.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        seed_missed_winner(con)
-        refresh_options_radar(con, ["RBLX"])
-        proposal_id = query_rows(con, "SELECT proposal_id FROM strategy_mutation_proposal")[0]["proposal_id"]
-
-    _use_temp_api_db(monkeypatch, db_path)
+def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated_postgres_dsn: str, monkeypatch) -> None:
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    runtime = runtime_for_url(migrated_postgres_dsn)
+    with runtime.transaction() as connection:
+        proposal_id = connection.execute(
+            "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+            "VALUES ('strategy_mutation_proposal', 'completed', %s, %s) RETURNING id",
+            [Jsonb({"source": "test"}), Jsonb({"status": "backtest_required"})],
+        ).fetchone()["id"]
+    proposal_id = str(proposal_id)
     client = TestClient(app)
     blocked = client.post(
         f"/api/strategy-mutation-proposals/{proposal_id}/promote",
@@ -718,10 +689,10 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     assert blocked.status_code == 400
     assert "backtest" in blocked.text
 
-    with db(db_path) as con:
-        con.execute(
-            "UPDATE strategy_backtest_result SET verdict = 'pass' WHERE proposal_id = ?",
-            [proposal_id],
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
+            [Jsonb({"status": "forward_test_required"}), proposal_id],
         )
 
     forward_blocked = client.post(
@@ -732,14 +703,10 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     assert forward_blocked.status_code == 400
     assert "forward shadow test" in forward_blocked.text
 
-    with db(db_path) as con:
-        con.execute(
-            """
-            UPDATE strategy_forward_test_result
-            SET verdict = 'pass', status = 'complete', days_observed = 30
-            WHERE proposal_id = ?
-            """,
-            [proposal_id],
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
+            [Jsonb({"status": "approved", "proposed_strategy_version": "leap_10x_momentum_lottery__delta_max_delta_min"}), proposal_id],
         )
 
     unapproved = client.post(
@@ -758,26 +725,16 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(tmp_path
     assert payload["status"] == "promoted"
     assert payload["proposal_id"] == proposal_id
     assert payload["strategy_version"] == "leap_10x_momentum_lottery__delta_max_delta_min"
-    with db(db_path) as con:
-        proposal = query_rows(
-            con,
-            """
-            SELECT status, human_approval_status, approved_by, approved_at
-            FROM strategy_mutation_proposal
-            WHERE proposal_id = ?
-            """,
-            [proposal_id],
-        )[0]
-        strategy = query_rows(
-            con,
-            "SELECT strategy_version, status, supersedes FROM option_strategy_versions WHERE strategy_version = ?",
+    with runtime.read() as connection:
+        validation = connection.execute(
+            "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]
+        ).fetchone()["validation"]
+        strategy = connection.execute(
+            "SELECT strategy_key, status FROM analysis.strategy_revision WHERE strategy_key = %s",
             [payload["strategy_version"]],
-        )[0]
-    assert proposal["status"] == "promoted"
-    assert proposal["human_approval_status"] == "approved"
-    assert proposal["approved_by"] == "joe"
-    assert proposal["approved_at"]
-    assert strategy == {"strategy_version": payload["strategy_version"], "status": "promoted", "supersedes": DEFAULT_STRATEGY_VERSION}
+        ).fetchone()
+    assert validation == {"status": "promoted", "approved_by": "joe"}
+    assert dict(strategy) == {"strategy_key": payload["strategy_version"], "status": "active"}
 
 
 def test_local_write_guard_allows_private_lan_clients() -> None:

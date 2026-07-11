@@ -436,7 +436,21 @@ def test_signal_refresh_scopes_opportunities_to_fast_snapshot(monkeypatch) -> No
     assert calls == [("v1", "2026-06-09T15:00:00"), ("v2", "2026-06-09T15:00:00")]
 
 
-def test_options_radar_panel_renders_one_display_strategy(tmp_path) -> None:
+def _publish_options_panel(database_url: str, models: dict[str, list[dict[str, object]]]) -> None:
+    from datetime import UTC, datetime
+    from investment_panel.database.analysis import AnalysisRepository
+    from investment_panel.database.runtime import DatabaseRuntime
+
+    runtime = DatabaseRuntime(database_url)
+    runtime.open()
+    repository = AnalysisRepository(runtime)
+    run_id = repository.start_run("options-panel", input_cutoff=datetime.now(UTC), code_version="test", inputs=models)
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(run_id, "options-radar", models)
+    runtime.close()
+
+
+def test_options_radar_panel_renders_one_display_strategy(tmp_path, migrated_postgres_dsn: str) -> None:
     from app.data_access import load_panel_scope_data
     from investment_panel.core.db import db, init_db
 
@@ -485,14 +499,22 @@ def test_options_radar_panel_renders_one_display_strategy(tmp_path) -> None:
             [DEFAULT_STRATEGY_VERSION],
         )
 
-    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+    _publish_options_panel(
+        migrated_postgres_dsn,
+        {
+            "option_radar_opportunity": [{"opportunity_id": "opp-default", "ticker": "TSLA", "strategy_version": DEFAULT_STRATEGY_VERSION}],
+            "candidate_event": [{"event_id": "ev-default", "ticker": "TSLA", "strategy_version": DEFAULT_STRATEGY_VERSION}],
+            "option_radar_summary": [{"strategy_version": DEFAULT_STRATEGY_VERSION}],
+        },
+    )
+    panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "options-radar")
 
     assert [row["strategy_version"] for row in panel.rows("option_radar_opportunity")] == [DEFAULT_STRATEGY_VERSION]
     assert [row["strategy_version"] for row in panel.rows("candidate_event")] == [DEFAULT_STRATEGY_VERSION]
     assert panel.rows("option_radar_summary")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
 
 
-def test_options_radar_panel_falls_back_to_display_strategy_last_good_snapshot(tmp_path) -> None:
+def test_options_radar_panel_falls_back_to_display_strategy_last_good_snapshot(tmp_path, migrated_postgres_dsn: str) -> None:
     from app.data_access import load_panel_scope_data
     from investment_panel.core.db import db, init_db
 
@@ -542,7 +564,15 @@ def test_options_radar_panel_falls_back_to_display_strategy_last_good_snapshot(t
             [DEFAULT_STRATEGY_VERSION],
         )
 
-    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+    _publish_options_panel(
+        migrated_postgres_dsn,
+        {
+            "option_radar_opportunity": [{"opportunity_id": "opp-default", "ticker": "TSLA", "strategy_version": DEFAULT_STRATEGY_VERSION}],
+            "candidate_event": [{"event_id": "ev-default", "ticker": "TSLA", "strategy_version": DEFAULT_STRATEGY_VERSION}],
+            "option_radar_summary": [{"latest_candidate_time": "2026-06-09T15:00:00", "strategy_version": DEFAULT_STRATEGY_VERSION}],
+        },
+    )
+    panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "options-radar")
 
     assert [(row["ticker"], row["strategy_version"]) for row in panel.rows("option_radar_opportunity")] == [
         ("TSLA", DEFAULT_STRATEGY_VERSION)

@@ -151,7 +151,7 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
 
     class _Cfg:
         class database:
-            duckdb_path = str(tmp_path / "force.duckdb")
+            url = "postgresql://test/market"
 
         class agents:
             class option_agent:
@@ -179,18 +179,18 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
             pricing: dict = {}
 
     monkeypatch.setattr(run_option_agents, "load_config", lambda path=None: _Cfg)
-    monkeypatch.setattr(run_option_agents, "init_db", lambda path: None)
-    monkeypatch.setattr(run_option_agents, "run_external_option_agents", lambda con, **kw: {"mode": "separate"})
 
-    class _NullCtx:
-        def __enter__(self):
-            return object()
+    class _Repository:
+        def __init__(self, runtime) -> None:
+            self.runtime = runtime
 
-        def __exit__(self, *a):
-            return False
+        def run_queued(self, command, **kwargs):
+            if command:
+                calls.append(kwargs.get("trigger"))
+            return {"completed": 0}
 
-    monkeypatch.setattr(run_option_agents, "db", lambda path, read_only=False: _NullCtx())
-    monkeypatch.setattr(run_option_agents, "run_consolidated_option_agents", lambda con, **kw: calls.append(kw.get("trigger")) or {"accepted": 0})
+    monkeypatch.setattr(run_option_agents, "runtime_for_config", lambda config: object())
+    monkeypatch.setattr(run_option_agents, "AgentRepository", _Repository)
 
     # Auto-run off + no force => does NOT run the consolidated path.
     run_option_agents.run(force=False)

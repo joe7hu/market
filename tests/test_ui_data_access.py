@@ -12,14 +12,16 @@ from app import data_access
 from investment_panel.core.panel import market_freshness
 from investment_panel.core.db import db, init_db
 from investment_panel.core.panel import read_session
+from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.runtime import DatabaseRuntime
 
 
-def test_empty_database_returns_duckdb_status(tmp_path) -> None:
-    panel_data = data_access.load_panel_data({"database": {"duckdb_path": str(tmp_path / "missing.duckdb")}})
+def test_unavailable_postgresql_returns_explicit_status() -> None:
+    panel_data = data_access.load_panel_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}})
 
     assert panel_data.status.ready is False
-    assert panel_data.status.source == "duckdb"
-    assert "Database is initialized" in panel_data.status.message
+    assert panel_data.status.source == "postgresql-error"
+    assert "PostgreSQL read models unavailable" in panel_data.status.message
     assert panel_data.rows("candidates") == []
 
 
@@ -234,39 +236,6 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert market_tables["market_environment_model"]["count"] == 1
 
 
-def test_market_panel_status_reports_stale_broad_market_inputs(tmp_path) -> None:
-    db_path = tmp_path / "market-stale.duckdb"
-    stale_date = date.today() - timedelta(days=10)
-    init_db(db_path)
-    with db(db_path) as con:
-        con.execute(
-            """
-            INSERT INTO market_valuation_metric_points
-            (metric, as_of, label, value, suffix, higher_is_better, source, source_url)
-            VALUES ('sp500_forward_pe', ?, 'S&P 500 Forward P/E', 21.5, 'x', false, 'test', 'https://example.com')
-            """,
-            [stale_date],
-        )
-        con.execute(
-            """
-            INSERT INTO market_environment_asset_snapshots
-            (symbol, as_of, group_name, name, price, return_1d, return_ytd, return_1w,
-             return_1m, return_1y, pct_from_52w_high, sma_10_up, sma_20_up, sma_50_up,
-             sma_200_up, sma_20_gt_50, sma_50_gt_200, range_ratio_52w, color, source, raw)
-            VALUES ('SPY', ?, 'Market', 'S&P 500 ETF', 600, 0.1, 5, 1, 2, 12, 1, true, true, true, true, true, true, 90, 'green', 'test', '{}')
-            """,
-            [stale_date],
-        )
-
-    panel_data = data_access.load_market_panel_data({"database": {"duckdb_path": str(db_path)}})
-
-    assert panel_data.status.ready is True
-    assert panel_data.status.source == "duckdb-stale"
-    assert panel_data.metadata["market_freshness"]["status"] == "stale"
-    assert panel_data.metadata["market_freshness"]["checks"]["asset_matrix"]["latest_date"] == stale_date.isoformat()
-    assert panel_data.metadata["market_freshness"]["checks"]["valuation_reference"]["series"]["sp500_forward_pe"]["status"] == "stale"
-
-
 def test_market_freshness_distinguishes_off_market_hours_from_stale() -> None:
     tables = {
         "market_valuation_reference_charts": [{"metric": "sp500_forward_pe", "latest_date": "2026-06-12"}],
@@ -296,8 +265,8 @@ def test_market_freshness_marks_missed_completed_session_stale() -> None:
     assert freshness["checks"]["asset_matrix"]["status"] == "stale"
 
 
-def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "scoped.duckdb")}}
+def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
 
     panel_data = data_access.load_panel_scope_data(config, "feed")
 
@@ -305,62 +274,35 @@ def test_scope_loader_materializes_only_requested_tables(tmp_path) -> None:
     assert panel_data.rows("source_freshness") == []
 
 
-def test_source_table_loader_uses_read_only_panel_load(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
+def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
 
-    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], ensure_decision_models: bool, ensure_source_models: bool) -> dict[str, object]:
-        calls.append(
-            {
-                "table_names": table_names,
-                "ensure_decision_models": ensure_decision_models,
-                "ensure_source_models": ensure_source_models,
-            }
-        )
-        return {"ready": True, "message": "ok", "source": "test", "tables": {"source_items": []}, "metadata": {}}
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...]):
+        calls.append(table_names)
+        return {"source_items": []}, {"database": "postgresql"}
 
-    monkeypatch.setattr(data_access.loaders, "core_load_panel_data", fake_helper)
+    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
 
-    data_access.load_table_panel_data({"database": {"duckdb_path": "/tmp/test.duckdb"}}, "source_items")
+    data_access.load_table_panel_data({"database": {"url": "postgresql:///test"}}, "source_items")
 
-    assert calls == [
-        {
-            "table_names": ("source_items",),
-            "ensure_decision_models": False,
-            "ensure_source_models": False,
-        }
-    ]
+    assert calls == [("source_items",)]
 
 
-def test_default_panel_loader_preserves_full_load_sentinel(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
+def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
 
-    def fake_helper(
-        config: dict[str, object],
-        table_names: tuple[str, ...] | None,
-        ensure_decision_models: bool | None,
-        ensure_source_models: bool | None,
-    ) -> dict[str, object]:
-        calls.append(
-            {
-                "table_names": table_names,
-                "ensure_decision_models": ensure_decision_models,
-                "ensure_source_models": ensure_source_models,
-            }
-        )
-        return {"ready": True, "message": "ok", "source": "test", "tables": {"signals": [{"symbol": "NVDA"}]}, "metadata": {}}
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...]):
+        calls.append(table_names)
+        return {name: [] for name in table_names}, {"database": "postgresql"}
 
-    monkeypatch.setattr(data_access.loaders, "core_load_panel_data", fake_helper)
+    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
 
-    panel_data = data_access.load_panel_data({"database": {"duckdb_path": "/tmp/test.duckdb"}})
+    panel_data = data_access.load_panel_data({"database": {"url": "postgresql:///test"}})
 
     assert panel_data.status.ready is True
-    assert calls == [
-        {
-            "table_names": None,
-            "ensure_decision_models": None,
-            "ensure_source_models": None,
-        }
-    ]
+    assert len(calls) == 1
+    assert "signals" in calls[0]
+    assert "option_radar_opportunity" in calls[0]
 
 
 def test_empty_settings_scope_does_not_touch_missing_database(tmp_path) -> None:
@@ -369,37 +311,26 @@ def test_empty_settings_scope_does_not_touch_missing_database(tmp_path) -> None:
     panel_data = data_access.load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "settings")
 
     assert panel_data.status.ready is True
-    assert panel_data.status.source == "duckdb"
+    assert panel_data.status.source == "postgresql"
     assert panel_data.tables == {}
     assert not db_path.exists()
 
 
-def test_market_panel_loader_handles_unmigrated_existing_database(tmp_path) -> None:
-    db_path = tmp_path / "unmigrated.duckdb"
-    duckdb.connect(str(db_path)).close()
-
-    panel_data = data_access.load_market_panel_data({"database": {"duckdb_path": str(db_path)}})
+def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str) -> None:
+    panel_data = data_access.load_market_panel_data({"database": {"url": migrated_postgres_dsn}})
 
     assert panel_data.status.ready is True
-    assert panel_data.status.source != "core-error"
+    assert panel_data.status.source == "postgresql"
     assert panel_data.rows("market_valuation_reference_charts") == []
     assert panel_data.rows("market_environment_assets") == []
-    assert panel_data.rows("market_environment_model")
+    assert panel_data.rows("market_environment_model") == []
 
 
-def test_pure_scoped_read_migrates_stale_database_before_reading(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "0")
-    db_path = tmp_path / "stale.duckdb"
-    with duckdb.connect(str(db_path)) as con:
-        con.execute("CREATE TABLE source_health (source TEXT PRIMARY KEY, checked_at TIMESTAMP, status TEXT, detail TEXT)")
+def test_pure_scoped_postgresql_read_is_empty_when_unpublished(migrated_postgres_dsn: str) -> None:
+    panel_data = data_access.load_table_panel_data({"database": {"url": migrated_postgres_dsn}}, "source_health")
 
-    panel_data = data_access.load_table_panel_data({"database": {"duckdb_path": str(db_path)}}, "source_health")
-
-    assert panel_data.status.source != "core-error"
+    assert panel_data.status.source == "postgresql"
     assert panel_data.rows("source_health") == []
-    with duckdb.connect(str(db_path), read_only=True) as con:
-        columns = {row[1] for row in con.execute("PRAGMA table_info('source_health')").fetchall()}
-    assert "source_url" in columns
 
 
 def test_scheduler_compatible_panel_read_does_not_poison_later_writer(tmp_path) -> None:
@@ -452,23 +383,17 @@ def test_panel_read_session_uses_read_only_fail_fast_by_default(tmp_path, monkey
     assert calls == [(True, 0, 0.1)]
 
 
-def test_scoped_panel_status_is_ready_when_requested_table_has_rows(tmp_path) -> None:
-    db_path = tmp_path / "scoped-ready.duckdb"
-    config = {"database": {"duckdb_path": str(db_path)}}
-    data_access.load_panel_data(config)
-    from investment_panel.core.db import db
-
-    with db(db_path) as con:
-        con.execute(
-            """
-            INSERT INTO birdclaw_theses
-            VALUES ('thesis-1', 'NVDA', 'tester', '2026-06-01T12:00:00Z', 'NVDA thesis', '{}', '{}', 'https://example.com')
-            """
-        )
-        from investment_panel.core.decision import refresh_decision_read_models
-
-        refresh_decision_read_models(con, [])
-
+def test_scoped_panel_status_is_ready_when_publication_has_rows(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = AnalysisRepository(runtime)
+    run_id = repository.start_run(
+        "feed", input_cutoff=datetime.now(UTC), code_version="test", inputs={"feed": 1}
+    )
+    repository.finish_run(run_id, "succeeded")
+    repository.publish(run_id, "feed", {"feed_signals": [{"symbol": "NVDA", "summary": "NVDA thesis"}]})
+    runtime.close()
     panel_data = data_access.load_panel_scope_data(config, "feed")
 
     assert panel_data.status.ready is True

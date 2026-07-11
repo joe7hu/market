@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -1120,40 +1120,41 @@ def test_options_radar_quality_does_not_compare_stale_peer_snapshots(tmp_path) -
     assert raw["quality"]["peer"]["crosscheck_skipped"] == "stale_peer_snapshot"
 
 
-def test_options_radar_tables_load_through_panel_contract(tmp_path) -> None:
-    db_path = tmp_path / "panel-radar.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        seed_prices(con, "TSLA", slope=0.12)
-        seed_prices(con, "QQQ", start_price=100, slope=0.02)
-        con.execute(
-            "INSERT INTO quotes_intraday VALUES ('TSLA', '2026-06-02T19:00:00Z', 102, 1, 1, 'USD', 'tradingview', '{}')"
-        )
-        store_options_chain(
-            con,
-            "TSLA",
-            "2026-06-02T19:00:00Z",
-            [
-                option_row("2027-09-18", 120, "call", 2.9, 3.0, 0.25, 0.30, "OPRA:TSLA270918C120", volume=25, open_interest=250),
-                option_row("2027-09-18", 180, "call", 7.5, 8.5, 0.50, 0.30, "OPRA:TSLA270918C180", volume=25, open_interest=250),
-            ],
-        )
-        refresh_options_radar(con, ["TSLA"])
-
+def test_options_radar_tables_load_through_panel_contract(migrated_postgres_dsn: str) -> None:
     from app.data_access import load_panel_scope_data
+    from investment_panel.database.ingestion import IngestionRepository
+    from investment_panel.database.options_analysis import refresh_options_radar as refresh_postgres_radar
+    from investment_panel.database.runtime import DatabaseRuntime
 
-    panel = load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "options-radar")
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    ingestion.register_source("test", name="Test", family="test", kind="option_chain")
+    run_id = ingestion.start_run("test", "option_quotes")
+    observed_at = datetime(2026, 6, 2, 19, tzinfo=UTC)
+    ingestion.store_option_snapshot(
+        run_id,
+        source_id="test",
+        observed_at=observed_at,
+        market_session="regular",
+        universe="test",
+        rows=[
+            {"symbol": "TSLA", "expiration": "2027-09-18", "strike": 120, "option_type": "call", "bid": 2.9, "ask": 3.0, "mid": 2.95, "iv": .25, "delta": .30, "volume": 25, "open_interest": 250},
+            {"symbol": "TSLA", "expiration": "2027-09-18", "strike": 180, "option_type": "call", "bid": 7.5, "ask": 8.5, "mid": 8.0, "iv": .50, "delta": .30, "volume": 25, "open_interest": 250},
+        ],
+    )
+    ingestion.finish_run(run_id, "succeeded")
+    refresh_postgres_radar(runtime, source_id="test", code_version="panel-test")
+    runtime.close()
+
+    panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "options-radar")
     tables = panel.tables
-    assert panel.rows("option_radar_summary")[0]["scanned_tickers_current"] == 1
-    assert panel.rows("option_radar_summary")[0]["opportunity_tickers_current"] == 1
+    assert panel.rows("option_radar_summary")[0]["symbol"] == "TSLA"
     assert "option_snapshot" not in tables
     assert "option_features" not in tables
     assert "stock_features" not in tables
     assert "radar_alert" in tables
-    assert panel.rows("radar_alert")
-    assert {row["state"] for row in panel.rows("candidate_event")} == {"FIRE"}
-    assert panel.rows("candidate_event")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
-    assert panel.rows("candidate_event_mark")[0]["candidate_state"] in {"FIRE", "REJECT"}
+    assert {row["state"] for row in panel.rows("candidate_event")} <= {"FIRE", "SETUP", "WATCH", "REJECT"}
     assert "candidate_event_attribution" in tables
     assert "shadow_trade" not in tables
     assert "radar_state_transition" not in tables

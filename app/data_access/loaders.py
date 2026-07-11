@@ -1,22 +1,13 @@
-"""Panel read-model loading and scope selection."""
+"""PostgreSQL panel read-model loading and scope selection."""
 
 from __future__ import annotations
+
 from typing import Any, Iterable
-from app.panel_contracts import (
-    panel_contract_payload as contract_panel_payload,
-)
-from investment_panel.core.panel import (
-    load_market_panel_data as core_load_market_panel_data,
-    load_panel_data as core_load_panel_data,
-    load_ticker_dossier_data as core_load_ticker_dossier_data,
-)
 
-from app.data_access.types import DataStatus, PanelData, SETUP_INSTRUCTIONS
 from app.data_access.config import load_config, tables_for_scope
-from app.data_access.coerce import _is_empty
-from app.data_access.normalize import _normalize_panel_data
-from app.data_access.payloads import _runtime_metadata
-
+from app.data_access.postgres_panel import load_postgres_tables
+from app.data_access.types import DataStatus, PanelData
+from app.panel_contracts import panel_contract_payload as contract_panel_payload
 
 
 def load_panel_data(
@@ -25,110 +16,66 @@ def load_panel_data(
     ensure_decision_models: bool | None = None,
     ensure_source_models: bool | None = None,
 ) -> PanelData:
-    """Load panel read models from core and normalize them for the API."""
-
+    del ensure_decision_models, ensure_source_models
     active_config = config or load_config()
-    requested_table_names = None if table_names is None else tuple(table_names)
-    try:
-        raw_data = core_load_panel_data(
-            active_config,
-            table_names=requested_table_names,
-            ensure_decision_models=ensure_decision_models,
-            ensure_source_models=ensure_source_models,
-        )
-    except Exception as exc:  # pragma: no cover - defensive UI boundary
+    requested = _all_contract_tables() if table_names is None else tuple(table_names)
+    if not requested:
         return PanelData(
-            status=DataStatus(
-                ready=False,
-                message=f"Core data helper failed: {exc}",
-                source="core-error",
-            ),
-            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
+            status=DataStatus(True, "No PostgreSQL read models requested.", "postgresql"),
+            tables={},
+            metadata={"database": "postgresql", "table_count": 0},
         )
-
-    panel_data = _normalize_panel_data(raw_data)
-    panel_data.metadata.update(_runtime_metadata(active_config))
-    if _is_empty(panel_data) and panel_data.status.source != "duckdb-missing" and requested_table_names != ():
-        panel_data.status = DataStatus(
-            ready=False,
-            message="Core helpers returned no rows for the configured DuckDB.",
-            source="empty-db",
+    try:
+        tables, metadata = load_postgres_tables(active_config, requested)
+    except Exception as exc:
+        return PanelData(
+            status=DataStatus(False, f"PostgreSQL read models unavailable: {exc}", "postgresql-error"),
+            tables={name: [] for name in requested},
+            metadata={"database": "postgresql", "error": str(exc)},
         )
-        panel_data.metadata.setdefault("setup_instructions", SETUP_INSTRUCTIONS)
-    return panel_data
-
-
+    return PanelData(
+        status=DataStatus(True, "PostgreSQL read models loaded.", "postgresql"),
+        tables=tables,
+        metadata=metadata,
+    )
 
 
 def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelData:
-    """Load the minimum backend read models needed for one app scope."""
-
-    scope_tables = tables_for_scope(scope)
-    return load_panel_data(
-        config,
-        table_names=scope_tables,
-        ensure_decision_models=False,
-        ensure_source_models=False,
-    )
-
-
+    return load_panel_data(config, table_names=tables_for_scope(scope))
 
 
 def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
-    """Load the minimum backend read model for one table endpoint."""
-
-    return load_panel_data(
-        config,
-        table_names=(table_name,),
-        ensure_decision_models=False,
-        ensure_source_models=False,
-    )
-
-
+    return load_panel_data(config, table_names=(table_name,))
 
 
 def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelData:
-    """Load only ticker dossier read models before symbol filtering."""
-
     normalized = ticker.strip().upper()
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
-    try:
-        raw_data = core_load_ticker_dossier_data(config or load_config(), normalized)
-        return _normalize_panel_data(raw_data)
-    except Exception as exc:
-        return PanelData(
-            status=DataStatus(False, f"Ticker dossier helper failed: {exc}", "core-error"),
-            tables={},
-            metadata={"setup_instructions": SETUP_INSTRUCTIONS},
-        )
-
-
+    panel = load_panel_data(config)
+    panel.tables = {
+        name: [row for row in rows if _row_symbol(row) in {"", normalized}]
+        for name, rows in panel.tables.items()
+    }
+    panel.metadata["ticker"] = normalized
+    return panel
 
 
 def panel_contract_payload() -> dict[str, Any]:
     return contract_panel_payload()
 
 
-
-
 def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
-    """Load only the broad-market tables required by the Market page."""
-
-    active_config = config or load_config()
-    try:
-        return _normalize_panel_data(core_load_market_panel_data(active_config))
-    except Exception as exc:
-        return _empty_market_panel_data(f"Market read models are unavailable: {exc}", "core-error")
+    return load_panel_scope_data(config, "market")
 
 
-def _empty_market_panel_data(message: str, source: str) -> PanelData:
-    return PanelData(
-        status=DataStatus(ready=False, message=message, source=source),
-        tables={
-            "market_valuation_reference_charts": [],
-            "market_environment_assets": [],
-            "market_environment_model": [],
-        },
-        metadata={"setup_instructions": SETUP_INSTRUCTIONS},
-    )
+def _all_contract_tables() -> tuple[str, ...]:
+    contract = contract_panel_payload()
+    values = set(contract.get("tables") or [])
+    for names in (contract.get("scopes") or {}).values():
+        values.update(names or [])
+    return tuple(sorted(values))
+
+
+def _row_symbol(row: dict[str, Any]) -> str:
+    return str(row.get("symbol") or row.get("ticker") or "").upper()

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import re
-from typing import Any
-
 from psycopg import sql
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE

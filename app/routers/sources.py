@@ -23,22 +23,10 @@ def sources() -> dict[str, Any]:
 @router.get("/api/sources/{source_id}")
 def source_detail(source_id: str) -> dict[str, Any]:
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    if not db_path.exists():
-        return {
-            "source": {"source_id": source_id, "found": False},
-            "runs": [],
-            "items": [],
-            "signals": [],
-            "status": {
-                "ready": False,
-                "source": "duckdb-missing",
-                "message": "DuckDB database does not exist yet. Run a refresh job to initialize it.",
-            },
-        }
-    with deps._CONTEXT_LOCK:
-        with deps.db(db_path, read_only=True) as con:
-            return deps.source_detail_payload(con, source_id, ensure_sources=False)
+    from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.sources import SourceRepository
+
+    return SourceRepository(runtime_for_config(config)).detail(source_id)
 
 
 @router.get("/api/source-items")
@@ -60,22 +48,10 @@ def source_runs() -> dict[str, Any]:
 def source_catalog() -> dict[str, Any]:
     """Authoritative data-source catalog joined with live freshness/health status."""
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    if not db_path.exists():
-        return {
-            "categories": [],
-            "families": {},
-            "generated_from": "source_catalog",
-            "status": {
-                "ready": False,
-                "source": "duckdb-missing",
-                "message": "DuckDB database does not exist yet. Run a refresh job to initialize it.",
-            },
-        }
-    with deps._CONTEXT_LOCK:
-        with deps.db(db_path, read_only=True) as con:
-            payload = deps.build_source_catalog_health(con)
-    return {**payload, "status": {"ready": True, "source": "duckdb"}}
+    from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.sources import SourceRepository
+
+    return SourceRepository(runtime_for_config(config)).catalog()
 
 
 @router.get("/api/ticker-source-signals")
@@ -86,19 +62,10 @@ def ticker_source_signals() -> dict[str, Any]:
 @router.get("/api/source-ingestion-audit")
 def source_audit() -> dict[str, Any]:
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    if not db_path.exists():
-        return {
-            "status": "missing_database",
-            "active_sources": 0,
-            "disabled_sources": 0,
-            "source_failures": [],
-            "broker_rows": [],
-            "failures": [],
-        }
-    with deps._CONTEXT_LOCK:
-        with deps.db(db_path, read_only=True) as con:
-            return deps.source_ingestion_audit(con, sync_sources=False)
+    from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.sources import SourceRepository
+
+    return SourceRepository(runtime_for_config(config)).audit()
 
 
 @router.get("/api/source-consensus")

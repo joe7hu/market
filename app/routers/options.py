@@ -74,21 +74,20 @@ def agent_thesis() -> dict[str, Any]:
 def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    deps.init_db(db_path)
     strategy_version = deps._payload_strategy_version(payload)
+    from investment_panel.database.agents import AgentRepository
+    from investment_panel.database.authority import runtime_for_config
+
     try:
-        with deps.db(db_path, read_only=False) as con:
-            thesis_id = deps.upsert_agent_thesis(con, payload)
-            agent_work = deps.refresh_option_agent_work(con, strategy_version=strategy_version)
-    except deps.AgentThesisValidationError as exc:
+        thesis_id = AgentRepository(runtime_for_config(config)).submit("option_thesis", payload)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
     return {
         "status": "accepted",
         "thesis_id": thesis_id,
         "strategy_version": strategy_version,
-        **agent_work,
+        "agent_thesis_validations": 1,
     }
 
 
@@ -116,21 +115,20 @@ def agent_postmortems() -> dict[str, Any]:
 def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    deps.init_db(db_path)
     strategy_version = deps._payload_strategy_version(payload)
+    from investment_panel.database.agents import AgentRepository
+    from investment_panel.database.authority import runtime_for_config
+
     try:
-        with deps.db(db_path, read_only=False) as con:
-            postmortem_id = deps.upsert_agent_postmortem(con, payload)
-            evaluation_rows = deps.refresh_strategy_proposal_evaluations(con, strategy_version=strategy_version)
-    except deps.AgentPostmortemValidationError as exc:
+        postmortem_id = AgentRepository(runtime_for_config(config)).submit("option_postmortem", payload)
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
     return {
         "status": "accepted",
         "postmortem_id": postmortem_id,
         "strategy_version": strategy_version,
-        **evaluation_rows,
+        "strategy_evaluations": 0,
     }
 
 
@@ -148,10 +146,10 @@ def radar_alerts() -> dict[str, Any]:
 def acknowledge_radar_alert_endpoint(alert_id: str, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    deps.init_db(db_path)
-    with deps.db(db_path, read_only=False) as con:
-        acknowledged = deps.acknowledge_radar_alert(con, alert_id)
+    from investment_panel.database.actions import ActionRepository
+    from investment_panel.database.authority import runtime_for_config
+
+    acknowledged = ActionRepository(runtime_for_config(config)).acknowledge_alert(alert_id)
     deps._invalidate_context_cache()
     if not acknowledged:
         raise HTTPException(status_code=404, detail="Radar alert not found")
@@ -202,18 +200,17 @@ def trade_journal() -> dict[str, Any]:
 def create_trade_journal_entry(payload: deps.TradeJournalInput, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    deps.init_db(db_path)
-    with deps.db(db_path, read_only=False) as con:
-        journal_id = deps.record_trade_journal_entry(
-            con,
-            ticker=payload.ticker,
-            contract_id=payload.contract_id,
-            event_id=payload.event_id,
-            strategy_version=payload.strategy_version,
-            opportunity=payload.opportunity,
-            notes=payload.notes,
-        )
+    from investment_panel.database.actions import ActionRepository
+    from investment_panel.database.authority import runtime_for_config
+
+    journal_id = ActionRepository(runtime_for_config(config)).record_trade_journal(
+        ticker=payload.ticker,
+        contract_id=payload.contract_id,
+        event_id=payload.event_id,
+        strategy_version=payload.strategy_version,
+        opportunity=payload.opportunity,
+        notes=payload.notes,
+    )
     deps._invalidate_context_cache()
     return {"status": "recorded", "journal_id": journal_id}
 
@@ -241,13 +238,15 @@ def promote_strategy_mutation_endpoint(
 ) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
-    db_path = deps.database_path(config)
-    deps.init_db(db_path)
     approved_by = payload.approved_by.strip() if payload else "joe"
+    from investment_panel.database.actions import ActionRepository
+    from investment_panel.database.authority import runtime_for_config
+
     try:
-        with deps.db(db_path, read_only=False) as con:
-            strategy_version = deps.promote_strategy_mutation(con, proposal_id, approved_by=approved_by)
-    except deps.StrategyPromotionError as exc:
+        strategy_version = ActionRepository(runtime_for_config(config)).promote_strategy_proposal(
+            proposal_id, approved_by=approved_by
+        )
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
     return {

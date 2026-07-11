@@ -16,6 +16,8 @@ from investment_panel.core.decision.service import refresh_decision_read_models
 from investment_panel.core.panel import load_panel_data
 from investment_panel.core.source_ingestion.health import record_verified_sources
 from investment_panel.core.sources import MUNGERMODE_BENCHMARK_SOURCES, SOURCE_DEFINITIONS, source_ingestion_audit
+from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.runtime import DatabaseRuntime
 
 
 DECISION_TABLES = {
@@ -523,9 +525,24 @@ def test_decision_grade_api_contract_routes_smoke(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
     expected_key: str,
+    migrated_postgres_dsn: str,
 ) -> None:
-    db_path = seed_decision_fixture(tmp_path)
-    monkeypatch.setattr(api_deps, "load_config", lambda: config_for(db_path))
+    model_by_path = {
+        "/api/decision-readiness": "decision_readiness",
+        "/api/discovered-universe": "discovered_universe",
+        "/api/decision-queue": "decision_queue",
+        "/api/source-freshness": "source_freshness",
+    }
+    model = model_by_path.get(path)
+    if model:
+        runtime = DatabaseRuntime(migrated_postgres_dsn)
+        runtime.open()
+        repository = AnalysisRepository(runtime)
+        run_id = repository.start_run("decision-grade", input_cutoff=datetime.now(UTC), code_version="test", inputs={"path": path})
+        repository.finish_run(run_id, "succeeded")
+        repository.publish(run_id, "watchlist", {model: [{"symbol": "NVDA", "status": "ready"}]})
+        runtime.close()
+    monkeypatch.setattr(api_deps, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
     api_main._invalidate_context_cache()
     client = TestClient(api_main.app)
 

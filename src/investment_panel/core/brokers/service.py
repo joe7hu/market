@@ -1,11 +1,11 @@
 """Broker sync orchestration and policy checks."""
 
 from __future__ import annotations
-from typing import Any, Protocol
-from investment_panel.core.config import AppConfig, BrokerPolicyConfig, load_config
-from investment_panel.core.db import db, init_db, json_dumps, query_rows
+from typing import Any
+from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.db import query_rows
 from investment_panel.core.decision import refresh_decision_read_models
-from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+from investment_panel.core.instruments import normalize_symbol
 
 from investment_panel.core.brokers.constants import ADVISORY_AUTHORITY
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
@@ -13,14 +13,33 @@ from investment_panel.core.brokers.ibkr import IBKRProvider
 from investment_panel.core.brokers.moomoo import MoomooProvider
 from investment_panel.core.brokers.persistence import persist_broker_snapshot
 from investment_panel.core.brokers.recommendations import build_and_persist_agent_recommendations
+from investment_panel.database.authority import runtime_for_config
+from investment_panel.database.brokers import BrokerRepository
+from investment_panel.database.ingestion import IngestionRepository
 
 
 
 def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
-    init_db(config.database.duckdb_path)
-    with db(config.database.duckdb_path, read_only=False) as con:
-        return update_broker_sources(con, config)
+    runtime = runtime_for_config(config)
+    symbols = IngestionRepository(runtime).option_universe(config.watchlist)[:250]
+    providers = [IBKRProvider(config.data_sources.brokers.ibkr), MoomooProvider(config.data_sources.brokers.moomoo)]
+    repository = BrokerRepository(runtime)
+    provider_results = []
+    for provider in providers:
+        try:
+            snapshot = provider.collect(symbols)
+        except Exception as exc:  # pragma: no cover - provider boundary
+            snapshot = BrokerSnapshot(ProviderStatus(getattr(provider, "name", "unknown"), "session_failure", str(exc)))
+        provider_results.append(repository.sync_snapshot(snapshot))
+    recommendations = repository.build_recommendations()
+    return {
+        "status": "ok" if any(row["status"] == "ok" for row in provider_results) else "degraded",
+        "providers": provider_results,
+        "recommendations": len(recommendations),
+        "authority": ADVISORY_AUTHORITY,
+        "database": config.database.url,
+    }
 
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Sequence
 
 from investment_panel.database.analysis import AnalysisRepository
