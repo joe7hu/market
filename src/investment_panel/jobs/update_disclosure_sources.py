@@ -25,6 +25,7 @@ from investment_panel.core.house_disclosures import (
 from investment_panel.core import sec
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.source_facts import SourceFactRepository
 
 
 def run(config_path: str | None = None) -> dict[str, Any]:
@@ -108,7 +109,7 @@ def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str,
                         "holdings_value_thousands": total_value, "source_document": candidate,
                     },
                 }
-                ingested += repository.store_disclosures(run_id, source_id, [row], payload_id=payload_id)
+                ingested += SourceFactRepository(runtime).store_disclosures(run_id, source_id, [row], payload_id=payload_id)
             except Exception as exc:
                 failures.append(f"{accession}: {type(exc).__name__}: {exc}")
         status = "partial" if failures else "succeeded"
@@ -278,7 +279,7 @@ def _ingest_house(runtime: Any, config: Any, trader: dict[str, Any]) -> dict[str
                 _normalize_house(row, filing, trader)
                 for row in parse_house_disclosure_text(text, filing, trader["trader_name"])
             ]
-            count = repository.store_disclosures(run_id, source_id, rows, payload_id=payload_id)
+            count = SourceFactRepository(runtime).store_disclosures(run_id, source_id, rows, payload_id=payload_id)
             ingested += count
         repository.finish_run(
             run_id,
@@ -348,7 +349,7 @@ def _ingest_csv(runtime: Any, source: dict[str, Any]) -> dict[str, Any]:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             rows = [_normalize(row, source) for row in csv.DictReader(handle)]
         rows = [row for row in rows if row is not None]
-        count = repository.store_disclosures(run_id, source_id, rows, payload_id=payload_id)
+        count = SourceFactRepository(runtime).store_disclosures(run_id, source_id, rows, payload_id=payload_id)
         repository.finish_run(run_id, "succeeded", item_count=count, summary={"source_file": path.name})
         return {"source_id": source_id, "status": "ok", "rows": count}
     except Exception as exc:

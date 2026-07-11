@@ -18,6 +18,7 @@ import httpx
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.providers.opencli import OpenCliRateLimitError, OpenCliRunner, ensure_list
 
 
@@ -113,7 +114,7 @@ def _run_source(config: Any, runtime: Any, known: set[str], spec: dict[str, Any]
         payload_id = repository.record_payload_file(run_id, archive, source_key=str(spec["key"]))
         rows = [_content_row(source_id, spec["kind"], row, known) for row in raw_rows]
         rows = [row for row in rows if row is not None]
-        counts = repository.store_content_items(run_id, source_id, rows, payload_id=payload_id)
+        counts = SourceFactRepository(runtime).store_content_items(run_id, source_id, rows, payload_id=payload_id)
         repository.finish_run(
             run_id,
             "succeeded",

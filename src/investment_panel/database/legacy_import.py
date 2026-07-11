@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -281,7 +282,7 @@ class LegacyImporter:
             }
             for row in rows
         ]
-        counts = repository.store_content_items(run_id, source_id, normalized)
+        counts = SourceFactRepository(self.runtime).store_content_items(run_id, source_id, normalized)
         repository.finish_run(run_id, "succeeded", item_count=counts["items"])
         return counts["items"]
 
@@ -306,7 +307,7 @@ class LegacyImporter:
             }
             for row in rows
         ]
-        count = repository.store_disclosures(run_id, source_id, normalized)
+        count = SourceFactRepository(self.runtime).store_disclosures(run_id, source_id, normalized)
         repository.finish_run(run_id, "succeeded", item_count=count)
         return count
 
@@ -332,7 +333,7 @@ class LegacyImporter:
             }
             for row in rows
         ]
-        count = repository.store_market_events(run_id, source_id, normalized)
+        count = SourceFactRepository(self.runtime).store_market_events(run_id, source_id, normalized)
         repository.finish_run(run_id, "succeeded", item_count=count)
         return count
 

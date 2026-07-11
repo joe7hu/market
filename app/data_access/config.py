@@ -62,7 +62,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         "prompt_dir": "prompts",
     }
     if not config_path.exists():
-        return _apply_runtime_overrides(defaults)
+        return _with_persisted_settings(_apply_runtime_overrides(defaults), enabled=bool(os.environ.get("MARKET_DATABASE_URL")))
 
     try:
         import yaml
@@ -71,7 +71,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     with config_path.open("r", encoding="utf-8") as handle:
         parsed = yaml.safe_load(handle) or {}
-    return _apply_runtime_overrides(_deep_merge(defaults, parsed))
+    configured = _apply_runtime_overrides(_deep_merge(defaults, parsed))
+    return _with_persisted_settings(
+        configured,
+        enabled=bool(os.environ.get("MARKET_DATABASE_URL") or (parsed.get("database") or {}).get("url")),
+    )
 
 
 
@@ -83,6 +87,19 @@ def _apply_runtime_overrides(config: dict[str, Any]) -> dict[str, Any]:
         updated = _deep_merge(updated, {"database": {"url": database_url_override}})
         updated.setdefault("runtime_overrides", {})["MARKET_DATABASE_URL"] = database_url_override
     return updated
+
+
+def _with_persisted_settings(config: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return config
+    try:
+        from investment_panel.database.authority import runtime_for_url
+        from investment_panel.database.configuration import SettingRepository
+
+        sections = SettingRepository(runtime_for_url(database_url(config))).sections()
+    except Exception:
+        return config
+    return _deep_merge(config, sections)
 
 
 

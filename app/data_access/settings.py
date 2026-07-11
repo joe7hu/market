@@ -9,8 +9,11 @@ from urllib.parse import urlparse
 
 from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
+from app.data_access.coerce import _deep_merge
 from app.data_access.payloads import _runtime_metadata, status_payload
 from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
+from investment_panel.database.authority import runtime_for_url
+from investment_panel.database.configuration import SettingRepository
 
 
 def slug(value: Any) -> str:
@@ -65,6 +68,14 @@ def _redact_config(value: Any, *, parent_key: str = "") -> Any:
     if isinstance(value, list):
         return [_redact_config(item, parent_key=parent_key) for item in value]
     return value
+
+
+def persist_setting_section(config: dict[str, Any], section: str, update: dict[str, Any]) -> None:
+    current = config.get(section) if isinstance(config.get(section), dict) else {}
+    value = _deep_merge(dict(current), update)
+    SettingRepository(runtime_for_url(str(config.get("database", {}).get("url") or "postgresql:///market"))).set_section(
+        section, value
+    )
 
 
 def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:

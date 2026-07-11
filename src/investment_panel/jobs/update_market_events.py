@@ -16,6 +16,7 @@ import httpx
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.source_facts import SourceFactRepository
 
 
 SOURCE_ID = "official-event-calendar"
@@ -60,7 +61,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         if payloads:
             archive = _archive_payload(config, run_id, payloads)
             payload_id = repository.record_payload_file(run_id, archive, source_pages=len(payloads))
-        count = repository.store_market_events(run_id, SOURCE_ID, events, payload_id=payload_id)
+        count = SourceFactRepository(runtime).store_market_events(run_id, SOURCE_ID, events, payload_id=payload_id)
         status = "partial" if errors else "succeeded"
         repository.finish_run(
             run_id,

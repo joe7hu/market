@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
+from investment_panel.database.runtime import DatabaseRuntime
+
 
 @dataclass(frozen=True)
 class DatabaseConfig:
@@ -23,3 +27,52 @@ def load_database_config(raw: dict[str, Any], base: Path) -> DatabaseConfig:
     if not legacy_path.is_absolute():
         legacy_path = base / legacy_path
     return DatabaseConfig(url=url, duckdb_path=legacy_path)
+
+
+class SettingRepository:
+    """Small JSON settings store; secrets remain environment-owned."""
+
+    def __init__(self, runtime: DatabaseRuntime) -> None:
+        self.runtime = runtime
+
+    def sections(self, keys: tuple[str, ...] = ("agents", "research_sources")) -> dict[str, Any]:
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                "SELECT key, value FROM app.setting WHERE key = ANY(%s)", [list(keys)]
+            ).fetchall()
+        return {str(row["key"]): dict(row["value"] or {}) for row in rows}
+
+    def set_section(self, key: str, value: dict[str, Any]) -> None:
+        if key not in {"agents", "research_sources"}:
+            raise ValueError(f"setting section is not writable: {key}")
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO app.setting (key, value, updated_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+                """,
+                [key, Jsonb(value)],
+            )
+
+
+def merge_persisted_setting_sections(raw: dict[str, Any], database_url: str) -> dict[str, Any]:
+    """Overlay DB settings while keeping initial migration config loadable."""
+
+    try:
+        from investment_panel.database.authority import runtime_for_url
+
+        sections = SettingRepository(runtime_for_url(database_url)).sections()
+    except Exception:
+        return raw
+    return _merge(raw, sections)
+
+
+def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged

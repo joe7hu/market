@@ -42,6 +42,7 @@ from app.data_access import (
     save_thesis,
     save_watchlist_symbol,
     settings_payload,
+    persist_setting_section,
     signals_payload,
     status_payload,
     table_payload,

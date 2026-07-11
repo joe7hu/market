@@ -10,17 +10,14 @@ from typing import Any
 import yaml
 
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
-from investment_panel.database.configuration import DatabaseConfig, load_database_config
-
+from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
-
 def resolve_path(value: str | Path, base: Path | None = None) -> Path:
     path = Path(os.path.expandvars(str(value))).expanduser()
     if path.is_absolute():
         return path
     return (base or project_root()) / path
-
 @dataclass(frozen=True)
 class NasConfig:
     source_root: Path = Path("/Volumes/agent/data-sources")
@@ -28,8 +25,6 @@ class NasConfig:
     market_dir: Path = Path("/Volumes/agent/data-sources/market-mini")
     duckdb_snapshot_dir: Path = Path("/Volumes/agent/data-sources/market-mini/duckdb-snapshots")
     postgres_backup_dir: Path = Path("/Volumes/agent/data-sources/market-mini/postgres-backups")
-
-
 @dataclass(frozen=True)
 class ArcoConfig:
     raw_dir: Path = Path("/Volumes/agent/brain/raw/sources/arco")
@@ -300,6 +295,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             raw = yaml.safe_load(handle) or {}
     base = project_root()
     database = load_database_config(raw, base)
+    # Database-backed overrides are enabled in live job processes by the same
+    # explicit DSN environment used for execution. Keeping plain file parsing
+    # side-effect free avoids accidental local-DB probes in tooling/tests.
+    if os.environ.get("MARKET_DATABASE_URL"):
+        raw = merge_persisted_setting_sections(raw, database.url)
     nas_raw = raw.get("nas", {})
     nas = NasConfig(
         source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),

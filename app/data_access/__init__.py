@@ -11,7 +11,7 @@ from app.data_access.mutations import delete_portfolio_position, delete_watchlis
 from app.data_access.loaders import load_market_panel_data, load_panel_data, load_panel_scope_data, load_table_panel_data, load_ticker_panel_data, panel_contract_payload
 from app.data_access.payloads import dashboard_payload, panel_snapshot_payload, signals_payload, status_payload, table_payload, ticker_payload, watchlist_section_payload
 from app.data_access.decision_brief import GATE_LABELS, ticker_decision_brief
-from app.data_access.settings import agent_control_payload, settings_payload, update_agent_settings_config, update_research_sources_config
+from app.data_access.settings import agent_control_payload, persist_setting_section, settings_payload, update_agent_settings_config, update_research_sources_config
 from app.data_access.user_state import portfolio_rows, table_payload as user_state_table_payload, thesis_monitor_rows, thesis_rows, watchlist_rows
 from app.data_access.publications import options_radar_rows
 
@@ -46,6 +46,7 @@ __all__ = [
     "save_thesis",
     "save_watchlist_symbol",
     "settings_payload",
+    "persist_setting_section",
     "signals_payload",
     "status_payload",
     "table_payload",

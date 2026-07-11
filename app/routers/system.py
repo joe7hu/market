@@ -53,7 +53,7 @@ def settings() -> dict[str, Any]:
 def update_agent_settings(payload: deps.AgentSettingsInput, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     try:
-        deps.update_agent_settings_config("config.yaml", payload.model_dump(exclude_none=True))
+        deps.persist_setting_section(deps.load_config(), "agents", payload.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
@@ -65,7 +65,7 @@ def update_agent_settings(payload: deps.AgentSettingsInput, request: Request) ->
 def update_research_sources(payload: deps.ResearchSourcesInput, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
     try:
-        deps.update_research_sources_config("config.yaml", payload.model_dump(exclude_none=True))
+        deps.persist_setting_section(deps.load_config(), "research_sources", payload.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()

@@ -12,6 +12,7 @@ from investment_panel.core.arco import flatten_arco_items, load_arco_context
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.source_facts import SourceFactRepository
 
 
 SOURCE_ID = "arco"
@@ -37,7 +38,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         known = _known_symbols(runtime)
         items = [_normalize(item, known) for item in flatten_arco_items(context)]
         items = [item for item in items if item is not None]
-        counts = repository.store_content_items(
+        counts = SourceFactRepository(runtime).store_content_items(
             run_id,
             SOURCE_ID,
             items,

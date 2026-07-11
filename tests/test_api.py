@@ -303,12 +303,12 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
     _use_temp_api_db(monkeypatch, db_path)
     captured: dict[str, Any] = {}
 
-    def fake_update(config_path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        captured["config_path"] = config_path
+    def fake_update(config: dict[str, Any], section: str, payload: dict[str, Any]) -> None:
+        captured["config"] = config
+        captured["section"] = section
         captured["payload"] = payload
-        return {}
 
-    monkeypatch.setattr(app_deps, "update_agent_settings_config", fake_update)
+    monkeypatch.setattr(app_deps, "persist_setting_section", fake_update)
     monkeypatch.setattr(
         app_deps,
         "load_panel_data",
@@ -322,7 +322,7 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
     )
 
     assert response.status_code == 200
-    assert captured["config_path"] == "config.yaml"
+    assert captured["section"] == "agents"
     assert captured["payload"]["option_thesis"]["enabled"] is False
     assert response.json()["status"]["ready"] is True
 
