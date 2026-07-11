@@ -1,4 +1,5 @@
 database:
+  url: postgresql:///market
   duckdb_path: data/investment.duckdb
 
 nas:

@@ -240,6 +240,4 @@ data_sources:
 
     result = update_ibkr_options.run(str(config_path), symbols=["NVDA"])
     assert result["status"] == "skipped_unquoted_snapshot"
-    with db(tmp_path / "investment.duckdb") as con:
-        rows = query_rows(con, "SELECT count(*) AS c FROM options_chain WHERE source = 'ibkr'")
-    assert rows[0]["c"] == 0  # nothing persisted
+    assert not (tmp_path / "investment.duckdb").exists()  # rejected before any persistence

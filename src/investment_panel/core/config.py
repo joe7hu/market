@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
+from investment_panel.database.configuration import DatabaseConfig, load_database_config
 
 
 def project_root() -> Path:
@@ -21,11 +22,6 @@ def resolve_path(value: str | Path, base: Path | None = None) -> Path:
     if path.is_absolute():
         return path
     return (base or project_root()) / path
-
-
-@dataclass(frozen=True)
-class DatabaseConfig:
-    duckdb_path: Path = project_root() / "data" / "investment.duckdb"
 
 
 @dataclass(frozen=True)
@@ -304,12 +300,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if config_path.exists():
         with config_path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
-    if os.environ.get("MARKET_DUCKDB_PATH"):
-        raw.setdefault("database", {})["duckdb_path"] = os.environ["MARKET_DUCKDB_PATH"]
-
     base = project_root()
-    database_path = os.environ.get("MARKET_DUCKDB_PATH") or raw.get("database", {}).get("duckdb_path", "data/investment.duckdb")
-    database = DatabaseConfig(duckdb_path=resolve_path(database_path, base))
+    database = load_database_config(raw, base)
     nas_raw = raw.get("nas", {})
     nas = NasConfig(
         source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),

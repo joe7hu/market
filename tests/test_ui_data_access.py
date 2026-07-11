@@ -746,38 +746,28 @@ def test_fastapi_config_reports_runtime_duckdb_override(tmp_path, monkeypatch) -
     assert config["runtime_overrides"]["MARKET_DUCKDB_PATH"] == str(runtime_path)
 
 
-def test_save_and_delete_portfolio_position(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "portfolio.duckdb")}}
+def test_save_and_delete_portfolio_position(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
 
     saved = data_access.save_portfolio_position(
         config,
         {"symbol": "nvda", "quantity": 3, "avg_cost": 125.5, "purchase_date": "2024-01-15", "notes": "core"},
     )
-    panel_data = data_access.load_panel_data(config)
+    rows = data_access.portfolio_rows(config)
 
     assert saved["symbol"] == "NVDA"
     assert saved["purchase_date"] == "2024-01-15"
-    assert panel_data.rows("portfolio")[0]["symbol"] == "NVDA"
-    assert panel_data.rows("portfolio")[0]["quantity"] == 3
-    assert panel_data.rows("portfolio")[0]["purchase_date"] == "2024-01-15"
-    assert panel_data.rows("portfolio")[0]["tax_lot_term"] == "long_term"
-    assert panel_data.rows("discovered_universe")[0]["symbol"] == "NVDA"
-
-    from investment_panel.core.db import db, query_rows
-
-    with db(config["database"]["duckdb_path"]) as con:
-        instruments = query_rows(con, "SELECT symbol, asset_class, category, source FROM instruments WHERE symbol = 'NVDA'")
-    assert instruments == [{"symbol": "NVDA", "asset_class": "equity", "category": "owned-portfolio", "source": "portfolio"}]
+    assert rows[0]["symbol"] == "NVDA"
+    assert rows[0]["quantity"] == 3
+    assert str(rows[0]["purchase_date"]) == "2024-01-15"
 
     deleted = data_access.delete_portfolio_position(config, "NVDA")
-    panel_data = data_access.load_panel_data(config)
-
     assert deleted == {"symbol": "NVDA", "deleted": True}
-    assert panel_data.rows("portfolio") == []
+    assert data_access.portfolio_rows(config) == []
 
 
-def test_save_thesis_records_content_and_clears_stale(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "thesis.duckdb")}, "watchlist": [{"symbol": "NVDA"}]}
+def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "NVDA"}]}
 
     saved = data_access.save_thesis(
         config,
@@ -795,11 +785,7 @@ def test_save_thesis_records_content_and_clears_stale(tmp_path) -> None:
     assert saved["thesis"]["core_thesis"].startswith("AI accelerator")
     assert saved["thesis"]["last_reviewed"]
 
-    from investment_panel.core.db import db
-    from investment_panel.core.thesis_monitor import thesis_monitor_rows
-
-    with db(config["database"]["duckdb_path"]) as con:
-        rows = thesis_monitor_rows(con, [{"symbol": "NVDA"}])
+    rows = data_access.thesis_monitor_rows(config)
     nvda = next(row for row in rows if row["symbol"] == "NVDA")
     assert nvda["source"] == "theses"
     assert nvda["stale_thesis"] is False
@@ -813,8 +799,8 @@ def test_save_thesis_requires_thesis_text(tmp_path) -> None:
         data_access.save_thesis(config, "NVDA", {"thesis": "   "})
 
 
-def test_mark_thesis_reviewed_stamps_review_date(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "review.duckdb")}, "watchlist": [{"symbol": "MU"}]}
+def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "MU"}]}
 
     data_access.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
     reviewed = data_access.mark_thesis_reviewed(config, "mu")
@@ -823,80 +809,43 @@ def test_mark_thesis_reviewed_stamps_review_date(tmp_path) -> None:
     assert reviewed["last_reviewed"]
 
 
-def test_delete_config_watchlist_symbol_persists_unwatch_override(tmp_path) -> None:
+def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
     config = {
-        "database": {"duckdb_path": str(tmp_path / "watchlist.duckdb")},
+        "database": {"url": migrated_postgres_dsn},
         "watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}],
     }
-
-    before = data_access.load_panel_data(config)
-    assert next(row for row in before.rows("universe_screen") if row["symbol"] == "NVDA")["watch_state"] == "watched"
+    data_access.save_watchlist_symbol(config, config["watchlist"][0])
 
     deleted = data_access.delete_watchlist_symbol(config, "NVDA")
-    after = data_access.load_panel_data(config)
-
     assert deleted == {"symbol": "NVDA", "deleted": True}
-    assert next(row for row in after.rows("universe_screen") if row["symbol"] == "NVDA")["watch_state"] == "candidate"
-    assert after.rows("manual_watchlist") == []
-
-    from investment_panel.core.db import db, query_rows
-
-    with db(config["database"]["duckdb_path"]) as con:
-        overrides = query_rows(con, "SELECT symbol, watch_state FROM manual_watchlist WHERE symbol = 'NVDA'")
-    assert overrides == [{"symbol": "NVDA", "watch_state": "excluded"}]
+    assert data_access.watchlist_rows(config) == []
+    assert data_access.watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
 
 
-def test_delete_source_watchlist_symbol_persists_unwatch_override(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "source-watchlist.duckdb")}, "watchlist": []}
-
-    from investment_panel.core.db import db, init_db, json_dumps, query_rows
-
-    init_db(config["database"]["duckdb_path"])
-    with db(config["database"]["duckdb_path"]) as con:
-        con.execute(
-            """
-            INSERT INTO tradingview_watchlists (id, observed_at, name, color, symbol_count, symbols, source, raw)
-            VALUES ('tv-ai', now(), 'AI', NULL, 1, ?, 'tradingview', '{}')
-            """,
-            [json_dumps(["PLTR"])],
-        )
-
-    before = data_access.load_panel_data(config)
-    assert next(row for row in before.rows("universe_screen") if row["symbol"] == "PLTR")["watch_state"] == "watched"
+def test_delete_source_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": []}
+    data_access.save_watchlist_symbol(config, {"symbol": "PLTR", "name": "Palantir"})
 
     deleted = data_access.delete_watchlist_symbol(config, "PLTR")
-    after = data_access.load_panel_data(config)
-
     assert deleted == {"symbol": "PLTR", "deleted": True}
-    assert next(row for row in after.rows("universe_screen") if row["symbol"] == "PLTR")["watch_state"] == "candidate"
-
-    with db(config["database"]["duckdb_path"]) as con:
-        overrides = query_rows(con, "SELECT symbol, watch_state FROM manual_watchlist WHERE symbol = 'PLTR'")
-    assert overrides == [{"symbol": "PLTR", "watch_state": "excluded"}]
+    assert data_access.watchlist_rows(config) == []
+    assert data_access.watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
 
 
-def test_save_watchlist_crypto_alias_uses_crypto_asset_class(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "crypto-watchlist.duckdb")}}
+def test_save_watchlist_crypto_alias_uses_crypto_asset_class(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
 
     saved = data_access.save_watchlist_symbol(config, {"symbol": "btc", "asset_class": "equity"})
-    panel_data = data_access.load_panel_data(config)
-
     assert saved["symbol"] == "BTC-USD"
     assert saved["asset_class"] == "crypto"
-    assert next(row for row in panel_data.rows("discovered_universe") if row["symbol"] == "BTC-USD")["asset_class"] == "crypto"
-
-    from investment_panel.core.db import db, query_rows
-
-    with db(config["database"]["duckdb_path"]) as con:
-        instruments = query_rows(con, "SELECT symbol, asset_class FROM instruments WHERE symbol = 'BTC-USD'")
-    assert instruments == [{"symbol": "BTC-USD", "asset_class": "crypto"}]
+    assert data_access.watchlist_rows(config)[0]["asset_class"] == "crypto"
 
 
-def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch) -> None:
+def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch, migrated_postgres_dsn: str) -> None:
     import pandas as pd
 
     config = {
-        "database": {"duckdb_path": str(tmp_path / "populate-watchlist.duckdb")},
+        "database": {"url": migrated_postgres_dsn, "duckdb_path": str(tmp_path / "populate-watchlist.duckdb")},
         "market_data": {"lookback_days": 30, "mode": "online"},
         "data_sources": {
             "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},

@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import pytest
 
+from investment_panel.database.authority import close_cached_runtimes
+from investment_panel.database.migrations import upgrade_database
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
@@ -53,3 +56,22 @@ def _zero_yfinance_option_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
     except Exception:  # pragma: no cover - core import optional in some envs
         return
     monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _close_postgresql_runtime_pools() -> None:
+    yield
+    close_cached_runtimes()
+
+
+@pytest.fixture
+def postgres_dsn(postgresql) -> str:
+    info = postgresql.info
+    credentials = info.user if not info.password else f"{info.user}:{info.password}"
+    return f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
+
+
+@pytest.fixture
+def migrated_postgres_dsn(postgres_dsn: str) -> str:
+    upgrade_database(postgres_dsn)
+    return postgres_dsn

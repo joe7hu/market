@@ -1057,6 +1057,7 @@ def test_config_loads_paths(tmp_path: Path) -> None:
     path.write_text(
         f"""
 database:
+  url: postgresql://localhost/market_test
   duckdb_path: data/test.duckdb
 nas:
   status_dir: {tmp_path / "nas" / "status"}
@@ -1064,6 +1065,7 @@ nas:
         encoding="utf-8",
     )
     config = load_config(path)
+    assert config.database.url == "postgresql://localhost/market_test"
     assert config.database.duckdb_path.name == "test.duckdb"
     assert config.nas.status_dir == tmp_path / "nas" / "status"
 
@@ -1117,3 +1119,13 @@ database:
     config = load_config(path)
 
     assert config.database.duckdb_path == runtime_path
+
+
+def test_config_allows_runtime_postgresql_override(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("database:\n  url: postgresql:///configured\n", encoding="utf-8")
+    monkeypatch.setenv("MARKET_DATABASE_URL", "postgresql:///runtime")
+
+    config = load_config(path)
+
+    assert config.database.url == "postgresql:///runtime"

@@ -25,6 +25,7 @@ from investment_panel.core.robinhood_options import (
     load_robinhood_access_token,
 )
 from investment_panel.core.status import write_source_status
+from investment_panel.database.options import incremental_option_symbols, option_universe, persist_collected_option_chains
 
 
 MIN_QUOTED_FRACTION = 0.2
@@ -83,7 +84,7 @@ def run(
             "auth_command": "market-update-robinhood-options --auth",
             "auth_token_env": provider.auth_token_env,
             "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
-            "database": str(config.database.duckdb_path),
+            "database": config.database.url,
         }
         status_path = write_source_status(
             config,
@@ -92,10 +93,16 @@ def run(
         )
         return {**result, "status_path": str(status_path) if status_path else None}
 
-    init_db(config.database.duckdb_path)
-    with db(config.database.duckdb_path) as con:
-        universe = symbols or option_symbols(con, config)[: _max_symbols(provider.max_symbols)]
-        target = universe if symbols or full or not _incremental_enabled() else _incremental_robinhood_symbols(con, universe)
+    universe = symbols or option_universe(config, limit=_max_symbols(provider.max_symbols))
+    target = universe
+    if not symbols and not full and _incremental_enabled():
+        target = incremental_option_symbols(
+            config,
+            "robinhood",
+            universe,
+            limit=min(len(universe), _env_int("MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS", DEFAULT_INCREMENTAL_SYMBOLS)),
+            stale_before=datetime.now(UTC) - timedelta(minutes=_env_int("MARKET_ROBINHOOD_STALE_MINUTES", DEFAULT_STALE_MINUTES)),
+        )
 
     try:
         collected = collect_robinhood_option_chains(provider, target, client=client)
@@ -107,7 +114,7 @@ def run(
             "auth_token_env": provider.auth_token_env,
             "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
             "error": str(exc),
-            "database": str(config.database.duckdb_path),
+            "database": config.database.url,
         }
         status_path = write_source_status(
             config,
@@ -120,7 +127,7 @@ def run(
             "provider": "robinhood",
             "status": "error",
             "error": str(exc),
-            "database": str(config.database.duckdb_path),
+            "database": config.database.url,
         }
         status_path = write_source_status(
             config,
@@ -143,7 +150,7 @@ def run(
             "quoted_rows": quoted_rows,
             "total_rows": total_rows,
             "observed_at": collected["observed_at"],
-            "database": str(config.database.duckdb_path),
+            "database": config.database.url,
         }
         status_path = write_source_status(
             config,
@@ -152,19 +159,8 @@ def run(
         )
         return {**result, "status_path": str(status_path) if status_path else None}
 
-    stored = 0
-    signal_symbols: list[str] = []
-    with db(config.database.duckdb_path) as con:
-        for quote in collected.get("quotes") or []:
-            _upsert_robinhood_quote(con, quote)
-        for symbol, rows in collected["rows"].items():
-            stored += store_options_chain(con, symbol, collected["observed_at"], rows, source="robinhood")
-            signal_symbols.append(symbol)
-        # Build the per-ticker option intelligence the watchlist reads from the same
-        # Robinhood chains the radar uses, so both surfaces share one (fresher) source
-        # instead of the watchlist showing stale TradingView-only signals.
-        if signal_symbols:
-            refresh_options_intelligence(con, signal_symbols, source="robinhood")
+    persisted = persist_collected_option_chains(config, "robinhood", collected)
+    stored = int(persisted["contract_count"])
 
     result = {
         "provider": "robinhood",
@@ -179,7 +175,9 @@ def run(
         "quoted_rows": quoted_rows,
         "observed_at": collected["observed_at"],
         "errors": collected["errors"][:25],
-        "database": str(config.database.duckdb_path),
+        "database": config.database.url,
+        "ingest_run_id": persisted["run_id"],
+        "snapshot_id": persisted["snapshot_id"],
     }
     status_path = write_source_status(
         config,

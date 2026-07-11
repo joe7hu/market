@@ -25,9 +25,9 @@
 | PG-01 | Isolated migration branch/worktree from current Market main | done | `codex/postgres-revamp` at `7c3aa11` |
 | PG-02 | PostgreSQL pool/runtime and configuration are primary | open | Bounded pool, read-only transactions, advisory locks, revision checks, and deterministic shutdown implemented; remaining callers pending |
 | PG-03 | Alembic owns six-schema PostgreSQL DDL | done | `20260711_0001`; upgrade/downgrade test on PostgreSQL 18.4 |
-| PG-04 | Real PostgreSQL test harness and coverage gates | open | PostgreSQL 18 fixtures; 38 API/foundation/user-state tests pass; full port and coverage threshold pending |
+| PG-04 | Real PostgreSQL test harness and coverage gates | open | PostgreSQL 18 fixtures; full fast suite 544 passed, 3 skipped; final coverage/concurrency thresholds pending |
 | PG-05 | Durable app/user workflows ported | open | Portfolio, watchlist, and versioned thesis CRUD/read models ported; remaining settings/journal/orders pending |
-| PG-06 | Ingestion and normalized raw facts ported | open | |
+| PG-06 | Ingestion and normalized raw facts ported | open | Idempotent run/payload manifests, quotes, monthly narrow option partitions, Robinhood and IBKR job persistence ported; remaining providers pending |
 | PG-07 | Analysis decisions/outcomes and atomic publications ported | open | |
 | PG-08 | Jobs, agents, brokers, retention, and backups ported | open | |
 | PG-09 | Selective DuckDB importer and reconciliation report | open | |
