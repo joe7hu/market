@@ -48,6 +48,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         update_content_sources,
         update_ibkr_options,
         update_market_data,
+        update_market_events,
         update_robinhood_options,
     )
 
@@ -55,6 +56,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
         ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
         ("content_sources", False, lambda: update_content_sources.run(config_path)),
+        ("market_events", False, lambda: update_market_events.run(config_path)),
         ("robinhood_options", False, lambda: update_robinhood_options.run(config_path)),
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),

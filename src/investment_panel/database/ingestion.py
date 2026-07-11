@@ -281,6 +281,81 @@ class IngestionRepository:
                     linked += int(result.rowcount)
         return {"items": stored, "instrument_links": linked}
 
+    def store_market_events(
+        self,
+        run_id: UUID,
+        source_id: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        payload_id: int | None = None,
+    ) -> int:
+        """Upsert source-faithful event facts and their user-facing catalysts."""
+
+        stored = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for source in rows:
+                source_key = str(source.get("source_key") or source.get("id") or "").strip()
+                starts_at = _aware_datetime(source.get("starts_at") or source.get("start_at"))
+                title = str(source.get("title") or source.get("event") or "").strip()
+                if not source_key or starts_at is None or not title:
+                    continue
+                instrument_id = None
+                symbol = str(source.get("symbol") or "").strip().upper()
+                if symbol:
+                    instrument_id = connection.execute(
+                        """
+                        INSERT INTO catalog.instrument (symbol, name, asset_class, category)
+                        VALUES (%s, %s, 'equity', 'event_reference')
+                        ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id
+                        """,
+                        [symbol, symbol],
+                    ).fetchone()["id"]
+                event = connection.execute(
+                    """
+                    INSERT INTO raw.market_event (
+                        instrument_id, source_id, ingest_run_id, payload_id, source_key,
+                        event_scope, event_kind, title, starts_at, ends_at, importance,
+                        verification_status, source_url, details
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_id, source_key) DO UPDATE
+                    SET ingest_run_id = EXCLUDED.ingest_run_id,
+                        payload_id = COALESCE(EXCLUDED.payload_id, raw.market_event.payload_id),
+                        instrument_id = EXCLUDED.instrument_id, event_scope = EXCLUDED.event_scope,
+                        event_kind = EXCLUDED.event_kind, title = EXCLUDED.title,
+                        starts_at = EXCLUDED.starts_at, ends_at = EXCLUDED.ends_at,
+                        importance = EXCLUDED.importance,
+                        verification_status = EXCLUDED.verification_status,
+                        source_url = EXCLUDED.source_url, details = EXCLUDED.details
+                    RETURNING id
+                    """,
+                    [
+                        instrument_id, source_id, run_id, payload_id, source_key,
+                        str(source.get("event_scope") or "macro"),
+                        str(source.get("event_kind") or "economic"), title, starts_at,
+                        _aware_datetime(source.get("ends_at") or source.get("end_at")),
+                        source.get("importance"), source.get("verification_status"),
+                        source.get("source_url"), Jsonb(dict(source.get("details") or {})),
+                    ],
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO app.catalyst (
+                        instrument_id, market_event_id, starts_at, title, expected_impact, notes
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (market_event_id) DO UPDATE
+                    SET instrument_id = EXCLUDED.instrument_id, starts_at = EXCLUDED.starts_at,
+                        title = EXCLUDED.title, expected_impact = EXCLUDED.expected_impact,
+                        notes = EXCLUDED.notes
+                    """,
+                    [
+                        instrument_id, event["id"], starts_at, title,
+                        source.get("expected_impact"), source.get("notes"),
+                    ],
+                )
+                stored += 1
+        return stored
+
     @contextmanager
     def run(
         self,

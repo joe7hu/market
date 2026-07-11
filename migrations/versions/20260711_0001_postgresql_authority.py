@@ -601,7 +601,8 @@ SCHEMA_DDL = [
         title TEXT NOT NULL,
         expected_impact TEXT,
         notes TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (market_event_id)
     )
     """,
     """

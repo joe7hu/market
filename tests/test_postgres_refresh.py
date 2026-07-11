@@ -9,6 +9,7 @@ from investment_panel.jobs import (
     update_content_sources,
     update_ibkr_options,
     update_market_data,
+    update_market_events,
     update_robinhood_options,
 )
 
@@ -19,6 +20,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(update_market_data, "run", lambda _path, publish=False: {"status": "ok"})
     monkeypatch.setattr(update_content_sources, "run", lambda _path: {"status": "ok"})
+    monkeypatch.setattr(update_market_events, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(update_robinhood_options, "run", lambda _path: {"status": "auth_required"})
     monkeypatch.setattr(update_ibkr_options, "run", lambda _path: {"status": "gateway_offline"})
     monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
