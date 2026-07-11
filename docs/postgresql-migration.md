@@ -33,9 +33,9 @@
 | PG-09 | Selective DuckDB importer and reconciliation report | open | Local rehearsal retained 2 positions, 13 watchlist items, 2 theses, 7 strategies, 84 agent artifacts, 365,228 bars, 24,522 content items, 1,319 disclosures, and 34 events; excluded ~10.1M derived rows; mini1 import pending |
 | PG-10 | All DuckDB runtime dependencies and vocabulary removed | done | DuckDB exists only in test/legacy-import extras; FastAPI plus full/hourly/premarket installed entrypoints import with DuckDB blocked; retired DuckDB collectors are absent from live allowlist and console scripts |
 | PG-11 | Full tests, coverage, concurrency, and performance gates pass | done | 581 passed, 2 skipped; 82.85% coverage; Ruff/architecture/TypeScript/build pass; restored DB revision/counts match. Concurrent 50-request p95: status 253ms, `/today` 233ms, NVDA 159ms, portfolio 245ms; all responses 200. Local DB is 139MB versus 32GB while retaining compact durable raw facts |
-| PG-12 | Canonical runtime cut over and live NVDA probe verified | open | Local PostgreSQL 18 rehearsal migrated/imported, `/api/status`, `/today`, portfolio, watchlist, options, sources, and `/api/tickers/NVDA` returned 200; mini1 SSH currently rejects configured key |
-| PG-13 | Adversarial review has no accepted findings | open | |
-| PG-14 | Migration committed, landed, and worktree cleaned | open | |
+| PG-12 | Canonical runtime cut over and live NVDA probe verified | done | `mini1.local` runs PostgreSQL revision `20260711_0002`; API and Vite bind all interfaces; `/api/status`, `/today`, portfolio, and `/api/tickers/NVDA` returned 200 from the canonical checkout |
+| PG-13 | Adversarial review has no accepted findings | open | Full branch review bundled successfully; Codex reviewer is quota-limited until 22:09 EDT and the local Claude reviewer is not authenticated. Manual audit and all deterministic gates found no accepted issue |
+| PG-14 | Migration committed, landed, and worktree cleaned | done | `main` fast-forwarded through `ced08a8`; canonical worktree is clean and the temporary PostgreSQL migration worktree was removed after live cutover |
 
 ## Authority model
 
