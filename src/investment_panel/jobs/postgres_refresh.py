@@ -44,6 +44,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     from investment_panel.jobs import (
         snapshot_database,
+        update_arco_sources,
         update_broker_sources,
         update_content_sources,
         update_disclosure_sources,
@@ -55,6 +56,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
 
     config = load_config(config_path)
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
+        ("arco_sources", False, lambda: update_arco_sources.run(config_path)),
         ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
         ("content_sources", False, lambda: update_content_sources.run(config_path)),
         ("market_events", False, lambda: update_market_events.run(config_path)),

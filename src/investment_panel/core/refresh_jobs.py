@@ -20,6 +20,7 @@ from investment_panel.jobs import (
     snapshot_database,
     update_ibkr_options,
     update_broker_sources,
+    update_arco_sources,
     update_content_sources,
     update_disclosure_sources,
     update_market_data,
@@ -117,6 +118,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_social_sources": lambda config_path: update_content_sources.run_social(config_path),
     "update_event_calendar": lambda config_path: update_market_events.run(config_path),
     "update_disclosures": lambda config_path: update_disclosure_sources.run(config_path),
+    "update_arco_data": lambda config_path: update_arco_sources.run(config_path),
     "postgres_retention": lambda config_path: RetentionRepository(
         runtime_for_url(database_url(load_config(config_path)))
     ).prune(),
