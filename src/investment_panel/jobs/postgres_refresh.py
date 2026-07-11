@@ -10,6 +10,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
+from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.jobs import refresh_options_radar, run_option_agents
 
 
@@ -19,6 +20,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
     before_agents = refresh_options_radar.run(config_path)
     agents = run_option_agents.run(config_path)
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
+    outcomes = OutcomeRepository(runtime_for_config(load_config(config_path))).refresh()
     today = refresh_today_publication(runtime_for_config(load_config(config_path)))
     market = refresh_market_publication(runtime_for_config(load_config(config_path)))
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
@@ -29,6 +31,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
         "before_agents": before_agents,
         "agents": agents,
         "after_agents": after_agents,
+        "outcomes": outcomes,
         "today": today,
         "market": market,
     }
@@ -65,6 +68,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
+        ("option_outcomes", False, lambda: OutcomeRepository(runtime_for_config(config)).refresh()),
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("today_publication", True, lambda: refresh_today_publication(runtime_for_config(config))),
         ("market_publication", True, lambda: refresh_market_publication(runtime_for_config(config))),

@@ -10,6 +10,7 @@ from investment_panel.core.config import load_config
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_analysis import refresh_options_radar
+from investment_panel.database.outcomes import OutcomeRepository
 
 
 def run(config_path: str | None = None, symbols: list[str] | None = None, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
@@ -52,12 +53,12 @@ def run_learning_marks(
     """Incremental marks/calibration refresh for short-horizon learning feedback."""
 
     config = load_config(config_path)
+    result = OutcomeRepository(runtime_for_config(config)).refresh(lookback_days=max(60, recent_days * 36))
     return {
         "database": "postgresql",
         "strategy_version": strategy_version,
         "mode": "learning_marks",
-        "status": "skipped",
-        "reason": "outcome observations are refreshed by the PostgreSQL outcome job",
+        **result,
         "recent_days": recent_days,
         "include_calibration": include_calibration,
     }

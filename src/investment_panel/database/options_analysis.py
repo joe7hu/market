@@ -276,7 +276,38 @@ def _insert_decisions(runtime: DatabaseRuntime, run_id: Any, strategy_id: int) -
             """,
             [run_id],
         )
-    return int(result.rowcount)
+        connection.execute(
+            """
+            DELETE FROM analysis.option_decision option_decision
+            USING analysis.decision decision
+            WHERE option_decision.decision_id = decision.id
+              AND decision.run_id = %s AND decision.state = 'REJECT'
+            """,
+            [run_id],
+        )
+        connection.execute(
+            "DELETE FROM analysis.decision WHERE run_id = %s AND state = 'REJECT'",
+            [run_id],
+        )
+        connection.execute(
+            """
+            DELETE FROM analysis.option_feature feature
+            WHERE feature.run_id = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM analysis.option_decision option_decision
+                  JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+                  WHERE decision.run_id = feature.run_id
+                    AND option_decision.contract_id = feature.contract_id
+                    AND option_decision.snapshot_id = feature.snapshot_id
+                    AND option_decision.quote_observed_at = feature.quote_observed_at
+              )
+            """,
+            [run_id],
+        )
+        actionable = connection.execute(
+            "SELECT count(*) AS count FROM analysis.decision WHERE run_id = %s", [run_id]
+        ).fetchone()["count"]
+    return int(actionable)
 
 
 def _publication_models(runtime: DatabaseRuntime, run_id: Any) -> dict[str, list[dict[str, Any]]]:
@@ -317,12 +348,27 @@ def _publication_models(runtime: DatabaseRuntime, run_id: Any) -> dict[str, list
             """,
             [run_id],
         ).fetchall()
+        rejected = connection.execute(
+            """
+            SELECT instrument.symbol, sum(summary.reject_count) AS reject_count
+            FROM analysis.reject_summary summary
+            JOIN catalog.instrument instrument ON instrument.id = summary.instrument_id
+            WHERE summary.run_id = %s GROUP BY instrument.symbol
+            """,
+            [run_id],
+        ).fetchall()
     all_rows = [dict(row) for row in rows]
     actionable = [row for row in all_rows if row["state"] != "REJECT"]
     summaries: dict[str, dict[str, Any]] = {}
     for row in all_rows:
         summary = summaries.setdefault(row["symbol"], {"symbol": row["symbol"], "ticker": row["ticker"], "fire_count": 0, "setup_count": 0, "watch_count": 0, "reject_count": 0})
         summary[f"{str(row['state']).lower()}_count"] += 1
+    for row in rejected:
+        summary = summaries.setdefault(
+            row["symbol"],
+            {"symbol": row["symbol"], "ticker": row["symbol"], "fire_count": 0, "setup_count": 0, "watch_count": 0, "reject_count": 0},
+        )
+        summary["reject_count"] = int(row["reject_count"] or 0)
     snapshots = [
         {
             key: row[key]

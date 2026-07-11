@@ -18,13 +18,13 @@ def test_scheduler_enabled_respects_off_values(monkeypatch) -> None:
         assert scheduler.scheduler_enabled() is False
 
 
-def test_job_intervals_default_to_robinhood_source(monkeypatch) -> None:
+def test_job_intervals_default_to_daily_premarket_options(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.delenv("MARKET_SOURCE_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("MARKET_RADAR_REFRESH_SECONDS", raising=False)
     monkeypatch.delenv("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS", raising=False)
     intervals = scheduler.job_intervals()
-    assert intervals["options_radar_hard_refresh"] == 900
+    assert "options_radar_hard_refresh" not in intervals
 
 
 def test_robinhood_split_source_and_signal_can_be_enabled_explicitly(monkeypatch) -> None:
@@ -32,7 +32,7 @@ def test_robinhood_split_source_and_signal_can_be_enabled_explicitly(monkeypatch
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "120")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "60")
     intervals = scheduler.job_intervals()
-    assert intervals["options_radar_hard_refresh"] == 900
+    assert "options_radar_hard_refresh" not in intervals
     assert intervals["update_robinhood_options"] == 120
     assert intervals["refresh_options_radar_signal_robinhood"] == 60
 
@@ -65,7 +65,7 @@ def test_job_intervals_ignore_invalid_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "not-a-number")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "-5")
     intervals = scheduler.job_intervals()
-    assert intervals["options_radar_hard_refresh"] == 900
+    assert "options_radar_hard_refresh" not in intervals
     assert "update_robinhood_options" not in intervals
     assert "refresh_options_radar_signal_robinhood" not in intervals
 
@@ -81,7 +81,7 @@ def test_source_pull_can_be_disabled(monkeypatch) -> None:
     assert "refresh_options_radar_signal_robinhood" in intervals
 
 
-def test_radar_freshness_loop_defaults_to_incremental_hard_refresh(monkeypatch) -> None:
+def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
     for var in (
         "MARKET_RADAR_OPTION_SOURCE",
         "MARKET_IN_PROCESS_HEAVY_REFRESH",
@@ -93,7 +93,7 @@ def test_radar_freshness_loop_defaults_to_incremental_hard_refresh(monkeypatch) 
     ):
         monkeypatch.delenv(var, raising=False)
     intervals = scheduler.job_intervals()
-    assert intervals["options_radar_hard_refresh"] == 900
+    assert "options_radar_hard_refresh" not in intervals
     assert "refresh_options_radar_learning_marks" not in intervals
     assert "refresh_options_radar_deterministic" not in intervals
     assert "update_market_environment" not in intervals
@@ -106,7 +106,7 @@ def test_heavy_refresh_loops_can_be_enabled_for_app_process(monkeypatch) -> None
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "3600")
     intervals = scheduler.job_intervals()
-    assert intervals["options_radar_hard_refresh"] == 900
+    assert "options_radar_hard_refresh" not in intervals
     assert intervals["refresh_options_radar_signal_robinhood"] == 900
     assert intervals["update_robinhood_options"] == 3600
     assert intervals["refresh_options_radar_deterministic"] == 21600
@@ -158,9 +158,9 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     )
 
     assert status["agent_refresh_seconds"] == "123"
-    assert status["radar_refresh_seconds"] == "900"
-    assert status["source_refresh_seconds"] == "900"
-    assert status["options_hard_refresh_seconds"] == "900"
+    assert status["radar_refresh_seconds"] == "0"
+    assert status["source_refresh_seconds"] == "0"
+    assert status["options_hard_refresh_seconds"] == "0"
     assert status["learning_mark_refresh_seconds"] == "0"
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "0"

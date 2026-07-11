@@ -485,6 +485,7 @@ SCHEMA_DDL = [
         decision_id UUID PRIMARY KEY REFERENCES analysis.decision(id) ON DELETE CASCADE,
         maturity_state TEXT NOT NULL,
         observed_through TIMESTAMPTZ,
+        current_return DOUBLE PRECISION,
         return_1d DOUBLE PRECISION,
         return_5d DOUBLE PRECISION,
         return_20d DOUBLE PRECISION,

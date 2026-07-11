@@ -20,7 +20,7 @@ class RetentionRepository:
         self,
         *,
         now: datetime | None = None,
-        option_days: int = 120,
+        option_days: int = 7,
         analysis_days: int = 365,
         publication_days: int = 90,
         job_days: int = 30,

@@ -192,6 +192,91 @@ DIRECT_QUERIES: dict[str, str] = {
         LEFT JOIN catalog.instrument instrument ON instrument.id = alert.instrument_id
         ORDER BY alert.created_at DESC
     """,
+    "candidate_event_mark": """
+        SELECT decision.id::text AS candidate_event_id, decision.id::text AS event_id,
+               instrument.symbol AS ticker, outcome.observed_through AS mark_time,
+               decision.state AS candidate_state, outcome.current_return,
+               outcome.peak_return AS max_return_since_alert,
+               outcome.max_drawdown, outcome.maturity_state AS outcome_status,
+               outcome.time_to_2x_days, outcome.time_to_5x_days, outcome.time_to_10x_days
+        FROM analysis.option_outcome outcome
+        JOIN analysis.decision decision ON decision.id = outcome.decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY outcome.observed_through DESC
+    """,
+    "candidate_event_attribution": """
+        SELECT decision.id::text AS candidate_event_id, decision.id::text AS event_id,
+               instrument.symbol AS ticker, outcome.observed_through AS attributed_at,
+               CASE WHEN outcome.peak_return >= 9 THEN 'winner_10x'
+                    WHEN outcome.peak_return >= 4 THEN 'winner_5x'
+                    WHEN outcome.peak_return >= 1 THEN 'winner_2x'
+                    WHEN outcome.current_return < 0 THEN 'loser'
+                    ELSE 'open' END AS label,
+               outcome.current_return, outcome.peak_return, outcome.max_drawdown,
+               outcome.stock_move_effect, outcome.iv_effect, outcome.theta_effect,
+               outcome.spread_effect, outcome.unexplained_effect
+        FROM analysis.option_outcome outcome
+        JOIN analysis.decision decision ON decision.id = outcome.decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY outcome.observed_through DESC
+    """,
+    "option_attribution": """
+        SELECT decision.id::text AS candidate_event_id, decision.id::text AS event_id,
+               instrument.symbol AS ticker, outcome.observed_through AS attributed_at,
+               CASE WHEN outcome.peak_return >= 9 THEN 'winner_10x'
+                    WHEN outcome.peak_return >= 4 THEN 'winner_5x'
+                    WHEN outcome.peak_return >= 1 THEN 'winner_2x'
+                    WHEN outcome.current_return < 0 THEN 'loser'
+                    ELSE 'open' END AS label,
+               outcome.current_return, outcome.peak_return, outcome.max_drawdown,
+               outcome.stock_move_effect, outcome.iv_effect, outcome.theta_effect,
+               outcome.spread_effect, outcome.unexplained_effect
+        FROM analysis.option_outcome outcome
+        JOIN analysis.decision decision ON decision.id = outcome.decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY outcome.observed_through DESC
+    """,
+    "conviction_calibration": """
+        WITH observations AS (
+            SELECT strategy.strategy_key AS strategy_version,
+                   floor(decision.score / 10)::integer AS bin_index,
+                   decision.score / 100.0 AS predicted,
+                   (outcome.time_to_2x_days IS NOT NULL)::integer AS hit_2x,
+                   (outcome.time_to_5x_days IS NOT NULL)::integer AS hit_5x,
+                   outcome.maturity_state <> 'observing' AS mature
+            FROM analysis.option_outcome outcome
+            JOIN analysis.decision decision ON decision.id = outcome.decision_id
+            LEFT JOIN analysis.strategy_revision strategy ON strategy.id = decision.strategy_revision_id
+        ), bins AS (
+            SELECT strategy_version, bin_index, count(*) AS n,
+                   count(*) FILTER (WHERE mature) AS mature_n,
+                   avg(predicted) AS predicted_p2x,
+                   avg(hit_2x) FILTER (WHERE mature) AS realized_p2x,
+                   avg(hit_5x) FILTER (WHERE mature) AS realized_p5x,
+                   avg(power(predicted - hit_2x, 2)) FILTER (WHERE mature) AS brier
+            FROM observations GROUP BY strategy_version, bin_index
+        )
+        SELECT strategy_version, bin_index, bin_index / 10.0 AS bin_lo,
+               (bin_index + 1) / 10.0 AS bin_hi, n, mature_n, predicted_p2x,
+               realized_p2x, realized_p5x, brier,
+               greatest(0, realized_p2x - 1.96 * sqrt(realized_p2x * (1-realized_p2x) / mature_n)) AS wilson_lo,
+               least(1, realized_p2x + 1.96 * sqrt(realized_p2x * (1-realized_p2x) / mature_n)) AS wilson_hi,
+               mature_n >= 30 AS calibrated
+        FROM bins WHERE mature_n > 0 ORDER BY strategy_version, bin_index
+    """,
+    "strategy_cohort_result": """
+        SELECT strategy.strategy_key AS strategy_version, decision.state,
+               count(*) AS n, count(*) FILTER (WHERE outcome.maturity_state <> 'observing') AS mature_n,
+               avg((outcome.time_to_2x_days IS NOT NULL)::integer) AS realized_p2x,
+               avg((outcome.time_to_5x_days IS NOT NULL)::integer) AS realized_p5x,
+               avg(outcome.peak_return) AS average_peak_return,
+               min(decision.as_of) AS period_start, max(outcome.observed_through) AS period_end
+        FROM analysis.option_outcome outcome
+        JOIN analysis.decision decision ON decision.id = outcome.decision_id
+        LEFT JOIN analysis.strategy_revision strategy ON strategy.id = decision.strategy_revision_id
+        GROUP BY strategy.strategy_key, decision.state
+        ORDER BY strategy.strategy_key, decision.state
+    """,
 }
 
 

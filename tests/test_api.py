@@ -195,8 +195,8 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     assert payload["agents"]["runtime"]["option_thesis"]["active"] is True
     assert payload["agents"]["runtime"]["option_postmortem"]["status"] == "paused"
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
-    assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "900"
-    assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "900"
+    assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "0"
+    assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "0"
     sources = payload["sources"]["rows"]
     assert len(sources) == 5

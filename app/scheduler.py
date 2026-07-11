@@ -88,7 +88,9 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         # fresh without the old full-universe writer lock.
         hard_seconds = _env_int_optional("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS")
         if hard_seconds is None:
-            hard_seconds = 0 if _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS") == 0 else 900
+            # Daily/premarket is the default product cadence. Opt into intraday
+            # chain pulls explicitly when they are actually useful.
+            hard_seconds = 0
         if hard_seconds > 0:
             intervals["options_radar_hard_refresh"] = hard_seconds
     else:
