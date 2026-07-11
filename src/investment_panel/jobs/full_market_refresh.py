@@ -117,7 +117,7 @@ def refresh_steps(
             ),
         ),
         RefreshStep("event_calendar", lambda: update_event_calendar.run(config_path)),
-        RefreshStep("retention_prune", lambda: prune_operational_tables(config.database.duckdb_path)),
+        RefreshStep("retention_prune", lambda: prune_operational_tables(config.database.url)),
         RefreshStep("database_snapshot", lambda: snapshot_database.run(config_path)),
     ]
 

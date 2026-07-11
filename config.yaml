@@ -7,6 +7,7 @@ nas:
   status_dir: /Volumes/agent/data-sources/status
   market_dir: /Volumes/agent/data-sources/market-mini
   duckdb_snapshot_dir: /Volumes/agent/data-sources/market-mini/duckdb-snapshots
+  postgres_backup_dir: /Volumes/agent/data-sources/market-mini/postgres-backups
 
 arco:
   raw_dir: /Volumes/agent/brain/raw/sources/arco

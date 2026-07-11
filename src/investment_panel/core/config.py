@@ -12,10 +12,8 @@ import yaml
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config
 
-
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
-
 
 def resolve_path(value: str | Path, base: Path | None = None) -> Path:
     path = Path(os.path.expandvars(str(value))).expanduser()
@@ -23,13 +21,13 @@ def resolve_path(value: str | Path, base: Path | None = None) -> Path:
         return path
     return (base or project_root()) / path
 
-
 @dataclass(frozen=True)
 class NasConfig:
     source_root: Path = Path("/Volumes/agent/data-sources")
     status_dir: Path = Path("/Volumes/agent/data-sources/status")
     market_dir: Path = Path("/Volumes/agent/data-sources/market-mini")
     duckdb_snapshot_dir: Path = Path("/Volumes/agent/data-sources/market-mini/duckdb-snapshots")
+    postgres_backup_dir: Path = Path("/Volumes/agent/data-sources/market-mini/postgres-backups")
 
 
 @dataclass(frozen=True)
@@ -309,6 +307,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         market_dir=resolve_path(nas_raw.get("market_dir", "/Volumes/agent/data-sources/market-mini"), base),
         duckdb_snapshot_dir=resolve_path(
             nas_raw.get("duckdb_snapshot_dir", "/Volumes/agent/data-sources/market-mini/duckdb-snapshots"),
+            base,
+        ),
+        postgres_backup_dir=resolve_path(
+            nas_raw.get("postgres_backup_dir", "/Volumes/agent/data-sources/market-mini/postgres-backups"),
             base,
         ),
     )

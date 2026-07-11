@@ -1,0 +1,55 @@
+"""Verified PostgreSQL custom-format backup creation."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+from typing import Any
+
+
+def create_verified_backup(
+    database_url: str,
+    destination_dir: str | Path,
+    *,
+    postgres_bin_dir: str | Path = "/opt/homebrew/opt/postgresql@18/bin",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    reference = now or datetime.now(UTC)
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    stamp = reference.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    dump_path = destination / f"market-{stamp}.dump"
+    manifest_path = destination / f"market-{stamp}.json"
+    binary_dir = Path(postgres_bin_dir)
+    subprocess.run(
+        [str(binary_dir / "pg_dump"), "--format=custom", "--compress=9", "--file", str(dump_path), database_url],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    listing = subprocess.run(
+        [str(binary_dir / "pg_restore"), "--list", str(dump_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    required_schemas = {"catalog", "ingest", "raw", "analysis", "app", "ops"}
+    missing = sorted(schema for schema in required_schemas if f"SCHEMA - {schema}" not in listing)
+    if missing:
+        dump_path.unlink(missing_ok=True)
+        raise RuntimeError(f"backup verification missing schemas: {', '.join(missing)}")
+    digest = hashlib.sha256(dump_path.read_bytes()).hexdigest()
+    manifest = {
+        "status": "verified",
+        "created_at": reference.isoformat(),
+        "dump_path": str(dump_path),
+        "byte_count": dump_path.stat().st_size,
+        "sha256": digest,
+        "format": "postgresql-custom",
+        "schemas": sorted(required_schemas),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return {**manifest, "manifest_path": str(manifest_path)}

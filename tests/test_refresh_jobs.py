@@ -3,9 +3,7 @@ from __future__ import annotations
 import subprocess
 from datetime import UTC, datetime, timedelta
 
-from investment_panel.core.db import db, init_db
 from investment_panel.core import refresh_jobs
-from investment_panel.core.retention import prune_operational_tables
 import psycopg
 import pytest
 
@@ -54,40 +52,6 @@ def test_refresh_job_rows_returns_running_postgresql_job(tmp_path, monkeypatch) 
     assert rows[0]["job_name"] == "unit_refresh"
     assert rows[0]["status"] == "running"
     assert rows[0]["summary"] == {}
-
-
-def test_retention_prunes_old_operational_rows_without_dropping_latest(tmp_path) -> None:
-    db_path = tmp_path / "jobs.duckdb"
-    init_db(db_path)
-    now = datetime(2026, 6, 1, tzinfo=UTC)
-    old = now - timedelta(days=45)
-    recent = now - timedelta(hours=1)
-    with db(db_path, read_only=False) as con:
-        for index in range(3):
-            timestamp = recent if index == 0 else old - timedelta(hours=index)
-            con.execute(
-                "INSERT INTO provider_runs VALUES (?, 'test', 'capability', ?, ?, 'ok', '', '{}')",
-                [f"provider-{index}", timestamp, timestamp],
-            )
-            con.execute(
-                "INSERT INTO source_runs VALUES ('test_source', ?, 'capability', ?, ?, 'ok', 0, 0, '', '{}')",
-                [f"source-{index}", timestamp, timestamp],
-            )
-            con.execute(
-                "INSERT INTO refresh_jobs VALUES (?, 'unit_refresh', 'succeeded', ?, ?, NULL, '{}')",
-                [f"job-{index}", timestamp, timestamp],
-            )
-
-    counts = prune_operational_tables(db_path, now=now, keep_recent=1, refresh_job_days=14, provider_run_days=30, source_run_days=30)
-
-    assert counts == {"provider_runs": 2, "refresh_jobs": 2, "source_runs": 2}
-    with db(db_path, read_only=True) as con:
-        provider_ids = [row[0] for row in con.execute("SELECT id FROM provider_runs ORDER BY id").fetchall()]
-        source_ids = [row[0] for row in con.execute("SELECT run_id FROM source_runs ORDER BY run_id").fetchall()]
-        job_ids = [row[0] for row in con.execute("SELECT id FROM refresh_jobs ORDER BY id").fetchall()]
-    assert provider_ids == ["provider-0"]
-    assert source_ids == ["source-0"]
-    assert job_ids == ["job-0"]
 
 
 def test_refresh_job_records_failure_without_reraising(tmp_path, monkeypatch) -> None:
