@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from investment_panel.jobs import postgres_refresh, update_ibkr_options, update_robinhood_options
+from investment_panel.jobs import postgres_refresh, snapshot_database, update_broker_sources, update_ibkr_options, update_robinhood_options
 
 
 def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypatch) -> None:
@@ -11,10 +11,12 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(update_robinhood_options, "run", lambda _path: {"status": "auth_required"})
     monkeypatch.setattr(update_ibkr_options, "run", lambda _path: {"status": "gateway_offline"})
+    monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.run_option_agents, "run", lambda _path: {"status": "skipped"})
     monkeypatch.setattr(postgres_refresh, "refresh_today_publication", lambda _runtime: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh, "refresh_market_publication", lambda _runtime: {"status": "ok"})
+    monkeypatch.setattr(snapshot_database, "run", lambda _path: {"status": "verified"})
 
     class _Retention:
         def __init__(self, _runtime) -> None:

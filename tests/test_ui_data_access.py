@@ -640,13 +640,19 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
 
 
 def test_settings_payload_redacts_database_credentials() -> None:
-    config = {"database": {"url": "postgresql://market:secret@db.internal:5433/market?sslmode=require"}}
+    config = {
+        "database": {"url": "postgresql://market:secret@db.internal:5433/market?sslmode=require"},
+        "runtime_overrides": {"MARKET_DATABASE_URL": "postgresql://market:secret@db.internal:5433/market"},
+        "provider": {"api_key": "provider-secret"},
+    }
     panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
 
     payload = data_access.settings_payload(config, panel_data)
 
     assert payload["config"]["database"]["url"] == "postgresql://db.internal:5433/market"
     assert payload["integration"]["database_url"] == "postgresql://db.internal:5433/market"
+    assert payload["config"]["runtime_overrides"]["MARKET_DATABASE_URL"] == "postgresql://db.internal:5433/market"
+    assert payload["config"]["provider"]["api_key"] == "***"
     assert "secret" not in str(payload)
 
 

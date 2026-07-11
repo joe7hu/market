@@ -8,7 +8,6 @@ import threading
 import time
 from typing import Any, Protocol
 from uuid import uuid4
-from investment_panel.core.db import db, init_db, json_dumps, query_rows
 from investment_panel.core.instruments import infer_asset_class, normalize_symbol
 
 from investment_panel.core.brokers.constants import IBKR_ACCOUNT_TAGS, IBKR_GENERIC_TICKS, IBKR_TICK_GENERIC_FIELDS, IBKR_TICK_PRICE_FIELDS, IBKR_TICK_SIZE_FIELDS
@@ -662,6 +661,8 @@ def ibkr_entitlement_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def ibkr_health(con: Any) -> dict[str, Any]:
+    from investment_panel.core.db import query_rows
+
     rows = query_rows(con, "SELECT * FROM broker_provider_status WHERE provider = 'ibkr' LIMIT 1")
     if not rows:
         return {"provider": "ibkr", "status": "missing", "usable": False, "detail": "IBKR has not synced yet."}

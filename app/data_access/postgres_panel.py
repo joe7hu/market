@@ -198,6 +198,7 @@ PUBLICATION_MODELS = {
     "opportunities_ranked", "candidates", "feed_signals",
     "market_environment_assets", "market_environment_model",
     "market_valuation_reference_charts",
+    "agent_recommendations",
 }
 
 SPECIAL_MODELS = {

@@ -26,7 +26,7 @@ def guarded(name, *args, **kwargs):
     return real_import(name, *args, **kwargs)
 builtins.__import__ = guarded
 import app.main
-from investment_panel.jobs import full_market_refresh, hourly_options_radar, premarket_options_intelligence
+from investment_panel.jobs import full_market_refresh, hourly_options_radar, premarket_options_intelligence, update_broker_sources
 assert 'duckdb' not in __import__('sys').modules
 """
     completed = subprocess.run(

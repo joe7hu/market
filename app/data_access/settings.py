@@ -20,7 +20,7 @@ def slug(value: Any) -> str:
 
 
 def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
-    public_config = deepcopy(config)
+    public_config = _redact_config(deepcopy(config))
     database = public_config.get("database")
     if isinstance(database, dict) and database.get("url"):
         database["url"] = _public_database_url(str(database["url"]))
@@ -48,6 +48,23 @@ def _public_database_url(value: str) -> str:
         host = f"[{host}]"
     port = f":{parsed.port}" if parsed.port else ""
     return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"
+
+
+def _redact_config(value: Any, *, parent_key: str = "") -> Any:
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if normalized in {"password", "secret", "client_secret", "api_key", "access_token", "refresh_token"}:
+                output[str(key)] = "***"
+            elif normalized in {"market_database_url", "database_url"}:
+                output[str(key)] = _public_database_url(str(item))
+            else:
+                output[str(key)] = _redact_config(item, parent_key=normalized)
+        return output
+    if isinstance(value, list):
+        return [_redact_config(item, parent_key=parent_key) for item in value]
+    return value
 
 
 def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
