@@ -47,12 +47,12 @@ def option_strategy_versions() -> dict[str, Any]:
 
 @router.get("/api/option-snapshot")
 def option_snapshot() -> dict[str, Any]:
-    return deps._table_payload("option_snapshot")
+    return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "option_snapshot"))
 
 
 @router.get("/api/option-features")
 def option_features() -> dict[str, Any]:
-    return deps._table_payload("option_features")
+    return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "option_features"))
 
 
 @router.get("/api/stock-features")
@@ -62,7 +62,7 @@ def stock_features() -> dict[str, Any]:
 
 @router.get("/api/option-radar-opportunities")
 def option_radar_opportunities() -> dict[str, Any]:
-    return deps._table_payload("option_radar_opportunity")
+    return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "option_radar_opportunity"))
 
 
 @router.get("/api/agent-thesis")
@@ -136,7 +136,7 @@ def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[s
 
 @router.get("/api/candidate-events")
 def candidate_events() -> dict[str, Any]:
-    return deps._table_payload("candidate_event")
+    return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "candidate_event"))
 
 
 @router.get("/api/radar-alerts")

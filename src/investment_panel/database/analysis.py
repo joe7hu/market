@@ -1,0 +1,293 @@
+"""Reproducible analysis runs and atomic PostgreSQL publications."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+import hashlib
+import json
+from typing import Any, Mapping, Sequence
+from uuid import UUID
+
+from psycopg.types.json import Jsonb
+
+from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+
+
+class AnalysisRepository:
+    def __init__(self, runtime: DatabaseRuntime) -> None:
+        self.runtime = runtime
+
+    def register_strategy(
+        self,
+        strategy_key: str,
+        revision: int,
+        *,
+        name: str,
+        parameters: Mapping[str, Any],
+        status: str = "candidate",
+        supersedes_id: int | None = None,
+    ) -> int:
+        with self.runtime.transaction() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO analysis.strategy_revision
+                    (strategy_key, revision, name, status, parameters, supersedes_id,
+                     promoted_at)
+                VALUES (%s, %s, %s, %s, %s, %s,
+                        CASE WHEN %s = 'active' THEN now() ELSE NULL END)
+                ON CONFLICT (strategy_key, revision) DO UPDATE
+                SET name = EXCLUDED.name, parameters = EXCLUDED.parameters
+                RETURNING id
+                """,
+                [strategy_key, revision, name, status, Jsonb(dict(parameters)), supersedes_id, status],
+            ).fetchone()
+        return int(row["id"])
+
+    def start_run(
+        self,
+        run_type: str,
+        *,
+        input_cutoff: datetime,
+        code_version: str,
+        inputs: Mapping[str, Any],
+        feature_versions: Mapping[str, str] | None = None,
+        strategy_revision_id: int | None = None,
+    ) -> UUID:
+        if input_cutoff.tzinfo is None:
+            raise ValueError("input_cutoff must be timezone-aware")
+        input_hash = _hash(inputs)
+        with self.runtime.transaction() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO analysis.run
+                    (run_type, input_cutoff, code_version, feature_versions,
+                     strategy_revision_id, input_hash, started_at, status)
+                VALUES (%s, %s, %s, %s, %s, %s, now(), 'running')
+                RETURNING id
+                """,
+                [run_type, input_cutoff, code_version, Jsonb(dict(feature_versions or {})), strategy_revision_id, input_hash],
+            ).fetchone()
+        return UUID(str(row["id"]))
+
+    def finish_run(self, run_id: UUID, status: str, summary: Mapping[str, Any] | None = None) -> None:
+        if status not in {"succeeded", "partial", "failed"}:
+            raise ValueError("analysis status is invalid")
+        with self.runtime.transaction() as connection:
+            result = connection.execute(
+                """
+                UPDATE analysis.run SET status = %s, finished_at = now(), summary = summary || %s
+                WHERE id = %s AND status = 'running'
+                """,
+                [status, Jsonb(dict(summary or {})), run_id],
+            )
+            if result.rowcount != 1:
+                raise ValueError(f"analysis run is not running: {run_id}")
+
+    def store_option_feature(
+        self,
+        run_id: UUID,
+        *,
+        snapshot_id: int,
+        contract_id: int,
+        quote_observed_at: datetime,
+        feature_version: str,
+        values: Mapping[str, Any],
+    ) -> int:
+        columns = (
+            "modeled_iv", "modeled_delta", "modeled_gamma", "modeled_theta", "modeled_vega",
+            "dte", "spread_pct", "iv_rank", "iv_percentile", "liquidity_score", "flow_score",
+            "convexity_score", "required_2x_price", "required_5x_price", "required_10x_price",
+            "required_move_pct",
+        )
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            row = connection.execute(
+                f"""
+                INSERT INTO analysis.option_feature
+                    (run_id, snapshot_id, contract_id, quote_observed_at, feature_version,
+                     {', '.join(columns)}, ev_inputs, metrics)
+                VALUES (%s, %s, %s, %s, %s, {', '.join(['%s'] * len(columns))}, %s, %s)
+                ON CONFLICT (run_id, snapshot_id, contract_id, feature_version) DO UPDATE
+                SET metrics = EXCLUDED.metrics, ev_inputs = EXCLUDED.ev_inputs
+                RETURNING id
+                """,
+                [
+                    run_id, snapshot_id, contract_id, quote_observed_at, feature_version,
+                    *(values.get(column) for column in columns),
+                    Jsonb(dict(values.get("ev_inputs") or {})), Jsonb(dict(values.get("metrics") or {})),
+                ],
+            ).fetchone()
+        return int(row["id"])
+
+    def store_option_decision(
+        self,
+        run_id: UUID,
+        *,
+        decision_key: str,
+        instrument_id: int,
+        contract_id: int,
+        snapshot_id: int,
+        quote_observed_at: datetime,
+        state: str,
+        score: float | None,
+        rank: int | None,
+        inputs: Mapping[str, Any],
+        reasons: Sequence[str] = (),
+        blockers: Sequence[str] = (),
+        details: Mapping[str, Any] | None = None,
+        strategy_revision_id: int | None = None,
+    ) -> UUID:
+        option = dict(details or {})
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            decision = connection.execute(
+                """
+                INSERT INTO analysis.decision
+                    (run_id, decision_key, kind, instrument_id, as_of, state, rank, score,
+                     quality_status, strategy_revision_id, reasons, blockers, input_hash)
+                VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id, decision_key) DO UPDATE
+                SET state = EXCLUDED.state, rank = EXCLUDED.rank, score = EXCLUDED.score,
+                    quality_status = EXCLUDED.quality_status, reasons = EXCLUDED.reasons,
+                    blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash
+                RETURNING id
+                """,
+                [
+                    run_id, decision_key, instrument_id, quote_observed_at, state, rank, score,
+                    option.get("quality_status"), strategy_revision_id, list(reasons), list(blockers), _hash(inputs),
+                ],
+            ).fetchone()
+            decision_id = UUID(str(decision["id"]))
+            connection.execute(
+                """
+                INSERT INTO analysis.option_decision
+                    (decision_id, contract_id, snapshot_id, quote_observed_at, premium_mid,
+                     fill_assumption, required_move_pct, buy_under, predicted_p2x,
+                     predicted_p5x, ev_multiple, tier, synthetic_legs)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (decision_id) DO UPDATE
+                SET premium_mid = EXCLUDED.premium_mid, fill_assumption = EXCLUDED.fill_assumption,
+                    required_move_pct = EXCLUDED.required_move_pct, buy_under = EXCLUDED.buy_under,
+                    predicted_p2x = EXCLUDED.predicted_p2x, predicted_p5x = EXCLUDED.predicted_p5x,
+                    ev_multiple = EXCLUDED.ev_multiple, tier = EXCLUDED.tier,
+                    synthetic_legs = EXCLUDED.synthetic_legs
+                """,
+                [
+                    decision_id, contract_id, snapshot_id, quote_observed_at,
+                    option.get("premium_mid"), option.get("fill_assumption"), option.get("required_move_pct"),
+                    option.get("buy_under"), option.get("predicted_p2x"), option.get("predicted_p5x"),
+                    option.get("ev_multiple"), option.get("tier"), Jsonb(list(option.get("synthetic_legs") or [])),
+                ],
+            )
+        return decision_id
+
+    def publish(
+        self,
+        run_id: UUID,
+        scope: str,
+        models: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        validation: Mapping[str, Any] | None = None,
+        complete_run_summary: Mapping[str, Any] | None = None,
+    ) -> UUID:
+        prepared = _prepare_models(models)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"publication:{scope}"])
+            run = connection.execute(
+                "SELECT status FROM analysis.run WHERE id = %s FOR UPDATE", [run_id]
+            ).fetchone()
+            if run is None or run["status"] == "failed":
+                raise ValueError("publication requires a non-failed analysis run")
+            publication = connection.execute(
+                """
+                INSERT INTO app.publication (scope, analysis_run_id, status, validation)
+                VALUES (%s, %s, 'building', %s) RETURNING id
+                """,
+                [scope, run_id, Jsonb(dict(validation or {}))],
+            ).fetchone()
+            publication_id = UUID(str(publication["id"]))
+            for model_name, rows in prepared.items():
+                with connection.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO app.publication_item
+                            (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            [publication_id, model_name, row["stable_key"], rank, row.get("instrument_id"), Jsonb(row["payload"])]
+                            for rank, row in enumerate(rows, start=1)
+                        ],
+                    )
+            connection.execute(
+                "UPDATE app.publication SET status = 'superseded' "
+                "WHERE scope = %s AND status = 'published'",
+                [scope],
+            )
+            connection.execute(
+                "UPDATE app.publication SET status = 'published', published_at = now() WHERE id = %s",
+                [publication_id],
+            )
+            if complete_run_summary is not None:
+                result = connection.execute(
+                    "UPDATE analysis.run SET status = 'succeeded', finished_at = now(), "
+                    "summary = summary || %s WHERE id = %s AND status = 'running'",
+                    [Jsonb(dict(complete_run_summary)), run_id],
+                )
+                if result.rowcount != 1:
+                    raise ValueError("atomic publication requires a running analysis run")
+        return publication_id
+
+    def publication_rows(self, scope: str, model_name: str) -> list[dict[str, Any]]:
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT item.payload
+                FROM app.publication publication
+                JOIN app.publication_item item ON item.publication_id = publication.id
+                WHERE publication.scope = %s AND publication.status = 'published'
+                  AND item.model_name = %s
+                ORDER BY item.rank
+                """,
+                [scope, model_name],
+            ).fetchall()
+        return [dict(row["payload"]) for row in rows]
+
+
+def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    prepared: dict[str, list[dict[str, Any]]] = {}
+    for model_name, source_rows in models.items():
+        if not model_name.strip():
+            raise ValueError("publication model name is required")
+        rows: list[dict[str, Any]] = []
+        keys: set[str] = set()
+        for source in source_rows:
+            payload = _jsonable(dict(source))
+            stable_key = str(
+                payload.get("stable_key") or payload.get("decision_id") or payload.get("opportunity_id")
+                or payload.get("event_id") or payload.get("contract_id") or payload.get("symbol") or _hash(payload)
+            )
+            if stable_key in keys:
+                raise ValueError(f"duplicate publication key for {model_name}: {stable_key}")
+            keys.add(stable_key)
+            rows.append({"stable_key": stable_key, "instrument_id": payload.pop("instrument_id", None), "payload": payload})
+        prepared[model_name] = rows
+    return prepared
+
+
+def _hash(value: Mapping[str, Any]) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    return value

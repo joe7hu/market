@@ -13,6 +13,7 @@ from app.data_access.payloads import dashboard_payload, panel_snapshot_payload, 
 from app.data_access.decision_brief import GATE_LABELS, ticker_decision_brief
 from app.data_access.settings import agent_control_payload, settings_payload, update_agent_settings_config, update_research_sources_config
 from app.data_access.user_state import portfolio_rows, table_payload as user_state_table_payload, thesis_monitor_rows, thesis_rows, watchlist_rows
+from app.data_access.publications import options_radar_rows
 
 __all__ = [
     "DataStatus",
@@ -35,6 +36,7 @@ __all__ = [
     "load_ticker_panel_data",
     "mark_thesis_reviewed",
     "normalize_rows",
+    "options_radar_rows",
     "panel_contract_payload",
     "panel_snapshot_payload",
     "portfolio_rows",

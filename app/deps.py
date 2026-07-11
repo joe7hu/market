@@ -32,6 +32,7 @@ from app.data_access import (
     panel_snapshot_payload,
     panel_contract_payload,
     portfolio_rows,
+    options_radar_rows,
     populate_watchlist_symbol_data,
     delete_portfolio_position,
     delete_watchlist_symbol,
