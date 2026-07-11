@@ -91,5 +91,11 @@ __all__ = [
     "WATCHLIST_SECTION_OUTPUT_TABLES", "WATCHLIST_SECTION_TABLES",
     "frontend_key_for_table", "panel_contract_payload", "panel_snapshot_table_names",
     "table_for_endpoint", "tables_for_scope",
-    *_CALLABLES,
+    "build_source_catalog_health", "build_ticker_dossier", "dashboard_payload",
+    "disclosures", "feed_signals", "liquidity", "load_panel_data",
+    "load_ticker_dossier_data", "market_environment_assets", "market_environment_model",
+    "market_freshness", "market_valuation_charts", "market_valuation_reference_charts",
+    "ownership_consensus", "panel_snapshot_payload", "quotes", "read_model_names",
+    "screener", "sepa", "source_consensus", "source_ticker_ranking_rows",
+    "technicals", "universe_screen", "valuations",
 ]

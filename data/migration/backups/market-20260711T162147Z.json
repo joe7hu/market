@@ -1,0 +1,16 @@
+{
+  "byte_count": 244405,
+  "created_at": "2026-07-11T16:21:47.258602+00:00",
+  "dump_path": "data/migration/backups/market-20260711T162147Z.dump",
+  "format": "postgresql-custom",
+  "schemas": [
+    "analysis",
+    "app",
+    "catalog",
+    "ingest",
+    "ops",
+    "raw"
+  ],
+  "sha256": "a281801ef8d9c3931439312baffaec271f53cd3df7b064dc5435f433f1962560",
+  "status": "verified"
+}

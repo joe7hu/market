@@ -119,9 +119,9 @@ class AgentRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 f"SELECT id, status, created_at, updated_at, {field} AS payload "
-                "FROM analysis.agent_task WHERE task_kind IN (%s, %s) "
+                "FROM analysis.agent_task WHERE task_kind = %s "
                 f"AND {field} IS NOT NULL ORDER BY created_at DESC",
-                [task_kind, f"legacy_agent_{'thesis' if task_kind == 'option_thesis' else 'postmortem'}"],
+                [task_kind],
             ).fetchall()
         return [
             {

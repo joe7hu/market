@@ -8,6 +8,7 @@ from typing import Any, Callable
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.retention import RetentionRepository
+from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.jobs import refresh_options_radar, run_option_agents
 
 
@@ -17,6 +18,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
     before_agents = refresh_options_radar.run(config_path)
     agents = run_option_agents.run(config_path)
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
+    today = refresh_today_publication(runtime_for_config(load_config(config_path)))
     return {
         "status": "ok",
         "database": load_config(config_path).database.url,
@@ -24,6 +26,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
         "before_agents": before_agents,
         "agents": agents,
         "after_agents": after_agents,
+        "today": today,
     }
 
 
@@ -43,6 +46,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", lambda: update_ibkr_options.run(config_path)),
         ("options_radar", lambda: refresh_options_radar.run(config_path)),
         ("option_agents", lambda: run_option_agents.run(config_path)),
+        ("today_publication", lambda: refresh_today_publication(runtime_for_config(config))),
         ("retention", lambda: RetentionRepository(runtime_for_config(config)).prune()),
     ]
     results: list[dict[str, Any]] = []

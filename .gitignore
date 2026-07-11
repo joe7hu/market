@@ -5,9 +5,12 @@ data/*.duckdb
 data/*.duckdb.wal
 data/.refresh-jobs/
 data/api-cache/
+data/migration/backups/*.dump
 data/packets/*.json
 *.duckdb
 __pycache__/
 .pytest_cache/
+.coverage
+data/migration/coverage.json
 .DS_Store
 .gstack/
