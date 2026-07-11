@@ -222,6 +222,12 @@ export function rows(table: TablePayload | undefined): RowRecord[] {
   return table?.rows ?? [];
 }
 
+export function rowsForDisplayTime(sourceRows: RowRecord[], displayTime: string, timeKey = "snapshot_time"): RowRecord[] {
+  if (!displayTime) return sourceRows;
+  const matchingRows = sourceRows.filter((row) => textField(row, [timeKey]) === displayTime);
+  return matchingRows.length ? matchingRows : sourceRows;
+}
+
 export const OPPORTUNITY_STATES = new Set(["FIRE", "SETUP", "WATCH", "HOLD", "TRIM"]);
 
 export function isOpportunityCandidate(row: RowRecord): boolean {

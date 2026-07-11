@@ -8,12 +8,13 @@ bid/ask, IV, Greeks, open interest, and volume without involving an agent turn.
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from typing import Any
 
 from investment_panel.core.config import load_config
-from investment_panel.core.db import db, init_db, json_dumps
+from investment_panel.core.db import db, init_db, json_dumps, query_rows
 from investment_panel.core.free_sources import option_symbols, store_options_chain
 from investment_panel.core.options_intelligence import refresh_options_intelligence
 from investment_panel.core.robinhood_options import (
@@ -27,6 +28,9 @@ from investment_panel.core.status import write_source_status
 
 
 MIN_QUOTED_FRACTION = 0.2
+DEFAULT_INCREMENTAL_SYMBOLS = 20
+DEFAULT_STALE_MINUTES = 60
+_TRUTHY_OFF = {"0", "false", "off", "no"}
 
 
 def _max_symbols(config_value: int) -> int:
@@ -38,6 +42,19 @@ def _max_symbols(config_value: int) -> int:
         return config_value
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int((raw or "").strip())
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _incremental_enabled() -> bool:
+    return os.environ.get("MARKET_ROBINHOOD_INCREMENTAL", "1").strip().lower() not in _TRUTHY_OFF
+
+
 def _robinhood_status(errors: list[Any], stored: int) -> str:
     if errors and not stored:
         return "error"
@@ -46,7 +63,13 @@ def _robinhood_status(errors: list[Any], stored: int) -> str:
     return "ok"
 
 
-def run(config_path: str | None = None, symbols: list[str] | None = None, *, client: RobinhoodClient | None = None) -> dict[str, Any]:
+def run(
+    config_path: str | None = None,
+    symbols: list[str] | None = None,
+    *,
+    client: RobinhoodClient | None = None,
+    full: bool = False,
+) -> dict[str, Any]:
     config = load_config(config_path)
     provider = config.data_sources.brokers.robinhood
     if not config.data_sources.brokers.enabled or not provider.enabled:
@@ -71,7 +94,8 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
 
     init_db(config.database.duckdb_path)
     with db(config.database.duckdb_path) as con:
-        target = symbols or option_symbols(con, config)[: _max_symbols(provider.max_symbols)]
+        universe = symbols or option_symbols(con, config)[: _max_symbols(provider.max_symbols)]
+        target = universe if symbols or full or not _incremental_enabled() else _incremental_robinhood_symbols(con, universe)
 
     try:
         collected = collect_robinhood_option_chains(provider, target, client=client)
@@ -82,6 +106,19 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
             "auth_command": "market-update-robinhood-options --auth",
             "auth_token_env": provider.auth_token_env,
             "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
+            "error": str(exc),
+            "database": str(config.database.duckdb_path),
+        }
+        status_path = write_source_status(
+            config,
+            "mini-market-robinhood-options",
+            {"source": "market-mini", "job": "update_robinhood_options", "origin": "autonomous_collector", **result},
+        )
+        return {**result, "status_path": str(status_path) if status_path else None}
+    except Exception as exc:  # noqa: BLE001 - provider/network failures should become job status, not hung jobs
+        result = {
+            "provider": "robinhood",
+            "status": "error",
             "error": str(exc),
             "database": str(config.database.duckdb_path),
         }
@@ -134,6 +171,9 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         "status": _robinhood_status(collected["errors"], stored),
         "market_data": collected["market_data"],
         "symbols_requested": len(target),
+        "symbols_considered": len(universe),
+        "symbols": target,
+        "incremental": bool(not symbols and not full and _incremental_enabled()),
         "symbols_with_chains": len(collected["rows"]),
         "chain_rows": stored,
         "quoted_rows": quoted_rows,
@@ -147,6 +187,72 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, *, cli
         {"source": "market-mini", "job": "update_robinhood_options", "origin": "autonomous_collector", **result},
     )
     return {**result, "status_path": str(status_path) if status_path else None}
+
+
+def _incremental_robinhood_symbols(con: Any, symbols: list[str]) -> list[str]:
+    normalized = []
+    seen = set()
+    for symbol in symbols:
+        upper = str(symbol or "").upper()
+        if upper and upper not in seen:
+            seen.add(upper)
+            normalized.append(upper)
+    if not normalized:
+        return []
+
+    limit = min(len(normalized), _env_int("MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS", DEFAULT_INCREMENTAL_SYMBOLS))
+    stale_minutes = _env_int("MARKET_ROBINHOOD_STALE_MINUTES", DEFAULT_STALE_MINUTES)
+    cutoff = datetime.now(UTC) - timedelta(minutes=stale_minutes)
+    latest_by_symbol = _latest_robinhood_chain_observed_at(con, normalized)
+
+    ranked: list[tuple[int, datetime, int, str]] = []
+    for index, symbol in enumerate(normalized):
+        latest = latest_by_symbol.get(symbol)
+        if latest is not None and latest >= cutoff:
+            continue
+        bucket = 0 if latest is not None else 1
+        ranked.append((bucket, latest or datetime.min.replace(tzinfo=UTC), index, symbol))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [symbol for _bucket, _latest, _index, symbol in ranked[:limit]]
+
+
+def _latest_robinhood_chain_observed_at(con: Any, symbols: list[str]) -> dict[str, datetime]:
+    if not symbols:
+        return {}
+    placeholders = ", ".join(["?"] * len(symbols))
+    rows = query_rows(
+        con,
+        f"""
+        SELECT symbol, max(observed_at) AS latest_observed_at
+        FROM options_chain
+        WHERE source = 'robinhood'
+          AND symbol IN ({placeholders})
+        GROUP BY symbol
+        """,
+        symbols,
+    )
+    out: dict[str, datetime] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        observed = _coerce_utc_datetime(row.get("latest_observed_at"))
+        if symbol and observed is not None:
+            out[symbol] = observed
+    return out
+
+
+def _coerce_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    elif value:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _robinhood_auth_available(provider: Any) -> bool:
@@ -180,13 +286,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--symbol", action="append", dest="symbols", default=None)
+    parser.add_argument("--full", action="store_true", help="refresh the full configured Robinhood option universe")
     parser.add_argument("--auth", action="store_true", help="run OAuth setup and cache a Robinhood MCP token")
     args = parser.parse_args()
     if args.auth:
         config = load_config(args.config)
         print(json.dumps(authorize_robinhood_mcp(config.data_sources.brokers.robinhood), indent=2, default=str))
     else:
-        print(json.dumps(run(args.config, symbols=args.symbols), indent=2, default=str))
+        print(json.dumps(run(args.config, symbols=args.symbols, full=args.full), indent=2, default=str))
 
 
 if __name__ == "__main__":

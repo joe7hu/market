@@ -169,8 +169,8 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     assert payload["agents"]["runtime"]["option_postmortem"]["status"] == "paused"
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "900"
-    assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "3600"
-    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "3600"
+    assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "900"
+    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "0"
     sources = payload["sources"]["rows"]
     assert len(sources) == 5
     bloomberg = next(row for row in sources if row["source_id"] == "news_bloomberg")
@@ -334,6 +334,43 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert set(payload["tables"]) == set(panel_contracts.PANEL_SCOPE_TABLES["options-radar"])
+
+
+def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "fallback-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    calls = 0
+
+    def fake_scope_loader(_config: dict[str, object], scope: str) -> PanelData:
+        nonlocal calls
+        calls += 1
+        assert scope == "options-radar"
+        if calls == 1:
+            return PanelData(
+                status=DataStatus(True, "loaded radar", "test"),
+                tables={
+                    "option_radar_summary": [{"latest_candidate_time": "2026-07-09T10:00:00"}],
+                    "candidate_event": [{"event_id": "event-1"}],
+                },
+            )
+        return PanelData(status=DataStatus(False, "DuckDB locked", "core-error"), tables={})
+
+    monkeypatch.setattr(app_deps, "load_panel_scope_data", fake_scope_loader)
+
+    client = TestClient(app)
+    first = client.get("/api/panel-snapshot?scope=options-radar")
+    assert first.status_code == 200
+    assert first.json()["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
+
+    app_main._invalidate_context_cache()
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    second = client.get("/api/panel-snapshot?scope=options-radar")
+
+    assert second.status_code == 200
+    payload = second.json()
+    assert payload["status"]["source"] == "panel-snapshot-cache"
+    assert payload["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
 
 
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
@@ -858,5 +895,6 @@ def test_frontend_fallback_serves_spa_deep_links_after_build() -> None:
     ]:
         response = client.get(path)
         assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache"
         assert response.headers["content-type"].startswith("text/html")
         assert '<div id="root">' in response.text

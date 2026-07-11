@@ -111,6 +111,8 @@ class RobinhoodConfig:
     callback_host: str = "127.0.0.1"
     callback_port: int = 8765
     timeout_seconds: int = 30
+    max_collection_seconds: int = 600
+    max_response_bytes: int = 8 * 1024 * 1024
     readonly: bool = True
     max_symbols: int = 40
     max_expiries: int = 2
@@ -395,6 +397,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 callback_host=str(robinhood_raw.get("callback_host", "127.0.0.1")),
                 callback_port=int(robinhood_raw.get("callback_port", 8765)),
                 timeout_seconds=int(robinhood_raw.get("timeout_seconds", 30)),
+                max_collection_seconds=int(robinhood_raw.get("max_collection_seconds", 600)),
+                max_response_bytes=int(robinhood_raw.get("max_response_bytes", 8 * 1024 * 1024)),
                 readonly=bool(robinhood_raw.get("readonly", True)),
                 max_symbols=int(robinhood_raw.get("max_symbols", 40)),
                 max_expiries=int(robinhood_raw.get("max_expiries", 2)),
@@ -601,6 +605,8 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                     "callback_host": config.data_sources.brokers.robinhood.callback_host,
                     "callback_port": config.data_sources.brokers.robinhood.callback_port,
                     "timeout_seconds": config.data_sources.brokers.robinhood.timeout_seconds,
+                    "max_collection_seconds": config.data_sources.brokers.robinhood.max_collection_seconds,
+                    "max_response_bytes": config.data_sources.brokers.robinhood.max_response_bytes,
                     "readonly": config.data_sources.brokers.robinhood.readonly,
                     "max_symbols": config.data_sources.brokers.robinhood.max_symbols,
                     "max_expiries": config.data_sources.brokers.robinhood.max_expiries,

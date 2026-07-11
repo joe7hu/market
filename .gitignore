@@ -3,6 +3,8 @@ node_modules/
 frontend/dist/
 data/*.duckdb
 data/*.duckdb.wal
+data/.refresh-jobs/
+data/api-cache/
 data/packets/*.json
 *.duckdb
 __pycache__/

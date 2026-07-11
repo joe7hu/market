@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
 def _mount_frontend(app: FastAPI) -> None:
     dist_dir = Path(__file__).resolve().parents[1] / "frontend" / "dist"
     index_path = dist_dir / "index.html"
+    index_headers = {"Cache-Control": "no-cache"}
     if not index_path.exists():
         return
 
@@ -80,7 +81,7 @@ def _mount_frontend(app: FastAPI) -> None:
         requested = dist_dir / path
         if requested.is_file():
             return FileResponse(requested)
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=index_headers)
 
 
 app = create_app()

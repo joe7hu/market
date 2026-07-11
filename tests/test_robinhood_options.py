@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.core.robinhood_options import (
+    RobinhoodMcpClient,
     _authorization_server_metadata,
     authorize_robinhood_mcp,
     collect_robinhood_option_chains,
@@ -31,6 +32,8 @@ class _ProviderConfig:
     codex_credentials_path: str = "~/.codex/.credentials.json"
     codex_mcp_server_name: str = "robinhood-trading"
     timeout_seconds: int = 30
+    max_collection_seconds: int = 900
+    max_response_bytes: int = 8 * 1024 * 1024
     readonly: bool = True
     max_symbols: int = 40
     max_expiries: int = 2
@@ -132,6 +135,20 @@ class _FakeRobinhoodClient:
                 ]
             }
         }
+
+
+class _FailingRobinhoodClient:
+    def get_equity_quotes(self, symbols: list[str]) -> dict[str, Any]:
+        raise TimeoutError("Robinhood MCP request timed out after 30s")
+
+    def get_option_chains(self, underlying_symbol: str) -> dict[str, Any]:
+        return {}
+
+    def get_option_instruments(self, **_kwargs) -> dict[str, Any]:
+        return {}
+
+    def get_option_quotes(self, instrument_ids: list[str]) -> dict[str, Any]:
+        return {}
 
 
 def test_option_quote_row_maps_robinhood_fields() -> None:
@@ -254,6 +271,32 @@ def test_collect_robinhood_option_chains_with_fake_client() -> None:
     assert all(row["open_interest"] == 3652 for row in rows)
 
 
+def test_robinhood_mcp_client_rejects_oversized_response(monkeypatch) -> None:
+    class FakeStreamResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        request = httpx.Request("POST", "https://example.invalid/mcp")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"x" * 2048
+
+    monkeypatch.setattr("investment_panel.core.robinhood_options.collector.httpx.stream", lambda *_args, **_kwargs: FakeStreamResponse())
+    client = RobinhoodMcpClient("https://example.invalid/mcp", timeout_seconds=30, max_response_bytes=1024)
+
+    try:
+        client._post({"method": "tools/call"}, {})  # noqa: SLF001 - regression test for bounded transport
+    except RuntimeError as exc:
+        assert "exceeded 1024 bytes" in str(exc)
+    else:  # pragma: no cover - assertion clarity
+        raise AssertionError("oversized response was not rejected")
+
+
 def test_load_robinhood_access_token_from_cache(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
     token_path = tmp_path / "token.json"
@@ -367,3 +410,58 @@ data_sources:
     assert result["status"] == "auth_required"
     assert result["provider"] == "robinhood"
     assert result["auth_command"] == "market-update-robinhood-options --auth"
+
+
+def test_update_robinhood_options_reports_provider_error(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+database:
+  duckdb_path: {tmp_path / "investment.duckdb"}
+nas:
+  status_dir: {tmp_path / "status"}
+data_sources:
+  brokers:
+    enabled: true
+    robinhood:
+      enabled: true
+      readonly: true
+""",
+        encoding="utf-8",
+    )
+
+    result = update_robinhood_options.run(str(config_path), symbols=["NVDA"], client=_FailingRobinhoodClient())
+
+    assert result["status"] == "error"
+    assert result["provider"] == "robinhood"
+    assert "timed out" in result["error"]
+
+
+def test_incremental_robinhood_symbols_prioritize_known_stale_before_missing(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "investment.duckdb"
+    init_db(db_path)
+    now = datetime.now(UTC)
+    row = option_quote_row(
+        {
+            "id": "contract-1",
+            "chain_id": "chain-1",
+            "chain_symbol": "NVDA",
+            "underlying_type": "equity",
+            "expiration_date": "2027-06-17",
+            "strike_price": "210.0000",
+            "type": "call",
+            "state": "active",
+            "tradability": "tradable",
+        },
+        {"instrument_id": "contract-1", "bid_price": "1", "ask_price": "2", "mark_price": "1.5"},
+    )
+    assert row is not None
+    with db(db_path) as con:
+        store_options_chain(con, "NVDA", (now - timedelta(minutes=10)).isoformat(), [row], source="robinhood")
+        store_options_chain(con, "AAPL", (now - timedelta(hours=2)).isoformat(), [row], source="robinhood")
+        store_options_chain(con, "MSFT", (now - timedelta(hours=3)).isoformat(), [row], source="robinhood")
+
+        monkeypatch.setenv("MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS", "2")
+        selected = update_robinhood_options._incremental_robinhood_symbols(con, ["NVDA", "AAPL", "MSFT", "TSLA"])
+
+    assert selected == ["MSFT", "AAPL"]

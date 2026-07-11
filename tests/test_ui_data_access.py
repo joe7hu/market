@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -7,6 +11,7 @@ import pytest
 from app import data_access
 from investment_panel.core.panel import market_freshness
 from investment_panel.core.db import db, init_db
+from investment_panel.core.panel import read_session
 
 
 def test_empty_database_returns_duckdb_status(tmp_path) -> None:
@@ -382,7 +387,8 @@ def test_market_panel_loader_handles_unmigrated_existing_database(tmp_path) -> N
     assert panel_data.rows("market_environment_model")
 
 
-def test_pure_scoped_read_migrates_stale_database_before_reading(tmp_path) -> None:
+def test_pure_scoped_read_migrates_stale_database_before_reading(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "0")
     db_path = tmp_path / "stale.duckdb"
     with duckdb.connect(str(db_path)) as con:
         con.execute("CREATE TABLE source_health (source TEXT PRIMARY KEY, checked_at TIMESTAMP, status TEXT, detail TEXT)")
@@ -394,6 +400,56 @@ def test_pure_scoped_read_migrates_stale_database_before_reading(tmp_path) -> No
     with duckdb.connect(str(db_path), read_only=True) as con:
         columns = {row[1] for row in con.execute("PRAGMA table_info('source_health')").fetchall()}
     assert "source_url" in columns
+
+
+def test_scheduler_compatible_panel_read_does_not_poison_later_writer(tmp_path) -> None:
+    db_path = tmp_path / "scheduler-compatible.duckdb"
+    init_db(db_path)
+    script = f"""
+from pathlib import Path
+from investment_panel.core.db import init_db
+from investment_panel.core.panel.read_session import panel_read_session
+
+db_path = Path({str(db_path)!r})
+with panel_read_session(db_path, needs_write=False) as con:
+    assert con is not None
+    con.execute("SELECT 1").fetchone()
+init_db(db_path)
+"""
+    env = {**os.environ, "MARKET_SCHEDULER_ENABLED": "1"}
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_panel_read_session_uses_read_only_fail_fast_by_default(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "read-only.duckdb"
+    db_path.write_bytes(b"placeholder")
+    calls: list[tuple[bool, int, float]] = []
+
+    @contextmanager
+    def fake_db(_path, read_only: bool = False, *, retries: int = 30, delay_seconds: float = 1.0):
+        calls.append((read_only, retries, delay_seconds))
+        yield object()
+
+    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "1")
+    monkeypatch.delenv("MARKET_PANEL_READ_ONLY", raising=False)
+    monkeypatch.delenv("MARKET_PANEL_READ_LOCK_RETRIES", raising=False)
+    monkeypatch.setattr(read_session, "_schema_needs_migration", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(read_session, "db", fake_db)
+
+    with read_session.panel_read_session(db_path, needs_write=False) as con:
+        assert con is not None
+
+    assert calls == [(True, 0, 0.1)]
 
 
 def test_scoped_panel_status_is_ready_when_requested_table_has_rows(tmp_path) -> None:

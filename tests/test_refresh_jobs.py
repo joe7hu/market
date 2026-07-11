@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.db import db, init_db
@@ -28,7 +29,7 @@ def test_refresh_job_rows_falls_back_to_read_only_when_writer_config_conflicts(t
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     job = refresh_jobs.run_refresh_job("unit_refresh", db_path)
 
-    def fail_init(_db_path):
+    def fail_init(_db_path, **_kwargs):
         raise RuntimeError("Connection Error: different configuration than existing connections")
 
     monkeypatch.setattr(refresh_jobs, "init_db", fail_init)
@@ -37,6 +38,25 @@ def test_refresh_job_rows_falls_back_to_read_only_when_writer_config_conflicts(t
 
     assert rows[0]["id"] == job["id"]
     assert rows[0]["status"] == "succeeded"
+
+
+def test_refresh_job_rows_returns_running_sidecar_when_duckdb_is_locked(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
+    job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
+
+    def fail_init(_db_path, **_kwargs):
+        raise RuntimeError('IO Error: Could not set lock on file "jobs.duckdb": Conflicting lock is held')
+
+    monkeypatch.setattr(refresh_jobs, "init_db", fail_init)
+
+    rows = refresh_jobs.refresh_job_rows(db_path)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == job["id"]
+    assert rows[0]["job_name"] == "unit_refresh"
+    assert rows[0]["status"] == "running"
+    assert rows[0]["summary"] == {}
 
 
 def test_retention_prunes_old_operational_rows_without_dropping_latest(tmp_path) -> None:
@@ -145,6 +165,86 @@ def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None
 
     assert result["status"] == "succeeded"
     assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
+
+
+def test_options_radar_hard_refresh_updates_source_then_rebuilds_radar(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_update(config_path):
+        calls.append(("source", config_path))
+        return {"status": "ok", "chain_rows": 12, "symbols": ["NVDA", "TSLA"]}
+
+    def fake_signal(config_path, *, symbols=None, source=None):
+        calls.append((f"radar:{source}:{','.join(symbols or [])}", config_path))
+        return {"mode": "signal_only", "source": source, "symbols": symbols, "option_radar_opportunities": 5}
+
+    monkeypatch.setattr(refresh_jobs.update_robinhood_options, "run", fake_update)
+    monkeypatch.setattr(refresh_jobs.refresh_options_radar, "run_signal_only", fake_signal)
+
+    result = refresh_jobs.run_refresh_job("options_radar_hard_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"]["ok"] is True
+    assert result["summary"]["options_radar"]["option_radar_opportunities"] == 5
+    assert result["summary"]["options_radar"]["symbols"] == ["NVDA", "TSLA"]
+    assert calls == [("source", "config.yaml"), ("radar:robinhood:NVDA,TSLA", "config.yaml")]
+
+
+def test_options_radar_hard_refresh_skips_radar_when_no_incremental_symbols(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    calls: list[str] = []
+    monkeypatch.setattr(refresh_jobs.update_robinhood_options, "run", lambda _config_path: {"status": "ok", "chain_rows": 0, "symbols": []})
+    monkeypatch.setattr(refresh_jobs.refresh_options_radar, "run_signal_only", lambda *_args, **_kwargs: calls.append("radar") or {})
+
+    result = refresh_jobs.run_refresh_job("options_radar_hard_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"]["options_radar"] == {"status": "skipped", "reason": "no_incremental_symbols", "source": "robinhood"}
+    assert calls == []
+
+
+def test_options_radar_hard_refresh_timeout_covers_source_and_radar_steps() -> None:
+    assert refresh_jobs.JOB_TIMEOUT_SECONDS["options_radar_hard_refresh"] >= 5400
+
+
+def test_options_radar_hard_refresh_fails_when_source_unusable(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        refresh_jobs.update_robinhood_options,
+        "run",
+        lambda _config_path: {"status": "auth_required", "provider": "robinhood"},
+    )
+    monkeypatch.setattr(refresh_jobs.refresh_options_radar, "run_signal_only", lambda *_args, **_kwargs: calls.append("radar") or {})
+
+    result = refresh_jobs.run_refresh_job("options_radar_hard_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "failed"
+    assert result["error"] == "Robinhood option refresh returned auth_required"
+    assert calls == []
+
+
+def test_refresh_job_subprocess_timeout_marks_job_failed(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
+    monkeypatch.setitem(refresh_jobs.JOB_TIMEOUT_SECONDS, "unit_refresh", 1)
+    job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
+
+    def timeout_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(refresh_jobs.subprocess, "run", timeout_run)
+
+    result = refresh_jobs.execute_refresh_job_subprocess(job["id"], "unit_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "failed"
+    assert "timed out after 1s" in result["error"]
+    rows = refresh_jobs.refresh_job_rows(db_path)
+    assert rows[0]["id"] == job["id"]
+    assert rows[0]["status"] == "failed"
+    assert "timed out after 1s" in (rows[0]["error"] or "")
 
 
 def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monkeypatch) -> None:

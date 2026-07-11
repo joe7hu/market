@@ -159,6 +159,11 @@ export const JOB_CATALOG: Record<string, JobDef> = {
     description: "Fast signal refresh from the reliable IBKR chains only.",
     group: "synthesis",
   },
+  options_radar_hard_refresh: {
+    label: "Options Radar Hard Refresh",
+    description: "Pull fresh Robinhood option chains, then rebuild the visible radar snapshot.",
+    group: "synthesis",
+  },
   run_option_agents: {
     label: "Option Agents",
     description: "Run the Codex thesis/postmortem option agents.",

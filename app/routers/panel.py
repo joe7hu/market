@@ -37,12 +37,13 @@ def dashboard() -> dict[str, Any]:
 def panel_snapshot(scope: str = "dashboard", offset: int = 0, limit: int | None = None) -> dict[str, Any]:
     if scope == "market":
         config = deps.load_config()
-        return deps.panel_snapshot_payload(deps.load_market_panel_data(config), scope, offset=offset, limit=limit)
+        panel_data = deps.load_market_panel_data(config)
+        return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "dashboard":
         _, panel_data = deps._context()
         return deps.panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
-    _, panel_data = deps._context(cache_key=f"scope:{scope}", loader=lambda config: deps.load_panel_scope_data(config, scope))
-    return deps.panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
+    config, panel_data = deps._context(cache_key=f"scope:{scope}", loader=lambda config: deps.load_panel_scope_data(config, scope))
+    return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
 
 
 @router.get("/api/decision-readiness")

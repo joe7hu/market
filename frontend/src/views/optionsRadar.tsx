@@ -1,11 +1,13 @@
-import {useMemo, useState } from "react";
-import {promoteStrategyMutation } from "@/api";
+import { RefreshCw } from "lucide-react";
+import {useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {loadRefreshJobs, promoteStrategyMutation, startRefreshJob, type RefreshJob } from "@/api";
 import {StatusBadge } from "@/components/market/workstation";
+import { Button } from "@/components/ui/button";
 import {PanelData, RowRecord } from "@/types";
 import {displayField, numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
-import {tabButtonClass, rows, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
+import {tabButtonClass, rows, rowsForDisplayTime, isOpportunityCandidate, uniqueText, candidateOpportunityFields, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
 import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, ExplorationGatePanel, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
@@ -18,11 +20,18 @@ type OptionsRadarPageProps = {
   onRefresh: () => Promise<void> | void;
 };
 
+type HardRefreshStatus = "checking" | "idle" | "starting" | "running" | "succeeded" | "failed";
+
+const HARD_REFRESH_JOB = "options_radar_hard_refresh";
+const HARD_REFRESH_POLL_MS = 5000;
 
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
   const [activeTab, setActiveTab] = useState<"signals" | "learning">("signals");
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
+  const hardRefreshJobId = useRef<string | null>(null);
+  const [hardRefreshStatus, setHardRefreshStatus] = useState<HardRefreshStatus>("checking");
+  const [hardRefreshError, setHardRefreshError] = useState<string | null>(null);
   const candidates = rows(data.candidateEvent);
   const radarAlerts = rows(data.radarAlert);
   const missedWinners = rows(data.missedWinnerEvent);
@@ -47,11 +56,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const optionThesisAgent = optionThesisAgentState(data);
 
   const opportunityCandidates = useMemo(
-    () => candidates.filter((row) => isOpportunityCandidate(row) && (!latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime)),
+    () => rowsForDisplayTime(candidates.filter(isOpportunityCandidate), latestCandidateTime),
     [candidates, latestCandidateTime],
   );
   const currentOpportunityRows = useMemo(
-    () => opportunityRows.filter((row) => !latestCandidateTime || textField(row, ["snapshot_time"]) === latestCandidateTime),
+    () => rowsForDisplayTime(opportunityRows, latestCandidateTime),
     [latestCandidateTime, opportunityRows],
   );
   const opportunityByEvent = useMemo(
@@ -96,6 +105,93 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     }
   }
 
+  const applyHardRefreshJob = useCallback(async (job: RefreshJob, options: { refreshOnSuccess?: boolean } = {}) => {
+    if (job.id) hardRefreshJobId.current = job.id;
+    if (job.status === "running") {
+      setHardRefreshStatus("running");
+      setHardRefreshError(null);
+      return;
+    }
+    if (job.status === "failed") {
+      hardRefreshJobId.current = null;
+      setHardRefreshStatus("failed");
+      setHardRefreshError(refreshFailureMessage(job));
+      return;
+    }
+    if (job.status === "succeeded") {
+      const failure = refreshFailureMessage(job);
+      hardRefreshJobId.current = null;
+      if (failure) {
+        setHardRefreshStatus("failed");
+        setHardRefreshError(failure);
+        return;
+      }
+      setHardRefreshStatus("succeeded");
+      setHardRefreshError(null);
+      if (options.refreshOnSuccess ?? true) await onRefresh();
+    }
+  }, [onRefresh]);
+
+  const updateHardRefreshStatus = useCallback(async () => {
+    const payload = await loadRefreshJobs();
+    const jobRows = payload.rows ?? [];
+    const job = (hardRefreshJobId.current
+      ? jobRows.find((row) => row.id === hardRefreshJobId.current)
+      : null) ?? latestJobByName(jobRows, HARD_REFRESH_JOB);
+    if (!job) return;
+    await applyHardRefreshJob(job);
+  }, [applyHardRefreshJob]);
+
+  const startHardRefresh = useCallback(async () => {
+    if (hardRefreshStatus === "checking" || hardRefreshStatus === "starting" || hardRefreshStatus === "running") return;
+    setHardRefreshStatus("starting");
+    setHardRefreshError(null);
+    try {
+      const job = await startRefreshJob(HARD_REFRESH_JOB);
+      await applyHardRefreshJob(job);
+    } catch (error) {
+      hardRefreshJobId.current = null;
+      setHardRefreshStatus("failed");
+      setHardRefreshError(error instanceof Error ? error.message : "Hard refresh failed");
+    }
+  }, [applyHardRefreshJob, hardRefreshStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadRefreshJobs()
+      .then((payload) => {
+        if (cancelled) return;
+        const runningJob = latestRunningJobByName(payload.rows ?? [], HARD_REFRESH_JOB);
+        if (!runningJob) {
+          setHardRefreshStatus("idle");
+          return;
+        }
+        if (runningJob.id) hardRefreshJobId.current = runningJob.id;
+        setHardRefreshStatus("running");
+        setHardRefreshError(null);
+      })
+      .catch(() => {
+        if (!cancelled) setHardRefreshStatus("idle");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (hardRefreshStatus !== "running") return;
+    const id = window.setInterval(() => {
+      void updateHardRefreshStatus().catch((error) => {
+        setHardRefreshStatus("failed");
+        setHardRefreshError(error instanceof Error ? error.message : "Hard refresh status check failed");
+      });
+    }, HARD_REFRESH_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [hardRefreshStatus, updateHardRefreshStatus]);
+
+  const hardRefreshBusy = hardRefreshStatus === "checking" || hardRefreshStatus === "starting" || hardRefreshStatus === "running";
+  const hardRefreshSpinning = hardRefreshStatus === "starting" || hardRefreshStatus === "running";
+
   return (
     <WorkspacePage
       eyebrow="Options Radar"
@@ -103,6 +199,22 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       subtitle="Layered signal brief for extreme options setups: strength, blockers, learning impact, and thesis validation."
       actions={
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={hardRefreshBusy}
+            onClick={() => void startHardRefresh()}
+            title={hardRefreshStatus === "checking" ? "Checking current refresh status" : "Pull fresh Robinhood option chains and rebuild the options radar"}
+          >
+            <RefreshCw className={hardRefreshSpinning ? "animate-spin" : undefined} />
+            Hard refresh
+          </Button>
+          {hardRefreshStatus === "checking" ? <StatusBadge tone="info">Checking</StatusBadge> : null}
+          {hardRefreshStatus === "starting" ? <StatusBadge tone="info">Starting</StatusBadge> : null}
+          {hardRefreshStatus === "running" ? <StatusBadge tone="info">Refreshing</StatusBadge> : null}
+          {hardRefreshStatus === "succeeded" ? <StatusBadge tone="good">Updated</StatusBadge> : null}
+          {hardRefreshStatus === "failed" ? <StatusBadge tone="bad">{hardRefreshError ?? "Refresh failed"}</StatusBadge> : null}
           {(() => {
             const badge = sessionBadge(marketSession, frozenToRth, latestSnapshot);
             return <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>;
@@ -170,4 +282,34 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       )}
     </WorkspacePage>
   );
+}
+
+function latestJobByName(jobs: RefreshJob[], jobName: string): RefreshJob | null {
+  return jobs
+    .filter((job) => job.job_name === jobName)
+    .sort((a, b) => (dateValue(b.started_at) ?? 0) - (dateValue(a.started_at) ?? 0))[0] ?? null;
+}
+
+function latestRunningJobByName(jobs: RefreshJob[], jobName: string): RefreshJob | null {
+  return jobs
+    .filter((job) => job.job_name === jobName && job.status === "running")
+    .sort((a, b) => (dateValue(b.started_at) ?? 0) - (dateValue(a.started_at) ?? 0))[0] ?? null;
+}
+
+function refreshFailureMessage(job: RefreshJob): string {
+  if (job.error) return job.error;
+  const summary = isRecord(job.summary) ? job.summary : null;
+  const error = typeof summary?.error === "string" ? summary.error : null;
+  const failedStep = typeof summary?.failedStep === "string" ? summary.failedStep : null;
+  return error || (failedStep ? `Refresh failed at ${failedStep}` : "Hard refresh failed");
+}
+
+function dateValue(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const date = new Date(value).getTime();
+  return Number.isNaN(date) ? null : date;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

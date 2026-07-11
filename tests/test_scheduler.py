@@ -20,9 +20,19 @@ def test_scheduler_enabled_respects_off_values(monkeypatch) -> None:
 
 def test_job_intervals_default_to_robinhood_source(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
+    monkeypatch.delenv("MARKET_SOURCE_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("MARKET_RADAR_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS", raising=False)
+    intervals = scheduler.job_intervals()
+    assert intervals["options_radar_hard_refresh"] == 900
+
+
+def test_robinhood_split_source_and_signal_can_be_enabled_explicitly(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "120")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "60")
     intervals = scheduler.job_intervals()
+    assert intervals["options_radar_hard_refresh"] == 900
     assert intervals["update_robinhood_options"] == 120
     assert intervals["refresh_options_radar_signal_robinhood"] == 60
 
@@ -30,6 +40,8 @@ def test_job_intervals_default_to_robinhood_source(monkeypatch) -> None:
 def test_ibkr_source_fallback_via_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_RADAR_OPTION_SOURCE", "ibkr")
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
+    monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "3600")
+    monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     intervals = scheduler.job_intervals()
     assert "update_ibkr_options" in intervals
     assert "refresh_options_radar_signal_ibkr" in intervals
@@ -39,6 +51,8 @@ def test_ibkr_source_fallback_via_env(monkeypatch) -> None:
 def test_free_source_fallback_via_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_RADAR_OPTION_SOURCE", "free")
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
+    monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "3600")
+    monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     intervals = scheduler.job_intervals()
     assert "update_free_sources_radar" in intervals
     assert "refresh_options_radar_signal" in intervals
@@ -51,8 +65,9 @@ def test_job_intervals_ignore_invalid_env(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "not-a-number")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "-5")
     intervals = scheduler.job_intervals()
-    assert intervals["update_robinhood_options"] == 3600  # default
-    assert intervals["refresh_options_radar_signal_robinhood"] == 900  # default
+    assert intervals["options_radar_hard_refresh"] == 900
+    assert "update_robinhood_options" not in intervals
+    assert "refresh_options_radar_signal_robinhood" not in intervals
 
 
 def test_source_pull_can_be_disabled(monkeypatch) -> None:
@@ -60,12 +75,13 @@ def test_source_pull_can_be_disabled(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "0")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     intervals = scheduler.job_intervals()
+    assert "options_radar_hard_refresh" not in intervals
     assert "update_robinhood_options" not in intervals
     # The continuous fresh-signal loop must remain regardless.
     assert "refresh_options_radar_signal_robinhood" in intervals
 
 
-def test_radar_freshness_loops_default_on_in_app_process(monkeypatch) -> None:
+def test_radar_freshness_loop_defaults_to_incremental_hard_refresh(monkeypatch) -> None:
     for var in (
         "MARKET_RADAR_OPTION_SOURCE",
         "MARKET_IN_PROCESS_HEAVY_REFRESH",
@@ -77,18 +93,20 @@ def test_radar_freshness_loops_default_on_in_app_process(monkeypatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     intervals = scheduler.job_intervals()
-    assert intervals["refresh_options_radar_signal_robinhood"] == 900
-    assert intervals["update_robinhood_options"] == 3600
+    assert intervals["options_radar_hard_refresh"] == 900
     assert "refresh_options_radar_learning_marks" not in intervals
     assert "refresh_options_radar_deterministic" not in intervals
-    assert intervals["update_market_environment"] == 3600
-    assert intervals["update_preopen_daily_brief_scheduled"] == 300
+    assert "update_market_environment" not in intervals
+    assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
 def test_heavy_refresh_loops_can_be_enabled_for_app_process(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
+    monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
+    monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "3600")
     intervals = scheduler.job_intervals()
+    assert intervals["options_radar_hard_refresh"] == 900
     assert intervals["refresh_options_radar_signal_robinhood"] == 900
     assert intervals["update_robinhood_options"] == 3600
     assert intervals["refresh_options_radar_deterministic"] == 21600
@@ -106,6 +124,14 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "0")
     intervals = scheduler.job_intervals()
     assert "update_preopen_daily_brief_scheduled" not in intervals
+
+
+def test_read_model_refreshes_can_be_enabled_explicitly(monkeypatch) -> None:
+    monkeypatch.setenv("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600")
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "300")
+    intervals = scheduler.job_intervals()
+    assert intervals["update_market_environment"] == 3600
+    assert intervals["update_preopen_daily_brief_scheduled"] == 300
 
 
 def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
@@ -133,12 +159,19 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
 
     assert status["agent_refresh_seconds"] == "123"
     assert status["radar_refresh_seconds"] == "900"
-    assert status["source_refresh_seconds"] == "3600"
+    assert status["source_refresh_seconds"] == "900"
+    assert status["options_hard_refresh_seconds"] == "900"
     assert status["learning_mark_refresh_seconds"] == "0"
     assert status["learning_refresh_seconds"] == "21600"
-    assert status["market_environment_refresh_seconds"] == "3600"
-    assert status["preopen_brief_refresh_seconds"] == "300"
+    assert status["market_environment_refresh_seconds"] == "0"
+    assert status["preopen_brief_refresh_seconds"] == "0"
     assert status["jobs"]["run_option_agents"] == 123
+
+
+def test_source_writers_wait_one_interval_before_first_run() -> None:
+    assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
+    assert scheduler._initial_delay_seconds("update_robinhood_options", 120, 1) == 120
+    assert scheduler._initial_delay_seconds("refresh_options_radar_signal_robinhood", 60, 2) == 2 * scheduler.STAGGER_SECONDS
 
 
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:
@@ -151,6 +184,7 @@ def test_agent_pass_can_be_disabled(monkeypatch) -> None:
 def test_learning_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
+    monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     monkeypatch.setenv("MARKET_LEARNING_REFRESH_SECONDS", "0")
     intervals = scheduler.job_intervals()
     assert "refresh_options_radar_deterministic" not in intervals
@@ -164,24 +198,49 @@ def test_learning_mark_refresh_can_be_enabled_explicitly(monkeypatch) -> None:
     assert intervals["refresh_options_radar_learning_marks"] == 1800
 
 
-def test_dispatch_invokes_run_refresh_job(monkeypatch) -> None:
-    calls: list[tuple[str, object, str]] = []
+def test_dispatch_starts_and_executes_refresh_job(monkeypatch) -> None:
+    started_calls: list[tuple[str, object]] = []
+    execute_calls: list[tuple[str, str, object, str]] = []
 
-    def fake_run_refresh_job(job_name, db_path, config_path):
-        calls.append((job_name, db_path, config_path))
+    def fake_start_refresh_job(job_name, db_path):
+        started_calls.append((job_name, db_path))
+        return {"id": "job-1", "job_name": job_name, "created": True}
+
+    async def fake_execute_started_refresh_job(job_name, job_id, db_path, config_path):
+        execute_calls.append((job_name, job_id, db_path, config_path))
         return {"status": "succeeded"}
 
-    monkeypatch.setattr(scheduler, "run_refresh_job", fake_run_refresh_job)
+    monkeypatch.setattr(scheduler, "start_refresh_job", fake_start_refresh_job)
+    monkeypatch.setattr(scheduler, "_execute_started_refresh_job", fake_execute_started_refresh_job)
     asyncio.run(scheduler._dispatch("refresh_options_radar_signal_robinhood", "db", "config.yaml"))
 
-    assert calls == [("refresh_options_radar_signal_robinhood", "db", "config.yaml")]
+    assert started_calls == [("refresh_options_radar_signal_robinhood", "db")]
+    assert execute_calls == [("refresh_options_radar_signal_robinhood", "job-1", "db", "config.yaml")]
+
+
+def test_dispatch_skips_existing_running_job(monkeypatch) -> None:
+    execute_calls: list[str] = []
+
+    def fake_start_refresh_job(job_name, db_path):
+        return {"id": "job-1", "job_name": job_name, "status": "running", "created": False}
+
+    async def fake_execute_started_refresh_job(*_args):
+        execute_calls.append("executed")
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(scheduler, "start_refresh_job", fake_start_refresh_job)
+    monkeypatch.setattr(scheduler, "_execute_started_refresh_job", fake_execute_started_refresh_job)
+
+    asyncio.run(scheduler._dispatch("refresh_options_radar_signal_robinhood", "db", "config.yaml"))
+
+    assert execute_calls == []
 
 
 def test_dispatch_swallows_exceptions(monkeypatch) -> None:
     def boom(*_args, **_kwargs):
         raise RuntimeError("job blew up")
 
-    monkeypatch.setattr(scheduler, "run_refresh_job", boom)
+    monkeypatch.setattr(scheduler, "start_refresh_job", boom)
     # Must not raise: a bad job can never be allowed to kill the scheduler loop.
     asyncio.run(scheduler._dispatch("update_free_sources", "db", "config.yaml"))
 

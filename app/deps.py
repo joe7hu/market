@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import inspect
 import time
+from copy import deepcopy
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from threading import RLock
@@ -45,7 +46,14 @@ from app.data_access import (
     update_agent_settings_config,
     update_research_sources_config,
 )
-from investment_panel.core.refresh_jobs import ALLOWLIST, execute_refresh_job, refresh_job_rows, run_refresh_job, start_refresh_job
+from investment_panel.core.refresh_jobs import (
+    ALLOWLIST,
+    execute_refresh_job,
+    execute_refresh_job_subprocess,
+    refresh_job_rows,
+    run_refresh_job,
+    start_refresh_job,
+)
 from investment_panel.core.brokers import build_and_persist_agent_recommendations, stage_paper_order
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
 from investment_panel.core.db import db, init_db, query_rows
@@ -69,6 +77,10 @@ SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
 TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
 _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
 _CONTEXT_LOCK = RLock()
+_LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
+_SCOPE_SNAPSHOT_FALLBACK_TABLES = {
+    "options-radar": {"option_radar_summary", "option_radar_opportunity", "candidate_event", "radar_alert"},
+}
 
 
 class PortfolioPositionInput(BaseModel):
@@ -207,6 +219,80 @@ def _table_payload(table_name: str) -> dict[str, Any]:
     return table_payload(panel_data, table_name)
 
 
+def scope_panel_snapshot_payload(
+    config: dict[str, Any],
+    panel_data: Any,
+    scope: str,
+    *,
+    offset: int = 0,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    payload = panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
+    if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES or offset != 0 or limit is not None:
+        return payload
+    if _scope_snapshot_has_rows(scope, payload):
+        _store_last_good_scope_snapshot(config, scope, payload)
+        return payload
+    fallback = _load_last_good_scope_snapshot(config, scope)
+    if fallback is None:
+        return payload
+    status = dict(fallback.get("status") or {})
+    status.update(
+        {
+            "ready": True,
+            "source": "panel-snapshot-cache",
+            "message": "Serving last good options-radar snapshot while the live DuckDB read is unavailable.",
+        }
+    )
+    fallback["status"] = status
+    return fallback
+
+
+def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
+    tables = payload.get("tables")
+    if not isinstance(tables, dict):
+        return False
+    for table_name in _SCOPE_SNAPSHOT_FALLBACK_TABLES.get(scope, set()):
+        table = tables.get(table_name)
+        rows = table.get("rows") if isinstance(table, dict) else None
+        if isinstance(rows, list) and rows:
+            return True
+    return False
+
+
+def _store_last_good_scope_snapshot(config: dict[str, Any], scope: str, payload: dict[str, Any]) -> None:
+    snapshot = deepcopy(payload)
+    _LAST_GOOD_SCOPE_SNAPSHOTS[scope] = snapshot
+    path = _scope_snapshot_cache_path(config, scope)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
+        temp_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        return
+
+
+def _load_last_good_scope_snapshot(config: dict[str, Any], scope: str) -> dict[str, Any] | None:
+    cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(scope)
+    if cached is not None:
+        return deepcopy(cached)
+    path = _scope_snapshot_cache_path(config, scope)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or not _scope_snapshot_has_rows(scope, payload):
+        return None
+    _LAST_GOOD_SCOPE_SNAPSHOTS[scope] = payload
+    return deepcopy(payload)
+
+
+def _scope_snapshot_cache_path(config: dict[str, Any], scope: str) -> Path:
+    db_path = database_path(config)
+    return db_path.parent / "api-cache" / f"panel-snapshot-{scope}.json"
+
+
 def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:
     payload = _table_payload(table_name)
     rows = payload["rows"]
@@ -227,7 +313,7 @@ def _invalidate_context_cache() -> None:
 
 def _execute_background_refresh_job(job_id: str, job_name: str, db_path: Path) -> None:
     try:
-        execute_refresh_job(job_id, job_name, db_path, "config.yaml", raise_on_error=False)
+        execute_refresh_job_subprocess(job_id, job_name, db_path, "config.yaml")
     finally:
         _invalidate_context_cache()
 

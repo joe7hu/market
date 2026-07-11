@@ -48,8 +48,8 @@ def connect(path: str | Path, read_only: bool = False, retries: int = 30, delay_
     raise last_error or RuntimeError(f"Could not connect to DuckDB: {db_path}")
 
 
-def init_db(path: str | Path) -> None:
-    with connect(path) as con:
+def init_db(path: str | Path, *, retries: int = 30, delay_seconds: float = 1.0) -> None:
+    with connect(path, retries=retries, delay_seconds=delay_seconds) as con:
         con.sql(SCHEMA_SQL)
         _migrate_schema(con)
 
@@ -194,8 +194,14 @@ def _backfill_instrument_market_identity(con: duckdb.DuckDBPyConnection) -> None
 
 
 @contextmanager
-def db(path: str | Path, read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
-    con = connect(path, read_only=read_only)
+def db(
+    path: str | Path,
+    read_only: bool = False,
+    *,
+    retries: int = 30,
+    delay_seconds: float = 1.0,
+) -> Iterator[duckdb.DuckDBPyConnection]:
+    con = connect(path, read_only=read_only, retries=retries, delay_seconds=delay_seconds)
     try:
         yield con
     finally:

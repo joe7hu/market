@@ -9,6 +9,7 @@ called from this module. Authentication is delegated entirely to :mod:`auth`.
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, date, datetime
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
@@ -20,6 +21,10 @@ from investment_panel.core.coercion import to_int_or_none as as_int
 from investment_panel.core.ibkr_options import select_leap_call_strikes, select_leap_put_strikes
 from investment_panel.core.option_scan import RADAR_MAX_DTE, RADAR_MIN_DTE
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
+
+
+DEFAULT_MAX_COLLECTION_SECONDS = 600
+DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class RobinhoodClient(Protocol):
@@ -43,10 +48,18 @@ class RobinhoodClient(Protocol):
 class RobinhoodMcpClient:
     """Minimal streamable-HTTP MCP client for the Robinhood trading server."""
 
-    def __init__(self, url: str, *, auth_token: str | None = None, timeout_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        auth_token: str | None = None,
+        timeout_seconds: int = 30,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    ) -> None:
         self.url = url
         self.auth_token = auth_token
         self.timeout = timeout_seconds
+        self.max_response_bytes = max(1024, int(max_response_bytes))
         self._session_id: str | None = None
         self._next_id = 1
         self._initialized = False
@@ -118,7 +131,7 @@ class RobinhoodMcpClient:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
-        response = httpx.post(self.url, headers=headers, json=payload, timeout=self.timeout)
+        response = self._post(payload, headers)
         response.raise_for_status()
         session_id = response.headers.get("Mcp-Session-Id") or response.headers.get("mcp-session-id")
         if session_id:
@@ -129,6 +142,34 @@ class RobinhoodMcpClient:
         if data.get("error"):
             raise RuntimeError(data["error"])
         return dict(data.get("result") or data)
+
+    def _post(self, payload: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
+        deadline = time.monotonic() + max(1, self.timeout)
+        timeout = httpx.Timeout(
+            timeout=max(1.0, float(self.timeout)),
+            connect=min(10.0, max(1.0, float(self.timeout))),
+            read=min(10.0, max(1.0, float(self.timeout))),
+            write=min(10.0, max(1.0, float(self.timeout))),
+            pool=min(5.0, max(1.0, float(self.timeout))),
+        )
+        chunks: list[bytes] = []
+        total = 0
+        with httpx.stream("POST", self.url, headers=headers, json=payload, timeout=timeout) as response:
+            for chunk in response.iter_bytes():
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Robinhood MCP request timed out after {self.timeout}s")
+                total += len(chunk)
+                if total > self.max_response_bytes:
+                    raise RuntimeError(
+                        f"Robinhood MCP response exceeded {self.max_response_bytes} bytes for {payload.get('method')}"
+                    )
+                chunks.append(chunk)
+            return httpx.Response(
+                status_code=response.status_code,
+                headers=response.headers,
+                content=b"".join(chunks),
+                request=response.request,
+            )
 
 
 def collect_robinhood_option_chains(
@@ -162,6 +203,7 @@ def collect_robinhood_option_chains(
             str(getattr(config, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
             auth_token=token,
             timeout_seconds=int(getattr(config, "timeout_seconds", 30)),
+            max_response_bytes=int(getattr(config, "max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES)),
         )
 
     max_expiries = max(1, int(max_expiries if max_expiries is not None else getattr(config, "max_expiries", 2)))
@@ -169,12 +211,18 @@ def collect_robinhood_option_chains(
     collect_puts = bool(collect_puts if collect_puts is not None else getattr(config, "collect_puts", False))
     quote_batch_size = max(1, min(20, int(quote_batch_size if quote_batch_size is not None else getattr(config, "quote_batch_size", 20))))
     near_term_dte = int(near_term_dte if near_term_dte is not None else getattr(config, "near_term_dte", 35))
+    max_collection_seconds = max(1, int(getattr(config, "max_collection_seconds", DEFAULT_MAX_COLLECTION_SECONDS)))
+    deadline = time.monotonic() + max_collection_seconds
 
-    quote_rows = _fetch_equity_quotes(client, symbols)
+    quote_rows = _fetch_equity_quotes(client, symbols, deadline=deadline)
     result["quotes"] = quote_rows
     spot_by_symbol = {str(row.get("symbol") or "").upper(): as_float(row.get("close")) for row in quote_rows}
     today = _observed_date(observed_at)
     for symbol in [s.upper() for s in symbols if s]:
+        if time.monotonic() > deadline:
+            result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s before {symbol}")
+            result["timed_out"] = True
+            break
         try:
             rows = _collect_symbol(
                 client,
@@ -188,12 +236,17 @@ def collect_robinhood_option_chains(
                 collect_puts=collect_puts,
                 quote_batch_size=quote_batch_size,
                 near_term_dte=near_term_dte,
+                deadline=deadline,
             )
         except Exception as exc:  # noqa: BLE001 - keep the rest of the universe moving
             result["errors"].append(f"{symbol}:{exc}")
             continue
         if rows:
             result["rows"][symbol] = rows
+        if time.monotonic() > deadline:
+            result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s after {symbol}")
+            result["timed_out"] = True
+            break
     return result
 
 
@@ -302,10 +355,13 @@ def _collect_symbol(
     collect_puts: bool,
     quote_batch_size: int,
     near_term_dte: int = 0,
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     chains = _payload_list(client.get_option_chains(symbol), "chains")
     rows: list[dict[str, Any]] = []
     for chain in chains:
+        if _deadline_expired(deadline):
+            return rows
         chain_id = str(chain.get("id") or "")
         expiration_dates = [str(expiry) for expiry in chain.get("expiration_dates") or []]
         expiries = select_robinhood_expiries(
@@ -321,15 +377,19 @@ def _collect_symbol(
                 expiries = [near_term, *expiries]
         for expiry in expiries:
             for option_type in (["call", "put"] if collect_puts else ["call"]):
-                instruments = _fetch_instruments(client, chain_id=chain_id, expiration=expiry, option_type=option_type)
+                if _deadline_expired(deadline):
+                    return rows
+                instruments = _fetch_instruments(client, chain_id=chain_id, expiration=expiry, option_type=option_type, deadline=deadline)
                 selected = _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
-                rows.extend(_quote_instruments(client, selected, quote_batch_size=quote_batch_size))
+                rows.extend(_quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline))
     return rows
 
 
-def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str]) -> list[dict[str, Any]]:
+def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str], *, deadline: float | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for batch in _batches([s.upper() for s in symbols if s], 20):
+        if _deadline_expired(deadline):
+            return rows
         payload = client.get_equity_quotes(batch)
         for result in _payload_list(payload, "results"):
             quote = dict(result.get("quote") or {})
@@ -352,10 +412,19 @@ def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str]) -> list[di
     return rows
 
 
-def _fetch_instruments(client: RobinhoodClient, *, chain_id: str, expiration: str, option_type: str) -> list[dict[str, Any]]:
+def _fetch_instruments(
+    client: RobinhoodClient,
+    *,
+    chain_id: str,
+    expiration: str,
+    option_type: str,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     instruments: list[dict[str, Any]] = []
     cursor: str | None = None
     while True:
+        if _deadline_expired(deadline):
+            return instruments
         payload = client.get_option_instruments(
             chain_id=chain_id,
             expiration_dates=expiration,
@@ -379,10 +448,18 @@ def _select_instruments(instruments: list[dict[str, Any]], spot: float | None, *
     return [by_strike[strike] for strike in selected if strike in by_strike]
 
 
-def _quote_instruments(client: RobinhoodClient, instruments: list[dict[str, Any]], *, quote_batch_size: int) -> list[dict[str, Any]]:
+def _quote_instruments(
+    client: RobinhoodClient,
+    instruments: list[dict[str, Any]],
+    *,
+    quote_batch_size: int,
+    deadline: float | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     by_id = {str(row.get("id")): row for row in instruments if row.get("id")}
     for batch in _batches(list(by_id), quote_batch_size):
+        if _deadline_expired(deadline):
+            return rows
         payload = client.get_option_quotes(batch)
         for result in _payload_list(payload, "results"):
             quote = dict(result.get("quote") or {})
@@ -391,6 +468,10 @@ def _quote_instruments(client: RobinhoodClient, instruments: list[dict[str, Any]
             if row:
                 rows.append(row)
     return rows
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() > deadline
 
 
 def _extract_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:

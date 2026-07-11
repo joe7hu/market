@@ -5,30 +5,29 @@ radar is refreshed here on a timer instead of by an external launchd job that
 skipped whenever the app was running. Closing the browser does not stop this:
 it lives in the long-running uvicorn process, not the frontend.
 
-Core market-data cadences run here so they continue while the app is open:
+Refresh cadences are available here, but default off in the browser API process
+because DuckDB blocks readers while a writer is active. Use the
+``MARKET_*_REFRESH_SECONDS`` env vars to opt into in-process refreshes for an
+unattended runtime; manual and launchd jobs remain the safer path for normal
+interactive browsing.
 
-- ``update_free_sources`` pulls fresh option chains / quotes (rate-limited
-  upstream, so it runs on a slower cadence).
-- ``refresh_options_radar_deterministic`` rematerializes option math, gates,
-  ranking, and opportunities from whatever chains are present (cheap, frequent).
-- ``update_market_environment`` keeps the broad-market valuation charts and
-  asset matrix current for the Market page.
-
-Job execution reuses ``run_refresh_job``, which records job rows and refuses to
-start a second copy of a job that is already running, so overlapping ticks (or
-multiple uvicorn workers) cannot pile up duplicate refreshes.
+Job execution records refresh rows before handing heavy work to a subprocess;
+the refresh-job table still refuses to start a second copy of a job that is
+already running, so overlapping ticks cannot pile up duplicate refreshes.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from investment_panel.core.refresh_jobs import run_refresh_job
+from investment_panel.core.refresh_jobs import finish_refresh_job_failed, start_refresh_job
 
 logger = logging.getLogger("market.scheduler")
 
@@ -96,21 +95,35 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
 
     heavy_refresh = _heavy_refresh_enabled()
     intervals: dict[str, int] = {}
-    # Fast fresh-signal rematerialization keeps /options-radar on the latest
-    # usable chain snapshot while the API owns the DuckDB writer.
-    radar_seconds = _env_int_optional("MARKET_RADAR_REFRESH_SECONDS")
-    if radar_seconds is None:
-        radar_seconds = 900
-    if radar_seconds > 0:
-        intervals[signal_job] = radar_seconds
-    # Source pull (option chains). The external hourly job skips when the app is
-    # active, so this must run in-process by default or the radar can freeze on
-    # days-old data. Set MARKET_SOURCE_REFRESH_SECONDS=0 to disable explicitly.
-    source_seconds = _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS")
-    if source_seconds is None:
-        source_seconds = 3600
-    if source_seconds > 0:
-        intervals[source_job] = source_seconds
+    if option_source == "robinhood":
+        # Default self-healing path: incrementally pull stale Robinhood chains
+        # and rebuild only those tickers' radar rows. This keeps /options-radar
+        # fresh without the old full-universe writer lock.
+        hard_seconds = _env_int_optional("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS")
+        if hard_seconds is None:
+            hard_seconds = 0 if _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS") == 0 else 900
+        if hard_seconds > 0:
+            intervals["options_radar_hard_refresh"] = hard_seconds
+    else:
+        # Fallback providers still use the split source/signal jobs.
+        radar_seconds = _env_int_optional("MARKET_RADAR_REFRESH_SECONDS")
+        if radar_seconds is None:
+            radar_seconds = 900
+        if radar_seconds > 0:
+            intervals[signal_job] = radar_seconds
+        source_seconds = _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS")
+        if source_seconds is None:
+            source_seconds = 3600
+        if source_seconds > 0:
+            intervals[source_job] = source_seconds
+    # Explicit split Robinhood jobs remain available for diagnostics/experiments.
+    if option_source == "robinhood":
+        radar_seconds = _env_int_optional("MARKET_RADAR_REFRESH_SECONDS")
+        if radar_seconds and radar_seconds > 0:
+            intervals[signal_job] = radar_seconds
+        source_seconds = _env_int_optional("MARKET_SOURCE_REFRESH_SECONDS")
+        if source_seconds and source_seconds > 0:
+            intervals[source_job] = source_seconds
     # Incremental marks refresh for short-horizon learning. Default off in the normal
     # browser API process because option-source/signal jobs already contend for the
     # single DuckDB writer at startup; enable explicitly when running a learning pass.
@@ -163,13 +176,13 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         intervals["update_research_sources"] = research_seconds
     # Broad-market valuation and asset-matrix inputs for /market. These are small
     # enough to refresh hourly and need to run while the API owns the DuckDB writer.
-    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 3600, allow_zero=True)
+    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
     # Pre-open macro / key-events brief for /today. This is a frequent gated
     # check, not a 24h-from-process-start refresh: the job writes only once
     # during the New York pre-open window and otherwise returns skipped.
-    preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 300, allow_zero=True)
+    preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0, allow_zero=True)
     if preopen_brief_seconds > 0:
         intervals["update_preopen_daily_brief_scheduled"] = preopen_brief_seconds
     return intervals
@@ -185,8 +198,9 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "heavy_refresh_enabled": "1" if _heavy_refresh_enabled() else "0",
         "jobs": intervals,
         "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
-        "radar_refresh_seconds": str(_first_interval(intervals, "refresh_options_radar_signal")),
-        "source_refresh_seconds": str(_first_interval(intervals, "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
+        "radar_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "refresh_options_radar_signal")),
+        "source_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
+        "options_hard_refresh_seconds": str(intervals.get("options_radar_hard_refresh", 0)),
         "learning_mark_refresh_seconds": str(intervals.get("refresh_options_radar_learning_marks", 0)),
         "learning_refresh_seconds": str(intervals.get("refresh_options_radar_deterministic", 0)),
         "social_refresh_seconds": str(intervals.get("update_social_sources", 0)),
@@ -220,6 +234,12 @@ def _config_value(source: Any, key: str, default: Any = None) -> Any:
     return getattr(source, key, default)
 
 
+def _initial_delay_seconds(job: str, interval: int, offset: int) -> float:
+    if job in {"options_radar_hard_refresh", "update_robinhood_options", "update_ibkr_options", "update_free_sources_radar"}:
+        return float(interval)
+    return float(offset * STAGGER_SECONDS)
+
+
 async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None:
     intervals = job_intervals()
     warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20, allow_zero=True)
@@ -228,7 +248,10 @@ async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None
     # Stagger first runs after warmup so the source pull lands before the first
     # deterministic rematerialization, and the two jobs do not contend at t0.
     start = time.monotonic() + warmup
-    next_due: dict[str, float] = {job: start + offset * STAGGER_SECONDS for offset, job in enumerate(intervals)}
+    next_due: dict[str, float] = {
+        job: start + _initial_delay_seconds(job, interval, offset)
+        for offset, (job, interval) in enumerate(intervals.items())
+    }
     in_flight: dict[str, asyncio.Task] = {}
 
     try:
@@ -256,7 +279,11 @@ async def run_scheduler(db_path: Path, config_path: str = "config.yaml") -> None
 
 async def _dispatch(job: str, db_path: Path, config_path: str) -> None:
     try:
-        result: Any = await asyncio.to_thread(run_refresh_job, job, db_path, config_path)
+        started: Any = await asyncio.to_thread(start_refresh_job, job, db_path)
+        if isinstance(started, dict) and started.get("created"):
+            result: Any = await _execute_started_refresh_job(job, str(started["id"]), db_path, config_path)
+        else:
+            result = started
     except Exception:  # noqa: BLE001 - a bad job must never kill the loop
         logger.exception("scheduled job %s raised", job)
         return
@@ -267,3 +294,58 @@ async def _dispatch(job: str, db_path: Path, config_path: str) -> None:
         logger.debug("scheduled job %s already running; skipped", job)
     else:
         logger.info("scheduled job %s -> %s", job, status)
+
+
+async def _execute_started_refresh_job(job: str, job_id: str, db_path: Path, config_path: str) -> dict[str, Any]:
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "investment_panel.core.refresh_jobs",
+        job,
+        "--job-id",
+        job_id,
+        "--db-path",
+        str(db_path),
+        "--config",
+        config_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        await _terminate_refresh_subprocess(proc)
+        await asyncio.to_thread(
+            finish_refresh_job_failed,
+            job_id,
+            job,
+            db_path,
+            "refresh subprocess cancelled during scheduler shutdown/reload",
+        )
+        raise
+    stdout_text = stdout.decode("utf-8", errors="replace").strip()
+    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        detail = stderr_text or stdout_text or f"refresh subprocess exited with code {proc.returncode}"
+        error = f"refresh subprocess exited with code {proc.returncode}: {detail[-2000:]}"
+        return await asyncio.to_thread(finish_refresh_job_failed, job_id, job, db_path, error)
+    try:
+        return json.loads(stdout_text)
+    except json.JSONDecodeError:
+        return {
+            "id": job_id,
+            "job_name": job,
+            "status": "succeeded",
+            "summary": {"stdout": stdout_text[-2000:]},
+        }
+
+
+async def _terminate_refresh_subprocess(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
