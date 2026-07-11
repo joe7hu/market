@@ -20,6 +20,7 @@ from investment_panel.jobs import (
     snapshot_database,
     update_ibkr_options,
     update_broker_sources,
+    update_market_data,
     update_robinhood_options,
 )
 from investment_panel.database.retention import RetentionRepository
@@ -103,6 +104,12 @@ ALLOWLIST: dict[str, JobRunner] = {
     # On-demand run: processes only user-requested (ondemand:) thesis requests.
     "run_option_agents_ondemand": lambda config_path: run_option_agents.run(config_path, ondemand=True),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
+    "update_market_data": lambda config_path: update_market_data.run(config_path),
+    # Preserve the established UI/automation job names while routing them to
+    # PostgreSQL-native implementations.
+    "update_free_sources": lambda config_path: update_market_data.run(config_path),
+    "update_free_sources_radar": lambda config_path: update_market_data.run(config_path),
+    "update_market_environment": lambda config_path: update_market_data.run(config_path),
     "postgres_retention": lambda config_path: RetentionRepository(
         runtime_for_url(database_url(load_config(config_path)))
     ).prune(),

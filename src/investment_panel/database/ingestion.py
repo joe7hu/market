@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 import hashlib
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -127,6 +127,86 @@ class IngestionRepository:
                     ],
                 )
                 stored += 1
+        return stored
+
+    def store_price_bars(
+        self,
+        run_id: UUID,
+        source_id: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        asset_classes: dict[str, str] | None = None,
+    ) -> int:
+        """Upsert normalized daily bars without copying provider payloads.
+
+        The full response belongs in ``ingest.payload`` when one is archived;
+        this table retains only query-critical facts.  The latest bar for each
+        symbol is also materialized into ``raw.quote`` so existing quote read
+        models and market publications share one current-price contract.
+        """
+
+        normalized_asset_classes = {
+            str(symbol).strip().upper(): str(asset_class or "equity")
+            for symbol, asset_class in (asset_classes or {}).items()
+        }
+        latest: dict[str, dict[str, Any]] = {}
+        stored = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for source in rows:
+                symbol = str(source.get("symbol") or "").strip().upper()
+                trading_date = _date(source.get("date") or source.get("trading_date"))
+                close = _number(source.get("close"))
+                if not symbol or trading_date is None or close is None:
+                    continue
+                observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
+                asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
+                instrument = connection.execute(
+                    """
+                    INSERT INTO catalog.instrument (symbol, name, asset_class, category)
+                    VALUES (%s, %s, %s, 'market_data')
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET asset_class = CASE
+                            WHEN catalog.instrument.asset_class IN ('unknown', 'equity')
+                            THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
+                        updated_at = now()
+                    RETURNING id
+                    """,
+                    [symbol, str(source.get("name") or symbol), asset_class],
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO raw.price_bar (
+                        instrument_id, source_id, ingest_run_id, interval,
+                        trading_date, observed_at, open, high, low, close, volume, currency
+                    )
+                    VALUES (%s, %s, %s, '1d', %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, source_id, interval, observed_at) DO UPDATE
+                    SET ingest_run_id = EXCLUDED.ingest_run_id, open = EXCLUDED.open,
+                        high = EXCLUDED.high, low = EXCLUDED.low, close = EXCLUDED.close,
+                        volume = EXCLUDED.volume, currency = EXCLUDED.currency
+                    """,
+                    [
+                        instrument["id"], source_id, run_id, trading_date, observed_at,
+                        _number(source.get("open")), _number(source.get("high")),
+                        _number(source.get("low")), close, _number(source.get("volume")),
+                        str(source.get("currency") or "USD"),
+                    ],
+                )
+                stored += 1
+                if symbol not in latest or trading_date > latest[symbol]["date"]:
+                    latest[symbol] = {"instrument_id": instrument["id"], "date": trading_date, "price": close}
+            for row in latest.values():
+                observed_at = datetime.combine(row["date"], time(20), tzinfo=UTC)
+                connection.execute(
+                    """
+                    INSERT INTO raw.quote
+                        (instrument_id, source_id, ingest_run_id, observed_at, price, currency)
+                    VALUES (%s, %s, %s, %s, %s, 'USD')
+                    ON CONFLICT (instrument_id, source_id, observed_at) DO UPDATE
+                    SET ingest_run_id = EXCLUDED.ingest_run_id, price = EXCLUDED.price
+                    """,
+                    [row["instrument_id"], source_id, run_id, observed_at, row["price"]],
+                )
         return stored
 
     @contextmanager
@@ -416,6 +496,19 @@ def _number(value: Any) -> float | None:
         return float(value) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
+
+
+def _date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value:
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+    return None
 
 
 def _integer(value: Any) -> int | None:

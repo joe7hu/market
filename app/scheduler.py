@@ -65,14 +65,14 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     """Job name -> minimum seconds between runs.
 
     The deterministic refresh is the continuous loop (cheap, in-process, no DB
-    lock contention). The source pull is heavier — it fetches option chains over
-    the universe and holds the DuckDB write lock for the duration — so it runs
-    hourly and can be disabled with ``MARKET_SOURCE_REFRESH_SECONDS=0`` for users
+    lock contention). The source pull is heavier because it fetches option chains
+    over the universe, so it runs hourly and can be disabled with
+    ``MARKET_SOURCE_REFRESH_SECONDS=0`` for users
     who rely on the daily full refresh for source freshness instead.
     """
 
     # Option source for the radar: Robinhood by default, or IBKR as a gateway
-    # fallback. The former free-source DuckDB collector is intentionally retired.
+    # fallback. The former wide free-source collector is intentionally retired.
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
     if option_source == "ibkr":
         signal_job, source_job = "refresh_options_radar_signal_ibkr", "update_ibkr_options"
@@ -112,8 +112,8 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         if source_seconds and source_seconds > 0:
             intervals[source_job] = source_seconds
     # Incremental marks refresh for short-horizon learning. Default off in the normal
-    # browser API process because option-source/signal jobs already contend for the
-    # single DuckDB writer at startup; enable explicitly when running a learning pass.
+    # browser API process because it is unnecessary for the daily decision cadence;
+    # enable explicitly when running a learning pass.
     learning_mark_seconds = _env_int_optional("MARKET_LEARNING_MARK_REFRESH_SECONDS")
     if learning_mark_seconds is None:
         learning_mark_seconds = 0

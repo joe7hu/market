@@ -245,8 +245,14 @@ def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monke
     assert result["summary"] == {"job": "refresh_options_radar_learning_marks", "config_path": "config.yaml"}
 
 
-def test_legacy_market_environment_job_is_not_allowlisted() -> None:
-    assert "update_market_environment" not in refresh_jobs.ALLOWLIST
+def test_market_environment_contract_is_routed_to_postgresql_market_data(monkeypatch) -> None:
+    monkeypatch.setattr(
+        refresh_jobs.update_market_data,
+        "run",
+        lambda config_path: {"status": "ok", "database": "postgresql", "config_path": config_path},
+    )
+    result = refresh_jobs.ALLOWLIST["update_market_environment"]("config.yaml")
+    assert result == {"status": "ok", "database": "postgresql", "config_path": "config.yaml"}
 
 
 def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:

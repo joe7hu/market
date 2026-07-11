@@ -18,11 +18,15 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         run_id = ingestion.start_run("market-test", "quotes")
         start = datetime(2026, 6, 1, 20, tzinfo=UTC)
         rows = [
-            {"symbol": symbol, "observed_at": start + timedelta(days=index), "price": base + index}
+            {
+                "symbol": symbol, "date": (start + timedelta(days=index)).date(),
+                "open": base + index, "high": base + index, "low": base + index,
+                "close": base + index, "volume": 1,
+            }
             for symbol, base in (("SPY", 500), ("QQQ", 450))
             for index in range(30)
         ]
-        ingestion.store_quotes(run_id, "market-test", rows)
+        ingestion.store_price_bars(run_id, "market-test", rows, asset_classes={"SPY": "etf", "QQQ": "etf"})
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=2)
 
         result = refresh_market_publication(runtime, now=datetime(2026, 7, 1, 12, tzinfo=UTC))

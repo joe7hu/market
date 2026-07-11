@@ -7,8 +7,8 @@
 #   make lint    - high-signal ruff rules (config in pyproject.toml [tool.ruff])
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
-# The full backend suite lives in `test` because it needs a throwaway DuckDB and
-# carries a few path-sensitive failures (see the target below).
+# The full backend suite uses ephemeral PostgreSQL fixtures; legacy-import tests
+# open throwaway DuckDB files only to verify the one-time importer.
 
 PY := uv run python
 RUFF := uvx ruff

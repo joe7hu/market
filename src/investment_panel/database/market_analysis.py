@@ -21,12 +21,12 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             for row in connection.execute(
                 """
                 SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
-                       instrument.asset_class, quote.observed_at, quote.price,
-                       quote.change_pct, quote.source_id
-                FROM raw.quote quote
-                JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
-                WHERE quote.observed_at >= %s - interval '400 days'
-                ORDER BY instrument.symbol, quote.observed_at
+                       instrument.asset_class, bar.observed_at, bar.close AS price,
+                       NULL::double precision AS change_pct, bar.source_id
+                FROM raw.price_bar bar
+                JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+                WHERE bar.interval = '1d' AND bar.observed_at >= %s - interval '400 days'
+                ORDER BY instrument.symbol, bar.observed_at
                 """,
                 [as_of],
             ).fetchall()

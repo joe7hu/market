@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import hashlib
 from pathlib import Path
 
@@ -83,6 +83,32 @@ def test_failed_ingestion_run_persists_failure(repository: IngestionRepository, 
             "SELECT status, failure_detail FROM ingest.run WHERE id = %s", [run_id]
         ).fetchone()
     assert row == ("failed", "RuntimeError: provider unavailable")
+
+
+def test_daily_price_bars_are_idempotent_and_materialize_latest_quote(repository: IngestionRepository) -> None:
+    repository.register_source("daily-prices", name="Daily", family="market_data", kind="daily_bars")
+    rows = [
+        {"symbol": "QQQ", "date": "2026-07-09", "open": 600, "high": 606, "low": 598, "close": 604, "volume": 10},
+        {"symbol": "QQQ", "date": "2026-07-10", "open": 604, "high": 610, "low": 603, "close": 609, "volume": 12},
+    ]
+    for _ in range(2):
+        run_id = repository.start_run("daily-prices", "price_bars")
+        assert repository.store_price_bars(run_id, "daily-prices", rows, asset_classes={"QQQ": "etf"}) == 2
+        repository.finish_run(run_id, "succeeded")
+    with repository.runtime.read() as connection:
+        counts = connection.execute(
+            "SELECT (SELECT count(*) FROM raw.price_bar) AS bars, (SELECT count(*) FROM raw.quote) AS quotes"
+        ).fetchone()
+        latest = connection.execute(
+            """
+            SELECT instrument.symbol, instrument.asset_class, quote.price, quote.observed_at::date
+            FROM raw.quote quote JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
+            """
+        ).fetchone()
+    assert (counts["bars"], counts["quotes"]) == (2, 1)
+    assert (latest["symbol"], latest["asset_class"], latest["price"], latest["observed_at"]) == (
+        "QQQ", "etf", 609.0, date(2026, 7, 10)
+    )
 
 
 def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(

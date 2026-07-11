@@ -42,10 +42,17 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     single-flight boundary; no file lock or application shutdown is required.
     """
 
-    from investment_panel.jobs import snapshot_database, update_broker_sources, update_ibkr_options, update_robinhood_options
+    from investment_panel.jobs import (
+        snapshot_database,
+        update_broker_sources,
+        update_ibkr_options,
+        update_market_data,
+        update_robinhood_options,
+    )
 
     config = load_config(config_path)
     steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
+        ("market_data", False, lambda: update_market_data.run(config_path, publish=False)),
         ("robinhood_options", False, lambda: update_robinhood_options.run(config_path)),
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
