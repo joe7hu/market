@@ -149,16 +149,20 @@ class IngestionRepository:
             str(symbol).strip().upper(): str(asset_class or "equity")
             for symbol, asset_class in (asset_classes or {}).items()
         }
+        prepared: list[tuple[dict[str, Any], str, date, float]] = []
+        examples: dict[str, dict[str, Any]] = {}
+        for source in rows:
+            symbol = str(source.get("symbol") or "").strip().upper()
+            trading_date = _date(source.get("date") or source.get("trading_date"))
+            close = _number(source.get("close"))
+            if symbol and trading_date is not None and close is not None:
+                prepared.append((source, symbol, trading_date, close))
+                examples.setdefault(symbol, source)
         latest: dict[str, dict[str, Any]] = {}
         stored = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            for source in rows:
-                symbol = str(source.get("symbol") or "").strip().upper()
-                trading_date = _date(source.get("date") or source.get("trading_date"))
-                close = _number(source.get("close"))
-                if not symbol or trading_date is None or close is None:
-                    continue
-                observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
+            instruments: dict[str, int] = {}
+            for symbol, source in examples.items():
                 asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
                 instrument = connection.execute(
                     """
@@ -173,6 +177,9 @@ class IngestionRepository:
                     """,
                     [symbol, str(source.get("name") or symbol), asset_class],
                 ).fetchone()
+                instruments[symbol] = int(instrument["id"])
+            for source, symbol, trading_date, close in prepared:
+                observed_at = datetime.combine(trading_date, time(20), tzinfo=UTC)
                 connection.execute(
                     """
                     INSERT INTO raw.price_bar (
@@ -186,7 +193,7 @@ class IngestionRepository:
                         volume = EXCLUDED.volume, currency = EXCLUDED.currency
                     """,
                     [
-                        instrument["id"], source_id, run_id, trading_date, observed_at,
+                        instruments[symbol], source_id, run_id, trading_date, observed_at,
                         _number(source.get("open")), _number(source.get("high")),
                         _number(source.get("low")), close, _number(source.get("volume")),
                         str(source.get("currency") or "USD"),
@@ -194,7 +201,7 @@ class IngestionRepository:
                 )
                 stored += 1
                 if symbol not in latest or trading_date > latest[symbol]["date"]:
-                    latest[symbol] = {"instrument_id": instrument["id"], "date": trading_date, "price": close}
+                    latest[symbol] = {"instrument_id": instruments[symbol], "date": trading_date, "price": close}
             for row in latest.values():
                 observed_at = datetime.combine(row["date"], time(20), tzinfo=UTC)
                 connection.execute(

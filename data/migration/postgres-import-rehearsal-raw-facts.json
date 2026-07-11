@@ -1,0 +1,76 @@
+{
+  "excluded_derived": {
+    "candidate_event": 7467487,
+    "option_features": 1279590,
+    "option_snapshot": 1345371,
+    "radar_alert": 6224,
+    "shadow_trade": 6387
+  },
+  "generated_at": "2026-07-11T21:49:26.213329+00:00",
+  "imported_or_updated": {
+    "agent_postmortem": 0,
+    "agent_thesis": 0,
+    "catalysts": 34,
+    "disclosures": 1319,
+    "manual_watchlist": 13,
+    "option_strategy_versions": 7,
+    "portfolio_positions": 2,
+    "prices_daily": 365228,
+    "source_items": 24522,
+    "strategy_mutation_proposal": 0,
+    "theses": 0,
+    "trade_journal": 0
+  },
+  "policy": {
+    "duckdb_modified": false,
+    "durable_tables": [
+      "portfolio_positions",
+      "manual_watchlist",
+      "theses",
+      "trade_journal",
+      "option_strategy_versions",
+      "agent_thesis",
+      "agent_postmortem",
+      "strategy_mutation_proposal",
+      "prices_daily",
+      "source_items",
+      "disclosures",
+      "catalysts"
+    ],
+    "excluded_reason": "recomputed from normalized raw facts or superseded operational history"
+  },
+  "source": "/Users/joehu/proj/market/data/investment.duckdb",
+  "source_counts": {
+    "agent_postmortem": 16,
+    "agent_thesis": 52,
+    "candidate_event": 7467487,
+    "catalysts": 34,
+    "disclosures": 1319,
+    "manual_watchlist": 13,
+    "option_features": 1279590,
+    "option_snapshot": 1345371,
+    "option_strategy_versions": 7,
+    "portfolio_positions": 2,
+    "prices_daily": 365228,
+    "radar_alert": 6224,
+    "shadow_trade": 6387,
+    "source_items": 24522,
+    "strategy_mutation_proposal": 16,
+    "theses": 2,
+    "trade_journal": 0
+  },
+  "source_sha256": "706ba2985e7bd9aeead77ffe94c408dc80c31226aa8511eb5bd8380df3c455e5",
+  "status": "ok",
+  "target_counts": {
+    "content_items": 24522,
+    "disclosures": 1319,
+    "legacy_agent_tasks": 84,
+    "manual_watchlist": 13,
+    "market_events": 34,
+    "portfolio_positions": 2,
+    "price_bars": 370945,
+    "strategy_revisions": 7,
+    "theses_current": 2,
+    "trade_journal": 0
+  }
+}
