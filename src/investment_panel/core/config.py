@@ -529,12 +529,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
 def config_to_dict(config: AppConfig) -> dict[str, Any]:
     return {
-        "database": {"duckdb_path": str(config.database.duckdb_path)},
+        "database": {"url": config.database.url},
         "nas": {
             "source_root": str(config.nas.source_root),
             "status_dir": str(config.nas.status_dir),
             "market_dir": str(config.nas.market_dir),
-            "duckdb_snapshot_dir": str(config.nas.duckdb_snapshot_dir),
+            "postgres_backup_dir": str(config.nas.postgres_backup_dir),
         },
         "arco": {
             "raw_dir": str(config.arco.raw_dir),

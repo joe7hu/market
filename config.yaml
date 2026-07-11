@@ -1,12 +1,10 @@
 database:
   url: postgresql:///market
-  duckdb_path: data/investment.duckdb
 
 nas:
   source_root: /Volumes/agent/data-sources
   status_dir: /Volumes/agent/data-sources/status
   market_dir: /Volumes/agent/data-sources/market-mini
-  duckdb_snapshot_dir: /Volumes/agent/data-sources/market-mini/duckdb-snapshots
   postgres_backup_dir: /Volumes/agent/data-sources/market-mini/postgres-backups
 
 arco:

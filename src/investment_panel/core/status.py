@@ -6,12 +6,10 @@ from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
-import shutil
 import socket
 from typing import Any
 
 from investment_panel.core.config import AppConfig
-from investment_panel.core.db import db
 
 logger = logging.getLogger("market.status")
 
@@ -49,6 +47,12 @@ def write_source_status(config: AppConfig, status_id: str, payload: dict[str, An
 
 
 def snapshot_duckdb(config: AppConfig, label: str = "market") -> Path | None:
+    """Legacy one-time snapshot helper; not used by the PostgreSQL runtime."""
+
+    import shutil
+
+    from investment_panel.core.db import db
+
     db_path = config.database.duckdb_path
     if not db_path.exists():
         return None

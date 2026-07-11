@@ -13,8 +13,6 @@ import os
 from typing import Any
 
 from investment_panel.core.config import load_config
-from investment_panel.core.db import db, init_db
-from investment_panel.core.free_sources import option_symbols, store_options_chain
 from investment_panel.core.ibkr_options import collect_ibkr_option_chains
 from investment_panel.core.status import write_source_status
 from investment_panel.database.options import option_universe, persist_collected_option_chains

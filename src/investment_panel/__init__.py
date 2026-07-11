@@ -1,6 +1,6 @@
-"""Personal investment panel backend."""
+"""Personal investment panel backend.
 
-from investment_panel.core.panel import get_panel_snapshot, load_panel_data
-
-__all__ = ["get_panel_snapshot", "load_panel_data"]
-
+Runtime entry points live in explicit modules. Keeping package initialization
+side-effect free prevents legacy import-only tooling from loading DuckDB into
+the PostgreSQL application process.
+"""

@@ -1,10 +1,15 @@
-"""Read models for the FastAPI app (package facade)."""
+"""Panel contracts with lazy access to retired DuckDB read models.
+
+The PostgreSQL app imports only the contract names below. Legacy tests may ask
+for an older read-model function; those modules are loaded on demand so they do
+not pull DuckDB into the live API process.
+"""
 
 from __future__ import annotations
 
-from investment_panel.core.sources import source_ticker_ranking_rows
-from investment_panel.core.panel.catalog import build_source_catalog_health
-from investment_panel.core.panel.coerce import decode_fields, decode_json_value, first_heading
+from importlib import import_module
+from typing import Any
+
 from investment_panel.core.panel.contracts import (
     DECISION_REPAIR_TABLES,
     ENDPOINT_TABLES,
@@ -20,157 +25,71 @@ from investment_panel.core.panel.contracts import (
     table_for_endpoint,
     tables_for_scope,
 )
-from investment_panel.core.panel.sources import source_rows
-from investment_panel.core.panel.technicals import average_true_range_pct, one_month_bar_points, one_month_volume_bar_points, period_bar_points, period_return, relative_volume, sampled_price_points, technical_price_history, technicals, trailing_return, true_range_pct_points
-from investment_panel.core.panel.disclosures import disclosures, enrich_13f_disclosure_rows, holding_key, sorted_13f_holdings
-from investment_panel.core.panel.market_environment import MarketDisplayContext, market_context, market_display_context, market_environment_assets, market_environment_model, market_valuation_charts, market_valuation_reference_charts
-from investment_panel.core.panel.market_freshness import market_freshness
-from investment_panel.core.panel.feed import feed_signals, ownership_consensus, source_consensus, universe_screen
-from investment_panel.core.panel.read_equity import candidate_source_evidence, candidates, catalysts, confidence_to_number, decision_queue, decision_readiness, discovered_universe, opportunities_ranked, opportunity_source_counts, opportunity_sources, portfolio, source_freshness, symbol_decision_snapshots, theses, top_source_label
-from investment_panel.core.panel.read_market_data import analyst_estimates, correlations, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, provider_runs, quotes, screener, sepa, source_health, valuations
-from investment_panel.core.panel.read_research import reports, research_packets, trader_profiles
-from investment_panel.core.panel.read_tradingview import instrument_market_identity, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
-from investment_panel.core.panel.read_options import option_features, option_radar_opportunity, option_radar_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
-from investment_panel.core.panel.read_learning import agent_postmortem, agent_postmortem_request, agent_thesis, agent_thesis_request, agent_thesis_validation, candidate_event, candidate_event_attribution, candidate_event_mark, conviction_calibration, missed_winner_event, option_attribution, radar_alert, radar_state_transition, shadow_trade, shadow_trade_mark, strategy_backtest_result, strategy_cohort_result, strategy_forward_test_result, strategy_mutation_proposal, trade_journal, vol_surface_features
-from investment_panel.core.panel.payloads import dashboard_payload, panel_snapshot_payload
-from investment_panel.core.panel.read_session import panel_read_session
-from investment_panel.core.panel.registry import READ_MODELS, ReadContext, load_read_models, read_model_names
-from investment_panel.core.panel.snapshot import DECISION_READ_MODEL_TABLES, DECISION_REFRESH_LOCK, decision_readiness_snapshot, ensure_decision_read_models, get_panel_snapshot, load_market_panel_data, load_panel_data, load_ticker_dossier_data
-from investment_panel.core.panel.ticker_dossier import ticker_payload_tables
-from investment_panel.core.panel.ticker_sections import build_ticker_dossier
+
+_LEGACY_MODULES = (
+    "catalog", "coerce", "sources", "technicals", "disclosures",
+    "market_environment", "market_freshness", "feed", "read_equity",
+    "read_market_data", "read_research", "read_tradingview", "read_options",
+    "read_learning", "payloads", "read_session", "registry", "snapshot",
+    "ticker_dossier", "ticker_sections",
+)
+
+_CALLABLES = {
+    "build_source_catalog_health": "catalog",
+    "build_ticker_dossier": "ticker_sections",
+    "dashboard_payload": "payloads",
+    "disclosures": "disclosures",
+    "feed_signals": "feed",
+    "liquidity": "read_market_data",
+    "load_panel_data": "snapshot",
+    "load_ticker_dossier_data": "snapshot",
+    "market_environment_assets": "market_environment",
+    "market_environment_model": "market_environment",
+    "market_freshness": "market_freshness",
+    "market_valuation_charts": "market_environment",
+    "market_valuation_reference_charts": "market_environment",
+    "ownership_consensus": "feed",
+    "panel_snapshot_payload": "payloads",
+    "quotes": "read_market_data",
+    "read_model_names": "registry",
+    "screener": "read_market_data",
+    "sepa": "read_market_data",
+    "source_consensus": "feed",
+    "source_ticker_ranking_rows": "sources",
+    "technicals": "technicals",
+    "universe_screen": "feed",
+    "valuations": "read_market_data",
+}
+
+
+def _lazy_callable(name: str, module_name: str):
+    def call(*args: Any, **kwargs: Any) -> Any:
+        function = getattr(import_module(f"investment_panel.core.panel.{module_name}"), name)
+        return function(*args, **kwargs)
+
+    call.__name__ = name
+    return call
+
+
+for _name, _module_name in _CALLABLES.items():
+    globals()[_name] = _lazy_callable(_name, _module_name)
+
+
+def __getattr__(name: str) -> Any:
+    for module_name in _LEGACY_MODULES:
+        module = import_module(f"investment_panel.core.panel.{module_name}")
+        if hasattr(module, name):
+            value = getattr(module, name)
+            globals()[name] = value
+            return value
+    raise AttributeError(name)
+
 
 __all__ = [
-    "build_source_catalog_health",
-    "build_ticker_dossier",
-    "ticker_payload_tables",
-    "DECISION_READ_MODEL_TABLES",
-    "DECISION_REPAIR_TABLES",
-    "DECISION_REFRESH_LOCK",
-    "ENDPOINT_TABLES",
-    "FRONTEND_TABLE_KEY_OVERRIDES",
-    "MarketDisplayContext",
-    "PANEL_SCOPE_TABLES",
-    "READ_MODELS",
-    "ReadContext",
-    "SOURCE_REPAIR_TABLES",
-    "TICKER_TABLES",
-    "WATCHLIST_SECTION_OUTPUT_TABLES",
-    "WATCHLIST_SECTION_TABLES",
-    "load_read_models",
-    "read_model_names",
-    "agent_postmortem",
-    "agent_postmortem_request",
-    "agent_thesis",
-    "agent_thesis_request",
-    "agent_thesis_validation",
-    "analyst_estimates",
-    "average_true_range_pct",
-    "candidate_event",
-    "candidate_event_attribution",
-    "candidate_event_mark",
-    "candidate_source_evidence",
-    "candidates",
-    "catalysts",
-    "confidence_to_number",
-    "conviction_calibration",
-    "correlations",
-    "decision_queue",
-    "decision_readiness",
-    "decision_readiness_snapshot",
-    "decode_fields",
-    "decode_json_value",
-    "dashboard_payload",
-    "disclosures",
-    "discovered_universe",
-    "earnings",
-    "earnings_setups",
-    "enrich_13f_disclosure_rows",
-    "ensure_decision_read_models",
-    "etf_premiums",
-    "feed_signals",
-    "first_heading",
-    "frontend_key_for_table",
-    "fundamentals",
-    "get_panel_snapshot",
-    "holding_key",
-    "liquidity",
-    "load_panel_data",
-    "load_market_panel_data",
-    "load_ticker_dossier_data",
-    "market_context",
-    "market_display_context",
-    "market_environment_assets",
-    "market_environment_model",
-    "market_freshness",
-    "market_valuation_charts",
-    "market_valuation_reference_charts",
-    "missed_winner_event",
-    "news",
-    "one_month_bar_points",
-    "one_month_volume_bar_points",
-    "opportunities_ranked",
-    "opportunity_source_counts",
-    "opportunity_sources",
-    "option_attribution",
-    "option_features",
-    "option_radar_opportunity",
-    "option_radar_summary",
-    "option_snapshot",
-    "option_strategy_versions",
-    "options_chain",
-    "options_expiries",
-    "options_expiry_signals",
-    "options_payoff_scenarios",
-    "options_provider_capabilities",
-    "options_ticker_signals",
-    "ownership_consensus",
-    "panel_contract_payload",
-    "panel_read_session",
-    "panel_snapshot_payload",
-    "panel_snapshot_table_names",
-    "period_bar_points",
-    "period_return",
-    "portfolio",
-    "provider_runs",
-    "quotes",
-    "radar_alert",
-    "radar_state_transition",
-    "relative_volume",
-    "reports",
-    "research_packets",
-    "sampled_price_points",
-    "screener",
-    "sepa",
-    "shadow_trade",
-    "shadow_trade_mark",
-    "sorted_13f_holdings",
-    "source_consensus",
-    "source_freshness",
-    "source_health",
-    "source_rows",
-    "source_ticker_ranking_rows",
-    "stock_features",
-    "strategy_backtest_result",
-    "strategy_cohort_result",
-    "strategy_forward_test_result",
-    "strategy_mutation_proposal",
-    "symbol_decision_snapshots",
-    "table_for_endpoint",
-    "tables_for_scope",
-    "technical_price_history",
-    "technicals",
-    "theses",
-    "top_source_label",
-    "trade_journal",
-    "trader_profiles",
-    "instrument_market_identity",
-    "tradingview_alerts",
-    "tradingview_chart_state",
-    "tradingview_symbol_search",
-    "tradingview_watchlists",
-    "trailing_return",
-    "true_range_pct_points",
-    "universe_screen",
-    "valuations",
-    "vol_surface_features",
+    "DECISION_REPAIR_TABLES", "ENDPOINT_TABLES", "FRONTEND_TABLE_KEY_OVERRIDES",
+    "PANEL_SCOPE_TABLES", "SOURCE_REPAIR_TABLES", "TICKER_TABLES",
+    "WATCHLIST_SECTION_OUTPUT_TABLES", "WATCHLIST_SECTION_TABLES",
+    "frontend_key_for_table", "panel_contract_payload", "panel_snapshot_table_names",
+    "table_for_endpoint", "tables_for_scope",
+    *_CALLABLES,
 ]

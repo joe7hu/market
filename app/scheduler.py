@@ -71,15 +71,13 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     who rely on the daily full refresh for source freshness instead.
     """
 
-    # Option source for the radar: 'robinhood' (default — read-only MCP chains
-    # with OI/volume/greeks), 'ibkr' (Gateway fallback), or 'free' (legacy
-    # TradingView+yfinance fallback).
+    # Option source for the radar: Robinhood by default, or IBKR as a gateway
+    # fallback. The former free-source DuckDB collector is intentionally retired.
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
-    if option_source == "free":
-        signal_job, source_job = "refresh_options_radar_signal", "update_free_sources_radar"
-    elif option_source == "ibkr":
+    if option_source == "ibkr":
         signal_job, source_job = "refresh_options_radar_signal_ibkr", "update_ibkr_options"
     else:
+        option_source = "robinhood"
         signal_job, source_job = "refresh_options_radar_signal_robinhood", "update_robinhood_options"
 
     heavy_refresh = _heavy_refresh_enabled()
@@ -151,29 +149,6 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         pass
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
-    # Live opencli social (X) ingestion — conservative ~30 min by default; 0 disables.
-    social_seconds = _env_int_optional("MARKET_SOCIAL_REFRESH_SECONDS")
-    if social_seconds is None:
-        social_seconds = 1800 if heavy_refresh else 0
-    if social_seconds > 0:
-        intervals["update_social_sources"] = social_seconds
-    # Live opencli research (news + blogs) ingestion — hourly by default; 0 disables.
-    research_seconds = _env_int_optional("MARKET_RESEARCH_REFRESH_SECONDS")
-    if research_seconds is None:
-        research_seconds = 3600 if heavy_refresh else 0
-    if research_seconds > 0:
-        intervals["update_research_sources"] = research_seconds
-    # Broad-market valuation and asset-matrix inputs for /market. These are small
-    # enough to refresh hourly and need to run while the API owns the DuckDB writer.
-    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
-    if market_environment_seconds > 0:
-        intervals["update_market_environment"] = market_environment_seconds
-    # Pre-open macro / key-events brief for /today. This is a frequent gated
-    # check, not a 24h-from-process-start refresh: the job writes only once
-    # during the New York pre-open window and otherwise returns skipped.
-    preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0, allow_zero=True)
-    if preopen_brief_seconds > 0:
-        intervals["update_preopen_daily_brief_scheduled"] = preopen_brief_seconds
     return intervals
 
 

@@ -14,9 +14,6 @@ import os
 from typing import Any
 
 from investment_panel.core.config import load_config
-from investment_panel.core.db import db, init_db, json_dumps, query_rows
-from investment_panel.core.free_sources import option_symbols, store_options_chain
-from investment_panel.core.options_intelligence import refresh_options_intelligence
 from investment_panel.core.robinhood_options import (
     RobinhoodAuthRequired,
     RobinhoodClient,
@@ -215,6 +212,8 @@ def _incremental_robinhood_symbols(con: Any, symbols: list[str]) -> list[str]:
 
 
 def _latest_robinhood_chain_observed_at(con: Any, symbols: list[str]) -> dict[str, datetime]:
+    from investment_panel.core.db import query_rows
+
     if not symbols:
         return {}
     placeholders = ", ".join(["?"] * len(symbols))
@@ -261,6 +260,8 @@ def _robinhood_auth_available(provider: Any) -> bool:
 
 
 def _upsert_robinhood_quote(con: Any, row: dict[str, Any]) -> None:
+    from investment_panel.core.db import json_dumps
+
     con.execute(
         """
         INSERT OR REPLACE INTO quotes_intraday

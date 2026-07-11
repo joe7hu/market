@@ -62,9 +62,7 @@ from investment_panel.core.refresh_jobs import (
     start_refresh_job,
 )
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
-from investment_panel.core.options_radar import (
-    DEFAULT_STRATEGY_VERSION,
-)
+from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -180,7 +178,7 @@ class TradeJournalInput(BaseModel):
 
 def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | None = None) -> tuple[dict[str, Any], Any]:
     config = load_config()
-    config_key = str(database_path(config))
+    config_key = database_url(config)
     now = time.monotonic()
     with _CONTEXT_LOCK:
         entries = _CONTEXT_CACHE.setdefault("entries", {})
@@ -237,7 +235,7 @@ def scope_panel_snapshot_payload(
         {
             "ready": True,
             "source": "panel-snapshot-cache",
-            "message": "Serving last good options-radar snapshot while the live DuckDB read is unavailable.",
+            "message": "Serving the last good options-radar publication while PostgreSQL is unavailable.",
         }
     )
     fallback["status"] = status
@@ -285,8 +283,7 @@ def _load_last_good_scope_snapshot(config: dict[str, Any], scope: str) -> dict[s
 
 
 def _scope_snapshot_cache_path(config: dict[str, Any], scope: str) -> Path:
-    db_path = database_path(config)
-    return db_path.parent / "api-cache" / f"panel-snapshot-{scope}.json"
+    return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{scope}.json"
 
 
 def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:

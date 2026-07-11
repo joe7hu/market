@@ -8,13 +8,13 @@ from investment_panel.core.panel import (
     build_ticker_dossier,
     dashboard_payload as core_dashboard_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
-    ticker_payload_tables,
 )
-from investment_panel.core.option_agent_thesis import DEFAULT_AGENT_THESIS_REQUEST_LIMIT
 
 from app.data_access.types import PanelData
 from app.data_access.coerce import _int_value, jsonable
 from app.data_access.decision_brief import ticker_decision_brief
+
+DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
 
 
@@ -131,7 +131,10 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
     """
 
     normalized_ticker = ticker.upper()
-    tables = ticker_payload_tables(panel_data.rows, normalized_ticker)
+    tables = {
+        name: [row for row in rows if _payload_symbol(row) in {"", normalized_ticker}]
+        for name, rows in panel_data.tables.items()
+    }
     decision_brief = ticker_decision_brief(normalized_ticker, tables)
     dossier = build_ticker_dossier(normalized_ticker, tables, decision_brief)
     return {
@@ -142,3 +145,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "dossier": dossier,
         "found": bool(dossier["coverage"].get("present") or dossier["coverage"]["live"]),
     }
+
+
+def _payload_symbol(row: dict[str, Any]) -> str:
+    return str(row.get("symbol") or row.get("ticker") or "").upper()

@@ -21,23 +21,16 @@ def project_root() -> Path:
 
 
 def repo_root() -> Path:
-    """Repository root (one level above the ``app/`` package).
-
-    ``project_root()`` resolves to the ``app/`` package directory, but
-    ``config.yaml`` and the default ``data/`` directory live at the repo root.
-    Relative paths from config must resolve here so the app process reads and
-    writes the same DuckDB file the read path (which resolves against the repo
-    root via ``Path.cwd()``) uses — otherwise writes land in a stray
-    ``app/data/investment.duckdb`` while reads serve the real one.
-    """
+    """Repository root (one level above the ``app/`` package)."""
     return project_root().parent
 
 
 
 
 def _database_path(config: dict[str, Any]) -> Path:
-    db_path = Path(config.get("database", {}).get("duckdb_path", "data/investment.duckdb"))
-    return db_path if db_path.is_absolute() else repo_root() / db_path
+    """Deprecated cache-root compatibility helper; never opened as a database."""
+
+    return repo_root() / "data"
 
 
 
@@ -57,12 +50,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     config_path = Path(path) if path else repo_root() / "config.yaml"
     defaults: dict[str, Any] = {
-        "database": {"url": "postgresql:///market", "duckdb_path": "data/investment.duckdb"},
+        "database": {"url": "postgresql:///market"},
         "nas": {
             "source_root": "/Volumes/agent/data-sources",
             "status_dir": "/Volumes/agent/data-sources/status",
             "market_dir": "/Volumes/agent/data-sources/market-mini",
-            "duckdb_snapshot_dir": "/Volumes/agent/data-sources/market-mini/duckdb-snapshots",
+            "postgres_backup_dir": "/Volumes/agent/data-sources/market-mini/postgres-backups",
         },
         "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
         "trader_profile_dir": "data/trader_profiles",
@@ -85,14 +78,10 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 def _apply_runtime_overrides(config: dict[str, Any]) -> dict[str, Any]:
     database_url_override = os.environ.get("MARKET_DATABASE_URL")
-    duckdb_path = os.environ.get("MARKET_DUCKDB_PATH")
     updated = config
     if database_url_override:
         updated = _deep_merge(updated, {"database": {"url": database_url_override}})
         updated.setdefault("runtime_overrides", {})["MARKET_DATABASE_URL"] = database_url_override
-    if duckdb_path:
-        updated = _deep_merge(updated, {"database": {"duckdb_path": duckdb_path}})
-        updated.setdefault("runtime_overrides", {})["MARKET_DUCKDB_PATH"] = duckdb_path
     return updated
 
 

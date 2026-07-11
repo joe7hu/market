@@ -25,13 +25,13 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
     assert panel_data.rows("candidates") == []
 
 
-def test_load_config_honors_market_duckdb_path_override(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "canonical.duckdb"
-    monkeypatch.setenv("MARKET_DUCKDB_PATH", str(db_path))
+def test_load_config_honors_market_database_url_override(tmp_path, monkeypatch) -> None:
+    url = "postgresql://localhost/market-test"
+    monkeypatch.setenv("MARKET_DATABASE_URL", url)
 
     config = data_access.load_config(tmp_path / "missing-config.yaml")
 
-    assert config["database"]["duckdb_path"] == str(db_path)
+    assert config["database"]["url"] == url
 
 
 def test_table_payload_normalizes_rows() -> None:
@@ -613,7 +613,7 @@ def test_ticker_page_does_not_render_operational_data_coverage_panel() -> None:
 
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     config = {
-        "database": {"duckdb_path": "/tmp/market.duckdb"},
+        "database": {"url": "postgresql:///market"},
         "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
         "birdclaw": {"command": "birdclaw export"},
     }
@@ -622,8 +622,8 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     payload = data_access.settings_payload(config, panel_data)
 
     assert payload["status"]["ready"] is True
-    assert payload["config"]["database"]["duckdb_path"] == "/tmp/market.duckdb"
-    assert payload["integration"]["duckdb_path"] == "/tmp/market.duckdb"
+    assert payload["config"]["database"]["url"] == "postgresql:///market"
+    assert payload["integration"]["database_url"] == "postgresql:///market"
     assert payload["integration"]["arco_raw_dir"] == "/Volumes/agent/brain/raw/sources/arco"
     assert payload["integration"]["birdclaw_command"] == "birdclaw export"
 
@@ -661,14 +661,14 @@ def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
     assert option_thesis["status"] == "paused"
 
 
-def test_fastapi_config_reports_runtime_duckdb_override(tmp_path, monkeypatch) -> None:
-    runtime_path = tmp_path / "runtime.duckdb"
-    monkeypatch.setenv("MARKET_DUCKDB_PATH", str(runtime_path))
+def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch) -> None:
+    runtime_url = "postgresql://localhost/runtime"
+    monkeypatch.setenv("MARKET_DATABASE_URL", runtime_url)
 
     config = data_access.load_config(tmp_path / "missing.yaml")
 
-    assert config["database"]["duckdb_path"] == str(runtime_path)
-    assert config["runtime_overrides"]["MARKET_DUCKDB_PATH"] == str(runtime_path)
+    assert config["database"]["url"] == runtime_url
+    assert config["runtime_overrides"]["MARKET_DATABASE_URL"] == runtime_url
 
 
 def test_save_and_delete_portfolio_position(migrated_postgres_dsn: str) -> None:
@@ -770,7 +770,7 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     import pandas as pd
 
     config = {
-        "database": {"url": migrated_postgres_dsn, "duckdb_path": str(tmp_path / "populate-watchlist.duckdb")},
+        "database": {"url": migrated_postgres_dsn},
         "market_data": {"lookback_days": 30, "mode": "online"},
         "data_sources": {
             "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},
@@ -781,8 +781,6 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         "watchlist": [],
     }
     data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
-    yfinance_symbols = []
-    tradingview_symbols = []
 
     def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
         assert symbol == "XYZ"
@@ -796,45 +794,15 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         )
 
     monkeypatch.setattr("investment_panel.core.prices.fetch_prices", fetch_prices)
-    monkeypatch.setattr("investment_panel.core.prices.upsert_prices", lambda con, frame: len(frame))
-    monkeypatch.setattr("investment_panel.core.technicals.compute_and_store", lambda con, symbol: symbol == "XYZ")
-    monkeypatch.setattr("investment_panel.analysis.valuation.store_valuation_models", lambda con, symbols: len(symbols) * 2)
-    monkeypatch.setattr("investment_panel.core.scoring.score_and_store", lambda con, symbols, weights: [{"symbol": symbol} for symbol in symbols])
-    monkeypatch.setattr("investment_panel.core.decision.refresh_decision_read_models", lambda con, watchlist: {"status": "decision_models_refreshed"})
-
-    def update_yfinance_sources(_con, app_config, symbols):
-        yfinance_symbols.extend(symbols)
-        assert str(app_config.database.duckdb_path).endswith("populate-watchlist.duckdb")
-        return {"status": "ok", "market_snapshots": 1, "estimates": 1, "earnings": 1}
-
-    def update_tradingview_sources(_con, app_config, symbols):
-        tradingview_symbols.extend(symbols)
-        assert str(app_config.database.duckdb_path).endswith("populate-watchlist.duckdb")
-        return {"status": "ok", "search_rows": 1}
-
-    monkeypatch.setattr(
-        "investment_panel.core.free_sources.update_yfinance_sources",
-        update_yfinance_sources,
-    )
-    monkeypatch.setattr(
-        "investment_panel.core.free_sources.update_tradingview_sources",
-        update_tradingview_sources,
-    )
-
     result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "ok"
-    assert result["price_rows"] == 2
-    assert result["technical_rows"] == 1
-    assert result["yfinance"] == {"status": "ok", "market_snapshots": 1, "estimates": 1, "earnings": 1}
-    assert result["market_snapshots"] == 1
-    assert yfinance_symbols == ["XYZ"]
-    assert result["tradingview"] == {"status": "ok", "search_rows": 1}
-    assert tradingview_symbols == ["XYZ"]
-    assert result["valuation_rows"] == 2
-    assert result["scored"] == 1
-    assert result["decision_models"] == {"status": "decision_models_refreshed"}
-    assert result["errors"] == {}
+    assert result["quote_rows"] == 1
+    assert result["provider_rows_received"] == 2
+    assert result["history_policy"] == "latest_only"
+    rows = data_access.load_table_panel_data(config, "quotes").rows("quotes")
+    assert rows[0]["symbol"] == "XYZ"
+    assert float(rows[0]["price"]) == 12
 
 
 def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:

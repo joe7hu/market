@@ -14,25 +14,14 @@ from investment_panel.core.config import load_config
 from investment_panel.database.authority import database_url, runtime_for_url
 from investment_panel.database.jobs import JobRepository
 from investment_panel.jobs import (
-    daily_screen,
-    full_market_refresh,
-    hourly_options_radar,
-    premarket_options_intelligence,
+    postgres_refresh,
     refresh_options_radar,
     run_option_agents,
-    refresh_decision_models,
-    update_arco_data,
-    update_disclosures,
-    update_broker_sources,
-    update_event_calendar,
-    update_free_sources,
+    snapshot_database,
     update_ibkr_options,
-    update_market_environment,
-    update_preopen_daily_brief,
-    update_research_sources,
     update_robinhood_options,
-    update_social_sources,
 )
+from investment_panel.database.retention import RetentionRepository
 
 
 JobRunner = Callable[[str | None], dict[str, Any]]
@@ -82,24 +71,9 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
 
 
 ALLOWLIST: dict[str, JobRunner] = {
-    "full_market_refresh": lambda config_path: full_market_refresh.run(config_path, continue_on_error=True),
-    "refresh_decision_models": lambda config_path: refresh_decision_models.run(config_path),
-    "daily_screen": lambda config_path: daily_screen.run(config_path, online_check=False),
-    "hourly_options_radar": lambda config_path: hourly_options_radar.run(config_path),
-    "premarket_options_intelligence": lambda config_path: premarket_options_intelligence.run(config_path),
-    "update_arco_data": lambda config_path: update_arco_data.run(config_path),
-    "update_free_sources": lambda config_path: update_free_sources.run(config_path, analyses=True),
-    "update_market_environment": lambda config_path: update_market_environment.run(config_path),
-    "update_preopen_daily_brief": lambda config_path: update_preopen_daily_brief.run(config_path),
-    "update_preopen_daily_brief_scheduled": lambda config_path: update_preopen_daily_brief.run(config_path, scheduled=True),
-    # Radar-focused source pull for the continuous scheduler: TradingView option
-    # chains/quotes plus yfinance option liquidity (open interest / volume), which
-    # the radar data contract requires for trade-readiness. The equity-price
-    # refresh and run_all_analyses pass are skipped — they are not needed for
-    # radar option freshness and run in the daily full_market_refresh.
-    "update_free_sources_radar": lambda config_path: update_free_sources.run(
-        config_path, equity_data=False, tradingview=True, yfinance=True, analyses=False
-    ),
+    "full_market_refresh": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
+    "hourly_options_radar": lambda config_path: refresh_options_radar.run_signal_only(config_path),
+    "premarket_options_intelligence": lambda config_path: postgres_refresh.premarket(config_path),
     # IBKR option chains (price/greeks/OI/volume) persisted as source='ibkr' — the
     # reliable option source replacing the rate-limited TradingView+yfinance combo.
     "update_ibkr_options": lambda config_path: update_ibkr_options.run(config_path),
@@ -127,13 +101,10 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_option_agents_force": lambda config_path: run_option_agents.run(config_path, force=True),
     # On-demand run: processes only user-requested (ondemand:) thesis requests.
     "run_option_agents_ondemand": lambda config_path: run_option_agents.run(config_path, ondemand=True),
-    "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
-    # Live opencli social (X list + per-account fallback) and research (news +
-    # blogs) ingestion. Both record source_runs with ok/rate_limited/failed.
-    "update_social_sources": lambda config_path: update_social_sources.run(config_path),
-    "update_research_sources": lambda config_path: update_research_sources.run(config_path),
-    "update_disclosures": lambda config_path: update_disclosures.run(config_path, online_check=False, max_filings=3, fetch_holdings=False),
-    "update_event_calendar": lambda config_path: update_event_calendar.run(config_path),
+    "postgres_retention": lambda config_path: RetentionRepository(
+        runtime_for_url(database_url(load_config(config_path)))
+    ).prune(),
+    "snapshot_database": lambda config_path: snapshot_database.run(config_path),
 }
 
 

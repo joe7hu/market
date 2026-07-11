@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from investment_panel.core.config import load_config
-from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION
+from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.authority import runtime_for_config
 

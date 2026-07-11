@@ -10,7 +10,11 @@ from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
 from app.data_access.payloads import _runtime_metadata, status_payload
 from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
-from investment_panel.core.source_ingestion.utils import slug
+
+
+def slug(value: Any) -> str:
+    text = str(value or "source").lower().strip()
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "source"
 
 
 
@@ -21,9 +25,9 @@ def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str,
         "sources": research_source_inventory(config, panel_data),
         "agents": agent_control_payload(config),
         "integration": {
-            "core_modules": ["investment_panel.core.panel"],
+            "core_modules": ["investment_panel.database"],
             "helper_names": ["load_panel_data", "load_ticker_dossier_data"],
-            "duckdb_path": config.get("database", {}).get("duckdb_path"),
+            "database_url": config.get("database", {}).get("url"),
             "arco_raw_dir": config.get("arco", {}).get("raw_dir"),
             "birdclaw_command": config.get("birdclaw", {}).get("command") or "Not configured",
         },

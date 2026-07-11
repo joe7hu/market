@@ -223,27 +223,16 @@ def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monke
     assert result["summary"] == {"job": "refresh_options_radar_learning_marks", "config_path": "config.yaml"}
 
 
-def test_update_market_environment_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
-
-    monkeypatch.setattr(
-        refresh_jobs.update_market_environment,
-        "run",
-        lambda config_path: {"job": "update_market_environment", "config_path": config_path},
-    )
-
-    result = refresh_jobs.run_refresh_job("update_market_environment", db_path, "config.yaml")
-
-    assert result["status"] == "succeeded"
-    assert result["summary"] == {"job": "update_market_environment", "config_path": "config.yaml"}
+def test_legacy_market_environment_job_is_not_allowlisted() -> None:
+    assert "update_market_environment" not in refresh_jobs.ALLOWLIST
 
 
 def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 
     monkeypatch.setattr(
-        refresh_jobs.hourly_options_radar,
-        "run",
+        refresh_jobs.refresh_options_radar,
+        "run_signal_only",
         lambda config_path: {"job": "hourly_options_radar", "config_path": config_path, "agent_workers": "daily_premarket_only"},
     )
 
@@ -276,8 +265,8 @@ def test_premarket_options_intelligence_job_is_allowlisted(tmp_path, monkeypatch
     db_path = tmp_path / "jobs.duckdb"
 
     monkeypatch.setattr(
-        refresh_jobs.premarket_options_intelligence,
-        "run",
+        refresh_jobs.postgres_refresh,
+        "premarket",
         lambda config_path: {"job": "premarket_options_intelligence", "config_path": config_path, "agent_workers": "enabled_once_per_day"},
     )
 

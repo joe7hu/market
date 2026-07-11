@@ -48,14 +48,14 @@ def test_ibkr_source_fallback_via_env(monkeypatch) -> None:
     assert "update_robinhood_options" not in intervals
 
 
-def test_free_source_fallback_via_env(monkeypatch) -> None:
+def test_retired_free_source_falls_back_to_postgresql_robinhood(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_RADAR_OPTION_SOURCE", "free")
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "3600")
     monkeypatch.setenv("MARKET_RADAR_REFRESH_SECONDS", "900")
     intervals = scheduler.job_intervals()
-    assert "update_free_sources_radar" in intervals
-    assert "refresh_options_radar_signal" in intervals
+    assert "update_robinhood_options" in intervals
+    assert "refresh_options_radar_signal_robinhood" in intervals
     assert "update_ibkr_options" not in intervals
 
 
@@ -126,12 +126,12 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
     assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
-def test_read_model_refreshes_can_be_enabled_explicitly(monkeypatch) -> None:
+def test_retired_duckdb_read_model_refreshes_are_ignored(monkeypatch) -> None:
     monkeypatch.setenv("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600")
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "300")
     intervals = scheduler.job_intervals()
-    assert intervals["update_market_environment"] == 3600
-    assert intervals["update_preopen_daily_brief_scheduled"] == 300
+    assert "update_market_environment" not in intervals
+    assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
 def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
@@ -280,6 +280,6 @@ def test_deterministic_radar_job_is_allowlisted() -> None:
     assert "refresh_options_radar_deterministic" in ALLOWLIST
     assert "update_robinhood_options" in ALLOWLIST
     assert "refresh_options_radar_signal_robinhood" in ALLOWLIST
-    assert "update_market_environment" in ALLOWLIST
-    assert "update_preopen_daily_brief" in ALLOWLIST
-    assert "update_preopen_daily_brief_scheduled" in ALLOWLIST
+    assert "premarket_options_intelligence" in ALLOWLIST
+    assert "postgres_retention" in ALLOWLIST
+    assert "snapshot_database" in ALLOWLIST
