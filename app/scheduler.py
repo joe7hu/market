@@ -149,6 +149,19 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         pass
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
+    social_seconds = _env_int_optional("MARKET_SOCIAL_REFRESH_SECONDS")
+    if social_seconds is None:
+        social_seconds = 1800 if heavy_refresh else 0
+    if social_seconds > 0:
+        intervals["update_social_sources"] = social_seconds
+    research_seconds = _env_int_optional("MARKET_RESEARCH_REFRESH_SECONDS")
+    if research_seconds is None:
+        research_seconds = 3600 if heavy_refresh else 0
+    if research_seconds > 0:
+        intervals["update_research_sources"] = research_seconds
+    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
+    if market_environment_seconds > 0:
+        intervals["update_market_environment"] = market_environment_seconds
     return intervals
 
 

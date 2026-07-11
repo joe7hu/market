@@ -209,6 +209,78 @@ class IngestionRepository:
                 )
         return stored
 
+    def store_content_items(
+        self,
+        run_id: UUID,
+        source_id: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        payload_id: int | None = None,
+    ) -> dict[str, int]:
+        """Persist compact content facts and their instrument associations."""
+
+        stored = 0
+        linked = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for source in rows:
+                source_key = str(source.get("source_key") or source.get("id") or "").strip()
+                observed_at = _aware_datetime(source.get("observed_at")) or datetime.now(UTC)
+                published_at = _aware_datetime(source.get("published_at") or source.get("published"))
+                if not source_key:
+                    continue
+                title = str(source.get("title") or "").strip() or None
+                summary = str(source.get("summary") or source.get("description") or "").strip() or None
+                digest_value = "\n".join(filter(None, (title, summary, str(source.get("url") or ""))))
+                content_hash = hashlib.sha256(digest_value.encode("utf-8")).hexdigest() if digest_value else None
+                item = connection.execute(
+                    """
+                    INSERT INTO raw.content_item (
+                        source_id, ingest_run_id, payload_id, source_key, kind, title,
+                        url, author, published_at, observed_at, summary, content_hash,
+                        license_status, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_id, source_key) DO UPDATE
+                    SET ingest_run_id = EXCLUDED.ingest_run_id,
+                        payload_id = COALESCE(EXCLUDED.payload_id, raw.content_item.payload_id),
+                        title = EXCLUDED.title, url = EXCLUDED.url, author = EXCLUDED.author,
+                        published_at = EXCLUDED.published_at, observed_at = EXCLUDED.observed_at,
+                        summary = EXCLUDED.summary, content_hash = EXCLUDED.content_hash,
+                        license_status = EXCLUDED.license_status,
+                        metadata = raw.content_item.metadata || EXCLUDED.metadata
+                    RETURNING id
+                    """,
+                    [
+                        source_id, run_id, payload_id, source_key, str(source.get("kind") or "article"),
+                        title, source.get("url"), source.get("author"), published_at, observed_at,
+                        summary, content_hash, str(source.get("license_status") or "provider_link_only"),
+                        Jsonb(dict(source.get("metadata") or {})),
+                    ],
+                ).fetchone()
+                stored += 1
+                for raw_symbol in source.get("symbols") or source.get("tickers") or []:
+                    symbol = str(raw_symbol).strip().upper().lstrip("$")
+                    if not symbol:
+                        continue
+                    instrument = connection.execute(
+                        """
+                        INSERT INTO catalog.instrument (symbol, name, asset_class, category)
+                        VALUES (%s, %s, 'equity', 'content_reference')
+                        ON CONFLICT (symbol) DO UPDATE SET updated_at = now()
+                        RETURNING id
+                        """,
+                        [symbol, symbol],
+                    ).fetchone()
+                    result = connection.execute(
+                        """
+                        INSERT INTO raw.content_item_instrument (content_item_id, instrument_id, relevance)
+                        VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+                        """,
+                        [item["id"], instrument["id"], _number(source.get("relevance"))],
+                    )
+                    linked += int(result.rowcount)
+        return {"items": stored, "instrument_links": linked}
+
     @contextmanager
     def run(
         self,

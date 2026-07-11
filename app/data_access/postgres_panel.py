@@ -135,6 +135,16 @@ DIRECT_QUERIES: dict[str, str] = {
         ) run ON true
         ORDER BY source.family, source.id
     """,
+    "ticker_source_signals": """
+        SELECT instrument.symbol AS ticker, instrument.symbol, item.source_id,
+               item.kind AS signal_type, item.observed_at, item.title AS thesis,
+               item.summary, item.url AS source_url, link.relevance,
+               jsonb_build_object('content_item_id', item.id, 'license_status', item.license_status) AS raw
+        FROM raw.content_item_instrument link
+        JOIN raw.content_item item ON item.id = link.content_item_id
+        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+        ORDER BY item.observed_at DESC LIMIT 500
+    """,
     "option_strategy_versions": """
         SELECT strategy.id, strategy.strategy_key AS strategy_version, strategy.name AS strategy_name,
                strategy.revision AS version, strategy.created_at, strategy.status,
