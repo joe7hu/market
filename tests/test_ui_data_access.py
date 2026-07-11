@@ -641,6 +641,17 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     assert payload["integration"]["birdclaw_command"] == "birdclaw export"
 
 
+def test_settings_payload_redacts_database_credentials() -> None:
+    config = {"database": {"url": "postgresql://market:secret@db.internal:5433/market?sslmode=require"}}
+    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+
+    payload = data_access.settings_payload(config, panel_data)
+
+    assert payload["config"]["database"]["url"] == "postgresql://db.internal:5433/market"
+    assert payload["integration"]["database_url"] == "postgresql://db.internal:5433/market"
+    assert "secret" not in str(payload)
+
+
 def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
     config = {
         "agents": {

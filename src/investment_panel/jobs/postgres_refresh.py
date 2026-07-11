@@ -41,37 +41,44 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     from investment_panel.jobs import update_ibkr_options, update_robinhood_options
 
     config = load_config(config_path)
-    steps: list[tuple[str, Callable[[], dict[str, Any]]]] = [
-        ("robinhood_options", lambda: update_robinhood_options.run(config_path)),
-        ("ibkr_options", lambda: update_ibkr_options.run(config_path)),
-        ("options_radar", lambda: refresh_options_radar.run(config_path)),
-        ("option_agents", lambda: run_option_agents.run(config_path)),
-        ("today_publication", lambda: refresh_today_publication(runtime_for_config(config))),
-        ("retention", lambda: RetentionRepository(runtime_for_config(config)).prune()),
+    steps: list[tuple[str, bool, Callable[[], dict[str, Any]]]] = [
+        ("robinhood_options", False, lambda: update_robinhood_options.run(config_path)),
+        ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
+        ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
+        ("option_agents", True, lambda: run_option_agents.run(config_path)),
+        ("today_publication", True, lambda: refresh_today_publication(runtime_for_config(config))),
+        ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
     ]
     results: list[dict[str, Any]] = []
     failed: list[str] = []
-    for name, runner in steps:
+    warnings: list[str] = []
+    for name, required, runner in steps:
         started = datetime.now(UTC)
         try:
             result = runner()
-            step_failed = str(result.get("status") or "").lower() in {"error", "failed", "unsafe_config"}
+            status = str(result.get("status") or "ok").lower()
+            if name in {"robinhood_options", "ibkr_options"}:
+                step_failed = status not in {"ok", "partial"}
+            else:
+                step_failed = status in {"error", "failed", "unsafe_config"}
             results.append({"name": name, "ok": not step_failed, "started_at": started, "result": result})
             if step_failed:
-                failed.append(name)
-                if not continue_on_error:
+                (failed if required else warnings).append(name)
+                if required and not continue_on_error:
                     break
         except Exception as exc:  # provider boundary is reflected in job status
             results.append({"name": name, "ok": False, "started_at": started, "error": f"{type(exc).__name__}: {exc}"})
-            failed.append(name)
-            if not continue_on_error:
+            (failed if required else warnings).append(name)
+            if required and not continue_on_error:
                 break
+    status = "failed" if failed and not any(row["ok"] for row in results) else "partial" if failed or warnings else "ok"
     return {
         "ok": not failed,
-        "status": "ok" if not failed else "partial" if any(row["ok"] for row in results) else "failed",
+        "status": status,
         "database": config.database.url,
         "started_at": results[0]["started_at"] if results else datetime.now(UTC),
         "finished_at": datetime.now(UTC),
         "failed_steps": failed,
+        "warning_steps": warnings,
         "steps": results,
     }

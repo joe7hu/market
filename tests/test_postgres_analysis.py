@@ -232,7 +232,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     ]
 
 
-def test_incremental_refresh_preserves_older_symbols_in_complete_publication(analysis_context) -> None:
+def test_incremental_refresh_preserves_older_symbols_in_complete_publication(analysis_context, postgres_dsn: str) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     ingestion = IngestionRepository(runtime)
     for key, observed_at, symbol, strike in (
@@ -262,6 +262,11 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
     assert result["status"] == "ok"
     opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
     assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
+    from app.data_access import load_table_panel_data
+
+    chain = load_table_panel_data({"database": {"url": postgres_dsn}}, "options_chain").rows("options_chain")
+    assert {row["symbol"] for row in chain} == {"AAPL", "NVDA"}
+    assert {float(row["strike"]) for row in chain if row["symbol"] == "NVDA"} == {185.0}
 
 
 def test_options_api_reads_only_published_postgresql_generation(

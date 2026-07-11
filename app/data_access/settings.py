@@ -3,6 +3,7 @@
 from __future__ import annotations
 import os
 import re
+from copy import deepcopy
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -19,19 +20,34 @@ def slug(value: Any) -> str:
 
 
 def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
+    public_config = deepcopy(config)
+    database = public_config.get("database")
+    if isinstance(database, dict) and database.get("url"):
+        database["url"] = _public_database_url(str(database["url"]))
     return {
         "status": status_payload(panel_data),
-        "config": jsonable(config),
+        "config": jsonable(public_config),
         "sources": research_source_inventory(config, panel_data),
         "agents": agent_control_payload(config),
         "integration": {
             "core_modules": ["investment_panel.database"],
             "helper_names": ["load_panel_data", "load_ticker_dossier_data"],
-            "database_url": config.get("database", {}).get("url"),
+            "database_url": _public_database_url(str(config.get("database", {}).get("url") or "postgresql:///market")),
             "arco_raw_dir": config.get("arco", {}).get("raw_dir"),
             "birdclaw_command": config.get("birdclaw", {}).get("command") or "Not configured",
         },
     }
+
+
+def _public_database_url(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        return f"{parsed.scheme or 'postgresql'}://{parsed.path}"
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"
 
 
 def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:

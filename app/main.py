@@ -22,6 +22,7 @@ from app import deps
 from app.routers import ALL_ROUTERS
 from app.scheduler import run_scheduler, scheduler_enabled
 from investment_panel.core.refresh_jobs import mark_stale_running_jobs
+from investment_panel.database.authority import close_cached_runtimes
 
 # Re-exported for tests and any caller importing from app.main.
 from app.deps import _invalidate_context_cache, _require_local_request  # noqa: F401
@@ -46,6 +47,7 @@ async def lifespan(_app: FastAPI):
                 await scheduler_task
             except asyncio.CancelledError:
                 pass
+        close_cached_runtimes()
 
 
 def create_app() -> FastAPI:

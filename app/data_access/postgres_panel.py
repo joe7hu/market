@@ -22,6 +22,17 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY instrument.id, quote.observed_at DESC
     """,
     "options_chain": """
+        WITH latest_symbol_snapshot AS (
+            SELECT DISTINCT ON (instrument.id)
+                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
+            FROM raw.option_snapshot snapshot
+            JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            ORDER BY instrument.id, snapshot.observed_at DESC,
+                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
+                     snapshot.id DESC
+        )
         SELECT instrument.symbol, contract.expiration AS expiry, contract.strike,
                contract.option_type, quote.bid, quote.ask, quote.mid, quote.last,
                quote.volume, quote.open_interest, quote.provider_iv AS iv,
@@ -33,16 +44,30 @@ DIRECT_QUERIES: dict[str, str] = {
         JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
         JOIN catalog.option_contract contract ON contract.id = quote.contract_id
         JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-        WHERE snapshot.observed_at = (SELECT max(observed_at) FROM raw.option_snapshot)
+        JOIN latest_symbol_snapshot latest
+          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
         ORDER BY instrument.symbol, contract.expiration, contract.strike, contract.option_type
     """,
     "options_expiries": """
+        WITH latest_symbol_snapshot AS (
+            SELECT DISTINCT ON (instrument.id)
+                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
+            FROM raw.option_snapshot snapshot
+            JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            ORDER BY instrument.id, snapshot.observed_at DESC,
+                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
+                     snapshot.id DESC
+        )
         SELECT instrument.symbol, contract.expiration AS expiry,
                max(quote.observed_at) AS observed_at, snapshot.source_id AS source
         FROM raw.option_quote quote
         JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
         JOIN catalog.option_contract contract ON contract.id = quote.contract_id
         JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+        JOIN latest_symbol_snapshot latest
+          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
         GROUP BY instrument.symbol, contract.expiration, snapshot.source_id
         ORDER BY instrument.symbol, contract.expiration
     """,

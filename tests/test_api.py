@@ -591,6 +591,7 @@ def test_api_startup_does_not_fail_recent_job_owned_by_another_process(
     with TestClient(app):
         pass
 
+    repository = JobRepository(runtime_for_url(migrated_postgres_dsn))
     row = next(item for item in repository.rows() if item["id"] == job["id"])
     assert row["status"] == "running"
 
