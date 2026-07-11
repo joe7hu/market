@@ -577,6 +577,24 @@ def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monk
     assert "refresh_options_radar" in response.json()["allowlist"]
 
 
+def test_api_startup_does_not_fail_recent_job_owned_by_another_process(
+    migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from investment_panel.database.jobs import JobRepository
+
+    runtime = runtime_for_url(migrated_postgres_dsn)
+    repository = JobRepository(runtime)
+    job = repository.start("external-refresh")
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
+    monkeypatch.setattr(app_main, "scheduler_enabled", lambda: False)
+
+    with TestClient(app):
+        pass
+
+    row = next(item for item in repository.rows() if item["id"] == job["id"])
+    assert row["status"] == "running"
+
+
 def test_agent_thesis_post_fulfills_request_and_validates(migrated_postgres_dsn: str, monkeypatch) -> None:
     _use_postgres_api(monkeypatch, migrated_postgres_dsn)
     repository = AgentRepository(runtime_for_url(migrated_postgres_dsn))

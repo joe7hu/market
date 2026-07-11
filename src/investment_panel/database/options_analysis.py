@@ -122,10 +122,25 @@ def _insert_features(
     source_id: str | None,
     symbols: Sequence[str] | None,
 ) -> int:
-    normalized = [str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()]
+    # A publication is a complete replacement. ``symbols`` only scopes the
+    # freshness cutoff that triggered this run; rebuilding must include every
+    # symbol's latest snapshot so an incremental provider batch cannot erase
+    # unchanged radar rows.
+    del symbols
     with runtime.transaction(JOB_PROFILE) as connection:
         result = connection.execute(
             """
+            WITH latest_symbol_snapshot AS (
+                SELECT DISTINCT ON (instrument.id)
+                       instrument.id AS instrument_id, snapshot.id AS snapshot_id
+                FROM raw.option_snapshot snapshot
+                JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
+                JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+                WHERE snapshot.observed_at <= %s
+                  AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
+                ORDER BY instrument.id, snapshot.observed_at DESC, snapshot.id DESC
+            )
             INSERT INTO analysis.option_feature (
                 run_id, snapshot_id, contract_id, quote_observed_at, feature_version,
                 modeled_iv, modeled_delta, modeled_gamma, modeled_theta, modeled_vega,
@@ -167,12 +182,11 @@ def _insert_features(
             JOIN raw.option_quote quote ON quote.snapshot_id = snapshot.id
             JOIN catalog.option_contract contract ON contract.id = quote.contract_id
             JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            WHERE snapshot.observed_at = %s
-              AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
-              AND (cardinality(%s::text[]) = 0 OR instrument.symbol = ANY(%s::text[]))
+            JOIN latest_symbol_snapshot latest
+              ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
             ON CONFLICT (run_id, snapshot_id, contract_id, feature_version) DO NOTHING
             """,
-            [run_id, FEATURE_VERSION, cutoff, source_id, source_id, normalized, normalized],
+            [cutoff, source_id, source_id, run_id, FEATURE_VERSION],
         )
     return int(result.rowcount)
 

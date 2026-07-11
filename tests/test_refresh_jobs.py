@@ -208,6 +208,28 @@ def test_refresh_job_subprocess_timeout_marks_job_failed(tmp_path, monkeypatch) 
     assert "timed out after 1s" in (rows[0]["error"] or "")
 
 
+def test_refresh_subprocess_keeps_database_credentials_out_of_arguments(monkeypatch) -> None:
+    captured = {}
+
+    class _Repository:
+        class runtime:
+            dsn = "postgresql://market:super-secret@db.internal/market"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, stdout='{"status":"succeeded"}', stderr="")
+
+    monkeypatch.setattr(refresh_jobs, "_job_repository", lambda *_args: _Repository())
+    monkeypatch.setattr(refresh_jobs.subprocess, "run", fake_run)
+
+    result = refresh_jobs.execute_refresh_job_subprocess("job-1", "unit_refresh", "ignored", "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert "super-secret" not in " ".join(captured["command"])
+    assert captured["env"]["MARKET_DATABASE_URL"].endswith("@db.internal/market")
+
+
 def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 

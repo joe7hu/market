@@ -99,6 +99,17 @@ DIRECT_QUERIES: dict[str, str] = {
                source.capabilities, source.config, source.updated_at
         FROM ingest.source source ORDER BY source.family, source.id
     """,
+    "source_health": """
+        SELECT source.id AS source_id, source.name, source.enabled,
+               run.status, run.started_at, run.finished_at,
+               run.failure_detail, run.item_count, run.instrument_count AS ticker_count
+        FROM ingest.source source
+        LEFT JOIN LATERAL (
+            SELECT status, started_at, finished_at, failure_detail, item_count, instrument_count
+            FROM ingest.run WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1
+        ) run ON true
+        ORDER BY source.family, source.id
+    """,
     "option_strategy_versions": """
         SELECT strategy.id, strategy.strategy_key AS strategy_version, strategy.name AS strategy_name,
                strategy.revision AS version, strategy.created_at, strategy.status,
@@ -154,6 +165,19 @@ AGENT_MODELS = {
     "agent_postmortem_request", "agent_postmortem",
 }
 
+PUBLICATION_MODELS = {
+    "option_snapshot", "option_features", "option_radar_opportunity",
+    "candidate_event", "option_radar_summary", "preopen_daily_brief",
+    "daily_brief", "portfolio_risk_cards", "review_actions",
+    "decision_queue", "decision_readiness", "symbol_decision_snapshots",
+    "opportunities_ranked", "candidates", "feed_signals",
+}
+
+SPECIAL_MODELS = {
+    "portfolio", "manual_watchlist", "theses", "thesis_monitor",
+    "refresh_jobs", "broker_status",
+}
+
 
 def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
@@ -180,13 +204,19 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
             query = DIRECT_QUERIES.get(name)
             if query:
                 tables[name] = [dict(row) for row in connection.execute(query).fetchall()]
+            elif name in PUBLICATION_MODELS:
+                tables[name] = []
             else:
                 tables[name] = []
+    supported = set(DIRECT_QUERIES) | PUBLICATION_MODELS | SPECIAL_MODELS | AGENT_MODELS
+    unavailable = sorted(name for name in requested if name not in supported)
     metadata = {
         "database": "postgresql",
         "schema_revision": HEAD_REVISION,
         "loaded_at": datetime.now(UTC).isoformat(),
         "table_count": len(requested),
+        "unavailable_models": unavailable,
+        "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata
 

@@ -232,6 +232,38 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     ]
 
 
+def test_incremental_refresh_preserves_older_symbols_in_complete_publication(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    ingestion = IngestionRepository(runtime)
+    for key, observed_at, symbol, strike in (
+        ("aapl-old", datetime(2026, 7, 11, 12, 10, tzinfo=UTC), "AAPL", 220),
+        ("nvda-new", datetime(2026, 7, 11, 12, 20, tzinfo=UTC), "NVDA", 185),
+    ):
+        ingest_run = ingestion.start_run("test-options", "option_quotes", source_run_key=key)
+        ingestion.store_option_snapshot(
+            ingest_run,
+            source_id="test-options",
+            observed_at=observed_at,
+            market_session="premarket",
+            universe="incremental",
+            rows=[{
+                "symbol": symbol, "expiration": "2026-08-21", "strike": strike,
+                "option_type": "call", "contract_symbol": f"{symbol}-{strike}",
+                "underlying_price": strike - 5, "bid": 4.8, "ask": 5.2, "mid": 5,
+                "volume": 120, "open_interest": 1500, "iv": 0.4, "delta": 0.4,
+            }],
+        )
+        ingestion.finish_run(ingest_run, "succeeded")
+
+    result = refresh_options_radar(
+        runtime, source_id="test-options", symbols=["NVDA"], code_version="incremental-test"
+    )
+
+    assert result["status"] == "ok"
+    opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
+    assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
+
+
 def test_options_api_reads_only_published_postgresql_generation(
     analysis_context,
     postgres_dsn: str,

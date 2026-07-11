@@ -25,6 +25,16 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
     assert panel_data.rows("candidates") == []
 
 
+def test_unported_postgresql_model_is_explicitly_unavailable(migrated_postgres_dsn: str) -> None:
+    panel_data = data_access.load_table_panel_data(
+        {"database": {"url": migrated_postgres_dsn}}, "market_environment_model"
+    )
+
+    assert panel_data.status.ready is False
+    assert panel_data.status.source == "postgresql-partial"
+    assert panel_data.metadata["unavailable_models"] == ["market_environment_model"]
+
+
 def test_load_config_honors_market_database_url_override(tmp_path, monkeypatch) -> None:
     url = "postgresql://localhost/market-test"
     monkeypatch.setenv("MARKET_DATABASE_URL", url)
@@ -319,8 +329,11 @@ def test_empty_settings_scope_does_not_touch_missing_database(tmp_path) -> None:
 def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str) -> None:
     panel_data = data_access.load_market_panel_data({"database": {"url": migrated_postgres_dsn}})
 
-    assert panel_data.status.ready is True
-    assert panel_data.status.source == "postgresql"
+    assert panel_data.status.ready is False
+    assert panel_data.status.source == "postgresql-partial"
+    assert set(panel_data.metadata["unavailable_models"]) == {
+        "market_environment_assets", "market_environment_model", "market_valuation_reference_charts"
+    }
     assert panel_data.rows("market_valuation_reference_charts") == []
     assert panel_data.rows("market_environment_assets") == []
     assert panel_data.rows("market_environment_model") == []

@@ -89,6 +89,27 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         option_items + review_rows + catalyst_rows + portfolio_rows,
         key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),
     )
+    decision_queue = [
+        {
+            **row,
+            "stable_key": f"decision:{row['stable_key']}",
+            "readiness_status": "ready" if not row.get("blockers") else "blocked",
+            "action_grade": row.get("action") or "review",
+        }
+        for row in daily_brief
+        if row.get("category") == "decide_now"
+    ]
+    decision_readiness = [
+        {
+            "stable_key": f"readiness:{row['stable_key']}",
+            "symbol": row.get("symbol"),
+            "status": row["readiness_status"],
+            "next_action": row.get("action_grade"),
+            "blockers": row.get("blockers") or [],
+            "score": row.get("score"),
+        }
+        for row in decision_queue
+    ]
     preopen = [{
         "stable_key": as_of.date().isoformat(),
         "brief_date": as_of.date().isoformat(),
@@ -119,6 +140,12 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             "daily_brief": daily_brief,
             "portfolio_risk_cards": portfolio_rows,
             "review_actions": review_rows,
+            "decision_queue": decision_queue,
+            "decision_readiness": decision_readiness,
+            "symbol_decision_snapshots": decision_queue,
+            "opportunities_ranked": option_items,
+            "candidates": option_items,
+            "feed_signals": daily_brief,
         },
         validation={"raw_and_analysis_separated": True, "row_count": len(daily_brief)},
         complete_run_summary={"daily_brief": len(daily_brief), "holdings": len(holdings)},

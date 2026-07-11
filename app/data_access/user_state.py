@@ -36,7 +36,9 @@ def save_position(config: dict[str, Any], position: dict[str, Any]) -> dict[str,
     purchase_date = position.get("purchase_date")
     notes = str(position.get("notes") or "").strip()
     with runtime.transaction() as connection:
-        instrument_id = _upsert_instrument(connection, symbol, symbol, "equity")
+        instrument_id = _upsert_instrument(
+            connection, symbol, symbol, _infer_asset_class(symbol), replace_asset_class=False
+        )
         connection.execute(
             """
             INSERT INTO app.portfolio_position
@@ -185,7 +187,9 @@ def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> 
         raise ValueError("thesis is required")
     runtime = runtime_for_config(config)
     with runtime.transaction() as connection:
-        instrument_id = _upsert_instrument(connection, normalized, normalized, "equity")
+        instrument_id = _upsert_instrument(
+            connection, normalized, normalized, _infer_asset_class(normalized), replace_asset_class=False
+        )
         connection.execute("SELECT id FROM catalog.instrument WHERE id = %s FOR UPDATE", [instrument_id])
         current = connection.execute(
             "SELECT revision, thesis FROM app.thesis "
@@ -240,7 +244,9 @@ def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
             [normalized],
         ).fetchone()
         if row is None:
-            instrument_id = _upsert_instrument(connection, normalized, normalized, "equity")
+            instrument_id = _upsert_instrument(
+                connection, normalized, normalized, _infer_asset_class(normalized), replace_asset_class=False
+            )
             revision = 1
             thesis: dict[str, Any] = {}
         else:
@@ -371,18 +377,25 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _upsert_instrument(connection: Any, symbol: str, name: str, asset_class: str) -> int:
+def _upsert_instrument(
+    connection: Any,
+    symbol: str,
+    name: str,
+    asset_class: str,
+    *,
+    replace_asset_class: bool = True,
+) -> int:
     row = connection.execute(
         """
         INSERT INTO catalog.instrument (symbol, name, asset_class, category)
         VALUES (%s, %s, %s, 'watchlist')
         ON CONFLICT (symbol) DO UPDATE
         SET name = CASE WHEN EXCLUDED.name = EXCLUDED.symbol THEN catalog.instrument.name ELSE EXCLUDED.name END,
-            asset_class = EXCLUDED.asset_class,
+            asset_class = CASE WHEN %s THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
             updated_at = now()
         RETURNING id
         """,
-        [symbol, name, asset_class],
+        [symbol, name, asset_class, replace_asset_class],
     ).fetchone()
     return int(row["id"])
 

@@ -176,6 +176,7 @@ def execute_refresh_job_subprocess(
     db_path: Any,
     config_path: str | None = "config.yaml",
 ) -> dict[str, Any]:
+    repository = _job_repository(db_path, config_path)
     command = [
         sys.executable,
         "-m",
@@ -183,11 +184,10 @@ def execute_refresh_job_subprocess(
         job_name,
         "--job-id",
         job_id,
-        "--db-path",
-        str(db_path),
         "--config",
         config_path or "config.yaml",
     ]
+    child_environment = {**os.environ, "MARKET_DATABASE_URL": repository.runtime.dsn}
     timeout_seconds = _job_timeout_seconds(job_name)
     try:
         completed = subprocess.run(
@@ -196,13 +196,14 @@ def execute_refresh_job_subprocess(
             text=True,
             check=False,
             timeout=timeout_seconds,
+            env=child_environment,
         )
     except subprocess.TimeoutExpired:
         return finish_refresh_job_failed(
             job_id,
             job_name,
             db_path,
-            f"refresh subprocess timed out after {timeout_seconds}s: {' '.join(command)}",
+            f"refresh subprocess timed out after {timeout_seconds}s",
         )
     stdout = (completed.stdout or "").strip()
     stderr = (completed.stderr or "").strip()
@@ -263,7 +264,7 @@ def summary_failure_message(summary: Any) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_name")
-    parser.add_argument("--db-path", required=True)
+    parser.add_argument("--db-path", help="Deprecated non-secret database reference")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--job-id")
     args = parser.parse_args(argv)

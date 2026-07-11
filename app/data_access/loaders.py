@@ -33,8 +33,15 @@ def load_panel_data(
             tables={name: [] for name in requested},
             metadata={"database": "postgresql", "error": str(exc)},
         )
+    unavailable = list(metadata.get("unavailable_models") or [])
+    available_count = int(metadata.get("available_model_count") or 0)
+    if unavailable:
+        message = f"PostgreSQL loaded with {len(unavailable)} explicitly unavailable read models."
+        status = DataStatus(available_count > 0, message, "postgresql-partial")
+    else:
+        status = DataStatus(True, "PostgreSQL read models loaded.", "postgresql")
     return PanelData(
-        status=DataStatus(True, "PostgreSQL read models loaded.", "postgresql"),
+        status=status,
         tables=tables,
         metadata=metadata,
     )
@@ -74,6 +81,7 @@ def _all_contract_tables() -> tuple[str, ...]:
     values = set(contract.get("tables") or [])
     for names in (contract.get("scopes") or {}).values():
         values.update(names or [])
+    values.update(contract.get("ticker_tables") or [])
     return tuple(sorted(values))
 
 

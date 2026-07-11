@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from app import deps
 from app.routers import ALL_ROUTERS
 from app.scheduler import run_scheduler, scheduler_enabled
-from investment_panel.core.refresh_jobs import fail_running_jobs
+from investment_panel.core.refresh_jobs import mark_stale_running_jobs
 
 # Re-exported for tests and any caller importing from app.main.
 from app.deps import _invalidate_context_cache, _require_local_request  # noqa: F401
@@ -31,7 +31,7 @@ from app.deps import _invalidate_context_cache, _require_local_request  # noqa: 
 async def lifespan(_app: FastAPI):
     config = deps.load_config()
     database_url = deps.database_url(config)
-    fail_running_jobs(database_url, "Server restarted before refresh job completed.")
+    mark_stale_running_jobs(database_url)
     scheduler_task: asyncio.Task | None = None
     if scheduler_enabled():
         scheduler_task = asyncio.create_task(run_scheduler(database_url))

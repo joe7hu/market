@@ -119,6 +119,28 @@ def test_watchlist_route_round_trip_and_soft_exclusion(client: TestClient, postg
     assert state == "excluded"
 
 
+def test_position_and_thesis_edits_preserve_existing_crypto_asset_class(client: TestClient, postgres_dsn: str) -> None:
+    watched = client.post(
+        "/api/watchlist/symbols",
+        json={"symbol": "BTC-USD", "name": "Bitcoin", "asset_class": "crypto"},
+    )
+    assert watched.status_code == 200
+    assert client.post(
+        "/api/portfolio/positions",
+        json={"symbol": "BTC-USD", "quantity": 0.5, "avg_cost": 50000},
+    ).status_code == 200
+    assert client.put(
+        "/api/theses/BTC-USD",
+        json={"thesis": "Institutional adoption continues."},
+    ).status_code == 200
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        asset_class = connection.execute(
+            "SELECT asset_class FROM catalog.instrument WHERE symbol = 'BTC-USD'"
+        ).fetchone()[0]
+    assert asset_class == "crypto"
+
+
 def test_routes_reject_invalid_user_state(client: TestClient) -> None:
     invalid_position = client.post(
         "/api/portfolio/positions",
