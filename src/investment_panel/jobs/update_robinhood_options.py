@@ -81,7 +81,7 @@ def run(
             "auth_command": "market-update-robinhood-options --auth",
             "auth_token_env": provider.auth_token_env,
             "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
-            "database": config.database.url,
+            "database": "postgresql",
         }
         status_path = write_source_status(
             config,
@@ -111,7 +111,7 @@ def run(
             "auth_token_env": provider.auth_token_env,
             "token_path": os.path.expanduser(os.path.expandvars(provider.token_path)),
             "error": str(exc),
-            "database": config.database.url,
+            "database": "postgresql",
         }
         status_path = write_source_status(
             config,
@@ -124,7 +124,7 @@ def run(
             "provider": "robinhood",
             "status": "error",
             "error": str(exc),
-            "database": config.database.url,
+            "database": "postgresql",
         }
         status_path = write_source_status(
             config,
@@ -147,7 +147,7 @@ def run(
             "quoted_rows": quoted_rows,
             "total_rows": total_rows,
             "observed_at": collected["observed_at"],
-            "database": config.database.url,
+            "database": "postgresql",
         }
         status_path = write_source_status(
             config,
@@ -172,7 +172,7 @@ def run(
         "quoted_rows": quoted_rows,
         "observed_at": collected["observed_at"],
         "errors": collected["errors"][:25],
-        "database": config.database.url,
+        "database": "postgresql",
         "ingest_run_id": persisted["run_id"],
         "snapshot_id": persisted["snapshot_id"],
     }

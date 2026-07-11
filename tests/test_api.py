@@ -727,6 +727,19 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
             "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
             [Jsonb({"status": "approved", "proposed_strategy_version": "leap_10x_momentum_lottery__delta_max_delta_min"}), proposal_id],
         )
+        candidate_id = connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters) "
+            "VALUES ('leap_10x_momentum_lottery__delta_max_delta_min', 1, 'candidate', 'candidate', %s) RETURNING id",
+            [Jsonb({})],
+        ).fetchone()["id"]
+        for evaluation_type in ("backtest", "forward_shadow_test"):
+            connection.execute(
+                "INSERT INTO analysis.strategy_evaluation "
+                "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
+                "VALUES (%s, %s, now(), 'pass', %s)",
+                [candidate_id, evaluation_type, Jsonb({"sample_size": 100})],
+            )
 
     unapproved = client.post(
         f"/api/strategy-mutation-proposals/{proposal_id}/promote",

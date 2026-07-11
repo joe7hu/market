@@ -32,7 +32,7 @@ def run(
             provider=option_agent.provider,
             model=option_agent.model,
         )
-        return {"database": config.database.url, "strategy_version": strategy_version, "mode": "consolidated", "option_agent_runner": result}
+        return {"database": "postgresql", "strategy_version": strategy_version, "mode": "consolidated", "option_agent_runner": result}
 
     thesis = repository.run_queued(
         config.agents.option_thesis.command if config.agents.option_thesis.enabled else "",
@@ -50,7 +50,7 @@ def run(
         task_kinds=("option_postmortem",),
         model="option-postmortem",
     )
-    return {"database": config.database.url, "strategy_version": strategy_version, "mode": "separate", "option_thesis": thesis, "option_postmortem": postmortem}
+    return {"database": "postgresql", "strategy_version": strategy_version, "mode": "separate", "option_thesis": thesis, "option_postmortem": postmortem}
 
 
 def main() -> None:

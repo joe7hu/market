@@ -264,8 +264,25 @@ data_sources:
 
     assert result["status"] == "ok"
     assert result["chain_rows"] == 1
-    assert result["database"] == postgres_dsn
+    assert result["database"] == "postgresql"
     with closing(psycopg.connect(postgres_dsn)) as connection:
         assert connection.execute("SELECT count(*) FROM raw.option_quote").fetchone()[0] == 1
         assert connection.execute("SELECT price FROM raw.quote").fetchone()[0] == 175
         assert connection.execute("SELECT status FROM ingest.run").fetchone()[0] == "succeeded"
+
+
+def test_option_universe_honors_persisted_exclusion_over_config(repository: IngestionRepository) -> None:
+    with repository.runtime.transaction() as connection:
+        instrument = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+            "VALUES ('PLTR', 'Palantir', 'equity') RETURNING id"
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO app.watchlist_item (instrument_id, watch_state) VALUES (%s, 'excluded')",
+            [instrument["id"]],
+        )
+
+    universe = repository.option_universe([{"symbol": "PLTR"}, {"symbol": "NVDA"}])
+
+    assert "PLTR" not in universe
+    assert "NVDA" in universe

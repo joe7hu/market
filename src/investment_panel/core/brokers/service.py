@@ -38,7 +38,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         "providers": provider_results,
         "recommendations": len(recommendations),
         "authority": ADVISORY_AUTHORITY,
-        "database": config.database.url,
+        "database": "postgresql",
     }
 
 

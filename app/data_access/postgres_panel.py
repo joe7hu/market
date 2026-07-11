@@ -196,6 +196,8 @@ PUBLICATION_MODELS = {
     "daily_brief", "portfolio_risk_cards", "review_actions",
     "decision_queue", "decision_readiness", "symbol_decision_snapshots",
     "opportunities_ranked", "candidates", "feed_signals",
+    "market_environment_assets", "market_environment_model",
+    "market_valuation_reference_charts",
 }
 
 SPECIAL_MODELS = {

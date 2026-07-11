@@ -46,20 +46,28 @@ class IngestionRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT i.symbol
+                SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state
                 FROM catalog.instrument i
                 LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
                 LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
-                WHERE p.instrument_id IS NOT NULL
-                   OR (w.instrument_id IS NOT NULL AND w.watch_state <> 'excluded')
+                WHERE p.instrument_id IS NOT NULL OR w.instrument_id IS NOT NULL
                 ORDER BY (p.instrument_id IS NOT NULL) DESC, i.symbol
                 """
             ).fetchall()
-        output = [str(row["symbol"]) for row in rows]
+        excluded = {
+            str(row["symbol"])
+            for row in rows
+            if row["watch_state"] == "excluded" and not row["is_owned"]
+        }
+        output = [
+            str(row["symbol"])
+            for row in rows
+            if row["is_owned"] or row["watch_state"] != "excluded"
+        ]
         seen = set(output)
         for item in configured:
             symbol = str(item.get("symbol") or "").strip().upper()
-            if symbol and symbol not in seen:
+            if symbol and symbol not in seen and symbol not in excluded:
                 seen.add(symbol)
                 output.append(symbol)
         return output

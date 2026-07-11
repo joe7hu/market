@@ -212,7 +212,7 @@ def _option_item(row: dict[str, Any]) -> dict[str, Any]:
         "category": "decide_now",
         "symbol": symbol,
         "headline": f"Review {symbol} option setup",
-        "summary": "; ".join(row.get("reasons") or []) or "Fresh option decision is available.",
+        "summary": "; ".join(row.get("top_reasons") or row.get("reasons") or []) or "Fresh option decision is available.",
         "action": row.get("state") or row.get("action") or "review",
         "score": _number(row.get("score")) or 0,
         "decision_id": row.get("decision_id"),

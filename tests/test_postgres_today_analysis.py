@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.today_analysis import refresh_today_publication
+from investment_panel.database.today_analysis import _option_item, refresh_today_publication
 from app.data_access.user_state import save_position
 
 
@@ -44,3 +44,8 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
         assert validation["raw_and_analysis_separated"] is True
     finally:
         runtime.close()
+
+
+def test_today_option_item_preserves_published_rationale() -> None:
+    row = _option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
+    assert row["summary"] == "liquidity_supported; convexity_supported"

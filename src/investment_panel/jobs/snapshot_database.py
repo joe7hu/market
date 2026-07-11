@@ -18,11 +18,11 @@ def run(config_path: str | None = None) -> dict[str, object]:
         "mini-market-db-snapshot",
         {
             "source": "market-mini",
-            "database": config.database.url,
+            "database": "postgresql",
             "backup": backup,
         },
     )
-    return {"database": config.database.url, "status_path": str(status_path), **backup}
+    return {"database": "postgresql", "status_path": str(status_path), **backup}
 
 
 def main() -> None:

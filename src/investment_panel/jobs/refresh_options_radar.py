@@ -15,7 +15,7 @@ from investment_panel.database.options_analysis import refresh_options_radar
 def run(config_path: str | None = None, symbols: list[str] | None = None, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
     config = load_config(config_path)
     result = refresh_options_radar(runtime_for_config(config), symbols=symbols)
-    return {"database": config.database.url, "strategy_version": strategy_version, **result}
+    return {"database": "postgresql", "strategy_version": strategy_version, **result}
 
 
 def run_deterministic_only(
@@ -25,7 +25,7 @@ def run_deterministic_only(
 ) -> dict[str, Any]:
     config = load_config(config_path)
     result = refresh_options_radar(runtime_for_config(config), symbols=symbols)
-    return {"database": config.database.url, "strategy_version": strategy_version, "agent_work": "skipped", **result}
+    return {"database": "postgresql", "strategy_version": strategy_version, "agent_work": "skipped", **result}
 
 
 def run_signal_only(
@@ -40,7 +40,7 @@ def run_signal_only(
 
     config = load_config(config_path)
     result = refresh_options_radar(runtime_for_config(config), symbols=symbols, source_id=source)
-    return {"database": config.database.url, "strategy_version": strategy_version, "mode": "signal_only", "source": source or "all", **result}
+    return {"database": "postgresql", "strategy_version": strategy_version, "mode": "signal_only", "source": source or "all", **result}
 
 
 def run_learning_marks(
@@ -53,7 +53,7 @@ def run_learning_marks(
 
     config = load_config(config_path)
     return {
-        "database": config.database.url,
+        "database": "postgresql",
         "strategy_version": strategy_version,
         "mode": "learning_marks",
         "status": "skipped",

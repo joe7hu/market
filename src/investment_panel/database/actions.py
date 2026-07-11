@@ -7,7 +7,6 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -77,13 +76,39 @@ class ActionRepository:
                 raise ValueError("strategy proposal has not passed deterministic approval gates")
             key = str(proposal.get("proposed_strategy_version") or f"proposal-{proposal_id}")
             parameters = proposal.get("proposed_parameter_changes") or {}
-            current = connection.execute(
-                "SELECT coalesce(max(revision), 0) AS revision FROM analysis.strategy_revision WHERE strategy_key = %s",
+            candidate = connection.execute(
+                "SELECT id, parameters FROM analysis.strategy_revision "
+                "WHERE strategy_key = %s AND status IN ('candidate', 'testing', 'approved') "
+                "ORDER BY revision DESC LIMIT 1 FOR UPDATE",
                 [key],
             ).fetchone()
-            revision = int(current["revision"]) + 1
-        AnalysisRepository(self.runtime).register_strategy(key, revision, name=key, status="active", parameters=dict(parameters))
-        with self.runtime.transaction() as connection:
+            if candidate is None:
+                raise ValueError("strategy proposal requires a persisted candidate revision")
+            if dict(candidate["parameters"] or {}) != dict(parameters):
+                raise ValueError("strategy proposal parameters do not match the evaluated candidate revision")
+            evaluations = connection.execute(
+                "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation "
+                "WHERE strategy_revision_id = %s ORDER BY evaluated_at DESC",
+                [candidate["id"]],
+            ).fetchall()
+            passed = {
+                str(row["evaluation_type"]).lower()
+                for row in evaluations
+                if str(row["verdict"] or "").lower() in {"pass", "passed", "approved"}
+            }
+            if "backtest" not in passed:
+                raise ValueError("strategy proposal requires a persisted passing backtest")
+            if not passed.intersection({"forward_test", "forward_shadow_test"}):
+                raise ValueError("strategy proposal requires a persisted passing forward shadow test")
+            connection.execute(
+                "UPDATE analysis.strategy_revision SET status = 'superseded' "
+                "WHERE strategy_key = %s AND status = 'active' AND id <> %s",
+                [key, candidate["id"]],
+            )
+            connection.execute(
+                "UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s",
+                [candidate["id"]],
+            )
             connection.execute(
                 "UPDATE analysis.agent_task SET validation = %s, updated_at = now() WHERE id = %s",
                 [Jsonb({"status": "promoted", "approved_by": approver}), task["id"]],

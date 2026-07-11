@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import closing
 import psycopg
 from psycopg.types.json import Jsonb
+import pytest
 
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.agents import AgentRepository
@@ -67,6 +68,19 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 """,
                 [Jsonb({"source": "test"}), Jsonb({"status": "approved", "proposed_strategy_version": "new-v2", "proposed_parameter_changes": {"max_spread_pct": 0.2}})],
             ).fetchone()["id"]
+            candidate_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters) "
+                "VALUES ('new-v2', 1, 'new-v2', 'candidate', %s) RETURNING id",
+                [Jsonb({"max_spread_pct": 0.2})],
+            ).fetchone()["id"]
+            for evaluation_type in ("backtest", "forward_shadow_test"):
+                connection.execute(
+                    "INSERT INTO analysis.strategy_evaluation "
+                    "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
+                    "VALUES (%s, %s, now(), 'pass', %s)",
+                    [candidate_id, evaluation_type, Jsonb({"sample_size": 100})],
+                )
         assert actions.acknowledge_alert(str(alert_id)) is True
         assert actions.acknowledge_alert(str(alert_id)) is False
         assert actions.promote_strategy_proposal(str(proposal_id), approved_by="joe") == "new-v2"
@@ -78,3 +92,20 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
         assert connection.execute("SELECT acknowledged_at IS NOT NULL FROM app.alert WHERE id = %s", [alert_id]).fetchone()[0] is True
         strategy = connection.execute("SELECT status, parameters FROM analysis.strategy_revision WHERE strategy_key = 'new-v2'").fetchone()
     assert strategy == ("active", {"max_spread_pct": 0.2})
+
+
+def test_strategy_promotion_rejects_agent_approval_without_deterministic_evaluations(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            proposal_id = connection.execute(
+                "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s) RETURNING id",
+                [Jsonb({"source": "test"}), Jsonb({"status": "approved", "proposed_strategy_version": "unsafe-v1", "proposed_parameter_changes": {"delta_min": 0.01}})],
+            ).fetchone()["id"]
+        with pytest.raises(ValueError, match="candidate revision"):
+            ActionRepository(runtime).promote_strategy_proposal(str(proposal_id), approved_by="joe")
+    finally:
+        runtime.close()

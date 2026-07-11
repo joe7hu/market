@@ -9,6 +9,7 @@ from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
+from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.jobs import refresh_options_radar, run_option_agents
 
 
@@ -19,6 +20,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
     agents = run_option_agents.run(config_path)
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
     today = refresh_today_publication(runtime_for_config(load_config(config_path)))
+    market = refresh_market_publication(runtime_for_config(load_config(config_path)))
     return {
         "status": "ok",
         "database": load_config(config_path).database.url,
@@ -27,6 +29,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
         "agents": agents,
         "after_agents": after_agents,
         "today": today,
+        "market": market,
     }
 
 
@@ -47,6 +50,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("today_publication", True, lambda: refresh_today_publication(runtime_for_config(config))),
+        ("market_publication", True, lambda: refresh_market_publication(runtime_for_config(config))),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),
     ]
     results: list[dict[str, Any]] = []
@@ -75,7 +79,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
     return {
         "ok": not failed,
         "status": status,
-        "database": config.database.url,
+        "database": "postgresql",
         "started_at": results[0]["started_at"] if results else datetime.now(UTC),
         "finished_at": datetime.now(UTC),
         "failed_steps": failed,

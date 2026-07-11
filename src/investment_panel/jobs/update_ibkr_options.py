@@ -77,7 +77,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
             "quoted_rows": quoted_rows,
             "total_rows": total_rows,
             "observed_at": collected["observed_at"],
-            "database": config.database.url,
+            "database": "postgresql",
         }
         status_path = write_source_status(
             config,
@@ -96,7 +96,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
         "observed_at": collected["observed_at"],
         "errors": collected["errors"][:25],
     }
-    result["database"] = config.database.url
+    result["database"] = "postgresql"
     result["ingest_run_id"] = persisted["run_id"]
     result["snapshot_id"] = persisted["snapshot_id"]
     result["symbols_requested"] = len(target)
