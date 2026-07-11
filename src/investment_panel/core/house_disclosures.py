@@ -79,10 +79,18 @@ def parse_house_search_results(html: str, year: int) -> list[dict[str, Any]]:
 
 
 def fetch_house_pdf_text(url: str, user_agent: str) -> str:
+    return parse_house_pdf_bytes(fetch_house_pdf_bytes(url, user_agent))
+
+
+def fetch_house_pdf_bytes(url: str, user_agent: str) -> bytes:
     with httpx.Client(timeout=30.0, headers={"User-Agent": user_agent}, follow_redirects=True) as client:
         response = client.get(url)
         response.raise_for_status()
-    reader = PdfReader(io.BytesIO(response.content))
+    return response.content
+
+
+def parse_house_pdf_bytes(payload: bytes) -> str:
+    reader = PdfReader(io.BytesIO(payload))
     return clean_pdf_text("\n".join(page.extract_text() or "" for page in reader.pages))
 
 
