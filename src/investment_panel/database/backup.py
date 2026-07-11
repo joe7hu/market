@@ -41,13 +41,16 @@ def create_verified_backup(
     if missing:
         dump_path.unlink(missing_ok=True)
         raise RuntimeError(f"backup verification missing schemas: {', '.join(missing)}")
-    digest = hashlib.sha256(dump_path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with dump_path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
     manifest = {
         "status": "verified",
         "created_at": reference.isoformat(),
         "dump_path": str(dump_path),
         "byte_count": dump_path.stat().st_size,
-        "sha256": digest,
+        "sha256": digest.hexdigest(),
         "format": "postgresql-custom",
         "schemas": sorted(required_schemas),
     }
