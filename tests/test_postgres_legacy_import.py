@@ -32,6 +32,14 @@ def _legacy_database(path: Path) -> None:
         connection.execute("INSERT INTO agent_postmortem VALUES ('postmortem-1', 'NVDA', now(), 'late_entry', '{}')")
         connection.execute("CREATE TABLE strategy_mutation_proposal (proposal_id TEXT PRIMARY KEY, created_at TIMESTAMP, strategy_version TEXT, status TEXT, raw JSON)")
         connection.execute("INSERT INTO strategy_mutation_proposal VALUES ('proposal-1', now(), 'legacy-v1', 'rejected', '{}')")
+        connection.execute("CREATE TABLE prices_daily (symbol TEXT, date DATE, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, source TEXT)")
+        connection.execute("INSERT INTO prices_daily VALUES ('NVDA', DATE '2026-07-10', 160, 166, 159, 165, 1000, 'yahoo-chart')")
+        connection.execute("CREATE TABLE source_items (id TEXT, source_id TEXT, source_kind TEXT, title TEXT, url TEXT, author TEXT, published_at TIMESTAMP, observed_at TIMESTAMP, summary TEXT, raw JSON, license_status TEXT)")
+        connection.execute("INSERT INTO source_items VALUES ('news-1', 'news', 'news', 'NVDA update', 'https://example.test/news', 'Reporter', now(), now(), 'AI demand', '{}', 'provider_link_only')")
+        connection.execute("CREATE TABLE disclosures (id TEXT, source_type TEXT, trader_name TEXT, filer_name TEXT, symbol TEXT, event_date DATE, filed_date DATE, action TEXT, amount TEXT, raw JSON, source_url TEXT)")
+        connection.execute("INSERT INTO disclosures VALUES ('disc-1', 'public_disclosure_transaction', 'Trader', 'House', 'NVDA', DATE '2026-07-01', DATE '2026-07-03', 'BUY', '1001-15000', '{}', 'https://example.test/disc')")
+        connection.execute("CREATE TABLE catalysts (id TEXT, symbol TEXT, event_date DATE, event TEXT, expected_impact TEXT, source TEXT, start_at TIMESTAMP, end_at TIMESTAMP, timezone TEXT, event_scope TEXT, event_kind TEXT, importance TEXT, verification_status TEXT, source_url TEXT, source_name TEXT, raw JSON)")
+        connection.execute("INSERT INTO catalysts VALUES ('event-1', 'NVDA', DATE '2026-07-20', 'Earnings', 'Volatility', 'calendar', TIMESTAMP '2026-07-20 16:00:00', NULL, 'America/New_York', 'symbol', 'earnings', 'high', 'confirmed', 'https://example.test/event', 'Example', '{}')")
         connection.execute("CREATE TABLE option_snapshot (id INTEGER)")
         connection.execute("INSERT INTO option_snapshot SELECT * FROM range(100)")
         connection.execute("CREATE TABLE radar_alert (id INTEGER)")
@@ -66,6 +74,10 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
         "trade_journal": 1,
         "strategy_revisions": 1,
         "legacy_agent_tasks": 3,
+        "price_bars": 1,
+        "content_items": 1,
+        "disclosures": 1,
+        "market_events": 1,
     }
     assert second["imported_or_updated"]["theses"] == 0
     assert second["imported_or_updated"]["agent_thesis"] == 0

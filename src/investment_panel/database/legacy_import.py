@@ -13,6 +13,7 @@ from uuid import NAMESPACE_URL, uuid5
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -25,6 +26,10 @@ DURABLE_TABLES = (
     "agent_thesis",
     "agent_postmortem",
     "strategy_mutation_proposal",
+    "prices_daily",
+    "source_items",
+    "disclosures",
+    "catalysts",
 )
 EXCLUDED_DERIVED_TABLES = ("option_snapshot", "option_features", "candidate_event", "radar_alert", "shadow_trade")
 
@@ -53,6 +58,10 @@ class LegacyImporter:
                 "theses": self._import_theses(_rows(legacy, "theses")) if "theses" in available else 0,
                 "trade_journal": self._import_trade_journal(_rows(legacy, "trade_journal")) if "trade_journal" in available else 0,
                 "option_strategy_versions": self._import_strategies(_rows(legacy, "option_strategy_versions")) if "option_strategy_versions" in available else 0,
+                "prices_daily": self._import_prices(_rows(legacy, "prices_daily")) if "prices_daily" in available else 0,
+                "source_items": self._import_content(_rows(legacy, "source_items")) if "source_items" in available else 0,
+                "disclosures": self._import_disclosures(_rows(legacy, "disclosures")) if "disclosures" in available else 0,
+                "catalysts": self._import_catalysts(_rows(legacy, "catalysts")) if "catalysts" in available else 0,
             }
             agent_tables = [table for table in ("agent_thesis", "agent_postmortem", "strategy_mutation_proposal") if table in available]
             imported.update(self._import_agent_artifacts({table: _rows(legacy, table) for table in agent_tables}))
@@ -230,6 +239,103 @@ class LegacyImporter:
                     counts[table] += 1
         return counts
 
+    def _import_prices(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        repository = IngestionRepository(self.runtime)
+        source_id = "legacy-price-history"
+        repository.register_source(
+            source_id, name="Legacy price history", family="migration", kind="daily_bars",
+            origin=str(self.duckdb_path), capabilities={"price_bars": True},
+        )
+        run_id = repository.start_run(source_id, "price_bars")
+        normalized = [
+            {
+                "symbol": row.get("symbol"), "date": row.get("date"),
+                "open": row.get("open"), "high": row.get("high"), "low": row.get("low"),
+                "close": row.get("close"), "volume": row.get("volume"),
+            }
+            for row in rows
+        ]
+        count = repository.store_price_bars(run_id, source_id, normalized)
+        repository.finish_run(run_id, "succeeded", item_count=count)
+        return count
+
+    def _import_content(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        repository = IngestionRepository(self.runtime)
+        source_id = "legacy-content"
+        repository.register_source(
+            source_id, name="Legacy content evidence", family="migration", kind="content",
+            origin=str(self.duckdb_path), capabilities={"content": True},
+        )
+        run_id = repository.start_run(source_id, "content")
+        normalized = [
+            {
+                "source_key": row.get("id"), "kind": row.get("source_kind") or row.get("kind") or "article",
+                "title": row.get("title"), "url": row.get("url"), "author": row.get("author"),
+                "published_at": row.get("published_at"), "observed_at": row.get("observed_at"),
+                "summary": row.get("summary"), "license_status": row.get("license_status"),
+                "metadata": {"legacy_source_id": row.get("source_id")},
+            }
+            for row in rows
+        ]
+        counts = repository.store_content_items(run_id, source_id, normalized)
+        repository.finish_run(run_id, "succeeded", item_count=counts["items"])
+        return counts["items"]
+
+    def _import_disclosures(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        repository = IngestionRepository(self.runtime)
+        source_id = "legacy-disclosures"
+        repository.register_source(
+            source_id, name="Legacy disclosures", family="migration", kind="disclosure",
+            origin=str(self.duckdb_path), capabilities={"disclosures": True},
+        )
+        run_id = repository.start_run(source_id, "disclosures")
+        normalized = [
+            {
+                "source_key": row.get("id"), "source_type": row.get("source_type"),
+                "trader_name": row.get("trader_name"), "filer_name": row.get("filer_name"),
+                "symbol": row.get("symbol"), "event_date": row.get("event_date"),
+                "filed_date": row.get("filed_date"), "action": row.get("action"),
+                "amount_text": row.get("amount"), "source_url": row.get("source_url"),
+                "details": _json_value(row.get("raw"), {}),
+            }
+            for row in rows
+        ]
+        count = repository.store_disclosures(run_id, source_id, normalized)
+        repository.finish_run(run_id, "succeeded", item_count=count)
+        return count
+
+    def _import_catalysts(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        repository = IngestionRepository(self.runtime)
+        source_id = "legacy-events"
+        repository.register_source(
+            source_id, name="Legacy event calendar", family="migration", kind="calendar",
+            origin=str(self.duckdb_path), capabilities={"events": True},
+        )
+        run_id = repository.start_run(source_id, "events")
+        normalized = [
+            {
+                "source_key": row.get("id"), "symbol": row.get("symbol"),
+                "event_scope": row.get("event_scope"), "event_kind": row.get("event_kind"),
+                "title": row.get("event"), "starts_at": row.get("start_at") or row.get("event_date"),
+                "ends_at": row.get("end_at"), "importance": row.get("importance"),
+                "verification_status": row.get("verification_status"), "source_url": row.get("source_url"),
+                "expected_impact": row.get("expected_impact"),
+                "details": _json_value(row.get("raw"), {}),
+            }
+            for row in rows
+        ]
+        count = repository.store_market_events(run_id, source_id, normalized)
+        repository.finish_run(run_id, "succeeded", item_count=count)
+        return count
+
     def _target_counts(self) -> dict[str, int]:
         queries = {
             "portfolio_positions": "SELECT count(*) FROM app.portfolio_position",
@@ -238,6 +344,10 @@ class LegacyImporter:
             "trade_journal": "SELECT count(*) FROM app.trade_journal",
             "strategy_revisions": "SELECT count(*) FROM analysis.strategy_revision",
             "legacy_agent_tasks": "SELECT count(*) FROM analysis.agent_task WHERE task_kind LIKE 'legacy_%'",
+            "price_bars": "SELECT count(*) FROM raw.price_bar",
+            "content_items": "SELECT count(*) FROM raw.content_item",
+            "disclosures": "SELECT count(*) FROM raw.disclosure",
+            "market_events": "SELECT count(*) FROM raw.market_event",
         }
         with self.runtime.read() as connection:
             return {name: int(connection.execute(query).fetchone()["count"]) for name, query in queries.items()}

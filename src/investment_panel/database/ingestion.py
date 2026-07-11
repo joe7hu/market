@@ -356,6 +356,65 @@ class IngestionRepository:
                 stored += 1
         return stored
 
+    def store_disclosures(
+        self,
+        run_id: UUID,
+        source_id: str,
+        rows: Sequence[dict[str, Any]],
+        *,
+        payload_id: int | None = None,
+    ) -> int:
+        """Upsert normalized public disclosure facts without derived replicas."""
+
+        stored = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for source in rows:
+                source_key = str(source.get("source_key") or source.get("id") or "").strip()
+                if not source_key:
+                    continue
+                instrument_id = None
+                symbol = str(source.get("symbol") or source.get("ticker") or "").strip().upper()
+                if symbol:
+                    instrument_id = connection.execute(
+                        """
+                        INSERT INTO catalog.instrument (symbol, name, asset_class, category)
+                        VALUES (%s, %s, 'equity', 'disclosure_reference')
+                        ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id
+                        """,
+                        [symbol, symbol],
+                    ).fetchone()["id"]
+                connection.execute(
+                    """
+                    INSERT INTO raw.disclosure (
+                        instrument_id, source_id, ingest_run_id, payload_id, source_key,
+                        source_type, trader_name, filer_name, event_date, filed_date,
+                        action, amount_text, source_url, details
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source_id, source_key) DO UPDATE
+                    SET ingest_run_id = EXCLUDED.ingest_run_id,
+                        payload_id = COALESCE(EXCLUDED.payload_id, raw.disclosure.payload_id),
+                        instrument_id = EXCLUDED.instrument_id, source_type = EXCLUDED.source_type,
+                        trader_name = EXCLUDED.trader_name, filer_name = EXCLUDED.filer_name,
+                        event_date = EXCLUDED.event_date, filed_date = EXCLUDED.filed_date,
+                        action = EXCLUDED.action, amount_text = EXCLUDED.amount_text,
+                        source_url = EXCLUDED.source_url, details = EXCLUDED.details
+                    """,
+                    [
+                        instrument_id, source_id, run_id, payload_id, source_key,
+                        str(source.get("source_type") or "public_disclosure"),
+                        source.get("trader_name"), source.get("filer_name"),
+                        _date(source.get("event_date") or source.get("transaction_date")),
+                        _date(source.get("filed_date") or source.get("filing_date")),
+                        source.get("action") or source.get("transaction_type"),
+                        source.get("amount_text") or source.get("amount") or source.get("amount_range"),
+                        source.get("source_url") or source.get("url"),
+                        Jsonb(dict(source.get("details") or source.get("raw") or {})),
+                    ],
+                )
+                stored += 1
+        return stored
+
     @contextmanager
     def run(
         self,
