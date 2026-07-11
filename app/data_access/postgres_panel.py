@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Iterable
 
+from app.data_access.postgres_queries import OWNED_CORRELATIONS_QUERY
 from app.data_access.user_state import portfolio_rows, thesis_monitor_rows, thesis_rows, watchlist_rows
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
@@ -535,22 +536,20 @@ DIRECT_QUERIES: dict[str, str] = {
     "correlations": """
         WITH returns AS (
             SELECT instrument.id, instrument.symbol, bar.trading_date,
-                   bar.close / lag(bar.close) OVER (
-                       PARTITION BY instrument.id ORDER BY bar.trading_date
-                   ) - 1 AS daily_return
+                   bar.close / lag(bar.close) OVER (PARTITION BY instrument.id
+                       ORDER BY bar.trading_date) - 1 AS daily_return
             FROM raw.price_bar bar
             JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
             WHERE bar.interval = '1d' AND bar.trading_date >= current_date - 200
         )
-        SELECT left_side.symbol, right_side.symbol AS peer_symbol,
-               corr(left_side.daily_return, right_side.daily_return) AS correlation,
-               count(*) AS observations
-        FROM returns left_side JOIN returns right_side
-          ON right_side.trading_date = left_side.trading_date AND right_side.id > left_side.id
+        SELECT left_side.symbol, right_side.symbol AS peer_symbol, count(*) AS observations, corr(left_side.daily_return, right_side.daily_return) AS correlation
+        FROM returns left_side JOIN returns right_side ON right_side.id > left_side.id
+          AND right_side.trading_date = left_side.trading_date
         WHERE left_side.daily_return IS NOT NULL AND right_side.daily_return IS NOT NULL
         GROUP BY left_side.symbol, right_side.symbol HAVING count(*) >= 20
         ORDER BY abs(corr(left_side.daily_return, right_side.daily_return)) DESC LIMIT 500
     """,
+    "owned_correlations": OWNED_CORRELATIONS_QUERY,
 }
 
 
@@ -565,8 +564,8 @@ MODEL_ALIASES = {
     "opportunity_sources": "ticker_source_signals",
     "options_expiry_signals": "options_expiries",
     "shadow_trade_mark": "candidate_event_mark",
-    "correlation_edges": "correlations",
-    "exposure_clusters": "correlations",
+    "correlation_edges": "owned_correlations",
+    "exposure_clusters": "owned_correlations",
     "symbol_decision_snapshot": "symbol_decision_snapshots",
 }
 

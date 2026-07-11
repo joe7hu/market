@@ -5,7 +5,7 @@ flow, thesis tracking, portfolio-aware risk, and evidence-backed decision memory
 
 ## Stack
 
-- Python + DuckDB for data, scoring, jobs, and research packets.
+- Python + PostgreSQL 18 for authoritative data, analysis, jobs, and user state.
 - FastAPI for the local API.
 - React + TanStack Table + Vite for the web app.
 - Arco is the upstream weak-signal/evidence layer.
@@ -16,7 +16,8 @@ flow, thesis tracking, portfolio-aware risk, and evidence-backed decision memory
 ```bash
 uv sync --extra test
 npm install
-uv run python -m investment_panel.jobs.daily_screen --config config.yaml
+uv run market-db-migrate
+uv run market-full-refresh --config config.yaml
 npm run build
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 npx vite --host 0.0.0.0
@@ -38,42 +39,32 @@ npm run api
 ## Jobs
 
 ```bash
-uv run python -m investment_panel.jobs.daily_screen --config config.yaml
-uv run python -m investment_panel.jobs.update_equity_data --config config.yaml
-uv run python -m investment_panel.jobs.update_crypto_data --config config.yaml
-uv run python -m investment_panel.jobs.update_arco_data --config config.yaml
-uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --online-check
-uv run python -m investment_panel.jobs.update_free_sources --config config.yaml
-uv run python -m investment_panel.jobs.hourly_options_radar --config config.yaml
-uv run python -m investment_panel.jobs.premarket_options_intelligence --config config.yaml
-uv run python -m investment_panel.jobs.refresh_options_radar --config config.yaml
-uv run python -m investment_panel.jobs.update_event_calendar --config config.yaml
-uv run python -m investment_panel.jobs.snapshot_database --config config.yaml
-uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
-uv run python -m investment_panel.jobs.research_candidate TSLA --config config.yaml
-uv run python -m investment_panel.jobs.weekly_portfolio_review --config config.yaml
+uv run market-full-refresh --config config.yaml
+uv run market-update-market-data --config config.yaml
+uv run market-update-content-sources --config config.yaml
+uv run market-update-arco-data --config config.yaml
+uv run market-update-disclosures --config config.yaml
+uv run market-update-event-calendar --config config.yaml
+uv run market-update-robinhood-options --config config.yaml
+uv run market-refresh-options-radar --config config.yaml
+uv run market-premarket-options-intelligence --config config.yaml
+uv run market-run-option-agents --config config.yaml
+uv run market-update-broker-sources --config config.yaml
+uv run market-snapshot-database --config config.yaml
 ```
 
-Disclosure ingestion should also run daily. The scheduled command is:
-
-```bash
-uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --skip-holdings
-```
-
-Use the backfill job once when onboarding a trader with full historical filings:
-
-```bash
-uv run python -m investment_panel.jobs.backfill_trader_disclosures --config config.yaml --trader "Trader Name"
-```
+Disclosure refresh is incremental: configured CSV files are content-addressed,
+House PDFs are skipped after their document ID is stored, and current 13F
+submission/index/information-table payloads are archived once.
 
 New trader onboarding and the normalized public-disclosure CSV contract are
 documented in [docs/trader-disclosure-pipeline.md](docs/trader-disclosure-pipeline.md).
 
 The broad daily refresh workflow is documented in
 [docs/full-market-refresh.md](docs/full-market-refresh.md). It coordinates
-Arco import, daily screening, free-source refresh, deterministic options-radar
-validation, broker context, disclosures, event calendar, analyses, and the DB
-snapshot before the decision desk reads the data.
+Arco, market/content sources, deterministic options decisions and outcomes,
+broker context, disclosures, event calendar, publications, retention, and a
+verified PostgreSQL custom-format backup.
 This workflow should run from the canonical `mini1.local` checkout at
 `/Users/joehu/proj/market`, not from temporary or topic-specific worktrees.
 
@@ -146,11 +137,11 @@ IB market-data rows record whether returned quotes are live or delayed, because
 paper access still depends on live-account subscriptions and market-data
 sharing.
 
-Free-source enrichment is handled by `market-update-free-sources`. It uses the
-local OpenCLI TradingView adapter for quotes, screeners, options, news, symbol
-search, watchlists, alerts, and chart state, plus yfinance for estimates,
-earnings, and ETF NAV/premium data. Funda and Adanos are intentionally not
-integrated.
+Market prices are normalized into compact daily bars and one latest quote per
+symbol. OpenCLI news/X and configured RSS/Substack sources retain one compressed
+provider payload manifest plus query-critical content facts. TradingView
+personal-state replication and ETF-premium enrichment are intentionally retired;
+those compatibility endpoints remain empty instead of becoming database owners.
 
 Market codifies high-value finance-skills workflows as deterministic backend
 read models where possible: options payoff scenarios, earnings setup scoring,

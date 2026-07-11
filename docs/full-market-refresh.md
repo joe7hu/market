@@ -1,15 +1,16 @@
 # Full-Market Refresh
 
-The decision-grade app needs one daily workflow that refreshes every source
-cluster before the UI ranks opportunities. The workflow is intentionally
-sequential because later steps depend on earlier evidence and market-data rows.
+The daily workflow refreshes independent raw-source clusters, then publishes
+one atomic decision generation. PostgreSQL readers stay responsive while
+provider calls run; `ops.job_run` plus a partial unique index enforce
+cross-process single flight.
 
 ## Command
 
 ```bash
 cd /Users/joehu/proj/market
 git pull --rebase origin main
-uv run python -m investment_panel.jobs.full_market_refresh --config config.yaml
+uv run market-full-refresh --config config.yaml
 ```
 
 Run this on `mini1.local` from the canonical checkout. Do not schedule the full
@@ -32,49 +33,28 @@ http://192.168.50.197:8000/api/status
 
 ## Step Order
 
-1. `update_arco_data`: import the latest Arco brief evidence from
-   `/Volumes/agent/brain/raw/sources/arco`.
-2. `daily_screen`: rebuild the configured and evidence-derived universe, daily
-   prices, fundamentals, technicals, candidates, and base analyses.
-3. `update_free_sources`: refresh TradingView/OpenCLI and yfinance rows for
-   quotes, screeners, options, news, TradingView symbol/watchlist/alert/chart
-   metadata, estimates, earnings, ETF premiums, SEPA, liquidity, correlations,
-   options payoff scenarios, earnings setup scores, and deterministic
-   DCF/relative/blended valuations.
-   Decision-model rebuilds now sync existing rows into canonical
-   `source_registry`, `source_runs`, `source_items`, and
-   `ticker_source_signals`, then promote source-discovered tickers to
-   refreshable instruments with explicit market-context blockers.
-4. `options_radar`: materialize the deterministic 10x options radar from the
-   refreshed option/stock rows: point-in-time snapshots, 10x math, feature
-   scores, candidate events, shadow-trade marks, attribution, state
-   transitions, missed-winner events, cohort results, the grouped
-   `option_radar_opportunity` read model, and agent work queues. The grouped
-   model is intentionally strict: most days can produce no `Exceptional` setup,
-   with blocked rows retained as `Research` for audit and learning.
-   This is also exposed as the standalone `refresh_options_radar` refresh job
-   for local reruns after option-source changes. For intraday operation, use
-   `hourly_options_radar`; it recomputes the deterministic radar from existing
-   option/quote rows without refreshing providers or generating agent work, so
-   it does not hold the app database lock across network calls.
-5. `run_option_agents`: optionally run configured local external agent commands
+1. `arco_sources`: manifest the latest Arco source files and normalize compact
+   evidence rows.
+2. `market_data`: refresh daily bars and latest quotes.
+3. `content_sources`: archive and normalize configured news, RSS/Substack, and X.
+4. `market_events` and `disclosures`: refresh official schedules, CSVs, House
+   PDFs, and SEC 13F payloads incrementally.
+5. Robinhood/IBKR option and broker sources run independently; unavailable
+   providers produce warnings without erasing the last good publication.
+6. `options_radar`: retain actionable feature/decision rows and aggregate rejects.
+7. `option_outcomes`: update one compact outcome per actionable decision.
+8. `run_option_agents`: optionally run configured local external agent commands
    for open options-radar thesis and postmortem handoffs. This step is
    the daily premarket interpretation boundary; hourly refreshes must not call
    it. When enabled, Market passes one request JSON over stdin, accepts only
    structured JSON over stdout, then persists and validates it through the
    deterministic backend.
-6. `update_broker_sources`: refresh read-only broker account, position, and
-   recommendation context.
-7. `update_disclosures`: refresh public disclosures, official House filings,
-   configured 13F trackers, disclosure symbol prices, and trader replicas.
-   Daily runs default to metadata/light holdings; pass `--fetch-holdings` when
-   a heavier 13F holdings refresh is intended.
-8. `update_event_calendar`: refresh macro, earnings, filing, and watchlist
-   events.
-9. `snapshot_database`: copy the local DuckDB to the NAS snapshot archive.
+9. `/today` and market read models publish atomically, then reference-safe
+   retention runs and `pg_dump --format=custom` writes a checksum-verified backup.
 
-The orchestrator writes `/Volumes/agent/data-sources/status/mini-market-full-refresh.json`.
-Each underlying job still writes its own status file.
+The orchestrator records step summaries in `ops.job_run`; source details live in
+`ingest.run`. Provider payloads and backups are archived outside PostgreSQL and
+referenced by manifest rows.
 
 ## Agent Handoff
 

@@ -341,6 +341,26 @@ def test_market_snapshot_only_returns_market_tables() -> None:
     }
 
 
+def test_ticker_route_reuses_cached_snapshot(monkeypatch) -> None:
+    app_main._invalidate_context_cache()
+    calls = 0
+
+    def loader(_config, _ticker):
+        nonlocal calls
+        calls += 1
+        return PanelData(
+            status=DataStatus(True, "ticker", "postgresql"),
+            tables={"quotes": [{"symbol": "NVDA", "price": 175}]},
+        )
+
+    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": "postgresql:///cached"}})
+    monkeypatch.setattr(app_deps, "load_ticker_panel_data", loader)
+    client = TestClient(app)
+    assert client.get("/api/tickers/NVDA").status_code == 200
+    assert client.get("/api/tickers/NVDA").status_code == 200
+    assert calls == 1
+
+
 def test_settings_snapshot_returns_no_panel_tables() -> None:
     client = TestClient(app)
 

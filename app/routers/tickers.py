@@ -12,10 +12,13 @@ router = APIRouter()
 
 @router.get("/api/tickers/{ticker}")
 def ticker_detail(ticker: str) -> dict[str, Any]:
-    config = deps.load_config()
+    normalized = ticker.strip().upper()
     with deps._CONTEXT_LOCK:
-        panel_data = deps.load_ticker_panel_data(config, ticker)
-    return deps.ticker_payload(panel_data, ticker)
+        _, panel_data = deps._context(
+            cache_key=f"ticker:{normalized}",
+            loader=lambda config: deps.load_ticker_panel_data(config, normalized),
+        )
+    return deps.ticker_payload(panel_data, normalized)
 
 
 @router.get("/api/tickers/{ticker}/decision-snapshot")

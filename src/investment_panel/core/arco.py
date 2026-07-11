@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import date, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 from investment_panel.core.config import ArcoConfig
 from investment_panel.core.instruments import symbols_from_text
+
+
+def json_dumps(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        default=lambda item: item.isoformat() if isinstance(item, (date, datetime)) else str(item),
+    )
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -321,8 +329,6 @@ def author_label(item: dict[str, Any]) -> str | None:
 
 
 def ingest_arco_theses(con: Any, context: dict[str, Any]) -> int:
-    from investment_panel.core.db import json_dumps
-
     rows: list[list[Any]] = []
     for item in flatten_arco_items(context):
         symbols = symbols_from_text(item.get("text", ""))
