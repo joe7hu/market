@@ -1,12 +1,19 @@
 """Portfolio and watchlist write operations."""
 
 from __future__ import annotations
-import json
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any, Iterable
 
 from app.data_access.config import _database_path
 from app.data_access.coerce import _optional_date, _positive_number
+from app.data_access.user_state import (
+    delete_position as delete_postgres_position,
+    delete_watchlist_item,
+    save_position as save_postgres_position,
+    save_thesis as save_postgres_thesis,
+    save_watchlist_item,
+    mark_thesis_reviewed as mark_postgres_thesis_reviewed,
+)
 
 
 
@@ -21,33 +28,10 @@ def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) ->
     purchase_date = _optional_date(position.get("purchase_date"))
     notes = str(position.get("notes", "") or "").strip()
 
-    from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import refresh_decision_read_models
-    from investment_panel.core.portfolio import ensure_portfolio_instruments
-
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        con.execute(
-            """
-            INSERT OR REPLACE INTO portfolio_positions (symbol, quantity, avg_cost, purchase_date, notes)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            [symbol, quantity, avg_cost, purchase_date, notes],
-        )
-        con.execute(
-            """
-            INSERT OR IGNORE INTO theses (symbol, thesis_json, updated_at)
-            VALUES (?, ?, now())
-            """,
-            [
-                symbol,
-                '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
-            ],
-        )
-        ensure_portfolio_instruments(con)
-        refresh_decision_read_models(con, config.get("watchlist", []))
-    return {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes}
+    return save_postgres_position(
+        config,
+        {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes},
+    )
 
 
 
@@ -61,8 +45,7 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
     name = str(item.get("name") or "").strip() or symbol
     notes = str(item.get("notes", "") or "").strip()
 
-    from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import SYMBOL_RE, upsert_instrument_preserving
+    from investment_panel.core.decision import SYMBOL_RE
     from investment_panel.core.instruments import infer_asset_class, normalize_symbol
 
     normalized = normalize_symbol(symbol)
@@ -75,33 +58,10 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
         asset_class = requested_asset_class or infer_asset_class(normalized)
     if asset_class not in {"equity", "etf", "crypto"}:
         raise ValueError("asset_class must be equity, etf, or crypto")
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        con.execute(
-            """
-            INSERT INTO manual_watchlist (symbol, name, asset_class, watch_state, notes, created_at, updated_at)
-            VALUES (?, ?, ?, 'watched', ?, now(), now())
-            ON CONFLICT (symbol) DO UPDATE
-            SET name = excluded.name,
-                asset_class = excluded.asset_class,
-                watch_state = 'watched',
-                notes = excluded.notes,
-                updated_at = now()
-            """,
-            [normalized, name, asset_class, notes],
-        )
-        upsert_instrument_preserving(
-            con,
-            {
-                "symbol": normalized,
-                "name": name,
-                "asset_class": asset_class,
-                "category": "watchlist",
-                "source": "manual_watchlist",
-            },
-        )
-    return {"symbol": normalized, "name": name, "asset_class": asset_class, "notes": notes}
+    return save_watchlist_item(
+        config,
+        {"symbol": normalized, "name": name, "asset_class": asset_class, "notes": notes},
+    )
 
 
 
@@ -265,27 +225,13 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
     if not normalized:
         raise ValueError("symbol is required")
 
-    from investment_panel.core.db import db, init_db
     from investment_panel.core.decision import SYMBOL_RE
     from investment_panel.core.instruments import normalize_symbol
 
     normalized = normalize_symbol(normalized)
     if not normalized or not SYMBOL_RE.match(normalized):
         raise ValueError("symbol must be a valid ticker")
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        con.execute(
-            """
-            INSERT INTO manual_watchlist (symbol, name, asset_class, watch_state, notes, created_at, updated_at)
-            VALUES (?, ?, ?, 'excluded', '', now(), now())
-            ON CONFLICT (symbol) DO UPDATE
-            SET watch_state = 'excluded',
-                updated_at = now()
-            """,
-            [normalized, normalized, "crypto" if normalized.endswith("-USD") else "equity"],
-        )
-    return {"symbol": normalized, "deleted": True}
+    return delete_watchlist_item(config, normalized)
 
 
 
@@ -295,54 +241,7 @@ def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, 
     if not normalized:
         raise ValueError("symbol is required")
 
-    from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import refresh_decision_read_models
-
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        con.execute("DELETE FROM portfolio_positions WHERE symbol = ?", [normalized])
-        con.execute(
-            """
-            DELETE FROM theses
-            WHERE symbol = ?
-              AND thesis_json = ?
-            """,
-            [
-                normalized,
-                '{"position_status":"owned","core_thesis":"","pillars":[],"risks":[],"invalidation":[],"catalysts":[],"conviction":"unknown"}',
-            ],
-        )
-        refresh_decision_read_models(con, config.get("watchlist", []))
-    return {"symbol": normalized, "deleted": True}
-
-
-def _load_thesis_json(con: Any, symbol: str) -> dict[str, Any]:
-    row = con.execute("SELECT thesis_json FROM theses WHERE symbol = ?", [symbol]).fetchone()
-    if not row or not row[0]:
-        return {}
-    try:
-        parsed = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _persist_thesis(config: dict[str, Any], symbol: str, thesis: dict[str, Any]) -> None:
-    from investment_panel.core.db import db, init_db
-    from investment_panel.core.decision import refresh_decision_read_models
-
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        con.execute(
-            """
-            INSERT OR REPLACE INTO theses (symbol, thesis_json, updated_at)
-            VALUES (?, ?, now())
-            """,
-            [symbol, json.dumps(thesis)],
-        )
-        refresh_decision_read_models(con, config.get("watchlist", []))
+    return delete_postgres_position(config, normalized)
 
 
 def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -352,62 +251,10 @@ def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> 
     so the monitor can leave the stale/needs-review state once content exists.
     """
 
-    normalized = str(symbol or "").strip().upper()
-    if not normalized:
-        raise ValueError("symbol is required")
-    thesis_text = str(fields.get("thesis") or "").strip()
-    why = str(fields.get("why") or "").strip()
-    invalidation = str(fields.get("invalidation") or "").strip()
-    if not thesis_text:
-        raise ValueError("thesis is required")
-
-    from investment_panel.core.db import db, init_db
-
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        thesis = _load_thesis_json(con, normalized)
-
-    thesis["core_thesis"] = thesis_text
-    if why:
-        thesis["why_owned_watched"] = why
-    if invalidation:
-        thesis["invalidation"] = invalidation
-    invalidation_price = fields.get("invalidation_price")
-    if invalidation_price not in (None, ""):
-        try:
-            thesis["invalidation_price"] = float(invalidation_price)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("invalidation_price must be a number") from exc
-    status = str(fields.get("status") or "").strip().lower()
-    if status:
-        thesis["status"] = status
-    evidence_links = fields.get("evidence_links")
-    if isinstance(evidence_links, list):
-        cleaned = [str(link).strip() for link in evidence_links if str(link).strip()]
-        if cleaned:
-            thesis["evidence_links"] = cleaned
-    thesis["last_reviewed"] = datetime.now(UTC).isoformat()
-
-    _persist_thesis(config, normalized, thesis)
-    return {"symbol": normalized, "thesis": thesis}
+    return save_postgres_thesis(config, symbol, fields)
 
 
 def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
     """Stamp the thesis last_reviewed date so an audited thesis leaves the queue."""
 
-    normalized = str(symbol or "").strip().upper()
-    if not normalized:
-        raise ValueError("symbol is required")
-
-    from investment_panel.core.db import db, init_db
-
-    db_path = _database_path(config)
-    init_db(db_path)
-    with db(db_path, read_only=False) as con:
-        thesis = _load_thesis_json(con, normalized)
-    reviewed_at = datetime.now(UTC).isoformat()
-    thesis["last_reviewed"] = reviewed_at
-
-    _persist_thesis(config, normalized, thesis)
-    return {"symbol": normalized, "last_reviewed": reviewed_at}
+    return mark_postgres_thesis_reviewed(config, symbol)

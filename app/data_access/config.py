@@ -46,6 +46,10 @@ def database_path(config: dict[str, Any]) -> Path:
     return _database_path(config)
 
 
+def database_url(config: dict[str, Any]) -> str:
+    return str(config.get("database", {}).get("url") or "postgresql:///market")
+
+
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -53,7 +57,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     config_path = Path(path) if path else repo_root() / "config.yaml"
     defaults: dict[str, Any] = {
-        "database": {"duckdb_path": "data/investment.duckdb"},
+        "database": {"url": "postgresql:///market", "duckdb_path": "data/investment.duckdb"},
         "nas": {
             "source_root": "/Volumes/agent/data-sources",
             "status_dir": "/Volumes/agent/data-sources/status",
@@ -80,11 +84,15 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def _apply_runtime_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    database_url_override = os.environ.get("MARKET_DATABASE_URL")
     duckdb_path = os.environ.get("MARKET_DUCKDB_PATH")
-    if not duckdb_path:
-        return config
-    updated = _deep_merge(config, {"database": {"duckdb_path": duckdb_path}})
-    updated.setdefault("runtime_overrides", {})["MARKET_DUCKDB_PATH"] = duckdb_path
+    updated = config
+    if database_url_override:
+        updated = _deep_merge(updated, {"database": {"url": database_url_override}})
+        updated.setdefault("runtime_overrides", {})["MARKET_DATABASE_URL"] = database_url_override
+    if duckdb_path:
+        updated = _deep_merge(updated, {"database": {"duckdb_path": duckdb_path}})
+        updated.setdefault("runtime_overrides", {})["MARKET_DUCKDB_PATH"] = duckdb_path
     return updated
 
 

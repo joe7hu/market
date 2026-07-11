@@ -12,12 +12,12 @@ router = APIRouter()
 
 @router.get("/api/theses")
 def theses() -> dict[str, Any]:
-    return deps._table_payload("theses")
+    return deps.user_state_table_payload(deps.thesis_rows(deps.load_config()))
 
 
 @router.get("/api/thesis-monitor")
 def thesis_monitor() -> dict[str, Any]:
-    return deps._table_payload("thesis_monitor")
+    return deps.user_state_table_payload(deps.thesis_monitor_rows(deps.load_config()))
 
 
 @router.put("/api/theses/{symbol}")
@@ -28,8 +28,8 @@ def save_thesis_endpoint(symbol: str, payload: deps.ThesisInput, request: Reques
         saved = deps.save_thesis(config, symbol, payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    return {"thesis": saved, "thesis_monitor": deps._table_payload("thesis_monitor")}
+    rows = deps.thesis_monitor_rows(config)
+    return {"thesis": saved, "thesis_monitor": deps.user_state_table_payload(rows)}
 
 
 @router.post("/api/theses/{symbol}/review")
@@ -40,8 +40,8 @@ def review_thesis_endpoint(symbol: str, request: Request) -> dict[str, Any]:
         reviewed = deps.mark_thesis_reviewed(config, symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    return {"review": reviewed, "thesis_monitor": deps._table_payload("thesis_monitor")}
+    rows = deps.thesis_monitor_rows(config)
+    return {"review": reviewed, "thesis_monitor": deps.user_state_table_payload(rows)}
 
 
 @router.get("/api/trader-twins")

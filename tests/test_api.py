@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 
 from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
+from investment_panel.database.authority import close_cached_runtimes
+from investment_panel.database.migrations import upgrade_database
 import investment_panel.core.source_ingestion.audit as audit_mod
 from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config, update_research_sources_config
 import app.main as app_main
@@ -34,9 +36,24 @@ def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     )
 
 
-def test_api_routes_return_json() -> None:
+def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    info = postgresql.info
+    credentials = info.user if not info.password else f"{info.user}:{info.password}"
+    postgres_dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
+    upgrade_database(postgres_dsn)
+    duckdb_path = tmp_path / "api-smoke.duckdb"
+    _use_temp_api_db(monkeypatch, duckdb_path)
+    monkeypatch.setattr(
+        app_deps,
+        "load_config",
+        lambda _path=None: {
+            "database": {"url": postgres_dsn, "duckdb_path": str(duckdb_path)},
+            "nas": {"status_dir": str(tmp_path / "status")},
+        },
+    )
     client = TestClient(app)
-    for path in [
+    try:
+        paths = [
         "/api/status",
         "/api/panel-contract",
         "/api/dashboard",
@@ -133,10 +150,13 @@ def test_api_routes_return_json() -> None:
         "/api/refresh-jobs",
         "/api/settings",
         "/api/tickers/TSLA",
-    ]:
-        response = client.get(path)
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("application/json")
+        ]
+        for path in paths:
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("application/json")
+    finally:
+        close_cached_runtimes()
 
 
 def test_settings_payload_includes_agent_control_metadata() -> None:

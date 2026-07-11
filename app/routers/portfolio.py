@@ -12,7 +12,7 @@ router = APIRouter()
 
 @router.get("/api/portfolio")
 def portfolio() -> dict[str, Any]:
-    return deps._table_payload("portfolio")
+    return deps.user_state_table_payload(deps.portfolio_rows(deps.load_config()))
 
 
 @router.post("/api/portfolio/positions")
@@ -22,9 +22,8 @@ def save_position(position: deps.PortfolioPositionInput) -> dict[str, Any]:
         saved = deps.save_portfolio_position(config, position.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    _, panel_data = deps._context()
-    return {"position": saved, "portfolio": deps.table_payload(panel_data, "portfolio")}
+    rows = deps.portfolio_rows(config)
+    return {"position": saved, "portfolio": deps.user_state_table_payload(rows)}
 
 
 @router.delete("/api/portfolio/positions/{symbol}")
@@ -34,9 +33,8 @@ def delete_position(symbol: str) -> dict[str, Any]:
         deleted = deps.delete_portfolio_position(config, symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    _, panel_data = deps._context()
-    return {"position": deleted, "portfolio": deps.table_payload(panel_data, "portfolio")}
+    rows = deps.portfolio_rows(config)
+    return {"position": deleted, "portfolio": deps.user_state_table_payload(rows)}
 
 
 @router.get("/api/portfolio-risk/exposure-clusters")
@@ -66,7 +64,7 @@ def watchlist_screen() -> dict[str, Any]:
 
 @router.get("/api/watchlist/symbols")
 def watchlist_symbols() -> dict[str, Any]:
-    return deps._table_payload("manual_watchlist")
+    return deps.user_state_table_payload(deps.watchlist_rows(deps.load_config()))
 
 
 @router.post("/api/watchlist/symbols")
@@ -77,12 +75,17 @@ def save_watchlist_symbol_endpoint(item: deps.WatchlistSymbolInput, request: Req
         saved = deps.save_watchlist_symbol(config, item.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        refresh_result = deps.populate_watchlist_symbol_data(config, saved["symbol"], saved.get("asset_class"))
-    except Exception as exc:  # pragma: no cover - defensive API boundary
-        refresh_result = {"status": "error", "symbol": saved["symbol"], "errors": {"refresh": f"{type(exc).__name__}: {exc}"}}
-    deps._invalidate_context_cache()
-    return {"watchlist_symbol": saved, "data_refresh": refresh_result, "watchlist": {"rows": [], "count": 0}}
+    refresh_result = {
+        "status": "pending_source_refresh",
+        "symbol": saved["symbol"],
+        "reason": "PostgreSQL source ingestion is queued for the next migration slice",
+    }
+    rows = deps.watchlist_rows(config)
+    return {
+        "watchlist_symbol": saved,
+        "data_refresh": refresh_result,
+        "watchlist": deps.user_state_table_payload(rows),
+    }
 
 
 @router.delete("/api/watchlist/symbols/{symbol}")
@@ -93,5 +96,5 @@ def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str,
         deleted = deps.delete_watchlist_symbol(config, symbol)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    return {"watchlist_symbol": deleted, "watchlist": {"rows": [], "count": 0}}
+    rows = deps.watchlist_rows(config)
+    return {"watchlist_symbol": deleted, "watchlist": deps.user_state_table_payload(rows)}

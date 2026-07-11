@@ -31,6 +31,7 @@ from app.data_access import (
     load_ticker_panel_data,
     panel_snapshot_payload,
     panel_contract_payload,
+    portfolio_rows,
     populate_watchlist_symbol_data,
     delete_portfolio_position,
     delete_watchlist_symbol,
@@ -42,9 +43,13 @@ from app.data_access import (
     signals_payload,
     status_payload,
     table_payload,
+    thesis_monitor_rows,
+    thesis_rows,
     ticker_payload,
     update_agent_settings_config,
     update_research_sources_config,
+    user_state_table_payload,
+    watchlist_rows,
 )
 from investment_panel.core.refresh_jobs import (
     ALLOWLIST,
