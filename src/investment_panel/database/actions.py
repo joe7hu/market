@@ -19,7 +19,20 @@ class ActionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
-    def record_trade_journal(self, *, ticker: str, contract_id: str, event_id: str | None, strategy_version: str, opportunity: dict[str, Any], notes: str) -> str:
+    def record_trade_journal(
+        self,
+        *,
+        ticker: str,
+        contract_id: str,
+        event_id: str | None,
+        strategy_version: str,
+        opportunity: dict[str, Any],
+        notes: str,
+        action: str = "accepted",
+        idempotency_key: str | None = None,
+        publication_id: str | None = None,
+        expected_contract_version: int | None = None,
+    ) -> str:
         symbol = ticker.strip().upper()
         with self.runtime.transaction() as connection:
             instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()
@@ -35,14 +48,31 @@ class ActionRepository:
                     [instrument["id"]],
                 ).fetchone()
                 decision_id = decision["id"] if decision else None
+            if expected_contract_version is not None and expected_contract_version != 2:
+                raise ValueError("stale options-radar contract version")
+            if idempotency_key:
+                prior = connection.execute(
+                    "SELECT id FROM app.trade_journal WHERE details->>'idempotency_key' = %s LIMIT 1",
+                    [idempotency_key],
+                ).fetchone()
+                if prior:
+                    return str(prior["id"])
             row = connection.execute(
                 """
                 INSERT INTO app.trade_journal (decision_id, instrument_id, action, price, rationale, details)
-                VALUES (%s, %s, 'option_entry_review', %s, %s, %s) RETURNING id
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 [
-                    decision_id, instrument["id"], opportunity.get("premium_mid") or opportunity.get("entry_premium"), notes,
-                    Jsonb({"contract_id": contract_id, "strategy_version": strategy_version, "opportunity": opportunity}),
+                    decision_id, instrument["id"], action,
+                    opportunity.get("entry_price") or opportunity.get("premium_mid") or opportunity.get("entry_premium"), notes,
+                    Jsonb({
+                        "contract_id": contract_id,
+                        "strategy_version": strategy_version,
+                        "publication_id": publication_id,
+                        "contract_version": expected_contract_version,
+                        "idempotency_key": idempotency_key,
+                        "opportunity": opportunity,
+                    }),
                 ],
             ).fetchone()
         return str(row["id"])
@@ -54,6 +84,115 @@ class ActionRepository:
                 [alert_id],
             )
         return result.rowcount == 1
+
+    def stage_option_paper_entry(
+        self,
+        *,
+        decision_id: UUID,
+        idempotency_key: str,
+        expected_contract_version: int,
+        limit_price: float | None,
+    ) -> dict[str, Any]:
+        if expected_contract_version != 2:
+            raise ValueError("stale options-radar contract version")
+        key = idempotency_key.strip()
+        if not key:
+            raise ValueError("idempotency key is required")
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["paper-order:options-radar"],
+            )
+            prior = connection.execute(
+                "SELECT id, status, reserved_collateral FROM app.paper_order WHERE idempotency_key = %s",
+                [key],
+            ).fetchone()
+            if prior:
+                return {
+                    "status": str(prior["status"]),
+                    "paper_order_id": str(prior["id"]),
+                    "reserved_collateral": float(prior["reserved_collateral"] or 0),
+                    "idempotent_replay": True,
+                }
+            signal = connection.execute(
+                """
+                SELECT decision.instrument_id, decision.state, option_decision.structure,
+                       option_decision.entry_price, option_decision.secured_cash,
+                       option_decision.max_loss, option_decision.details,
+                       EXISTS (
+                           SELECT 1 FROM app.publication publication
+                           JOIN app.publication_item item ON item.publication_id = publication.id
+                           WHERE publication.scope = 'options-radar'
+                             AND publication.status = 'published'
+                             AND item.model_name = 'option_radar_opportunity'
+                             AND item.payload->>'decision_id' = decision.id::text
+                       ) AS currently_published
+                FROM analysis.decision decision
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                WHERE decision.id = %s FOR UPDATE
+                """,
+                [decision_id],
+            ).fetchone()
+            if signal is None:
+                raise ValueError("options-radar signal not found")
+            if not signal["currently_published"]:
+                raise ValueError("signal is stale and is no longer in the current publication")
+            structure = str(signal["structure"] or "long_option")
+            collateral = float(signal["secured_cash"] or 0)
+            account = connection.execute(
+                "SELECT net_liquidation, cash_balance, buying_power, observed_at "
+                "FROM raw.broker_account_snapshot ORDER BY observed_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if structure == "cash_secured_put":
+                if account is None or account["net_liquidation"] is None or account["cash_balance"] is None:
+                    raise ValueError("current broker cash and NAV are required for a cash-secured put")
+                nav = float(account["net_liquidation"])
+                available_cash = min(float(account["cash_balance"]), float(account["buying_power"] or account["cash_balance"]))
+                reserved = float(
+                    connection.execute(
+                        "SELECT COALESCE(sum(reserved_collateral), 0) AS total FROM app.paper_order "
+                        "WHERE structure = 'cash_secured_put' AND status IN ('staged', 'open', 'entered')"
+                    ).fetchone()["total"]
+                )
+                if collateral <= 0:
+                    raise ValueError("cash-secured-put collateral is unavailable")
+                if collateral > nav * 0.05:
+                    raise ValueError("one contract exceeds the 5% NAV ticker limit")
+                if reserved + collateral > nav * 0.15:
+                    raise ValueError("aggregate cash-secured-put collateral would exceed 15% NAV")
+                if reserved + collateral > available_cash:
+                    raise ValueError("insufficient unreserved cash collateral")
+            quantity = 1
+            side = "sell" if structure == "cash_secured_put" else "buy"
+            policy = {
+                "contract_version": 2,
+                "structure": structure,
+                "fully_cash_secured": structure == "cash_secured_put",
+                "live_order_submission": False,
+            }
+            row = connection.execute(
+                """
+                INSERT INTO app.paper_order
+                    (decision_id, instrument_id, side, quantity, limit_price, status,
+                     policy_result, structure, reserved_collateral, idempotency_key)
+                VALUES (%s, %s, %s, %s, %s, 'staged', %s, %s, %s, %s)
+                RETURNING id
+                """,
+                [
+                    decision_id, signal["instrument_id"], side, quantity,
+                    limit_price if limit_price is not None else signal["entry_price"],
+                    Jsonb(policy), structure, collateral or None, key,
+                ],
+            ).fetchone()
+        return {
+            "status": "staged",
+            "paper_order_id": str(row["id"]),
+            "decision_id": str(decision_id),
+            "structure": structure,
+            "reserved_collateral": collateral,
+            "live_order_submission": False,
+            "idempotent_replay": False,
+        }
 
     def promote_strategy_proposal(self, proposal_id: str, *, approved_by: str) -> str:
         approver = approved_by.strip()

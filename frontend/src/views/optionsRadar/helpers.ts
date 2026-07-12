@@ -27,9 +27,9 @@ export function summarizeReasons(reasons: Array<[string, number]>, empty: string
 
 export function impactSummary(row: RowRecord, fireCount = 0, setupCount = 0): string {
   if (isServiceRepair(row)) return "Do not interpret as a trade setup until the data contract is fixed.";
-  if (tierOf(row) === "Exceptional") return "Candidate is allowed into trade review because data, asymmetry, entry, and evidence gates are aligned.";
+  if (stateOf(row) === "READY") return "Candidate is allowed into trade review because data, execution, evidence, and calibration gates are aligned.";
   if (tierOf(row) === "Research") {
-    const contractMix = fireCount ? `${fireCount.toLocaleString()} FIRE contract${fireCount === 1 ? "" : "s"}` : `${setupCount.toLocaleString()} setup contract${setupCount === 1 ? "" : "s"}`;
+    const contractMix = fireCount ? `${fireCount.toLocaleString()} ready contract${fireCount === 1 ? "" : "s"}` : `${setupCount.toLocaleString()} setup contract${setupCount === 1 ? "" : "s"}`;
     return `${contractMix} exist, but the grouped ticker is still Research because strict evidence, thesis, regime, or blocker gates are not all clean.`;
   }
   return "Watch only; signal is not yet strong enough for research priority.";
@@ -64,7 +64,7 @@ export function opportunityActionText(row: RowRecord): string {
   }
   const blockers = arrayText(row, "blockers");
   const reasons = arrayText(row, "top_reasons");
-  if (tier === "Exceptional" && !blockers.length) {
+  if (stateOf(row) === "READY" && !blockers.length) {
     const why = reasons.slice(0, 3).map(reasonLabel).join(", ");
     return why ? `Trade-ready candidate: ${why}.` : "Trade-ready candidate: strict gates passed.";
   }
@@ -84,9 +84,9 @@ export function candidateActionText(row: RowRecord, validation: RowRecord | unde
   const blockers = listFromRecord(raw, "blockers");
   if (hardRejects.length) return `Do not advance: ${hardRejects.slice(0, 3).map(reasonLabel).join(", ")}.`;
   if (validationState.includes("invalidated") || redTeam.includes("hard_risk")) return "Do not advance until thesis invalidation or hard red-team risk is resolved.";
-  if (state === "FIRE" && blockers.length) return `Research, not trade-ready: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.`;
-  if (state === "FIRE") return "Top signal: review thesis expansion, fill discipline, and kill switch before any trade review.";
-  if (state === "SETUP") return blockers.length ? `Monitor setup: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.` : "Monitor setup until it clears FIRE gates.";
+  if (state === "READY" && blockers.length) return `Research, not trade-ready: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.`;
+  if (state === "READY") return "Ready signal: review entry discipline, portfolio fit, and invalidation before paper entry.";
+  if (state === "SETUP") return blockers.length ? `Monitor setup: ${blockers.slice(0, 3).map(reasonLabel).join(", ")}.` : "Shadow setup; READY remains locked until forward calibration matures.";
   return "Watch only until ranking, data quality, and thesis gates improve.";
 }
 
@@ -228,7 +228,7 @@ export function rowsForDisplayTime(sourceRows: RowRecord[], displayTime: string,
   return matchingRows.length ? matchingRows : sourceRows;
 }
 
-export const OPPORTUNITY_STATES = new Set(["FIRE", "SETUP", "WATCH", "HOLD", "TRIM"]);
+export const OPPORTUNITY_STATES = new Set(["READY", "SETUP", "WATCH"]);
 
 export function isOpportunityCandidate(row: RowRecord): boolean {
   return OPPORTUNITY_STATES.has(stateOf(row));
@@ -253,7 +253,7 @@ export function candidateOpportunityFields(opportunity: RowRecord | undefined): 
 }
 
 export function candidateConviction(row: RowRecord): number {
-  return numberField(row, ["opportunity_conviction_score", "conviction_score", "score"], Number.NEGATIVE_INFINITY);
+  return numberField(row, ["rank_score", "score", "opportunity_conviction_score", "conviction_score"], Number.NEGATIVE_INFINITY);
 }
 
 // Human-readable contract label (e.g. "$845 Call") for the radar table, replacing
@@ -268,6 +268,8 @@ export function contractLabel(row: RowRecord): string {
 }
 
 export function candidateFamily(row: RowRecord): string {
+  const structure = textField(row, ["structure"]);
+  if (structure) return structure.replaceAll("_", " ");
   const raw = recordField(row, "raw");
   const rawFamily = stringFromRecord(raw, "strategy_family");
   if (rawFamily) return rawFamily;
@@ -393,9 +395,8 @@ export function investmentStateLabel(row: RowRecord): string {
   const tier = tierOf(row);
   const primaryState = textField(row, ["primary_state"], "watch").toUpperCase();
   if (isServiceRepair(row)) return "Data Blocked";
-  if (tier === "Exceptional") return "Trade Ready";
+  if (primaryState === "READY") return "Ready";
   if (tier === "Research") return `${titleLabel(primaryState)} Research`;
-  if (primaryState === "FIRE") return "Fire Watch";
   if (primaryState === "SETUP") return "Setup Watch";
   return titleLabel(primaryState || tier || "Watch");
 }
@@ -403,7 +404,7 @@ export function investmentStateLabel(row: RowRecord): string {
 export function investmentStateTone(row: RowRecord): Tone {
   if (isServiceRepair(row)) return "bad";
   const tier = tierOf(row);
-  if (tier === "Exceptional") return "good";
+  if (textField(row, ["primary_state", "state"]).toUpperCase() === "READY") return "good";
   if (tier === "Research") return "info";
   return stateTone(textField(row, ["primary_state"]));
 }

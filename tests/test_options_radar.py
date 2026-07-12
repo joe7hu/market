@@ -1149,12 +1149,13 @@ def test_options_radar_tables_load_through_panel_contract(migrated_postgres_dsn:
 
     panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "options-radar")
     tables = panel.tables
-    assert panel.rows("option_radar_summary")[0]["symbol"] == "TSLA"
+    assert panel.rows("option_radar_summary")[0]["stable_key"] == "global"
+    assert panel.rows("option_radar_symbol_summary")[0]["symbol"] == "TSLA"
     assert "option_snapshot" not in tables
     assert "option_features" not in tables
     assert "stock_features" not in tables
     assert "radar_alert" in tables
-    assert {row["state"] for row in panel.rows("candidate_event")} <= {"FIRE", "SETUP", "WATCH", "REJECT"}
+    assert {row["state"] for row in panel.rows("candidate_event")} <= {"READY", "SETUP", "WATCH", "REJECTED"}
     assert "candidate_event_attribution" in tables
     assert "shadow_trade" not in tables
     assert "radar_state_transition" not in tables

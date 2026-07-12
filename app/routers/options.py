@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -63,6 +64,42 @@ def stock_features() -> dict[str, Any]:
 @router.get("/api/option-radar-opportunities")
 def option_radar_opportunities() -> dict[str, Any]:
     return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "option_radar_opportunity"))
+
+
+@router.get("/api/options-radar/signals/{decision_id}")
+def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
+    config = deps.load_config()
+    from investment_panel.database.analysis import AnalysisRepository
+    from investment_panel.database.authority import runtime_for_config
+
+    detail = AnalysisRepository(runtime_for_config(config)).option_signal_detail(decision_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Options-radar signal not found")
+    return detail
+
+
+@router.post("/api/options-radar/signals/{decision_id}/paper-entry")
+def stage_option_radar_paper_entry(
+    decision_id: UUID,
+    payload: deps.OptionPaperEntryInput,
+    request: Request,
+) -> dict[str, Any]:
+    deps._require_local_request(request)
+    config = deps.load_config()
+    from investment_panel.database.actions import ActionRepository
+    from investment_panel.database.authority import runtime_for_config
+
+    try:
+        result = ActionRepository(runtime_for_config(config)).stage_option_paper_entry(
+            decision_id=decision_id,
+            idempotency_key=payload.idempotency_key,
+            expected_contract_version=payload.expected_contract_version,
+            limit_price=payload.limit_price,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    deps._invalidate_context_cache()
+    return result
 
 
 @router.get("/api/agent-thesis")
@@ -212,6 +249,10 @@ def create_trade_journal_entry(payload: deps.TradeJournalInput, request: Request
         strategy_version=payload.strategy_version,
         opportunity=payload.opportunity,
         notes=payload.notes,
+        action=payload.action,
+        idempotency_key=payload.idempotency_key,
+        publication_id=payload.publication_id,
+        expected_contract_version=payload.expected_contract_version,
     )
     deps._invalidate_context_cache()
     return {"status": "recorded", "journal_id": journal_id}

@@ -15,7 +15,7 @@ from copy import deepcopy
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
@@ -74,7 +74,7 @@ _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key"
 _CONTEXT_LOCK = RLock()
 _LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
-    "options-radar": {"option_radar_summary", "option_radar_opportunity", "candidate_event", "radar_alert"},
+    "options-radar": {"option_radar_summary", "option_radar_symbol_summary", "option_radar_opportunity", "candidate_event", "radar_alert"},
 }
 
 
@@ -104,6 +104,12 @@ class ThesisInput(BaseModel):
 
 class PaperOrderInput(BaseModel):
     recommendation_id: str
+
+
+class OptionPaperEntryInput(BaseModel):
+    idempotency_key: str
+    expected_contract_version: int = 2
+    limit_price: float | None = None
 
 
 class StrategyPromotionInput(BaseModel):
@@ -175,6 +181,10 @@ class TradeJournalInput(BaseModel):
     strategy_version: str = DEFAULT_STRATEGY_VERSION
     opportunity: dict[str, Any] = {}
     notes: str = ""
+    action: Literal["accepted", "skipped", "entered", "resized", "exited", "invalidated"] = "accepted"
+    idempotency_key: str | None = None
+    publication_id: str | None = None
+    expected_contract_version: int | None = None
 
 
 def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | None = None) -> tuple[dict[str, Any], Any]:

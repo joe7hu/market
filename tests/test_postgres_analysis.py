@@ -13,9 +13,11 @@ from psycopg.types.json import Jsonb
 from app import deps
 from app.routers.options import router as options_router
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.actions import ActionRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
+from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -223,14 +225,147 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert result["actionable"] == 1
     opportunity = published_options_radar_rows(runtime, "option_radar_opportunity")[0]
     assert opportunity["symbol"] == "NVDA"
-    assert opportunity["state"] == "FIRE"
-    assert opportunity["tier"] == "Exceptional"
+    assert opportunity["state"] == "SETUP"
+    assert opportunity["tier"] == "setup"
+    assert opportunity["structure"] == "long_call"
+    assert opportunity["contract_version"] == 2
     assert opportunity["quality_status"] == "complete"
     assert opportunity["spread_pct"] == pytest.approx(0.08)
-    assert opportunity["raw"]["feature_version"] == "option-core-v1"
-    assert published_options_radar_rows(runtime, "option_radar_summary") == [
-        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 1, "setup_count": 0, "watch_count": 0, "reject_count": 0}
+    assert opportunity["raw"]["feature_version"] == "option-professional-v2"
+    summary = published_options_radar_rows(runtime, "option_radar_summary")
+    assert len(summary) == 1
+    assert summary[0]["stable_key"] == "global"
+    assert summary[0]["shortlist_count"] == 1
+    assert summary[0]["shadow_only"] is True
+    assert published_options_radar_rows(runtime, "option_radar_symbol_summary") == [
+        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 0, "setup_count": 1, "watch_count": 0, "reject_count": 0}
     ]
+
+
+def test_options_radar_captures_cash_secured_put_with_collateral_context(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    ingestion = IngestionRepository(runtime)
+    observed_at = datetime(2026, 7, 12, 15, 0, tzinfo=UTC)
+    option_run = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        option_run,
+        source_id="test-options",
+        observed_at=observed_at,
+        market_session="regular",
+        universe="test",
+        rows=[
+            {
+                "symbol": "NVDA",
+                "expiration": "2026-08-21",
+                "strike": 160,
+                "option_type": "put",
+                "contract_symbol": "NVDA260821P00160000",
+                "underlying_price": 175,
+                "bid": 3.0,
+                "ask": 3.2,
+                "mid": 3.1,
+                "volume": 150,
+                "open_interest": 2500,
+                "iv": 0.38,
+                "delta": -0.22,
+            }
+        ],
+    )
+    ingestion.finish_run(option_run, "succeeded")
+    ingestion.register_source("test-broker", name="Broker", family="broker", kind="account")
+    broker_run = ingestion.start_run("test-broker", "broker_account")
+    with runtime.transaction() as connection:
+        instrument_id = analysis_context["instrument_id"]
+        connection.execute(
+            """
+            INSERT INTO raw.price_bar
+                (instrument_id, source_id, ingest_run_id, interval, trading_date,
+                 observed_at, close, volume)
+            SELECT %s, 'test-options', %s, '1d', (%s::date - value),
+                   %s - make_interval(days => value), 150 + value * 0.1, 1000000
+            FROM generate_series(0, 79) value
+            """,
+            [instrument_id, option_run, observed_at, observed_at],
+        )
+        connection.execute(
+            """
+            INSERT INTO raw.fundamental_observation
+                (instrument_id, source_id, ingest_run_id, metric_set, period_end,
+                 observed_at, values)
+            VALUES (%s, 'test-options', %s, 'company_quality', '2025-12-31', %s, %s)
+            """,
+            [instrument_id, option_run, observed_at, Jsonb({"quality_status": "acceptable"})],
+        )
+        connection.execute(
+            """
+            INSERT INTO raw.broker_account_snapshot
+                (source_id, ingest_run_id, account_key, observed_at, currency,
+                 net_liquidation, buying_power, cash_balance)
+            VALUES ('test-broker', %s, 'paper', %s, 'USD', 500000, 100000, 100000)
+            """,
+            [broker_run, observed_at],
+        )
+    ingestion.finish_run(broker_run, "succeeded")
+
+    result = refresh_options_radar(runtime, source_id="test-options", code_version="csp-test")
+
+    assert result["cash_secured_puts"] == 1
+    opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
+    csp = next(row for row in opportunities if row["structure"] == "cash_secured_put")
+    assert csp["state"] == "SETUP"
+    assert csp["secured_cash"] == pytest.approx(15700.65)
+    assert csp["effective_assignment_price"] == pytest.approx(157.0065)
+    assert csp["probability_assignment"] == pytest.approx(0.22)
+    assert csp["details"]["max_contracts"] == 1
+    assert csp["blockers"] == []
+    summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
+    assert summary["cash_secured_put_count"] == 1
+    assert summary["shortlist_count"] <= 10
+    detail = AnalysisRepository(runtime).option_signal_detail(csp["decision_id"])
+    assert detail is not None
+    assert detail["structure"] == "cash_secured_put"
+    assert detail["no_trade_baseline"]["expected_value"] == 0
+    staged = ActionRepository(runtime).stage_option_paper_entry(
+        decision_id=csp["decision_id"],
+        idempotency_key="csp-nvda-1",
+        expected_contract_version=2,
+        limit_price=3.1,
+    )
+    replay = ActionRepository(runtime).stage_option_paper_entry(
+        decision_id=csp["decision_id"],
+        idempotency_key="csp-nvda-1",
+        expected_contract_version=2,
+        limit_price=3.1,
+    )
+    assert staged["reserved_collateral"] == pytest.approx(15700.65)
+    assert replay["paper_order_id"] == staged["paper_order_id"]
+    assert replay["idempotent_replay"] is True
+    mark_run = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        mark_run,
+        source_id="test-options",
+        observed_at=datetime(2026, 7, 17, 15, 0, tzinfo=UTC),
+        market_session="regular",
+        universe="test",
+        rows=[
+            {
+                "symbol": "NVDA", "expiration": "2026-08-21", "strike": 160,
+                "option_type": "put", "contract_symbol": "NVDA260821P00160000",
+                "underlying_price": 180, "bid": 1.4, "ask": 1.5, "mid": 1.45,
+                "volume": 100, "open_interest": 2500, "iv": 0.32, "delta": -0.15,
+            }
+        ],
+    )
+    ingestion.finish_run(mark_run, "succeeded")
+    OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 18, 15, 0, tzinfo=UTC))
+    with runtime.read() as connection:
+        outcome = connection.execute(
+            "SELECT current_return, return_5d, strike_touched FROM analysis.option_outcome WHERE decision_id = %s",
+            [csp["decision_id"]],
+        ).fetchone()
+    assert outcome["current_return"] > 0
+    assert outcome["return_5d"] > 0
+    assert outcome["strike_touched"] is False
 
 
 def test_options_radar_applies_promoted_strategy_parameters(analysis_context) -> None:
@@ -264,7 +399,7 @@ def test_options_radar_applies_promoted_strategy_parameters(analysis_context) ->
 
     assert result["decisions"] == 0
     assert published_options_radar_rows(runtime, "option_radar_opportunity") == []
-    assert published_options_radar_rows(runtime, "option_radar_summary")[0]["reject_count"] == 1
+    assert published_options_radar_rows(runtime, "option_radar_symbol_summary")[0]["reject_count"] == 1
     with runtime.read() as connection:
         run = connection.execute(
             "SELECT strategy_revision_id FROM analysis.run ORDER BY started_at DESC LIMIT 1"
@@ -366,5 +501,5 @@ def test_options_api_reads_only_published_postgresql_generation(
     assert opportunities.status_code == 200
     assert opportunities.json()["rows"][0]["symbol"] == "NVDA"
     assert snapshots.json()["rows"][0]["contract_id"] == str(analysis_context["contract_id"])
-    assert features.json()["rows"][0]["raw"]["feature_version"] == "option-core-v1"
-    assert candidates.json()["rows"][0]["state"] == "FIRE"
+    assert features.json()["rows"][0]["raw"]["feature_version"] == "option-professional-v2"
+    assert candidates.json()["rows"][0]["state"] == "SETUP"

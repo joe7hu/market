@@ -10,7 +10,7 @@ import {recordField, numberFromRecord, stringFromRecord, boolFromRecord } from "
 import {stateTone, tierTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone } from "../optionsRadarTone";
 import {FullText, TickerButton } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, opportunityActionText, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures } from "./helpers";
+import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, opportunityActionText, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures, stateOf } from "./helpers";
 import {OptionThesisAgentRuntime } from "./types";
 import {BriefCallout, InsightLine, MetricBox } from "./shared";
 
@@ -44,7 +44,7 @@ export function SignalBriefPanel({
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
   const repairRows = rows.filter(isServiceRepair);
-  const exceptionalRows = rows.filter((row) => tierOf(row) === "Exceptional");
+  const exceptionalRows = rows.filter((row) => stateOf(row) === "READY");
   const researchRows = rows.filter((row) => tierOf(row) === "Research");
   const topBlockers = commonBlockers(rows).slice(0, 3);
   const dataFailures = commonDataContractFailures(repairRows).slice(0, 3);
@@ -63,7 +63,7 @@ export function SignalBriefPanel({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
-            {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} FIRE contract{fireCount === 1 ? "" : "s"} blocked from trade-ready</StatusBadge> : null}
+            {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} ready contract{fireCount === 1 ? "" : "s"} awaiting grouped evidence</StatusBadge> : null}
             <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} with setups`}</StatusBadge>
             {activeAlertCount ? <StatusBadge tone="warn">{activeAlertCount.toLocaleString()} active alert{activeAlertCount === 1 ? "" : "s"}</StatusBadge> : null}
             <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
@@ -73,15 +73,15 @@ export function SignalBriefPanel({
             <div className="mt-4">
               <div className="flex flex-wrap items-center gap-2">
                 <TickerButton ticker={textField(strongest, ["ticker"])} onOpenTicker={onOpenTicker} />
-                <StatusBadge tone={tierTone(tierOf(strongest))}>{tierOf(strongest)}</StatusBadge>
-                <StatusBadge tone={stateTone(textField(strongest, ["primary_state"]).toUpperCase())}>{titleLabel(displayField(strongest, ["primary_state"], "watch"))}</StatusBadge>
+                <StatusBadge tone={tierTone(tierOf(strongest))}>{titleLabel(textField(strongest, ["structure"], tierOf(strongest)).replaceAll("_", " "))}</StatusBadge>
+                <StatusBadge tone={stateTone(stateOf(strongest))}>{titleLabel(stateOf(strongest) || "watch")}</StatusBadge>
               </div>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricBox label="Conviction" value={formatScore(numberField(strongest, ["conviction_score"], Number.NaN))} />
-                <MetricBox label="Required Move" value={formatRatio(numberField(strongest, ["required_move_pct"], Number.NaN))} />
-                <MetricBox label="Premium" value={moneyField(strongest, ["premium_mid"])} />
-                <MetricBox label="Buy Under" value={moneyField(strongest, ["buy_under"])} />
+                <MetricBox label="Rank Score" value={formatScore(numberField(strongest, ["rank_score", "score"], Number.NaN))} />
+                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Assignment Basis" : "Required Move"} value={textField(strongest, ["structure"]) === "cash_secured_put" ? moneyField(strongest, ["effective_assignment_price"]) : formatRatio(numberField(strongest, ["required_move_pct"], Number.NaN))} />
+                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Entry Credit" : "Entry"} value={moneyField(strongest, ["entry_price", "premium_mid"])} />
+                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Max Loss"} value={moneyField(strongest, ["secured_cash", "max_loss"])} />
               </div>
             </div>
           ) : (
@@ -143,18 +143,18 @@ export function OpportunityThesisSummary({
 
 export function StrategyExplainer({ strategy }: { strategy: RowRecord | undefined }) {
   const params = recordField(strategy, "parameters");
-  const strategyName = displayField(strategy, ["strategy_name"], "LEAP 10x reversal");
+  const strategyName = displayField(strategy, ["strategy_name"], "Professional options radar");
   const version = displayField(strategy, ["strategy_version"], "No strategy loaded");
   const status = textField(strategy, ["status"], "shadow");
   const rules = [
     ["Contract", `${titleLabel(stringFromRecord(params, "option_type", "call"))} options`],
     ["Delta", `${formatNumber(numberFromRecord(params, "delta_min"), 2)}-${formatNumber(numberFromRecord(params, "delta_max"), 2)}`],
     ["DTE", `${formatNumber(numberFromRecord(params, "dte_min"), 0)}-${formatNumber(numberFromRecord(params, "dte_max"), 0)} days`],
-    ["Spread", `Fire <= ${formatRatio(numberFromRecord(params, "max_spread_pct"))}; reject > ${formatRatio(numberFromRecord(params, "reject_spread_pct"))}`],
+    ["Spread", `Eligible <= ${formatRatio(numberFromRecord(params, "max_spread_pct"))}`],
     ["Liquidity", `OI >= ${formatNumber(numberFromRecord(params, "min_open_interest"), 0)}; volume >= ${formatNumber(numberFromRecord(params, "min_volume"), 0)}`],
     ["IV", `Fire <= ${formatNumber(numberFromRecord(params, "max_iv_percentile"), 0)} pctile; reject > ${formatNumber(numberFromRecord(params, "reject_iv_percentile"), 0)}`],
     ["Trend", `${boolFromRecord(params, "require_price_above_ma50") ? "Above 50D" : "50D optional"}; ${boolFromRecord(params, "require_rs_improving") ? "RS vs QQQ improving" : "RS optional"}`],
-    ["10x cap", `Underlying move <= ${formatRatio(numberFromRecord(params, "max_required_move_pct"))}`],
+    ["Structures", "Long calls, long puts, and cash-secured puts"],
   ];
   return (
     <section className="rounded-md border border-border bg-card p-4">
@@ -166,7 +166,7 @@ export function StrategyExplainer({ strategy }: { strategy: RowRecord | undefine
             <StatusBadge tone="info">{version}</StatusBadge>
           </div>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-muted-foreground">
-            A shadow-only LEAP call screen looking for contracts where a large underlying move could make intrinsic value roughly 10x the option mid. The visible signal rank uses opportunity conviction when the read model has it; queue state still separates FIRE, SETUP, and WATCH. Agents only receive the current top-ranked queue, and promotion requires deterministic backtest, forward shadow test, and human approval.
+            A shadow-only decision system for executable directional options and fully collateralized short puts. Rank score, assignment basis, tail loss, execution quality, and portfolio constraints remain separate; READY stays locked until forward calibration matures.
           </p>
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">
@@ -184,4 +184,3 @@ export function StrategyExplainer({ strategy }: { strategy: RowRecord | undefine
     </section>
   );
 }
-

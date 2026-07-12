@@ -10,7 +10,7 @@ export type OptionThesisAgentRuntime = {
 };
 
 export type CandidateSort = "conviction-desc" | "ticker-asc" | "move-asc" | "premium-asc" | "expiry-asc" | "state";
-export type CandidateStateFilter = "all" | "FIRE" | "SETUP" | "WATCH";
+export type CandidateStateFilter = "all" | "READY" | "SETUP" | "WATCH";
 export type CandidateFocus = "top25" | "top-per-ticker" | "all";
 export type ThesisFilter = "all" | "needs" | "requested" | "attached";
 export type QualityFilter = "all" | "ok" | "caution" | "bad";

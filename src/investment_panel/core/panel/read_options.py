@@ -377,6 +377,36 @@ def option_radar_opportunity(con: Any, radar_context: RadarDisplayContext | None
     ]
 
 
+def option_radar_symbol_summary(
+    con: Any, radar_context: RadarDisplayContext | None = None
+) -> list[dict[str, Any]]:
+    """Legacy-reader compatibility for the professional per-symbol contract."""
+
+    context = radar_context or radar_display_context(con)
+    rows = query_rows(
+        con,
+        """
+        SELECT ticker AS symbol, ticker,
+               sum(CASE WHEN primary_state = 'READY' THEN 1 ELSE 0 END) AS ready_count,
+               sum(CASE WHEN primary_state = 'SETUP' THEN 1 ELSE 0 END) AS setup_count,
+               sum(CASE WHEN primary_state = 'WATCH' THEN 1 ELSE 0 END) AS watch_count
+        FROM option_radar_opportunity
+        WHERE snapshot_time = TRY_CAST(? AS TIMESTAMP) AND strategy_version = ?
+        GROUP BY ticker ORDER BY ticker
+        """,
+        [context.candidate_time, context.strategy_version],
+    )
+    return rows
+
+
+def option_action_queue(
+    con: Any, radar_context: RadarDisplayContext | None = None
+) -> list[dict[str, Any]]:
+    """Top three legacy-reader opportunities for the Today compatibility path."""
+
+    return option_radar_opportunity(con, radar_context)[:3]
+
+
 
 
 def option_snapshot(con: Any) -> list[dict[str, Any]]:

@@ -8,7 +8,7 @@ import type { Tone } from "@/ui/tone";
 import { textField, titleLabel, toneFromText } from "./rowFormat";
 
 export function stateRank(state: string): number {
-  if (state === "FIRE") return 0;
+  if (state === "READY") return 0;
   if (state === "SETUP") return 1;
   if (state === "WATCH") return 2;
   return 3;
@@ -16,7 +16,7 @@ export function stateRank(state: string): number {
 
 export function stateTone(state: string): Tone {
   const normalized = state.toUpperCase();
-  if (normalized === "FIRE" || normalized === "HOLD") return "good";
+  if (normalized === "READY") return "good";
   if (normalized === "SETUP" || normalized === "TRIM") return "warn";
   if (normalized === "INVALIDATED" || normalized === "EXIT") return "bad";
   if (normalized === "WATCH") return "info";

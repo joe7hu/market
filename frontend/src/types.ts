@@ -94,6 +94,7 @@ export type SettingsPayload = {
 export type KnownPanelTables = {
   discoveredUniverse: TablePayload;
   decisionQueue: TablePayload;
+  optionActionQueue: TablePayload;
   decisionReadiness: TablePayload;
   sourceFreshness: TablePayload;
   symbolDecisionSnapshots: TablePayload;
@@ -118,6 +119,7 @@ export type KnownPanelTables = {
   optionsTickerSignals: TablePayload;
   optionStrategyVersions: TablePayload;
   optionRadarSummary: TablePayload;
+  optionRadarSymbolSummary: TablePayload;
   optionRadarOpportunity: TablePayload;
   radarAlert: TablePayload;
   optionSnapshot: TablePayload;

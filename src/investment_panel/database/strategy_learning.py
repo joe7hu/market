@@ -127,8 +127,12 @@ class StrategyLearningRepository:
             """
             INSERT INTO analysis.strategy_revision
                 (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
-            VALUES ('options-radar-core', 1, 'options-radar-core', 'active', %s,
-                    'options-radar-core', now())
+            SELECT 'options-radar-core', 1, 'options-radar-core', 'active', %s,
+                   'options-radar-core', now()
+            WHERE NOT EXISTS (
+                SELECT 1 FROM analysis.strategy_revision
+                WHERE authority_group = 'options-radar-core' AND status = 'active'
+            )
             ON CONFLICT (strategy_key, revision) DO NOTHING
             """,
             [Jsonb(_DEFAULT_PARAMETERS)],

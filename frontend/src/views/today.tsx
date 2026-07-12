@@ -25,6 +25,7 @@ const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCa
 
 export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
+  const optionActions = data.optionActionQueue?.rows ?? [];
   const hasBrief = vm.briefCount > 0;
 
   return (
@@ -58,6 +59,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       </div>
 
       <PreopenBrief row={vm.preopenBrief} />
+      <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} />
 
       {hasBrief ? (
         <>
@@ -75,6 +77,49 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
       )}
     </section>
   );
+}
+
+function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  if (!rows.length) return null;
+  return (
+    <section className="mb-6">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Options decisions</h2>
+          <p className="text-xs text-muted-foreground">Top current actions from the same immutable Options Radar publication.</p>
+        </div>
+        <StatusBadge tone="info">{rows.length} current</StatusBadge>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        {rows.slice(0, 3).map((row) => {
+          const symbol = textField(row, ["symbol", "ticker"]);
+          const structure = textField(row, ["structure"], "option").replaceAll("_", " ");
+          const cashSecured = textField(row, ["structure"]) === "cash_secured_put";
+          return (
+            <Card key={textField(row, ["stable_key", "decision_id"], `${symbol}-${structure}`)}>
+              <CardContent className="space-y-3 p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(symbol)}>{symbol}</button>
+                  <StatusBadge tone="warn">{structure}</StatusBadge>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <OptionMetric label={cashSecured ? "Credit" : "Entry"} value={formatMoney(numberField(row, ["entry_price"], Number.NaN))} />
+                  <OptionMetric label={cashSecured ? "Assignment basis" : "Max loss"} value={formatMoney(numberField(row, cashSecured ? ["effective_assignment_price"] : ["max_loss"], Number.NaN))} />
+                  <OptionMetric label={cashSecured ? "Secured cash" : "Expected value"} value={formatMoney(numberField(row, cashSecured ? ["secured_cash"] : ["expected_value"], Number.NaN))} />
+                  <OptionMetric label={cashSecured ? "Assignment" : "State"} value={cashSecured ? `${(numberField(row, ["probability_assignment"], 0) * 100).toFixed(1)}%` : textField(row, ["action"], "setup")} />
+                </div>
+                <p className="line-clamp-2 text-sm text-muted-foreground">{textField(row, ["summary"], "Review entry, risk, and invalidation in Options Radar.")}</p>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function OptionMetric({ label, value }: { label: string; value: string }) {
+  return <div><div className="text-muted-foreground">{label}</div><div className="mt-0.5 font-medium tabular-nums text-foreground">{value}</div></div>;
 }
 
 function PreopenBrief({ row }: { row: RowRecord | null }) {

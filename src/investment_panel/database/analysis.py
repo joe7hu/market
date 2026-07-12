@@ -31,7 +31,7 @@ class AnalysisRepository:
     ) -> int:
         with self.runtime.transaction() as connection:
             row = connection.execute(
-                """
+                f"""
                 INSERT INTO analysis.strategy_revision
                     (strategy_key, revision, name, status, parameters, supersedes_id, authority_group,
                      promoted_at)
@@ -162,24 +162,50 @@ class AnalysisRepository:
             ).fetchone()
             decision_id = UUID(str(decision["id"]))
             connection.execute(
-                """
+                f"""
                 INSERT INTO analysis.option_decision
                     (decision_id, contract_id, snapshot_id, quote_observed_at, premium_mid,
                      fill_assumption, required_move_pct, buy_under, predicted_p2x,
-                     predicted_p5x, ev_multiple, tier, synthetic_legs)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     predicted_p5x, ev_multiple, tier, synthetic_legs, structure,
+                     entry_price, exit_cost_estimate, secured_cash, max_profit, max_loss,
+                     break_even, effective_assignment_price, probability_profit,
+                     probability_assignment, probability_touch, expected_value,
+                     risk_adjusted_expectancy, tail_cvar, data_confidence,
+                     execution_confidence, details)
+                VALUES ({', '.join(['%s'] * 30)})
                 ON CONFLICT (decision_id) DO UPDATE
                 SET premium_mid = EXCLUDED.premium_mid, fill_assumption = EXCLUDED.fill_assumption,
                     required_move_pct = EXCLUDED.required_move_pct, buy_under = EXCLUDED.buy_under,
                     predicted_p2x = EXCLUDED.predicted_p2x, predicted_p5x = EXCLUDED.predicted_p5x,
                     ev_multiple = EXCLUDED.ev_multiple, tier = EXCLUDED.tier,
-                    synthetic_legs = EXCLUDED.synthetic_legs
+                    synthetic_legs = EXCLUDED.synthetic_legs,
+                    structure = EXCLUDED.structure, entry_price = EXCLUDED.entry_price,
+                    exit_cost_estimate = EXCLUDED.exit_cost_estimate,
+                    secured_cash = EXCLUDED.secured_cash, max_profit = EXCLUDED.max_profit,
+                    max_loss = EXCLUDED.max_loss, break_even = EXCLUDED.break_even,
+                    effective_assignment_price = EXCLUDED.effective_assignment_price,
+                    probability_profit = EXCLUDED.probability_profit,
+                    probability_assignment = EXCLUDED.probability_assignment,
+                    probability_touch = EXCLUDED.probability_touch,
+                    expected_value = EXCLUDED.expected_value,
+                    risk_adjusted_expectancy = EXCLUDED.risk_adjusted_expectancy,
+                    tail_cvar = EXCLUDED.tail_cvar, data_confidence = EXCLUDED.data_confidence,
+                    execution_confidence = EXCLUDED.execution_confidence,
+                    details = EXCLUDED.details
                 """,
                 [
                     decision_id, contract_id, snapshot_id, quote_observed_at,
                     option.get("premium_mid"), option.get("fill_assumption"), option.get("required_move_pct"),
                     option.get("buy_under"), option.get("predicted_p2x"), option.get("predicted_p5x"),
                     option.get("ev_multiple"), option.get("tier"), Jsonb(list(option.get("synthetic_legs") or [])),
+                    option.get("structure") or "long_option", option.get("entry_price"),
+                    option.get("exit_cost_estimate"), option.get("secured_cash"),
+                    option.get("max_profit"), option.get("max_loss"), option.get("break_even"),
+                    option.get("effective_assignment_price"), option.get("probability_profit"),
+                    option.get("probability_assignment"), option.get("probability_touch"),
+                    option.get("expected_value"), option.get("risk_adjusted_expectancy"),
+                    option.get("tail_cvar"), option.get("data_confidence"),
+                    option.get("execution_confidence"), Jsonb(dict(option.get("details") or {})),
                 ],
             )
         return decision_id
@@ -272,6 +298,78 @@ class AnalysisRepository:
                 [scope, model_name],
             ).fetchall()
         return [dict(row["payload"]) for row in rows]
+
+    def option_signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
+        """Return immutable signal, publication, evidence, and outcome context."""
+
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT decision.id::text AS decision_id, decision.state, decision.rank,
+                       decision.score AS rank_score, decision.as_of, decision.reasons,
+                       decision.blockers, decision.quality_status,
+                       instrument.symbol AS ticker, contract.expiration, contract.strike,
+                       contract.option_type, contract.multiplier,
+                       option_decision.*, strategy.strategy_key,
+                       strategy.revision AS strategy_revision,
+                       run.input_cutoff AS analysis_cutoff, run.code_version,
+                       run.feature_versions,
+                       publication.id::text AS publication_id,
+                       publication.published_at,
+                       outcome.maturity_state, outcome.observed_through,
+                       outcome.current_return, outcome.return_1d, outcome.return_5d,
+                       outcome.return_20d, outcome.return_60d, outcome.peak_return,
+                       outcome.max_drawdown, outcome.paper_status,
+                       outcome.credit_captured, outcome.collateral_return,
+                       outcome.assigned_basis, outcome.strike_touched
+                FROM analysis.decision decision
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                JOIN analysis.run run ON run.id = decision.run_id
+                LEFT JOIN analysis.strategy_revision strategy ON strategy.id = decision.strategy_revision_id
+                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                LEFT JOIN app.publication publication
+                  ON publication.analysis_run_id = decision.run_id
+                 AND publication.scope = 'options-radar'
+                 AND publication.status IN ('published', 'superseded')
+                WHERE decision.id = %s
+                ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
+                """,
+                [decision_id],
+            ).fetchone()
+            if row is None:
+                return None
+            evidence = connection.execute(
+                "SELECT evidence_kind, reference_key, reference_url, detail "
+                "FROM analysis.decision_evidence WHERE decision_id = %s "
+                "ORDER BY evidence_kind, reference_key",
+                [decision_id],
+            ).fetchall()
+            alternatives = connection.execute(
+                """
+                SELECT candidate.id::text AS decision_id, candidate.state,
+                       candidate.score AS rank_score, candidate_option.structure,
+                       candidate_option.entry_price, candidate_option.expected_value,
+                       candidate_option.risk_adjusted_expectancy,
+                       candidate_option.max_loss, candidate_option.secured_cash
+                FROM analysis.decision chosen
+                JOIN analysis.decision candidate
+                  ON candidate.run_id = chosen.run_id
+                 AND candidate.instrument_id = chosen.instrument_id
+                 AND candidate.id <> chosen.id
+                JOIN analysis.option_decision candidate_option ON candidate_option.decision_id = candidate.id
+                WHERE chosen.id = %s
+                ORDER BY candidate.score DESC NULLS LAST LIMIT 3
+                """,
+                [decision_id],
+            ).fetchall()
+        result = _jsonable(dict(row))
+        result["contract_version"] = 2
+        result["evidence"] = [_jsonable(dict(item)) for item in evidence]
+        result["alternatives"] = [_jsonable(dict(item)) for item in alternatives]
+        result["no_trade_baseline"] = {"structure": "no_trade", "expected_value": 0.0, "max_loss": 0.0}
+        return result
 
 
 def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, list[dict[str, Any]]]:

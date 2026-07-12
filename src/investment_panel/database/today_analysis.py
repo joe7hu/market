@@ -110,6 +110,10 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
     portfolio_rows = [_portfolio_pulse(row, holdings) for row in holdings]
     review_rows = [_review_item(row) for row in reviews]
     option_items = [_option_item(row) for row in option_rows]
+    option_action_queue = sorted(
+        option_items,
+        key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),
+    )[:3]
     source_items = [_source_change_item(row) for row in source_changes]
     catalyst_rows = [_catalyst_item(row, as_of) for row in catalysts]
     daily_brief = sorted(
@@ -169,6 +173,7 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             "portfolio_risk_cards": portfolio_rows,
             "review_actions": review_rows,
             "decision_queue": decision_queue,
+            "option_action_queue": option_action_queue,
             "decision_readiness": decision_readiness,
             "symbol_decision_snapshots": decision_queue,
             "opportunities_ranked": option_items,
@@ -186,6 +191,7 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         "catalysts": len(catalyst_rows),
         "source_changes": len(source_items),
         "option_decisions": len(option_items),
+        "option_actions": len(option_action_queue),
     }
 
 
@@ -262,13 +268,27 @@ def _option_item(row: dict[str, Any]) -> dict[str, Any]:
         "stable_key": f"option:{row.get('opportunity_id') or row.get('decision_id') or symbol}",
         "category": "decide_now",
         "symbol": symbol,
-        "headline": f"Review {symbol} option setup",
+        "headline": f"Review {symbol} {str(row.get('structure') or 'option').replace('_', ' ')}",
         "summary": "; ".join(row.get("top_reasons") or row.get("reasons") or []) or "Fresh option decision is available.",
         "action": row.get("state") or row.get("action") or "review",
         "score": _number(row.get("score")) or 0,
         "decision_id": row.get("decision_id"),
         "opportunity_id": row.get("opportunity_id"),
         "tier": row.get("tier"),
+        "structure": row.get("structure"),
+        "expiration": row.get("expiration"),
+        "dte": row.get("dte"),
+        "strike": row.get("strike"),
+        "entry_price": row.get("entry_price") or row.get("ask"),
+        "secured_cash": row.get("secured_cash"),
+        "max_loss": row.get("max_loss"),
+        "effective_assignment_price": row.get("effective_assignment_price"),
+        "probability_profit": row.get("probability_profit"),
+        "probability_assignment": row.get("probability_assignment"),
+        "expected_value": row.get("expected_value"),
+        "risk_adjusted_expectancy": row.get("risk_adjusted_expectancy"),
+        "contract_version": row.get("contract_version"),
+        "feature_version": row.get("feature_version"),
         "blockers": row.get("blockers") or [],
     }
 

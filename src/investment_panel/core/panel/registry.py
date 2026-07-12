@@ -34,7 +34,7 @@ from investment_panel.core.panel.read_equity import candidates, catalysts, decis
 from investment_panel.core.panel.read_market_data import analyst_estimates, correlations, earnings, earnings_setups, etf_premiums, fundamentals, liquidity, news, provider_runs, quotes, screener, sepa, source_health, valuations
 from investment_panel.core.panel.read_research import reports, research_packets, trader_profiles
 from investment_panel.core.panel.read_tradingview import instrument_market_identity, tradingview_alerts, tradingview_chart_state, tradingview_symbol_search, tradingview_watchlists
-from investment_panel.core.panel.read_options import option_features, option_radar_opportunity, option_radar_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
+from investment_panel.core.panel.read_options import option_action_queue, option_features, option_radar_opportunity, option_radar_summary, option_radar_symbol_summary, option_snapshot, option_strategy_versions, options_chain, options_expiries, options_expiry_signals, options_payoff_scenarios, options_provider_capabilities, options_ticker_signals, stock_features
 from investment_panel.core.panel.read_learning import agent_postmortem, agent_postmortem_request, agent_thesis, agent_thesis_request, agent_thesis_validation, candidate_event, candidate_event_attribution, candidate_event_mark, conviction_calibration, exploration_gate_report, missed_winner_event, option_attribution, radar_alert, radar_state_transition, shadow_trade, shadow_trade_mark, strategy_backtest_result, strategy_cohort_result, strategy_forward_test_result, strategy_mutation_proposal, trade_journal, vol_surface_features
 
 
@@ -82,6 +82,8 @@ READ_MODELS: dict[str, ReadLoader] = {
     "options_ticker_signals": lambda ctx: options_ticker_signals(ctx.con),
     "option_strategy_versions": lambda ctx: option_strategy_versions(ctx.con),
     "option_radar_summary": lambda ctx: option_radar_summary(ctx.con, ctx.radar_context),
+    "option_radar_symbol_summary": lambda ctx: option_radar_symbol_summary(ctx.con, ctx.radar_context),
+    "option_action_queue": lambda ctx: option_action_queue(ctx.con, ctx.radar_context),
     "option_radar_opportunity": lambda ctx: option_radar_opportunity(ctx.con, ctx.radar_context),
     "option_snapshot": lambda ctx: option_snapshot(ctx.con),
     "option_features": lambda ctx: option_features(ctx.con),

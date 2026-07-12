@@ -16,6 +16,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "portfolio",
         "thesis_monitor",
         "decision_queue",
+        "option_action_queue",
         "feed_signals",
     ),
     "watchlist": (
@@ -212,6 +213,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "options-radar": (
         "option_strategy_versions",
         "option_radar_summary",
+        "option_radar_symbol_summary",
         "option_radar_opportunity",
         "radar_alert",
         "candidate_event",

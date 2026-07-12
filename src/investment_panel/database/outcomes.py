@@ -21,7 +21,10 @@ class OutcomeRepository:
             rows = connection.execute(
                 """
                 SELECT decision.id::text AS decision_id, decision.as_of, contract.expiration,
-                       option_decision.premium_mid, quote.observed_at, quote.mid,
+                       contract.strike, contract.multiplier, option_decision.structure,
+                       option_decision.premium_mid, option_decision.entry_price,
+                       option_decision.secured_cash, option_decision.effective_assignment_price,
+                       quote.observed_at, quote.mid, quote.ask, quote.underlying_price,
                        outcome.maturity_state, outcome.return_1d, outcome.return_5d,
                        outcome.return_20d, outcome.return_60d, outcome.peak_return,
                        outcome.max_drawdown, outcome.time_to_2x_days,
@@ -52,22 +55,52 @@ class OutcomeRepository:
                 entry = _number(first.get("premium_mid"))
                 if not entry or entry <= 0:
                     continue
-                marks = [
-                    (row["observed_at"], float(row["mid"]), float(row["mid"]) / entry - 1)
-                    for row in decision_rows
-                    if row.get("observed_at") is not None and _number(row.get("mid")) is not None
-                ]
+                structure = str(first.get("structure") or "long_option")
+                if structure == "cash_secured_put":
+                    entry = _number(first.get("entry_price")) or entry
+                    secured_cash = _number(first.get("secured_cash"))
+                    multiplier = int(first.get("multiplier") or 100)
+                    marks = [
+                        (
+                            row["observed_at"],
+                            float(row.get("ask") if _number(row.get("ask")) is not None else row["mid"]),
+                            ((entry - float(row.get("ask") if _number(row.get("ask")) is not None else row["mid"])) * multiplier)
+                            / secured_cash,
+                        )
+                        for row in decision_rows
+                        if row.get("observed_at") is not None
+                        and _number(row.get("mid")) is not None
+                        and secured_cash
+                    ]
+                else:
+                    marks = [
+                        (row["observed_at"], float(row["mid"]), float(row["mid"]) / entry - 1)
+                        for row in decision_rows
+                        if row.get("observed_at") is not None and _number(row.get("mid")) is not None
+                    ]
                 as_of = first["as_of"]
                 age_days = max(0, (reference.date() - as_of.date()).days)
                 expired = first.get("expiration") is not None and first["expiration"] <= reference.date()
                 maturity = "expired" if expired else "mature" if age_days >= 60 else "observing"
+                underlying_marks = [
+                    float(row["underlying_price"])
+                    for row in decision_rows
+                    if _number(row.get("underlying_price")) is not None
+                ]
+                strike = _number(first.get("strike"))
+                strike_touched = bool(strike and any(price <= strike for price in underlying_marks)) if structure == "cash_secured_put" else None
+                latest_underlying = underlying_marks[-1] if underlying_marks else None
+                assigned = bool(expired and strike and latest_underlying is not None and latest_underlying < strike)
+                paper_status = (
+                    "assigned" if assigned else "expired_worthless" if expired and structure == "cash_secured_put" else None
+                )
                 values = {
                     "return_1d": _horizon_return(marks, as_of, 1, reference),
                     "return_5d": _horizon_return(marks, as_of, 5, reference),
                     "return_20d": _horizon_return(marks, as_of, 20, reference),
                     "return_60d": _horizon_return(marks, as_of, 60, reference),
-                    "peak_return": max((mark[2] for mark in marks), default=0.0),
-                    "max_drawdown": min((mark[2] for mark in marks), default=0.0),
+                    "peak_return": max((mark[2] for mark in marks), default=None),
+                    "max_drawdown": min((mark[2] for mark in marks), default=None),
                     "time_to_2x_days": _time_to_multiple(marks, as_of, 1.0),
                     "time_to_5x_days": _time_to_multiple(marks, as_of, 4.0),
                     "time_to_10x_days": _time_to_multiple(marks, as_of, 9.0),
@@ -78,8 +111,11 @@ class OutcomeRepository:
                         decision_id, maturity_state, observed_through,
                         current_return, return_1d, return_5d, return_20d, return_60d,
                         peak_return, max_drawdown, time_to_2x_days,
-                        time_to_5x_days, time_to_10x_days, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                        time_to_5x_days, time_to_10x_days, paper_status,
+                        credit_captured, collateral_return, assigned_basis,
+                        strike_touched, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, now())
                     ON CONFLICT (decision_id) DO UPDATE
                     SET maturity_state = EXCLUDED.maturity_state,
                         observed_through = GREATEST(analysis.option_outcome.observed_through, EXCLUDED.observed_through),
@@ -93,14 +129,24 @@ class OutcomeRepository:
                         time_to_2x_days = COALESCE(analysis.option_outcome.time_to_2x_days, EXCLUDED.time_to_2x_days),
                         time_to_5x_days = COALESCE(analysis.option_outcome.time_to_5x_days, EXCLUDED.time_to_5x_days),
                         time_to_10x_days = COALESCE(analysis.option_outcome.time_to_10x_days, EXCLUDED.time_to_10x_days),
+                        paper_status = COALESCE(EXCLUDED.paper_status, analysis.option_outcome.paper_status),
+                        credit_captured = COALESCE(EXCLUDED.credit_captured, analysis.option_outcome.credit_captured),
+                        collateral_return = COALESCE(EXCLUDED.collateral_return, analysis.option_outcome.collateral_return),
+                        assigned_basis = COALESCE(EXCLUDED.assigned_basis, analysis.option_outcome.assigned_basis),
+                        strike_touched = COALESCE(EXCLUDED.strike_touched, analysis.option_outcome.strike_touched),
                         updated_at = now()
                     """,
                     [
                         decision_id, maturity, max((mark[0] for mark in marks), default=as_of),
-                        marks[-1][2] if marks else 0.0,
+                        marks[-1][2] if marks else None,
                         values["return_1d"], values["return_5d"], values["return_20d"], values["return_60d"],
                         values["peak_return"], values["max_drawdown"], values["time_to_2x_days"],
                         values["time_to_5x_days"], values["time_to_10x_days"],
+                        paper_status,
+                        (entry * int(first.get("multiplier") or 100)) if paper_status == "expired_worthless" else None,
+                        marks[-1][2] if marks and maturity != "observing" else None,
+                        _number(first.get("effective_assignment_price")) if assigned else None,
+                        strike_touched,
                     ],
                 )
                 updated += 1

@@ -16,7 +16,7 @@ import {Cell, FullText, Head, MetricPill, SectionTitle, TickerButton } from "../
 import {OpenTicker } from "../workspacePage";
 import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, contractLabel, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
 import {OptionThesisAgentRuntime, CandidateSort, CandidateStateFilter, CandidateFocus, ThesisFilter, QualityFilter, FamilyFilter, CANDIDATE_PAGE_SIZE } from "./types";
-import {ReadableReasonGroup, InlineMetric, MobileSection, QualityIndicator, HelpLabel, FillTarget, PremiumCapHint, OpportunityOutcome } from "./shared";
+import {ReadableReasonGroup, InlineMetric, MobileSection, QualityIndicator, HelpLabel, OpportunityOutcome } from "./shared";
 import {OpportunityThesisSummary } from "./signalBrief";
 
 export function CandidateEventsTable({
@@ -115,7 +115,7 @@ export function CandidateEventsTable({
             <SelectTrigger aria-label="State filter"><SelectValue placeholder="State" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All states</SelectItem>
-              <SelectItem value="FIRE">Fire</SelectItem>
+              <SelectItem value="READY">Ready</SelectItem>
               <SelectItem value="SETUP">Setup</SelectItem>
               <SelectItem value="WATCH">Watch</SelectItem>
             </SelectContent>
@@ -148,7 +148,7 @@ export function CandidateEventsTable({
           <Select value={sort} onValueChange={(value) => setSort(value as CandidateSort)}>
             <SelectTrigger aria-label="Sort candidates"><SelectValue placeholder="Sort" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="conviction-desc">Conviction high to low</SelectItem>
+              <SelectItem value="conviction-desc">Rank score high to low</SelectItem>
               <SelectItem value="move-asc">Required move low to high</SelectItem>
               <SelectItem value="premium-asc">Option mid low to high</SelectItem>
               <SelectItem value="expiry-asc">Expiration soonest</SelectItem>
@@ -212,8 +212,8 @@ export function CandidateEventsTable({
             <Head>Ticker</Head>
             <Head>Signal State</Head>
             <Head>Contract</Head>
-            <Head className="text-right"><HelpLabel label="Option Mid" detail="Current option midpoint from the stored chain snapshot. Est fill adds the strategy slippage assumption used by shadow entries." /></Head>
-            <Head className="text-right"><HelpLabel label="10x Math" detail="Underlying stock price where intrinsic value is about ten times the option mid. Fill target uses the estimated fill premium when it differs. Cap room is how far the estimated fill is below the strategy premium ceiling." /></Head>
+            <Head className="text-right"><HelpLabel label="Entry" detail="Conservative executable entry: ask for long options and bid credit for cash-secured puts." /></Head>
+            <Head className="text-right"><HelpLabel label="Risk / Payoff" detail="Long-option move and max-loss context, or secured cash and effective assignment basis for short puts." /></Head>
             <Head>Signal Evidence</Head>
             <Head>Thesis</Head>
             <Head>Impact So Far</Head>
@@ -250,21 +250,30 @@ export function CandidateEventsTable({
                         <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
                         <QualityIndicator status={qualityStatus} flags={qualityFlags} />
                       </div>
-                      <div className="text-xs text-muted-foreground">conviction {formatScore(candidateConviction(row))}</div>
+                      <div className="text-xs text-muted-foreground">rank {formatScore(candidateConviction(row))}</div>
                     </div>
                   </Cell>
                   <Cell>
                     <ContractIdentity row={row} />
                   </Cell>
                   <Cell className="text-right tabular-nums">
-                    <div>{moneyField(row, ["premium_mid"])}</div>
+                    <div>{moneyField(row, ["entry_price", "premium_mid"])}</div>
                     <BidAsk row={row} />
-                    <div className="text-xs text-muted-foreground">fill {moneyField(row, ["premium_fill_assumption"])}</div>
+                    <div className="text-xs text-muted-foreground">{titleLabel(textField(row, ["structure"], "option").replaceAll("_", " "))}</div>
                   </Cell>
                   <Cell className="text-right tabular-nums">
-                    <div>{moneyField(row, ["required_10x_price"])}</div>
-                    <FillTarget row={row} />
-                    <PremiumCapHint row={row} />
+                    {textField(row, ["structure"]) === "cash_secured_put" ? (
+                      <>
+                        <div>basis {moneyField(row, ["effective_assignment_price"])}</div>
+                        <div className="text-xs text-muted-foreground">cash {moneyField(row, ["secured_cash"])}</div>
+                        <div className="text-xs text-muted-foreground">assign {formatRatio(numberField(row, ["probability_assignment"], Number.NaN))}</div>
+                      </>
+                    ) : (
+                      <>
+                        <div>move {formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</div>
+                        <div className="text-xs text-muted-foreground">max loss {moneyField(row, ["max_loss"])}</div>
+                      </>
+                    )}
                   </Cell>
                   <Cell><CandidateSignalEvidence row={row} /></Cell>
                   <Cell>
@@ -349,14 +358,14 @@ export function CandidateMobileCard({
             <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
             <QualityIndicator status={qualityStatus} flags={qualityFlags} />
           </div>
-          <div className="text-xs text-muted-foreground">conviction {formatScore(candidateConviction(row))}</div>
+          <div className="text-xs text-muted-foreground">rank {formatScore(candidateConviction(row))}</div>
         </div>
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <InlineMetric label="Premium" value={moneyField(row, ["premium_mid"])} />
-        <InlineMetric label="10x Price" value={moneyField(row, ["required_10x_price"])} />
-        <InlineMetric label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+        <InlineMetric label="Entry" value={moneyField(row, ["entry_price", "premium_mid"])} />
+        <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Assignment Basis" : "Max Loss"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["effective_assignment_price"]) : moneyField(row, ["max_loss"])} />
+        <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Move"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["secured_cash"]) : formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
       </div>
       <div className="mt-2"><BidAsk row={row} label="Bid×Ask" /></div>
 
@@ -487,4 +496,3 @@ export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
     </div>
   );
 }
-

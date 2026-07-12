@@ -10,15 +10,23 @@ from psycopg.types.json import Jsonb
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
+from investment_panel.database.options_publication import publication_models
+from investment_panel.analysis.cash_secured_put import CashSecuredPutInputs, evaluate_cash_secured_put
 
 
-FEATURE_VERSION = "option-core-v1"
+FEATURE_VERSION = "option-professional-v2"
 STRATEGY_KEY = "options-radar-core"
-STRATEGY_REVISION = 1
+STRATEGY_REVISION = 2
 DEFAULT_PARAMETERS = {
     "feature_version": FEATURE_VERSION,
+    "contract_version": 2,
+    "shadow_only": True,
     "score_weights": {"liquidity": 0.65, "convexity": 0.35},
-    "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 14, "max_dte": 900},
+    "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 2, "max_dte": 900},
+    "cash_secured_put": {
+        "min_dte": 21, "max_dte": 60, "delta_min": 0.15, "delta_max": 0.30,
+        "max_ticker_nav_pct": 0.05, "max_aggregate_nav_pct": 0.15,
+    },
 }
 
 
@@ -51,7 +59,17 @@ def refresh_options_radar(
             symbols=symbols,
         )
         decision_count = _insert_decisions(runtime, run_id, strategy_id, strategy_parameters)
-        models = _publication_models(runtime, run_id)
+        cash_secured_puts = _insert_cash_secured_put_decisions(
+            runtime, repository, run_id, strategy_id, strategy_parameters
+        )
+        decision_count += cash_secured_puts
+        shadow_trades = _ensure_shadow_trades(runtime, run_id)
+        models = publication_models(
+            runtime,
+            run_id,
+            feature_version=FEATURE_VERSION,
+            strategy_revision=STRATEGY_REVISION,
+        )
         publication_id = repository.publish(
             run_id,
             "options-radar",
@@ -59,6 +77,8 @@ def refresh_options_radar(
             validation={
                 "feature_count": feature_count,
                 "decision_count": decision_count,
+                "cash_secured_puts": cash_secured_puts,
+                "shadow_trades": shadow_trades,
                 "raw_payload_duplicated": False,
                 "feature_version": FEATURE_VERSION,
             },
@@ -78,6 +98,8 @@ def refresh_options_radar(
         "publication_id": str(publication_id),
         "option_features": feature_count,
         "decisions": decision_count,
+        "cash_secured_puts": cash_secured_puts,
+        "shadow_trades": shadow_trades,
         "actionable": len(models["option_radar_opportunity"]),
     }
 
@@ -163,14 +185,14 @@ def _insert_features(
                     5 * ABS(COALESCE(quote.provider_delta, 0)) * quote.underlying_price / NULLIF(quote.mid, 0)
                 )),
                 CASE WHEN contract.option_type = 'call' THEN contract.strike + 2 * quote.mid
-                     ELSE contract.strike - 2 * quote.mid END,
+                     WHEN contract.strike - 2 * quote.mid >= 0 THEN contract.strike - 2 * quote.mid END,
                 CASE WHEN contract.option_type = 'call' THEN contract.strike + 5 * quote.mid
-                     ELSE contract.strike - 5 * quote.mid END,
+                     WHEN contract.strike - 5 * quote.mid >= 0 THEN contract.strike - 5 * quote.mid END,
                 CASE WHEN contract.option_type = 'call' THEN contract.strike + 10 * quote.mid
-                     ELSE contract.strike - 10 * quote.mid END,
+                     WHEN contract.strike - 10 * quote.mid >= 0 THEN contract.strike - 10 * quote.mid END,
                 ABS(
                     (CASE WHEN contract.option_type = 'call' THEN contract.strike + 10 * quote.mid
-                          ELSE contract.strike - 10 * quote.mid END) - quote.underlying_price
+                          WHEN contract.strike - 10 * quote.mid >= 0 THEN contract.strike - 10 * quote.mid END) - quote.underlying_price
                 ) / NULLIF(quote.underlying_price, 0),
                 jsonb_build_object(
                     'pricing_model', 'strike_plus_premium_proxy_v1',
@@ -195,13 +217,34 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
     with runtime.transaction() as connection:
         connection.execute(
             """
-            INSERT INTO analysis.strategy_revision
-                (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
-            VALUES (%s, %s, 'Storage-efficient options radar', 'active', %s, %s, now())
-            ON CONFLICT (strategy_key, revision) DO NOTHING
+            SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
             """,
-            [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY],
+            [f"strategy:{STRATEGY_KEY}"],
         )
+        current = connection.execute(
+            "SELECT id, strategy_key, revision, parameters FROM analysis.strategy_revision "
+            "WHERE authority_group = %s AND status = 'active' FOR UPDATE",
+            [STRATEGY_KEY],
+        ).fetchall()
+        professional = [row for row in current if int(dict(row["parameters"] or {}).get("contract_version") or 0) >= 2]
+        external_active = [row for row in current if str(row["strategy_key"]) != STRATEGY_KEY]
+        if not professional and not external_active:
+            connection.execute(
+                "UPDATE analysis.strategy_revision SET status = 'superseded' "
+                "WHERE authority_group = %s AND status = 'active'",
+                [STRATEGY_KEY],
+            )
+        if not professional and not external_active:
+            connection.execute(
+                """
+                INSERT INTO analysis.strategy_revision
+                    (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
+                VALUES (%s, %s, 'Professional options radar', 'active', %s, %s, now())
+                ON CONFLICT (strategy_key, revision) DO UPDATE
+                SET status = 'active', promoted_at = COALESCE(analysis.strategy_revision.promoted_at, now())
+                """,
+                [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY],
+            )
         row = connection.execute(
             """
             SELECT revision.id, revision.parameters
@@ -247,6 +290,9 @@ def _insert_decisions(
                        quote.mid, quote.bid, quote.ask, quote.open_interest, quote.volume,
                        %s * feature.liquidity_score + %s * feature.convexity_score AS score,
                        array_remove(ARRAY[
+                           CASE WHEN quote.underlying_price IS NULL OR quote.underlying_price <= 0 THEN 'missing_underlying' END,
+                           CASE WHEN quote.bid IS NULL OR quote.ask IS NULL THEN 'incomplete_market' END,
+                           CASE WHEN quote.bid < 0 OR quote.ask <= 0 OR quote.bid > quote.ask THEN 'crossed_or_empty_market' END,
                            CASE WHEN quote.mid IS NULL OR quote.mid <= 0 THEN 'missing_premium' END,
                            CASE WHEN feature.spread_pct IS NULL THEN 'missing_spread' END,
                            CASE WHEN feature.spread_pct > %s THEN 'spread_too_wide' END,
@@ -276,11 +322,11 @@ def _insert_decisions(
                 quality_status, strategy_revision_id, reasons, blockers, input_hash
             )
             SELECT %s, contract_id::text, 'option', instrument_id, quote_observed_at,
-                   CASE WHEN cardinality(blockers) > 0 THEN 'REJECT'
-                        WHEN score >= 85 THEN 'FIRE'
+                   CASE WHEN cardinality(blockers) > 0 THEN 'REJECTED'
+                        WHEN score >= 85 THEN 'SETUP'
                         WHEN score >= 70 THEN 'SETUP'
                         WHEN score >= 55 THEN 'WATCH'
-                        ELSE 'REJECT' END,
+                        ELSE 'REJECTED' END,
                    decision_rank, round(score::numeric, 2),
                    CASE WHEN cardinality(blockers) = 0 THEN 'complete' ELSE 'gated' END,
                    %s,
@@ -305,18 +351,32 @@ def _insert_decisions(
             """
             INSERT INTO analysis.option_decision (
                 decision_id, contract_id, snapshot_id, quote_observed_at,
-                premium_mid, fill_assumption, required_move_pct, buy_under, tier
+                premium_mid, fill_assumption, required_move_pct, buy_under, tier,
+                structure, entry_price, exit_cost_estimate, max_loss,
+                data_confidence, execution_confidence, details
             )
             SELECT decision.id, feature.contract_id, feature.snapshot_id, feature.quote_observed_at,
                    quote.mid, quote.ask, feature.required_move_pct,
                    CASE WHEN quote.bid IS NOT NULL AND quote.ask IS NOT NULL
                         THEN quote.bid + 0.35 * (quote.ask - quote.bid) ELSE quote.mid END,
-                   CASE WHEN decision.state = 'FIRE' THEN 'Exceptional'
-                        WHEN decision.state = 'SETUP' THEN 'Strong'
-                        WHEN decision.state = 'WATCH' THEN 'Watch' ELSE 'Reject' END
+                   CASE WHEN decision.state = 'SETUP' THEN 'setup'
+                        WHEN decision.state = 'WATCH' THEN 'watch' ELSE 'rejected' END,
+                   CASE WHEN contract.option_type = 'call' THEN 'long_call' ELSE 'long_put' END,
+                   quote.ask,
+                   CASE WHEN quote.bid IS NOT NULL AND quote.ask IS NOT NULL THEN quote.ask - quote.bid END,
+                   quote.ask * COALESCE(contract.multiplier, 100),
+                   CASE WHEN quote.provider_iv IS NOT NULL AND quote.provider_delta IS NOT NULL THEN 0.8 ELSE 0.5 END,
+                   GREATEST(0, LEAST(1, 1 - COALESCE(feature.spread_pct, 1))),
+                   jsonb_build_object(
+                       'contract_version', 2,
+                       'feature_version', feature.feature_version,
+                       'probability_semantics', 'provisional_uncalibrated',
+                       'provider_local_quote', true
+                   )
             FROM analysis.decision decision
             JOIN analysis.option_feature feature
               ON feature.run_id = decision.run_id AND feature.contract_id::text = decision.decision_key
+            JOIN catalog.option_contract contract ON contract.id = feature.contract_id
             JOIN raw.option_quote quote
               ON quote.snapshot_id = feature.snapshot_id AND quote.contract_id = feature.contract_id
              AND quote.observed_at = feature.quote_observed_at
@@ -329,7 +389,7 @@ def _insert_decisions(
             INSERT INTO analysis.reject_summary (run_id, strategy_revision_id, instrument_id, gate_code, reject_count)
             SELECT decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker, count(*)
             FROM analysis.decision decision CROSS JOIN unnest(decision.blockers) blocker
-            WHERE decision.run_id = %s AND decision.state = 'REJECT'
+            WHERE decision.run_id = %s AND decision.state = 'REJECTED'
             GROUP BY decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker
             """,
             [run_id],
@@ -339,12 +399,12 @@ def _insert_decisions(
             DELETE FROM analysis.option_decision option_decision
             USING analysis.decision decision
             WHERE option_decision.decision_id = decision.id
-              AND decision.run_id = %s AND decision.state = 'REJECT'
+              AND decision.run_id = %s AND decision.state = 'REJECTED'
             """,
             [run_id],
         )
         connection.execute(
-            "DELETE FROM analysis.decision WHERE run_id = %s AND state = 'REJECT'",
+            "DELETE FROM analysis.decision WHERE run_id = %s AND state = 'REJECTED'",
             [run_id],
         )
         connection.execute(
@@ -368,90 +428,227 @@ def _insert_decisions(
     return int(actionable)
 
 
-def _publication_models(runtime: DatabaseRuntime, run_id: Any) -> dict[str, list[dict[str, Any]]]:
+def _insert_cash_secured_put_decisions(
+    runtime: DatabaseRuntime,
+    repository: AnalysisRepository,
+    run_id: Any,
+    strategy_id: int,
+    parameters: dict[str, Any],
+) -> int:
+    """Create the shadow-only cash-secured-put lane from the same quote cutoff."""
+
+    csp = dict(parameters.get("cash_secured_put") or DEFAULT_PARAMETERS["cash_secured_put"])
+    min_dte = int(csp.get("min_dte", 21))
+    max_dte = int(csp.get("max_dte", 60))
+    delta_min = float(csp.get("delta_min", 0.15))
+    delta_max = float(csp.get("delta_max", 0.30))
+    max_ticker_nav_pct = float(csp.get("max_ticker_nav_pct", 0.05))
     with runtime.read(JOB_PROFILE) as connection:
+        account = connection.execute(
+            """
+            SELECT net_liquidation, cash_balance, buying_power, observed_at
+            FROM raw.broker_account_snapshot
+            ORDER BY observed_at DESC, id DESC LIMIT 1
+            """
+        ).fetchone()
         rows = connection.execute(
             """
-            SELECT
-                decision.id::text AS opportunity_id, decision.id::text AS candidate_event_id,
-                decision.id::text AS event_id, instrument.symbol, instrument.symbol AS ticker,
-                decision.state, decision.rank, decision.score, option_decision.tier,
-                quote.observed_at AS snapshot_time, snapshot.source_id AS data_source,
-                contract.id::text AS contract_id, contract.expiration, contract.strike,
-                contract.option_type, quote.underlying_price, quote.bid, quote.ask, quote.mid,
-                quote.mid AS premium_mid, quote.volume, quote.open_interest,
-                quote.provider_iv AS iv, quote.provider_delta AS delta,
-                feature.dte, feature.spread_pct, feature.liquidity_score,
-                feature.convexity_score, feature.required_2x_price, feature.required_5x_price,
-                feature.required_10x_price, feature.required_move_pct,
-                option_decision.buy_under, decision.reasons AS top_reasons,
-                decision.blockers, decision.quality_status,
-                jsonb_build_object(
-                    'expiration', contract.expiration, 'strike', contract.strike,
-                    'option_type', contract.option_type, 'feature_version', feature.feature_version
-                ) AS raw
+            SELECT feature.snapshot_id, feature.contract_id, feature.quote_observed_at,
+                   feature.dte, feature.spread_pct, feature.liquidity_score,
+                   quote.underlying_price, quote.bid, quote.ask, quote.provider_iv,
+                   quote.provider_delta, quote.open_interest, quote.volume,
+                   contract.strike, contract.expiration, contract.multiplier,
+                   instrument.id AS instrument_id, instrument.symbol, instrument.asset_class,
+                   instrument.category,
+                   EXISTS (
+                       SELECT 1 FROM raw.fundamental_observation fundamental
+                       WHERE fundamental.instrument_id = instrument.id
+                   ) AS has_fundamentals,
+                   (SELECT count(*) FROM raw.price_bar bar
+                    WHERE bar.instrument_id = instrument.id AND bar.interval = '1d') AS history_observations,
+                   EXISTS (
+                       SELECT 1 FROM raw.market_event event
+                       WHERE event.instrument_id = instrument.id AND event.event_kind = 'earnings'
+                         AND event.starts_at::date > feature.quote_observed_at::date
+                         AND event.starts_at::date <= contract.expiration
+                   ) AS earnings_before_expiry
+            FROM analysis.option_feature feature
+            JOIN raw.option_quote quote
+              ON quote.snapshot_id = feature.snapshot_id
+             AND quote.contract_id = feature.contract_id
+             AND quote.observed_at = feature.quote_observed_at
+            JOIN catalog.option_contract contract ON contract.id = feature.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            WHERE feature.run_id = %s AND contract.option_type = 'put'
+              AND feature.dte BETWEEN %s AND %s
+              AND ABS(quote.provider_delta) BETWEEN %s AND %s
+            ORDER BY feature.liquidity_score DESC, feature.contract_id
+            """,
+            [run_id, min_dte, max_dte, delta_min, delta_max],
+        ).fetchall()
+
+    created = 0
+    for raw_row in rows:
+        row = dict(raw_row)
+        hard_blockers: list[str] = []
+        if not row.get("has_fundamentals") and str(row.get("asset_class") or "") != "etf":
+            hard_blockers.append("missing_quality_evidence")
+        if int(row.get("history_observations") or 0) < 60:
+            hard_blockers.append("insufficient_price_history")
+        if row.get("earnings_before_expiry"):
+            hard_blockers.append("earnings_before_expiry")
+        if float(row.get("open_interest") or 0) < 50:
+            hard_blockers.append("open_interest_too_low")
+        spread_pct = _float(row.get("spread_pct"))
+        if spread_pct is None or spread_pct > 0.25:
+            hard_blockers.append("spread_too_wide")
+        evaluation = evaluate_cash_secured_put(
+            CashSecuredPutInputs(
+                spot=_float(row.get("underlying_price")) or 0,
+                strike=_float(row.get("strike")) or 0,
+                dte=int(row.get("dte") or 0),
+                bid=_float(row.get("bid")) or 0,
+                ask=_float(row.get("ask")) or 0,
+                delta=_float(row.get("provider_delta")) or 0,
+                multiplier=int(row.get("multiplier") or 100),
+                annualized_volatility=_float(row.get("provider_iv")),
+            )
+        )
+        if evaluation is None:
+            hard_blockers.append("invalid_cash_secured_put_market")
+        if hard_blockers or evaluation is None:
+            continue
+
+        net_liquidation = _float(account.get("net_liquidation")) if account else None
+        cash_balance = _float(account.get("cash_balance")) if account else None
+        buying_power = _float(account.get("buying_power")) if account else None
+        available_cash = min(value for value in (cash_balance, buying_power) if value is not None) if any(
+            value is not None for value in (cash_balance, buying_power)
+        ) else None
+        sizing_blockers: list[str] = []
+        if net_liquidation is None or available_cash is None:
+            sizing_blockers.append("missing_cash_context")
+        elif evaluation.secured_cash > available_cash:
+            sizing_blockers.append("insufficient_cash_collateral")
+        if net_liquidation and evaluation.secured_cash / net_liquidation > max_ticker_nav_pct:
+            sizing_blockers.append("one_contract_exceeds_ticker_limit")
+        max_contracts = 0
+        if net_liquidation and available_cash is not None:
+            max_contracts = max(
+                0,
+                int(min(available_cash, net_liquidation * max_ticker_nav_pct) // evaluation.secured_cash),
+            )
+
+        tail_ratio = evaluation.tail_cvar / evaluation.secured_cash
+        expected_value = evaluation.entry_credit * (1 - evaluation.probability_assignment) - evaluation.tail_cvar * 0.05
+        risk_adjusted = expected_value / evaluation.secured_cash
+        score = max(
+            0.0,
+            min(
+                100.0,
+                0.45 * float(row.get("liquidity_score") or 0)
+                + 35.0 * min(evaluation.annualized_return_on_collateral, 1.0)
+                + 20.0 * (1.0 - min(tail_ratio, 1.0)),
+            ),
+        )
+        details = {
+            **evaluation.as_dict(),
+            "contract_version": 2,
+            "feature_version": FEATURE_VERSION,
+            "probability_semantics": "provisional_uncalibrated",
+            "provider_local_quote": True,
+            "max_contracts": max_contracts,
+            "available_cash": available_cash,
+            "net_liquidation": net_liquidation,
+            "management_plan": {
+                "profit_review_pct": 0.50,
+                "mandatory_review_dte": 21,
+                "assignment_requires_quality_pass": True,
+                "automatic_roll": False,
+            },
+            "quality_basis": {
+                "fundamentals_present": bool(row.get("has_fundamentals")),
+                "history_observations": int(row.get("history_observations") or 0),
+                "earnings_before_expiry": False,
+            },
+        }
+        repository.store_option_decision(
+            run_id,
+            decision_key=f"cash-secured-put:{row['contract_id']}",
+            instrument_id=int(row["instrument_id"]),
+            contract_id=int(row["contract_id"]),
+            snapshot_id=int(row["snapshot_id"]),
+            quote_observed_at=row["quote_observed_at"],
+            state="SETUP",
+            score=round(score, 2),
+            rank=None,
+            inputs={"structure": "cash_secured_put", "row": row, "evaluation": details},
+            reasons=("acceptable_assignment_entry", "cash_secured_income", "liquidity_supported"),
+            blockers=sizing_blockers,
+            details={
+                "quality_status": "complete" if not sizing_blockers else "sizing_blocked",
+                "premium_mid": row.get("bid"),
+                "fill_assumption": row.get("bid"),
+                "structure": "cash_secured_put",
+                "entry_price": row.get("bid"),
+                "exit_cost_estimate": max(0.0, (_float(row.get("ask")) or 0) - (_float(row.get("bid")) or 0)),
+                "secured_cash": evaluation.secured_cash,
+                "max_profit": evaluation.max_profit,
+                "max_loss": evaluation.max_loss,
+                "break_even": evaluation.break_even,
+                "effective_assignment_price": evaluation.effective_assignment_price,
+                "probability_profit": evaluation.probability_profit,
+                "probability_assignment": evaluation.probability_assignment,
+                "probability_touch": evaluation.probability_touch,
+                "expected_value": expected_value,
+                "risk_adjusted_expectancy": risk_adjusted,
+                "tail_cvar": evaluation.tail_cvar,
+                "data_confidence": 0.65,
+                "execution_confidence": max(0.0, 1.0 - (spread_pct or 1.0)),
+                "details": details,
+            },
+            strategy_revision_id=strategy_id,
+        )
+        created += 1
+    return created
+
+
+def _ensure_shadow_trades(runtime: DatabaseRuntime, run_id: Any) -> int:
+    """Open one immutable paper observation for every retained signal."""
+
+    with runtime.transaction(JOB_PROFILE) as connection:
+        result = connection.execute(
+            """
+            INSERT INTO analysis.shadow_trade
+                (decision_id, entry_at, entry_price, status, metrics)
+            SELECT decision.id, decision.as_of,
+                   COALESCE(option_decision.entry_price, option_decision.fill_assumption,
+                            option_decision.premium_mid),
+                   'observing',
+                   jsonb_build_object(
+                       'structure', option_decision.structure,
+                       'secured_cash', option_decision.secured_cash,
+                       'entry_basis', CASE
+                           WHEN option_decision.structure = 'cash_secured_put' THEN 'provider_bid'
+                           ELSE 'provider_ask'
+                       END,
+                       'provider_local_quote', true
+                   )
             FROM analysis.decision decision
             JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-            JOIN analysis.option_feature feature
-              ON feature.run_id = decision.run_id AND feature.contract_id = option_decision.contract_id
-            JOIN raw.option_quote quote
-              ON quote.snapshot_id = option_decision.snapshot_id
-             AND quote.contract_id = option_decision.contract_id
-             AND quote.observed_at = option_decision.quote_observed_at
-            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
-            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            WHERE decision.run_id = %s
-            ORDER BY decision.rank
+            WHERE decision.run_id = %s AND decision.state IN ('WATCH', 'SETUP', 'READY')
+              AND COALESCE(option_decision.entry_price, option_decision.fill_assumption,
+                           option_decision.premium_mid) > 0
+            ON CONFLICT (decision_id) DO NOTHING
             """,
             [run_id],
-        ).fetchall()
-        rejected = connection.execute(
-            """
-            SELECT instrument.symbol, sum(summary.reject_count) AS reject_count
-            FROM analysis.reject_summary summary
-            JOIN catalog.instrument instrument ON instrument.id = summary.instrument_id
-            WHERE summary.run_id = %s GROUP BY instrument.symbol
-            """,
-            [run_id],
-        ).fetchall()
-    all_rows = [dict(row) for row in rows]
-    actionable = [row for row in all_rows if row["state"] != "REJECT"]
-    summaries: dict[str, dict[str, Any]] = {}
-    for row in all_rows:
-        summary = summaries.setdefault(row["symbol"], {"symbol": row["symbol"], "ticker": row["ticker"], "fire_count": 0, "setup_count": 0, "watch_count": 0, "reject_count": 0})
-        summary[f"{str(row['state']).lower()}_count"] += 1
-    for row in rejected:
-        summary = summaries.setdefault(
-            row["symbol"],
-            {"symbol": row["symbol"], "ticker": row["symbol"], "fire_count": 0, "setup_count": 0, "watch_count": 0, "reject_count": 0},
         )
-        summary["reject_count"] = int(row["reject_count"] or 0)
-    snapshots = [
-        {
-            key: row[key]
-            for key in (
-                "snapshot_time", "ticker", "underlying_price", "expiration", "strike",
-                "option_type", "bid", "ask", "mid", "volume", "open_interest", "iv",
-                "delta", "dte", "spread_pct", "data_source", "contract_id", "raw",
-            )
-        }
-        for row in all_rows
-    ]
-    features = [
-        {
-            key: row[key]
-            for key in (
-                "snapshot_time", "contract_id", "ticker", "required_2x_price", "required_5x_price",
-                "required_10x_price", "required_move_pct", "liquidity_score", "convexity_score", "raw",
-            )
-        }
-        for row in all_rows
-    ]
-    return {
-        "option_radar_opportunity": actionable,
-        "candidate_event": all_rows,
-        "option_radar_summary": list(summaries.values()),
-        "option_snapshot": snapshots,
-        "option_features": features,
-    }
+    return int(result.rowcount)
+
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
