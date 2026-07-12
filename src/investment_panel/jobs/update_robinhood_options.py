@@ -171,6 +171,7 @@ def run(
         "chain_rows": stored,
         "quoted_rows": quoted_rows,
         "observed_at": collected["observed_at"],
+        "collected_at": collected.get("collected_at"),
         "errors": collected["errors"][:25],
         "database": "postgresql",
         "ingest_run_id": persisted["run_id"],

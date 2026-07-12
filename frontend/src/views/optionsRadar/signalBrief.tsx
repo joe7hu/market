@@ -55,7 +55,9 @@ export function SignalBriefPanel({
       ? `${repairRows.length} data contract issue${repairRows.length === 1 ? "" : "s"}`
       : researchRows.length
         ? `${researchRows.length} research opportunit${researchRows.length === 1 ? "y" : "ies"}`
-        : "No grouped opportunities";
+        : rows.length
+          ? `${rows.length} ranked signal${rows.length === 1 ? "" : "s"}`
+          : "No current signals";
   const fireGap = fireCount > 0 && exceptionalRows.length === 0;
   return (
     <section className="rounded-md border border-border bg-card p-4">
@@ -64,7 +66,7 @@ export function SignalBriefPanel({
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
             {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} ready contract{fireCount === 1 ? "" : "s"} awaiting grouped evidence</StatusBadge> : null}
-            <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} scanned / ${opportunityTickerCount.toLocaleString()} with setups`}</StatusBadge>
+            <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} contracts scanned / ${opportunityTickerCount.toLocaleString()} shortlisted`}</StatusBadge>
             {activeAlertCount ? <StatusBadge tone="warn">{activeAlertCount.toLocaleString()} active alert{activeAlertCount === 1 ? "" : "s"}</StatusBadge> : null}
             <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
             <StatusBadge tone={offHours ? "warn" : "muted"}>{snapshotText}</StatusBadge>

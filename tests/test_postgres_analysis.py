@@ -251,6 +251,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     summary = published_options_radar_rows(runtime, "option_radar_summary")
     assert len(summary) == 1
     assert summary[0]["stable_key"] == "global"
+    assert summary[0]["scanned_contracts"] == result["option_features"]
     assert summary[0]["shortlist_count"] == 1
     assert summary[0]["shadow_only"] is True
     assert published_options_radar_rows(runtime, "option_radar_symbol_summary") == [
@@ -427,6 +428,23 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
     assert spread["max_profit"] == pytest.approx(1080)
     assert spread["expected_value"] > 0
     assert spread["details"]["same_snapshot_legs"] is True
+    mark_at = datetime(2026, 7, 13, 15, 0, tzinfo=UTC)
+    mark_run = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        mark_run, source_id="test-options", observed_at=mark_at, market_session="regular", universe="test",
+        rows=[
+            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 175, "option_type": "call", "underlying_price": 182, "bid": 9.0, "ask": 9.2, "mid": 9.1, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58},
+            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 190, "option_type": "call", "underlying_price": 182, "bid": 5.3, "ask": 5.5, "mid": 5.4, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35},
+        ],
+    )
+    ingestion.finish_run(mark_run, "succeeded")
+    OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 13, 16, 0, tzinfo=UTC))
+    with runtime.read() as connection:
+        outcome = connection.execute(
+            "SELECT current_return FROM analysis.option_outcome WHERE decision_id = %s",
+            [spread["decision_id"]],
+        ).fetchone()
+    assert outcome["current_return"] == pytest.approx((9.0 - 5.5) / 4.2 - 1)
 
 
 def test_options_radar_applies_promoted_strategy_parameters(analysis_context) -> None:

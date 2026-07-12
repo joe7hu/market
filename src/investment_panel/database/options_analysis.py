@@ -76,6 +76,7 @@ def refresh_options_radar(
             run_id,
             feature_version=FEATURE_VERSION,
             strategy_revision=STRATEGY_REVISION,
+            scanned_contracts=feature_count,
         )
         models["option_calibration"] = calibration_profiles(runtime, strategy_id)
         publication_id = repository.publish(

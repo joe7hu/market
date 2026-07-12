@@ -10,8 +10,14 @@ import pytest
 
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
+from investment_panel.database.options import _market_session
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import update_robinhood_options
+
+
+def test_option_snapshot_session_includes_listed_option_close_window() -> None:
+    assert _market_session(datetime(2026, 7, 10, 20, 14, tzinfo=UTC)) == "regular"
+    assert _market_session(datetime(2026, 7, 10, 20, 16, tzinfo=UTC)) == "afterhours"
 
 
 @pytest.fixture

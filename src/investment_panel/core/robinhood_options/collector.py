@@ -187,12 +187,13 @@ def collect_robinhood_option_chains(
 ) -> dict[str, Any]:
     """Collect option rows from Robinhood for Market's radar universe."""
 
-    observed_at = datetime.now(UTC).isoformat()
+    collected_at = datetime.now(UTC).isoformat()
     result: dict[str, Any] = {
         "rows": {},
         "quotes": [],
         "errors": [],
-        "observed_at": observed_at,
+        "observed_at": collected_at,
+        "collected_at": collected_at,
         "market_data": "robinhood",
     }
     if not symbols:
@@ -216,8 +217,11 @@ def collect_robinhood_option_chains(
 
     quote_rows = _fetch_equity_quotes(client, symbols, deadline=deadline)
     result["quotes"] = quote_rows
-    spot_by_symbol = {str(row.get("symbol") or "").upper(): as_float(row.get("close")) for row in quote_rows}
-    today = _observed_date(observed_at)
+    spot_by_symbol = {
+        str(row.get("symbol") or "").upper(): as_float(row.get("option_spot"))
+        for row in quote_rows
+    }
+    today = _observed_date(collected_at)
     for symbol in [s.upper() for s in symbols if s]:
         if time.monotonic() > deadline:
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s before {symbol}")
@@ -247,6 +251,9 @@ def collect_robinhood_option_chains(
             result["errors"].append(f"collection_timeout:exceeded {max_collection_seconds}s after {symbol}")
             result["timed_out"] = True
             break
+    effective_observed_at = _latest_option_quote_time(result["rows"])
+    if effective_observed_at is not None:
+        result["observed_at"] = effective_observed_at.isoformat()
     return result
 
 
@@ -381,8 +388,26 @@ def _collect_symbol(
                     return rows
                 instruments = _fetch_instruments(client, chain_id=chain_id, expiration=expiry, option_type=option_type, deadline=deadline)
                 selected = _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
-                rows.extend(_quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline))
+                quoted = _quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline)
+                for row in quoted:
+                    row["underlying_price"] = spot
+                rows.extend(quoted)
     return rows
+
+
+def _latest_option_quote_time(rows_by_symbol: dict[str, list[dict[str, Any]]]) -> datetime | None:
+    observed: list[datetime] = []
+    for rows in rows_by_symbol.values():
+        for row in rows:
+            value = row.get("updated_at")
+            if not value:
+                continue
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            observed.append(parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC))
+    return max(observed, default=None)
 
 
 def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str], *, deadline: float | None = None) -> list[dict[str, Any]]:
@@ -402,6 +427,7 @@ def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str], *, deadlin
                     "symbol": symbol,
                     "time": quote.get("venue_last_non_reg_trade_time") or quote.get("venue_last_trade_time"),
                     "close": current,
+                    "option_spot": as_float(quote.get("last_trade_price")) or current,
                     "change": _quote_change_pct(quote, current),
                     "change_abs": _quote_change_abs(quote, current),
                     "currency": "USD",

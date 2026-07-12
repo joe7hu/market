@@ -39,14 +39,15 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const opportunityRows = rows(data.optionRadarOpportunity);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
+  const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 2;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
   const marketSession = textField(radarSummary, ["market_session"]);
   const frozenToRth = textField(radarSummary, ["frozen_to_last_rth"]) === "Yes";
   const optionThesisAgent = optionThesisAgentState(data);
 
   const currentOpportunityRows = useMemo(
-    () => rowsForDisplayTime(opportunityRows, latestCandidateTime),
-    [latestCandidateTime, opportunityRows],
+    () => professionalContract ? opportunityRows : rowsForDisplayTime(opportunityRows, latestCandidateTime),
+    [latestCandidateTime, opportunityRows, professionalContract],
   );
   const opportunityCandidates = currentOpportunityRows;
   const enrichedOpportunityCandidates = currentOpportunityRows;

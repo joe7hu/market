@@ -23,8 +23,10 @@ class OutcomeRepository:
                 SELECT decision.id::text AS decision_id, decision.as_of, contract.expiration,
                        contract.strike, contract.multiplier, option_decision.structure,
                        option_decision.premium_mid, option_decision.entry_price,
+                       option_decision.synthetic_legs,
                        option_decision.secured_cash, option_decision.effective_assignment_price,
-                       quote.observed_at, quote.mid, quote.ask, quote.underlying_price,
+                       quote.observed_at, quote.mid, quote.bid, quote.ask, quote.underlying_price,
+                       short_quote.mid AS short_mid, short_quote.ask AS short_ask,
                        outcome.maturity_state, outcome.return_1d, outcome.return_5d,
                        outcome.return_20d, outcome.return_60d, outcome.peak_return,
                        outcome.max_drawdown, outcome.time_to_2x_days,
@@ -32,14 +34,26 @@ class OutcomeRepository:
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                JOIN raw.option_snapshot entry_snapshot ON entry_snapshot.id = option_decision.snapshot_id
                 LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
                 LEFT JOIN raw.option_quote quote
                   ON quote.contract_id = option_decision.contract_id
-                 AND quote.observed_at >= decision.as_of
+                 AND quote.observed_at > decision.as_of
                  AND quote.observed_at <= %s
-                WHERE decision.kind = 'option' AND decision.state <> 'REJECT'
+                 AND EXISTS (
+                     SELECT 1 FROM raw.option_snapshot mark_snapshot
+                     WHERE mark_snapshot.id = quote.snapshot_id
+                       AND mark_snapshot.market_session = 'regular'
+                       AND mark_snapshot.source_id = entry_snapshot.source_id
+                 )
+                LEFT JOIN raw.option_quote short_quote
+                  ON option_decision.structure = 'call_debit_spread'
+                 AND short_quote.contract_id = (option_decision.synthetic_legs->1->>'contract_id')::bigint
+                 AND short_quote.observed_at = quote.observed_at
+                WHERE decision.kind = 'option' AND decision.state <> 'REJECTED'
                   AND decision.as_of >= %s - make_interval(days => %s)
-                  AND (outcome.decision_id IS NULL OR outcome.maturity_state = 'observing')
+                  AND (outcome.decision_id IS NULL OR outcome.maturity_state = 'observing'
+                       OR option_decision.structure = 'call_debit_spread')
                 ORDER BY decision.id, quote.observed_at
                 """,
                 [reference, reference, lookback_days],
@@ -71,6 +85,18 @@ class OutcomeRepository:
                         if row.get("observed_at") is not None
                         and _number(row.get("mid")) is not None
                         and secured_cash
+                    ]
+                elif structure == "call_debit_spread":
+                    marks = [
+                        (
+                            row["observed_at"],
+                            max(0.0, float(row["bid"]) - float(row["short_ask"])),
+                            max(0.0, float(row["bid"]) - float(row["short_ask"])) / entry - 1,
+                        )
+                        for row in decision_rows
+                        if row.get("observed_at") is not None
+                        and _number(row.get("bid")) is not None
+                        and _number(row.get("short_ask")) is not None
                     ]
                 else:
                     marks = [
@@ -124,11 +150,11 @@ class OutcomeRepository:
                         return_5d = COALESCE(analysis.option_outcome.return_5d, EXCLUDED.return_5d),
                         return_20d = COALESCE(analysis.option_outcome.return_20d, EXCLUDED.return_20d),
                         return_60d = COALESCE(analysis.option_outcome.return_60d, EXCLUDED.return_60d),
-                        peak_return = GREATEST(analysis.option_outcome.peak_return, EXCLUDED.peak_return),
-                        max_drawdown = LEAST(analysis.option_outcome.max_drawdown, EXCLUDED.max_drawdown),
-                        time_to_2x_days = COALESCE(analysis.option_outcome.time_to_2x_days, EXCLUDED.time_to_2x_days),
-                        time_to_5x_days = COALESCE(analysis.option_outcome.time_to_5x_days, EXCLUDED.time_to_5x_days),
-                        time_to_10x_days = COALESCE(analysis.option_outcome.time_to_10x_days, EXCLUDED.time_to_10x_days),
+                        peak_return = EXCLUDED.peak_return,
+                        max_drawdown = EXCLUDED.max_drawdown,
+                        time_to_2x_days = EXCLUDED.time_to_2x_days,
+                        time_to_5x_days = EXCLUDED.time_to_5x_days,
+                        time_to_10x_days = EXCLUDED.time_to_10x_days,
                         paper_status = COALESCE(EXCLUDED.paper_status, analysis.option_outcome.paper_status),
                         credit_captured = COALESCE(EXCLUDED.credit_captured, analysis.option_outcome.credit_captured),
                         collateral_return = COALESCE(EXCLUDED.collateral_return, analysis.option_outcome.collateral_return),

@@ -269,6 +269,9 @@ def test_collect_robinhood_option_chains_with_fake_client() -> None:
     assert rows
     assert {row["market_data"] for row in rows} == {"robinhood"}
     assert all(row["open_interest"] == 3652 for row in rows)
+    assert all(row["underlying_price"] == 205.14 for row in rows)
+    assert result["observed_at"] == "2026-06-12T19:59:59+00:00"
+    assert result["collected_at"] != result["observed_at"]
 
 
 def test_robinhood_mcp_client_rejects_oversized_response(monkeypatch) -> None:

@@ -43,6 +43,7 @@ def publication_models(
     *,
     feature_version: str,
     strategy_revision: int,
+    scanned_contracts: int,
 ) -> dict[str, list[dict[str, Any]]]:
     with runtime.read(JOB_PROFILE) as connection:
         rows = connection.execute(
@@ -131,7 +132,6 @@ def publication_models(
         (row.get("snapshot_time") for row in all_rows if row.get("snapshot_time") is not None),
         default=None,
     )
-    rejected_count = sum(int(row.get("reject_count") or 0) for row in rejected)
     global_summary = [{
         "stable_key": "global",
         "contract_version": 2,
@@ -141,7 +141,7 @@ def publication_models(
         "latest_complete_quote_time": latest,
         "source": all_rows[0].get("data_source") if all_rows else None,
         "market_session": all_rows[0].get("market_session") if all_rows else None,
-        "scanned_contracts": len(all_rows) + rejected_count,
+        "scanned_contracts": scanned_contracts,
         "eligible_contracts": sum(row.get("state") != "REJECTED" for row in all_rows),
         "shortlist_count": len(actionable),
         "cash_secured_put_count": sum(row.get("structure") == "cash_secured_put" for row in actionable),

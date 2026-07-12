@@ -98,7 +98,9 @@ def _market_session(observed_at: datetime) -> str:
     clock = local.time().replace(tzinfo=None)
     if time(4) <= clock < time(9, 30):
         return "premarket"
-    if time(9, 30) <= clock < time(16):
+    # Listed equity options quote through 16:15 ET; a weekend pull reports the
+    # provider's last quote timestamp and must remain eligible as the last RTH window.
+    if time(9, 30) <= clock < time(16, 15):
         return "regular"
     if time(16) <= clock < time(20):
         return "afterhours"
