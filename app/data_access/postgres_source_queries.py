@@ -1,6 +1,42 @@
 """PostgreSQL read models for source evidence and source-derived signals."""
 
 SOURCE_QUERIES: dict[str, str] = {
+    "source_catalog": """
+        SELECT source.id, source.name AS label, source.family,
+               COALESCE(latest.capability, source.kind) AS cadence_label,
+               0 AS cadence_seconds, '' AS refresh_job, '2 days' AS stale_after,
+               ARRAY[source.kind] AS source_types, false AS live_fetcher,
+               CASE WHEN latest.status = 'failed' THEN 'bad'
+                    WHEN latest.finished_at IS NULL THEN 'neutral'
+                    WHEN latest.finished_at < now() - interval '2 days' THEN 'warn'
+                    ELSE 'good' END AS tone,
+               jsonb_build_object(
+                   'provider', source.name,
+                   'status', COALESCE(latest.status, 'not_loaded'),
+                   'tone', CASE WHEN latest.status = 'failed' THEN 'bad'
+                                WHEN latest.finished_at IS NULL THEN 'neutral'
+                                WHEN latest.finished_at < now() - interval '2 days' THEN 'warn'
+                                ELSE 'good' END,
+                   'provider_status', COALESCE(latest.status, 'not_loaded'),
+                   'last_observed_at', latest.finished_at,
+                   'stale_after', '2 days',
+                   'symbol_count', COALESCE(latest.instrument_count, 0),
+                   'rate_limited', false,
+                   'freshness_status', CASE WHEN latest.finished_at IS NULL THEN 'not_loaded'
+                                            WHEN latest.finished_at < now() - interval '2 days' THEN 'stale'
+                                            ELSE 'fresh' END,
+                   'detail', COALESCE(latest.failure_detail, source.origin, '')
+               ) AS primary,
+               '[]'::jsonb AS fallback
+        FROM ingest.source source
+        LEFT JOIN LATERAL (
+            SELECT run.capability, run.status, run.finished_at,
+                   run.instrument_count, run.failure_detail
+            FROM ingest.run run WHERE run.source_id = source.id
+            ORDER BY run.started_at DESC LIMIT 1
+        ) latest ON true
+        ORDER BY source.family, source.id
+    """,
     "source_ticker_rankings": """
         SELECT instrument.symbol AS ticker, instrument.symbol,
                count(*) AS source_item_count, count(*) AS signal_count,

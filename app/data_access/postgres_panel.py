@@ -527,7 +527,6 @@ DIRECT_QUERIES.update(SOURCE_QUERIES)
 MODEL_ALIASES = {
     "screener": "universe_screen",
     "signals": "ticker_source_signals",
-    "source_catalog": "sources",
     "earnings_setups": "earnings",
     "stock_features": "technicals",
     "sepa": "technicals",

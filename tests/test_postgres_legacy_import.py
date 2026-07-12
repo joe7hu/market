@@ -127,7 +127,7 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
 
     tables, _metadata = load_postgres_tables(
         {"database": {"url": postgres_dsn}},
-        ("feed_signals", "source_ticker_rankings", "source_consensus", "sources"),
+        ("feed_signals", "source_ticker_rankings", "source_consensus", "source_catalog", "sources"),
     )
     assert tables["feed_signals"][0]["sentiment"] == "bullish"
     assert tables["source_ticker_rankings"][0]["symbol"] == "NVDA"
@@ -136,3 +136,5 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
     news_source = next(row for row in tables["sources"] if row["source_id"] == "news")
     assert news_source["items_count"] == 1
     assert news_source["tickers_count"] == 1
+    assert any(row["id"] == "legacy-analyst-estimates" for row in tables["source_catalog"])
+    assert len({row["id"] for row in tables["source_catalog"]}) == len(tables["source_catalog"])
