@@ -867,7 +867,8 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
     assert payload["status"] == "promoted"
     assert payload["proposal_id"] == proposal_id
     assert payload["strategy_version"] == "leap_10x_momentum_lottery__delta_max_delta_min"
-    assert payload["radar_refresh"]["status"] == "skipped"
+    assert payload["radar_refresh"]["status"] == "ok"
+    assert payload["radar_refresh"]["reason"] == "legacy_publication_replaced"
     with runtime.read() as connection:
         validation = connection.execute(
             "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]

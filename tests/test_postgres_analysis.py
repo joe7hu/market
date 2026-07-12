@@ -21,6 +21,22 @@ from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
+def test_no_regular_snapshot_replaces_legacy_contract_with_explicit_empty_publication(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        result = refresh_options_radar(runtime, code_version="empty-contract-test")
+        summary = published_options_radar_rows(runtime, "option_radar_summary")
+        assert result["reason"] == "legacy_publication_replaced"
+        assert len(summary) == 1
+        assert summary[0]["contract_version"] == 2
+        assert summary[0]["degraded_reason"] == "no_complete_regular_session_publication"
+        assert published_options_radar_rows(runtime, "option_radar_opportunity") == []
+    finally:
+        runtime.close()
+
+
 @pytest.fixture
 def analysis_context(postgres_dsn: str):
     upgrade_database(postgres_dsn)

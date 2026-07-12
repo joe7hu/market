@@ -10,7 +10,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
-from investment_panel.database.options_publication import publication_models
+from investment_panel.database.options_publication import publication_models, publish_degraded_if_needed
 from investment_panel.database.options_expressions import enrich_long_option_expectancy, insert_call_debit_spreads
 from investment_panel.database.options_calibration import calibration_profiles, ready_structures
 from investment_panel.database.options_retention import retain_reject_sample
@@ -44,7 +44,7 @@ def refresh_options_radar(
     strategy_id, strategy_parameters = _active_strategy(runtime)
     cutoff = _latest_snapshot_time(runtime, source_id=source_id, symbols=symbols)
     if cutoff is None:
-        return {"status": "skipped", "reason": "no_option_snapshot", "option_features": 0, "decisions": 0}
+        return publish_degraded_if_needed(repository, code_version, FEATURE_VERSION, STRATEGY_KEY)
     run_id = repository.start_run(
         "options-radar",
         input_cutoff=cutoff,

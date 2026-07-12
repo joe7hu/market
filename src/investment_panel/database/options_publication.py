@@ -2,9 +2,39 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+
+
+def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
+    """Replace an incompatible legacy fallback when no regular-session publication exists."""
+    current = repository.publication_rows("options-radar", "option_radar_summary")
+    if len(current) == 1 and current[0].get("contract_version") == 2:
+        return {"status": "skipped", "reason": "no_regular_session_snapshot", "option_features": 0, "decisions": 0}
+    cutoff = datetime.now(UTC)
+    run_id = repository.start_run(
+        "options-radar", input_cutoff=cutoff, code_version=code_version,
+        inputs={"reason": "no_complete_regular_session_publication"}, feature_versions={"option": feature_version},
+    )
+    summary = [{
+        "stable_key": "global", "contract_version": 2, "feature_version": feature_version,
+        "publication_cutoff": cutoff, "latest_complete_quote_time": None, "source": None,
+        "market_session": "unavailable", "scanned_contracts": 0, "eligible_contracts": 0,
+        "shortlist_count": 0, "cash_secured_put_count": 0, "ready_count": 0,
+        "setup_count": 0, "watch_count": 0, "learning_coverage": 0.0, "shadow_only": True,
+        "degraded_reason": "no_complete_regular_session_publication",
+    }]
+    publication_id = repository.publish(
+        run_id, "options-radar", {"option_radar_summary": summary, "option_radar_opportunity": [],
+            "option_radar_symbol_summary": [], "candidate_event": [], "option_snapshot": [],
+            "option_features": [], "option_calibration": []},
+        validation={"contract_version": 2, "degraded": True},
+        complete_run_summary={"option_features": 0, "decisions": 0},
+    )
+    return {"status": "ok", "reason": "legacy_publication_replaced", "publication_id": str(publication_id),
+            "option_features": 0, "decisions": 0}
 
 
 def publication_models(
