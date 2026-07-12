@@ -64,10 +64,11 @@ def create_verified_backup(
 
 
 def _credential_safe_connection(database_url: str) -> tuple[str, dict[str, str] | None]:
-    parameters = conninfo_to_dict(database_url)
+    libpq_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    parameters = conninfo_to_dict(libpq_url)
     password = parameters.pop("password", None)
     if password is None:
-        return database_url, None
+        return libpq_url, None
     environment = dict(os.environ)
     environment["PGPASSWORD"] = password
     return make_conninfo(**parameters), environment

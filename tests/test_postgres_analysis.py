@@ -8,6 +8,7 @@ import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from app import deps
 from app.routers.options import router as options_router
@@ -230,6 +231,42 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert published_options_radar_rows(runtime, "option_radar_summary") == [
         {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 1, "setup_count": 0, "watch_count": 0, "reject_count": 0}
     ]
+
+
+def test_options_radar_applies_promoted_strategy_parameters(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    refresh_options_radar(runtime, source_id="test-options", code_version="base")
+    with runtime.transaction() as connection:
+        base = connection.execute(
+            "SELECT id, parameters FROM analysis.strategy_revision "
+            "WHERE strategy_key = 'options-radar-core' AND status = 'active'"
+        ).fetchone()
+        parameters = dict(base["parameters"])
+        parameters["gates"] = {**parameters["gates"], "max_spread_pct": 0.05}
+        candidate = connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, supersedes_id, promoted_at)
+            VALUES ('options-radar-core__agent_test', 1, 'tight spread', 'active', %s, %s, now())
+            RETURNING id
+            """,
+            [Jsonb(parameters), base["id"]],
+        ).fetchone()
+        connection.execute(
+            "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",
+            [base["id"]],
+        )
+
+    result = refresh_options_radar(runtime, source_id="test-options", code_version="promoted")
+
+    assert result["decisions"] == 0
+    assert published_options_radar_rows(runtime, "option_radar_opportunity") == []
+    assert published_options_radar_rows(runtime, "option_radar_summary")[0]["reject_count"] == 1
+    with runtime.read() as connection:
+        run = connection.execute(
+            "SELECT strategy_revision_id FROM analysis.run ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+    assert run["strategy_revision_id"] == candidate["id"]
 
 
 def test_incremental_refresh_preserves_older_symbols_in_complete_publication(analysis_context, postgres_dsn: str) -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+import json
+from types import SimpleNamespace
 from uuid import uuid4
 import psycopg
 from psycopg.types.json import Jsonb
@@ -73,6 +75,47 @@ def test_agent_repository_requeues_tasks_from_expired_worker_lease(postgres_dsn:
         assert recovered["agent_run_id"] is None
         assert recovered["validation"]["reason"] == "stale_running_lease"
         assert failed_run["status"] == "failed"
+    finally:
+        runtime.close()
+
+
+def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        repository.queue_thesis("NVDA", trigger="sequential")
+        repository.queue_thesis("MSFT", trigger="sequential")
+        observed_statuses: list[list[str]] = []
+
+        def fake_run(*_args, input: str, **_kwargs):
+            with runtime.read() as connection:
+                observed_statuses.append(
+                    [
+                        row["status"]
+                        for row in connection.execute(
+                            "SELECT status FROM analysis.agent_task ORDER BY created_at"
+                        ).fetchall()
+                    ]
+                )
+            request = json.loads(input)
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"core_thesis": f"{request['ticker']} thesis"}),
+                stderr="",
+            )
+
+        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        result = repository.run_queued(
+            "agent-command", trigger="sequential", limit=2, task_kinds=("option_thesis",)
+        )
+
+        assert result["completed"] == 2
+        assert observed_statuses[0] == ["running", "queued"]
+        assert observed_statuses[1] == ["completed", "running"]
     finally:
         runtime.close()
 

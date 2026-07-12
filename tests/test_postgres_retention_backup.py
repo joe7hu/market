@@ -118,3 +118,14 @@ def test_backup_removes_password_from_pg_dump_arguments() -> None:
     assert "user=market_user" in safe_dsn
     assert environment is not None
     assert environment["PGPASSWORD"] == "do-not-expose"
+
+
+def test_backup_normalizes_sqlalchemy_psycopg_url() -> None:
+    safe_dsn, environment = _credential_safe_connection(
+        "postgresql+psycopg://market_user:secret@db.internal:5432/market"
+    )
+
+    assert "postgresql+psycopg" not in safe_dsn
+    assert "password" not in safe_dsn
+    assert environment is not None
+    assert environment["PGPASSWORD"] == "secret"

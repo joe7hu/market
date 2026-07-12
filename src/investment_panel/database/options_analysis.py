@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Sequence
 
+from psycopg.types.json import Jsonb
+
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -12,6 +14,11 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 FEATURE_VERSION = "option-core-v1"
 STRATEGY_KEY = "options-radar-core"
 STRATEGY_REVISION = 1
+DEFAULT_PARAMETERS = {
+    "feature_version": FEATURE_VERSION,
+    "score_weights": {"liquidity": 0.65, "convexity": 0.35},
+    "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 14, "max_dte": 900},
+}
 
 
 def refresh_options_radar(
@@ -22,17 +29,7 @@ def refresh_options_radar(
     code_version: str = "working-tree",
 ) -> dict[str, Any]:
     repository = AnalysisRepository(runtime)
-    strategy_id = repository.register_strategy(
-        STRATEGY_KEY,
-        STRATEGY_REVISION,
-        name="Storage-efficient options radar",
-        status="active",
-        parameters={
-            "feature_version": FEATURE_VERSION,
-            "score_weights": {"liquidity": 0.65, "convexity": 0.35},
-            "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 14, "max_dte": 900},
-        },
-    )
+    strategy_id, strategy_parameters = _active_strategy(runtime)
     cutoff = _latest_snapshot_time(runtime, source_id=source_id, symbols=symbols)
     if cutoff is None:
         return {"status": "skipped", "reason": "no_option_snapshot", "option_features": 0, "decisions": 0}
@@ -52,7 +49,7 @@ def refresh_options_radar(
             source_id=source_id,
             symbols=symbols,
         )
-        decision_count = _insert_decisions(runtime, run_id, strategy_id)
+        decision_count = _insert_decisions(runtime, run_id, strategy_id, strategy_parameters)
         models = _publication_models(runtime, run_id)
         publication_id = repository.publish(
             run_id,
@@ -191,7 +188,59 @@ def _insert_features(
     return int(result.rowcount)
 
 
-def _insert_decisions(runtime: DatabaseRuntime, run_id: Any, strategy_id: int) -> int:
+def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
+    """Return the promoted strategy in the core lineage without rewriting it."""
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, promoted_at)
+            VALUES (%s, %s, 'Storage-efficient options radar', 'active', %s, now())
+            ON CONFLICT (strategy_key, revision) DO NOTHING
+            """,
+            [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS)],
+        )
+        row = connection.execute(
+            """
+            WITH RECURSIVE lineage AS (
+                SELECT id FROM analysis.strategy_revision WHERE strategy_key = %s
+                UNION
+                SELECT child.id FROM analysis.strategy_revision child
+                JOIN lineage parent ON child.supersedes_id = parent.id
+            )
+            SELECT revision.id, revision.parameters
+            FROM analysis.strategy_revision revision
+            JOIN lineage ON lineage.id = revision.id
+            WHERE revision.status = 'active'
+            ORDER BY revision.promoted_at DESC NULLS LAST, revision.id DESC
+            LIMIT 1
+            """,
+            [STRATEGY_KEY],
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("options radar has no active strategy revision")
+    return int(row["id"]), dict(row["parameters"] or {})
+
+
+def _insert_decisions(
+    runtime: DatabaseRuntime,
+    run_id: Any,
+    strategy_id: int,
+    parameters: dict[str, Any],
+) -> int:
+    weights = dict(parameters.get("score_weights") or {})
+    liquidity_weight = float(weights.get("liquidity", 0.65))
+    convexity_weight = float(weights.get("convexity", 0.35))
+    gates = dict(parameters.get("gates") or {})
+    max_spread = gates.get("max_spread_pct", gates.get("reject_spread_pct", 0.25))
+    min_open_interest = gates.get("min_open_interest", 50)
+    min_volume = gates.get("min_volume")
+    min_dte = gates.get("min_dte", 14)
+    max_dte = gates.get("max_dte", 900)
+    delta_min = gates.get("delta_min")
+    delta_max = gates.get("delta_max")
+    max_required_move = gates.get("max_required_move_pct")
+    max_iv_percentile = gates.get("max_iv_percentile", gates.get("reject_iv_percentile"))
     with runtime.transaction(JOB_PROFILE) as connection:
         result = connection.execute(
             """
@@ -199,13 +248,18 @@ def _insert_decisions(runtime: DatabaseRuntime, run_id: Any, strategy_id: int) -
                 SELECT feature.*,
                        instrument.id AS instrument_id,
                        quote.mid, quote.bid, quote.ask, quote.open_interest, quote.volume,
-                       0.65 * feature.liquidity_score + 0.35 * feature.convexity_score AS score,
+                       %s * feature.liquidity_score + %s * feature.convexity_score AS score,
                        array_remove(ARRAY[
                            CASE WHEN quote.mid IS NULL OR quote.mid <= 0 THEN 'missing_premium' END,
                            CASE WHEN feature.spread_pct IS NULL THEN 'missing_spread' END,
-                           CASE WHEN feature.spread_pct > 0.25 THEN 'spread_too_wide' END,
-                           CASE WHEN COALESCE(quote.open_interest, 0) < 50 THEN 'open_interest_too_low' END,
-                           CASE WHEN feature.dte < 14 OR feature.dte > 900 THEN 'dte_out_of_range' END
+                           CASE WHEN feature.spread_pct > %s THEN 'spread_too_wide' END,
+                           CASE WHEN COALESCE(quote.open_interest, 0) < %s THEN 'open_interest_too_low' END,
+                           CASE WHEN %s::double precision IS NOT NULL AND COALESCE(quote.volume, 0) < %s::double precision THEN 'volume_too_low' END,
+                           CASE WHEN feature.dte < %s OR feature.dte > %s THEN 'dte_out_of_range' END,
+                           CASE WHEN %s::double precision IS NOT NULL AND (feature.modeled_delta IS NULL OR ABS(feature.modeled_delta) < %s::double precision) THEN 'delta_too_low' END,
+                           CASE WHEN %s::double precision IS NOT NULL AND (feature.modeled_delta IS NULL OR ABS(feature.modeled_delta) > %s::double precision) THEN 'delta_too_high' END,
+                           CASE WHEN %s::double precision IS NOT NULL AND (feature.required_move_pct IS NULL OR feature.required_move_pct > %s::double precision) THEN 'required_move_too_high' END,
+                           CASE WHEN %s::double precision IS NOT NULL AND (feature.iv_percentile IS NULL OR feature.iv_percentile > %s::double precision) THEN 'iv_percentile_too_high' END
                        ], NULL) AS blockers
                 FROM analysis.option_feature feature
                 JOIN raw.option_quote quote
@@ -241,7 +295,14 @@ def _insert_decisions(runtime: DatabaseRuntime, run_id: Any, strategy_id: int) -
                    encode(digest(concat_ws('|', %s::text, contract_id::text, score::text), 'sha256'), 'hex')
             FROM ranked
             """,
-            [run_id, run_id, strategy_id, run_id],
+            [
+                liquidity_weight, convexity_weight, max_spread, min_open_interest,
+                min_volume, min_volume, min_dte, max_dte,
+                delta_min, delta_min, delta_max, delta_max,
+                max_required_move, max_required_move,
+                max_iv_percentile, max_iv_percentile,
+                run_id, run_id, strategy_id, run_id,
+            ],
         )
         connection.execute(
             """

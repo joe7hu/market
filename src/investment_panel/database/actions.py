@@ -110,9 +110,14 @@ class ActionRepository:
             if not passed.intersection({"forward_test", "forward_shadow_test"}):
                 raise ValueError("strategy proposal requires a persisted passing forward shadow test")
             connection.execute(
-                "UPDATE analysis.strategy_revision SET status = 'superseded' "
-                "WHERE strategy_key = %s AND status = 'active' AND id <> %s",
-                [key, candidate["id"]],
+                """
+                UPDATE analysis.strategy_revision SET status = 'superseded'
+                WHERE status = 'active' AND id <> %s
+                  AND (strategy_key = %s OR id = (
+                      SELECT supersedes_id FROM analysis.strategy_revision WHERE id = %s
+                  ))
+                """,
+                [candidate["id"], key, candidate["id"]],
             )
             connection.execute(
                 "UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s",

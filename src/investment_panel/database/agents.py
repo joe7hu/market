@@ -156,24 +156,30 @@ class AgentRepository:
                 """,
                 [provider, model, trigger or "scheduled"],
             ).fetchone()
-            tasks = connection.execute(
-                """
-                SELECT id, task_kind, request FROM analysis.agent_task
-                WHERE status = 'queued' AND task_kind = ANY(%s)
-                  AND (CAST(%s AS text) IS NULL OR request->>'trigger' = %s)
-                ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED
-                """,
-                [list(task_kinds), trigger, trigger, limit],
-            ).fetchall()
-            if tasks:
-                connection.execute(
-                    "UPDATE analysis.agent_task SET agent_run_id = %s, status = 'running', updated_at = now() "
-                    "WHERE id = ANY(%s)",
-                    [run["id"], [task["id"] for task in tasks]],
-                )
         completed = failed = 0
         errors: list[str] = []
-        for task in tasks:
+        for _ in range(limit):
+            # Claim only the task that is about to execute. Claiming a whole
+            # sequential batch makes later tasks look abandoned while earlier
+            # external commands are still running.
+            with self.runtime.transaction(JOB_PROFILE) as connection:
+                task = connection.execute(
+                    """
+                    SELECT id, task_kind, request FROM analysis.agent_task
+                    WHERE status = 'queued' AND task_kind = ANY(%s)
+                      AND (CAST(%s AS text) IS NULL OR request->>'trigger' = %s)
+                    ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+                    """,
+                    [list(task_kinds), trigger, trigger],
+                ).fetchone()
+                if task is not None:
+                    connection.execute(
+                        "UPDATE analysis.agent_task SET agent_run_id = %s, status = 'running', updated_at = now() "
+                        "WHERE id = %s",
+                        [run["id"], task["id"]],
+                    )
+            if task is None:
+                break
             try:
                 process = subprocess.run(
                     shlex.split(command),
