@@ -1,7 +1,7 @@
 import type { PanelData, RowRecord } from "@/types";
 import { rows } from "@/utils";
 import { numberField, textField } from "@/views/rowFormat";
-import { closeVolatilityPct, expensivenessPercentileFromDiscountHistory, firstFinite, freeCashFlowMargin, freeCashFlowYield, inferredFcfMargin, latestValue, modeledAtrTrend, modeledRelativeVolumeBars, modeledTrendPoints, movingAverageState, normalizedBars, normalizeRatio, objectField, objectNumber, oneMonthBars, parsePercent, parseRating, periodBars, priceTrendPoints, ratioSeries, safeNumber, seriesPoints } from "./watchlistMath";
+import { closeVolatilityPct, expensivenessPercentileFromDiscountHistory, firstFinite, freeCashFlowMargin, freeCashFlowYield, inferredFcfMargin, latestValue, modeledAtrTrend, modeledRelativeVolumeBars, movingAverageState, normalizedBars, normalizeRatio, objectField, objectNumber, oneMonthBars, parsePercent, parseRating, periodBars, priceTrendPoints, ratioSeries, safeNumber, seriesPoints } from "./watchlistMath";
 
 export type WatchlistSort = "rank" | "state" | "momentum" | "quality" | "value" | "marketCap" | "drawdown" | "symbol" | "price" | "ps" | "pe" | "forwardPe" | "roic" | "rating" | "returnYtd" | "return1y" | "rsRank1m" | "rsRank3m" | "revenueGrowth" | "fcfYield" | "fcfMargin" | "relVol1m" | "atrPct1m" | "valuationPercentile";
 export type WatchState = "owned" | "watched" | "candidate";
@@ -170,7 +170,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const ma200Up = movingAverageState(price, numberField(technical, ["ma200", "sma_200"], Number.NaN));
   const oneYearTrend = priceTrendPoints(technical?.chart_1y) ?? priceTrendPoints(technical?.price_history_1y);
   const sixtyDayTrend = priceTrendPoints(technical?.price_history_60d);
-  const trend = oneYearTrend ?? sixtyDayTrend ?? modeledTrendPoints(return1y, return60d, drawdownFromHigh);
+  const trend = oneYearTrend ?? sixtyDayTrend ?? [];
   const rsBars = priceTrendPoints(technical?.rs_1m_bars) ?? oneMonthBars(trend);
   const rs3mBars = priceTrendPoints(technical?.rs_3m_bars) ?? periodBars(trend, 63);
   const relVol1m = firstFinite([numberField(technical, ["relative_volume_1m", "rel_vol_1m", "rel_volume_1m", "volume_ratio_20_60", "volume_ratio"], Number.NaN), objectNumber(screenerMetrics, ["relative_volume_1m", "rel_vol_1m", "rel_volume_1m", "volume_ratio"])]);

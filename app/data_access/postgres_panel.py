@@ -127,21 +127,85 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
     """,
     "technicals": """
-        WITH ranked AS (
-            SELECT instrument.symbol, bar.observed_at, bar.close, bar.volume,
-                   row_number() OVER (PARTITION BY instrument.id ORDER BY bar.observed_at DESC) AS rn
-            FROM raw.price_bar bar JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-            WHERE bar.interval = '1d'
+        WITH daily AS (
+            SELECT DISTINCT ON (bar.instrument_id, bar.trading_date)
+                   bar.instrument_id, instrument.symbol, bar.trading_date,
+                   bar.observed_at, bar.high, bar.low, bar.close, bar.volume
+            FROM raw.price_bar bar
+            JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+            WHERE bar.interval = '1d' AND bar.close > 0
+            ORDER BY bar.instrument_id, bar.trading_date,
+                     (bar.source_id = 'daily-market-prices') DESC, bar.observed_at DESC
+        ), sequenced AS (
+            SELECT daily.*,
+                   row_number() OVER (
+                       PARTITION BY instrument_id ORDER BY trading_date DESC
+                   ) AS rn,
+                   lag(close) OVER (
+                       PARTITION BY instrument_id ORDER BY trading_date
+                   ) AS prior_close
+            FROM daily
+        ), aggregated AS (
+            SELECT instrument_id, symbol, max(observed_at) AS as_of,
+                   max(close) FILTER (WHERE rn = 1) AS price,
+                   avg(close) FILTER (WHERE rn <= 20) AS sma_20,
+                   avg(close) FILTER (WHERE rn <= 50) AS sma_50,
+                   avg(close) FILTER (WHERE rn <= 200) AS sma_200,
+                   avg(volume) FILTER (WHERE rn <= 20) AS average_volume_20d,
+                   max(close) FILTER (WHERE rn = 1)
+                       / NULLIF(max(close) FILTER (WHERE rn = 21), 0) - 1 AS return_20d,
+                   max(close) FILTER (WHERE rn = 1)
+                       / NULLIF(max(close) FILTER (WHERE rn = 61), 0) - 1 AS return_60d,
+                   max(close) FILTER (WHERE rn = 1)
+                       / NULLIF(max(close) FILTER (WHERE rn = 252), 0) - 1 AS return_1y,
+                   max(close) FILTER (WHERE rn = 1)
+                       / NULLIF((array_agg(close ORDER BY trading_date)
+                           FILTER (WHERE trading_date >= date_trunc('year', current_date)))[1], 0) - 1 AS return_ytd,
+                   max(close) FILTER (WHERE rn = 1)
+                       / NULLIF(max(high) FILTER (WHERE rn <= 252), 0) - 1 AS drawdown_from_high,
+                   avg(volume) FILTER (WHERE rn <= 22)
+                       / NULLIF(avg(volume) FILTER (WHERE rn BETWEEN 23 AND 85), 0) AS relative_volume_1m,
+                   avg(greatest(
+                       high - low,
+                       abs(high - prior_close),
+                       abs(low - prior_close)
+                   )) FILTER (WHERE rn <= 22)
+                       / NULLIF(max(close) FILTER (WHERE rn = 1), 0) AS atr_pct_1m,
+                   jsonb_agg(jsonb_build_object(
+                       'date', trading_date, 'close', close
+                   ) ORDER BY trading_date) FILTER (WHERE rn <= 252) AS chart_1y,
+                   jsonb_agg(jsonb_build_object(
+                       'date', trading_date, 'value', volume
+                   ) ORDER BY trading_date) FILTER (WHERE rn <= 22) AS volume_1m_bars,
+                   jsonb_agg(jsonb_build_object(
+                       'date', trading_date,
+                       'value', greatest(high - low, abs(high - prior_close), abs(low - prior_close))
+                           / NULLIF(close, 0)
+                   ) ORDER BY trading_date) FILTER (WHERE rn <= 22) AS atr_pct_1m_points
+            FROM sequenced
+            WHERE rn <= 252
+            GROUP BY instrument_id, symbol
+        ), price_ranks AS (
+            SELECT sequenced.instrument_id,
+                   100.0 * (count(*) FILTER (
+                       WHERE sequenced.rn <= 252 AND sequenced.close <= aggregated.price
+                   ) - 1) / NULLIF(count(*) FILTER (WHERE sequenced.rn <= 252) - 1, 0)
+                       AS valuation_percentile
+            FROM sequenced
+            JOIN aggregated USING (instrument_id)
+            GROUP BY sequenced.instrument_id
         )
-        SELECT symbol, max(observed_at) AS as_of,
-               max(close) FILTER (WHERE rn = 1) AS price,
-               avg(close) FILTER (WHERE rn <= 20) AS sma_20,
-               avg(close) FILTER (WHERE rn <= 50) AS sma_50,
-               avg(close) FILTER (WHERE rn <= 200) AS sma_200,
-               avg(volume) FILTER (WHERE rn <= 20) AS average_volume_20d,
-               CASE WHEN avg(close) FILTER (WHERE rn <= 50) > 0
-                    THEN max(close) FILTER (WHERE rn = 1) / (avg(close) FILTER (WHERE rn <= 50)) - 1 END AS distance_from_sma_50
-        FROM ranked WHERE rn <= 200 GROUP BY symbol ORDER BY symbol
+        SELECT aggregated.*,
+               aggregated.price / NULLIF(aggregated.sma_50, 0) - 1 AS distance_from_sma_50,
+               price_ranks.valuation_percentile,
+               ((aggregated.price >= aggregated.sma_20)::int
+                 + (aggregated.price >= aggregated.sma_50)::int
+                 + (aggregated.price >= aggregated.sma_200)::int
+                 + (aggregated.return_20d > 0)::int
+                 + (aggregated.return_60d > 0)::int) * 20 AS technical_score
+        FROM aggregated
+        JOIN price_ranks USING (instrument_id)
+        ORDER BY aggregated.symbol
     """,
     "valuations": """
         SELECT DISTINCT ON (instrument.id, observation.metric_set)
