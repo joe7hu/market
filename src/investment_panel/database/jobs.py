@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -51,6 +52,7 @@ class JobRepository:
     ) -> dict[str, Any]:
         if status not in {"succeeded", "partial", "failed", "skipped"}:
             raise ValueError("job status is invalid")
+        stored_summary = summary if summary is not None else ({} if error is None else {"error": error})
         with self.runtime.transaction() as connection:
             row = connection.execute(
                 """
@@ -59,7 +61,12 @@ class JobRepository:
                 WHERE id = %s AND status = 'running'
                 RETURNING id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
                 """,
-                [status, error, Jsonb(summary if summary is not None else ({} if error is None else {"error": error})), job_id],
+                [
+                    status,
+                    error,
+                    Jsonb(_jsonable(stored_summary)),
+                    job_id,
+                ],
             ).fetchone()
         if row is None:
             raise ValueError(f"job is not running: {job_id}")
@@ -114,3 +121,17 @@ class JobRepository:
                 [reason, Jsonb({"error": reason})],
             )
         return int(result.rowcount)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    return value

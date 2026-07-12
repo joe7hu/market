@@ -32,6 +32,23 @@ def test_job_repository_start_finish_and_rows(job_repository: JobRepository) -> 
     assert job_repository.rows()[0]["summary"] == {"rows": 3}
 
 
+def test_job_repository_serializes_nested_datetime_summary(job_repository: JobRepository) -> None:
+    job = job_repository.start("timed-refresh")
+    started_at = datetime(2026, 7, 12, 18, 53, tzinfo=UTC)
+
+    job_repository.finish(
+        job["id"],
+        "succeeded",
+        summary={"started_at": started_at, "steps": [{"observed_on": started_at.date()}]},
+    )
+
+    summary = job_repository.rows()[0]["summary"]
+    assert summary == {
+        "started_at": "2026-07-12T18:53:00+00:00",
+        "steps": [{"observed_on": "2026-07-12"}],
+    }
+
+
 def test_concurrent_job_starts_are_single_flight(job_repository: JobRepository) -> None:
     with ThreadPoolExecutor(max_workers=4) as executor:
         jobs = list(executor.map(lambda _index: job_repository.start("options-radar"), range(4)))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
+import os
 import time
 
 from investment_panel.core import refresh_jobs
@@ -219,6 +220,7 @@ def test_refresh_subprocess_keeps_database_credentials_out_of_arguments(monkeypa
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs["env"]
+        captured["cwd"] = kwargs["cwd"]
         return subprocess.CompletedProcess(command, 0, stdout='{"status":"succeeded"}', stderr="")
 
     monkeypatch.setattr(refresh_jobs, "_job_repository", lambda *_args: _Repository())
@@ -229,6 +231,8 @@ def test_refresh_subprocess_keeps_database_credentials_out_of_arguments(monkeypa
     assert result["status"] == "succeeded"
     assert "super-secret" not in " ".join(captured["command"])
     assert captured["env"]["MARKET_DATABASE_URL"].endswith("@db.internal/market")
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(refresh_jobs.SOURCE_ROOT)
+    assert captured["cwd"] == refresh_jobs.PROJECT_ROOT
 
 
 def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monkeypatch) -> None:

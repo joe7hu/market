@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import timedelta
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 from threading import Event, Thread
@@ -38,6 +39,8 @@ JOB_TIMEOUT_SECONDS: dict[str, int] = {
     "options_radar_hard_refresh": 5400,
 }
 JOB_HEARTBEAT_SECONDS = 30.0
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SOURCE_ROOT = PROJECT_ROOT / "src"
 
 
 def _job_timeout_seconds(job_name: str) -> int | None:
@@ -236,7 +239,15 @@ def execute_refresh_job_subprocess(
         "--config",
         config_path or "config.yaml",
     ]
-    child_environment = {**os.environ, "MARKET_DATABASE_URL": repository.runtime.dsn}
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    child_pythonpath = os.pathsep.join(
+        part for part in (str(SOURCE_ROOT), existing_pythonpath) if part
+    )
+    child_environment = {
+        **os.environ,
+        "MARKET_DATABASE_URL": repository.runtime.dsn,
+        "PYTHONPATH": child_pythonpath,
+    }
     timeout_seconds = _job_timeout_seconds(job_name)
     try:
         completed = subprocess.run(
@@ -246,6 +257,7 @@ def execute_refresh_job_subprocess(
             check=False,
             timeout=timeout_seconds,
             env=child_environment,
+            cwd=PROJECT_ROOT,
         )
     except subprocess.TimeoutExpired:
         return finish_refresh_job_failed(
