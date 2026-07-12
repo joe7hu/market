@@ -80,13 +80,40 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
                 """
             ).fetchall()
         ]
+        source_changes = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT signal.id, instrument.id AS instrument_id, instrument.symbol,
+                       signal.observed_at, signal.sentiment, signal.confidence,
+                       signal.thesis, signal.antithesis, signal.invalidation,
+                       signal.details, item.title, item.summary, item.url,
+                       source.name AS source_name
+                FROM analysis.source_signal signal
+                JOIN raw.content_item item ON item.id = signal.content_item_id
+                JOIN catalog.instrument instrument ON instrument.id = signal.instrument_id
+                JOIN ingest.source source ON source.id = item.source_id
+                WHERE EXISTS (
+                    SELECT 1 FROM app.portfolio_position position
+                    WHERE position.instrument_id = instrument.id
+                ) OR EXISTS (
+                    SELECT 1 FROM app.watchlist_item watchlist
+                    WHERE watchlist.instrument_id = instrument.id
+                      AND watchlist.watch_state <> 'excluded'
+                )
+                ORDER BY signal.observed_at DESC, signal.confidence DESC NULLS LAST
+                LIMIT 12
+                """
+            ).fetchall()
+        ]
 
     portfolio_rows = [_portfolio_pulse(row, holdings) for row in holdings]
     review_rows = [_review_item(row) for row in reviews]
     option_items = [_option_item(row) for row in option_rows]
+    source_items = [_source_change_item(row) for row in source_changes]
     catalyst_rows = [_catalyst_item(row, as_of) for row in catalysts]
     daily_brief = sorted(
-        option_items + review_rows + catalyst_rows + portfolio_rows,
+        option_items + review_rows + source_items + catalyst_rows + portfolio_rows,
         key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),
     )
     decision_queue = [
@@ -117,7 +144,7 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         "session": "premarket",
         "status": "ready",
         "headline": f"{len(option_items) + len(review_rows)} decisions need attention",
-        "summary": f"{len(holdings)} holdings, {len(option_items)} option setups, {len(review_rows)} thesis reviews, and {len(catalyst_rows)} near-term catalysts.",
+        "summary": f"{len(holdings)} holdings, {len(option_items)} option setups, {len(review_rows)} thesis reviews, {len(source_items)} source changes, and {len(catalyst_rows)} near-term catalysts.",
     }]
     analysis = AnalysisRepository(runtime)
     run_id = analysis.start_run(
@@ -128,6 +155,7 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             "holdings": holdings,
             "reviews": reviews,
             "catalysts": catalysts,
+            "source_signal_ids": [row.get("id") for row in source_changes],
             "option_decision_keys": [row.get("opportunity_id") or row.get("decision_id") for row in option_rows],
         },
         feature_versions={"daily_brief": "v1"},
@@ -156,7 +184,31 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         "portfolio_pulse": len(portfolio_rows),
         "thesis_reviews": len(review_rows),
         "catalysts": len(catalyst_rows),
+        "source_changes": len(source_items),
         "option_decisions": len(option_items),
+    }
+
+
+def _source_change_item(row: dict[str, Any]) -> dict[str, Any]:
+    details = dict(row.get("details") or {})
+    confidence = _number(row.get("confidence"))
+    sentiment = str(row.get("sentiment") or "neutral")
+    summary = row.get("thesis") or row.get("summary") or row.get("title") or "Source evidence changed."
+    return {
+        "stable_key": f"source:{row['id']}",
+        "instrument_id": row["instrument_id"],
+        "category": "whats_changed",
+        "symbol": row["symbol"],
+        "headline": row.get("title") or f"{row['symbol']} source update",
+        "summary": summary,
+        "score": round((confidence if confidence is not None else 0.5) * 100, 2),
+        "source": row.get("source_name"),
+        "sentiment": sentiment,
+        "antithesis": row.get("antithesis"),
+        "invalidation": row.get("invalidation"),
+        "evidence_refs": details.get("evidence_refs") or ([row["url"]] if row.get("url") else []),
+        "observed_at": row.get("observed_at"),
+        "next_action": "Review the source evidence against the current thesis before acting.",
     }
 
 
