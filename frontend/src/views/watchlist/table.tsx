@@ -98,8 +98,8 @@ function WatchlistTable({ rows, pendingSymbol, onOpenTicker, onSetWatchState }: 
                 <td className="px-2 py-2 text-right tabular-nums">{formatPrice(row.price)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{formatMarketCap(row.marketCap)}</td>
                 <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.psRatio, 8, 20))}>{formatMultiple(row.psRatio)}</td>
-                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.peRatio, 25, 50))}>{formatMultiple(row.peRatio)}</td>
-                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.forwardPe, 25, 50))}>{formatMultiple(row.forwardPe)}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.peRatio, 25, 50))}>{formatMultiple(row.peRatio, row.peStatus === "not_meaningful" ? "N/M" : "-")}</td>
+                <td className={cn("px-2 py-2 text-right tabular-nums", multipleTone(row.forwardPe, 25, 50))}>{formatMultiple(row.forwardPe, row.forwardPeStatus === "not_meaningful" ? "N/M" : "-")}</td>
                 <td className={cn("px-2 py-2 text-right tabular-nums", growthTone(row.revenueGrowthYoy))}>{formatPercent(row.revenueGrowthYoy, true)}</td>
                 <td className={cn("px-2 py-2 text-right tabular-nums", fcfYieldTone(row.fcfYield))}>{formatPercent(row.fcfYield, true)}</td>
                 <td className={cn("px-2 py-2 text-right tabular-nums", fcfMarginTone(row.fcfMargin))}>{formatPercent(row.fcfMargin, true)}</td>

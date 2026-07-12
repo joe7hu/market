@@ -259,6 +259,56 @@ class IngestionRepository:
                 )
         return stored
 
+    def store_fundamental_observations(
+        self,
+        run_id: UUID,
+        source_id: str,
+        metric_set: str,
+        rows: Sequence[dict[str, Any]],
+    ) -> int:
+        stored = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for source in rows:
+                symbol = str(source.get("symbol") or "").strip().upper()
+                observed_at = _aware_datetime(source.get("observed_at"))
+                period_end = _date(source.get("period_end") or observed_at)
+                values = source.get("values")
+                if not symbol or observed_at is None or period_end is None or not isinstance(values, dict):
+                    continue
+                name = str(source.get("name") or symbol).strip() or symbol
+                asset_class = str(source.get("asset_class") or "equity")
+                instrument = connection.execute(
+                    """
+                    INSERT INTO catalog.instrument (symbol, name, asset_class, category)
+                    VALUES (%s, %s, %s, 'fundamentals')
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET name = CASE
+                            WHEN catalog.instrument.name IS NULL OR catalog.instrument.name = ''
+                              OR catalog.instrument.name = catalog.instrument.symbol
+                            THEN EXCLUDED.name ELSE catalog.instrument.name END,
+                        asset_class = CASE
+                            WHEN catalog.instrument.asset_class IN ('unknown', 'equity')
+                            THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
+                        updated_at = now()
+                    RETURNING id
+                    """,
+                    [symbol, name, asset_class],
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO raw.fundamental_observation
+                        (instrument_id, source_id, ingest_run_id, metric_set,
+                         period_end, observed_at, values)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, source_id, metric_set, period_end, observed_at)
+                    DO UPDATE SET ingest_run_id = EXCLUDED.ingest_run_id,
+                        values = EXCLUDED.values
+                    """,
+                    [instrument["id"], source_id, run_id, metric_set, period_end, observed_at, Jsonb(values)],
+                )
+                stored += 1
+        return stored
+
     @contextmanager
     def run(
         self,

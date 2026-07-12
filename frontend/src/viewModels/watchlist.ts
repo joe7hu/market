@@ -24,7 +24,9 @@ export type WatchlistRow = {
   marketCap: number;
   psRatio: number;
   peRatio: number;
+  peStatus: string;
   forwardPe: number;
+  forwardPeStatus: string;
   revenueGrowthYoy: number;
   fcfYield: number;
   fcfMargin: number;
@@ -187,7 +189,9 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     marketCap,
     psRatio: firstFinite([numberField(row, ["ps_ratio"], Number.NaN), objectNumber(fundamentalMetrics, ["ps_ratio", "price_to_sales"])]),
     peRatio: firstFinite([numberField(row, ["pe_ratio", "trailing_pe", "pe"], Number.NaN), objectNumber(fundamentalMetrics, ["pe_ratio", "trailing_pe", "pe"])]),
+    peStatus: textField(row, ["pe_status"], "missing"),
     forwardPe: firstFinite([numberField(row, ["forward_pe"], Number.NaN), objectNumber(fundamentalMetrics, ["forward_pe", "forwardPe"])]),
+    forwardPeStatus: textField(row, ["forward_pe_status"], "missing"),
     revenueGrowthYoy,
     fcfYield,
     fcfMargin,

@@ -46,8 +46,8 @@ export function formatMarketCap(value: number): string {
   return `$${value.toLocaleString()}`;
 }
 
-export function formatMultiple(value: number): string {
-  if (!Number.isFinite(value)) return "-";
+export function formatMultiple(value: number, unavailable = "-"): string {
+  if (!Number.isFinite(value)) return unavailable;
   if (Math.abs(value) >= 100) return value.toFixed(0);
   if (Math.abs(value) >= 10) return value.toFixed(1);
   return value.toFixed(2);

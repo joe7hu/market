@@ -23,6 +23,17 @@ class YFinanceProvider:
     def info(self, symbol: str) -> dict[str, Any]:
         return dict(self.ticker(symbol).info or {})
 
+    def market_metrics(self, symbol: str) -> dict[str, Any]:
+        ticker = self.ticker(symbol)
+        info = dict(ticker.info or {})
+        try:
+            roic = return_on_invested_capital(ticker.income_stmt, ticker.balance_sheet)
+        except Exception:
+            roic = None
+        if roic is not None:
+            info["returnOnInvestedCapital"] = roic
+        return info
+
     def estimates(self, symbol: str) -> dict[str, Any]:
         ticker = self.ticker(symbol)
         return {
@@ -137,6 +148,36 @@ def number_or_none(value: Any) -> float | None:
     if number != number:
         return None
     return number
+
+
+def return_on_invested_capital(income_statement: Any, balance_sheet: Any) -> float | None:
+    operating_income = latest_statement_value(income_statement, "Operating Income")
+    invested_capital = statement_values(balance_sheet, "Invested Capital")[:2]
+    if operating_income is None or not invested_capital:
+        return None
+    denominator = sum(invested_capital) / len(invested_capital)
+    if denominator <= 0:
+        return None
+    tax_rate = latest_statement_value(income_statement, "Tax Rate For Calcs")
+    if tax_rate is None:
+        tax_provision = latest_statement_value(income_statement, "Tax Provision")
+        pretax_income = latest_statement_value(income_statement, "Pretax Income")
+        tax_rate = tax_provision / pretax_income if tax_provision is not None and pretax_income not in (None, 0) else 0.21
+    bounded_tax_rate = min(0.5, max(0.0, tax_rate))
+    return operating_income * (1.0 - bounded_tax_rate) / denominator
+
+
+def latest_statement_value(statement: Any, row_name: str) -> float | None:
+    values = statement_values(statement, row_name)
+    return values[0] if values else None
+
+
+def statement_values(statement: Any, row_name: str) -> list[float]:
+    if statement is None or not hasattr(statement, "index") or row_name not in statement.index:
+        return []
+    series = statement.loc[row_name]
+    raw_values = list(series.values) if hasattr(series, "values") else [series]
+    return [value for item in raw_values if (value := number_or_none(item)) is not None]
 
 
 def json_safe(value: Any) -> Any:
