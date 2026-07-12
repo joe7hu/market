@@ -9,6 +9,14 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.strategy_parameters import (
+    EVALUABLE_GATES,
+    MAXIMUM_GATES,
+    MINIMUM_GATES,
+    canonical_gate_name,
+    merge_strategy_parameters,
+    normalize_gates,
+)
 
 
 class StrategyLearningRepository:
@@ -60,9 +68,10 @@ class StrategyLearningRepository:
             f"{postmortem_task_id}:{json.dumps(changes, sort_keys=True)}".encode()
         ).hexdigest()[:10]
         proposed_key = f"{base['strategy_key']}__agent_{digest}"
-        parameters = _merge_parameters(dict(base["parameters"] or {}), changes)
+        parameters = merge_strategy_parameters(dict(base["parameters"] or {}), changes)
         candidate = connection.execute(
-            "SELECT id, status, parameters, supersedes_id FROM analysis.strategy_revision "
+            "SELECT id, status, parameters, supersedes_id, authority_group "
+            "FROM analysis.strategy_revision "
             "WHERE strategy_key = %s AND revision = 1 FOR UPDATE",
             [proposed_key],
         ).fetchone()
@@ -70,15 +79,19 @@ class StrategyLearningRepository:
             candidate = connection.execute(
                 """
                 INSERT INTO analysis.strategy_revision
-                    (strategy_key, revision, name, status, parameters, supersedes_id)
-                VALUES (%s, 1, %s, 'candidate', %s, %s)
-                RETURNING id, status, parameters, supersedes_id
+                    (strategy_key, revision, name, status, parameters, supersedes_id, authority_group)
+                VALUES (%s, 1, %s, 'candidate', %s, %s, %s)
+                RETURNING id, status, parameters, supersedes_id, authority_group
                 """,
-                [proposed_key, proposed_key, Jsonb(parameters), base["id"]],
+                [
+                    proposed_key, proposed_key, Jsonb(parameters), base["id"],
+                    base["authority_group"],
+                ],
             ).fetchone()
         elif (
             candidate["status"] != "candidate"
             or candidate["supersedes_id"] != base["id"]
+            or candidate["authority_group"] != base["authority_group"]
             or dict(candidate["parameters"] or {}) != parameters
         ):
             raise ValueError("proposed strategy key collides with an existing revision")
@@ -113,8 +126,9 @@ class StrategyLearningRepository:
         connection.execute(
             """
             INSERT INTO analysis.strategy_revision
-                (strategy_key, revision, name, status, parameters, promoted_at)
-            VALUES ('options-radar-core', 1, 'options-radar-core', 'active', %s, now())
+                (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
+            VALUES ('options-radar-core', 1, 'options-radar-core', 'active', %s,
+                    'options-radar-core', now())
             ON CONFLICT (strategy_key, revision) DO NOTHING
             """,
             [Jsonb(_DEFAULT_PARAMETERS)],
@@ -123,35 +137,33 @@ class StrategyLearningRepository:
             base = connection.execute(
                 """
                 WITH RECURSIVE ancestry AS (
-                    SELECT id, strategy_key, revision, parameters, supersedes_id
+                    SELECT id, strategy_key, revision, parameters, supersedes_id, authority_group
                     FROM analysis.strategy_revision WHERE id = %s
                     UNION ALL
                     SELECT parent.id, parent.strategy_key, parent.revision,
-                           parent.parameters, parent.supersedes_id
+                           parent.parameters, parent.supersedes_id, parent.authority_group
                     FROM analysis.strategy_revision parent
                     JOIN ancestry child ON child.supersedes_id = parent.id
                 )
                 SELECT source.id, source.strategy_key, source.revision, source.parameters,
+                       source.authority_group,
                        EXISTS (SELECT 1 FROM ancestry WHERE strategy_key = 'options-radar-core') AS in_core_lineage
                 FROM analysis.strategy_revision source WHERE source.id = %s
                 """,
                 [source_strategy_id, source_strategy_id],
             ).fetchone()
-            if base is None or not base["in_core_lineage"]:
+            if (
+                base is None
+                or not base["in_core_lineage"]
+                or base["authority_group"] != "options-radar-core"
+            ):
                 raise ValueError("source decision strategy is outside the options-radar-core lineage")
             return base
         return connection.execute(
             """
-            WITH RECURSIVE lineage AS (
-                SELECT id FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core'
-                UNION
-                SELECT child.id FROM analysis.strategy_revision child
-                JOIN lineage parent ON child.supersedes_id = parent.id
-            )
-            SELECT revision.id, revision.strategy_key, revision.revision, revision.parameters
-            FROM analysis.strategy_revision revision JOIN lineage ON lineage.id = revision.id
-            WHERE revision.status = 'active'
-            ORDER BY revision.promoted_at DESC NULLS LAST, revision.id DESC LIMIT 1
+            SELECT id, strategy_key, revision, parameters, authority_group
+            FROM analysis.strategy_revision
+            WHERE authority_group = 'options-radar-core' AND status = 'active'
             """
         ).fetchone()
 
@@ -277,48 +289,19 @@ _DEFAULT_PARAMETERS = {
 }
 
 
-def _merge_parameters(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    gates = _normalized_gates(base)
-    for key, value in changes.items():
-        canonical = _GATE_ALIASES.get(key, key)
-        if canonical in _EVALUABLE_GATES:
-            gates[canonical] = value
-        else:
-            merged[key] = value
-    merged["gates"] = gates
-    return merged
-
-
-_GATE_ALIASES = {"dte_min": "min_dte", "dte_max": "max_dte"}
-_MINIMUM_GATES = {"min_open_interest", "min_volume", "min_dte", "delta_min"}
-_MAXIMUM_GATES = {
-    "max_spread_pct", "reject_spread_pct", "max_dte", "delta_max",
-    "max_required_move_pct", "max_iv_percentile", "reject_iv_percentile",
-}
-_EVALUABLE_GATES = _MINIMUM_GATES | _MAXIMUM_GATES
 _METADATA_CHANGES = {"candidate_note", "filter_reason"}
 
 
-def _normalized_gates(parameters: dict[str, Any]) -> dict[str, Any]:
-    gates = dict(parameters.get("gates") or {})
-    for key, value in parameters.items():
-        canonical = _GATE_ALIASES.get(key, key)
-        if canonical in _EVALUABLE_GATES and canonical not in gates:
-            gates[canonical] = value
-    return gates
-
-
 def _evaluation_capability(base: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
-    base_gates = _normalized_gates(base)
+    base_gates = normalize_gates(base)
     unsupported: list[str] = []
     loosened: list[str] = []
     evaluated = 0
     for key, value in changes.items():
         if value is None or key in _METADATA_CHANGES:
             continue
-        canonical = _GATE_ALIASES.get(key, key)
-        if canonical not in _EVALUABLE_GATES:
+        canonical = canonical_gate_name(key)
+        if canonical not in EVALUABLE_GATES:
             unsupported.append(key)
             continue
         evaluated += 1
@@ -326,9 +309,9 @@ def _evaluation_capability(base: dict[str, Any], changes: dict[str, Any]) -> dic
         if baseline is None:
             loosened.append(key)
             continue
-        if canonical in _MINIMUM_GATES and float(value) < float(baseline):
+        if canonical in MINIMUM_GATES and float(value) < float(baseline):
             loosened.append(key)
-        if canonical in _MAXIMUM_GATES and float(value) > float(baseline):
+        if canonical in MAXIMUM_GATES and float(value) > float(baseline):
             loosened.append(key)
     if unsupported or evaluated == 0:
         return {
@@ -344,10 +327,9 @@ def _evaluation_capability(base: dict[str, Any], changes: dict[str, Any]) -> dic
 
 
 def _passes(row: dict[str, Any], parameters: dict[str, Any]) -> bool:
-    gates = _normalized_gates(parameters)
+    gates = normalize_gates(parameters)
     checks = (
         ("max_spread_pct", row.get("spread_pct"), lambda actual, limit: actual <= limit),
-        ("reject_spread_pct", row.get("spread_pct"), lambda actual, limit: actual <= limit),
         ("min_open_interest", row.get("open_interest"), lambda actual, limit: actual >= limit),
         ("min_volume", row.get("volume"), lambda actual, limit: actual >= limit),
         ("min_dte", row.get("dte"), lambda actual, limit: actual >= limit),
@@ -356,7 +338,6 @@ def _passes(row: dict[str, Any], parameters: dict[str, Any]) -> bool:
         ("delta_max", abs(row["modeled_delta"]) if row.get("modeled_delta") is not None else None, lambda actual, limit: actual <= limit),
         ("max_required_move_pct", row.get("required_move_pct"), lambda actual, limit: actual <= limit),
         ("max_iv_percentile", row.get("iv_percentile"), lambda actual, limit: actual <= limit),
-        ("reject_iv_percentile", row.get("iv_percentile"), lambda actual, limit: actual <= limit),
     )
     return all(key not in gates or actual is not None and compare(float(actual), float(gates[key])) for key, actual, compare in checks)
 

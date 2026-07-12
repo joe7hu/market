@@ -243,19 +243,26 @@ def promote_strategy_mutation_endpoint(
     approved_by = payload.approved_by.strip() if payload else "joe"
     from investment_panel.database.actions import ActionRepository
     from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.options_analysis import refresh_options_radar
 
     try:
-        strategy_version = ActionRepository(runtime_for_config(config)).promote_strategy_proposal(
+        runtime = runtime_for_config(config)
+        strategy_version = ActionRepository(runtime).promote_strategy_proposal(
             proposal_id, approved_by=approved_by
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        radar_refresh = refresh_options_radar(runtime, code_version="strategy-promotion")
+    except Exception as exc:
+        radar_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     deps._invalidate_context_cache()
     return {
         "status": "promoted",
         "proposal_id": proposal_id,
         "strategy_version": strategy_version,
         "approved_by": approved_by,
+        "radar_refresh": radar_refresh,
     }
 
 

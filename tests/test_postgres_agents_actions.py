@@ -160,14 +160,16 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             ).fetchone()["id"]
             base_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, promoted_at) "
-                "VALUES ('options-radar-core', 1, 'core', 'active', %s, now()) RETURNING id",
+                "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
+                "VALUES ('options-radar-core', 1, 'core', 'active', %s, "
+                "'options-radar-core', now()) RETURNING id",
                 [Jsonb({"gates": {"max_spread_pct": 0.25}})],
             ).fetchone()["id"]
             candidate_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, supersedes_id) "
-                "VALUES ('new-v2', 1, 'new-v2', 'candidate', %s, %s) RETURNING id",
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('new-v2', 1, 'new-v2', 'candidate', %s, %s, "
+                "'options-radar-core') RETURNING id",
                 [Jsonb({"max_spread_pct": 0.2}), base_id],
             ).fetchone()["id"]
             for evaluation_type in ("backtest", "forward_shadow_test"):
@@ -177,6 +179,19 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                     "VALUES (%s, %s, now(), 'pass', %s)",
                     [candidate_id, evaluation_type, Jsonb({"sample_size": 100})],
                 )
+            analysis_run_id = connection.execute(
+                "INSERT INTO analysis.run "
+                "(run_type, input_cutoff, code_version, strategy_revision_id, input_hash, "
+                "started_at, finished_at, status) "
+                "VALUES ('options-radar', now(), 'old-strategy', %s, %s, now(), now(), "
+                "'succeeded') RETURNING id",
+                [base_id, "c" * 64],
+            ).fetchone()["id"]
+            publication_id = connection.execute(
+                "INSERT INTO app.publication (scope, analysis_run_id, status, published_at) "
+                "VALUES ('options-radar', %s, 'published', now()) RETURNING id",
+                [analysis_run_id],
+            ).fetchone()["id"]
         assert actions.acknowledge_alert(str(alert_id)) is True
         assert actions.acknowledge_alert(str(alert_id)) is False
         assert actions.promote_strategy_proposal(str(proposal_id), approved_by="joe") == "new-v2"
@@ -188,7 +203,11 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             promotion = connection.execute(
                 "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]
             ).fetchone()
+            publication_status = connection.execute(
+                "SELECT status FROM app.publication WHERE id = %s", [publication_id]
+            ).fetchone()["status"]
         assert promotion["validation"] == {"status": "promoted", "approved_by": "joe"}
+        assert publication_status == "superseded"
         with runtime.transaction() as connection:
             sibling_proposal = connection.execute(
                 "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
@@ -197,8 +216,9 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
             ).fetchone()["id"]
             sibling_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, supersedes_id) "
-                "VALUES ('sibling-v2', 1, 'sibling', 'candidate', %s, %s) RETURNING id",
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('sibling-v2', 1, 'sibling', 'candidate', %s, %s, "
+                "'options-radar-core') RETURNING id",
                 [Jsonb({}), base_id],
             ).fetchone()["id"]
             for evaluation_type in ("backtest", "forward_shadow_test"):
@@ -258,6 +278,10 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
                 "proposed_parameter_changes": {"require_rs_improving": True},
             },
         )
+        alias = repository.materialize_postmortem(
+            _postmortem_task(runtime),
+            {"proposed_parameter_changes": {"reject_spread_pct": 0.05}},
+        )
         with runtime.read() as connection:
             candidates = connection.execute(
                 "SELECT parameters FROM analysis.strategy_revision WHERE status = 'candidate' ORDER BY id"
@@ -268,8 +292,13 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
             ).fetchall()
         assert tightened["strategy_backtests"] == 1
         assert unsupported["strategy_backtests"] == 1
+        assert alias["strategy_backtests"] == 1
         assert candidates[0]["parameters"]["gates"]["min_dte"] == 30
-        assert [row["verdict"] for row in verdicts] == ["insufficient_data", "unsupported_parameters"]
+        assert candidates[2]["parameters"]["gates"]["max_spread_pct"] == 0.05
+        assert "reject_spread_pct" not in candidates[2]["parameters"]["gates"]
+        assert [row["verdict"] for row in verdicts] == [
+            "insufficient_data", "unsupported_parameters", "insufficient_data"
+        ]
     finally:
         runtime.close()
 
@@ -357,8 +386,9 @@ def test_strategy_learning_rejects_source_decisions_outside_core_lineage(
             ).fetchone()["id"]
             strategy_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, promoted_at) "
-                "VALUES ('unrelated-strategy', 1, 'unrelated', 'active', %s, now()) RETURNING id",
+                "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
+                "VALUES ('unrelated-strategy', 1, 'unrelated', 'active', %s, "
+                "'unrelated-strategy', now()) RETURNING id",
                 [Jsonb({"gates": {"min_dte": 14}})],
             ).fetchone()["id"]
             run_id = connection.execute(

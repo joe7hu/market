@@ -241,19 +241,24 @@ def test_options_radar_applies_promoted_strategy_parameters(analysis_context) ->
             "SELECT id, parameters FROM analysis.strategy_revision "
             "WHERE strategy_key = 'options-radar-core' AND status = 'active'"
         ).fetchone()
-        candidate = connection.execute(
-            """
-            INSERT INTO analysis.strategy_revision
-                (strategy_key, revision, name, status, parameters, supersedes_id, promoted_at)
-            VALUES ('options-radar-core__agent_test', 1, 'tight spread', 'active', %s, %s, now())
-            RETURNING id
-            """,
-            [Jsonb({"max_spread_pct": 0.05}), base["id"]],
-        ).fetchone()
         connection.execute(
             "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",
             [base["id"]],
         )
+        candidate = connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, supersedes_id,
+                 authority_group, promoted_at)
+            VALUES ('options-radar-core__agent_test', 1, 'tight spread', 'active', %s, %s,
+                    'options-radar-core', now())
+            RETURNING id
+            """,
+            [
+                Jsonb({"gates": {"max_spread_pct": 0.25}, "reject_spread_pct": 0.05}),
+                base["id"],
+            ],
+        ).fetchone()
 
     result = refresh_options_radar(runtime, source_id="test-options", code_version="promoted")
 
@@ -265,6 +270,43 @@ def test_options_radar_applies_promoted_strategy_parameters(analysis_context) ->
             "SELECT strategy_revision_id FROM analysis.run ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
     assert run["strategy_revision_id"] == candidate["id"]
+
+
+def test_options_publication_rejects_run_from_superseded_strategy(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    refresh_options_radar(runtime, source_id="test-options", code_version="base")
+    with runtime.transaction() as connection:
+        base = connection.execute(
+            "SELECT id FROM analysis.strategy_revision "
+            "WHERE authority_group = 'options-radar-core' AND status = 'active'"
+        ).fetchone()
+    stale_run = analysis_context["analysis"].start_run(
+        "options-radar",
+        input_cutoff=analysis_context["observed_at"],
+        code_version="stale-strategy",
+        inputs={"strategy": "stale"},
+        strategy_revision_id=base["id"],
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",
+            [base["id"]],
+        )
+        connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group, promoted_at) "
+            "VALUES ('options-radar-core__agent_new', 1, 'new', 'active', %s, %s, "
+            "'options-radar-core', now())",
+            [Jsonb({"gates": {"max_spread_pct": 0.05}}), base["id"]],
+        )
+
+    with pytest.raises(ValueError, match="strategy authority changed"):
+        analysis_context["analysis"].publish(
+            stale_run,
+            "options-radar",
+            {"option_radar_opportunity": []},
+            strategy_root_key="options-radar-core",
+        )
 
 
 def test_incremental_refresh_preserves_older_symbols_in_complete_publication(analysis_context, postgres_dsn: str) -> None:

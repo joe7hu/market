@@ -27,20 +27,24 @@ class AnalysisRepository:
         parameters: Mapping[str, Any],
         status: str = "candidate",
         supersedes_id: int | None = None,
+        authority_group: str | None = None,
     ) -> int:
         with self.runtime.transaction() as connection:
             row = connection.execute(
                 """
                 INSERT INTO analysis.strategy_revision
-                    (strategy_key, revision, name, status, parameters, supersedes_id,
+                    (strategy_key, revision, name, status, parameters, supersedes_id, authority_group,
                      promoted_at)
-                VALUES (%s, %s, %s, %s, %s, %s,
+                VALUES (%s, %s, %s, %s, %s, %s, %s,
                         CASE WHEN %s = 'active' THEN now() ELSE NULL END)
                 ON CONFLICT (strategy_key, revision) DO UPDATE
                 SET name = EXCLUDED.name, parameters = EXCLUDED.parameters
                 RETURNING id
                 """,
-                [strategy_key, revision, name, status, Jsonb(dict(parameters)), supersedes_id, status],
+                [
+                    strategy_key, revision, name, status, Jsonb(dict(parameters)), supersedes_id,
+                    authority_group or strategy_key, status,
+                ],
             ).fetchone()
         return int(row["id"])
 
@@ -188,15 +192,32 @@ class AnalysisRepository:
         *,
         validation: Mapping[str, Any] | None = None,
         complete_run_summary: Mapping[str, Any] | None = None,
+        strategy_root_key: str | None = None,
     ) -> UUID:
         prepared = _prepare_models(models)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"publication:{scope}"])
+            if strategy_root_key:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    [f"strategy:{strategy_root_key}"],
+                )
             run = connection.execute(
-                "SELECT status FROM analysis.run WHERE id = %s FOR UPDATE", [run_id]
+                "SELECT status, strategy_revision_id FROM analysis.run WHERE id = %s FOR UPDATE",
+                [run_id],
             ).fetchone()
             if run is None or run["status"] == "failed":
                 raise ValueError("publication requires a non-failed analysis run")
+            if strategy_root_key:
+                active = connection.execute(
+                    "SELECT id FROM analysis.strategy_revision "
+                    "WHERE authority_group = %s AND status = 'active' FOR UPDATE",
+                    [strategy_root_key],
+                ).fetchall()
+                if len(active) != 1 or active[0]["id"] != run["strategy_revision_id"]:
+                    raise ValueError(
+                        "strategy authority changed during analysis; publication must be recomputed"
+                    )
             publication = connection.execute(
                 """
                 INSERT INTO app.publication (scope, analysis_run_id, status, validation)

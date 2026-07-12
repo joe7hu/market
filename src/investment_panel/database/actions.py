@@ -8,6 +8,11 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.strategy_parameters import (
+    EVALUABLE_GATES,
+    canonical_gate_name,
+    normalize_gates,
+)
 
 
 class ActionRepository:
@@ -55,6 +60,14 @@ class ActionRepository:
         if not approver:
             raise ValueError("human approval is required")
         with self.runtime.transaction() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["publication:options-radar"],
+            )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["strategy:options-radar-core"],
+            )
             task = connection.execute(
                 """
                 SELECT id, result FROM analysis.agent_task
@@ -77,7 +90,8 @@ class ActionRepository:
             key = str(proposal.get("proposed_strategy_version") or f"proposal-{proposal_id}")
             parameters = proposal.get("proposed_parameter_changes") or {}
             candidate_rows = connection.execute(
-                "SELECT id, parameters, supersedes_id FROM analysis.strategy_revision "
+                "SELECT id, parameters, supersedes_id, authority_group "
+                "FROM analysis.strategy_revision "
                 "WHERE strategy_key = %s AND status IN ('candidate', 'testing', 'approved') "
                 "ORDER BY revision DESC FOR UPDATE",
                 [key],
@@ -95,36 +109,11 @@ class ActionRepository:
                 raise ValueError("strategy proposal requires a persisted candidate revision")
             if candidate is None:
                 raise ValueError("strategy proposal parameters do not match the evaluated candidate revision")
-            in_core_lineage = connection.execute(
-                """
-                WITH RECURSIVE ancestry AS (
-                    SELECT id, strategy_key, supersedes_id FROM analysis.strategy_revision WHERE id = %s
-                    UNION ALL
-                    SELECT parent.id, parent.strategy_key, parent.supersedes_id
-                    FROM analysis.strategy_revision parent
-                    JOIN ancestry child ON child.supersedes_id = parent.id
-                )
-                SELECT EXISTS (
-                    SELECT 1 FROM ancestry WHERE strategy_key = 'options-radar-core'
-                ) AS valid
-                """,
-                [candidate["id"]],
-            ).fetchone()["valid"]
-            if not in_core_lineage:
+            if candidate["authority_group"] != "options-radar-core":
                 raise ValueError("strategy candidate is outside the options-radar-core lineage")
             lineage = connection.execute(
-                """
-                WITH RECURSIVE lineage AS (
-                    SELECT id FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core'
-                    UNION
-                    SELECT child.id FROM analysis.strategy_revision child
-                    JOIN lineage parent ON child.supersedes_id = parent.id
-                )
-                SELECT revision.id, revision.status
-                FROM analysis.strategy_revision revision
-                JOIN lineage ON lineage.id = revision.id
-                FOR UPDATE OF revision
-                """
+                "SELECT id, status FROM analysis.strategy_revision "
+                "WHERE authority_group = 'options-radar-core' FOR UPDATE"
             ).fetchall()
             statuses = {row["id"]: row["status"] for row in lineage}
             parent_id = candidate["supersedes_id"]
@@ -158,6 +147,10 @@ class ActionRepository:
                 [candidate["id"]],
             )
             connection.execute(
+                "UPDATE app.publication SET status = 'superseded' "
+                "WHERE scope = 'options-radar' AND status = 'published'"
+            )
+            connection.execute(
                 "UPDATE analysis.agent_task SET validation = %s, updated_at = now() WHERE id = %s",
                 [Jsonb({"status": "promoted", "approved_by": approver}), task["id"]],
             )
@@ -172,16 +165,10 @@ def _uuid_or_none(value: Any) -> UUID | None:
 
 
 def _candidate_contains_changes(candidate: dict[str, Any], changes: dict[str, Any]) -> bool:
-    gates = dict(candidate.get("gates") or {})
-    aliases = {"dte_min": "min_dte", "dte_max": "max_dte"}
-    gate_keys = {
-        "max_spread_pct", "reject_spread_pct", "min_open_interest", "min_volume",
-        "min_dte", "max_dte", "delta_min", "delta_max", "max_required_move_pct",
-        "max_iv_percentile", "reject_iv_percentile",
-    }
+    gates = normalize_gates(candidate)
     for key, value in changes.items():
-        canonical = aliases.get(key, key)
-        actual = gates.get(canonical, candidate.get(key)) if canonical in gate_keys else candidate.get(key)
+        canonical = canonical_gate_name(key)
+        actual = gates.get(canonical) if canonical in EVALUABLE_GATES else candidate.get(key)
         if actual != value:
             return False
     return True

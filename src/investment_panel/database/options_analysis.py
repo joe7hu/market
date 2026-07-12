@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.strategy_parameters import normalize_gates
 
 
 FEATURE_VERSION = "option-core-v1"
@@ -66,6 +67,7 @@ def refresh_options_radar(
                 "decisions": decision_count,
                 "publication_models": {key: len(value) for key, value in models.items()},
             },
+            strategy_root_key=STRATEGY_KEY,
         )
     except Exception as exc:
         repository.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
@@ -194,31 +196,26 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
         connection.execute(
             """
             INSERT INTO analysis.strategy_revision
-                (strategy_key, revision, name, status, parameters, promoted_at)
-            VALUES (%s, %s, 'Storage-efficient options radar', 'active', %s, now())
+                (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
+            VALUES (%s, %s, 'Storage-efficient options radar', 'active', %s, %s, now())
             ON CONFLICT (strategy_key, revision) DO NOTHING
             """,
-            [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS)],
+            [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY],
         )
         row = connection.execute(
             """
-            WITH RECURSIVE lineage AS (
-                SELECT id FROM analysis.strategy_revision WHERE strategy_key = %s
-                UNION
-                SELECT child.id FROM analysis.strategy_revision child
-                JOIN lineage parent ON child.supersedes_id = parent.id
-            )
             SELECT revision.id, revision.parameters
             FROM analysis.strategy_revision revision
-            JOIN lineage ON lineage.id = revision.id
-            WHERE revision.status = 'active'
+            WHERE revision.authority_group = %s AND revision.status = 'active'
             ORDER BY revision.promoted_at DESC NULLS LAST, revision.id DESC
-            LIMIT 1
             """,
             [STRATEGY_KEY],
-        ).fetchone()
-    if row is None:
-        raise RuntimeError("options radar has no active strategy revision")
+        ).fetchall()
+    if len(row) != 1:
+        raise RuntimeError(
+            f"options radar requires exactly one active strategy revision; found {len(row)}"
+        )
+    row = row[0]
     return int(row["id"]), dict(row["parameters"] or {})
 
 
@@ -231,8 +228,8 @@ def _insert_decisions(
     weights = dict(parameters.get("score_weights") or {})
     liquidity_weight = float(weights.get("liquidity", 0.65))
     convexity_weight = float(weights.get("convexity", 0.35))
-    gates = _runtime_gates(parameters)
-    max_spread = gates.get("max_spread_pct", gates.get("reject_spread_pct", 0.25))
+    gates = normalize_gates(parameters)
+    max_spread = gates.get("max_spread_pct", 0.25)
     min_open_interest = gates.get("min_open_interest", 50)
     min_volume = gates.get("min_volume")
     min_dte = gates.get("min_dte", 14)
@@ -240,7 +237,7 @@ def _insert_decisions(
     delta_min = gates.get("delta_min")
     delta_max = gates.get("delta_max")
     max_required_move = gates.get("max_required_move_pct")
-    max_iv_percentile = gates.get("max_iv_percentile", gates.get("reject_iv_percentile"))
+    max_iv_percentile = gates.get("max_iv_percentile")
     with runtime.transaction(JOB_PROFILE) as connection:
         result = connection.execute(
             """
@@ -369,22 +366,6 @@ def _insert_decisions(
             "SELECT count(*) AS count FROM analysis.decision WHERE run_id = %s", [run_id]
         ).fetchone()["count"]
     return int(actionable)
-
-
-def _runtime_gates(parameters: dict[str, Any]) -> dict[str, Any]:
-    """Normalize legacy flat parameters into the canonical runtime gate map."""
-    gates = dict(parameters.get("gates") or {})
-    aliases = {"dte_min": "min_dte", "dte_max": "max_dte"}
-    supported = {
-        "max_spread_pct", "reject_spread_pct", "min_open_interest", "min_volume",
-        "min_dte", "max_dte", "delta_min", "delta_max", "max_required_move_pct",
-        "max_iv_percentile", "reject_iv_percentile",
-    }
-    for key, value in parameters.items():
-        canonical = aliases.get(key, key)
-        if canonical in supported and canonical not in gates:
-            gates[canonical] = value
-    return gates
 
 
 def _publication_models(runtime: DatabaseRuntime, run_id: Any) -> dict[str, list[dict[str, Any]]]:

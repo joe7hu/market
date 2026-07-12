@@ -82,7 +82,50 @@ def test_existing_0001_database_upgrades_through_forward_migrations(postgres_dsn
             "SELECT count(*) FROM information_schema.columns "
             "WHERE table_schema = 'ops' AND table_name = 'job_run' AND column_name = 'heartbeat_at'"
         ).fetchone()[0]
-    assert (after, constraint, heartbeat) == (1, 1, 1)
+        authority_column = connection.execute(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_schema = 'analysis' AND table_name = 'strategy_revision' "
+            "AND column_name = 'authority_group'"
+        ).fetchone()[0]
+    assert (after, constraint, heartbeat, authority_column) == (1, 1, 1, 1)
+
+
+def test_strategy_authority_migration_reconciles_duplicate_active_revisions(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn, "20260711_0003")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        base = connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters, promoted_at) "
+            "VALUES ('options-radar-core', 1, 'core', 'active', '{}', now() - interval '1 day') "
+            "RETURNING id"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters, supersedes_id, promoted_at) "
+            "VALUES ('options-radar-core__agent_existing', 1, 'candidate', 'active', '{}', %s, now())",
+            [base],
+        )
+        connection.commit()
+
+    upgrade_database(postgres_dsn)
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        rows = connection.execute(
+            "SELECT strategy_key, status, authority_group FROM analysis.strategy_revision "
+            "ORDER BY id"
+        ).fetchall()
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, authority_group) "
+                "VALUES ('duplicate-active', 1, 'duplicate', 'active', '{}', 'options-radar-core')"
+            )
+    assert rows == [
+        ("options-radar-core", "superseded", "options-radar-core"),
+        ("options-radar-core__agent_existing", "active", "options-radar-core"),
+    ]
 
 
 def test_runtime_commits_writes_and_serves_read_only_transactions(migrated_postgres_dsn: str) -> None:

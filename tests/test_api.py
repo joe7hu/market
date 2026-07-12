@@ -676,8 +676,8 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
         ).fetchone()
         strategy = connection.execute(
             "INSERT INTO analysis.strategy_revision "
-            "(strategy_key, revision, name, status, parameters, promoted_at) "
-            "VALUES (%s, 1, %s, 'active', %s, now()) RETURNING id",
+            "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
+            "VALUES (%s, 1, %s, 'active', %s, 'options-radar-core', now()) RETURNING id",
             [
                 "options-radar-core",
                 "options-radar-core",
@@ -802,14 +802,16 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
         )
         base_id = connection.execute(
             "INSERT INTO analysis.strategy_revision "
-            "(strategy_key, revision, name, status, parameters, promoted_at) "
-            "VALUES ('options-radar-core', 1, 'core', 'active', %s, now()) RETURNING id",
+            "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
+            "VALUES ('options-radar-core', 1, 'core', 'active', %s, "
+            "'options-radar-core', now()) RETURNING id",
             [Jsonb({})],
         ).fetchone()["id"]
         candidate_id = connection.execute(
             "INSERT INTO analysis.strategy_revision "
-            "(strategy_key, revision, name, status, parameters, supersedes_id) "
-            "VALUES ('leap_10x_momentum_lottery__delta_max_delta_min', 1, 'candidate', 'candidate', %s, %s) RETURNING id",
+            "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+            "VALUES ('leap_10x_momentum_lottery__delta_max_delta_min', 1, 'candidate', "
+            "'candidate', %s, %s, 'options-radar-core') RETURNING id",
             [Jsonb({}), base_id],
         ).fetchone()["id"]
         for evaluation_type in ("backtest", "forward_shadow_test"):
@@ -836,6 +838,7 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
     assert payload["status"] == "promoted"
     assert payload["proposal_id"] == proposal_id
     assert payload["strategy_version"] == "leap_10x_momentum_lottery__delta_max_delta_min"
+    assert payload["radar_refresh"]["status"] == "skipped"
     with runtime.read() as connection:
         validation = connection.execute(
             "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]
