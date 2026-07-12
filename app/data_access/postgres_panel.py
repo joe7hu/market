@@ -14,6 +14,7 @@ from investment_panel.database.brokers import broker_status_rows
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
+from investment_panel.core.options_intelligence import build_expiry_signal, build_ticker_signal
 
 
 DIRECT_QUERIES: dict[str, str] = {
@@ -644,6 +645,74 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "owned_correlations": OWNED_CORRELATIONS_QUERY,
 }
+
+
+def _options_ticker_signal_rows(connection: Any) -> list[dict[str, Any]]:
+    """Compose current per-ticker option context from PostgreSQL chain facts."""
+    chain_rows = [
+        dict(row)
+        for row in connection.execute(
+            """
+            WITH latest AS (
+                SELECT contract.underlying_instrument_id,
+                       max(quote.observed_at) AS observed_at
+                FROM raw.option_quote quote
+                JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                WHERE contract.expiration >= current_date
+                GROUP BY contract.underlying_instrument_id
+            )
+            SELECT instrument.symbol, snapshot.source_id AS source,
+                   contract.expiration::text AS expiry,
+                   contract.expiration - current_date AS dte,
+                   contract.strike::double precision AS strike,
+                   contract.option_type, quote.bid, quote.ask, quote.mid, quote.last,
+                   quote.provider_iv AS iv, quote.provider_delta AS delta,
+                   quote.underlying_price AS spot, quote.observed_at
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            JOIN latest ON latest.underlying_instrument_id = contract.underlying_instrument_id
+                       AND latest.observed_at = quote.observed_at
+            WHERE contract.expiration >= current_date
+            ORDER BY instrument.symbol, snapshot.source_id, contract.expiration, contract.strike,
+                     contract.option_type
+            """
+        ).fetchall()
+    ]
+    by_expiry: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in chain_rows:
+        key = (str(row["symbol"]), str(row["source"]), str(row["expiry"]))
+        by_expiry.setdefault(key, []).append(row)
+
+    by_ticker: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for (symbol, source, expiry), rows in by_expiry.items():
+        signal = build_expiry_signal(
+            symbol,
+            expiry,
+            source,
+            rows,
+            {"dte": rows[0].get("dte"), "contracts_count": len(rows)},
+            {"price": rows[0].get("spot")},
+        )
+        if signal:
+            by_ticker.setdefault((symbol, source), []).append(signal)
+
+    composed: list[dict[str, Any]] = []
+    for (symbol, source), signals in by_ticker.items():
+        if not signals:
+            continue
+        row = {"ticker": symbol, **build_ticker_signal(symbol, source, signals)}
+        if row.get("put_call_iv_skew") is None:
+            row["skew_signal"] = "N/A"
+        composed.append(row)
+    newest_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in composed:
+        symbol = str(row["symbol"])
+        existing = newest_by_symbol.get(symbol)
+        if existing is None or str(row.get("as_of") or "") > str(existing.get("as_of") or ""):
+            newest_by_symbol[symbol] = row
+    return sorted(newest_by_symbol.values(), key=lambda row: str(row["symbol"]))
 DIRECT_QUERIES.update(SOURCE_QUERIES)
 
 
@@ -731,7 +800,10 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
             if query:
                 cache_key = alias or name
                 if cache_key not in query_cache:
-                    query_cache[cache_key] = [dict(row) for row in connection.execute(query).fetchall()]
+                    if cache_key == "options_ticker_signals":
+                        query_cache[cache_key] = _options_ticker_signal_rows(connection)
+                    else:
+                        query_cache[cache_key] = [dict(row) for row in connection.execute(query).fetchall()]
                 tables[name] = query_cache[cache_key]
             elif alias in PUBLICATION_MODELS:
                 tables[name] = AnalysisRepository(runtime).publication_rows("today", alias)
