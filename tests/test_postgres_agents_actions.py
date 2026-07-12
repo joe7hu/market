@@ -194,6 +194,15 @@ def test_strategy_learning_does_not_create_agent_named_active_base(postgres_dsn:
     runtime.open()
     try:
         repository = StrategyLearningRepository(runtime)
+        empty = repository.materialize_postmortem(
+            str(uuid4()),
+            {"proposed_parameter_changes": {"delta_min": None, "candidate_note": ""}},
+        )
+        assert empty == {
+            "strategy_proposals": 0,
+            "strategy_backtests": 0,
+            "strategy_forward_tests": 0,
+        }
         repository.materialize_postmortem(
             str(uuid4()),
             {
