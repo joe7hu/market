@@ -452,6 +452,7 @@ DIRECT_QUERIES: dict[str, str] = {
         JOIN analysis.run run ON run.id = decision.run_id
         LEFT JOIN analysis.strategy_revision strategy ON strategy.id = decision.strategy_revision_id
         WHERE run.feature_versions->>'option' = 'option-professional-v2'
+          AND decision.state <> 'REJECTED'
         GROUP BY strategy.strategy_key, decision.state
         ORDER BY strategy.strategy_key, decision.state
     """,
