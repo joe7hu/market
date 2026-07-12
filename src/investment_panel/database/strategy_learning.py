@@ -18,8 +18,11 @@ class StrategyLearningRepository:
         self.runtime = runtime
 
     def materialize_postmortem(self, postmortem_task_id: str, payload: dict[str, Any]) -> dict[str, int]:
-        changes = payload.get("proposed_parameter_changes")
-        if not isinstance(changes, dict) or not changes:
+        raw_changes = payload.get("proposed_parameter_changes")
+        if not isinstance(raw_changes, dict):
+            return {"strategy_proposals": 0, "strategy_backtests": 0, "strategy_forward_tests": 0}
+        changes = {str(key): value for key, value in raw_changes.items() if value not in (None, "")}
+        if not changes:
             return {"strategy_proposals": 0, "strategy_backtests": 0, "strategy_forward_tests": 0}
         with self.runtime.transaction(JOB_PROFILE) as connection:
             existing = connection.execute(
