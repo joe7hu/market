@@ -163,7 +163,10 @@ export function LearningProgressPanel({
   const currentMarks = opportunities.map((row) => latestMarkByEvent.get(textField(row, ["event_id"]))).filter(Boolean) as RowRecord[];
   const oneDay = countWhere(currentMarks, (row) => Number.isFinite(numberField(row, ["return_1d"], Number.NaN)));
   const fiveDay = countWhere(currentMarks, (row) => Number.isFinite(numberField(row, ["return_5d"], Number.NaN)));
-  const attributed = countWhere(opportunities, (row) => latestAttributionByEvent.has(textField(row, ["event_id"])));
+  const attributed = countWhere(opportunities, (row) => {
+    const attribution = latestAttributionByEvent.get(textField(row, ["event_id"]));
+    return Boolean(attribution) && Number.isFinite(numberField(attribution, ["current_return", "peak_return"], Number.NaN));
+  });
   const matureCohorts = cohorts.filter(cohortHasMatureEvidence).length;
   const openPostmortems = countWhere(postmortemRequests, (row) => textField(row, ["status"], "open").toLowerCase() === "open");
   const readyProposals = countWhere(proposals, (row) => textField(row, ["status"]).toLowerCase() === "ready_for_human_review");
@@ -209,7 +212,7 @@ export function CohortResultsTable({ rows }: { rows: RowRecord[] }) {
   const collectingRows = rows.filter((row) => !cohortHasMatureEvidence(row));
   const topCollectingRows = collectingRows
     .slice()
-    .sort((left, right) => numberField(right, ["candidate_count"], 0) - numberField(left, ["candidate_count"], 0))
+    .sort((left, right) => numberField(right, ["n", "candidate_count"], 0) - numberField(left, ["n", "candidate_count"], 0))
     .slice(0, 6);
 
   return (
@@ -259,13 +262,13 @@ export function CohortInsightCard({ row, mature }: { row: RowRecord; mature: boo
     <article className="rounded-md border border-border/70 bg-background p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{titleLabel(displayField(row, ["cohort_value"]))}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">{titleLabel(displayField(row, ["cohort_type"]))}</div>
+          <div className="truncate text-sm font-semibold">{titleLabel(displayField(row, ["cohort_value", "state"], "Current signals"))}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">{titleLabel(displayField(row, ["cohort_type", "strategy_version"], "Professional v2"))}</div>
         </div>
         <StatusBadge tone={mature ? "good" : "warn"}>{mature ? "Readable" : "Collecting"}</StatusBadge>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <MetricPill label="Signals" value={formatNumber(numberField(row, ["candidate_count"], Number.NaN), 0)} />
+        <MetricPill label="Signals" value={formatNumber(numberField(row, ["n", "candidate_count"], Number.NaN), 0)} />
         <MetricPill label="Observed" value={formatObservedWindow(stats.maxObservationDays)} />
         <MetricPill label="Sample" value={stats.sampleCount ? stats.sampleCount.toLocaleString() : "-"} />
       </div>

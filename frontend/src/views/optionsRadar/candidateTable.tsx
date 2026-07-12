@@ -195,17 +195,17 @@ export function CandidateEventsTable({
           );
         })}
       </div>
-      <table className="hidden w-full min-w-[1780px] table-fixed text-sm lg:table">
+      <table className="hidden w-full table-fixed text-sm lg:table">
         <colgroup>
           <col className="w-[8rem]" />
           <col className="w-[9rem]" />
           <col className="w-[16rem]" />
           <col className="w-[10rem]" />
           <col className="w-[11rem]" />
-          <col className="w-[24rem]" />
-          <col className="w-[28rem]" />
-          <col className="w-[15rem]" />
-          <col className="w-[22rem]" />
+          <col className="w-[18rem]" />
+          <col className="w-[18rem]" />
+          <col className="w-[12rem]" />
+          <col className="w-[18rem]" />
         </colgroup>
         <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
           <tr>
@@ -250,7 +250,7 @@ export function CandidateEventsTable({
                         <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
                         <QualityIndicator status={qualityStatus} flags={qualityFlags} />
                       </div>
-                      <div className="text-xs text-muted-foreground">rank {formatScore(candidateConviction(row))}</div>
+                        <div className="text-xs text-muted-foreground">score {formatScore(candidateConviction(row))}</div>
                     </div>
                   </Cell>
                   <Cell>
@@ -270,7 +270,7 @@ export function CandidateEventsTable({
                       </>
                     ) : (
                       <>
-                        <div>move {formatRatio(numberField(row, ["required_move_pct"], Number.NaN))}</div>
+                        <div>break-even {formatRatio(numberField(row, ["break_even_move_pct"], Number.NaN))}</div>
                         <div className="text-xs text-muted-foreground">max loss {moneyField(row, ["max_loss"])}</div>
                       </>
                     )}
@@ -358,14 +358,14 @@ export function CandidateMobileCard({
             <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
             <QualityIndicator status={qualityStatus} flags={qualityFlags} />
           </div>
-          <div className="text-xs text-muted-foreground">rank {formatScore(candidateConviction(row))}</div>
+          <div className="text-xs text-muted-foreground">score {formatScore(candidateConviction(row))}</div>
         </div>
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <InlineMetric label="Entry" value={moneyField(row, ["entry_price", "premium_mid"])} />
+        <InlineMetric label="Limit" value={moneyField(row, ["suggested_limit", "entry_price", "premium_mid"])} />
         <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Assignment Basis" : "Max Loss"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["effective_assignment_price"]) : moneyField(row, ["max_loss"])} />
-        <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Move"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["secured_cash"]) : formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+        <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Break-even"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["secured_cash"]) : formatRatio(numberField(row, ["break_even_move_pct"], Number.NaN))} />
       </div>
       <div className="mt-2"><BidAsk row={row} label="Bid×Ask" /></div>
 
@@ -481,13 +481,14 @@ export function BidAsk({ row, label }: { row: RowRecord; label?: string }) {
 export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
   const raw = recordField(row, "raw");
   const hardRejects = listFromRecord(raw, "hard_rejects");
-  const blockers = listFromRecord(raw, "blockers");
-  const positives = listFromRecord(raw, "positives");
+  const blockers = listField(row, ["blockers"]).length ? listField(row, ["blockers"]) : listFromRecord(raw, "blockers");
+  const positives = listField(row, ["top_reasons"]).length ? listField(row, ["top_reasons"]) : listFromRecord(raw, "positives");
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-1.5">
-        <MetricPill label="Conviction" value={formatScore(candidateConviction(row))} />
-        <MetricPill label="Move" value={formatRatio(numberField(row, ["required_move_pct"], Number.NaN))} />
+      <div className="grid grid-cols-3 gap-1.5">
+        <MetricPill label="Score" value={formatScore(candidateConviction(row))} />
+        <MetricPill label="Profit P" value={formatRatio(numberField(row, ["probability_profit"], Number.NaN))} />
+        <MetricPill label="Net EV" value={moneyField(row, ["expected_value"])} />
       </div>
       {hardRejects.length ? <ReadableReasonGroup label="Hard rejects" reasons={hardRejects} tone="bad" /> : null}
       {blockers.length ? <ReadableReasonGroup label="Blockers" reasons={blockers} tone="warn" /> : null}

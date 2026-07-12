@@ -27,7 +27,7 @@ export function StrategyProposalsTable({
   onPromote: (proposalId: string) => Promise<void> | void;
 }) {
   if (!rows.length) {
-    return <EmptyState title="No strategy proposals" detail="No mutation proposals are waiting in the learning engine." icon={GitBranchPlus} />;
+    return <EmptyState title="No active challenger" detail="The professional scorer remains the champion. A challenger appears here only after a current, typed hypothesis enters deterministic replay; legacy imported proposals are archived and never promotable." icon={GitBranchPlus} />;
   }
 
   return (
@@ -149,4 +149,3 @@ export function StrategyProposalCard({
     </article>
   );
 }
-

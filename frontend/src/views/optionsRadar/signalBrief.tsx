@@ -81,9 +81,9 @@ export function SignalBriefPanel({
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <MetricBox label="Rank Score" value={formatScore(numberField(strongest, ["rank_score", "score"], Number.NaN))} />
-                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Assignment Basis" : "Required Move"} value={textField(strongest, ["structure"]) === "cash_secured_put" ? moneyField(strongest, ["effective_assignment_price"]) : formatRatio(numberField(strongest, ["required_move_pct"], Number.NaN))} />
-                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Entry Credit" : "Entry"} value={moneyField(strongest, ["entry_price", "premium_mid"])} />
-                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Max Loss"} value={moneyField(strongest, ["secured_cash", "max_loss"])} />
+                <MetricBox label="Profit Probability" value={formatRatio(numberField(strongest, ["probability_profit"], Number.NaN))} />
+                <MetricBox label="Net EV" value={moneyField(strongest, ["expected_value"])} />
+                <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Minimum Credit" : "Maximum Entry"} value={moneyField(strongest, ["suggested_limit", "entry_price", "premium_mid"])} />
               </div>
             </div>
           ) : (

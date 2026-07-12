@@ -71,6 +71,9 @@ def test_call_debit_spread_payoff_is_bounded() -> None:
     assert result.break_even == 103
     assert result.expected_value == 200
     assert result.probability_profit == 0.6
+    assert result.required_2x_price == 106
+    assert result.required_5x_price is None
+    assert result.target_reasons["5x"] == "target_not_attainable"
 
 
 def test_call_debit_spread_rejects_crossed_or_non_debit_structure() -> None:

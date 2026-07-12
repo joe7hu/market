@@ -111,6 +111,15 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
         payoff = min(width, max(0.0, terminal - inputs.long_strike))
         scenario_pnls.append(payoff * inputs.multiplier - entry)
     expected_value, expected_loss, probability_profit = _moments(scenario_pnls)
+    targets: dict[int, float | None] = {}
+    reasons: dict[str, str] = {}
+    for multiple in (2, 5, 10):
+        target = inputs.long_strike + debit * multiple
+        if debit * multiple <= width:
+            targets[multiple] = round(target, 4)
+        else:
+            targets[multiple] = None
+            reasons[f"{multiple}x"] = "target_not_attainable"
     return ExpressionResult(
         entry_cost=round(entry, 2),
         max_loss=round(entry, 2),
@@ -121,6 +130,10 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
         risk_adjusted_expectancy=expected_value / entry,
         probability_profit=probability_profit,
         scenario_count=len(scenario_pnls),
+        required_2x_price=targets[2],
+        required_5x_price=targets[5],
+        required_10x_price=targets[10],
+        target_reasons=reasons,
     )
 
 

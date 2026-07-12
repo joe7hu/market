@@ -6,9 +6,9 @@ import {displayField, numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
 import {tabButtonClass, rows, rowsForDisplayTime, uniqueText, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
-import {SignalBriefPanel, StrategyExplainer } from "./optionsRadar/signalBrief";
+import {SignalBriefPanel } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
-import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable, ExplorationGatePanel, PostmortemRequestsTable, PostmortemsTable } from "./optionsRadar/learningPanels";
+import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
 
@@ -29,13 +29,12 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const forwardTests = rows(data.strategyForwardTestResult);
   const thesisRequests = rows(data.agentThesisRequest);
   const thesisValidations = rows(data.agentThesisValidation);
-  const postmortemRequests = rows(data.agentPostmortemRequest);
-  const postmortems = rows(data.agentPostmortem);
+  const postmortemRequests = rows(data.agentPostmortemRequest).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
+  const postmortems = rows(data.agentPostmortem).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
   const agentTheses = rows(data.agentThesis);
   const candidateMarks = rows(data.candidateEventMark);
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
-  const explorationGate = rows(data.explorationGateReport);
   const opportunityRows = rows(data.optionRadarOpportunity);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
@@ -139,14 +138,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           postmortemRequests={postmortemRequests}
           postmortems={postmortems}
         />
-        <StrategyExplainer strategy={latestStrategy} />
-        <ExplorationGatePanel rows={explorationGate} />
         <CohortResultsTable rows={cohortResults} />
         {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
-        {postmortems.length ? <PostmortemsTable rows={postmortems} onOpenTicker={onOpenTicker} /> : null}
-        {postmortemRequests.length ? <PostmortemRequestsTable rows={postmortemRequests} onOpenTicker={onOpenTicker} /> : null}
-        {proposals.length ? (
-          <StrategyProposalsTable
+        <StrategyProposalsTable
             rows={proposals}
             backtestByProposal={latestBacktestByProposal}
             forwardByProposal={latestForwardByProposal}
@@ -154,7 +148,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             promotionError={promotionError}
             onPromote={handlePromoteProposal}
           />
-        ) : null}
       </div>
       )}
     </WorkspacePage>

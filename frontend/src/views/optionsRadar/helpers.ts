@@ -48,16 +48,18 @@ export function thesisFallbackText(row: RowRecord, request: RowRecord | undefine
 }
 
 export function compareGroupedOpportunities(left: RowRecord, right: RowRecord): number {
-  const leftState = textField(left, ["primary_state"]).toUpperCase();
-  const rightState = textField(right, ["primary_state"]).toUpperCase();
+  const leftState = stateOf(left);
+  const rightState = stateOf(right);
   return (
     stateRank(leftState) - stateRank(rightState) ||
-    compareNumber(numberField(right, ["conviction_score"], Number.NEGATIVE_INFINITY), numberField(left, ["conviction_score"], Number.NEGATIVE_INFINITY)) ||
+    compareNumber(numberField(right, ["rank_score", "score", "conviction_score"], Number.NEGATIVE_INFINITY), numberField(left, ["rank_score", "score", "conviction_score"], Number.NEGATIVE_INFINITY)) ||
     compareText(textField(left, ["ticker"]), textField(right, ["ticker"]))
   );
 }
 
 export function opportunityActionText(row: RowRecord): string {
+  const published = textField(row, ["advisory_action"]);
+  if (published) return `${published}. ${displayField(row, ["exit_plan"])}`;
   const tier = tierOf(row);
   if (isServiceRepair(row)) {
     return displayField(row, ["service_repair_summary"], "Service bug blocks trade-state computation.");
@@ -76,6 +78,11 @@ export function opportunityActionText(row: RowRecord): string {
 }
 
 export function candidateActionText(row: RowRecord, validation: RowRecord | undefined): string {
+  const published = textField(row, ["advisory_action"]);
+  if (published) {
+    const reason = displayField(row, ["no_trade_reason"]);
+    return reason && published === "NO TRADE" ? `${published}: ${reasonLabel(reason)}.` : published;
+  }
   const state = stateOf(row);
   const validationState = textField(validation, ["state"]).toLowerCase();
   const redTeam = textField(validation, ["red_team_status"]).toLowerCase();
@@ -117,9 +124,9 @@ export function cohortObservationStats(row: RowRecord): { sampleCount: number; m
   }
   const maturity = jsonRecord(raw?.maturity);
   return {
-    sampleCount: outcomes.length,
+    sampleCount: numberField(row, ["n", "candidate_count"], outcomes.length),
     maxObservationDays,
-    matureCount: numberFromRecord(maturity, "mature_count"),
+    matureCount: numberField(row, ["mature_n"], numberFromRecord(maturity, "mature_count")),
   };
 }
 
@@ -319,11 +326,11 @@ export function outcomeMaturity(mark: RowRecord): { label: string; tone: Tone } 
 }
 
 export function cohortHasMatureEvidence(row: RowRecord): boolean {
-  const candidateCount = numberField(row, ["candidate_count"], Number.NaN);
+  const candidateCount = numberField(row, ["n", "candidate_count"], Number.NaN);
   const raw = recordField(row, "raw");
   const maturity = jsonRecord(raw?.maturity);
-  const matureCount = numberFromRecord(maturity, "mature_count");
-  if (Number.isFinite(candidateCount) && Number.isFinite(matureCount)) return matureCount >= candidateCount;
+  const matureCount = numberField(row, ["mature_n"], numberFromRecord(maturity, "mature_count"));
+  if (Number.isFinite(candidateCount) && Number.isFinite(matureCount)) return matureCount >= 30;
   const outcomes = raw?.sample_outcomes;
   if (!Array.isArray(outcomes) || !outcomes.length) return false;
   return outcomes.every((outcome) => {

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.analysis.option_recommendation import recommendation_fields
 
 
 def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
@@ -189,6 +190,7 @@ def _add_contract_fields(
         row["portfolio_context_status"] = "complete" if nav is not None else "missing_nav"
         if nav is None and "missing_portfolio_value" not in row["blockers"]:
             row["blockers"] = [*row["blockers"], "missing_portfolio_value"]
+        row.update(recommendation_fields(row))
 
 
 def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
