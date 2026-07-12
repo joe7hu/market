@@ -106,7 +106,7 @@ export function postmortemImpact(row: RowRecord): string {
 }
 
 export function cohortKey(row: RowRecord): string {
-  return textField(row, ["cohort_id"], `${textField(row, ["cohort_type"])}-${textField(row, ["cohort_value"])}`);
+  return textField(row, ["cohort_id"], `${textField(row, ["strategy_version", "cohort_type"])}-${textField(row, ["state", "cohort_value"])}`);
 }
 
 export function cohortObservationStats(row: RowRecord): { sampleCount: number; maxObservationDays: number; matureCount: number } {
@@ -125,7 +125,7 @@ export function cohortObservationStats(row: RowRecord): { sampleCount: number; m
   }
   const maturity = jsonRecord(raw?.maturity);
   return {
-    sampleCount: numberField(row, ["n", "candidate_count"], outcomes.length),
+    sampleCount: numberField(row, ["mature_n"], outcomes.length),
     maxObservationDays,
     matureCount: numberField(row, ["mature_n"], numberFromRecord(maturity, "mature_count")),
   };
