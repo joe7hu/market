@@ -13,11 +13,18 @@ Browser (frontend/src) ──HTTP──▶ app/main.py (FastAPI routes)
                           app/data_access/ (load + normalize for API)
                                       │
                                       ▼
-                core/panel/ (assemble read models from DuckDB) ──▶ core/db.py (DuckDB)
+                  app.publication + normalized PostgreSQL tables
+                                      │
+                                      ▼
+        database/ repositories ──▶ PostgreSQL 18 (catalog/ingest/raw/
+                                  analysis/app/ops)
 ```
 
-Write path: `jobs/*` (pipeline entry points) pull from `providers/` + `core/*`,
-compute via `analysis/`, and persist read-model tables that the read path serves.
+Write path: PostgreSQL-native `jobs/*` entry points pull from providers, archive
+one payload manifest, normalize raw facts, compute analysis rows, and atomically
+publish application read models. `core/refresh_jobs.py` is the only live job
+allowlist. Older DuckDB modules under `core/` and retired job modules are kept
+only for legacy-import/test compatibility and are not installed or scheduled.
 
 ## Backend layout (`src/investment_panel/` unless noted)
 
@@ -29,6 +36,7 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 | `app/data_access/` | Load core read models and normalize them into API payloads (types, config, loaders, mutations, payloads, ticker dossier, decision brief, settings) | how data is shaped for the UI / a payload field |
 | `app/panel_contracts.py` | Scope→table contracts (which tables each page needs) | which tables a page scope loads |
 | `app/scheduler.py` | In-app background refresh scheduler | scheduled in-app agent passes |
+| `database/` | **PostgreSQL authority layer**: pooled runtime, Alembic migrations, ingestion/raw repositories, analysis runs, atomic publications, jobs, agents, retention, backup, and the read-model query boundary | schemas, transactions, persistence, or publication behavior |
 | `core/panel/` | **Read-model layer**: ~120 `con→list[dict]` accessors + `load_panel_data` dispatcher. Submodules: `snapshot` (orchestration), `read_equity`/`read_options`/`read_learning` (accessors), `market_environment`, `feed`, `technicals`, `disclosures`, `sources`, `metrics`, `coerce` | a read model / what a table returns |
 | `core/decision/` | **Decision engine**: universe build, freshness, queue, readiness, grading, watchlist, market calendar. Submodules: `builders`, `read_models`, `grading`, `readiness`, `freshness`, `calendar`, `watchlist`, `portfolio`, `quotes`, `service`, `coerce`, `constants` | decision grades, gating, freshness rules |
 | `core/options_radar/` | Options-radar pipeline: candidates, gates, scoring, opportunities, alerts, learning loop | options-radar logic |
@@ -38,13 +46,13 @@ compute via `analysis/`, and persist read-model tables that the read path serves
 | `core/disclosures/` | SEC 13F + public/House disclosure ingestion. Submodules: `config`, `public_csv`, `house`, `prices`, `replica` (replica portfolios), `thirteen_f` (13F + SEC XML), `coerce`, `constants` | a disclosure ingestion / 13F parsing rule |
 | `core/option_agent_thesis/` | Structured agent-thesis handoff for the options radar. Submodules: `requests` (build/retire requests + prompt), `thesis` (upsert/normalize/attach), `validation` (proof/catalyst/red-team checks), `dbutil`, `coerce`, `constants` | agent-thesis request/validation logic |
 | `core/portfolio_intelligence/` | Portfolio-level risk read models. Submodules: `exposure` (clusters), `correlation` (edges), `cards` (risk cards + review actions), `holdings` (shared accessors), `coerce` | portfolio risk/exposure read models |
-| `core/db.py` + `core/schema.py` | DuckDB connection/helpers (`db`, `init_db`, `query_rows`, `json_dumps`) and the full DDL string | a table definition (`schema.py`) or a DB helper (`db.py`) |
+| `core/db.py` + `core/schema.py` | Retired DuckDB compatibility used only by legacy tests/import-era code; never a live authority | legacy compatibility only; new persistence belongs in `database/` and Alembic |
 | `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
 | `core/robinhood_options/` | Read-only Robinhood option-chain collector. Submodules: `auth` (MCP OAuth/PKCE token dance + Codex credential bridge), `collector` (chain collection + `store_options_chain` normalization) | Robinhood auth or chain collection |
 | `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `thesis_monitor`, `daily_brief`, `ibkr_options`, `options_intelligence`, `option_agent_runner`/`option_agent_postmortem`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
 | `analysis/` | Pure computations: `valuation`, `sepa`, `liquidity`, `correlation`, `earnings_setup`, `option_ev`, `options_payoff`, `market_environment`, `stats` (+ `registry`, `run`) | a quantitative model |
 | `providers/` | External data adapters: `yfinance_provider`, `tradingview`, `opencli` | how an external source is fetched |
-| `jobs/` | Pipeline entry points (run as scripts / refresh jobs): `full_market_refresh`, `update_*`, `refresh_*`, `daily_screen`, `run_option_agents`, etc. | a pipeline step / job orchestration |
+| `jobs/` | PostgreSQL-native installed entry points plus explicitly retired legacy modules. Live routing is defined by `pyproject.toml` scripts and `core/refresh_jobs.py:ALLOWLIST` | a pipeline step / job orchestration |
 
 ## Frontend layout (`frontend/src/`)
 
@@ -68,8 +76,10 @@ compute via `analysis/`, and persist read-model tables that the read path serves
   scannable (target < ~700 lines). Keep orchestration thin.
 - **Move, don't rewrite.** When extracting, preserve behavior and the public import
   contract; tests and the API import names from the facade.
-- **Schema lives in `core/schema.py`** (one DDL string), applied by `core/db.py:init_db`.
-  See `docs/schema-ddl-architecture-decision.md` before proposing a DDL split.
+- **Schema evolution lives in Alembic** under `migrations/versions/`. The
+  PostgreSQL authority is separated into `catalog`, `ingest`, `raw`, `analysis`,
+  `app`, and `ops`; do not add live tables to the retired `core/schema.py` DDL.
+  See `docs/postgresql-migration.md` for the authority and retention model.
   Frontend page = `pages/XRoute.tsx`; its logic/components live under `views/`.
 
 ## Guardrails (enforced, not just documented)
@@ -94,8 +104,9 @@ The conventions above are checked mechanically so they can't silently rot:
 
 - **`make check`** runs the gate below in one shot; targets are also runnable individually
   (`make guards`, `make lint`, `make test`).
-- Backend: `.venv/bin/python -m pytest tests/<relevant>.py -q` (focused first).
-  Full suite hits a shared DuckDB; if a live `uvicorn --reload` dev server is running
-  it holds the write lock and the run hangs — set `MARKET_DUCKDB_PATH=/tmp/x.duckdb`
-  to use a fresh DB (but then skip the few tests that assert the default path).
+- Backend: `uv run python -m pytest tests/<relevant>.py -q` (focused first).
+  The full suite provisions ephemeral PostgreSQL 18 databases. DuckDB is an
+  optional test/legacy-import dependency only; the running FastAPI process does
+  not need to stop for tests because PostgreSQL readers and writers do not share
+  an embedded-file lock.
 - Frontend: `node_modules/.bin/tsc --noEmit` (typecheck); `npm run build` for a full build.

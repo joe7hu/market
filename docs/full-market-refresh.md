@@ -180,9 +180,9 @@ The job uses `/tmp/market-hourly-options-radar.lock`, so a slow deterministic
 run skips the next hourly tick instead of starting overlapping radar
 recomputes. It writes
 `/Volumes/agent/data-sources/status/mini-market-hourly-options-radar.json`.
-Do not add provider refreshes back to this hourly job; long provider phases can
-hold the DuckDB writer lock and make the app look empty while API requests wait
-on the database. Provider ingestion belongs in `full_market_refresh`,
+Do not add provider refreshes back to this hourly job; long provider phases
+increase API contention and can overlap the next cadence even though PostgreSQL
+remains responsive. Provider ingestion belongs in `full_market_refresh`,
 `update_free_sources`, or the premarket options workflow.
 
 Run the broader agent-bearing workflow once before the local investment review

@@ -169,20 +169,21 @@ needs Joe's input before the trader-twin feature should be treated as serious.
 
 ## Shared Source Archive
 
-Market keeps its live DuckDB local for safe writes, but the Mac mini should
-publish autonomous source-job status and database snapshots to the NAS source
-archive configured under `nas:` in `config.yaml`.
+Market keeps its authoritative PostgreSQL database on `mini1.local`. Provider
+payloads, autonomous job status, and verified custom-format PostgreSQL backups
+are published to the NAS source archive configured under `nas:` in
+`config.yaml`; the NAS is not mounted as a live database filesystem.
 
 Default shared paths:
 
 ```text
 /Volumes/agent/data-sources/market-mini/
-/Volumes/agent/data-sources/market-mini/duckdb-snapshots/
+/Volumes/agent/data-sources/market-mini/postgres-backups/
 /Volumes/agent/data-sources/status/
 ```
 
-The daily screen and update jobs write status JSON files such as
-`mini-market-ingest.json`, `mini-market-equity.json`,
-`mini-market-crypto.json`, `mini-market-disclosures.json`, and
-`mini-market-free-sources.json`. The snapshot job copies the local DuckDB file
-to the NAS without running DuckDB over SMB.
+The broad refresh and snapshot jobs write `mini-market-full-refresh.json` and
+`mini-market-db-snapshot.json`. Source-level execution history lives in
+PostgreSQL `ingest.run`; application job history lives in `ops.job_run`. The
+snapshot job streams `pg_dump --format=custom`, verifies all six application
+schemas, and records a checksum manifest beside the dump.

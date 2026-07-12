@@ -9,26 +9,21 @@ but they are not ingestion sources.
 Run daily after market data has refreshed:
 
 ```bash
-uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --skip-holdings
+uv run market-update-disclosures --config config.yaml
 ```
 
 The job:
 
-1. Loads configured public disclosure CSV feeds from `disclosures.public_disclosure_csvs`
-   and each tracked trader's `daily_csvs`.
-2. Searches configured official House disclosure feeds, downloads matching PTR
-   and annual FD PDFs, and parses reproducible rows from the PDFs.
-3. Normalizes transaction/baseline rows into
-   `source_type = public_disclosure_transaction`.
-4. Ensures local price history reaches back to each trader's earliest
-   disclosure event.
-5. Refreshes configured SEC 13F metadata rows.
-6. Rebuilds one `source_type = trader_portfolio_model` row per trader from
-   normalized disclosures and local `prices_daily`.
-7. Writes job status to `mini-market-disclosures.json`.
-
-Use `--skip-holdings` for the daily scheduler until 13F holding fetch volume is
-intentionally widened. Remove it for manual deeper 13F refreshes.
+1. Loads configured public-disclosure CSV feeds and each tracked trader's
+   incremental CSVs.
+2. Searches configured official House feeds, archives matching PTR/FD PDFs
+   once, and parses reproducible transaction rows.
+3. Archives SEC submissions, filing indexes, and information-table documents
+   for configured 13F trackers.
+4. Normalizes query-critical facts into `raw.disclosure`, linked to the
+   content-addressed `ingest.payload` and `ingest.run` records.
+5. Leaves derived trader/market publications to the deterministic publication
+   refresh, keeping raw filings separate from analytical decisions.
 
 ## Required CSV Contract
 
@@ -86,26 +81,26 @@ disclosures:
 4. Make sure symbols are market tickers that can be priced. Backfill will fetch
    missing price history for disclosure symbols, but unsupported symbols or
    ambiguous assets still need a defended mapping before they can be modeled.
-5. Run the one-time historical backfill:
+5. Run the idempotent disclosure importer. Official House `start_year` provides
+   the historical window; file-based history can be listed under
+   `disclosures.public_disclosure_csvs`:
 
 ```bash
-uv run python -m investment_panel.jobs.backfill_trader_disclosures --config config.yaml --trader "Nancy Pelosi"
+uv run market-update-disclosures --config config.yaml
 ```
 
-By default the backfill clears that trader's prior normalized transaction/model
-rows before re-ingesting configured `historical_csvs` and `daily_csvs`. Use
-`--no-replace` only when intentionally appending/upserting without rebuilding
-from a clean trader ledger.
+Payload hashes and source keys make reruns incremental; the PostgreSQL importer
+does not clear a trader's history before each run.
 
 6. After backfill, the scheduled daily job keeps the trader current:
 
 ```bash
-uv run python -m investment_panel.jobs.update_disclosures --config config.yaml --skip-holdings
+uv run market-update-disclosures --config config.yaml
 ```
 
 7. Check `/api/disclosures` for:
-   - `public_disclosure_transaction` rows for the raw transactions.
-   - one `trader_portfolio_model` row for the derived portfolio.
+   - normalized raw disclosure transactions from primary sources.
+   - derived trader views only after their publication refresh has run.
 8. Open Trader Filings in the app and verify holdings, transaction history,
    caveats, and ticker links.
 

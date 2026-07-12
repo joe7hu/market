@@ -1,5 +1,12 @@
 # Personal Investment Panel Implementation Plan
 
+> Historical v0 plan, superseded by the implemented PostgreSQL architecture.
+> It is retained to explain the original product scope, not as current setup or
+> operational guidance. Use the repository [README](../README.md),
+> [architecture map](../ARCHITECTURE.md), and
+> [PostgreSQL migration ledger](postgresql-migration.md) for current commands,
+> schema ownership, verification, and runtime behavior.
+
 ## Local Context
 
 The `market` repo starts as a greenfield repository. The adjacent local repos are:
