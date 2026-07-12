@@ -20,24 +20,41 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             dict(row)
             for row in connection.execute(
                 """
-                SELECT chosen.instrument_id, chosen.symbol, chosen.name,
-                       chosen.asset_class, chosen.observed_at, chosen.price,
-                       NULL::double precision AS change_pct, chosen.source_id
-                FROM (
-                    SELECT DISTINCT ON (instrument.id, bar.trading_date)
-                           instrument.id AS instrument_id, instrument.symbol, instrument.name,
+                WITH observations AS (
+                    SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
                            instrument.asset_class, bar.observed_at, bar.close AS price,
-                           bar.source_id, bar.trading_date
+                           bar.source_id, bar.trading_date, ingest_run.started_at AS run_started_at
                     FROM raw.price_bar bar
                     JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
                     JOIN ingest.run ingest_run ON ingest_run.id = bar.ingest_run_id
                     WHERE bar.interval = '1d' AND bar.observed_at >= %s - interval '400 days'
-                    ORDER BY instrument.id, bar.trading_date,
-                             ingest_run.started_at DESC, bar.observed_at DESC, bar.source_id
+                    UNION ALL
+                    SELECT instrument.id, instrument.symbol, instrument.name,
+                           instrument.asset_class, quote.observed_at, quote.price,
+                           quote.source_id, quote.observed_at::date, ingest_run.started_at
+                    FROM raw.quote quote
+                    JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
+                    JOIN ingest.run ingest_run ON ingest_run.id = quote.ingest_run_id
+                    WHERE quote.observed_at >= %s - interval '400 days'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM raw.price_bar bar
+                          WHERE bar.instrument_id = quote.instrument_id
+                            AND bar.interval = '1d'
+                            AND bar.trading_date = quote.observed_at::date
+                      )
+                )
+                SELECT chosen.instrument_id, chosen.symbol, chosen.name,
+                       chosen.asset_class, chosen.observed_at, chosen.price,
+                       NULL::double precision AS change_pct, chosen.source_id
+                FROM (
+                    SELECT DISTINCT ON (instrument_id, trading_date) *
+                    FROM observations
+                    ORDER BY instrument_id, trading_date,
+                             run_started_at DESC, observed_at DESC, source_id
                 ) chosen
                 ORDER BY chosen.symbol, chosen.observed_at
                 """,
-                [as_of],
+                [as_of, as_of],
             ).fetchall()
         ]
         valuation_rows = [
@@ -49,6 +66,7 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
                 FROM raw.fundamental_observation observation
                 JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
                 WHERE observation.metric_set = 'market_valuation'
+                   OR observation.metric_set LIKE 'market_valuation:%'
                 ORDER BY observation.observed_at DESC LIMIT 20
                 """
             ).fetchall()

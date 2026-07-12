@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Iterable
 
 from app.data_access.postgres_queries import OWNED_CORRELATIONS_QUERY
+from app.data_access.postgres_source_queries import SOURCE_QUERIES
 from app.data_access.user_state import portfolio_rows, thesis_monitor_rows, thesis_rows, watchlist_rows
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
@@ -114,7 +115,8 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY item.observed_at DESC LIMIT 500
     """,
     "source_freshness": """
-        SELECT source.id AS source_id, source.name, source.family, source.kind,
+        SELECT source.id AS source_id, source.name AS source_name,
+               source.family AS source_family, source.kind AS source_kind,
                run.status, run.finished_at AS refreshed_at, run.failure_detail,
                run.item_count, run.instrument_count AS ticker_count,
                CASE WHEN run.finished_at IS NULL THEN 'missing'
@@ -125,25 +127,6 @@ DIRECT_QUERIES: dict[str, str] = {
             SELECT status, finished_at, failure_detail, item_count, instrument_count
             FROM ingest.run WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1
         ) run ON true ORDER BY source.family, source.id
-    """,
-    "source_ticker_rankings": """
-        SELECT instrument.symbol AS ticker, instrument.symbol,
-               count(*) AS source_item_count, count(DISTINCT item.source_id) AS source_count,
-               max(item.observed_at) AS latest_evidence_at
-        FROM raw.content_item_instrument link
-        JOIN raw.content_item item ON item.id = link.content_item_id
-        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
-        GROUP BY instrument.symbol ORDER BY source_count DESC, source_item_count DESC
-    """,
-    "source_consensus": """
-        SELECT instrument.symbol AS ticker, instrument.symbol,
-               count(*) AS evidence_count, count(DISTINCT item.source_id) AS source_count,
-               array_agg(DISTINCT item.kind) AS evidence_kinds,
-               max(item.observed_at) AS latest_evidence_at
-        FROM raw.content_item_instrument link
-        JOIN raw.content_item item ON item.id = link.content_item_id
-        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
-        GROUP BY instrument.symbol ORDER BY source_count DESC, evidence_count DESC
     """,
     "ownership_consensus": """
         SELECT disclosure.trader_name, disclosure.filer_name, disclosure.event_date,
@@ -312,12 +295,6 @@ DIRECT_QUERIES: dict[str, str] = {
                run.finished_at, run.status, run.item_count, run.failure_detail, run.summary
         FROM ingest.run run ORDER BY run.started_at DESC LIMIT 200
     """,
-    "sources": """
-        SELECT source.id AS source_id, source.name, source.family, source.kind,
-               source.origin, source.enabled, source.ingestion_mode, source.source_url,
-               source.capabilities, source.config, source.updated_at
-        FROM ingest.source source ORDER BY source.family, source.id
-    """,
     "source_health": """
         SELECT source.id AS source_id, source.name, source.enabled,
                run.status, run.started_at, run.finished_at,
@@ -328,16 +305,6 @@ DIRECT_QUERIES: dict[str, str] = {
             FROM ingest.run WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1
         ) run ON true
         ORDER BY source.family, source.id
-    """,
-    "ticker_source_signals": """
-        SELECT instrument.symbol AS ticker, instrument.symbol, item.source_id,
-               item.kind AS signal_type, item.observed_at, item.title AS thesis,
-               item.summary, item.url AS source_url, link.relevance,
-               jsonb_build_object('content_item_id', item.id, 'license_status', item.license_status) AS raw
-        FROM raw.content_item_instrument link
-        JOIN raw.content_item item ON item.id = link.content_item_id
-        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
-        ORDER BY item.observed_at DESC LIMIT 500
     """,
     "option_strategy_versions": """
         SELECT strategy.id, strategy.strategy_key AS strategy_version, strategy.name AS strategy_name,
@@ -554,6 +521,7 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "owned_correlations": OWNED_CORRELATIONS_QUERY,
 }
+DIRECT_QUERIES.update(SOURCE_QUERIES)
 
 
 MODEL_ALIASES = {

@@ -14,6 +14,13 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.legacy_bootstrap import (
+    import_earnings_events,
+    import_fundamental_facts,
+    import_latest_options,
+    import_source_catalog,
+    import_source_signals,
+)
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -29,8 +36,15 @@ DURABLE_TABLES = (
     "strategy_mutation_proposal",
     "prices_daily",
     "source_items",
+    "source_registry",
+    "ticker_source_signals",
     "disclosures",
     "catalysts",
+    "earnings_events",
+    "equity_fundamentals",
+    "analyst_estimates",
+    "market_valuation_metric_points",
+    "options_chain",
 )
 EXCLUDED_DERIVED_TABLES = ("option_snapshot", "option_features", "candidate_event", "radar_alert", "shadow_trade")
 
@@ -53,6 +67,10 @@ class LegacyImporter:
                 for table in (*DURABLE_TABLES, *EXCLUDED_DERIVED_TABLES)
                 if table in available
             }
+            source_catalog = _rows(legacy, "source_registry") if "source_registry" in available else []
+            content_rows = _rows(legacy, "source_items") if "source_items" in available else []
+            source_signal_rows = _rows(legacy, "ticker_source_signals") if "ticker_source_signals" in available else []
+            import_source_catalog(self.runtime, source_catalog)
             imported = {
                 "portfolio_positions": self._import_portfolio(_rows(legacy, "portfolio_positions")) if "portfolio_positions" in available else 0,
                 "manual_watchlist": self._import_watchlist(_rows(legacy, "manual_watchlist")) if "manual_watchlist" in available else 0,
@@ -60,14 +78,40 @@ class LegacyImporter:
                 "trade_journal": self._import_trade_journal(_rows(legacy, "trade_journal")) if "trade_journal" in available else 0,
                 "option_strategy_versions": self._import_strategies(_rows(legacy, "option_strategy_versions")) if "option_strategy_versions" in available else 0,
                 "prices_daily": self._import_prices(_rows(legacy, "prices_daily")) if "prices_daily" in available else 0,
-                "source_items": self._import_content(_rows(legacy, "source_items")) if "source_items" in available else 0,
+                "source_registry": len(source_catalog),
+                "source_items": self._import_content(content_rows),
+                "ticker_source_signals": import_source_signals(self.runtime, source_signal_rows),
                 "disclosures": self._import_disclosures(_rows(legacy, "disclosures")) if "disclosures" in available else 0,
                 "catalysts": self._import_catalysts(_rows(legacy, "catalysts")) if "catalysts" in available else 0,
+                "earnings_events": import_earnings_events(
+                    self.runtime, _rows(legacy, "earnings_events") if "earnings_events" in available else []
+                ),
             }
+            imported["fundamental_observations"] = import_fundamental_facts(
+                self.runtime,
+                fundamentals=_rows(legacy, "equity_fundamentals") if "equity_fundamentals" in available else [],
+                estimates=_rows(legacy, "analyst_estimates") if "analyst_estimates" in available else [],
+                market_valuations=_rows(legacy, "market_valuation_metric_points") if "market_valuation_metric_points" in available else [],
+            )
+            latest_options = _rows_query(
+                legacy,
+                """
+                WITH latest AS (
+                    SELECT symbol, max(observed_at) AS observed_at
+                    FROM options_chain GROUP BY symbol
+                )
+                SELECT chain.* FROM options_chain chain
+                JOIN latest USING (symbol, observed_at)
+                """,
+            ) if "options_chain" in available else []
+            option_counts = import_latest_options(self.runtime, latest_options)
+            imported["latest_option_snapshots"] = option_counts["snapshots"]
+            imported["latest_option_quotes"] = option_counts["quotes"]
             agent_tables = [table for table in ("agent_thesis", "agent_postmortem", "strategy_mutation_proposal") if table in available]
             imported.update(self._import_agent_artifacts({table: _rows(legacy, table) for table in agent_tables}))
         finally:
             legacy.close()
+        rebuilds = self._rebuild_publications()
         target_counts = self._target_counts()
         report = {
             "status": "ok",
@@ -77,6 +121,7 @@ class LegacyImporter:
             "source_counts": source_counts,
             "imported_or_updated": imported,
             "target_counts": target_counts,
+            "rebuilds": rebuilds,
             "excluded_derived": {table: source_counts.get(table, 0) for table in EXCLUDED_DERIVED_TABLES},
             "policy": {
                 "durable_tables": list(DURABLE_TABLES),
@@ -89,6 +134,23 @@ class LegacyImporter:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         return report
+
+    def _rebuild_publications(self) -> dict[str, Any]:
+        from investment_panel.database.market_analysis import refresh_market_publication
+        from investment_panel.database.options_analysis import refresh_options_radar
+        from investment_panel.database.today_analysis import refresh_today_publication
+
+        results: dict[str, Any] = {}
+        for name, refresh in (
+            ("options_radar", refresh_options_radar),
+            ("market", refresh_market_publication),
+            ("today", refresh_today_publication),
+        ):
+            try:
+                results[name] = refresh(self.runtime)
+            except Exception as exc:
+                results[name] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        return results
 
     def _import_portfolio(self, rows: list[dict[str, Any]]) -> int:
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -218,9 +280,13 @@ class LegacyImporter:
             for table, rows in tables.items():
                 for row in rows:
                     legacy_id = str(row[id_columns[table]])
+                    task_kind = {
+                        "agent_thesis": "option_thesis",
+                        "agent_postmortem": "option_postmortem",
+                    }.get(table, f"legacy_{table}")
                     exists = connection.execute(
                         "SELECT 1 FROM analysis.agent_task WHERE task_kind = %s AND request->>'legacy_id' = %s",
-                        [f"legacy_{table}", legacy_id],
+                        [task_kind, legacy_id],
                     ).fetchone()
                     if exists:
                         continue
@@ -232,7 +298,7 @@ class LegacyImporter:
                         VALUES (%s, %s, 'imported', %s, %s, %s, COALESCE(%s, now()), now())
                         """,
                         [
-                            agent_run["id"], f"legacy_{table}",
+                            agent_run["id"], task_kind,
                             Jsonb({"legacy_id": legacy_id, "source_table": table}), Jsonb(result),
                             Jsonb({"authority": "historical_evidence_only"}), row.get("created_at"),
                         ],
@@ -266,25 +332,52 @@ class LegacyImporter:
         if not rows:
             return 0
         repository = IngestionRepository(self.runtime)
-        source_id = "legacy-content"
-        repository.register_source(
-            source_id, name="Legacy content evidence", family="migration", kind="content",
-            origin=str(self.duckdb_path), capabilities={"content": True},
-        )
-        run_id = repository.start_run(source_id, "content")
-        normalized = [
-            {
-                "source_key": row.get("id"), "kind": row.get("source_kind") or row.get("kind") or "article",
-                "title": row.get("title"), "url": row.get("url"), "author": row.get("author"),
-                "published_at": row.get("published_at"), "observed_at": row.get("observed_at"),
-                "summary": row.get("summary"), "license_status": row.get("license_status"),
-                "metadata": {"legacy_source_id": row.get("source_id")},
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            source_id = str(row.get("source_id") or "legacy-content").strip()
+            grouped.setdefault(source_id, []).append(row)
+        with self.runtime.read() as connection:
+            registered = {
+                str(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM ingest.source WHERE id = ANY(%s)", [list(grouped)]
+                ).fetchall()
             }
-            for row in rows
-        ]
-        counts = SourceFactRepository(self.runtime).store_content_items(run_id, source_id, normalized)
-        repository.finish_run(run_id, "succeeded", item_count=counts["items"])
-        return counts["items"]
+        stored = 0
+        for source_id, source_rows in grouped.items():
+            if source_id not in registered:
+                repository.register_source(
+                    source_id, name=source_id.replace("_", " ").title(), family="legacy",
+                    kind="content", origin=str(self.duckdb_path), capabilities={"content": True},
+                )
+            run_id = repository.start_run(source_id, "content")
+            normalized = [
+                {
+                    "source_key": row.get("id"), "kind": row.get("source_kind") or row.get("kind") or "article",
+                    "title": row.get("title"), "url": row.get("url"), "author": row.get("author"),
+                    "published_at": row.get("published_at"), "observed_at": row.get("observed_at"),
+                    "summary": row.get("summary"), "license_status": row.get("license_status"),
+                    "tickers": _json_value(row.get("tickers"), []),
+                    "metadata": {"legacy_id": row.get("id"), "legacy_source_id": source_id},
+                }
+                for row in source_rows
+            ]
+            counts = SourceFactRepository(self.runtime).store_content_items(run_id, source_id, normalized)
+            repository.finish_run(run_id, "succeeded", item_count=counts["items"])
+            stored += counts["items"]
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute(
+                """
+                DELETE FROM raw.content_item legacy
+                WHERE legacy.source_id = 'legacy-content'
+                  AND EXISTS (
+                    SELECT 1 FROM raw.content_item current
+                    WHERE current.source_id = legacy.metadata->>'legacy_source_id'
+                      AND current.source_key = legacy.source_key
+                  )
+                """
+            )
+        return stored
 
     def _import_disclosures(self, rows: list[dict[str, Any]]) -> int:
         if not rows:
@@ -344,11 +437,16 @@ class LegacyImporter:
             "theses_current": "SELECT count(*) FROM app.thesis WHERE status = 'current'",
             "trade_journal": "SELECT count(*) FROM app.trade_journal",
             "strategy_revisions": "SELECT count(*) FROM analysis.strategy_revision",
-            "legacy_agent_tasks": "SELECT count(*) FROM analysis.agent_task WHERE task_kind LIKE 'legacy_%'",
+            "legacy_agent_tasks": "SELECT count(*) FROM analysis.agent_task WHERE request ? 'legacy_id'",
             "price_bars": "SELECT count(*) FROM raw.price_bar",
             "content_items": "SELECT count(*) FROM raw.content_item",
+            "content_item_links": "SELECT count(*) FROM raw.content_item_instrument",
+            "source_signals": "SELECT count(*) FROM analysis.source_signal",
             "disclosures": "SELECT count(*) FROM raw.disclosure",
             "market_events": "SELECT count(*) FROM raw.market_event",
+            "fundamental_observations": "SELECT count(*) FROM raw.fundamental_observation",
+            "option_snapshots": "SELECT count(*) FROM raw.option_snapshot",
+            "option_quotes": "SELECT count(*) FROM raw.option_quote",
         }
         with self.runtime.read() as connection:
             return {name: int(connection.execute(query).fetchone()["count"]) for name, query in queries.items()}
@@ -356,6 +454,12 @@ class LegacyImporter:
 
 def _rows(connection: Any, table: str) -> list[dict[str, Any]]:
     cursor = connection.execute(f"SELECT * FROM {table}")
+    columns = [item[0] for item in cursor.description]
+    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def _rows_query(connection: Any, query: str) -> list[dict[str, Any]]:
+    cursor = connection.execute(query)
     columns = [item[0] for item in cursor.description]
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 

@@ -145,7 +145,6 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             "symbol_decision_snapshots": decision_queue,
             "opportunities_ranked": option_items,
             "candidates": option_items,
-            "feed_signals": daily_brief,
         },
         validation={"raw_and_analysis_separated": True, "row_count": len(daily_brief)},
         complete_run_summary={"daily_brief": len(daily_brief), "holdings": len(holdings)},
