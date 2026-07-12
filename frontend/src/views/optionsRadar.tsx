@@ -9,6 +9,7 @@ import {tabButtonClass, rows, rowsForDisplayTime, uniqueText, countWhere, option
 import {SignalBriefPanel } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {DiscoveryQueue} from "./optionsRadar/discoveryQueue";
+import {ResearchPromptPanel} from "./optionsRadar/researchPrompt";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
@@ -121,6 +122,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         onOpenTicker={onOpenTicker}
       />
       <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />
+      <ResearchPromptPanel rows={currentOpportunityRows} observationTime={latestCandidateTime || latestSnapshot} />
       <div className="flex w-fit rounded-md border border-border bg-muted p-1">
         <button type="button" className={tabButtonClass(activeTab === "signals")} onClick={() => setActiveTab("signals")}>Signals</button>
         <button type="button" className={tabButtonClass(activeTab === "learning")} onClick={() => setActiveTab("learning")}>Learning</button>
