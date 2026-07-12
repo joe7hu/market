@@ -228,6 +228,9 @@ def scope_panel_snapshot_payload(
     if _scope_snapshot_has_rows(scope, payload):
         _store_last_good_scope_snapshot(config, scope, payload)
         return payload
+    status = payload.get("status")
+    if isinstance(status, dict) and status.get("ready") is True:
+        return payload
     fallback = _load_last_good_scope_snapshot(config, scope)
     if fallback is None:
         return payload

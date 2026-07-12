@@ -420,6 +420,35 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
     assert payload["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
 
 
+def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailable(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "ready-empty-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
+        "status": {"ready": True, "source": "old"},
+        "tables": {"candidate_event": {"rows": [{"event_id": "stale"}], "count": 1}},
+    }
+
+    monkeypatch.setattr(
+        app_deps,
+        "load_panel_scope_data",
+        lambda _config, _scope: PanelData(
+            status=DataStatus(True, "PostgreSQL loaded; no current candidates", "postgresql"),
+            tables={"option_strategy_versions": [{"strategy_version": "active-v1"}]},
+        ),
+    )
+
+    response = TestClient(app).get("/api/panel-snapshot?scope=options-radar")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"]["source"] == "postgresql"
+    assert payload["tables"]["option_strategy_versions"]["rows"] == [
+        {"strategy_version": "active-v1"}
+    ]
+    assert payload["tables"]["candidate_event"]["rows"] == []
+
+
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "scoped-api.duckdb"
     _use_temp_api_db(monkeypatch, db_path)
