@@ -81,6 +81,24 @@ class AgentRepository:
         return {"request_id": str(row["id"]), "status": "queued", **request}
 
     def submit(self, task_kind: str, payload: dict[str, Any]) -> str:
+        with self.runtime.transaction() as connection:
+            return self._submit_in_transaction(connection, task_kind, payload)
+
+    def submit_postmortem(self, payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
+        """Accept a postmortem and materialize its proposal in one commit."""
+        from investment_panel.database.strategy_learning import StrategyLearningRepository
+
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            task_id = self._submit_in_transaction(connection, "option_postmortem", payload)
+            evaluations = StrategyLearningRepository(self.runtime).materialize_postmortem_in_transaction(
+                connection, task_id, payload
+            )
+        return task_id, evaluations
+
+    @staticmethod
+    def _submit_in_transaction(
+        connection: Any, task_kind: str, payload: dict[str, Any]
+    ) -> str:
         if task_kind not in {"option_thesis", "option_postmortem"}:
             raise ValueError("unsupported agent task kind")
         request_id = str(
@@ -92,17 +110,16 @@ class AgentRepository:
         if not request_id:
             raise ValueError("request_id is required")
         _validate_result(task_kind, payload)
-        with self.runtime.transaction() as connection:
-            row = connection.execute(
-                """
-                UPDATE analysis.agent_task
-                SET status = 'completed', result = %s,
-                    validation = %s, updated_at = now()
-                WHERE id = %s AND task_kind = %s
-                RETURNING id
-                """,
-                [Jsonb(_jsonable(payload)), Jsonb({"status": "accepted", "authority": "advisory_only"}), request_id, task_kind],
-            ).fetchone()
+        row = connection.execute(
+            """
+            UPDATE analysis.agent_task
+            SET status = 'completed', result = %s,
+                validation = %s, updated_at = now()
+            WHERE id = %s AND task_kind = %s
+            RETURNING id
+            """,
+            [Jsonb(_jsonable(payload)), Jsonb({"status": "accepted", "authority": "advisory_only"}), request_id, task_kind],
+        ).fetchone()
         if row is None:
             raise ValueError(f"agent request not found: {request_id}")
         return str(row["id"])
@@ -198,10 +215,12 @@ class AgentRepository:
                         "UPDATE analysis.agent_task SET status = 'completed', result = %s, validation = %s, updated_at = now() WHERE id = %s",
                         [Jsonb(_jsonable(result)), Jsonb({"status": "accepted", "authority": "advisory_only"}), task["id"]],
                     )
-                if str(task["task_kind"]) == "option_postmortem":
-                    from investment_panel.database.strategy_learning import StrategyLearningRepository
+                    if str(task["task_kind"]) == "option_postmortem":
+                        from investment_panel.database.strategy_learning import StrategyLearningRepository
 
-                    StrategyLearningRepository(self.runtime).materialize_postmortem(str(task["id"]), result)
+                        StrategyLearningRepository(self.runtime).materialize_postmortem_in_transaction(
+                            connection, str(task["id"]), result
+                        )
                 completed += 1
             except Exception as exc:
                 with self.runtime.transaction() as connection:

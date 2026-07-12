@@ -16,6 +16,16 @@ from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 
 
+def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
+    with runtime.transaction() as connection:
+        row = connection.execute(
+            "INSERT INTO analysis.agent_task (decision_id, task_kind, status, request) "
+            "VALUES (%s, 'option_postmortem', 'completed', %s) RETURNING id",
+            [decision_id, Jsonb({"source": "test"})],
+        ).fetchone()
+    return str(row["id"])
+
+
 def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
@@ -148,11 +158,17 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 """,
                 [Jsonb({"source": "test"}), Jsonb({"status": "approved", "proposed_strategy_version": "new-v2", "proposed_parameter_changes": {"max_spread_pct": 0.2}})],
             ).fetchone()["id"]
+            base_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, promoted_at) "
+                "VALUES ('options-radar-core', 1, 'core', 'active', %s, now()) RETURNING id",
+                [Jsonb({"gates": {"max_spread_pct": 0.25}})],
+            ).fetchone()["id"]
             candidate_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters) "
-                "VALUES ('new-v2', 1, 'new-v2', 'candidate', %s) RETURNING id",
-                [Jsonb({"max_spread_pct": 0.2})],
+                "(strategy_key, revision, name, status, parameters, supersedes_id) "
+                "VALUES ('new-v2', 1, 'new-v2', 'candidate', %s, %s) RETURNING id",
+                [Jsonb({"max_spread_pct": 0.2}), base_id],
             ).fetchone()["id"]
             for evaluation_type in ("backtest", "forward_shadow_test"):
                 connection.execute(
@@ -164,6 +180,15 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
         assert actions.acknowledge_alert(str(alert_id)) is True
         assert actions.acknowledge_alert(str(alert_id)) is False
         assert actions.promote_strategy_proposal(str(proposal_id), approved_by="joe") == "new-v2"
+        assert StrategyLearningRepository(runtime).refresh_evaluations() == {
+            "strategy_backtests": 0,
+            "strategy_forward_tests": 0,
+        }
+        with runtime.read() as connection:
+            promotion = connection.execute(
+                "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]
+            ).fetchone()
+        assert promotion["validation"] == {"status": "promoted", "approved_by": "joe"}
     finally:
         runtime.close()
 
@@ -171,7 +196,11 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
         assert connection.execute("SELECT count(*) FROM app.trade_journal WHERE id = %s", [journal_id]).fetchone()[0] == 1
         assert connection.execute("SELECT acknowledged_at IS NOT NULL FROM app.alert WHERE id = %s", [alert_id]).fetchone()[0] is True
         strategy = connection.execute("SELECT status, parameters FROM analysis.strategy_revision WHERE strategy_key = 'new-v2'").fetchone()
+        base_status = connection.execute(
+            "SELECT status FROM analysis.strategy_revision WHERE id = %s", [base_id]
+        ).fetchone()[0]
     assert strategy == ("active", {"max_spread_pct": 0.2})
+    assert base_status == "superseded"
 
 
 def test_strategy_promotion_rejects_agent_approval_without_deterministic_evaluations(postgres_dsn: str) -> None:
@@ -196,20 +225,13 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
     runtime = DatabaseRuntime(postgres_dsn)
     runtime.open()
     try:
-        with runtime.transaction() as connection:
-            connection.execute(
-                "INSERT INTO analysis.strategy_revision "
-                "(strategy_key, revision, name, status, parameters, promoted_at) "
-                "VALUES ('learning-base', 1, 'learning-base', 'active', %s, now())",
-                [Jsonb({"dte_min": 14, "dte_max": 900})],
-            )
         repository = StrategyLearningRepository(runtime)
         tightened = repository.materialize_postmortem(
-            str(uuid4()),
-            {"strategy_version": "learning-base", "proposed_parameter_changes": {"dte_min": 30}},
+            _postmortem_task(runtime),
+            {"strategy_version": "ignored-agent-base", "proposed_parameter_changes": {"dte_min": 30}},
         )
         unsupported = repository.materialize_postmortem(
-            str(uuid4()),
+            _postmortem_task(runtime),
             {
                 "strategy_version": "learning-base",
                 "proposed_parameter_changes": {"require_rs_improving": True},
@@ -247,7 +269,7 @@ def test_strategy_learning_does_not_create_agent_named_active_base(postgres_dsn:
             "strategy_forward_tests": 0,
         }
         repository.materialize_postmortem(
-            str(uuid4()),
+            _postmortem_task(runtime),
             {
                 "strategy_version": "agent-controlled-active-key",
                 "proposed_strategy_version": "agent-controlled-active-key",
@@ -261,5 +283,80 @@ def test_strategy_learning_does_not_create_agent_named_active_base(postgres_dsn:
         assert keys[0] == {"strategy_key": "options-radar-core", "status": "active"}
         assert keys[1]["strategy_key"].startswith("options-radar-core__agent_")
         assert all(row["strategy_key"] != "agent-controlled-active-key" for row in keys)
+    finally:
+        runtime.close()
+
+
+def test_postmortem_submission_rolls_back_when_strategy_materialization_fails(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        task_id = _postmortem_task(runtime)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.agent_task SET status = 'queued' WHERE id = %s", [task_id]
+            )
+        with pytest.raises((TypeError, ValueError)):
+            AgentRepository(runtime).submit_postmortem(
+                {
+                    "request_id": task_id,
+                    "failure_type": "invalid_change",
+                    "proposed_parameter_changes": {"dte_min": "not-a-number"},
+                }
+            )
+        with runtime.read() as connection:
+            task = connection.execute(
+                "SELECT status, result FROM analysis.agent_task WHERE id = %s", [task_id]
+            ).fetchone()
+            proposal_count = connection.execute(
+                "SELECT count(*) AS count FROM analysis.agent_task "
+                "WHERE task_kind = 'strategy_mutation_proposal'"
+            ).fetchone()["count"]
+        assert task["status"] == "queued"
+        assert task["result"] is None
+        assert proposal_count == 0
+    finally:
+        runtime.close()
+
+
+def test_strategy_learning_rejects_source_decisions_outside_core_lineage(
+    postgres_dsn: str,
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) "
+                "VALUES ('NVDA', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            strategy_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, promoted_at) "
+                "VALUES ('unrelated-strategy', 1, 'unrelated', 'active', %s, now()) RETURNING id",
+                [Jsonb({"gates": {"min_dte": 14}})],
+            ).fetchone()["id"]
+            run_id = connection.execute(
+                "INSERT INTO analysis.run "
+                "(run_type, input_cutoff, code_version, input_hash, started_at, status) "
+                "VALUES ('test', now(), 'test', %s, now(), 'running') RETURNING id",
+                ["a" * 64],
+            ).fetchone()["id"]
+            decision_id = connection.execute(
+                "INSERT INTO analysis.decision "
+                "(run_id, decision_key, kind, instrument_id, as_of, state, strategy_revision_id, input_hash) "
+                "VALUES (%s, 'outside', 'option', %s, now(), 'WATCH', %s, %s) RETURNING id",
+                [run_id, instrument_id, strategy_id, "b" * 64],
+            ).fetchone()["id"]
+        task_id = _postmortem_task(runtime, decision_id)
+
+        with pytest.raises(ValueError, match="outside the options-radar-core lineage"):
+            StrategyLearningRepository(runtime).materialize_postmortem(
+                task_id, {"proposed_parameter_changes": {"min_dte": 30}}
+            )
     finally:
         runtime.close()

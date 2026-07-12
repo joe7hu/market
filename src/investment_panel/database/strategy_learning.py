@@ -18,104 +18,150 @@ class StrategyLearningRepository:
         self.runtime = runtime
 
     def materialize_postmortem(self, postmortem_task_id: str, payload: dict[str, Any]) -> dict[str, int]:
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            return self.materialize_postmortem_in_transaction(connection, postmortem_task_id, payload)
+
+    def materialize_postmortem_in_transaction(
+        self, connection: Any, postmortem_task_id: str, payload: dict[str, Any]
+    ) -> dict[str, int]:
         raw_changes = payload.get("proposed_parameter_changes")
         if not isinstance(raw_changes, dict):
             return {"strategy_proposals": 0, "strategy_backtests": 0, "strategy_forward_tests": 0}
         changes = {str(key): value for key, value in raw_changes.items() if value not in (None, "")}
         if not changes:
             return {"strategy_proposals": 0, "strategy_backtests": 0, "strategy_forward_tests": 0}
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            existing = connection.execute(
-                "SELECT id FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal' "
-                "AND request->>'postmortem_task_id' = %s LIMIT 1",
-                [postmortem_task_id],
-            ).fetchone()
-            if existing:
+        source = connection.execute(
+            """
+            SELECT task.id, decision.strategy_revision_id
+            FROM analysis.agent_task task
+            LEFT JOIN analysis.decision decision ON decision.id = task.decision_id
+            WHERE task.id = %s AND task.task_kind = 'option_postmortem'
+            FOR UPDATE OF task
+            """,
+            [postmortem_task_id],
+        ).fetchone()
+        if source is None:
+            raise ValueError(f"postmortem task not found: {postmortem_task_id}")
+        existing = connection.execute(
+            "SELECT id, validation FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal' "
+            "AND request->>'postmortem_task_id' = %s LIMIT 1",
+            [postmortem_task_id],
+        ).fetchone()
+        if existing:
+            if dict(existing["validation"] or {}).get("status") == "promoted":
                 return {
                     "strategy_proposals": 0,
-                    **self._evaluate(connection, existing["id"]),
+                    "strategy_backtests": 0,
+                    "strategy_forward_tests": 0,
                 }
-            requested_base = str(payload.get("strategy_version") or "").strip()
-            base = connection.execute(
-                "SELECT id, strategy_key, revision, parameters FROM analysis.strategy_revision "
-                "WHERE %s <> '' AND strategy_key = %s "
-                "ORDER BY (status = 'active') DESC, revision DESC LIMIT 1",
-                [requested_base, requested_base],
-            ).fetchone()
-            if base is None:
-                base = connection.execute(
-                    "SELECT id, strategy_key, revision, parameters FROM analysis.strategy_revision "
-                    "WHERE status = 'active' ORDER BY promoted_at DESC NULLS LAST, revision DESC LIMIT 1"
-                ).fetchone()
-            if base is None:
-                base_key = "options-radar-core"
-                base = connection.execute(
-                    """
-                    INSERT INTO analysis.strategy_revision
-                        (strategy_key, revision, name, status, parameters, promoted_at)
-                    VALUES (%s, 1, %s, 'active', %s, now())
-                    RETURNING id, strategy_key, revision, parameters
-                    """,
-                    [base_key, base_key, Jsonb(_DEFAULT_PARAMETERS)],
-                ).fetchone()
-            digest = hashlib.sha256(
-                f"{postmortem_task_id}:{json.dumps(changes, sort_keys=True)}".encode()
-            ).hexdigest()[:10]
-            proposed_key = f"{base['strategy_key']}__agent_{digest}"
-            parameters = _merge_parameters(dict(base["parameters"] or {}), changes)
+            return {"strategy_proposals": 0, **self._evaluate(connection, existing["id"])}
+        base = self._resolve_base(connection, source["strategy_revision_id"])
+        digest = hashlib.sha256(
+            f"{postmortem_task_id}:{json.dumps(changes, sort_keys=True)}".encode()
+        ).hexdigest()[:10]
+        proposed_key = f"{base['strategy_key']}__agent_{digest}"
+        parameters = _merge_parameters(dict(base["parameters"] or {}), changes)
+        candidate = connection.execute(
+            "SELECT id, status, parameters, supersedes_id FROM analysis.strategy_revision "
+            "WHERE strategy_key = %s AND revision = 1 FOR UPDATE",
+            [proposed_key],
+        ).fetchone()
+        if candidate is None:
             candidate = connection.execute(
-                "SELECT id, status, parameters, supersedes_id FROM analysis.strategy_revision "
-                "WHERE strategy_key = %s AND revision = 1 FOR UPDATE",
-                [proposed_key],
-            ).fetchone()
-            if candidate is None:
-                candidate = connection.execute(
-                    """
-                    INSERT INTO analysis.strategy_revision
-                        (strategy_key, revision, name, status, parameters, supersedes_id)
-                    VALUES (%s, 1, %s, 'candidate', %s, %s)
-                    RETURNING id, status, parameters, supersedes_id
-                    """,
-                    [proposed_key, proposed_key, Jsonb(parameters), base["id"]],
-                ).fetchone()
-            elif (
-                candidate["status"] != "candidate"
-                or candidate["supersedes_id"] != base["id"]
-                or dict(candidate["parameters"] or {}) != parameters
-            ):
-                raise ValueError("proposed strategy key collides with an existing revision")
-            result = {
-                "status": "backtest_required",
-                "source_postmortem_id": postmortem_task_id,
-                "strategy_version": str(base["strategy_key"]),
-                "proposed_strategy_version": proposed_key,
-                "proposed_parameter_changes": changes,
-                "expected_effect": payload.get("expected_effect"),
-                "risk": payload.get("risk"),
-                "candidate_revision_id": candidate["id"],
-                "promotion_policy": "deterministic_backtest_forward_test_and_human_approval",
-            }
-            proposal = connection.execute(
                 """
-                INSERT INTO analysis.agent_task (task_kind, status, request, result, validation)
-                VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s)
-                RETURNING id
+                INSERT INTO analysis.strategy_revision
+                    (strategy_key, revision, name, status, parameters, supersedes_id)
+                VALUES (%s, 1, %s, 'candidate', %s, %s)
+                RETURNING id, status, parameters, supersedes_id
                 """,
-                [
-                    Jsonb({"postmortem_task_id": postmortem_task_id}),
-                    Jsonb(result),
-                    Jsonb({"status": "deterministic_evaluation_required"}),
-                ],
+                [proposed_key, proposed_key, Jsonb(parameters), base["id"]],
             ).fetchone()
-            counts = self._evaluate(connection, proposal["id"])
+        elif (
+            candidate["status"] != "candidate"
+            or candidate["supersedes_id"] != base["id"]
+            or dict(candidate["parameters"] or {}) != parameters
+        ):
+            raise ValueError("proposed strategy key collides with an existing revision")
+        result = {
+            "status": "backtest_required",
+            "source_postmortem_id": postmortem_task_id,
+            "strategy_version": str(base["strategy_key"]),
+            "proposed_strategy_version": proposed_key,
+            "proposed_parameter_changes": changes,
+            "expected_effect": payload.get("expected_effect"),
+            "risk": payload.get("risk"),
+            "candidate_revision_id": candidate["id"],
+            "promotion_policy": "deterministic_backtest_forward_test_and_human_approval",
+        }
+        proposal = connection.execute(
+            """
+            INSERT INTO analysis.agent_task (task_kind, status, request, result, validation)
+            VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s)
+            RETURNING id
+            """,
+            [
+                Jsonb({"postmortem_task_id": postmortem_task_id}),
+                Jsonb(result),
+                Jsonb({"status": "deterministic_evaluation_required"}),
+            ],
+        ).fetchone()
+        counts = self._evaluate(connection, proposal["id"])
         return {"strategy_proposals": 1, **counts}
+
+    @staticmethod
+    def _resolve_base(connection: Any, source_strategy_id: int | None) -> Any:
+        connection.execute(
+            """
+            INSERT INTO analysis.strategy_revision
+                (strategy_key, revision, name, status, parameters, promoted_at)
+            VALUES ('options-radar-core', 1, 'options-radar-core', 'active', %s, now())
+            ON CONFLICT (strategy_key, revision) DO NOTHING
+            """,
+            [Jsonb(_DEFAULT_PARAMETERS)],
+        )
+        if source_strategy_id is not None:
+            base = connection.execute(
+                """
+                WITH RECURSIVE ancestry AS (
+                    SELECT id, strategy_key, revision, parameters, supersedes_id
+                    FROM analysis.strategy_revision WHERE id = %s
+                    UNION ALL
+                    SELECT parent.id, parent.strategy_key, parent.revision,
+                           parent.parameters, parent.supersedes_id
+                    FROM analysis.strategy_revision parent
+                    JOIN ancestry child ON child.supersedes_id = parent.id
+                )
+                SELECT source.id, source.strategy_key, source.revision, source.parameters,
+                       EXISTS (SELECT 1 FROM ancestry WHERE strategy_key = 'options-radar-core') AS in_core_lineage
+                FROM analysis.strategy_revision source WHERE source.id = %s
+                """,
+                [source_strategy_id, source_strategy_id],
+            ).fetchone()
+            if base is None or not base["in_core_lineage"]:
+                raise ValueError("source decision strategy is outside the options-radar-core lineage")
+            return base
+        return connection.execute(
+            """
+            WITH RECURSIVE lineage AS (
+                SELECT id FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core'
+                UNION
+                SELECT child.id FROM analysis.strategy_revision child
+                JOIN lineage parent ON child.supersedes_id = parent.id
+            )
+            SELECT revision.id, revision.strategy_key, revision.revision, revision.parameters
+            FROM analysis.strategy_revision revision JOIN lineage ON lineage.id = revision.id
+            WHERE revision.status = 'active'
+            ORDER BY revision.promoted_at DESC NULLS LAST, revision.id DESC LIMIT 1
+            """
+        ).fetchone()
 
     def refresh_evaluations(self) -> dict[str, int]:
         totals = {"strategy_backtests": 0, "strategy_forward_tests": 0}
         with self.runtime.transaction(JOB_PROFILE) as connection:
             proposals = connection.execute(
                 "SELECT id FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal' "
-                "AND status = 'completed' ORDER BY created_at"
+                "AND status = 'completed' AND COALESCE(validation->>'status', '') <> 'promoted' "
+                "ORDER BY created_at"
             ).fetchall()
             for proposal in proposals:
                 counts = self._evaluate(connection, proposal["id"])

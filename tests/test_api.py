@@ -679,8 +679,8 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "(strategy_key, revision, name, status, parameters, promoted_at) "
             "VALUES (%s, 1, %s, 'active', %s, now()) RETURNING id",
             [
-                DEFAULT_STRATEGY_VERSION,
-                DEFAULT_STRATEGY_VERSION,
+                "options-radar-core",
+                "options-radar-core",
                 Jsonb({"delta_min": 0.20, "dte_min": 14, "dte_max": 900}),
             ],
         ).fetchone()
@@ -800,11 +800,17 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
             "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
             [Jsonb({"status": "approved", "proposed_strategy_version": "leap_10x_momentum_lottery__delta_max_delta_min"}), proposal_id],
         )
+        base_id = connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters, promoted_at) "
+            "VALUES ('options-radar-core', 1, 'core', 'active', %s, now()) RETURNING id",
+            [Jsonb({})],
+        ).fetchone()["id"]
         candidate_id = connection.execute(
             "INSERT INTO analysis.strategy_revision "
-            "(strategy_key, revision, name, status, parameters) "
-            "VALUES ('leap_10x_momentum_lottery__delta_max_delta_min', 1, 'candidate', 'candidate', %s) RETURNING id",
-            [Jsonb({})],
+            "(strategy_key, revision, name, status, parameters, supersedes_id) "
+            "VALUES ('leap_10x_momentum_lottery__delta_max_delta_min', 1, 'candidate', 'candidate', %s, %s) RETURNING id",
+            [Jsonb({}), base_id],
         ).fetchone()["id"]
         for evaluation_type in ("backtest", "forward_shadow_test"):
             connection.execute(

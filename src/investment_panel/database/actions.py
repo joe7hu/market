@@ -77,7 +77,7 @@ class ActionRepository:
             key = str(proposal.get("proposed_strategy_version") or f"proposal-{proposal_id}")
             parameters = proposal.get("proposed_parameter_changes") or {}
             candidate_rows = connection.execute(
-                "SELECT id, parameters FROM analysis.strategy_revision "
+                "SELECT id, parameters, supersedes_id FROM analysis.strategy_revision "
                 "WHERE strategy_key = %s AND status IN ('candidate', 'testing', 'approved') "
                 "ORDER BY revision DESC FOR UPDATE",
                 [key],
@@ -95,6 +95,23 @@ class ActionRepository:
                 raise ValueError("strategy proposal requires a persisted candidate revision")
             if candidate is None:
                 raise ValueError("strategy proposal parameters do not match the evaluated candidate revision")
+            in_core_lineage = connection.execute(
+                """
+                WITH RECURSIVE ancestry AS (
+                    SELECT id, strategy_key, supersedes_id FROM analysis.strategy_revision WHERE id = %s
+                    UNION ALL
+                    SELECT parent.id, parent.strategy_key, parent.supersedes_id
+                    FROM analysis.strategy_revision parent
+                    JOIN ancestry child ON child.supersedes_id = parent.id
+                )
+                SELECT EXISTS (
+                    SELECT 1 FROM ancestry WHERE strategy_key = 'options-radar-core'
+                ) AS valid
+                """,
+                [candidate["id"]],
+            ).fetchone()["valid"]
+            if not in_core_lineage:
+                raise ValueError("strategy candidate is outside the options-radar-core lineage")
             evaluations = connection.execute(
                 "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation "
                 "WHERE strategy_revision_id = %s ORDER BY evaluated_at DESC",
