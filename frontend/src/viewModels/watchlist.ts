@@ -95,7 +95,7 @@ export function buildWatchlistViewModel(data: PanelData, filters: WatchlistFilte
   const technicalBySymbol = indexRows([...rows(data.technicals), ...rows(data.watchlistWatchedTechnicals), ...rows(data.watchlistUnwatchedTechnicals)]);
   const valuationBySymbol = latestValuations([...rows(data.valuations), ...rows(data.watchlistWatchedValuations), ...rows(data.watchlistUnwatchedValuations)]);
   const screenerBySymbol = indexRows([...rows(data.screener), ...rows(data.watchlistWatchedScreener), ...rows(data.watchlistUnwatchedScreener)]);
-  const fundamentalBySymbol = indexRows([...rows(data.fundamentals), ...rows(data.watchlistWatchedFundamentals), ...rows(data.watchlistUnwatchedFundamentals)]);
+  const fundamentalBySymbol = preferredFundamentals([...rows(data.fundamentals), ...rows(data.watchlistWatchedFundamentals), ...rows(data.watchlistUnwatchedFundamentals)]);
   const marketValuationBySymbol = indexRows(rows(data.marketValuationCharts));
   const optionsBySymbol = indexRows([...rows(data.optionsTickerSignals), ...rows(data.watchlistWatchedOptions), ...rows(data.watchlistUnwatchedOptions)]);
   const researchPacketBySymbol = latestRows([...rows(data.researchPackets), ...rows(data.watchlistWatchedResearchPackets), ...rows(data.watchlistUnwatchedResearchPackets)]);
@@ -141,11 +141,11 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const researchPacket = researchPacketBySymbol.get(symbol);
   const memo = memoBySymbol.get(symbol);
   const thesis = thesisBySymbol.get(symbol);
-  const screenerMetrics = objectField(screener, ["metrics"]);
-  const fundamentalMetrics = objectField(fundamental, ["metrics"]);
+  const screenerMetrics = objectField(screener, ["metrics", "values"]);
+  const fundamentalMetrics = objectField(fundamental, ["metrics", "values"]);
   const valuationAssumptions = objectField(valuation, ["assumptions"]);
   const valuationDiagnostics = objectField(valuation, ["diagnostics"]);
-  const close = numberField(technical, ["close"], Number.NaN);
+  const close = numberField(technical, ["close", "price"], Number.NaN);
   const price = firstFinite([numberField(row, ["price"], Number.NaN), numberField(quote, ["price", "close"], Number.NaN), close]);
   const baseState = normalizeWatchState(textField(row, ["watch_state"], "candidate"));
   const watchState = baseState === "owned" ? "owned" : localStates[symbol] ?? baseState;
@@ -163,9 +163,9 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
   const returnYtd = numberField(technical, ["return_ytd"], Number.NaN);
   const return1y = numberField(technical, ["return_1y"], Number.NaN);
   const drawdownFromHigh = numberField(technical, ["drawdown_from_high"], Number.NaN);
-  const ma20Up = movingAverageState(price, numberField(technical, ["ma20"], Number.NaN));
-  const ma50Up = movingAverageState(price, numberField(technical, ["ma50"], Number.NaN));
-  const ma200Up = movingAverageState(price, numberField(technical, ["ma200"], Number.NaN));
+  const ma20Up = movingAverageState(price, numberField(technical, ["ma20", "sma_20"], Number.NaN));
+  const ma50Up = movingAverageState(price, numberField(technical, ["ma50", "sma_50"], Number.NaN));
+  const ma200Up = movingAverageState(price, numberField(technical, ["ma200", "sma_200"], Number.NaN));
   const oneYearTrend = priceTrendPoints(technical?.chart_1y) ?? priceTrendPoints(technical?.price_history_1y);
   const sixtyDayTrend = priceTrendPoints(technical?.price_history_60d);
   const trend = oneYearTrend ?? sixtyDayTrend ?? modeledTrendPoints(return1y, return60d, drawdownFromHigh);
@@ -185,13 +185,13 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     price,
     changePct: firstFinite([numberField(row, ["change_pct"], Number.NaN), numberField(quote, ["change_pct"], Number.NaN)]),
     marketCap,
-    psRatio: numberField(row, ["ps_ratio"], Number.NaN),
-    peRatio: numberField(row, ["pe_ratio", "trailing_pe", "pe"], Number.NaN),
-    forwardPe: numberField(row, ["forward_pe"], Number.NaN),
+    psRatio: firstFinite([numberField(row, ["ps_ratio"], Number.NaN), objectNumber(fundamentalMetrics, ["ps_ratio", "price_to_sales"])]),
+    peRatio: firstFinite([numberField(row, ["pe_ratio", "trailing_pe", "pe"], Number.NaN), objectNumber(fundamentalMetrics, ["pe_ratio", "trailing_pe", "pe"])]),
+    forwardPe: firstFinite([numberField(row, ["forward_pe"], Number.NaN), objectNumber(fundamentalMetrics, ["forward_pe", "forwardPe"])]),
     revenueGrowthYoy,
     fcfYield,
     fcfMargin,
-    roic: numberField(row, ["roic"], Number.NaN),
+    roic: firstFinite([numberField(row, ["roic"], Number.NaN), objectNumber(fundamentalMetrics, ["roic", "return_on_invested_capital"])]),
     rating: parseRating(textField(row, ["rating"])),
     qualityScore: numberField(row, ["quality_score"], Number.NaN),
     action: textField(row, ["action"], "Watch"),
@@ -219,7 +219,7 @@ function buildWatchlistRow(row: RowRecord, quoteBySymbol: Map<string, RowRecord>
     atrPct1m,
     atrTrend,
     valuationPercentile,
-    optionsStatus: textField(options, ["status"], "missing"),
+    optionsStatus: textField(options, ["status", "state"], "missing"),
     optionsIvRegime: textField(options, ["iv_regime"], "unknown"),
     optionsExpectedMovePct: numberField(options, ["expected_move_pct"], Number.NaN),
     optionsSkewSignal: textField(options, ["skew_signal"], "unknown"),
@@ -325,6 +325,30 @@ function indexRows(inputRows: RowRecord[]): Map<string, RowRecord> {
     if (symbol && !indexed.has(symbol)) indexed.set(symbol, row);
   }
   return indexed;
+}
+
+function preferredFundamentals(inputRows: RowRecord[]): Map<string, RowRecord> {
+  const indexed = new Map<string, RowRecord>();
+  for (const row of inputRows) {
+    const symbol = textField(row, ["symbol", "ticker"]).toUpperCase();
+    if (!symbol) continue;
+    const existing = indexed.get(symbol);
+    const priority = fundamentalPriority(textField(row, ["metric_set"]));
+    const existingPriority = existing ? fundamentalPriority(textField(existing, ["metric_set"])) : -1;
+    const observedAt = textField(row, ["observed_at", "period_end"]);
+    const existingObservedAt = existing ? textField(existing, ["observed_at", "period_end"]) : "";
+    if (!existing || priority > existingPriority || (priority === existingPriority && observedAt > existingObservedAt)) {
+      indexed.set(symbol, row);
+    }
+  }
+  return indexed;
+}
+
+function fundamentalPriority(metricSet: string): number {
+  if (metricSet === "sec_fundamentals") return 3;
+  if (metricSet === "company_fundamentals" || metricSet === "fundamentals") return 2;
+  if (metricSet === "analyst_estimates" || metricSet === "consensus") return 1;
+  return 0;
 }
 
 function latestValuations(inputRows: RowRecord[]): Map<string, RowRecord> {
