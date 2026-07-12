@@ -118,9 +118,12 @@ def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[s
     strategy_version = deps._payload_strategy_version(payload)
     from investment_panel.database.agents import AgentRepository
     from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.strategy_learning import StrategyLearningRepository
 
     try:
-        postmortem_id = AgentRepository(runtime_for_config(config)).submit("option_postmortem", payload)
+        runtime = runtime_for_config(config)
+        postmortem_id = AgentRepository(runtime).submit("option_postmortem", payload)
+        evaluations = StrategyLearningRepository(runtime).materialize_postmortem(postmortem_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
@@ -128,7 +131,8 @@ def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[s
         "status": "accepted",
         "postmortem_id": postmortem_id,
         "strategy_version": strategy_version,
-        "strategy_evaluations": 0,
+        "strategy_evaluations": evaluations["strategy_backtests"] + evaluations["strategy_forward_tests"],
+        **evaluations,
     }
 
 

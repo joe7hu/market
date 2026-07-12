@@ -23,16 +23,16 @@ class JobRepository:
                 with connection.transaction():
                     row = connection.execute(
                         """
-                        INSERT INTO ops.job_run (job_name, status, started_at)
-                        VALUES (%s, 'running', now())
-                        RETURNING id, job_name, status, started_at, finished_at, error, summary
+                        INSERT INTO ops.job_run (job_name, status, started_at, heartbeat_at)
+                        VALUES (%s, 'running', now(), now())
+                        RETURNING id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
                         """,
                         [job_name],
                     ).fetchone()
             except errors.UniqueViolation:
                 row = connection.execute(
                     """
-                    SELECT id, job_name, status, started_at, finished_at, error, summary
+                    SELECT id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
                     FROM ops.job_run WHERE job_name = %s AND status = 'running'
                     ORDER BY started_at DESC LIMIT 1
                     """,
@@ -57,7 +57,7 @@ class JobRepository:
                 UPDATE ops.job_run
                 SET status = %s, finished_at = now(), error = %s, summary = %s
                 WHERE id = %s AND status = 'running'
-                RETURNING id, job_name, status, started_at, finished_at, error, summary
+                RETURNING id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
                 """,
                 [status, error, Jsonb(summary if summary is not None else ({} if error is None else {"error": error})), job_id],
             ).fetchone()
@@ -69,7 +69,7 @@ class JobRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT id, job_name, status, started_at, finished_at, error, summary
+                SELECT id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
                 FROM ops.job_run ORDER BY started_at DESC LIMIT %s
                 """,
                 [limit],
@@ -89,11 +89,19 @@ class JobRepository:
                 """
                 UPDATE ops.job_run
                 SET status = 'failed', finished_at = now(), error = %s, summary = %s
-                WHERE status = 'running' AND started_at < %s
+                WHERE status = 'running' AND heartbeat_at < %s
                 """,
                 [message, Jsonb({"error": message}), cutoff],
             )
         return int(result.rowcount)
+
+    def heartbeat(self, job_id: str | UUID) -> bool:
+        with self.runtime.transaction() as connection:
+            result = connection.execute(
+                "UPDATE ops.job_run SET heartbeat_at = now() WHERE id = %s AND status = 'running'",
+                [job_id],
+            )
+        return result.rowcount == 1
 
     def fail_all_running(self, reason: str) -> int:
         with self.runtime.transaction() as connection:

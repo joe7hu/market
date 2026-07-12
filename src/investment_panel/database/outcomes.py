@@ -105,7 +105,13 @@ class OutcomeRepository:
                 )
                 updated += 1
                 matured += int(maturity != "observing")
-        return {"status": "ok", "outcomes_updated": updated, "outcomes_matured": matured, "as_of": reference}
+        from investment_panel.database.strategy_learning import StrategyLearningRepository
+
+        evaluations = StrategyLearningRepository(self.runtime).refresh_evaluations()
+        return {
+            "status": "ok", "outcomes_updated": updated, "outcomes_matured": matured,
+            "as_of": reference, **evaluations,
+        }
 
 
 def _horizon_return(

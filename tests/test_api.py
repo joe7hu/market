@@ -674,10 +674,21 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "VALUES ('postmortem-test', now(), 'test', %s, now(), now(), 'succeeded') RETURNING id",
             ["0" * 64],
         ).fetchone()
+        strategy = connection.execute(
+            "INSERT INTO analysis.strategy_revision "
+            "(strategy_key, revision, name, status, parameters, promoted_at) "
+            "VALUES (%s, 1, %s, 'active', %s, now()) RETURNING id",
+            [
+                DEFAULT_STRATEGY_VERSION,
+                DEFAULT_STRATEGY_VERSION,
+                Jsonb({"delta_min": 0.20, "dte_min": 14, "dte_max": 900}),
+            ],
+        ).fetchone()
         decision = connection.execute(
-            "INSERT INTO analysis.decision (run_id, instrument_id, decision_key, kind, state, as_of, input_hash) "
-            "VALUES (%s, %s, 'rblx-missed', 'option', 'missed', now(), %s) RETURNING id",
-            [run["id"], instrument["id"], "1" * 64],
+            "INSERT INTO analysis.decision "
+            "(run_id, instrument_id, decision_key, kind, state, as_of, input_hash, strategy_revision_id) "
+            "VALUES (%s, %s, 'rblx-missed', 'option', 'missed', now(), %s, %s) RETURNING id",
+            [run["id"], instrument["id"], "1" * 64, strategy["id"]],
         ).fetchone()
     request = AgentRepository(runtime).queue_postmortem(decision["id"], reason="missed winner")
     client = TestClient(app)
@@ -693,6 +704,7 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
             "evidence": ["Contract was rejected for delta_outside_strategy_range before reaching 10x."],
             "proposed_rule_change": "Test a lower-delta sleeve for strong momentum reversals.",
             "proposed_parameter_changes": {"delta_min": 0.10, "candidate_note": "agent postmortem lower-delta sleeve"},
+            "proposed_strategy_version": DEFAULT_STRATEGY_VERSION,
             "expected_effect": "Increase recall for lower-delta 10x winners.",
             "risk": "May increase false positives and earlier entries.",
             "confidence": 70,
@@ -703,10 +715,51 @@ def test_agent_postmortem_post_keeps_strategy_mutation_gated(migrated_postgres_d
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "accepted"
-    assert payload["strategy_evaluations"] == 0
+    assert payload["strategy_proposals"] == 1
+    assert payload["strategy_evaluations"] == 2
+    assert payload["strategy_backtests"] == 1
+    assert payload["strategy_forward_tests"] == 1
     postmortem = AgentRepository(runtime).rows("agent_postmortem")[0]
     assert postmortem["status"] == "completed"
     assert postmortem["failure_type"] == "delta_range_too_strict"
+    with runtime.read() as connection:
+        proposal = connection.execute(
+            "SELECT id, result FROM analysis.agent_task WHERE task_kind = 'strategy_mutation_proposal'"
+        ).fetchone()
+        evaluations = connection.execute(
+            "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation ORDER BY evaluation_type"
+        ).fetchall()
+    assert proposal["result"]["status"] == "backtest_required"
+    assert [row["evaluation_type"] for row in evaluations] == ["backtest", "forward_shadow_test"]
+    assert {row["verdict"] for row in evaluations} == {
+        "requires_rejected_or_shadow_outcomes", "collecting_data",
+    }
+    assert proposal["result"]["proposed_strategy_version"] != DEFAULT_STRATEGY_VERSION
+    with runtime.read() as connection:
+        active = connection.execute(
+            "SELECT status, parameters FROM analysis.strategy_revision WHERE id = %s",
+            [strategy["id"]],
+        ).fetchone()
+    assert active["status"] == "active"
+    assert active["parameters"]["delta_min"] == 0.20
+
+    ready_result = {**dict(proposal["result"]), "status": "ready"}
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE analysis.agent_task SET result = %s WHERE id = %s",
+            [Jsonb(ready_result), proposal["id"]],
+        )
+        connection.execute(
+            "UPDATE analysis.strategy_evaluation SET verdict = 'pass' "
+            "WHERE strategy_revision_id = %s",
+            [ready_result["candidate_revision_id"]],
+        )
+    promoted = client.post(
+        f"/api/strategy-mutation-proposals/{proposal['id']}/promote",
+        json={"approved_by": "joe"},
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["strategy_version"] == ready_result["proposed_strategy_version"]
 
 
 def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated_postgres_dsn: str, monkeypatch) -> None:

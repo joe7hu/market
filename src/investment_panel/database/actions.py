@@ -76,15 +76,24 @@ class ActionRepository:
                 raise ValueError("strategy proposal has not passed deterministic approval gates")
             key = str(proposal.get("proposed_strategy_version") or f"proposal-{proposal_id}")
             parameters = proposal.get("proposed_parameter_changes") or {}
-            candidate = connection.execute(
+            candidate_rows = connection.execute(
                 "SELECT id, parameters FROM analysis.strategy_revision "
                 "WHERE strategy_key = %s AND status IN ('candidate', 'testing', 'approved') "
-                "ORDER BY revision DESC LIMIT 1 FOR UPDATE",
+                "ORDER BY revision DESC FOR UPDATE",
                 [key],
-            ).fetchone()
-            if candidate is None:
+            ).fetchall()
+            requested_candidate_id = proposal.get("candidate_revision_id")
+            candidate = next(
+                (
+                    row for row in candidate_rows
+                    if (requested_candidate_id is None or int(row["id"]) == int(requested_candidate_id))
+                    and _candidate_contains_changes(dict(row["parameters"] or {}), dict(parameters))
+                ),
+                None,
+            )
+            if candidate is None and not candidate_rows:
                 raise ValueError("strategy proposal requires a persisted candidate revision")
-            if dict(candidate["parameters"] or {}) != dict(parameters):
+            if candidate is None:
                 raise ValueError("strategy proposal parameters do not match the evaluated candidate revision")
             evaluations = connection.execute(
                 "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation "
@@ -121,3 +130,19 @@ def _uuid_or_none(value: Any) -> UUID | None:
         return UUID(str(value)) if value else None
     except (TypeError, ValueError):
         return None
+
+
+def _candidate_contains_changes(candidate: dict[str, Any], changes: dict[str, Any]) -> bool:
+    gates = dict(candidate.get("gates") or {})
+    aliases = {"dte_min": "min_dte", "dte_max": "max_dte"}
+    gate_keys = {
+        "max_spread_pct", "reject_spread_pct", "min_open_interest", "min_volume",
+        "min_dte", "max_dte", "delta_min", "delta_max", "max_required_move_pct",
+        "max_iv_percentile", "reject_iv_percentile",
+    }
+    for key, value in changes.items():
+        canonical = aliases.get(key, key)
+        actual = gates.get(canonical, candidate.get(key)) if canonical in gate_keys else candidate.get(key)
+        if actual != value:
+            return False
+    return True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
+import time
 
 from investment_panel.core import refresh_jobs
 import psycopg
@@ -338,12 +339,31 @@ def test_run_refresh_job_does_not_execute_existing_running_job(tmp_path, monkeyp
     assert rows[0]["status"] == "running"
 
 
+def test_job_heartbeat_runs_while_handler_is_active() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.pulses = 0
+
+        def heartbeat(self, _job_id: str) -> bool:
+            self.pulses += 1
+            return True
+
+    repository = Repository()
+    with refresh_jobs._heartbeat_while_running(repository, "job-1", interval_seconds=0.01):
+        time.sleep(0.035)
+
+    assert repository.pulses >= 3
+
+
 def test_stale_running_jobs_are_marked_failed(tmp_path, migrated_postgres_dsn: str) -> None:
     db_path = tmp_path / "jobs.duckdb"
     stale_started = datetime.now(UTC) - timedelta(hours=4)
     job = refresh_jobs.start_refresh_job("full_market_refresh", db_path)
     with psycopg.connect(migrated_postgres_dsn) as con:
-        con.execute("UPDATE ops.job_run SET started_at = %s WHERE id = %s", [stale_started, job["id"]])
+        con.execute(
+            "UPDATE ops.job_run SET started_at = %s, heartbeat_at = %s WHERE id = %s",
+            [stale_started, stale_started, job["id"]],
+        )
 
     rows = refresh_jobs.refresh_job_rows(db_path)
     assert rows[0]["id"] == job["id"]

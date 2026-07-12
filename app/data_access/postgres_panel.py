@@ -205,7 +205,8 @@ DIRECT_QUERIES: dict[str, str] = {
                evaluation.verdict, evaluation.metrics, evaluation.evidence AS raw
         FROM analysis.strategy_evaluation evaluation
         JOIN analysis.strategy_revision strategy ON strategy.id = evaluation.strategy_revision_id
-        WHERE evaluation.evaluation_type IN ('forward_test', 'shadow') ORDER BY evaluation.evaluated_at DESC
+        WHERE evaluation.evaluation_type IN ('forward_test', 'forward_shadow_test', 'shadow')
+        ORDER BY evaluation.evaluated_at DESC
     """,
     "quotes": """
         SELECT DISTINCT ON (instrument.id) instrument.symbol, quote.observed_at,
@@ -515,12 +516,14 @@ DIRECT_QUERIES: dict[str, str] = {
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
                decision.as_of AS snapshot_time, outcome.observed_through,
                outcome.current_return, outcome.peak_return AS max_return_since_alert,
+               decision.state AS prior_state,
                CASE WHEN outcome.peak_return >= 9 THEN '10x'
-                    WHEN outcome.peak_return >= 4 THEN '5x' ELSE '2x' END AS outcome_type
+                    ELSE '5x' END AS outcome_type
         FROM analysis.option_outcome outcome
         JOIN analysis.decision decision ON decision.id = outcome.decision_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        WHERE outcome.peak_return >= 1 ORDER BY outcome.peak_return DESC
+        WHERE outcome.peak_return >= 4 AND decision.state <> 'FIRE'
+        ORDER BY outcome.peak_return DESC
     """,
     "radar_state_transition": """
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,

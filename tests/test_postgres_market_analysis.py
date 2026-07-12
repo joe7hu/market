@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.data_access import load_panel_scope_data
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -47,5 +49,44 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         assert complete.metadata["unavailable_models"] == []
         assert {row["symbol"] for row in complete.rows("technicals")} == {"SPY", "QQQ"}
         assert len(complete.rows("correlations")) == 1
+    finally:
+        runtime.close()
+
+
+def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("ytd-test", name="YTD test", family="test", kind="quote")
+        run_id = ingestion.start_run("ytd-test", "quotes")
+        rows = [
+            {"symbol": "SPY", "date": day, "open": price, "high": price, "low": price,
+             "close": price, "volume": 1}
+            for day, price in (
+                (datetime(2025, 7, 1, tzinfo=UTC).date(), 100),
+                (datetime(2025, 12, 31, tzinfo=UTC).date(), 120),
+                (datetime(2026, 1, 2, tzinfo=UTC).date(), 121),
+                (datetime(2026, 7, 1, tzinfo=UTC).date(), 132),
+            )
+        ]
+        ingestion.store_price_bars(run_id, "ytd-test", rows)
+        ingestion.finish_run(run_id, "succeeded")
+        ingestion.register_source("ytd-override", name="YTD override", family="test", kind="quote")
+        override_run = ingestion.start_run("ytd-override", "quotes")
+        ingestion.store_price_bars(
+            override_run,
+            "ytd-override",
+            [{"symbol": "SPY", "date": datetime(2026, 7, 1, tzinfo=UTC).date(),
+              "open": 140, "high": 140, "low": 140, "close": 140, "volume": 1}],
+        )
+        ingestion.finish_run(override_run, "succeeded")
+
+        refresh_market_publication(runtime, now=datetime(2026, 7, 1, 23, tzinfo=UTC))
+        asset = AnalysisRepository(runtime).publication_rows("market", "market_environment_assets")[0]
+        assert asset["return_ytd"] == pytest.approx(16.6666667)
+        assert asset["return_1d"] == pytest.approx((140 / 121 - 1) * 100)
+        assert asset["return_1y"] == pytest.approx(40.0)
+        assert asset["source"] == "ytd-override"
     finally:
         runtime.close()

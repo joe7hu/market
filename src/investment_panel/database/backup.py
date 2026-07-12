@@ -5,9 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
+
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 
 def create_verified_backup(
@@ -24,11 +27,13 @@ def create_verified_backup(
     dump_path = destination / f"market-{stamp}.dump"
     manifest_path = destination / f"market-{stamp}.json"
     binary_dir = Path(postgres_bin_dir)
+    safe_database_url, dump_environment = _credential_safe_connection(database_url)
     subprocess.run(
-        [str(binary_dir / "pg_dump"), "--format=custom", "--compress=9", "--file", str(dump_path), database_url],
+        [str(binary_dir / "pg_dump"), "--format=custom", "--compress=9", "--file", str(dump_path), safe_database_url],
         check=True,
         capture_output=True,
         text=True,
+        env=dump_environment,
     )
     listing = subprocess.run(
         [str(binary_dir / "pg_restore"), "--list", str(dump_path)],
@@ -56,3 +61,13 @@ def create_verified_backup(
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     return {**manifest, "manifest_path": str(manifest_path)}
+
+
+def _credential_safe_connection(database_url: str) -> tuple[str, dict[str, str] | None]:
+    parameters = conninfo_to_dict(database_url)
+    password = parameters.pop("password", None)
+    if password is None:
+        return database_url, None
+    environment = dict(os.environ)
+    environment["PGPASSWORD"] = password
+    return make_conninfo(**parameters), environment

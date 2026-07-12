@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import timedelta
 import json
 import os
 import subprocess
 import sys
+from threading import Event, Thread
 import traceback
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import database_url, runtime_for_url
 from investment_panel.database.jobs import JobRepository
@@ -35,6 +37,7 @@ JobRunner = Callable[[str | None], dict[str, Any]]
 JOB_TIMEOUT_SECONDS: dict[str, int] = {
     "options_radar_hard_refresh": 5400,
 }
+JOB_HEARTBEAT_SECONDS = 30.0
 
 
 def _job_timeout_seconds(job_name: str) -> int | None:
@@ -169,7 +172,8 @@ def execute_refresh_job(
         raise ValueError(f"refresh job is not allowlisted: {job_name}. Allowed jobs: {allowed}")
     repository = _job_repository(db_path, config_path)
     try:
-        summary = ALLOWLIST[job_name](config_path)
+        with _heartbeat_while_running(repository, job_id):
+            summary = ALLOWLIST[job_name](config_path)
     except Exception as exc:
         error = f"{exc}\n{traceback.format_exc()}"
         repository.finish(job_id, "failed", error=error, summary={"error": str(exc)})
@@ -189,6 +193,30 @@ def execute_refresh_job(
 def finish_refresh_job_failed(job_id: str, job_name: str, db_path: Any, error: str) -> dict[str, Any]:
     _job_repository(db_path).finish(job_id, "failed", error=error)
     return {"id": job_id, "job_name": job_name, "status": "failed", "error": error}
+
+
+@contextmanager
+def _heartbeat_while_running(
+    repository: JobRepository,
+    job_id: str,
+    *,
+    interval_seconds: float = JOB_HEARTBEAT_SECONDS,
+) -> Iterator[None]:
+    stop = Event()
+
+    def pulse() -> None:
+        while not stop.wait(interval_seconds):
+            if not repository.heartbeat(job_id):
+                return
+
+    repository.heartbeat(job_id)
+    worker = Thread(target=pulse, name=f"market-job-heartbeat-{job_id}", daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        worker.join(timeout=max(1.0, interval_seconds))
 
 
 def execute_refresh_job_subprocess(

@@ -145,6 +145,7 @@ class AgentRepository:
         model: str = "configured-command",
         task_kinds: Sequence[str] = ("option_thesis", "option_postmortem"),
     ) -> dict[str, Any]:
+        self.recover_stale_tasks(stale_after=timedelta(seconds=max(300, timeout_seconds + 60)))
         if not command.strip():
             return {"status": "skipped", "reason": "agent command is not configured", "completed": 0, "failed": 0}
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -191,6 +192,10 @@ class AgentRepository:
                         "UPDATE analysis.agent_task SET status = 'completed', result = %s, validation = %s, updated_at = now() WHERE id = %s",
                         [Jsonb(_jsonable(result)), Jsonb({"status": "accepted", "authority": "advisory_only"}), task["id"]],
                     )
+                if str(task["task_kind"]) == "option_postmortem":
+                    from investment_panel.database.strategy_learning import StrategyLearningRepository
+
+                    StrategyLearningRepository(self.runtime).materialize_postmortem(str(task["id"]), result)
                 completed += 1
             except Exception as exc:
                 with self.runtime.transaction() as connection:
@@ -206,6 +211,31 @@ class AgentRepository:
                 ["succeeded" if failed == 0 else "partial" if completed else "failed", Jsonb({"completed": completed, "failed": failed, "errors": errors}), run["id"]],
             )
         return {"status": "ok" if failed == 0 else "partial" if completed else "failed", "run_id": str(run["id"]), "completed": completed, "failed": failed, "errors": errors}
+
+    def recover_stale_tasks(self, *, stale_after: timedelta = timedelta(minutes=10)) -> int:
+        cutoff = datetime.now(UTC) - stale_after
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            stale = connection.execute(
+                "SELECT id, agent_run_id FROM analysis.agent_task "
+                "WHERE status = 'running' AND updated_at < %s FOR UPDATE SKIP LOCKED",
+                [cutoff],
+            ).fetchall()
+            if not stale:
+                return 0
+            task_ids = [row["id"] for row in stale]
+            run_ids = list({row["agent_run_id"] for row in stale if row["agent_run_id"] is not None})
+            connection.execute(
+                "UPDATE analysis.agent_task SET status = 'queued', agent_run_id = NULL, "
+                "validation = %s, updated_at = now() WHERE id = ANY(%s)",
+                [Jsonb({"status": "requeued", "reason": "stale_running_lease"}), task_ids],
+            )
+            if run_ids:
+                connection.execute(
+                    "UPDATE analysis.agent_run SET status = 'failed', finished_at = now(), "
+                    "summary = summary || %s WHERE id = ANY(%s) AND status = 'running'",
+                    [Jsonb({"error": "worker lease expired; tasks requeued"}), run_ids],
+                )
+        return len(task_ids)
 
     def overview(self) -> dict[str, Any]:
         now = datetime.now(UTC)

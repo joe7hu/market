@@ -20,13 +20,22 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             dict(row)
             for row in connection.execute(
                 """
-                SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
-                       instrument.asset_class, bar.observed_at, bar.close AS price,
-                       NULL::double precision AS change_pct, bar.source_id
-                FROM raw.price_bar bar
-                JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-                WHERE bar.interval = '1d' AND bar.observed_at >= %s - interval '400 days'
-                ORDER BY instrument.symbol, bar.observed_at
+                SELECT chosen.instrument_id, chosen.symbol, chosen.name,
+                       chosen.asset_class, chosen.observed_at, chosen.price,
+                       NULL::double precision AS change_pct, chosen.source_id
+                FROM (
+                    SELECT DISTINCT ON (instrument.id, bar.trading_date)
+                           instrument.id AS instrument_id, instrument.symbol, instrument.name,
+                           instrument.asset_class, bar.observed_at, bar.close AS price,
+                           bar.source_id, bar.trading_date
+                    FROM raw.price_bar bar
+                    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+                    JOIN ingest.run ingest_run ON ingest_run.id = bar.ingest_run_id
+                    WHERE bar.interval = '1d' AND bar.observed_at >= %s - interval '400 days'
+                    ORDER BY instrument.id, bar.trading_date,
+                             ingest_run.started_at DESC, bar.observed_at DESC, bar.source_id
+                ) chosen
+                ORDER BY chosen.symbol, chosen.observed_at
                 """,
                 [as_of],
             ).fetchall()
@@ -95,7 +104,7 @@ def _asset_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "return_1d": _return(latest_price, prices[-2] if len(prices) >= 2 else None, latest.get("change_pct")),
         "return_1m": _period_return(prices, 21),
         "return_1y": _period_return(prices, 252),
-        "return_ytd": _period_return(prices, len(prices) - 1),
+        "return_ytd": _ytd_return(rows),
         "sma_20_up": _above_average(prices, 20),
         "sma_50_up": _above_average(prices, 50),
         "sma_200_up": _above_average(prices, 200),
@@ -172,6 +181,23 @@ def _period_return(prices: list[float], observations: int) -> float | None:
         return None
     index = max(0, len(prices) - 1 - max(1, observations))
     return _return(prices[-1], prices[index])
+
+
+def _ytd_return(rows: list[dict[str, Any]]) -> float | None:
+    priced = [row for row in rows if row.get("price") is not None and row.get("observed_at") is not None]
+    if len(priced) < 2:
+        return None
+    latest = priced[-1]
+    latest_at = latest["observed_at"]
+    latest_year = latest_at.year
+    prior = [row for row in priced if row["observed_at"].year < latest_year]
+    baseline = prior[-1] if prior else next(
+        (row for row in priced if row["observed_at"].year == latest_year),
+        None,
+    )
+    if baseline is None or baseline is latest:
+        return None
+    return _return(float(latest["price"]), float(baseline["price"]))
 
 
 def _average(prices: list[float], window: int) -> float:

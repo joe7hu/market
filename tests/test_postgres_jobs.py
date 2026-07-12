@@ -52,6 +52,14 @@ def test_stale_and_restart_recovery_are_database_owned(
             [datetime.now(UTC) - timedelta(hours=4), stale["id"]],
         )
         connection.commit()
+    assert job_repository.mark_stale(stale_after=timedelta(hours=3)) == 0
+    assert job_repository.heartbeat(stale["id"]) is True
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        connection.execute(
+            "UPDATE ops.job_run SET heartbeat_at = %s WHERE id = %s",
+            [datetime.now(UTC) - timedelta(hours=4), stale["id"]],
+        )
+        connection.commit()
     assert job_repository.mark_stale(stale_after=timedelta(hours=3)) == 1
     assert job_repository.fail_all_running("server restarted") == 1
     states = {row["job_name"]: row for row in job_repository.rows()}

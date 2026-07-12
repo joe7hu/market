@@ -25,6 +25,13 @@ def postgres_dsn(postgresql) -> str:
 def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     upgrade_database(postgres_dsn)
     monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": postgres_dsn}})
+    monkeypatch.setattr(
+        deps,
+        "populate_watchlist_symbol_data",
+        lambda _config, symbol, asset_class: {
+            "status": "ok", "symbol": symbol, "asset_class": asset_class, "quote_rows": 1,
+        },
+    )
     application = FastAPI()
     application.include_router(router)
     application.include_router(theses_router)
@@ -104,7 +111,9 @@ def test_watchlist_route_round_trip_and_soft_exclusion(client: TestClient, postg
     assert response.status_code == 200
     payload = response.json()
     assert payload["watchlist_symbol"]["asset_class"] == "crypto"
-    assert payload["data_refresh"]["status"] == "pending_source_refresh"
+    assert payload["data_refresh"] == {
+        "status": "ok", "symbol": "BTC-USD", "asset_class": "crypto", "quote_rows": 1,
+    }
     assert payload["watchlist"]["rows"][0]["symbol"] == "BTC-USD"
 
     deleted = client.delete("/api/watchlist/symbols/BTC-USD")

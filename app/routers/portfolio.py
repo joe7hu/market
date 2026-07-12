@@ -75,11 +75,12 @@ def save_watchlist_symbol_endpoint(item: deps.WatchlistSymbolInput, request: Req
         saved = deps.save_watchlist_symbol(config, item.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    refresh_result = {
-        "status": "pending_source_refresh",
-        "symbol": saved["symbol"],
-        "reason": "PostgreSQL source ingestion is queued for the next migration slice",
-    }
+    refresh_result = deps.populate_watchlist_symbol_data(
+        config,
+        saved["symbol"],
+        saved.get("asset_class"),
+    )
+    deps._invalidate_context_cache()
     rows = deps.watchlist_rows(config)
     return {
         "watchlist_symbol": saved,

@@ -295,10 +295,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             raw = yaml.safe_load(handle) or {}
     base = project_root()
     database = load_database_config(raw, base)
-    # Database-backed overrides are enabled in live job processes by the same
-    # explicit DSN environment used for execution. Keeping plain file parsing
-    # side-effect free avoids accidental local-DB probes in tooling/tests.
-    if os.environ.get("MARKET_DATABASE_URL"):
+    # PostgreSQL is the settings authority whether its DSN came from the
+    # environment or config.yaml. The repository handles an unavailable
+    # database as a no-op so initial migration/config tooling remains usable.
+    if database.url.startswith(("postgresql://", "postgresql+psycopg://")):
         raw = merge_persisted_setting_sections(raw, database.url)
     nas_raw = raw.get("nas", {})
     nas = NasConfig(

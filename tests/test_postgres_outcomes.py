@@ -54,6 +54,20 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         assert mark["current_return"] == pytest.approx(2.0)
         assert mark["max_return_since_alert"] == pytest.approx(2.0)
         assert attribution["label"] == "winner_2x"
+
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.option_outcome SET peak_return = 5")
+            connection.execute("UPDATE analysis.decision SET state = 'FIRE'")
+        assert load_table_panel_data(
+            {"database": {"url": migrated_postgres_dsn}}, "missed_winner_event"
+        ).rows("missed_winner_event") == []
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.decision SET state = 'WATCH'")
+        missed = load_table_panel_data(
+            {"database": {"url": migrated_postgres_dsn}}, "missed_winner_event"
+        ).rows("missed_winner_event")
+        assert missed[0]["prior_state"] == "WATCH"
+        assert missed[0]["outcome_type"] == "5x"
     finally:
         runtime.close()
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.backup import create_verified_backup
+from investment_panel.database.backup import _credential_safe_connection, create_verified_backup
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.jobs import JobRepository
 from investment_panel.database.migrations import upgrade_database
@@ -106,3 +106,15 @@ def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(
     assert dump_path.read_bytes()[:5] == b"PGDMP"
     assert manifest["sha256"] == hashlib.sha256(dump_path.read_bytes()).hexdigest()
     assert manifest["schemas"] == ["analysis", "app", "catalog", "ingest", "ops", "raw"]
+
+
+def test_backup_removes_password_from_pg_dump_arguments() -> None:
+    safe_dsn, environment = _credential_safe_connection(
+        "postgresql://market_user:do-not-expose@db.internal:5432/market?sslmode=require"
+    )
+
+    assert "do-not-expose" not in safe_dsn
+    assert "password" not in safe_dsn
+    assert "user=market_user" in safe_dsn
+    assert environment is not None
+    assert environment["PGPASSWORD"] == "do-not-expose"

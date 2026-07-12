@@ -22,7 +22,7 @@ def test_postgresql_settings_overlay_yaml_without_rewriting_it(
         encoding="utf-8",
     )
     original = config_path.read_text(encoding="utf-8")
-    monkeypatch.setenv("MARKET_DATABASE_URL", migrated_postgres_dsn)
+    monkeypatch.delenv("MARKET_DATABASE_URL", raising=False)
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
