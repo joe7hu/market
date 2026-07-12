@@ -14,6 +14,7 @@ from investment_panel.database.agents import AgentRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
+from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 
 
 def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
@@ -24,6 +25,70 @@ def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
             [decision_id, Jsonb({"source": "test"})],
         ).fetchone()
     return str(row["id"])
+
+
+def test_strategy_governance_automatically_promotes_only_complete_evidence(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            base_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, authority_group, promoted_at) "
+                "VALUES ('options-radar-core', 2, 'core', 'active', %s, 'options-radar-core', now()) RETURNING id",
+                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .25}})],
+            ).fetchone()["id"]
+            candidate_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, supersedes_id, authority_group) "
+                "VALUES ('options-radar-core__agent_auto', 1, 'auto', 'candidate', %s, %s, 'options-radar-core') RETURNING id",
+                [Jsonb({"contract_version": 2, "gates": {"max_spread_pct": .20}}), base_id],
+            ).fetchone()["id"]
+            task_id = connection.execute(
+                "INSERT INTO analysis.agent_task (task_kind, status, request, result, validation) "
+                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s, %s) RETURNING id",
+                [
+                    Jsonb({"source": "test"}),
+                    Jsonb({"candidate_revision_id": candidate_id, "proposed_parameter_changes": {"max_spread_pct": .20}}),
+                    Jsonb({"status": "ready"}),
+                ],
+            ).fetchone()["id"]
+            baseline = {"net_expectancy": .10, "precision_at_5": .50, "max_drawdown": -.20, "calibration_error": .10}
+            for evaluation_type, sample, span in (
+                ("backtest", 100, 120),
+                ("forward_shadow_test", 30, 30),
+                ("canary", 20, 20),
+            ):
+                proposed = {
+                    "sample_size": sample,
+                    "net_expectancy": .12,
+                    "lower_95_expectancy": .02,
+                    "precision_at_5": .50,
+                    "max_drawdown": -.19,
+                    "calibration_error": .10,
+                    "max_ticker_contribution": .10,
+                }
+                connection.execute(
+                    "INSERT INTO analysis.strategy_evaluation "
+                    "(strategy_revision_id, evaluation_type, evaluated_at, period_start, period_end, verdict, metrics) "
+                    "VALUES (%s, %s, now(), now() - make_interval(days => %s), now(), 'pass', %s)",
+                    [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span})],
+                )
+
+        assert StrategyGovernanceRepository(runtime).automatic_promote_eligible() == 1
+        with runtime.read() as connection:
+            statuses = connection.execute(
+                "SELECT id, status FROM analysis.strategy_revision WHERE id IN (%s, %s) ORDER BY id",
+                [base_id, candidate_id],
+            ).fetchall()
+            validation = connection.execute(
+                "SELECT validation FROM analysis.agent_task WHERE id = %s", [task_id]
+            ).fetchone()["validation"]
+        assert [row["status"] for row in statuses] == ["superseded", "active"]
+        assert validation["authority"] == "automatic_deterministic_governance"
+    finally:
+        runtime.close()
 
 
 def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str) -> None:
@@ -297,7 +362,7 @@ def test_strategy_learning_normalizes_dte_and_blocks_unsupported_changes(postgre
         assert candidates[2]["parameters"]["gates"]["max_spread_pct"] == 0.05
         assert "reject_spread_pct" not in candidates[2]["parameters"]["gates"]
         assert [row["verdict"] for row in verdicts] == [
-            "insufficient_data", "unsupported_parameters", "insufficient_data"
+            "collecting_data", "unsupported_parameters", "collecting_data"
         ]
     finally:
         runtime.close()

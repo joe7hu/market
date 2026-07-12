@@ -11,6 +11,9 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
 from investment_panel.database.options_publication import publication_models
+from investment_panel.database.options_expressions import enrich_long_option_expectancy, insert_call_debit_spreads
+from investment_panel.database.options_calibration import calibration_profiles, ready_structures
+from investment_panel.database.options_retention import retain_reject_sample
 from investment_panel.analysis.cash_secured_put import CashSecuredPutInputs, evaluate_cash_secured_put
 
 
@@ -51,6 +54,7 @@ def refresh_options_radar(
         strategy_revision_id=strategy_id,
     )
     try:
+        calibrated_ready = ready_structures(runtime, strategy_id)
         feature_count = _insert_features(
             runtime,
             run_id,
@@ -59,8 +63,11 @@ def refresh_options_radar(
             symbols=symbols,
         )
         decision_count = _insert_decisions(runtime, run_id, strategy_id, strategy_parameters)
+        empirical_long_options = enrich_long_option_expectancy(runtime, run_id, calibrated_ready)
+        call_debit_spreads = insert_call_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
+        decision_count += call_debit_spreads
         cash_secured_puts = _insert_cash_secured_put_decisions(
-            runtime, repository, run_id, strategy_id, strategy_parameters
+            runtime, repository, run_id, strategy_id, strategy_parameters, calibrated_ready
         )
         decision_count += cash_secured_puts
         shadow_trades = _ensure_shadow_trades(runtime, run_id)
@@ -70,6 +77,7 @@ def refresh_options_radar(
             feature_version=FEATURE_VERSION,
             strategy_revision=STRATEGY_REVISION,
         )
+        models["option_calibration"] = calibration_profiles(runtime, strategy_id)
         publication_id = repository.publish(
             run_id,
             "options-radar",
@@ -78,6 +86,8 @@ def refresh_options_radar(
                 "feature_count": feature_count,
                 "decision_count": decision_count,
                 "cash_secured_puts": cash_secured_puts,
+                "empirical_long_options": empirical_long_options,
+                "call_debit_spreads": call_debit_spreads,
                 "shadow_trades": shadow_trades,
                 "raw_payload_duplicated": False,
                 "feature_version": FEATURE_VERSION,
@@ -99,6 +109,8 @@ def refresh_options_radar(
         "option_features": feature_count,
         "decisions": decision_count,
         "cash_secured_puts": cash_secured_puts,
+        "empirical_long_options": empirical_long_options,
+        "call_debit_spreads": call_debit_spreads,
         "shadow_trades": shadow_trades,
         "actionable": len(models["option_radar_opportunity"]),
     }
@@ -118,7 +130,7 @@ def _latest_snapshot_time(
     with runtime.read() as connection:
         row = connection.execute(
             """
-            SELECT max(snapshot.observed_at) AS observed_at
+            SELECT max(snapshot.observed_at) FILTER (WHERE snapshot.market_session = 'regular') AS observed_at
             FROM raw.option_snapshot snapshot
             WHERE (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND (
@@ -294,6 +306,8 @@ def _insert_decisions(
                            CASE WHEN quote.bid IS NULL OR quote.ask IS NULL THEN 'incomplete_market' END,
                            CASE WHEN quote.bid < 0 OR quote.ask <= 0 OR quote.bid > quote.ask THEN 'crossed_or_empty_market' END,
                            CASE WHEN quote.mid IS NULL OR quote.mid <= 0 THEN 'missing_premium' END,
+                           CASE WHEN snapshot.market_session <> 'regular' THEN 'not_regular_session' END,
+                           CASE WHEN quote.observed_at < analysis_run.input_cutoff - interval '90 minutes' THEN 'stale_quote' END,
                            CASE WHEN feature.spread_pct IS NULL THEN 'missing_spread' END,
                            CASE WHEN feature.spread_pct > %s THEN 'spread_too_wide' END,
                            CASE WHEN COALESCE(quote.open_interest, 0) < %s THEN 'open_interest_too_low' END,
@@ -311,6 +325,8 @@ def _insert_decisions(
                  AND quote.observed_at = feature.quote_observed_at
                 JOIN catalog.option_contract contract ON contract.id = feature.contract_id
                 JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+                JOIN raw.option_snapshot snapshot ON snapshot.id = feature.snapshot_id
+                JOIN analysis.run analysis_run ON analysis_run.id = feature.run_id
                 WHERE feature.run_id = %s
             ), ranked AS (
                 SELECT scored.*,
@@ -384,27 +400,32 @@ def _insert_decisions(
             """,
             [run_id],
         )
+        retain_reject_sample(connection, run_id)
         connection.execute(
             """
-            INSERT INTO analysis.reject_summary (run_id, strategy_revision_id, instrument_id, gate_code, reject_count)
-            SELECT decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker, count(*)
-            FROM analysis.decision decision CROSS JOIN unnest(decision.blockers) blocker
-            WHERE decision.run_id = %s AND decision.state = 'REJECTED'
-            GROUP BY decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker
-            """,
-            [run_id],
-        )
-        connection.execute(
-            """
+            WITH ranked AS (
+                SELECT id, row_number() OVER (
+                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, id
+                ) AS symbol_rank
+                FROM analysis.decision WHERE run_id = %s
+            )
             DELETE FROM analysis.option_decision option_decision
-            USING analysis.decision decision
-            WHERE option_decision.decision_id = decision.id
-              AND decision.run_id = %s AND decision.state = 'REJECTED'
+            USING ranked WHERE option_decision.decision_id = ranked.id
+              AND ranked.symbol_rank > 12
             """,
             [run_id],
         )
         connection.execute(
-            "DELETE FROM analysis.decision WHERE run_id = %s AND state = 'REJECTED'",
+            """
+            WITH ranked AS (
+                SELECT id, row_number() OVER (
+                    PARTITION BY instrument_id ORDER BY (state = 'REJECTED'), score DESC NULLS LAST, id
+                ) AS symbol_rank
+                FROM analysis.decision WHERE run_id = %s
+            )
+            DELETE FROM analysis.decision decision
+            USING ranked WHERE decision.id = ranked.id AND ranked.symbol_rank > 12
+            """,
             [run_id],
         )
         connection.execute(
@@ -423,7 +444,7 @@ def _insert_decisions(
             [run_id],
         )
         actionable = connection.execute(
-            "SELECT count(*) AS count FROM analysis.decision WHERE run_id = %s", [run_id]
+            "SELECT count(*) AS count FROM analysis.decision WHERE run_id = %s AND state <> 'REJECTED'", [run_id]
         ).fetchone()["count"]
     return int(actionable)
 
@@ -434,6 +455,7 @@ def _insert_cash_secured_put_decisions(
     run_id: Any,
     strategy_id: int,
     parameters: dict[str, Any],
+    calibrated_ready: set[str],
 ) -> int:
     """Create the shadow-only cash-secured-put lane from the same quote cutoff."""
 
@@ -464,6 +486,9 @@ def _insert_cash_secured_put_decisions(
                        SELECT 1 FROM raw.fundamental_observation fundamental
                        WHERE fundamental.instrument_id = instrument.id
                    ) AS has_fundamentals,
+                   (SELECT fundamental.values FROM raw.fundamental_observation fundamental
+                    WHERE fundamental.instrument_id = instrument.id
+                    ORDER BY fundamental.observed_at DESC, fundamental.id DESC LIMIT 1) AS quality_values,
                    (SELECT count(*) FROM raw.price_bar bar
                     WHERE bar.instrument_id = instrument.id AND bar.interval = '1d') AS history_observations,
                    EXISTS (
@@ -493,6 +518,9 @@ def _insert_cash_secured_put_decisions(
         hard_blockers: list[str] = []
         if not row.get("has_fundamentals") and str(row.get("asset_class") or "") != "etf":
             hard_blockers.append("missing_quality_evidence")
+        quality_values = dict(row.get("quality_values") or {})
+        if str(quality_values.get("quality_status") or "").lower() in {"bad", "rejected", "unsafe"}:
+            hard_blockers.append("company_quality_rejected")
         if int(row.get("history_observations") or 0) < 60:
             hard_blockers.append("insufficient_price_history")
         if row.get("earnings_before_expiry"):
@@ -579,7 +607,7 @@ def _insert_cash_secured_put_decisions(
             contract_id=int(row["contract_id"]),
             snapshot_id=int(row["snapshot_id"]),
             quote_observed_at=row["quote_observed_at"],
-            state="SETUP",
+            state="READY" if "cash_secured_put" in calibrated_ready else "SETUP",
             score=round(score, 2),
             rank=None,
             inputs={"structure": "cash_secured_put", "row": row, "evaluation": details},
@@ -644,8 +672,6 @@ def _ensure_shadow_trades(runtime: DatabaseRuntime, run_id: Any) -> int:
             [run_id],
         )
     return int(result.rowcount)
-
-
 
 def _float(value: Any) -> float | None:
     try:

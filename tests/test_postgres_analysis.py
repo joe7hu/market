@@ -35,7 +35,7 @@ def analysis_context(postgres_dsn: str):
         ingest_run,
         source_id="test-options",
         observed_at=observed_at,
-        market_session="premarket",
+        market_session="regular",
         universe="test",
         rows=[
             {
@@ -225,7 +225,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert result["actionable"] == 1
     opportunity = published_options_radar_rows(runtime, "option_radar_opportunity")[0]
     assert opportunity["symbol"] == "NVDA"
-    assert opportunity["state"] == "SETUP"
+    assert opportunity["state"] == "WATCH"
     assert opportunity["tier"] == "setup"
     assert opportunity["structure"] == "long_call"
     assert opportunity["contract_version"] == 2
@@ -238,7 +238,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert summary[0]["shortlist_count"] == 1
     assert summary[0]["shadow_only"] is True
     assert published_options_radar_rows(runtime, "option_radar_symbol_summary") == [
-        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 0, "setup_count": 1, "watch_count": 0, "reject_count": 0}
+        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 0, "setup_count": 0, "watch_count": 1, "reject_count": 0}
     ]
 
 
@@ -368,6 +368,51 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(analysi
     assert outcome["strike_touched"] is False
 
 
+def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    ingestion = IngestionRepository(runtime)
+    observed_at = datetime(2026, 7, 12, 15, 0, tzinfo=UTC)
+    run_id = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        run_id,
+        source_id="test-options",
+        observed_at=observed_at,
+        market_session="regular",
+        universe="test",
+        rows=[
+            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 175, "option_type": "call", "underlying_price": 180, "bid": 7.8, "ask": 8.0, "mid": 7.9, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58},
+            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 190, "option_type": "call", "underlying_price": 180, "bid": 3.8, "ask": 4.0, "mid": 3.9, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35},
+        ],
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO raw.price_bar
+                (instrument_id, source_id, ingest_run_id, interval, trading_date,
+                 observed_at, close, volume)
+            SELECT %s, 'test-options', %s, '1d', (%s::date - 100 + value),
+                   %s - make_interval(days => 100 - value), 100 + value * 0.8, 1000000
+            FROM generate_series(0, 100) value
+            """,
+            [analysis_context["instrument_id"], run_id, observed_at, observed_at],
+        )
+    ingestion.finish_run(run_id, "succeeded")
+
+    result = refresh_options_radar(runtime, source_id="test-options", code_version="spread-test")
+
+    assert result["empirical_long_options"] == 2
+    assert result["call_debit_spreads"] >= 1
+    spread = next(
+        row for row in published_options_radar_rows(runtime, "option_radar_opportunity")
+        if row["structure"] == "call_debit_spread"
+    )
+    assert spread["state"] == "SETUP"
+    assert spread["max_loss"] == pytest.approx(420)
+    assert spread["max_profit"] == pytest.approx(1080)
+    assert spread["expected_value"] > 0
+    assert spread["details"]["same_snapshot_legs"] is True
+
+
 def test_options_radar_applies_promoted_strategy_parameters(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     refresh_options_radar(runtime, source_id="test-options", code_version="base")
@@ -456,7 +501,7 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
             ingest_run,
             source_id="test-options",
             observed_at=observed_at,
-            market_session="premarket",
+                market_session="regular",
             universe="incremental",
             rows=[{
                 "symbol": symbol, "expiration": "2026-08-21", "strike": strike,
@@ -502,4 +547,4 @@ def test_options_api_reads_only_published_postgresql_generation(
     assert opportunities.json()["rows"][0]["symbol"] == "NVDA"
     assert snapshots.json()["rows"][0]["contract_id"] == str(analysis_context["contract_id"])
     assert features.json()["rows"][0]["raw"]["feature_version"] == "option-professional-v2"
-    assert candidates.json()["rows"][0]["state"] == "SETUP"
+    assert candidates.json()["rows"][0]["state"] == "WATCH"

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from statistics import mean, pstdev
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -215,7 +217,7 @@ class StrategyLearningRepository:
             dict(candidate["base_parameters"] or {}),
             dict(result.get("proposed_parameter_changes") or {}),
         )
-        backtest = _evaluation(rows, proposed_rows, minimum=20)
+        backtest = _evaluation(rows, proposed_rows, minimum=100, require_span_days=120)
         if capability["blocking_verdict"]:
             backtest = {
                 **backtest,
@@ -224,9 +226,12 @@ class StrategyLearningRepository:
             }
         forward_source = [row for row in rows if row["as_of"] >= proposal["created_at"]]
         forward_rows = [row for row in forward_source if _passes(row, dict(candidate["parameters"] or {}))]
-        forward = _evaluation(forward_source, forward_rows, minimum=20, require_span_days=30)
+        forward = _evaluation(forward_source, forward_rows, minimum=30, require_span_days=30)
         self._store_evaluation(connection, candidate_id, "backtest", backtest, rows)
         self._store_evaluation(connection, candidate_id, "forward_shadow_test", forward, forward_source)
+        if forward["verdict"] == "pass":
+            canary = _evaluation(forward_source, forward_rows, minimum=20, require_span_days=20)
+            self._store_evaluation(connection, candidate_id, "canary", canary, forward_source)
         status = _proposal_status(str(backtest["verdict"]), str(forward["verdict"]))
         result["status"] = status
         connection.execute(
@@ -269,7 +274,9 @@ class StrategyLearningRepository:
 _OUTCOME_QUERY = """
     SELECT decision.as_of, feature.modeled_delta, feature.dte, feature.spread_pct,
            feature.iv_percentile, feature.required_move_pct,
-           quote.open_interest, quote.volume, outcome.peak_return
+           quote.open_interest, quote.volume, outcome.peak_return,
+           outcome.current_return, outcome.max_drawdown,
+           option_decision.probability_profit, instrument.symbol AS ticker
     FROM analysis.option_outcome outcome
     JOIN analysis.decision decision ON decision.id = outcome.decision_id
     JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -282,6 +289,7 @@ _OUTCOME_QUERY = """
       ON quote.snapshot_id = option_decision.snapshot_id
      AND quote.contract_id = option_decision.contract_id
      AND quote.observed_at = option_decision.quote_observed_at
+    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
     WHERE outcome.peak_return IS NOT NULL
       AND outcome.maturity_state IN ('mature', 'expired')
       AND decision.strategy_revision_id = %s
@@ -375,12 +383,30 @@ def _evaluation(baseline: list[dict[str, Any]], proposed: list[dict[str, Any]], 
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     peaks = [float(row["peak_return"]) for row in rows]
     count = len(peaks)
+    returns = [float(row.get("current_return") if row.get("current_return") is not None else row["peak_return"]) for row in rows]
+    net_expectancy = mean(returns) if returns else 0.0
+    lower_bound = net_expectancy - 1.96 * pstdev(returns) / math.sqrt(len(returns)) if len(returns) > 1 else 0.0
+    calibration_rows = [row for row in rows if row.get("probability_profit") is not None]
+    calibration_error = mean(
+        abs(float(row["probability_profit"]) - float((row.get("current_return") or 0) > 0))
+        for row in calibration_rows
+    ) if calibration_rows else 0.0
+    ticker_counts: dict[str, int] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "")
+        ticker_counts[ticker] = ticker_counts.get(ticker, 0) + 1
     return {
         "sample_size": count,
         "hit_rate_2x": sum(value >= 1 for value in peaks) / count if count else 0.0,
         "hit_rate_5x": sum(value >= 4 for value in peaks) / count if count else 0.0,
         "hit_rate_10x": sum(value >= 9 for value in peaks) / count if count else 0.0,
         "false_positive_rate": sum(value <= 0 for value in peaks) / count if count else 0.0,
+        "precision_at_5": sum(value >= 4 for value in peaks) / count if count else 0.0,
+        "net_expectancy": net_expectancy,
+        "lower_95_expectancy": lower_bound,
+        "max_drawdown": min((float(row.get("max_drawdown") or 0) for row in rows), default=0.0),
+        "calibration_error": calibration_error,
+        "max_ticker_contribution": max(ticker_counts.values(), default=0) / count if count else 1.0,
     }
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "20260712_0005"
@@ -33,7 +34,7 @@ def upgrade() -> None:
     op.add_column("option_decision", sa.Column("tail_cvar", sa.Double(), nullable=True), schema="analysis")
     op.add_column("option_decision", sa.Column("data_confidence", sa.Double(), nullable=True), schema="analysis")
     op.add_column("option_decision", sa.Column("execution_confidence", sa.Double(), nullable=True), schema="analysis")
-    op.add_column("option_decision", sa.Column("details", sa.JSON(), nullable=False, server_default=sa.text("'{}'::jsonb")), schema="analysis")
+    op.add_column("option_decision", sa.Column("details", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")), schema="analysis")
 
     op.add_column("paper_order", sa.Column("structure", sa.Text(), nullable=True), schema="app")
     op.add_column("paper_order", sa.Column("reserved_collateral", sa.Numeric(24, 4), nullable=True), schema="app")

@@ -17,6 +17,46 @@ from investment_panel.database.migrations import HEAD_REVISION
 
 
 DIRECT_QUERIES: dict[str, str] = {
+    "options_radar_health": """
+        SELECT publication.id::text AS publication_id,
+               publication.published_at,
+               EXTRACT(EPOCH FROM (now() - publication.published_at)) / 60 AS publication_age_minutes,
+               active.strategy_key AS champion_strategy,
+               active.revision AS champion_revision,
+               challenger.strategy_key AS challenger_strategy,
+               challenger.status AS challenger_status,
+               COALESCE(outcomes.resolved_outcomes, 0) AS resolved_outcomes,
+               COALESCE(outcomes.outcome_coverage, 0) AS outcome_coverage,
+               COALESCE(canary.canary_sample, 0) AS canary_sample,
+               publication.validation->>'rollback_reason' AS rollback_reason
+        FROM (SELECT 1) anchor
+        LEFT JOIN LATERAL (
+            SELECT * FROM app.publication
+            WHERE scope = 'options-radar' AND status = 'published'
+            ORDER BY published_at DESC LIMIT 1
+        ) publication ON true
+        LEFT JOIN LATERAL (
+            SELECT strategy_key, revision FROM analysis.strategy_revision
+            WHERE authority_group = 'options-radar-core' AND status = 'active' LIMIT 1
+        ) active ON true
+        LEFT JOIN LATERAL (
+            SELECT strategy_key, status FROM analysis.strategy_revision
+            WHERE authority_group = 'options-radar-core'
+              AND status IN ('candidate', 'testing', 'approved')
+            ORDER BY created_at DESC LIMIT 1
+        ) challenger ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*) FILTER (WHERE outcome.maturity_state IN ('mature', 'expired')) AS resolved_outcomes,
+                   count(outcome.decision_id)::double precision / NULLIF(count(decision.id), 0) AS outcome_coverage
+            FROM analysis.decision decision
+            LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+            WHERE decision.kind = 'option'
+        ) outcomes ON true
+        LEFT JOIN LATERAL (
+            SELECT max((metrics->'proposed'->>'sample_size')::int) AS canary_sample
+            FROM analysis.strategy_evaluation WHERE evaluation_type = 'canary'
+        ) canary ON true
+    """,
     "discovered_universe": """
         SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
                instrument.asset_class, instrument.category,
@@ -556,7 +596,6 @@ WATCHLIST_COMPAT_MODELS = {
     )
 }
 
-
 AGENT_MODELS = {
     "agent_thesis_request", "agent_thesis", "agent_thesis_validation",
     "agent_postmortem_request", "agent_postmortem",
@@ -565,7 +604,7 @@ AGENT_MODELS = {
 PUBLICATION_MODELS = {
     "option_snapshot", "option_features", "option_radar_opportunity",
     "candidate_event", "option_radar_summary", "option_radar_symbol_summary",
-    "option_action_queue", "preopen_daily_brief",
+    "option_action_queue", "option_calibration", "preopen_daily_brief",
     "daily_brief", "portfolio_risk_cards", "review_actions",
     "decision_queue", "decision_readiness", "symbol_decision_snapshots",
     "opportunities_ranked", "candidates", "feed_signals",

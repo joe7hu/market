@@ -88,6 +88,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "trade_journal",
         "vol_surface_features",
         "conviction_calibration",
+        "option_calibration",
         "option_attribution",
         "missed_winner_event",
         "strategy_mutation_proposal",
@@ -252,6 +253,7 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_postmortem_request",
         "agent_postmortem",
         "paper_orders",
+        "options_radar_health",
     ),
     "settings": (),
 }

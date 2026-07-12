@@ -79,9 +79,13 @@ def publication_models(
             """,
             [run_id],
         ).fetchall()
+        account = connection.execute(
+            "SELECT net_liquidation, cash_balance, buying_power, observed_at "
+            "FROM raw.broker_account_snapshot ORDER BY observed_at DESC, id DESC LIMIT 1"
+        ).fetchone()
     all_rows = [dict(row) for row in rows]
-    _add_contract_fields(all_rows, feature_version, strategy_revision)
-    actionable = _shortlist(all_rows)
+    _add_contract_fields(all_rows, feature_version, strategy_revision, dict(account) if account else None)
+    actionable = _shortlist([row for row in all_rows if row.get("state") != "REJECTED"])
     symbol_summaries = _symbol_summaries(all_rows, [dict(row) for row in rejected])
     snapshots = _unique_contract_rows(all_rows, (
         "snapshot_time", "ticker", "underlying_price", "expiration", "strike",
@@ -108,7 +112,7 @@ def publication_models(
         "source": all_rows[0].get("data_source") if all_rows else None,
         "market_session": all_rows[0].get("market_session") if all_rows else None,
         "scanned_contracts": len(all_rows) + rejected_count,
-        "eligible_contracts": len(all_rows),
+        "eligible_contracts": sum(row.get("state") != "REJECTED" for row in all_rows),
         "shortlist_count": len(actionable),
         "cash_secured_put_count": sum(row.get("structure") == "cash_secured_put" for row in actionable),
         "ready_count": sum(row.get("state") == "READY" for row in actionable),
@@ -127,7 +131,13 @@ def publication_models(
     }
 
 
-def _add_contract_fields(rows: list[dict[str, Any]], feature_version: str, strategy_revision: int) -> None:
+def _add_contract_fields(
+    rows: list[dict[str, Any]],
+    feature_version: str,
+    strategy_revision: int,
+    account: dict[str, Any] | None,
+) -> None:
+    nav = float(account["net_liquidation"]) if account and account.get("net_liquidation") is not None else None
     for row in rows:
         row.update({
             "decision_id": row["candidate_event_id"],
@@ -141,6 +151,14 @@ def _add_contract_fields(rows: list[dict[str, Any]], feature_version: str, strat
         })
         if not row.get("structure"):
             row["structure"] = "long_call" if row.get("option_type") == "call" else "long_put"
+        risk_cap = 0.05 if row["structure"] == "cash_secured_put" else 0.0025
+        capital_at_risk = float(row.get("secured_cash") or row.get("max_loss") or 0)
+        risk_budget = nav * risk_cap if nav is not None else None
+        row["risk_budget"] = risk_budget
+        row["advisory_max_contracts"] = int(risk_budget // capital_at_risk) if risk_budget is not None and capital_at_risk > 0 else 0
+        row["portfolio_context_status"] = "complete" if nav is not None else "missing_nav"
+        if nav is None and "missing_portfolio_value" not in row["blockers"]:
+            row["blockers"] = [*row["blockers"], "missing_portfolio_value"]
 
 
 def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -157,7 +175,10 @@ def _symbol_summaries(rows: list[dict[str, Any]], rejected: list[dict[str, Any]]
     summaries: dict[str, dict[str, Any]] = {}
     for row in rows:
         summary = summaries.setdefault(row["symbol"], _empty_symbol_summary(row["symbol"]))
-        summary[f"{str(row['state']).lower()}_count"] += 1
+        state = str(row["state"]).lower()
+        if state == "rejected":
+            continue
+        summary[f"{state}_count"] += 1
     for row in rejected:
         summary = summaries.setdefault(row["symbol"], _empty_symbol_summary(row["symbol"]))
         summary["reject_count"] = int(row.get("reject_count") or 0)

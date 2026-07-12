@@ -154,9 +154,16 @@ class OutcomeRepository:
         from investment_panel.database.strategy_learning import StrategyLearningRepository
 
         evaluations = StrategyLearningRepository(self.runtime).refresh_evaluations()
+        from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+
+        governance = StrategyGovernanceRepository(self.runtime)
+        automatic_promotions = governance.automatic_promote_eligible()
+        automatic_rollbacks = governance.rollback_regressing_active()
         return {
             "status": "ok", "outcomes_updated": updated, "outcomes_matured": matured,
             "as_of": reference, **evaluations,
+            "automatic_promotions": automatic_promotions,
+            "automatic_rollbacks": automatic_rollbacks,
         }
 
 

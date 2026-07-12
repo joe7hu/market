@@ -137,6 +137,7 @@ export type KnownPanelTables = {
   shadowTradeMark: TablePayload;
   radarStateTransition: TablePayload;
   convictionCalibration: TablePayload;
+  optionCalibration: TablePayload;
   volSurfaceFeatures: TablePayload;
   tradeJournal: TablePayload;
   optionAttribution: TablePayload;

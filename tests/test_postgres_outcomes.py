@@ -90,7 +90,7 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         runtime.close()
 
 
-def test_rejected_contracts_are_aggregated_not_retained(migrated_postgres_dsn: str) -> None:
+def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     ingestion = IngestionRepository(runtime)
@@ -101,11 +101,11 @@ def test_rejected_contracts_are_aggregated_not_retained(migrated_postgres_dsn: s
             run_id,
             source_id="reject-test",
             observed_at=datetime(2026, 7, 11, 12, tzinfo=UTC),
-            market_session="premarket",
+            market_session="regular",
             universe="test",
             rows=[
                 _row(5.0, bid=4.8, ask=5.2, open_interest=1500),
-                {**_row(2.0, bid=0.1, ask=3.9, open_interest=1), "strike": 250, "contract_symbol": "NVDA260821C00250000"},
+                {**_row(0.15, bid=0.1, ask=0.2, open_interest=1), "strike": 250, "contract_symbol": "NVDA260821C00250000"},
             ],
         )
         ingestion.finish_run(run_id, "succeeded")
@@ -119,8 +119,8 @@ def test_rejected_contracts_are_aggregated_not_retained(migrated_postgres_dsn: s
                        (SELECT sum(reject_count) FROM analysis.reject_summary) AS rejects
                 """
             ).fetchone()
-        assert counts["decisions"] == 1
-        assert counts["features"] == 1
+        assert counts["decisions"] == 2
+        assert counts["features"] == 2
         assert counts["rejects"] >= 1
     finally:
         runtime.close()
@@ -132,7 +132,7 @@ def _snapshot(repository: IngestionRepository, observed_at: datetime, mid: float
         run_id,
         source_id="outcome-test",
         observed_at=observed_at,
-        market_session="premarket",
+        market_session="regular",
         universe="test",
         rows=[_row(mid, bid=mid - 0.2, ask=mid + 0.2, open_interest=1500)],
     )
