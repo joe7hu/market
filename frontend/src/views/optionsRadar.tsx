@@ -69,6 +69,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const snapshotLabel = textField(radarSummary, ["latest_snapshot_label"]);
   const displayStrategyVersion = textField(radarSummary, ["strategy_version"]);
   const latestStrategy = strategyVersions.find((row) => textField(row, ["strategy_version"]) === displayStrategyVersion) ?? strategyVersions[0];
+  const strategyLabel = professionalContract
+    ? `Professional v2 · revision ${numberField(radarSummary, ["strategy_revision"], 0).toLocaleString()}`
+    : displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy");
 
   async function handlePromoteProposal(proposalId: string) {
     if (!proposalId || promotingProposal) return;
@@ -95,7 +98,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             const badge = sessionBadge(marketSession, frozenToRth, latestSnapshot);
             return <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>;
           })()}
-          <StatusBadge tone="info">{displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy")}</StatusBadge>
+          <StatusBadge tone="info">{strategyLabel}</StatusBadge>
         </div>
       }
     >

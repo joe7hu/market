@@ -43,7 +43,7 @@ export function CandidateEventsTable({
   const [thesisFilter, setThesisFilter] = useState<ThesisFilter>("all");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
   const [familyFilter, setFamilyFilter] = useState<FamilyFilter>("all");
-  const [focus, setFocus] = useState<CandidateFocus>("top-per-ticker");
+  const [focus, setFocus] = useState<CandidateFocus>("top25");
   const [sort, setSort] = useState<CandidateSort>("state");
   const [page, setPage] = useState(0);
   const [expandedThesisEvent, setExpandedThesisEvent] = useState<string | null>(null);
@@ -162,7 +162,7 @@ export function CandidateEventsTable({
             setThesisFilter("all");
             setQualityFilter("all");
             setFamilyFilter("all");
-            setFocus("top-per-ticker");
+            setFocus("top25");
             setSort("state");
           }}>
             <ArrowDownUp className="size-4" />

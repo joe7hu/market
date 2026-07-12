@@ -28,6 +28,7 @@ export function summarizeReasons(reasons: Array<[string, number]>, empty: string
 export function impactSummary(row: RowRecord, fireCount = 0, setupCount = 0): string {
   if (isServiceRepair(row)) return "Do not interpret as a trade setup until the data contract is fixed.";
   if (stateOf(row) === "READY") return "Candidate is allowed into trade review because data, execution, evidence, and calibration gates are aligned.";
+  if (stateOf(row) === "SETUP") return "Research setup only. The expectancy is positive, but paper entry remains locked until its blockers and forward-calibration gate clear.";
   if (tierOf(row) === "Research") {
     const contractMix = fireCount ? `${fireCount.toLocaleString()} ready contract${fireCount === 1 ? "" : "s"}` : `${setupCount.toLocaleString()} setup contract${setupCount === 1 ? "" : "s"}`;
     return `${contractMix} exist, but the grouped ticker is still Research because strict evidence, thesis, regime, or blocker gates are not all clean.`;
