@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -48,7 +49,7 @@ class ActionRepository:
                     [instrument["id"]],
                 ).fetchone()
                 decision_id = decision["id"] if decision else None
-            if expected_contract_version is not None and expected_contract_version != 2:
+            if expected_contract_version is not None and expected_contract_version != 3:
                 raise ValueError("stale options-radar contract version")
             if idempotency_key:
                 prior = connection.execute(
@@ -93,7 +94,7 @@ class ActionRepository:
         expected_contract_version: int,
         limit_price: float | None,
     ) -> dict[str, Any]:
-        if expected_contract_version != 2:
+        if expected_contract_version != 3:
             raise ValueError("stale options-radar contract version")
         key = idempotency_key.strip()
         if not key:
@@ -102,6 +103,10 @@ class ActionRepository:
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 ["paper-order:options-radar"],
+            )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["publication:options-radar"],
             )
             prior = connection.execute(
                 "SELECT id, status, reserved_collateral FROM app.paper_order WHERE idempotency_key = %s",
@@ -119,6 +124,15 @@ class ActionRepository:
                 SELECT decision.instrument_id, decision.state, option_decision.structure,
                        option_decision.entry_price, option_decision.secured_cash,
                        option_decision.max_loss, option_decision.details,
+                       (
+                           SELECT item.payload FROM app.publication publication
+                           JOIN app.publication_item item ON item.publication_id = publication.id
+                           WHERE publication.scope = 'options-radar'
+                             AND publication.status = 'published'
+                             AND item.model_name = 'option_radar_opportunity'
+                             AND item.payload->>'decision_id' = decision.id::text
+                           LIMIT 1
+                       ) AS publication_payload,
                        EXISTS (
                            SELECT 1 FROM app.publication publication
                            JOIN app.publication_item item ON item.publication_id = publication.id
@@ -126,6 +140,7 @@ class ActionRepository:
                              AND publication.status = 'published'
                              AND item.model_name = 'option_radar_opportunity'
                              AND item.payload->>'decision_id' = decision.id::text
+                             AND item.payload->>'execution_ready' = 'true'
                        ) AS currently_published
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
@@ -136,7 +151,14 @@ class ActionRepository:
             if signal is None:
                 raise ValueError("options-radar signal not found")
             if not signal["currently_published"]:
-                raise ValueError("signal is stale and is no longer in the current publication")
+                raise ValueError("signal is stale or not execution-ready in the current publication")
+            if str(signal["state"]) != "READY":
+                raise ValueError("signal decision state is not READY")
+            from investment_panel.database.options_publication import _contract_readiness
+
+            publication_payload = dict(signal["publication_payload"] or {})
+            if _contract_readiness(publication_payload, datetime.now(UTC)) != "A":
+                raise ValueError("signal quote is no longer execution-grade")
             structure = str(signal["structure"] or "long_option")
             collateral = float(signal["secured_cash"] or 0)
             account = connection.execute(
@@ -165,7 +187,7 @@ class ActionRepository:
             quantity = 1
             side = "sell" if structure == "cash_secured_put" else "buy"
             policy = {
-                "contract_version": 2,
+                "contract_version": 3,
                 "structure": structure,
                 "fully_cash_secured": structure == "cash_secured_put",
                 "live_order_submission": False,

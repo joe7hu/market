@@ -583,6 +583,7 @@ AGENT_MODELS = {
 
 PUBLICATION_MODELS = {
     "option_snapshot", "option_features", "option_radar_opportunity",
+    "option_discovery_candidate", "option_gate_result",
     "candidate_event", "option_radar_summary", "option_radar_symbol_summary",
     "option_action_queue", "option_calibration", "preopen_daily_brief",
     "daily_brief", "portfolio_risk_cards", "review_actions",

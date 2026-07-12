@@ -75,7 +75,12 @@ def persist_collected_option_chains(
             item_count=len(flattened),
             instrument_count=len(collected.get("rows") or {}),
             failure_detail="; ".join(map(str, errors[:25])) or None,
-            summary={"quote_count": quote_count, "market_data": collected.get("market_data")},
+            summary={
+                "quote_count": quote_count,
+                "market_data": collected.get("market_data"),
+                "symbols_requested": list(collected.get("symbols_requested") or (collected.get("rows") or {}).keys()),
+                "errors": list(collected.get("errors") or [])[:25],
+            },
         )
     except Exception as exc:
         repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")

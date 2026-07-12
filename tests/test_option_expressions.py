@@ -30,6 +30,8 @@ def test_long_call_empirical_expectancy_uses_ask_and_round_trip_cost() -> None:
     assert result.expected_value == 180
     assert result.probability_profit == 0.5
     assert result.risk_adjusted_expectancy == pytest.approx(result.expected_value / result.max_loss)
+    assert result.conservative_expected_value <= result.optimistic_expected_value
+    assert result.lower_95_expected_value <= result.expected_value
 
 
 def test_long_put_targets_are_unattainable_when_stock_floor_blocks_them() -> None:
@@ -87,3 +89,18 @@ def test_call_debit_spread_rejects_crossed_or_non_debit_structure() -> None:
             historical_horizon_returns=(0.1,),
         )
     ) is None
+
+
+def test_lower_bound_uses_effective_sample_size_for_overlapping_returns() -> None:
+    independent = evaluate_long_option(LongOptionInputs(
+        option_type="call", spot=100, strike=100, ask=5, bid=4.5,
+        historical_horizon_returns=(-0.2, -0.1, 0.0, 0.1, 0.2, 0.3),
+        return_stride=1,
+    ))
+    overlapping = evaluate_long_option(LongOptionInputs(
+        option_type="call", spot=100, strike=100, ask=5, bid=4.5,
+        historical_horizon_returns=(-0.2, -0.1, 0.0, 0.1, 0.2, 0.3),
+        return_stride=3,
+    ))
+    assert independent is not None and overlapping is not None
+    assert overlapping.lower_95_expected_value < independent.lower_95_expected_value

@@ -121,6 +121,8 @@ export type KnownPanelTables = {
   optionRadarSummary: TablePayload;
   optionRadarSymbolSummary: TablePayload;
   optionRadarOpportunity: TablePayload;
+  optionDiscoveryCandidate: TablePayload;
+  optionGateResult: TablePayload;
   radarAlert: TablePayload;
   optionSnapshot: TablePayload;
   optionFeatures: TablePayload;

@@ -216,6 +216,8 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "option_radar_summary",
         "option_radar_symbol_summary",
         "option_radar_opportunity",
+        "option_discovery_candidate",
+        "option_gate_result",
         "radar_alert",
         "candidate_event",
         "candidate_event_mark",

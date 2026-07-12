@@ -46,12 +46,36 @@ class IngestionRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state
+                WITH source_signal AS (
+                    SELECT link.instrument_id, count(DISTINCT item.source_id) AS source_roots,
+                           max(item.observed_at) AS latest_signal_at
+                    FROM raw.content_item_instrument link
+                    JOIN raw.content_item item ON item.id = link.content_item_id
+                    WHERE item.observed_at >= now() - interval '30 days'
+                    GROUP BY link.instrument_id
+                ), upcoming_catalyst AS (
+                    SELECT instrument_id, min(starts_at) AS starts_at
+                    FROM app.catalyst
+                    WHERE starts_at >= now() AND starts_at < now() + interval '90 days'
+                    GROUP BY instrument_id
+                )
+                SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state,
+                       coalesce(source_signal.source_roots, 0) AS source_roots,
+                       upcoming_catalyst.starts_at
                 FROM catalog.instrument i
                 LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
                 LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
+                LEFT JOIN source_signal ON source_signal.instrument_id = i.id
+                LEFT JOIN upcoming_catalyst ON upcoming_catalyst.instrument_id = i.id
                 WHERE p.instrument_id IS NOT NULL OR w.instrument_id IS NOT NULL
-                ORDER BY (p.instrument_id IS NOT NULL) DESC, i.symbol
+                   OR (i.asset_class IN ('equity', 'etf') AND (
+                       source_signal.instrument_id IS NOT NULL OR upcoming_catalyst.instrument_id IS NOT NULL
+                   ))
+                ORDER BY (p.instrument_id IS NOT NULL) DESC,
+                         (w.watch_state IS NOT NULL AND w.watch_state <> 'excluded') DESC,
+                         (upcoming_catalyst.starts_at IS NOT NULL) DESC,
+                         coalesce(source_signal.source_roots, 0) DESC,
+                         source_signal.latest_signal_at DESC NULLS LAST, i.symbol
                 """
             ).fetchall()
         excluded = {
@@ -59,15 +83,34 @@ class IngestionRepository:
             for row in rows
             if row["watch_state"] == "excluded" and not row["is_owned"]
         }
-        output = [
-            str(row["symbol"])
-            for row in rows
-            if row["is_owned"] or row["watch_state"] != "excluded"
+        owned = [str(row["symbol"]) for row in rows if row["is_owned"]]
+        persisted_watchlist = [
+            str(row["symbol"]) for row in rows
+            if not row["is_owned"] and row["watch_state"] not in (None, "excluded")
         ]
+        opportunistic = [
+            str(row["symbol"]) for row in rows
+            if not row["is_owned"] and row["watch_state"] is None
+        ]
+        configured_symbols = [
+            str(item.get("symbol") or "").strip().upper()
+            for item in configured
+            if str(item.get("symbol") or "").strip().upper()
+            and str(item.get("symbol") or "").strip().upper() not in excluded
+        ]
+        output = list(dict.fromkeys(owned))
         seen = set(output)
-        for item in configured:
-            symbol = str(item.get("symbol") or "").strip().upper()
-            if symbol and symbol not in seen and symbol not in excluded:
+        buckets = [configured_symbols, persisted_watchlist]
+        for index in range(max((len(bucket) for bucket in buckets), default=0)):
+            for bucket in buckets:
+                if index >= len(bucket):
+                    continue
+                symbol = bucket[index]
+                if symbol not in seen:
+                    seen.add(symbol)
+                    output.append(symbol)
+        for symbol in opportunistic:
+            if symbol not in seen:
                 seen.add(symbol)
                 output.append(symbol)
         return output
@@ -389,7 +432,14 @@ class IngestionRepository:
                     INSERT INTO catalog.instrument (symbol, name, asset_class, category)
                     SELECT DISTINCT underlying_symbol, underlying_symbol, 'equity', 'option-underlying'
                     FROM option_quote_stage
-                    ON CONFLICT (symbol) DO NOTHING
+                    ON CONFLICT (symbol) DO UPDATE
+                    SET asset_class = CASE
+                            WHEN catalog.instrument.asset_class = 'unknown' THEN EXCLUDED.asset_class
+                            ELSE catalog.instrument.asset_class END,
+                        category = CASE
+                            WHEN catalog.instrument.category = 'option-discovery' THEN EXCLUDED.category
+                            ELSE catalog.instrument.category END,
+                        updated_at = now()
                     """
                 )
                 connection.execute(
@@ -410,10 +460,10 @@ class IngestionRepository:
                     """
                     INSERT INTO raw.option_quote
                         (observed_at, snapshot_id, contract_id, underlying_price, bid, ask, mid, last,
-                         volume, open_interest, provider_iv, provider_delta, provider_gamma,
+                         bid_size, ask_size, last_trade_at, captured_at, market_data_status, volume, open_interest, provider_iv, provider_delta, provider_gamma,
                          provider_theta, provider_vega)
                     SELECT %s, %s, c.id, s.underlying_price, s.bid, s.ask, s.mid, s.last,
-                           s.volume, s.open_interest, s.provider_iv, s.provider_delta,
+                           s.bid_size, s.ask_size, s.last_trade_at, s.captured_at, s.market_data_status, s.volume, s.open_interest, s.provider_iv, s.provider_delta,
                            s.provider_gamma, s.provider_theta, s.provider_vega
                     FROM option_quote_stage s
                     JOIN catalog.instrument i ON i.symbol = s.underlying_symbol
@@ -425,6 +475,10 @@ class IngestionRepository:
                     SET underlying_price = EXCLUDED.underlying_price,
                         bid = EXCLUDED.bid, ask = EXCLUDED.ask, mid = EXCLUDED.mid,
                         last = EXCLUDED.last, volume = EXCLUDED.volume,
+                        bid_size = EXCLUDED.bid_size, ask_size = EXCLUDED.ask_size,
+                        last_trade_at = EXCLUDED.last_trade_at,
+                        captured_at = EXCLUDED.captured_at,
+                        market_data_status = EXCLUDED.market_data_status,
                         open_interest = EXCLUDED.open_interest, provider_iv = EXCLUDED.provider_iv,
                         provider_delta = EXCLUDED.provider_delta, provider_gamma = EXCLUDED.provider_gamma,
                         provider_theta = EXCLUDED.provider_theta, provider_vega = EXCLUDED.provider_vega
@@ -445,7 +499,9 @@ def _stage_option_rows(connection: Any, rows: Sequence[dict[str, Any]]) -> None:
             underlying_symbol TEXT NOT NULL, expiration DATE NOT NULL, strike NUMERIC(20, 6) NOT NULL,
             option_type TEXT NOT NULL, multiplier INTEGER NOT NULL, provider_symbol TEXT,
             underlying_price DOUBLE PRECISION, bid DOUBLE PRECISION, ask DOUBLE PRECISION,
-            mid DOUBLE PRECISION, last DOUBLE PRECISION, volume BIGINT, open_interest BIGINT,
+            mid DOUBLE PRECISION, last DOUBLE PRECISION, bid_size BIGINT, ask_size BIGINT,
+            last_trade_at TIMESTAMPTZ, captured_at TIMESTAMPTZ, market_data_status TEXT,
+            volume BIGINT, open_interest BIGINT,
             provider_iv DOUBLE PRECISION, provider_delta DOUBLE PRECISION,
             provider_gamma DOUBLE PRECISION, provider_theta DOUBLE PRECISION,
             provider_vega DOUBLE PRECISION
@@ -488,6 +544,11 @@ def _normalize_option_row(row: dict[str, Any]) -> dict[str, Any]:
         "ask": _number(row.get("ask")),
         "mid": _number(row.get("mid")),
         "last": _number(row.get("last")),
+        "bid_size": _integer(row.get("bid_size")),
+        "ask_size": _integer(row.get("ask_size")),
+        "last_trade_at": _aware_datetime(row.get("last_trade_at")),
+        "captured_at": _aware_datetime(row.get("captured_at")),
+        "market_data_status": str(row.get("market_data_status") or row.get("market_data") or "").lower() or None,
         "volume": _integer(row.get("volume")),
         "open_interest": _integer(row.get("open_interest")),
         "provider_iv": _number(row.get("provider_iv") if "provider_iv" in row else row.get("iv")),

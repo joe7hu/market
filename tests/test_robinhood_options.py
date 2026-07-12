@@ -176,6 +176,9 @@ def test_option_quote_row_maps_robinhood_fields() -> None:
         "vega": "0.154123",
         "open_interest": 3652,
         "volume": 2046,
+        "bid_size": 133,
+        "ask_size": 98,
+        "venue_last_trade_time": "2026-06-12T19:59:59Z",
         "updated_at": "2026-06-12T19:59:59Z",
     }
 
@@ -191,6 +194,9 @@ def test_option_quote_row_maps_robinhood_fields() -> None:
     assert row["iv"] == 0.378862
     assert row["open_interest"] == 3652
     assert row["volume"] == 2046
+    assert row["bid_size"] == 133
+    assert row["ask_size"] == 98
+    assert row["last_trade_at"] == "2026-06-12T19:59:59Z"
     assert row["contract_symbol"] == "deba9035-f70b-4257-917c-7bbc9ef06097"
 
 

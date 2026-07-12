@@ -85,6 +85,8 @@ READ_MODELS: dict[str, ReadLoader] = {
     "option_radar_symbol_summary": lambda ctx: option_radar_symbol_summary(ctx.con, ctx.radar_context),
     "option_action_queue": lambda ctx: option_action_queue(ctx.con, ctx.radar_context),
     "option_radar_opportunity": lambda ctx: option_radar_opportunity(ctx.con, ctx.radar_context),
+    "option_discovery_candidate": lambda ctx: [],
+    "option_gate_result": lambda ctx: [],
     "option_snapshot": lambda ctx: option_snapshot(ctx.con),
     "option_features": lambda ctx: option_features(ctx.con),
     "stock_features": lambda ctx: stock_features(ctx.con),

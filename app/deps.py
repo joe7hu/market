@@ -74,7 +74,7 @@ _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key"
 _CONTEXT_LOCK = RLock()
 _LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
-    "options-radar": {"option_radar_summary", "option_radar_symbol_summary", "option_radar_opportunity", "candidate_event", "radar_alert"},
+    "options-radar": {"option_radar_summary", "option_radar_symbol_summary", "option_radar_opportunity", "option_discovery_candidate", "option_gate_result", "candidate_event", "radar_alert"},
 }
 
 
@@ -108,7 +108,7 @@ class PaperOrderInput(BaseModel):
 
 class OptionPaperEntryInput(BaseModel):
     idempotency_key: str
-    expected_contract_version: int = 2
+    expected_contract_version: int = 3
     limit_price: float | None = None
 
 

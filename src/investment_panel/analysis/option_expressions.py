@@ -15,6 +15,7 @@ class LongOptionInputs:
     bid: float
     historical_horizon_returns: tuple[float, ...]
     multiplier: int = 100
+    return_stride: int = 1
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class DebitSpreadInputs:
     short_bid: float
     historical_horizon_returns: tuple[float, ...]
     multiplier: int = 100
+    return_stride: int = 1
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,9 @@ class ExpressionResult:
     risk_adjusted_expectancy: float
     probability_profit: float
     scenario_count: int
+    conservative_expected_value: float
+    optimistic_expected_value: float
+    lower_95_expected_value: float
     required_2x_price: float | None = None
     required_5x_price: float | None = None
     required_10x_price: float | None = None
@@ -70,6 +75,7 @@ def evaluate_long_option(inputs: LongOptionInputs) -> ExpressionResult | None:
         intrinsic = max(0.0, terminal - inputs.strike) if inputs.option_type == "call" else max(0.0, inputs.strike - terminal)
         scenario_pnls.append(intrinsic * inputs.multiplier - entry - spread_cost)
     expected_value, expected_loss, probability_profit = _moments(scenario_pnls)
+    conservative, optimistic, lower_95 = _uncertainty(scenario_pnls, inputs.return_stride)
     targets, reasons = _long_targets(inputs)
     return ExpressionResult(
         entry_cost=round(entry, 2),
@@ -81,6 +87,9 @@ def evaluate_long_option(inputs: LongOptionInputs) -> ExpressionResult | None:
         risk_adjusted_expectancy=expected_value / entry,
         probability_profit=probability_profit,
         scenario_count=len(scenario_pnls),
+        conservative_expected_value=conservative,
+        optimistic_expected_value=optimistic,
+        lower_95_expected_value=lower_95,
         required_2x_price=targets[2],
         required_5x_price=targets[5],
         required_10x_price=targets[10],
@@ -111,6 +120,7 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
         payoff = min(width, max(0.0, terminal - inputs.long_strike))
         scenario_pnls.append(payoff * inputs.multiplier - entry)
     expected_value, expected_loss, probability_profit = _moments(scenario_pnls)
+    conservative, optimistic, lower_95 = _uncertainty(scenario_pnls, inputs.return_stride)
     targets: dict[int, float | None] = {}
     reasons: dict[str, str] = {}
     for multiple in (2, 5, 10):
@@ -130,6 +140,9 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
         risk_adjusted_expectancy=expected_value / entry,
         probability_profit=probability_profit,
         scenario_count=len(scenario_pnls),
+        conservative_expected_value=conservative,
+        optimistic_expected_value=optimistic,
+        lower_95_expected_value=lower_95,
         required_2x_price=targets[2],
         required_5x_price=targets[5],
         required_10x_price=targets[10],
@@ -143,6 +156,19 @@ def _moments(pnls: list[float]) -> tuple[float, float, float]:
     expected_loss = sum(losses) / len(pnls)
     probability_profit = sum(pnl > 0 for pnl in pnls) / len(pnls)
     return expected, expected_loss, probability_profit
+
+
+def _uncertainty(pnls: list[float], return_stride: int) -> tuple[float, float, float]:
+    """Return P10/P90 and a mean bound corrected for overlapping returns."""
+    ordered = sorted(pnls)
+    n = len(ordered)
+    conservative = ordered[max(0, math.ceil(0.10 * n) - 1)]
+    optimistic = ordered[min(n - 1, math.ceil(0.90 * n) - 1)]
+    expected = sum(ordered) / n
+    variance = sum((value - expected) ** 2 for value in ordered) / max(1, n - 1)
+    effective_n = max(1, math.ceil(n / max(1, return_stride)))
+    lower_95 = expected - 1.96 * math.sqrt(variance / effective_n)
+    return round(conservative, 2), round(optimistic, 2), round(lower_95, 2)
 
 
 def _long_targets(inputs: LongOptionInputs) -> tuple[dict[int, float | None], dict[str, str]]:

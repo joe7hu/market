@@ -156,6 +156,7 @@ def run(
         )
         return {**result, "status_path": str(status_path) if status_path else None}
 
+    collected["symbols_requested"] = list(target)
     persisted = persist_collected_option_chains(config, "robinhood", collected)
     stored = int(persisted["contract_count"])
 

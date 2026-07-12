@@ -1,12 +1,8 @@
 """Fast PostgreSQL-native option feature, decision, and publication pipeline."""
-
 from __future__ import annotations
-
 from datetime import datetime
 from typing import Any, Sequence
-
 from psycopg.types.json import Jsonb
-
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
@@ -14,15 +10,14 @@ from investment_panel.database.options_publication import publication_models, pu
 from investment_panel.database.options_expressions import enrich_long_option_expectancy, insert_call_debit_spreads
 from investment_panel.database.options_calibration import calibration_profiles, ready_structures
 from investment_panel.database.options_retention import retain_reject_sample
+from investment_panel.database.options_discovery import materialize_discovery_foundation
 from investment_panel.analysis.cash_secured_put import CashSecuredPutInputs, evaluate_cash_secured_put
-
-
 FEATURE_VERSION = "option-professional-v2"
 STRATEGY_KEY = "options-radar-core"
-STRATEGY_REVISION = 2
+STRATEGY_REVISION = 3
 DEFAULT_PARAMETERS = {
     "feature_version": FEATURE_VERSION,
-    "contract_version": 2,
+    "contract_version": 3,
     "shadow_only": True,
     "score_weights": {"liquidity": 0.65, "convexity": 0.35},
     "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 2, "max_dte": 900},
@@ -71,6 +66,10 @@ def refresh_options_radar(
         )
         decision_count += cash_secured_puts
         shadow_trades = _ensure_shadow_trades(runtime, run_id)
+        discovery = materialize_discovery_foundation(
+            runtime, run_id, cutoff=cutoff, contracts_evaluated=feature_count,
+            source_id=source_id, requested_scope=symbols,
+        )
         models = publication_models(
             runtime,
             run_id,
@@ -90,6 +89,7 @@ def refresh_options_radar(
                 "empirical_long_options": empirical_long_options,
                 "call_debit_spreads": call_debit_spreads,
                 "shadow_trades": shadow_trades,
+                "discovery": discovery,
                 "raw_payload_duplicated": False,
                 "feature_version": FEATURE_VERSION,
             },
@@ -113,6 +113,7 @@ def refresh_options_radar(
         "empirical_long_options": empirical_long_options,
         "call_debit_spreads": call_debit_spreads,
         "shadow_trades": shadow_trades,
+        "discovery": discovery,
         "actionable": len(models["option_radar_opportunity"]),
     }
 
@@ -133,9 +134,12 @@ def _latest_snapshot_time(
             """
             SELECT max(snapshot.observed_at) FILTER (WHERE snapshot.market_session = 'regular') AS observed_at
             FROM raw.option_snapshot snapshot
+            JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
             WHERE (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND (
-                  cardinality(%s::text[]) = 0 OR EXISTS (
+                  cardinality(%s::text[]) = 0
+                  OR COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb) ?| %s::text[]
+                  OR EXISTS (
                       SELECT 1 FROM raw.option_quote quote
                       JOIN catalog.option_contract contract ON contract.id = quote.contract_id
                       JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
@@ -143,7 +147,7 @@ def _latest_snapshot_time(
                   )
               )
             """,
-            [source_id, source_id, normalized, normalized],
+            [source_id, source_id, normalized, normalized, normalized],
         ).fetchone()
     return row["observed_at"] if row else None
 
@@ -156,10 +160,8 @@ def _insert_features(
     source_id: str | None,
     symbols: Sequence[str] | None,
 ) -> int:
-    # A publication is a complete replacement. ``symbols`` only scopes the
-    # freshness cutoff that triggered this run; rebuilding must include every
-    # symbol's latest snapshot so an incremental provider batch cannot erase
-    # unchanged radar rows.
+    # Symbols only scope the triggering cutoff; replacement publications retain
+    # each other symbol's latest valid snapshot.
     del symbols
     with runtime.transaction(JOB_PROFILE) as connection:
         result = connection.execute(
@@ -173,6 +175,21 @@ def _insert_features(
                 JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
                 WHERE snapshot.observed_at <= %s
                   AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM raw.option_snapshot attempted
+                      JOIN ingest.run attempted_run ON attempted_run.id = attempted.ingest_run_id
+                      WHERE attempted.observed_at = %s
+                        AND (CAST(%s AS text) IS NULL OR attempted.source_id = %s)
+                        AND COALESCE(attempted_run.summary->'symbols_requested', '[]'::jsonb) ? instrument.symbol
+                        AND NOT EXISTS (
+                            SELECT 1 FROM raw.option_quote attempted_quote
+                            JOIN catalog.option_contract attempted_contract
+                              ON attempted_contract.id = attempted_quote.contract_id
+                            WHERE attempted_quote.snapshot_id = attempted.id
+                              AND attempted_contract.underlying_instrument_id = instrument.id
+                        )
+                  )
                 ORDER BY instrument.id, snapshot.observed_at DESC, snapshot.id DESC
             )
             INSERT INTO analysis.option_feature (
@@ -220,7 +237,7 @@ def _insert_features(
               ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
             ON CONFLICT (run_id, snapshot_id, contract_id, feature_version) DO NOTHING
             """,
-            [cutoff, source_id, source_id, run_id, FEATURE_VERSION],
+            [cutoff, source_id, source_id, cutoff, source_id, source_id, run_id, FEATURE_VERSION],
         )
     return int(result.rowcount)
 
@@ -239,7 +256,7 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
             "WHERE authority_group = %s AND status = 'active' FOR UPDATE",
             [STRATEGY_KEY],
         ).fetchall()
-        professional = [row for row in current if int(dict(row["parameters"] or {}).get("contract_version") or 0) >= 2]
+        professional = [row for row in current if int(dict(row["parameters"] or {}).get("contract_version") or 0) >= 3]
         external_active = [row for row in current if str(row["strategy_key"]) != STRATEGY_KEY]
         if not professional and not external_active:
             connection.execute(
@@ -254,7 +271,9 @@ def _active_strategy(runtime: DatabaseRuntime) -> tuple[int, dict[str, Any]]:
                     (strategy_key, revision, name, status, parameters, authority_group, promoted_at)
                 VALUES (%s, %s, 'Professional options radar', 'active', %s, %s, now())
                 ON CONFLICT (strategy_key, revision) DO UPDATE
-                SET status = 'active', promoted_at = COALESCE(analysis.strategy_revision.promoted_at, now())
+                SET name = EXCLUDED.name, status = 'active', parameters = EXCLUDED.parameters,
+                    authority_group = EXCLUDED.authority_group,
+                    promoted_at = COALESCE(analysis.strategy_revision.promoted_at, now())
                 """,
                 [STRATEGY_KEY, STRATEGY_REVISION, Jsonb(DEFAULT_PARAMETERS), STRATEGY_KEY],
             )
@@ -385,7 +404,7 @@ def _insert_decisions(
                    CASE WHEN quote.provider_iv IS NOT NULL AND quote.provider_delta IS NOT NULL THEN 0.8 ELSE 0.5 END,
                    GREATEST(0, LEAST(1, 1 - COALESCE(feature.spread_pct, 1))),
                    jsonb_build_object(
-                       'contract_version', 2,
+                       'contract_version', 3,
                        'feature_version', feature.feature_version,
                        'probability_semantics', 'provisional_uncalibrated',
                        'provider_local_quote', true
@@ -582,7 +601,7 @@ def _insert_cash_secured_put_decisions(
         )
         details = {
             **evaluation.as_dict(),
-            "contract_version": 2,
+            "contract_version": 3,
             "feature_version": FEATURE_VERSION,
             "probability_semantics": "provisional_uncalibrated",
             "provider_local_quote": True,

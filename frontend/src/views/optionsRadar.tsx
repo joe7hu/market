@@ -8,6 +8,7 @@ import {latestBy, latestValidationBy } from "./optionsRadarData";
 import {tabButtonClass, rows, rowsForDisplayTime, uniqueText, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
 import {SignalBriefPanel } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
+import {DiscoveryQueue} from "./optionsRadar/discoveryQueue";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
@@ -36,9 +37,10 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateAttributions = rows(data.candidateEventAttribution);
   const cohortResults = rows(data.strategyCohortResult);
   const opportunityRows = rows(data.optionRadarOpportunity);
+  const discoveryRows = rows(data.optionDiscoveryCandidate);
   const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
-  const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 2;
+  const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 3;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
   const marketSession = textField(radarSummary, ["market_session"]);
   const frozenToRth = textField(radarSummary, ["frozen_to_last_rth"]) === "Yes";
@@ -61,7 +63,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestAgentThesisByTicker = useMemo(() => latestBy(agentTheses, "ticker", "created_at"), [agentTheses]);
 
   const opportunityTickerCount = numberField(radarSummary, ["shortlist_count", "opportunity_tickers_current"], opportunityTickers.length);
-  const scannedTickerCount = numberField(radarSummary, ["scanned_contracts", "scanned_tickers_current"], 0);
+  const symbolsConsidered = numberField(radarSummary, ["symbols_considered"], 0);
+  const symbolsWithChains = numberField(radarSummary, ["symbols_with_chains"], 0);
+  const contractsEvaluated = numberField(radarSummary, ["contracts_evaluated", "scanned_contracts"], 0);
   const fireCount = numberField(radarSummary, ["ready_count", "fire_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "READY"));
   const setupCount = numberField(radarSummary, ["setup_count", "setup_rows_current"], countWhere(opportunityCandidates, (row) => stateOf(row) === "SETUP"));
 
@@ -107,13 +111,16 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         activeAlertCount={radarAlerts.length}
         fireCount={fireCount}
         setupCount={setupCount}
-        scannedTickerCount={scannedTickerCount}
+        symbolsConsidered={symbolsConsidered}
+        symbolsWithChains={symbolsWithChains}
+        contractsEvaluated={contractsEvaluated}
         opportunityTickerCount={opportunityTickerCount}
         latestSnapshot={latestSnapshot}
         snapshotLabel={snapshotLabel}
         latestCandidateTime={latestCandidateTime}
         onOpenTicker={onOpenTicker}
       />
+      <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />
       <div className="flex w-fit rounded-md border border-border bg-muted p-1">
         <button type="button" className={tabButtonClass(activeTab === "signals")} onClick={() => setActiveTab("signals")}>Signals</button>
         <button type="button" className={tabButtonClass(activeTab === "learning")} onClick={() => setActiveTab("learning")}>Learning</button>

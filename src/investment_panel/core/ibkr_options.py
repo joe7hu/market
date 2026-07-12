@@ -224,8 +224,10 @@ def parse_option_ticks(
     Prefers live ticks, falls back to delayed.
     """
 
-    bid = _first_positive(ticks, ("price_1", "price_66"))
-    ask = _first_positive(ticks, ("price_2", "price_67"))
+    live_bid, delayed_bid = _first_positive(ticks, ("price_1",)), _first_positive(ticks, ("price_66",))
+    live_ask, delayed_ask = _first_positive(ticks, ("price_2",)), _first_positive(ticks, ("price_67",))
+    bid = live_bid or delayed_bid
+    ask = live_ask or delayed_ask
     last = _first_positive(ticks, ("price_4", "price_68"))
     close = _first_positive(ticks, ("price_9", "price_75"))
     mid = (bid + ask) / 2 if bid is not None and ask is not None else (last or close)
@@ -239,6 +241,12 @@ def parse_option_ticks(
     oi_key = "size_27" if option_type == "call" else "size_28"
     open_interest = _non_negative_int(ticks, (oi_key, "gen_101", "size_101"))
     volume = _non_negative_int(ticks, ("size_8", "size_74", "gen_100", "size_100"))
+    live_bid_size, delayed_bid_size = _non_negative_int(ticks, ("size_0",)), _non_negative_int(ticks, ("size_69",))
+    live_ask_size, delayed_ask_size = _non_negative_int(ticks, ("size_3",)), _non_negative_int(ticks, ("size_70",))
+    bid_size = live_bid_size if live_bid_size is not None else delayed_bid_size
+    ask_size = live_ask_size if live_ask_size is not None else delayed_ask_size
+    live_tick = all(value is not None for value in (live_bid, live_ask, live_bid_size, live_ask_size))
+    delayed_tick = all(value is not None for value in (delayed_bid, delayed_ask, delayed_bid_size, delayed_ask_size))
 
     return {
         "option_type": option_type,
@@ -254,6 +262,9 @@ def parse_option_ticks(
         "theta": _clean(theta),
         "open_interest": open_interest,
         "volume": volume,
+        "bid_size": bid_size,
+        "ask_size": ask_size,
+        "market_data_status": "live" if live_tick else "delayed" if delayed_tick else "unknown",
     }
 
 
@@ -284,8 +295,12 @@ def chain_row(symbol: str, expiry: str, strike: float, parsed: dict[str, Any], *
         "theta": parsed["theta"],
         "open_interest": parsed["open_interest"],
         "volume": parsed["volume"],
+        "bid_size": parsed["bid_size"],
+        "ask_size": parsed["ask_size"],
         "contract_symbol": f"{symbol}{expiry}{parsed['option_type'][0].upper()}{strike}",
-        "market_data": "delayed" if delayed else "live",
+        "market_data": parsed["market_data_status"] if parsed["market_data_status"] != "unknown" else ("delayed" if delayed else "live"),
+        "market_data_status": parsed["market_data_status"],
+        "captured_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

@@ -318,3 +318,31 @@ def test_option_universe_honors_persisted_exclusion_over_config(repository: Inge
 
     assert "PLTR" not in universe
     assert "NVDA" in universe
+
+
+def test_option_universe_adds_upcoming_catalyst_discovery_candidate(repository: IngestionRepository) -> None:
+    with repository.runtime.transaction() as connection:
+        instrument = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+            "VALUES ('RXRX', 'Recursion', 'equity') RETURNING id"
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO app.catalyst (instrument_id, starts_at, title) "
+            "VALUES (%s, now() + interval '10 days', 'Clinical readout')",
+            [instrument["id"]],
+        )
+        crypto = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+            "VALUES ('BTC-USD', 'Bitcoin', 'crypto') RETURNING id"
+        ).fetchone()
+        connection.execute(
+            "INSERT INTO app.catalyst (instrument_id, starts_at, title) "
+            "VALUES (%s, now() + interval '5 days', 'Protocol event')",
+            [crypto["id"]],
+        )
+
+    assert "RXRX" in repository.option_universe([])
+    prioritized = repository.option_universe([{"symbol": "NVDA"}])
+    assert prioritized[0] == "NVDA"
+    assert "RXRX" in prioritized
+    assert "BTC-USD" not in prioritized

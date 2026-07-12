@@ -155,6 +155,15 @@ def test_parse_option_ticks_uses_put_open_interest_tick() -> None:
     assert parsed["delta"] is None  # no greeks present
 
 
+def test_parse_option_ticks_preserves_live_and_delayed_depth() -> None:
+    live = parse_option_ticks({"price_1": 1.0, "price_2": 1.2, "size_0": 11, "size_3": 17}, {}, option_type="call")
+    delayed = parse_option_ticks({"price_66": 0.9, "price_67": 1.3, "size_69": 7, "size_70": 9}, {}, option_type="call")
+    assert (live["bid_size"], live["ask_size"]) == (11, 17)
+    assert (delayed["bid_size"], delayed["ask_size"]) == (7, 9)
+    assert live["market_data_status"] == "live"
+    assert delayed["market_data_status"] == "delayed"
+
+
 def test_parse_option_ticks_prefers_live_over_delayed_greeks() -> None:
     greeks = {
         "opt_13": [0, 0.2, 0.5, 5.0, 0.0, 0.01, 0.1, -0.05, 100.0],  # live model
@@ -165,13 +174,15 @@ def test_parse_option_ticks_prefers_live_over_delayed_greeks() -> None:
 
 
 def test_chain_row_is_store_options_chain_compatible() -> None:
-    parsed = parse_option_ticks({"size_27": 966, "price_75": 9.66}, {}, option_type="call")
+    parsed = parse_option_ticks({"size_27": 966, "price_1": 9.5, "price_2": 9.8, "size_0": 12, "size_3": 15}, {}, option_type="call")
     row = chain_row("SPY", "20260630", 742.0, parsed, delayed=True)
     assert row["expiry"] == "2026-06-30"  # ISO for store_options_chain
     assert row["type"] == "call"
     assert row["strike"] == 742.0
     assert row["open_interest"] == 966
-    assert row["market_data"] == "delayed"
+    assert row["bid_size"] == 12
+    assert row["ask_size"] == 15
+    assert row["market_data"] == "live"
 
 
 def test_ibkr_chain_rows_flow_into_option_snapshots(tmp_path: Path) -> None:

@@ -19,7 +19,9 @@ export function SignalBriefPanel({
   activeAlertCount,
   fireCount,
   setupCount,
-  scannedTickerCount,
+  symbolsConsidered,
+  symbolsWithChains,
+  contractsEvaluated,
   opportunityTickerCount,
   latestSnapshot,
   snapshotLabel,
@@ -30,7 +32,9 @@ export function SignalBriefPanel({
   activeAlertCount: number;
   fireCount: number;
   setupCount: number;
-  scannedTickerCount: number;
+  symbolsConsidered: number;
+  symbolsWithChains: number;
+  contractsEvaluated: number;
   opportunityTickerCount: number;
   latestSnapshot: string;
   snapshotLabel: string;
@@ -43,8 +47,10 @@ export function SignalBriefPanel({
     : "No option data";
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
+  const hasLowerBound = Boolean(strongest) && Number.isFinite(numberField(strongest, ["lower_95_expected_value"], Number.NaN));
   const repairRows = rows.filter(isServiceRepair);
-  const exceptionalRows = rows.filter((row) => stateOf(row) === "READY");
+  const exceptionalRows = rows.filter((row) => stateOf(row) === "READY" && row["execution_ready"] === true);
+  const blockedReadyRows = rows.filter((row) => stateOf(row) === "READY" && row["execution_ready"] !== true);
   const researchRows = rows.filter((row) => tierOf(row) === "Research");
   const topBlockers = commonBlockers(rows).slice(0, 3);
   const dataFailures = commonDataContractFailures(repairRows).slice(0, 3);
@@ -66,7 +72,9 @@ export function SignalBriefPanel({
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge tone={decisionTone}>{decisionLabel}</StatusBadge>
             {fireGap ? <StatusBadge tone="warn">{fireCount.toLocaleString()} ready contract{fireCount === 1 ? "" : "s"} awaiting grouped evidence</StatusBadge> : null}
-            <StatusBadge tone={scannedTickerCount >= 20 ? "good" : scannedTickerCount ? "warn" : "muted"}>{`${scannedTickerCount.toLocaleString()} contracts scanned / ${opportunityTickerCount.toLocaleString()} shortlisted`}</StatusBadge>
+            {blockedReadyRows.length ? <StatusBadge tone="warn">{blockedReadyRows.length} READY but execution-blocked</StatusBadge> : null}
+            <StatusBadge tone={symbolsWithChains >= 20 ? "good" : symbolsWithChains ? "warn" : "muted"}>{`${symbolsConsidered.toLocaleString()} symbols considered · ${symbolsWithChains.toLocaleString()} chains · ${contractsEvaluated.toLocaleString()} contracts evaluated`}</StatusBadge>
+            <StatusBadge tone={opportunityTickerCount ? "info" : "muted"}>{opportunityTickerCount ? `${opportunityTickerCount.toLocaleString()} shortlisted` : "NONE MEETS THE STANDARD"}</StatusBadge>
             {activeAlertCount ? <StatusBadge tone="warn">{activeAlertCount.toLocaleString()} active alert{activeAlertCount === 1 ? "" : "s"}</StatusBadge> : null}
             <StatusBadge tone="muted">{latestCandidateTime ? `Candidate run ${formatDate(latestCandidateTime)}` : "No candidate run"}</StatusBadge>
             <StatusBadge tone={offHours ? "warn" : "muted"}>{snapshotText}</StatusBadge>
@@ -81,8 +89,8 @@ export function SignalBriefPanel({
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <MetricBox label="Rank Score" value={formatScore(numberField(strongest, ["rank_score", "score"], Number.NaN))} />
-                <MetricBox label="Profit Probability" value={formatRatio(numberField(strongest, ["probability_profit"], Number.NaN))} />
-                <MetricBox label="Net EV" value={moneyField(strongest, ["expected_value"])} />
+                <MetricBox label="Profit Probability (Provisional)" value={formatRatio(numberField(strongest, ["probability_profit"], Number.NaN))} />
+                <MetricBox label={hasLowerBound ? "Lower 95% EV" : "Net EV (Provisional)"} value={moneyField(strongest, hasLowerBound ? ["lower_95_expected_value"] : ["expected_value"])} />
                 <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Minimum Credit" : "Maximum Entry"} value={moneyField(strongest, ["suggested_limit", "entry_price", "premium_mid"])} />
               </div>
             </div>

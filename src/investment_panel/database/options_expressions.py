@@ -57,6 +57,7 @@ def enrich_long_option_expectancy(
                     bid=float(row["bid"] or 0),
                     multiplier=int(row["multiplier"] or 100),
                     historical_horizon_returns=tuple(returns),
+                    return_stride=max(1, min(int(row["dte"] or 0), 60)),
                 )
             ) if len(returns) >= 20 else None
             if result is None:
@@ -171,6 +172,7 @@ def insert_call_debit_spreads(
                         short_bid=float(short_leg["bid"] or 0),
                         multiplier=int(long_leg["multiplier"] or 100),
                         historical_horizon_returns=tuple(horizon_returns),
+                        return_stride=max(1, min(int(chain[0]["dte"] or 0), 60)),
                     )
                 )
                 if result and result.expected_value > 0:

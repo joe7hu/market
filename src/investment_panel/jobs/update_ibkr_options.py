@@ -85,6 +85,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
             {"source": "market-mini", "job": "update_ibkr_options", "origin": "autonomous_collector", **result},
         )
         return {**result, "status_path": str(status_path) if status_path else None}
+    collected["symbols_requested"] = list(target)
     persisted = persist_collected_option_chains(config, "ibkr", collected)
     stored = int(persisted["contract_count"])
     result = {

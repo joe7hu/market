@@ -365,7 +365,7 @@ class AnalysisRepository:
                 [decision_id],
             ).fetchall()
         result = _jsonable(dict(row))
-        result["contract_version"] = 2
+        result["contract_version"] = 3
         result["evidence"] = [_jsonable(dict(item)) for item in evidence]
         result["alternatives"] = [_jsonable(dict(item)) for item in alternatives]
         result["no_trade_baseline"] = {"structure": "no_trade", "expected_value": 0.0, "max_loss": 0.0}

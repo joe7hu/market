@@ -30,9 +30,77 @@ def test_no_regular_snapshot_replaces_legacy_contract_with_explicit_empty_public
         summary = published_options_radar_rows(runtime, "option_radar_summary")
         assert result["reason"] == "legacy_publication_replaced"
         assert len(summary) == 1
-        assert summary[0]["contract_version"] == 2
+        assert summary[0]["contract_version"] == 3
         assert summary[0]["degraded_reason"] == "no_complete_regular_session_publication"
         assert published_options_radar_rows(runtime, "option_radar_opportunity") == []
+    finally:
+        runtime.close()
+
+
+def test_zero_contract_snapshot_publishes_requested_symbol_discovery(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    try:
+        ingestion.register_source("test-options", name="Test", family="test", kind="option_chain")
+        old_run = ingestion.start_run("test-options", "option_quotes")
+        ingestion.store_option_snapshot(
+            old_run, source_id="test-options",
+            observed_at=datetime(2026, 7, 10, 12, 15, tzinfo=UTC),
+            market_session="regular", universe="test",
+            rows=[{
+                "symbol": "RXRX", "expiration": "2026-08-21", "strike": 10,
+                "option_type": "call", "bid": 1.0, "ask": 1.2, "mid": 1.1,
+            }],
+        )
+        ingestion.finish_run(old_run, "succeeded", summary={"symbols_requested": ["RXRX"]})
+        ingest_run = ingestion.start_run("test-options", "option_quotes")
+        ingestion.store_option_snapshot(
+            ingest_run,
+            source_id="test-options",
+            observed_at=datetime(2026, 7, 11, 12, 15, tzinfo=UTC),
+            market_session="regular",
+            universe="test",
+            rows=[],
+        )
+        ingestion.finish_run(
+            ingest_run, "partial",
+            summary={"symbols_requested": ["RXRX"], "errors": ["RXRX: no usable chain"]},
+        )
+
+        result = refresh_options_radar(
+            runtime, source_id="test-options", symbols=["RXRX"], code_version="zero-chain-test"
+        )
+
+        assert result["status"] == "ok"
+        assert result["option_features"] == 0
+        summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
+        assert datetime.fromisoformat(summary["publication_cutoff"]).astimezone(UTC) == datetime(2026, 7, 11, 12, 15, tzinfo=UTC)
+        assert summary["symbols_considered"] == 1
+        assert summary["symbols_with_chains"] == 0
+        assert summary["source"] == "test-options"
+        assert summary["market_session"] == "regular"
+        discovery = published_options_radar_rows(runtime, "option_discovery_candidate")
+        assert discovery[0]["ticker"] == "RXRX"
+        assert discovery[0]["stage"] == "DISCOVERED"
+        assert discovery[0]["data_readiness"] == "D"
+
+        next_run = ingestion.start_run("test-options", "option_quotes")
+        ingestion.store_option_snapshot(
+            next_run, source_id="test-options",
+            observed_at=datetime(2026, 7, 12, 12, 15, tzinfo=UTC),
+            market_session="regular", universe="test",
+            rows=[{
+                "symbol": "RXRX", "expiration": "2026-08-21", "strike": 10,
+                "option_type": "call", "bid": 1.0, "ask": 1.2, "mid": 1.1,
+            }],
+        )
+        with runtime.read() as connection:
+            identity = connection.execute(
+                "SELECT asset_class, category FROM catalog.instrument WHERE symbol = 'RXRX'"
+            ).fetchone()
+        assert (identity["asset_class"], identity["category"]) == ("equity", "option-underlying")
     finally:
         runtime.close()
 
@@ -232,6 +300,12 @@ def test_concurrent_publications_serialize_to_one_visible_snapshot(analysis_cont
 
 def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_models(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE ingest.run SET summary = %s WHERE id = "
+            "(SELECT ingest_run_id FROM raw.option_snapshot WHERE id = %s)",
+            [Jsonb({"symbols_requested": ["NVDA", "RXRX"], "errors": ["RXRX: no chain"]}), analysis_context["snapshot_id"]],
+        )
 
     result = refresh_options_radar(runtime, source_id="test-options", code_version="test-engine")
 
@@ -244,7 +318,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert opportunity["state"] == "WATCH"
     assert opportunity["tier"] == "setup"
     assert opportunity["structure"] == "long_call"
-    assert opportunity["contract_version"] == 2
+    assert opportunity["contract_version"] == 3
     assert opportunity["quality_status"] == "complete"
     assert opportunity["spread_pct"] == pytest.approx(0.08)
     assert opportunity["raw"]["feature_version"] == "option-professional-v2"
@@ -252,6 +326,24 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert len(summary) == 1
     assert summary[0]["stable_key"] == "global"
     assert summary[0]["scanned_contracts"] == result["option_features"]
+    assert summary[0]["symbols_considered"] == 2
+    assert summary[0]["symbols_with_chains"] == 1
+    assert summary[0]["contracts_evaluated"] == result["option_features"]
+    discovery = published_options_radar_rows(runtime, "option_discovery_candidate")
+    assert {row["ticker"] for row in discovery} == {"NVDA", "RXRX"}
+    nvda = next(row for row in discovery if row["ticker"] == "NVDA")
+    assert nvda["stage"] in {"UNDERWRITING", "PUBLISHED"}
+    assert nvda["data_readiness"] in {"A", "B", "C", "D"}
+    assert nvda["evidence_completeness"] <= 5
+    rxrx = next(row for row in discovery if row["ticker"] == "RXRX")
+    assert rxrx["stage"] == "DISCOVERED"
+    assert rxrx["data_readiness"] == "D"
+    assert "no usable option chain" in rxrx["surface_reason"]
+    gates = published_options_radar_rows(runtime, "option_gate_result")
+    assert {row["gate_code"] for row in gates} == {
+        "causal_exposure", "source_independence", "reference_class",
+        "catalyst_hazard", "counterfactual", "edge_persistence", "falsifiability",
+    }
     assert summary[0]["shortlist_count"] == 1
     assert summary[0]["shadow_only"] is True
     assert published_options_radar_rows(runtime, "option_radar_symbol_summary") == [
@@ -334,7 +426,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(analysi
     assert csp["effective_assignment_price"] == pytest.approx(157.0065)
     assert csp["probability_assignment"] == pytest.approx(0.22)
     assert csp["details"]["max_contracts"] == 1
-    assert csp["blockers"] == []
+    assert csp["blockers"] == ["execution_data_not_grade_a"]
     summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
     assert summary["cash_secured_put_count"] == 1
     assert summary["shortlist_count"] <= 10
@@ -342,16 +434,40 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(analysi
     assert detail is not None
     assert detail["structure"] == "cash_secured_put"
     assert detail["no_trade_baseline"]["expected_value"] == 0
+    with pytest.raises(ValueError, match="not execution-ready"):
+        ActionRepository(runtime).stage_option_paper_entry(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-blocked",
+            expected_contract_version=3,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute("UPDATE analysis.decision SET state = 'READY' WHERE id = %s", [csp["decision_id"]])
+        connection.execute(
+            """
+            UPDATE app.publication_item item
+            SET payload = item.payload || jsonb_build_object(
+                'execution_ready', true, 'captured_at', now(), 'last_trade_at', now(),
+                'bid_size', 10, 'ask_size', 10
+            )
+            FROM app.publication publication
+            WHERE item.publication_id = publication.id
+              AND publication.scope = 'options-radar' AND publication.status = 'published'
+              AND item.model_name = 'option_radar_opportunity'
+              AND item.payload->>'decision_id' = %s
+            """,
+            [csp["decision_id"]],
+        )
     staged = ActionRepository(runtime).stage_option_paper_entry(
         decision_id=csp["decision_id"],
         idempotency_key="csp-nvda-1",
-        expected_contract_version=2,
+        expected_contract_version=3,
         limit_price=3.1,
     )
     replay = ActionRepository(runtime).stage_option_paper_entry(
         decision_id=csp["decision_id"],
         idempotency_key="csp-nvda-1",
-        expected_contract_version=2,
+        expected_contract_version=3,
         limit_price=3.1,
     )
     assert staged["reserved_collateral"] == pytest.approx(15700.65)
