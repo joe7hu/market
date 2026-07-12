@@ -9,6 +9,8 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.strategy_learning import StrategyLearningRepository
+from psycopg.types.json import Jsonb
 
 
 def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
@@ -33,6 +35,22 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         assert outcome["return_5d"] == pytest.approx(1.0)
         assert outcome["peak_return"] == pytest.approx(1.0)
         assert outcome["time_to_2x_days"] == 5
+        with runtime.transaction() as connection:
+            decision_id = connection.execute("SELECT id FROM analysis.decision").fetchone()["id"]
+            postmortem_id = connection.execute(
+                "INSERT INTO analysis.agent_task (decision_id, task_kind, status, request) "
+                "VALUES (%s, 'option_postmortem', 'completed', %s) RETURNING id",
+                [decision_id, Jsonb({"source": "immature-outcome-test"})],
+            ).fetchone()["id"]
+        StrategyLearningRepository(runtime).materialize_postmortem(
+            str(postmortem_id), {"proposed_parameter_changes": {"min_dte": 30}}
+        )
+        with runtime.read() as connection:
+            evaluation = connection.execute(
+                "SELECT metrics FROM analysis.strategy_evaluation "
+                "WHERE evaluation_type = 'backtest'"
+            ).fetchone()
+        assert evaluation["metrics"]["baseline"]["sample_size"] == 0
 
         _snapshot(ingestion, datetime(2026, 7, 18, 12, tzinfo=UTC), 15.0)
         OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 18, 13, tzinfo=UTC))

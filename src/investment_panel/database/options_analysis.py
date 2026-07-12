@@ -231,7 +231,7 @@ def _insert_decisions(
     weights = dict(parameters.get("score_weights") or {})
     liquidity_weight = float(weights.get("liquidity", 0.65))
     convexity_weight = float(weights.get("convexity", 0.35))
-    gates = dict(parameters.get("gates") or {})
+    gates = _runtime_gates(parameters)
     max_spread = gates.get("max_spread_pct", gates.get("reject_spread_pct", 0.25))
     min_open_interest = gates.get("min_open_interest", 50)
     min_volume = gates.get("min_volume")
@@ -369,6 +369,22 @@ def _insert_decisions(
             "SELECT count(*) AS count FROM analysis.decision WHERE run_id = %s", [run_id]
         ).fetchone()["count"]
     return int(actionable)
+
+
+def _runtime_gates(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Normalize legacy flat parameters into the canonical runtime gate map."""
+    gates = dict(parameters.get("gates") or {})
+    aliases = {"dte_min": "min_dte", "dte_max": "max_dte"}
+    supported = {
+        "max_spread_pct", "reject_spread_pct", "min_open_interest", "min_volume",
+        "min_dte", "max_dte", "delta_min", "delta_max", "max_required_move_pct",
+        "max_iv_percentile", "reject_iv_percentile",
+    }
+    for key, value in parameters.items():
+        canonical = aliases.get(key, key)
+        if canonical in supported and canonical not in gates:
+            gates[canonical] = value
+    return gates
 
 
 def _publication_models(runtime: DatabaseRuntime, run_id: Any) -> dict[str, list[dict[str, Any]]]:

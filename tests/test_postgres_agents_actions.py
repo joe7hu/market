@@ -189,6 +189,27 @@ def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_
                 "SELECT validation FROM analysis.agent_task WHERE id = %s", [proposal_id]
             ).fetchone()
         assert promotion["validation"] == {"status": "promoted", "approved_by": "joe"}
+        with runtime.transaction() as connection:
+            sibling_proposal = connection.execute(
+                "INSERT INTO analysis.agent_task (task_kind, status, request, result) "
+                "VALUES ('strategy_mutation_proposal', 'completed', %s, %s) RETURNING id",
+                [Jsonb({"source": "sibling"}), Jsonb({"status": "approved", "proposed_strategy_version": "sibling-v2"})],
+            ).fetchone()["id"]
+            sibling_id = connection.execute(
+                "INSERT INTO analysis.strategy_revision "
+                "(strategy_key, revision, name, status, parameters, supersedes_id) "
+                "VALUES ('sibling-v2', 1, 'sibling', 'candidate', %s, %s) RETURNING id",
+                [Jsonb({}), base_id],
+            ).fetchone()["id"]
+            for evaluation_type in ("backtest", "forward_shadow_test"):
+                connection.execute(
+                    "INSERT INTO analysis.strategy_evaluation "
+                    "(strategy_revision_id, evaluation_type, evaluated_at, verdict, metrics) "
+                    "VALUES (%s, %s, now(), 'pass', %s)",
+                    [sibling_id, evaluation_type, Jsonb({"sample_size": 100})],
+                )
+        with pytest.raises(ValueError, match="base is no longer active"):
+            actions.promote_strategy_proposal(str(sibling_proposal), approved_by="joe")
     finally:
         runtime.close()
 

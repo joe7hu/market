@@ -77,6 +77,8 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     from investment_panel.database.ingestion import IngestionRepository
 
     market_data = config.get("market_data", {})
+    repository = None
+    run_id = None
     try:
         frame = fetch_prices(
             normalized,
@@ -99,6 +101,13 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
         )
         repository.finish_run(run_id, "succeeded", item_count=stored, instrument_count=1)
     except Exception as exc:  # provider boundary
+        if repository is not None and run_id is not None:
+            try:
+                repository.finish_run(
+                    run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
         return {"status": "error", "symbol": normalized, "quote_rows": 0, "error": f"{type(exc).__name__}: {exc}"}
     return {
         "status": "ok",

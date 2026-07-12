@@ -241,8 +241,6 @@ def test_options_radar_applies_promoted_strategy_parameters(analysis_context) ->
             "SELECT id, parameters FROM analysis.strategy_revision "
             "WHERE strategy_key = 'options-radar-core' AND status = 'active'"
         ).fetchone()
-        parameters = dict(base["parameters"])
-        parameters["gates"] = {**parameters["gates"], "max_spread_pct": 0.05}
         candidate = connection.execute(
             """
             INSERT INTO analysis.strategy_revision
@@ -250,7 +248,7 @@ def test_options_radar_applies_promoted_strategy_parameters(analysis_context) ->
             VALUES ('options-radar-core__agent_test', 1, 'tight spread', 'active', %s, %s, now())
             RETURNING id
             """,
-            [Jsonb(parameters), base["id"]],
+            [Jsonb({"max_spread_pct": 0.05}), base["id"]],
         ).fetchone()
         connection.execute(
             "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = %s",

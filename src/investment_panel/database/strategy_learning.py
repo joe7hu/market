@@ -267,6 +267,7 @@ _OUTCOME_QUERY = """
      AND quote.contract_id = option_decision.contract_id
      AND quote.observed_at = option_decision.quote_observed_at
     WHERE outcome.peak_return IS NOT NULL
+      AND outcome.maturity_state IN ('mature', 'expired')
       AND decision.strategy_revision_id = %s
 """
 

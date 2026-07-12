@@ -841,6 +841,38 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     assert float(rows[0]["price"]) == 12
 
 
+def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
+    monkeypatch, migrated_postgres_dsn: str
+) -> None:
+    import pandas as pd
+    from investment_panel.database.runtime import DatabaseRuntime
+
+    config = {"database": {"url": migrated_postgres_dsn}, "market_data": {"mode": "online"}}
+    monkeypatch.setattr(
+        "investment_panel.core.prices.fetch_prices",
+        lambda *_args: pd.DataFrame([{"date": "2026-01-02", "close": 12}]),
+    )
+    monkeypatch.setattr(
+        "investment_panel.database.ingestion.IngestionRepository.store_quotes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider write failed")),
+    )
+
+    result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
+
+    assert result["status"] == "error"
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            run = connection.execute(
+                "SELECT status, failure_detail FROM ingest.run WHERE source_id = 'watchlist_quote'"
+            ).fetchone()
+        assert run["status"] == "failed"
+        assert "provider write failed" in run["failure_detail"]
+    finally:
+        runtime.close()
+
+
 def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:
     config = {"database": {"duckdb_path": str(tmp_path / "bad-watchlist.duckdb")}}
 

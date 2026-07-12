@@ -112,6 +112,24 @@ class ActionRepository:
             ).fetchone()["valid"]
             if not in_core_lineage:
                 raise ValueError("strategy candidate is outside the options-radar-core lineage")
+            lineage = connection.execute(
+                """
+                WITH RECURSIVE lineage AS (
+                    SELECT id FROM analysis.strategy_revision WHERE strategy_key = 'options-radar-core'
+                    UNION
+                    SELECT child.id FROM analysis.strategy_revision child
+                    JOIN lineage parent ON child.supersedes_id = parent.id
+                )
+                SELECT revision.id, revision.status
+                FROM analysis.strategy_revision revision
+                JOIN lineage ON lineage.id = revision.id
+                FOR UPDATE OF revision
+                """
+            ).fetchall()
+            statuses = {row["id"]: row["status"] for row in lineage}
+            parent_id = candidate["supersedes_id"]
+            if parent_id is None or statuses.get(parent_id) != "active":
+                raise ValueError("strategy candidate base is no longer active; reevaluation is required")
             evaluations = connection.execute(
                 "SELECT evaluation_type, verdict FROM analysis.strategy_evaluation "
                 "WHERE strategy_revision_id = %s ORDER BY evaluated_at DESC",
@@ -126,16 +144,15 @@ class ActionRepository:
                 raise ValueError("strategy proposal requires a persisted passing backtest")
             if not passed.intersection({"forward_test", "forward_shadow_test"}):
                 raise ValueError("strategy proposal requires a persisted passing forward shadow test")
-            connection.execute(
-                """
-                UPDATE analysis.strategy_revision SET status = 'superseded'
-                WHERE status = 'active' AND id <> %s
-                  AND (strategy_key = %s OR id = (
-                      SELECT supersedes_id FROM analysis.strategy_revision WHERE id = %s
-                  ))
-                """,
-                [candidate["id"], key, candidate["id"]],
-            )
+            active_ids = [
+                revision_id for revision_id, status in statuses.items()
+                if status == "active" and revision_id != candidate["id"]
+            ]
+            if active_ids:
+                connection.execute(
+                    "UPDATE analysis.strategy_revision SET status = 'superseded' WHERE id = ANY(%s)",
+                    [active_ids],
+                )
             connection.execute(
                 "UPDATE analysis.strategy_revision SET status = 'active', promoted_at = now() WHERE id = %s",
                 [candidate["id"]],
