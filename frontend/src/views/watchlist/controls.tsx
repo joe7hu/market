@@ -67,7 +67,7 @@ export function WatchlistControls({ filters, counts, totalRows, visibleRows, new
             <SelectItem value="fcfMargin">FCF Margin</SelectItem>
             <SelectItem value="relVol1m">RelVol 1M</SelectItem>
             <SelectItem value="atrPct1m">ATR % 1M</SelectItem>
-            <SelectItem value="valuationPercentile">Valuation percentile</SelectItem>
+            <SelectItem value="valuationPercentile">1Y price percentile</SelectItem>
             <SelectItem value="rating">Rating</SelectItem>
             <SelectItem value="roic">ROIC</SelectItem>
             <SelectItem value="ps">P/S</SelectItem>

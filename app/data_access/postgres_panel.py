@@ -191,14 +191,15 @@ DIRECT_QUERIES: dict[str, str] = {
                    100.0 * (count(*) FILTER (
                        WHERE sequenced.rn <= 252 AND sequenced.close <= aggregated.price
                    ) - 1) / NULLIF(count(*) FILTER (WHERE sequenced.rn <= 252) - 1, 0)
-                       AS valuation_percentile
+                       AS price_percentile_1y
             FROM sequenced
             JOIN aggregated USING (instrument_id)
             GROUP BY sequenced.instrument_id
         )
         SELECT aggregated.*,
                aggregated.price / NULLIF(aggregated.sma_50, 0) - 1 AS distance_from_sma_50,
-               price_ranks.valuation_percentile,
+               price_ranks.price_percentile_1y,
+               price_ranks.price_percentile_1y AS valuation_percentile,
                ((aggregated.price >= aggregated.sma_20)::int
                  + (aggregated.price >= aggregated.sma_50)::int
                  + (aggregated.price >= aggregated.sma_200)::int

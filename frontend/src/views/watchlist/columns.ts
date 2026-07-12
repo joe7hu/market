@@ -76,8 +76,8 @@ export const columnHelp = {
     detail: "Average true range over roughly 1 month divided by price. +3.6% means a normal daily range near 3.6%; use it for position sizing and stops.",
   },
   valuationPercentile: {
-    label: "Val %ile",
-    detail: "Current valuation percentile versus the ticker's own stored history. Low percentile is cheaper than usual; high percentile needs exceptional growth or quality.",
+    label: "Price %ile",
+    detail: "Current closing-price percentile versus the ticker's latest 252 daily closes. Low percentile is near the bottom of its one-year range; high percentile is near the top.",
   },
   optionsStatus: {
     label: "Opt",
