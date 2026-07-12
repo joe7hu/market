@@ -363,6 +363,7 @@ export function thesisState(row: RowRecord, requestByEvent: Map<string, RowRecor
 
 export function focusCandidateRows(rows: RowRecord[], focus: CandidateFocus): RowRecord[] {
   if (focus === "all") return rows;
+  if (focus === "top25") return [...rows].sort((left, right) => compareCandidates(left, right, "state")).slice(0, 25);
   const bestByTicker = new Map<string, RowRecord>();
   for (const row of rows) {
     const ticker = textField(row, ["ticker"]);
@@ -373,7 +374,6 @@ export function focusCandidateRows(rows: RowRecord[], focus: CandidateFocus): Ro
     }
   }
   const focused = [...bestByTicker.values()].sort((left, right) => compareCandidates(left, right, "state"));
-  if (focus === "top25") return focused.slice(0, 25);
   return focused;
 }
 
