@@ -207,7 +207,8 @@ def test_source_health_refresh_jobs_are_exact_and_allowlisted(migrated_postgres_
 
     assert rows["birdclaw_primary_tweets"]["refresh_job"] == "update_social_sources"
     assert rows["news_reuters"]["refresh_job"] == "update_research_sources"
-    assert rows["robinhood"]["refresh_job"] == "update_robinhood_options"
+    assert rows["robinhood"]["refresh_job"] == "options_radar_hard_refresh"
+    assert rows["robinhood"]["refresh_jobs"] == ["options_radar_hard_refresh"]
     assert rows["disclosure_csv_house"]["refresh_job"] == "update_disclosures"
 
 

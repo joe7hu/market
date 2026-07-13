@@ -99,6 +99,11 @@ export const JOB_CATALOG: Record<string, JobDef> = {
     description: "Price, greeks, OI and volume pulled directly from IBKR.",
     group: "ingestion",
   },
+  update_robinhood_options: {
+    label: "Robinhood Option Ingest",
+    description: "Store Robinhood chains only; use Options Radar Hard Refresh to republish visible signals.",
+    group: "ingestion",
+  },
   update_arco_data: {
     label: "Social Graph (X / Arco)",
     description: "Private social-graph signal pull.",

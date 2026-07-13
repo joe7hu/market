@@ -52,6 +52,12 @@ def test_live_fetcher_flags_match_plan() -> None:
         assert by_id[cid].live_fetcher is False, f"{cid} should not be a live fetcher"
 
 
+def test_option_chain_health_refresh_republishes_the_radar() -> None:
+    by_id = {category.id: category for category in SOURCE_CATALOG}
+
+    assert by_id["options"].refresh_job == "options_radar_hard_refresh"
+
+
 def test_category_ids_are_unique() -> None:
     ids = [c.id for c in SOURCE_CATALOG]
     assert len(ids) == len(set(ids))

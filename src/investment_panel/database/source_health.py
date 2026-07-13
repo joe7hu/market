@@ -94,7 +94,7 @@ WITH eligible_run AS (
                OR source.id LIKE 'legacy-%' THEN ARRAY[]::text[]
              WHEN source.id = 'ibkr' THEN ARRAY['update_broker_sources', 'update_ibkr_options']::text[]
              WHEN source.id = 'moomoo' THEN ARRAY['update_broker_sources']::text[]
-             WHEN source.id = 'robinhood' THEN ARRAY['update_robinhood_options']::text[]
+             WHEN source.id = 'robinhood' THEN ARRAY['options_radar_hard_refresh']::text[]
              WHEN source.id = 'birdclaw_primary_tweets' THEN ARRAY['update_social_sources']::text[]
              WHEN source.id = 'arco' THEN ARRAY['update_arco_data']::text[]
              WHEN source.id LIKE 'news_%' OR source.id LIKE 'blog_%' THEN ARRAY['update_research_sources']::text[]
@@ -109,7 +109,7 @@ WITH eligible_run AS (
            CASE
              WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
                OR source.id LIKE 'legacy-%' THEN NULL
-             WHEN source.id = 'robinhood' THEN 'update_robinhood_options'
+             WHEN source.id = 'robinhood' THEN 'options_radar_hard_refresh'
              WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
              WHEN source.id IN ('ibkr', 'moomoo') THEN 'update_broker_sources'
              WHEN source.id = 'birdclaw_primary_tweets' THEN 'update_social_sources'

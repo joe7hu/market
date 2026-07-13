@@ -54,7 +54,9 @@ SOURCE_CATALOG: list[DataCategory] = [
         fallback=["ibkr", "tradingview", "yfinance"],
         cadence_label="hourly",
         cadence_seconds=3600,
-        refresh_job="update_robinhood_options",
+        # Health actions should complete the user-visible contract: ingest the
+        # provider chains and republish the radar from those fresh rows.
+        refresh_job="options_radar_hard_refresh",
         stale_after=stale_after_label("options"),
         source_types=["options"],
         live_fetcher=True,
