@@ -14,8 +14,10 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from investment_panel.core.config import load_config
+from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.payload_archive import provider_archive_path
 from investment_panel.database.source_facts import SourceFactRepository
 
 
@@ -51,7 +53,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     payloads: list[dict[str, str]] = []
     if config.event_sources.bls_enabled:
-        fetched, errors, payloads = _bls_events(config.market_data.user_agent)
+        fetched, errors, payloads = _bls_events(provider_user_agent(config, "bls"))
         events.extend(fetched)
     if config.event_sources.dol_enabled:
         events.extend(_weekly_events("dol", "Weekly unemployment insurance claims", time(8, 30), "labor"))
@@ -101,10 +103,9 @@ def _bls_events(user_agent: str) -> tuple[list[dict[str, Any]], list[dict[str, s
 def _archive_payload(config: Any, run_id: Any, payloads: list[dict[str, str]]) -> Any:
     from pathlib import Path
 
-    preferred = Path(config.nas.market_dir) / "provider-payloads"
-    root = preferred if preferred.parent.exists() else Path(config.report_dir).parent / "provider-payloads"
-    path = root / SOURCE_ID / datetime.now(UTC).strftime("%Y/%m/%d") / f"{run_id}.json.gz"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = provider_archive_path(
+        config, SOURCE_ID, datetime.now(UTC).strftime("%Y/%m/%d"), f"{run_id}.json.gz"
+    )
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         json.dump(payloads, handle, ensure_ascii=False, separators=(",", ":"))
     return path

@@ -11,6 +11,7 @@ from investment_panel.core.db import db, init_db, query_rows
 from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.fundamentals import update_equity_fundamentals
 from investment_panel.core.portfolio import ensure_portfolio_instruments
+from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.prices import fetch_prices, upsert_prices
 from investment_panel.core.status import write_source_status
 from investment_panel.core.technicals import compute_and_store
@@ -26,7 +27,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         for instrument in instruments:
             instrument["cik"] = config_by_symbol.get(instrument["symbol"], {}).get("cik")
         symbols = [row["symbol"] for row in instruments]
-        fundamental_rows = update_equity_fundamentals(con, instruments, config.market_data.user_agent)
+        fundamental_rows = update_equity_fundamentals(con, instruments, provider_user_agent(config, "sec"))
         price_rows = 0
         price_errors: dict[str, str] = {}
         feature_rows = 0

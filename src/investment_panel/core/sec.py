@@ -2,26 +2,42 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
 
+def sec_get_bytes(
+    url: str,
+    user_agent: str,
+    *,
+    timeout_seconds: float = 20.0,
+    max_retries: int = 2,
+) -> bytes:
+    host = urlparse(url).netloc
+    headers = {
+        "User-Agent": user_agent,
+        "Accept-Encoding": "gzip, deflate",
+        "Host": host,
+    }
+    for attempt in range(max_retries + 1):
+        response = httpx.get(url, headers=headers, timeout=timeout_seconds, follow_redirects=True)
+        if response.status_code not in {403, 429, 503} or attempt >= max_retries:
+            response.raise_for_status()
+            return response.content
+        time.sleep(0.25 * (2**attempt))
+    raise AssertionError("unreachable")
+
+
 def sec_get_json(url: str, user_agent: str) -> dict[str, Any]:
-    headers = {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"}
-    with httpx.Client(timeout=20.0, headers=headers) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.json()
+    return json.loads(sec_get_bytes(url, user_agent))
 
 
 def sec_get_text(url: str, user_agent: str) -> str:
-    headers = {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"}
-    with httpx.Client(timeout=20.0, headers=headers) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.text
+    return sec_get_bytes(url, user_agent).decode("utf-8", errors="replace")
 
 
 def company_submissions(cik: str, user_agent: str) -> dict[str, Any]:

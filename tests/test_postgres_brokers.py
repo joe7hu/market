@@ -14,6 +14,29 @@ from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.runtime import DatabaseRuntime
 
 
+def test_disabled_broker_source_is_not_an_operational_incident(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = BrokerRepository(runtime)
+    try:
+        repository.sync_snapshot(
+            BrokerSnapshot(
+                status=ProviderStatus(
+                    provider="moomoo",
+                    status="disabled",
+                    detail="disabled in config",
+                    capabilities=["accounts"],
+                )
+            )
+        )
+        with runtime.read() as connection:
+            source = connection.execute("SELECT enabled FROM ingest.source WHERE id = 'moomoo'").fetchone()
+    finally:
+        runtime.close()
+
+    assert source["enabled"] is False
+
+
 def test_broker_snapshot_recommendation_and_paper_order_are_postgresql_native(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)

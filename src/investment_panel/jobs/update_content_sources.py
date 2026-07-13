@@ -18,6 +18,7 @@ import httpx
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.payload_archive import provider_archive_path
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.providers.opencli import OpenCliRateLimitError, OpenCliRunner, ensure_list
 
@@ -184,11 +185,8 @@ def _symbols(text: str, known: set[str]) -> list[str]:
 
 
 def _archive_payload(config: Any, source_id: str, run_id: Any, payload: Any) -> Path:
-    preferred = Path(config.nas.market_dir) / "provider-payloads"
-    root = preferred if preferred.parent.exists() else Path(config.report_dir).parent / "provider-payloads"
     day = datetime.now(UTC).strftime("%Y/%m/%d")
-    path = root / source_id / day / f"{run_id}.json.gz"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = provider_archive_path(config, source_id, day, f"{run_id}.json.gz")
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), default=str)
     return path

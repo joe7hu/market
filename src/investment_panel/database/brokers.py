@@ -27,6 +27,8 @@ class BrokerRepository:
             kind="broker_account",
             capabilities={capability: True for capability in status.capabilities},
         )
+        if status.status == "disabled":
+            ingestion.set_source_enabled(status.provider, False)
         run_id = ingestion.start_run(status.provider, "broker_sync", started_at=_aware(status.checked_at))
         account_ids: dict[str, int] = {}
         try:

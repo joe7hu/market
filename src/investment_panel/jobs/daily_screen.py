@@ -14,6 +14,7 @@ from investment_panel.core.decision import refresh_decision_read_models
 from investment_panel.core.fundamentals import update_equity_fundamentals
 from investment_panel.core.instruments import universe_from_config_and_arco
 from investment_panel.core.portfolio import ensure_portfolio_instruments, import_portfolio_csv, portfolio_instruments, seed_empty_theses_for_portfolio
+from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.prices import fetch_prices, upsert_prices
 from investment_panel.core.scoring import score_and_store
 from investment_panel.core.source_ingestion.raw_sources import sync_private_raw_sources
@@ -38,7 +39,7 @@ def run(config_path: str | None = None, online_check: bool = False) -> dict[str,
         seed_empty_theses_for_portfolio(con)
         ensure_portfolio_instruments(con)
         universe = merge_universe(universe, portfolio_instruments(con))
-        fundamental_rows = update_equity_fundamentals(con, universe, config.market_data.user_agent)
+        fundamental_rows = update_equity_fundamentals(con, universe, provider_user_agent(config, "sec"))
         thesis_rows = ingest_arco_theses(con, arco_context)
         raw_source_result = sync_private_raw_sources(con, config.nas.source_root)
         price_rows = 0

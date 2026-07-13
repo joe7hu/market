@@ -12,10 +12,10 @@ import re
 from typing import Any
 import xml.etree.ElementTree as ET
 
-import httpx
 import yaml
 
 from investment_panel.core.config import load_config, resolve_path
+from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.house_disclosures import (
     fetch_house_pdf_bytes,
     parse_house_disclosure_text,
@@ -25,6 +25,7 @@ from investment_panel.core.house_disclosures import (
 from investment_panel.core import sec
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.payload_archive import provider_archive_path
 from investment_panel.database.source_facts import SourceFactRepository
 
 
@@ -61,7 +62,7 @@ def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str,
         capabilities={"disclosures": True, "holdings": True},
     )
     run_id = repository.start_run(source_id, "disclosures")
-    user_agent = str(config.market_data.user_agent)
+    user_agent = provider_user_agent(config, "sec")
     try:
         submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
         submissions_payload = _http_bytes(submissions_url, user_agent)
@@ -185,12 +186,7 @@ def _resolve_holdings(rows: list[dict[str, Any]], ticker_map: dict[str, str]) ->
 
 
 def _http_bytes(url: str, user_agent: str) -> bytes:
-    response = httpx.get(
-        url, headers={"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"},
-        timeout=30, follow_redirects=True,
-    )
-    response.raise_for_status()
-    return response.content
+    return sec.sec_get_bytes(url, user_agent, timeout_seconds=30.0)
 
 
 def _record_bytes(
@@ -202,10 +198,7 @@ def _record_bytes(
     payload: bytes,
     source_url: str,
 ) -> int:
-    preferred = Path(config.nas.market_dir) / "provider-payloads"
-    root = preferred if preferred.parent.exists() else Path(config.report_dir).parent / "provider-payloads"
-    path = root / source_id / "sec" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = provider_archive_path(config, source_id, "sec", filename)
     if not path.exists() or path.read_bytes() != payload:
         path.write_bytes(payload)
     return repository.record_payload_file(run_id, path, source_url=source_url)
@@ -319,10 +312,7 @@ def _existing_document_ids(runtime: Any, source_id: str) -> set[str]:
 
 
 def _archive_house_pdf(config: Any, source_id: str, document_id: str, payload: bytes) -> Path:
-    preferred = Path(config.nas.market_dir) / "provider-payloads"
-    root = preferred if preferred.parent.exists() else Path(config.report_dir).parent / "provider-payloads"
-    path = root / source_id / "house" / f"{document_id}.pdf"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = provider_archive_path(config, source_id, "house", f"{document_id}.pdf")
     if not path.exists() or path.read_bytes() != payload:
         path.write_bytes(payload)
     return path

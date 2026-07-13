@@ -153,14 +153,20 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
         intervals["run_option_agents"] = agent_seconds
     social_seconds = _env_int_optional("MARKET_SOCIAL_REFRESH_SECONDS")
     if social_seconds is None:
-        social_seconds = 1800 if heavy_refresh else 0
+        social_seconds = 1800
     if social_seconds > 0:
         intervals["update_social_sources"] = social_seconds
     research_seconds = _env_int_optional("MARKET_RESEARCH_REFRESH_SECONDS")
     if research_seconds is None:
-        research_seconds = 3600 if heavy_refresh else 0
+        research_seconds = 3600
     if research_seconds > 0:
         intervals["update_research_sources"] = research_seconds
+    arco_seconds = _env_int("MARKET_ARCO_REFRESH_SECONDS", 14400, allow_zero=True)
+    if arco_seconds > 0:
+        intervals["update_arco_data"] = arco_seconds
+    market_data_seconds = _env_int("MARKET_MARKET_DATA_REFRESH_SECONDS", 3600, allow_zero=True)
+    if market_data_seconds > 0:
+        intervals["update_market_data"] = market_data_seconds
     market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
@@ -187,6 +193,8 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "learning_refresh_seconds": str(intervals.get("refresh_options_radar_deterministic", 0)),
         "social_refresh_seconds": str(intervals.get("update_social_sources", 0)),
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
+        "arco_refresh_seconds": str(intervals.get("update_arco_data", 0)),
+        "market_data_refresh_seconds": str(intervals.get("update_market_data", 0)),
         "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "radar_option_source": option_source,

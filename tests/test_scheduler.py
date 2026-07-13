@@ -27,6 +27,23 @@ def test_job_intervals_default_to_daily_premarket_options(monkeypatch) -> None:
     assert "options_radar_hard_refresh" not in intervals
 
 
+def test_operational_source_refreshes_default_on(monkeypatch) -> None:
+    for variable in (
+        "MARKET_SOCIAL_REFRESH_SECONDS",
+        "MARKET_RESEARCH_REFRESH_SECONDS",
+        "MARKET_ARCO_REFRESH_SECONDS",
+        "MARKET_MARKET_DATA_REFRESH_SECONDS",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+    intervals = scheduler.job_intervals()
+
+    assert intervals["update_social_sources"] == 1800
+    assert intervals["update_research_sources"] == 3600
+    assert intervals["update_arco_data"] == 14400
+    assert intervals["update_market_data"] == 3600
+
+
 def test_robinhood_split_source_and_signal_can_be_enabled_explicitly(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "120")

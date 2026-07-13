@@ -211,6 +211,23 @@ def test_source_health_refresh_jobs_are_exact_and_allowlisted(migrated_postgres_
     assert rows["disclosure_csv_house"]["refresh_job"] == "update_disclosures"
 
 
+def test_source_health_cadences_match_operational_schedulers(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        _register(repository, "watchlist_quote", family="market_data", kind="daily_quote")
+        _register(repository, "arco", family="research", kind="private_evidence")
+        _register(repository, "robinhood", family="broker", kind="option_chain")
+        rows = _source_rows(migrated_postgres_dsn)
+    finally:
+        runtime.close()
+
+    assert rows["watchlist_quote"]["cadence_label"] == "event driven"
+    assert rows["arco"]["cadence_label"] == "4 hr"
+    assert rows["robinhood"]["cadence_label"] == "3 day"
+
+
 def test_source_health_surfaces_an_active_capability_run(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

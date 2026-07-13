@@ -12,6 +12,7 @@ import httpx
 
 from investment_panel.core.config import AppConfig
 from investment_panel.core.db import json_dumps
+from investment_panel.core.provider_identity import provider_user_agent
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ def update_event_calendar(con: Any, config: AppConfig) -> dict[str, Any]:
     events: list[MarketEvent] = []
     source_errors: list[dict[str, str]] = []
     if config.event_sources.bls_enabled:
-        fetched, errors = fetch_bls_release_schedules(user_agent=config.market_data.user_agent)
+        fetched, errors = fetch_bls_release_schedules(user_agent=provider_user_agent(config, "bls"))
         events.extend(fetched)
         source_errors.extend(errors)
     if config.event_sources.federal_reserve_enabled:

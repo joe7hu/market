@@ -8,6 +8,7 @@ import json
 from investment_panel.core.config import load_config
 from investment_panel.core.db import db, init_db
 from investment_panel.core.decision import refresh_decision_read_models
+from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.disclosures import (
     ingest_public_disclosure_csvs,
     ensure_disclosure_symbol_prices,
@@ -45,7 +46,7 @@ def run(
         ingest_result = ingest_13f_trackers(
             con,
             trackers,
-            config.market_data.user_agent,
+            provider_user_agent(config, "sec"),
             default_max_filings=max_filings,
             fetch_holdings=fetch_holdings,
         )

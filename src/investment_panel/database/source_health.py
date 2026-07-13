@@ -120,8 +120,10 @@ WITH eligible_run AS (
              ELSE NULL
            END AS refresh_job,
            CASE
-             WHEN source.id = 'watchlist_quote' THEN 900
-             WHEN source.id IN ('robinhood', 'ibkr', 'moomoo') THEN 3600
+             WHEN source.id = 'watchlist_quote' THEN NULL
+             WHEN source.id = 'robinhood' THEN 259200
+             WHEN source.id IN ('ibkr', 'moomoo') THEN 3600
+             WHEN source.id = 'arco' THEN 14400
              WHEN source.family = 'research' THEN 3600
              WHEN source.family = 'social' THEN 1800
              WHEN source.family IN ('events', 'disclosures', 'filing') THEN 86400
