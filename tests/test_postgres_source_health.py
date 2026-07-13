@@ -228,6 +228,36 @@ def test_source_health_cadences_match_operational_schedulers(migrated_postgres_d
     assert rows["robinhood"]["cadence_label"] == "3 day"
 
 
+def test_legacy_import_snapshots_are_event_driven_and_non_actionable(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        repository.register_source(
+            "legacy_market_snapshot",
+            name="Legacy Market Snapshot",
+            family="market_data",
+            kind="daily_quote",
+            origin="migration",
+            capabilities={"legacy_import": True},
+        )
+        run_id = _finish(repository, "legacy_market_snapshot", "succeeded", capability="legacy_import")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [datetime.now(UTC) - timedelta(days=30), datetime.now(UTC) - timedelta(days=30), run_id],
+            )
+        rows = _source_rows(migrated_postgres_dsn)
+    finally:
+        runtime.close()
+
+    snapshot = rows["legacy_market_snapshot"]
+    assert snapshot["freshness_status"] == "fresh"
+    assert snapshot["cadence_label"] == "event driven"
+    assert snapshot["refresh_job"] is None
+    assert snapshot["refresh_jobs"] == []
+
+
 def test_source_health_surfaces_an_active_capability_run(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

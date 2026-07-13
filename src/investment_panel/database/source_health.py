@@ -90,6 +90,7 @@ WITH eligible_run AS (
            source.source_url, source.capabilities,
            COALESCE(capability_health.rows, '[]'::jsonb) AS capability_health,
            CASE
+             WHEN source.capabilities ? 'legacy_import' THEN ARRAY[]::text[]
              WHEN source.id = 'ibkr' THEN ARRAY['update_broker_sources', 'update_ibkr_options']::text[]
              WHEN source.id = 'moomoo' THEN ARRAY['update_broker_sources']::text[]
              WHEN source.id = 'robinhood' THEN ARRAY['update_robinhood_options']::text[]
@@ -105,6 +106,7 @@ WITH eligible_run AS (
              ELSE ARRAY[]::text[]
            END AS refresh_jobs,
            CASE
+             WHEN source.capabilities ? 'legacy_import' THEN NULL
              WHEN source.id = 'robinhood' THEN 'update_robinhood_options'
              WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
              WHEN source.id IN ('ibkr', 'moomoo') THEN 'update_broker_sources'
@@ -120,6 +122,7 @@ WITH eligible_run AS (
              ELSE NULL
            END AS refresh_job,
            CASE
+             WHEN source.capabilities ? 'legacy_import' THEN NULL
              WHEN source.id = 'watchlist_quote' THEN NULL
              WHEN source.id = 'robinhood' THEN 259200
              WHEN source.id IN ('ibkr', 'moomoo') THEN 3600
