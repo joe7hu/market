@@ -5,6 +5,7 @@ data/*.duckdb
 data/*.duckdb.wal
 data/.refresh-jobs/
 data/api-cache/
+data/provider-payloads/
 data/migration/backups/*.dump
 data/packets/*.json
 *.duckdb
