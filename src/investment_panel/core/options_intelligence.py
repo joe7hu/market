@@ -7,9 +7,6 @@ from datetime import datetime
 from statistics import mean
 from typing import Any
 
-from investment_panel.core.db import json_dumps, query_rows
-
-
 def _expiry_dte(expiry: Any, reference: Any = None) -> int | None:
     """Calendar days to expiry; used when the chain rows carry no ``dte``."""
 
@@ -67,6 +64,8 @@ def _provider_limitation_note(source: str | None) -> str:
 
 
 def record_tradingview_options_capabilities(con: Any, observed_at: str | None = None) -> None:
+    from investment_panel.core.db import json_dumps
+
     as_of = observed_at or datetime.utcnow().isoformat()
     raw = {
         "available_fields": [
@@ -121,6 +120,8 @@ def refresh_options_intelligence(
     source: str = "tradingview",
     reference_date: str | None = None,
 ) -> dict[str, int]:
+    from investment_panel.core.db import query_rows
+
     requested_symbols = [_normalize_symbol(symbol) for symbol in symbols or [] if symbol]
     symbol_filter = _symbol_filter(symbols)
     today = reference_date or datetime.utcnow().date().isoformat()
@@ -302,6 +303,8 @@ def build_ticker_signal(symbol: str, source: str, expiry_signals: list[dict[str,
 
 
 def insert_expiry_signal(con: Any, signal: dict[str, Any]) -> None:
+    from investment_panel.core.db import json_dumps
+
     con.execute(
         """
         INSERT OR REPLACE INTO options_expiry_signals
@@ -341,6 +344,8 @@ def insert_expiry_signal(con: Any, signal: dict[str, Any]) -> None:
 
 
 def insert_ticker_signal(con: Any, signal: dict[str, Any]) -> None:
+    from investment_panel.core.db import json_dumps
+
     con.execute(
         """
         INSERT OR REPLACE INTO options_ticker_signals
