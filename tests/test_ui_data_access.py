@@ -70,7 +70,13 @@ def test_ticker_payload_matches_symbol() -> None:
         tables={
             "candidates": [{"symbol": "ABC", "name": "Alpha"}],
             "portfolio": [],
-            "thesis_monitor": [{"symbol": "ABC", "needs_review": True, "thesis": "watch"}],
+            "thesis_monitor": [{
+                "symbol": "ABC", "needs_review": True, "thesis": "watch",
+                "source_names": ["Wire A", "Wire B"], "source_count": 2,
+                "source_evidence_count": 3, "evidence_newer_than_review": True,
+                "latest_source_evidence_at": "2026-07-13T12:00:00Z",
+                "source_evidence": [{"source_name": "Wire A", "title": "ABC update"}],
+            }],
         },
     )
 
@@ -81,6 +87,9 @@ def test_ticker_payload_matches_symbol() -> None:
     assert payload["found"] is True
     assert dossier["identity"]["name"] == "Alpha"
     assert dossier["thesis"]["state"]["needs_review"] is True
+    assert dossier["thesis"]["state"]["source_names"] == ["Wire A", "Wire B"]
+    assert dossier["thesis"]["state"]["source_evidence_count"] == 3
+    assert dossier["thesis"]["state"]["source_evidence"][0]["title"] == "ABC update"
     assert dossier["thesis"]["coverage"]["status"] == "live"
 
 

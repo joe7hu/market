@@ -41,7 +41,7 @@ FX_SYMBOLS = {"USDJPY", "USDKRW", "USDMYR", "USDPHP", "USDSGD", "USDTHB"}
 
 
 def normalize_symbol(symbol: str) -> str:
-    normalized = symbol.strip().upper()
+    normalized = symbol.strip().upper().lstrip("$").rstrip(".")
     return CRYPTO_ALIASES.get(normalized, normalized)
 
 

@@ -6,6 +6,11 @@ def test_symbol_normalization_handles_crypto_aliases() -> None:
     assert normalize_symbol("ETH") == "ETH-USD"
 
 
+def test_normalize_symbol_strips_sentence_punctuation_but_preserves_share_class() -> None:
+    assert normalize_symbol("$NVDA.") == "NVDA"
+    assert normalize_symbol("BRK.B") == "BRK.B"
+
+
 def test_asset_class_inference_handles_non_equity_market_symbols() -> None:
     assert infer_asset_class("SPY") == "etf"
     assert infer_asset_class("BITO") == "etf"

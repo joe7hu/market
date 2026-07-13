@@ -84,26 +84,45 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             dict(row)
             for row in connection.execute(
                 """
-                SELECT signal.id, instrument.id AS instrument_id, instrument.symbol,
-                       signal.observed_at, signal.sentiment, signal.confidence,
-                       signal.thesis, signal.antithesis, signal.invalidation,
-                       signal.details, item.title, item.summary, item.url,
-                       source.name AS source_name
-                FROM analysis.source_signal signal
-                JOIN raw.content_item item ON item.id = signal.content_item_id
-                JOIN catalog.instrument instrument ON instrument.id = signal.instrument_id
-                JOIN ingest.source source ON source.id = item.source_id
-                WHERE EXISTS (
-                    SELECT 1 FROM app.portfolio_position position
-                    WHERE position.instrument_id = instrument.id
-                ) OR EXISTS (
-                    SELECT 1 FROM app.watchlist_item watchlist
-                    WHERE watchlist.instrument_id = instrument.id
-                      AND watchlist.watch_state <> 'excluded'
+                WITH ranked AS (
+                    SELECT signal.id, instrument.id AS instrument_id, instrument.symbol,
+                           signal.observed_at, signal.sentiment, signal.confidence,
+                           signal.thesis, signal.antithesis, signal.invalidation,
+                           signal.details, item.title, item.summary, item.url,
+                           source.name AS source_name, item.source_id,
+                           row_number() OVER (
+                               PARTITION BY lower(source.name)
+                               ORDER BY signal.observed_at DESC,
+                                        signal.confidence DESC NULLS LAST, signal.id DESC
+                           ) AS source_rank
+                    FROM analysis.source_signal signal
+                    JOIN raw.content_item item ON item.id = signal.content_item_id
+                    JOIN catalog.instrument instrument ON instrument.id = signal.instrument_id
+                    JOIN ingest.source source ON source.id = item.source_id
+                    WHERE source.enabled
+                      AND signal.observed_at <= %s
+                      AND item.observed_at <= %s
+                      AND COALESCE(item.published_at, item.observed_at) <= %s
+                      AND (
+                          EXISTS (
+                              SELECT 1 FROM app.portfolio_position position
+                              WHERE position.instrument_id = instrument.id
+                          ) OR EXISTS (
+                              SELECT 1 FROM app.watchlist_item watchlist
+                              WHERE watchlist.instrument_id = instrument.id
+                                AND watchlist.watch_state <> 'excluded'
+                          )
+                      )
                 )
-                ORDER BY signal.observed_at DESC, signal.confidence DESC NULLS LAST
+                SELECT id, instrument_id, symbol, observed_at, sentiment, confidence,
+                       thesis, antithesis, invalidation, details, title, summary,
+                       url, source_name
+                FROM ranked
+                WHERE source_rank <= 2
+                ORDER BY observed_at DESC, confidence DESC NULLS LAST
                 LIMIT 12
-                """
+                """,
+                [as_of, as_of, as_of],
             ).fetchall()
         ]
 

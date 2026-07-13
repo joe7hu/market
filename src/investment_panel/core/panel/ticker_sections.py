@@ -389,6 +389,12 @@ def build_thesis(symbol: str, tables: dict[str, list[dict[str, Any]]]) -> dict[s
             "review_reason": _text(state.get("review_reason")),
             "invalidation": _text(state.get("invalidation")),
             "last_reviewed": iso_or_none(state.get("last_reviewed") or state.get("as_of") or state.get("updated_at")),
+            "source_evidence": list(state.get("source_evidence") or []),
+            "source_names": string_list(state.get("source_names")),
+            "source_count": optional_number(state.get("source_count")),
+            "source_evidence_count": optional_number(state.get("source_evidence_count")),
+            "latest_source_evidence_at": iso_or_none(state.get("latest_source_evidence_at")),
+            "evidence_newer_than_review": bool(state.get("evidence_newer_than_review")),
         },
         "research_packet": {
             "decision": _text(packet.get("decision")),

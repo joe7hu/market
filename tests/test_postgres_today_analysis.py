@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -70,3 +70,66 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
 def test_today_option_item_preserves_published_rationale() -> None:
     row = _option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
     assert row["summary"] == "liquidity_supported; convexity_supported"
+
+
+def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime(2026, 7, 13, 13, tzinfo=UTC)
+    try:
+        save_position(
+            {"database": {"url": migrated_postgres_dsn}},
+            {"symbol": "NVDA", "quantity": 2, "avg_cost": 100},
+        )
+        ingestion = IngestionRepository(runtime)
+        facts = SourceFactRepository(runtime)
+
+        def add_source(source_id: str, count: int, observed_at: datetime) -> None:
+            ingestion.register_source(source_id, name=source_id.title(), family="news", kind="article")
+            run_id = ingestion.start_run(source_id, "content")
+            rows = [
+                {
+                    "source_key": f"{source_id}-{index}",
+                    "title": f"NVDA {source_id} update {index}",
+                    "summary": f"NVDA evidence from {source_id}",
+                    "observed_at": observed_at - timedelta(minutes=index),
+                    "symbols": ["NVDA"],
+                    "metadata": {"legacy_id": f"{source_id}-{index}"},
+                }
+                for index in range(count)
+            ]
+            facts.store_content_items(run_id, source_id, rows)
+            ingestion.finish_run(run_id, "succeeded", item_count=count, instrument_count=1)
+            import_source_signals(runtime, [
+                {
+                    "id": f"signal-{source_id}-{index}",
+                    "source_item_id": f"{source_id}-{index}",
+                    "source_id": source_id,
+                    "symbol": "NVDA",
+                    "observed_at": observed_at - timedelta(minutes=index),
+                    "signal_type": "thesis",
+                    "sentiment": "bullish",
+                    "confidence": 0.8,
+                    "thesis": f"NVDA evidence from {source_id}",
+                    "evidence_refs": "[]",
+                }
+                for index in range(count)
+            ])
+
+        add_source("crowded", 20, as_of - timedelta(hours=1))
+        add_source("second", 1, as_of - timedelta(hours=2))
+        add_source("future", 20, as_of + timedelta(days=30))
+
+        result = refresh_today_publication(runtime, now=as_of)
+        source_rows = [
+            row for row in AnalysisRepository(runtime).publication_rows("today", "daily_brief")
+            if row.get("category") == "whats_changed"
+        ]
+    finally:
+        runtime.close()
+
+    assert result["source_changes"] == 3
+    assert {row["source"] for row in source_rows} == {"Crowded", "Second"}
+    assert sum(row["source"] == "Crowded" for row in source_rows) == 2

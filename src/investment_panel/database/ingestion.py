@@ -66,31 +66,50 @@ class IngestionRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                WITH source_signal AS (
-                    SELECT link.instrument_id, count(DISTINCT item.source_id) AS source_roots,
+                WITH canonical_instruments AS (
+                    SELECT DISTINCT ON (canonical_symbol)
+                           instrument.id, canonical_symbol AS symbol, instrument.asset_class
+                    FROM (
+                        SELECT instrument.*,
+                               regexp_replace(upper(instrument.symbol), '[.]+$', '') AS canonical_symbol
+                        FROM catalog.instrument instrument
+                    ) instrument
+                    WHERE canonical_symbol <> ''
+                    ORDER BY canonical_symbol,
+                             (upper(instrument.symbol) = canonical_symbol) DESC,
+                             instrument.updated_at DESC, instrument.id
+                ), source_signal AS (
+                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
+                           count(DISTINCT CASE WHEN source.kind = 'news' THEN lower(source.name) ELSE source.id END) AS source_roots,
                            max(item.observed_at) AS latest_signal_at
                     FROM raw.content_item_instrument link
                     JOIN raw.content_item item ON item.id = link.content_item_id
-                    WHERE item.observed_at >= now() - interval '30 days'
-                    GROUP BY link.instrument_id
+                    JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+                    JOIN ingest.source source ON source.id = item.source_id
+                    WHERE source.enabled
+                      AND item.observed_at >= now() - interval '30 days'
+                      AND item.observed_at <= now()
+                      AND COALESCE(item.published_at, item.observed_at) <= now()
+                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
                 ), upcoming_catalyst AS (
-                    SELECT instrument_id, min(starts_at) AS starts_at
-                    FROM app.catalyst
-                    WHERE starts_at >= now() AND starts_at < now() + interval '90 days'
-                    GROUP BY instrument_id
+                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
+                           min(catalyst.starts_at) AS starts_at
+                    FROM app.catalyst catalyst
+                    JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
+                    WHERE catalyst.starts_at >= now() AND catalyst.starts_at < now() + interval '90 days'
+                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
                 )
                 SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state,
                        coalesce(source_signal.source_roots, 0) AS source_roots,
                        upcoming_catalyst.starts_at
-                FROM catalog.instrument i
+                FROM canonical_instruments i
                 LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
                 LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
-                LEFT JOIN source_signal ON source_signal.instrument_id = i.id
-                LEFT JOIN upcoming_catalyst ON upcoming_catalyst.instrument_id = i.id
+                LEFT JOIN source_signal ON source_signal.symbol = i.symbol
+                LEFT JOIN upcoming_catalyst ON upcoming_catalyst.symbol = i.symbol
                 WHERE p.instrument_id IS NOT NULL OR w.instrument_id IS NOT NULL
-                   OR (i.asset_class IN ('equity', 'etf') AND (
-                       source_signal.instrument_id IS NOT NULL OR upcoming_catalyst.instrument_id IS NOT NULL
-                   ))
+                   OR (i.asset_class IN ('equity', 'etf') AND
+                       (source_signal.symbol IS NOT NULL OR upcoming_catalyst.symbol IS NOT NULL))
                 ORDER BY (p.instrument_id IS NOT NULL) DESC,
                          (w.watch_state IS NOT NULL AND w.watch_state <> 'excluded') DESC,
                          (upcoming_catalyst.starts_at IS NOT NULL) DESC,

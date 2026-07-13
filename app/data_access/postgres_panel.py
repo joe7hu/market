@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Iterable
 
 from app.data_access.postgres_queries import OWNED_CORRELATIONS_QUERY
-from app.data_access.postgres_source_queries import SOURCE_QUERIES
+from app.data_access.postgres_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
 from app.data_access.user_state import portfolio_rows, thesis_monitor_rows, thesis_rows, watchlist_rows
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
@@ -58,75 +58,7 @@ DIRECT_QUERIES: dict[str, str] = {
             FROM analysis.strategy_evaluation WHERE evaluation_type = 'canary'
         ) canary ON true
     """,
-    "discovered_universe": """
-        SELECT instrument.id AS instrument_id, instrument.symbol, instrument.name,
-               instrument.asset_class, instrument.category,
-               watchlist.watch_state, watchlist.notes,
-               (position.instrument_id IS NOT NULL) AS is_owned
-        FROM catalog.instrument instrument
-        LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
-        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-        WHERE watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
-        ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
-    """,
-    "universe_screen": """
-        SELECT instrument.symbol, instrument.name, instrument.asset_class, instrument.category,
-               quote.price, quote.observed_at, watchlist.watch_state,
-               CASE WHEN position.instrument_id IS NOT NULL THEN 'owned' ELSE 'watchlist' END AS universe_source,
-               COALESCE(option_summary.actionable_count, 0) AS option_opportunities,
-               (market.values->>'market_cap')::double precision AS market_cap,
-               (market.values->>'price_to_sales')::double precision AS ps_ratio,
-               CASE WHEN (market.values->>'trailing_pe')::double precision > 0
-                    THEN (market.values->>'trailing_pe')::double precision END AS pe_ratio,
-               CASE WHEN (market.values->>'trailing_pe')::double precision > 0 THEN 'reported'
-                    WHEN (market.values->>'profit_margin')::double precision <= 0 THEN 'not_meaningful'
-                    ELSE 'missing' END AS pe_status,
-               CASE WHEN (market.values->>'forward_pe')::double precision > 0
-                    THEN (market.values->>'forward_pe')::double precision END AS forward_pe,
-               CASE WHEN (market.values->>'forward_pe')::double precision > 0 THEN 'reported'
-                    WHEN (market.values->>'forward_pe')::double precision <= 0 THEN 'not_meaningful'
-                    ELSE 'missing' END AS forward_pe_status,
-               COALESCE(
-                   (market.values->>'revenue_growth')::double precision,
-                   (sec.values->>'revenue_growth')::double precision
-               ) AS revenue_growth_yoy,
-               COALESCE(
-                   (market.values->>'fcf_yield')::double precision,
-                   CASE WHEN (market.values->>'market_cap')::double precision > 0
-                        THEN (sec.values->>'free_cash_flow')::double precision
-                             / (market.values->>'market_cap')::double precision END
-               ) AS fcf_yield,
-               COALESCE(
-                   CASE WHEN (market.values->>'total_revenue')::double precision > 0
-                        THEN (market.values->>'free_cash_flow')::double precision
-                             / (market.values->>'total_revenue')::double precision END,
-                   (sec.values->>'fcf_margin')::double precision
-               ) AS fcf_margin,
-               (market.values->>'return_on_invested_capital')::double precision * 100 AS roic
-        FROM catalog.instrument instrument
-        LEFT JOIN app.watchlist_item watchlist ON watchlist.instrument_id = instrument.id
-        LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-        LEFT JOIN LATERAL (
-            SELECT price, observed_at FROM raw.quote
-            WHERE instrument_id = instrument.id ORDER BY observed_at DESC LIMIT 1
-        ) quote ON true
-        LEFT JOIN LATERAL (
-            SELECT count(*) AS actionable_count FROM analysis.decision
-            WHERE instrument_id = instrument.id AND kind = 'option' AND state <> 'REJECT'
-        ) option_summary ON true
-        LEFT JOIN LATERAL (
-            SELECT values FROM raw.fundamental_observation
-            WHERE instrument_id = instrument.id AND metric_set = 'market_metrics'
-            ORDER BY observed_at DESC LIMIT 1
-        ) market ON true
-        LEFT JOIN LATERAL (
-            SELECT values FROM raw.fundamental_observation
-            WHERE instrument_id = instrument.id AND metric_set = 'sec_fundamentals'
-            ORDER BY observed_at DESC LIMIT 1
-        ) sec ON true
-        WHERE watchlist.instrument_id IS NOT NULL OR position.instrument_id IS NOT NULL
-        ORDER BY (position.instrument_id IS NOT NULL) DESC, instrument.symbol
-    """,
+    **SOURCE_UNIVERSE_QUERIES,
     "technicals": TECHNICALS_QUERY,
     "valuations": """
         SELECT DISTINCT ON (instrument.id, observation.metric_set)

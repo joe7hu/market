@@ -280,7 +280,7 @@ def thesis_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
 def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
-        rows = connection.execute(
+        rows = [dict(row) for row in connection.execute(
             """
             SELECT i.symbol, t.thesis, t.updated_at,
                    (p.instrument_id IS NOT NULL) AS owned,
@@ -299,13 +299,24 @@ def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
                OR t.id IS NOT NULL
             ORDER BY i.symbol
             """
-        ).fetchall()
-    output = [_thesis_monitor_row(dict(row)) for row in rows]
+        ).fetchall()]
+        evidence_by_symbol = _thesis_source_evidence(
+            connection,
+            [str(row["symbol"]) for row in rows],
+        )
+    output = [
+        _thesis_monitor_row(row, evidence_by_symbol.get(str(row["symbol"]), []))
+        for row in rows
+    ]
     return sorted(output, key=lambda row: (row["needs_review"], row["owned"], row["symbol"]), reverse=True)
 
 
-def _thesis_monitor_row(row: dict[str, Any]) -> dict[str, Any]:
+def _thesis_monitor_row(
+    row: dict[str, Any],
+    source_evidence: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     symbol = str(row["symbol"])
+    evidence_rows = source_evidence or []
     thesis = dict(row.get("thesis") or {})
     core_thesis = str(thesis.get("core_thesis") or thesis.get("thesis") or "").strip()
     why = str(thesis.get("why_owned_watched") or thesis.get("why") or "").strip()
@@ -328,6 +339,26 @@ def _thesis_monitor_row(row: dict[str, Any]) -> dict[str, Any]:
             flags.append("invalidation_breached")
         elif distance is not None and distance <= 10:
             flags.append("invalidation_near")
+    stored_evidence = [str(item) for item in thesis.get("evidence_links") or [] if item]
+    source_links = [str(item.get("reference") or "") for item in evidence_rows if item.get("reference")]
+    evidence_links = list(dict.fromkeys(stored_evidence + source_links))
+    source_names = sorted({str(item.get("source_name") or item.get("source_id") or "") for item in evidence_rows if item.get("source_name") or item.get("source_id")})
+    latest_source_evidence_at = max(
+        (_parse_datetime(item.get("observed_at")) for item in evidence_rows),
+        default=None,
+    )
+    evidence_newer_than_review = bool(
+        latest_source_evidence_at
+        and (reviewed_at is None or latest_source_evidence_at > reviewed_at)
+    )
+    if stale_reason:
+        review_reason = stale_reason
+    elif flags:
+        review_reason = "invalidation requires review"
+    elif evidence_newer_than_review:
+        review_reason = f"{len(evidence_rows)} new source evidence items since last review"
+    else:
+        review_reason = "Auditable thesis is current."
     return _without_none({
         "symbol": symbol,
         "thesis": core_thesis or f"No structured thesis loaded for {symbol}; review before action.",
@@ -336,27 +367,125 @@ def _thesis_monitor_row(row: dict[str, Any]) -> dict[str, Any]:
         "why": why or "Why-owned/watched rationale is missing.",
         "invalidation": invalidation or "No invalidation rule loaded.",
         "invalidation_text": invalidation or "No invalidation rule loaded.",
-        "evidence_links": list(thesis.get("evidence_links") or []),
+        "evidence_links": evidence_links,
+        "source_evidence": evidence_rows,
+        "source_names": source_names,
+        "source_count": len(source_names),
+        "source_evidence_count": len(evidence_rows),
+        "latest_source_evidence_at": latest_source_evidence_at,
+        "evidence_newer_than_review": evidence_newer_than_review,
         "last_reviewed": reviewed_at,
         "last_reviewed_age_days": age_days,
         "status": str(thesis.get("status") or thesis.get("position_status") or ("owned" if row["owned"] else "watched")),
         "owned": bool(row["owned"]),
         "watched": bool(row["watched"]),
-        "source": "theses" if core_thesis else "portfolio_watchlist",
+        "source": "theses" if core_thesis else "source_evidence" if evidence_rows else "portfolio_watchlist",
         "updated_at": row.get("updated_at"),
         "stale_thesis": stale,
         "stale_reason": stale_reason,
         "contradiction_flags": flags,
-        "needs_review": stale or bool(flags),
-        "review_reason": stale_reason or ("invalidation requires review" if flags else "Auditable thesis is current."),
+        "needs_review": stale or bool(flags) or evidence_newer_than_review,
+        "review_reason": review_reason,
         "latest_price": latest_price,
         "latest_quote_at": row.get("latest_quote_at"),
         "invalidation_price": invalidation_price,
         "invalidation_distance_pct": distance,
-        "evidence_count": len(thesis.get("evidence_links") or []),
+        "evidence_count": len(evidence_links),
         "raw_thesis": thesis,
         "structured_fields_missing": [name.replace(" owned/watched", "_owned_watched") for name in missing],
     })
+
+
+def _thesis_source_evidence(
+    connection: Any,
+    symbols: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    if not symbols:
+        return {}
+    rows = connection.execute(
+        """
+        WITH evidence_rows AS (
+            SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
+                   item.source_id,
+                   CASE WHEN source.kind = 'news' THEN lower(source.name)
+                        ELSE source.name END AS source_name,
+                   CASE WHEN source.family IN ('social', 'private_graph') THEN 'thesis'
+                        ELSE source.family END AS source_family,
+                   item.kind AS source_type, item.title,
+                   COALESCE(signal.thesis, item.summary, item.title) AS summary,
+                   COALESCE(signal.sentiment, 'neutral') AS sentiment,
+                   COALESCE(signal.observed_at, item.observed_at) AS observed_at,
+                   COALESCE(item.url, 'source_item:' || item.id) AS reference,
+                   row_number() OVER (
+                       PARTITION BY regexp_replace(upper(instrument.symbol), '[.]+$', ''),
+                                    CASE WHEN source.kind = 'news' THEN lower(source.name)
+                                         ELSE source.id END
+                       ORDER BY COALESCE(signal.observed_at, item.observed_at) DESC, item.id DESC
+                   ) AS source_rank
+            FROM raw.content_item_instrument link
+            JOIN raw.content_item item ON item.id = link.content_item_id
+            JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+            JOIN ingest.source source ON source.id = item.source_id
+            LEFT JOIN LATERAL (
+                SELECT signal.thesis, signal.sentiment, signal.observed_at
+                FROM analysis.source_signal signal
+                WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
+                ORDER BY signal.observed_at DESC LIMIT 1
+            ) signal ON true
+            WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
+              AND source.enabled
+              AND item.kind NOT IN (
+                  'analyst_estimate', 'crypto_fundamental', 'earnings_event',
+                  'equity_fundamental', 'market_screener', 'trader_portfolio_model'
+              )
+              AND item.observed_at <= now()
+              AND COALESCE(item.published_at, item.observed_at) <= now()
+            UNION ALL
+            SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
+                   disclosure.source_id,
+                   CASE WHEN source.kind = 'news' THEN lower(source.name)
+                        ELSE source.name END AS source_name,
+                   'filing' AS source_family, disclosure.source_type,
+                   concat_ws(' ', COALESCE(disclosure.trader_name, disclosure.filer_name),
+                             disclosure.action, instrument.symbol) AS title,
+                   concat_ws(' ', disclosure.action, disclosure.amount_text) AS summary,
+                   CASE WHEN lower(COALESCE(disclosure.action, '')) ~ '(sell|sale|reduc)'
+                        THEN 'bearish'
+                        WHEN lower(COALESCE(disclosure.action, '')) ~ '(buy|purchase|add)'
+                        THEN 'bullish' ELSE 'neutral' END AS sentiment,
+                   COALESCE(disclosure.filed_date, disclosure.event_date)::timestamptz AS observed_at,
+                   COALESCE(disclosure.source_url, 'disclosure:' || disclosure.id) AS reference,
+                   row_number() OVER (
+                       PARTITION BY regexp_replace(upper(instrument.symbol), '[.]+$', ''), disclosure.source_id
+                       ORDER BY COALESCE(disclosure.filed_date, disclosure.event_date) DESC, disclosure.id DESC
+                   ) AS source_rank
+            FROM raw.disclosure disclosure
+            JOIN catalog.instrument instrument ON instrument.id = disclosure.instrument_id
+            JOIN ingest.source source ON source.id = disclosure.source_id
+            WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
+              AND source.enabled
+              AND COALESCE(disclosure.filed_date, disclosure.event_date) <= current_date
+        ), balanced AS (
+            SELECT evidence_rows.*,
+                   row_number() OVER (
+                       PARTITION BY symbol ORDER BY observed_at DESC, source_id, reference
+                   ) AS symbol_rank
+            FROM evidence_rows
+            WHERE source_rank <= 2
+        )
+        SELECT symbol, source_id, source_name, source_family, source_type,
+               title, summary, sentiment, observed_at, reference
+        FROM balanced
+        WHERE symbol_rank <= 12
+        ORDER BY symbol, observed_at DESC
+        """,
+        [symbols, symbols],
+    ).fetchall()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for raw_row in rows:
+        item = dict(raw_row)
+        grouped.setdefault(str(item["symbol"]), []).append(item)
+    return grouped
 
 
 def _parse_datetime(value: Any) -> datetime | None:
