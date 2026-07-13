@@ -234,28 +234,45 @@ def test_legacy_import_snapshots_are_event_driven_and_non_actionable(migrated_po
     repository = IngestionRepository(runtime)
     try:
         repository.register_source(
-            "legacy_market_snapshot",
+            "legacy-market-snapshot",
             name="Legacy Market Snapshot",
+            family="market_data",
+            kind="daily_quote",
+            origin="legacy-duckdb",
+            capabilities={"daily_quote": True},
+        )
+        origin_run_id = _finish(repository, "legacy-market-snapshot", "succeeded", capability="daily_quote")
+        repository.register_source(
+            "capability_legacy_snapshot",
+            name="Capability Legacy Snapshot",
             family="market_data",
             kind="daily_quote",
             origin="migration",
             capabilities={"legacy_import": True},
         )
-        run_id = _finish(repository, "legacy_market_snapshot", "succeeded", capability="legacy_import")
+        capability_run_id = _finish(
+            repository, "capability_legacy_snapshot", "succeeded", capability="legacy_import"
+        )
         with runtime.transaction() as connection:
             connection.execute(
-                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
-                [datetime.now(UTC) - timedelta(days=30), datetime.now(UTC) - timedelta(days=30), run_id],
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id IN (%s, %s)",
+                [
+                    datetime.now(UTC) - timedelta(days=30),
+                    datetime.now(UTC) - timedelta(days=30),
+                    origin_run_id,
+                    capability_run_id,
+                ],
             )
         rows = _source_rows(migrated_postgres_dsn)
     finally:
         runtime.close()
 
-    snapshot = rows["legacy_market_snapshot"]
-    assert snapshot["freshness_status"] == "fresh"
-    assert snapshot["cadence_label"] == "event driven"
-    assert snapshot["refresh_job"] is None
-    assert snapshot["refresh_jobs"] == []
+    for source_id in ("legacy-market-snapshot", "capability_legacy_snapshot"):
+        snapshot = rows[source_id]
+        assert snapshot["freshness_status"] == "fresh"
+        assert snapshot["cadence_label"] == "event driven"
+        assert snapshot["refresh_job"] is None
+        assert snapshot["refresh_jobs"] == []
 
 
 def test_source_health_surfaces_an_active_capability_run(migrated_postgres_dsn: str) -> None:
