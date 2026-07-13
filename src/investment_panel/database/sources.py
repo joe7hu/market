@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.source_health import SOURCE_HEALTH_QUERY, source_health_payload
 
 
 class SourceRepository:
@@ -49,26 +49,8 @@ class SourceRepository:
 
     def catalog(self) -> dict[str, Any]:
         with self.runtime.read() as connection:
-            rows = connection.execute(
-                "SELECT source.id AS source_id, source.name, source.family, source.kind, "
-                "source.origin, source.enabled, source.ingestion_mode, source.source_url, "
-                "source.capabilities, source.updated_at, run.status AS latest_status, "
-                "run.finished_at AS latest_finished_at, run.failure_detail AS latest_failure_detail "
-                "FROM ingest.source source LEFT JOIN LATERAL ("
-                "SELECT status, finished_at, failure_detail FROM ingest.run "
-                "WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1"
-                ") run ON true ORDER BY source.family, source.id"
-            ).fetchall()
-        families: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in rows:
-            families[str(row["family"])].append(dict(row))
-        return {
-            "categories": sorted(families),
-            "families": dict(families),
-            "rows": [dict(row) for row in rows],
-            "generated_from": "postgresql.ingest.source",
-            "status": {"ready": True, "source": "postgresql"},
-        }
+            rows = [dict(row) for row in connection.execute(SOURCE_HEALTH_QUERY).fetchall()]
+        return source_health_payload(rows)
 
     def audit(self) -> dict[str, Any]:
         with self.runtime.read() as connection:

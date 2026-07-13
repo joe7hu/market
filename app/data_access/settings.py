@@ -14,6 +14,7 @@ from app.data_access.payloads import _runtime_metadata, status_payload
 from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.configuration import SettingRepository
+from investment_panel.database.ingestion import IngestionRepository
 
 
 def slug(value: Any) -> str:
@@ -73,9 +74,22 @@ def _redact_config(value: Any, *, parent_key: str = "") -> Any:
 def persist_setting_section(config: dict[str, Any], section: str, update: dict[str, Any]) -> None:
     current = config.get(section) if isinstance(config.get(section), dict) else {}
     value = _deep_merge(dict(current), update)
-    SettingRepository(runtime_for_url(str(config.get("database", {}).get("url") or "postgresql:///market"))).set_section(
-        section, value
-    )
+    runtime = runtime_for_url(str(config.get("database", {}).get("url") or "postgresql:///market"))
+    SettingRepository(runtime).set_section(section, value)
+    if section == "research_sources":
+        news = value.get("news", {}) if isinstance(value.get("news"), dict) else {}
+        blogs = value.get("blogs", {}) if isinstance(value.get("blogs"), dict) else {}
+        x = value.get("x", {}) if isinstance(value.get("x"), dict) else {}
+        IngestionRepository(runtime).sync_research_source_enablement(
+            news_ids=[slug(f"news_{provider}") for provider in _config_list(news.get("providers"))],
+            blog_sources=[
+                *[(_blog_source_id(url), "substack") for url in _config_list(blogs.get("substack_urls"))],
+                *[(_blog_source_id(url), "rss") for url in _config_list(blogs.get("rss_urls"))],
+            ],
+            news_enabled=bool(news.get("enabled", True)),
+            blogs_enabled=bool(blogs.get("enabled", True)),
+            x_enabled=bool(x.get("enabled", True) and str(x.get("list_id") or "").strip()),
+        )
 
 
 def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:

@@ -229,6 +229,7 @@ export type FamilyHealth = {
   tone: Tone;
   total: number;
   healthy: number;
+  jobs?: string[];
 };
 
 /**
@@ -247,10 +248,10 @@ export function buildFlowStages(families: FamilyHealth[]): FlowStage[] {
   }));
 
   const jobChips: FlowChip[] = dedupeChips(
-    present.map((family) => ({
-      label: jobDef(sourceFamilyDef(family.id).job).label,
+    present.flatMap((family) => (family.jobs?.length ? family.jobs : [sourceFamilyDef(family.id).job]).map((job) => ({
+      label: jobDef(job).label,
       tone: family.tone,
-    })),
+    }))),
   );
 
   // Downstream stages can only be as healthy as the data feeding them.

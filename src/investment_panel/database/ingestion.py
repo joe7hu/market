@@ -13,6 +13,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
 
 
 class IngestionRepository:
@@ -32,15 +33,34 @@ class IngestionRepository:
         with self.runtime.transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO ingest.source (id, name, family, kind, origin, capabilities)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO ingest.source (id, name, family, kind, origin, capabilities, enabled)
+                VALUES (%s, %s, %s, %s, %s, %s, true)
                 ON CONFLICT (id) DO UPDATE
                 SET name = EXCLUDED.name, family = EXCLUDED.family, kind = EXCLUDED.kind,
-                    origin = EXCLUDED.origin, capabilities = EXCLUDED.capabilities,
+                    origin = EXCLUDED.origin,
+                    capabilities = EXCLUDED.capabilities,
+                    enabled = true,
                     updated_at = now()
                 """,
                 [source_id, name, family, kind, origin, Jsonb(capabilities or {})],
             )
+
+    def set_source_enabled(self, source_id: str, enabled: bool) -> None:
+        set_source_enabled(self.runtime, source_id, enabled)
+
+    def sync_research_source_enablement(
+        self,
+        *,
+        news_ids: Sequence[str],
+        blog_sources: Sequence[tuple[str, str]],
+        news_enabled: bool,
+        blogs_enabled: bool,
+        x_enabled: bool,
+    ) -> None:
+        sync_research_source_enablement(
+            self.runtime, news_ids=news_ids, blog_sources=blog_sources,
+            news_enabled=news_enabled, blogs_enabled=blogs_enabled, x_enabled=x_enabled,
+        )
 
     def option_universe(self, configured: Sequence[dict[str, Any]] = ()) -> list[str]:
         with self.runtime.read() as connection:

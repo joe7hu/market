@@ -40,41 +40,46 @@ export type RefreshJobsPayload = {
 };
 
 // --- Source catalog (GET /api/source-catalog) ------------------------------
-// Backend tones are good|warn|bad|neutral|unknown; the UI Tone system uses
-// good|warn|bad|info|muted, so the catalog views map neutral/unknown -> muted.
-export type SourceCatalogTone = "good" | "warn" | "bad" | "neutral" | "unknown";
-
-export type SourceCatalogProvider = {
-  provider: string;
-  status: "ok" | "stale" | "failed" | "rate_limited" | "unknown" | string;
-  tone: SourceCatalogTone;
-  provider_status: "ok" | "degraded" | "failed" | string;
-  last_observed_at: string | null;
-  stale_after: string;
-  symbol_count: number;
-  rate_limited: boolean;
-  freshness_status: "fresh" | "stale" | string;
-  detail: string;
-};
-
-export type SourceCatalogCategory = {
-  id: string;
-  label: string;
-  family: string;
-  cadence_label: string;
-  cadence_seconds: number;
+export type SourceCatalogRow = {
+  source_id: string;
+  source_name: string;
+  source_family: string;
+  source_kind: string;
+  operational_group: string;
+  enabled: boolean;
+  ingestion_mode: string;
   refresh_job: string;
-  stale_after: string;
-  source_types: string[];
-  live_fetcher: boolean;
-  tone: SourceCatalogTone;
-  primary: SourceCatalogProvider | null;
-  fallback: SourceCatalogProvider[];
+  refresh_jobs: string[];
+  cadence_label: string;
+  run_status: string;
+  freshness_status: string;
+  effective_status: string;
+  latest_capability: string;
+  capability_health: Array<{ capability: string; status: string; finished_at: string | null; failure_detail: string }>;
+  last_attempt_at: string | null;
+  status_at: string | null;
+  last_success_at: string | null;
+  last_data_at: string | null;
+  item_count: number;
+  ticker_count: number;
+  failure_detail: string;
+  remediation: string;
+  inherited_check: boolean;
+  source_url: string;
 };
 
 export type SourceCatalogPayload = {
-  categories: SourceCatalogCategory[];
-  families: Record<string, string[]>;
+  rows: SourceCatalogRow[];
+  groups: Record<string, string[]>;
+  summary: {
+    total: number;
+    enabled: number;
+    healthy: number;
+    attention: number;
+    failed: number;
+    disabled: number;
+    last_success_at: string | null;
+  };
   generated_from?: string;
   status?: { ready?: boolean; source?: string; message?: string };
 };

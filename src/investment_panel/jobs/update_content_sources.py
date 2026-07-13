@@ -35,6 +35,17 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
     config = load_config(config_path)
     selected = kinds or {"news", "blogs", "social"}
     runtime = runtime_for_config(config)
+    ingestion = IngestionRepository(runtime)
+    ingestion.sync_research_source_enablement(
+        news_ids=[_slug(f"news_{provider}") for provider in config.research_sources.news.providers],
+        blog_sources=[
+            *[(_slug(f"blog_{_host(url)}"), "substack") for url in config.research_sources.blogs.substack_urls],
+            *[(_slug(f"blog_{_host(url)}"), "rss") for url in config.research_sources.blogs.rss_urls],
+        ],
+        news_enabled=config.research_sources.news.enabled,
+        blogs_enabled=config.research_sources.blogs.enabled,
+        x_enabled=bool(config.research_sources.x.enabled and config.research_sources.x.list_id),
+    )
     known = _known_symbols(runtime)
     runner = OpenCliRunner(
         command=config.data_sources.opencli.command,
@@ -104,7 +115,11 @@ def _run_source(config: Any, runtime: Any, known: set[str], spec: dict[str, Any]
         family="social" if spec["kind"] == "social" else "research",
         kind=str(spec["kind"]),
         origin=str(spec["key"]),
-        capabilities={str(spec["capability"]): True},
+        capabilities=(
+            {"content": True, str(spec["capability"]): True}
+            if source_id == "birdclaw_primary_tweets"
+            else {str(spec["capability"]): True}
+        ),
     )
     run_id = repository.start_run(source_id, str(spec["capability"]))
     try:

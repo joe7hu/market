@@ -6,54 +6,40 @@ import { useMarketData } from "../marketData";
 import { Button } from "@/components/ui/button";
 import { buildFlowStages, DataFlowDiagram } from "@/views/health/dataFlow";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
-import { buildCategories, buildFamilyHealth, collectTopErrors } from "@/views/health/aggregate";
-import { catalogToneCounts, groupCatalogByFamily, parseSourceCatalog } from "@/views/health/catalog";
+import { collectSourceErrors, parseSourceCatalog, sourceFamilyHealth, summarizeSourceHealth } from "@/views/health/catalog";
 import { Link } from "react-router-dom";
 
 import { useRefreshJobs } from "@/views/health/useRefreshJobs";
 import { TriggerPanel } from "@/views/health/triggerPanels";
-import { CatalogControlPlane } from "@/views/health/catalogPanels";
+import { SourceHealthControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
+import { formatDateTime } from "@/views/health/format";
 
 export function HealthRoute() {
-  const { data, model, loadScope } = useMarketData();
+  const { data, loadScope } = useMarketData();
   usePanelScope("health");
 
   const jobs = useRefreshJobs();
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
 
-  const categories = useMemo(() => buildCategories(data), [data]);
-  const families = useMemo(() => buildFamilyHealth(categories), [categories]);
+  const sourceRows = useMemo(() => parseSourceCatalog(data), [data]);
+  const summary = useMemo(() => summarizeSourceHealth(sourceRows), [sourceRows]);
+  const families = useMemo(() => sourceFamilyHealth(sourceRows), [sourceRows]);
   const flowStages = useMemo(() => buildFlowStages(families), [families]);
-  const topErrors = useMemo(() => collectTopErrors(categories, data, jobs.rows), [categories, data, jobs.rows]);
-
-  // Authoritative catalog (primary/fallback/cadence) drives the top-level view.
-  const catalogCategories = useMemo(() => parseSourceCatalog(data), [data]);
-  const catalogFamilies = useMemo(() => groupCatalogByFamily(catalogCategories), [catalogCategories]);
-  // Per-category refresh jobs are launched from the catalog, so the Operations
-  // trigger panel hides them and shows only orchestration/uncovered jobs.
+  const topErrors = useMemo(() => collectSourceErrors(sourceRows, jobs.rows), [jobs.rows, sourceRows]);
   const catalogJobs = useMemo(
-    () => new Set(catalogCategories.map((category) => category.refresh_job).filter(Boolean)),
-    [catalogCategories],
+    () => new Set(sourceRows.flatMap((row) => row.refresh_jobs.length ? row.refresh_jobs : [row.refresh_job]).filter(Boolean)),
+    [sourceRows],
   );
 
-  // Prefer the catalog's category tones for top metrics; fall back to the live
-  // joiner's provider counts when the catalog has not arrived yet.
-  const catalogCounts = useMemo(() => catalogToneCounts(catalogCategories), [catalogCategories]);
-  const totalProviders = categories.reduce((sum, category) => sum + category.total, 0);
-  const failed = catalogCategories.length ? catalogCounts.failed : categories.reduce((sum, category) => sum + category.failed, 0);
-  const stale = catalogCategories.length ? catalogCounts.stale : categories.reduce((sum, category) => sum + category.stale, 0);
-  const fresh = catalogCategories.length ? catalogCounts.fresh : categories.reduce((sum, category) => sum + category.fresh, 0);
-  const categoryCount = catalogCategories.length || categories.length;
-
   const metrics: MetricSpec[] = [
-    ["Categories", categoryCount.toLocaleString(), `${totalProviders.toLocaleString()} live providers`, categoryCount ? "info" : "muted"],
-    ["Fresh", fresh.toLocaleString(), "reporting on contract", fresh ? "good" : "muted"],
-    ["Stale", stale.toLocaleString(), "past freshness window", stale ? "warn" : "good"],
-    ["Failed", failed.toLocaleString(), "errored or unreachable", failed ? "bad" : "good"],
-    ["Last Check", model.latestHealthCheck, "freshest health timestamp", model.sources.health === "live" ? "info" : "muted"],
+    ["Enabled", summary.enabled.toLocaleString(), `${summary.total.toLocaleString()} registered sources`, summary.enabled ? "info" : "muted"],
+    ["Healthy", summary.healthy.toLocaleString(), "current and reporting", summary.healthy === summary.enabled ? "good" : "info"],
+    ["Needs Attention", summary.attention.toLocaleString(), "degraded, missing, or stale", summary.attention ? "warn" : "good"],
+    ["Failed", summary.failed.toLocaleString(), "latest attempt failed", summary.failed ? "bad" : "good"],
+    ["Disabled", summary.disabled.toLocaleString(), "excluded from health alerts", "muted"],
+    ["Last Success", formatDateTime(summary.lastSuccessAt), "freshest successful source check", summary.lastSuccessAt ? "info" : "muted"],
   ];
 
   // Note: a background scheduler job is almost always "running", so the Reload
@@ -71,7 +57,7 @@ export function HealthRoute() {
     <WorkspacePage
       eyebrow="Control plane"
       title="Source Health"
-      subtitle="Data sources by category with primary/fallback status, the option-agent control plane, and operations triggers."
+      subtitle="Operational source checks, data recency, coverage, and the exact jobs that own each refresh path."
       metrics={metrics}
       actions={
         <Button type="button" variant="outline" size="sm" onClick={() => void reload()} disabled={reloading}>
@@ -82,13 +68,7 @@ export function HealthRoute() {
     >
       <DataFlowDiagram stages={flowStages} />
 
-      <CatalogControlPlane
-        families={catalogFamilies}
-        data={data}
-        expanded={expanded}
-        onToggle={(id) => setExpanded((current) => (current === id ? null : id))}
-        jobs={jobs}
-      />
+      <SourceHealthControlPlane sourceRows={sourceRows} jobs={jobs} />
 
       <div className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
         <span className="text-sm text-muted-foreground">The option agent has its own control plane — config, on-demand runs, context, and cost.</span>

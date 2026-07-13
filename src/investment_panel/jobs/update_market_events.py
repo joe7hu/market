@@ -33,8 +33,6 @@ ROW_RE = re.compile(
 
 def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
-    if not config.event_sources.enabled:
-        return {"status": "disabled", "database": "postgresql", "events": 0}
     runtime = runtime_for_config(config)
     repository = IngestionRepository(runtime)
     repository.register_source(
@@ -45,6 +43,9 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         origin="BLS, DOL, and Federal Reserve",
         capabilities={"macro_events": True},
     )
+    if not config.event_sources.enabled:
+        repository.set_source_enabled(SOURCE_ID, False)
+        return {"status": "disabled", "database": "postgresql", "events": 0}
     run_id = repository.start_run(SOURCE_ID, "macro_events")
     events: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []

@@ -1,267 +1,324 @@
-import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Database, Loader2, RefreshCw, Search } from "lucide-react";
+import { Fragment, useMemo, useState } from "react";
 
-import type { SourceCatalogCategory, SourceCatalogProvider } from "@/api";
+import type { SourceCatalogRow } from "@/api";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
-import type { PanelData } from "@/types";
-import { rows } from "@/utils";
-import { displayField } from "@/views/rowFormat";
-import { jobDef, sourceFamilyDef, StatusDot, type SourceFamilyId } from "@/views/health/dataFlow";
-import { catalogTone, type CatalogFamilyGroup } from "@/views/health/catalog";
-import { baseProvider, dateMs, formatDateTime, freshnessTone, statusLabel, truncate } from "@/views/health/format";
+import { Input } from "@/components/ui/input";
+import { jobDef, StatusDot } from "@/views/health/dataFlow";
+import {
+  filterSourceHealth,
+  groupSourceHealth,
+  sourceHealthTone,
+  type SourceHealthFilter,
+  type SourceHealthGroup,
+} from "@/views/health/catalog";
+import { formatAge, formatDateTime } from "@/views/health/format";
 import type { UseRefreshJobs } from "@/views/health/useRefreshJobs";
-import { FragmentRow } from "@/views/health/tables";
 
-export function CatalogControlPlane({
-  families,
-  data,
-  expanded,
-  onToggle,
+const FILTERS: Array<{ id: SourceHealthFilter; label: string }> = [
+  { id: "all", label: "All active" },
+  { id: "attention", label: "Needs attention" },
+  { id: "failed", label: "Failed" },
+  { id: "degraded", label: "Degraded" },
+  { id: "missing", label: "Missing" },
+  { id: "stale", label: "Stale" },
+  { id: "healthy", label: "Healthy" },
+];
+
+export function SourceHealthControlPlane({
+  sourceRows,
   jobs,
 }: {
-  families: CatalogFamilyGroup[];
-  data: PanelData;
-  expanded: string | null;
-  onToggle: (id: string) => void;
+  sourceRows: SourceCatalogRow[];
   jobs: UseRefreshJobs;
 }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<SourceHealthFilter>("all");
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+  const [showDisabled, setShowDisabled] = useState(false);
+
+  const activeRows = useMemo(() => filterSourceHealth(sourceRows, query, filter), [filter, query, sourceRows]);
+  const groups = useMemo(() => groupSourceHealth(activeRows), [activeRows]);
+  const disabledRows = useMemo(
+    () => sourceRows.filter((row) => !row.enabled && matchesQuery(row, query)),
+    [query, sourceRows],
+  );
+
+  const toggleGroup = (group: SourceHealthGroup) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(group.id)) next.delete(group.id);
+      else next.add(group.id);
+      return next;
+    });
+  };
+
   return (
-    <DataTableFrame title="Data Sources by Category">
-      {families.length ? (
-        <div className="space-y-5 p-4">
-          {families.map((family) => {
-            const Icon = sourceFamilyDef(family.id).icon;
-            return (
-              <div key={family.id}>
-                <div className="mb-2 flex items-center gap-2">
-                  <Icon className="size-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">{family.label}</h3>
-                  <StatusBadge tone={family.tone}>{statusLabel(family.tone)}</StatusBadge>
-                </div>
-                <div className="overflow-hidden rounded-lg border border-border">
-                  <table className="w-full min-w-[960px] text-sm">
-                    <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
-                      <tr>
-                        <th className="w-8 px-2 py-2.5" />
-                        <th className="px-3 py-2.5">Category</th>
-                        <th className="px-3 py-2.5">Cadence</th>
-                        <th className="px-3 py-2.5">Fetcher</th>
-                        <th className="px-3 py-2.5">Primary</th>
-                        <th className="px-3 py-2.5">Fallback</th>
-                        <th className="px-3 py-2.5">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {family.categories.map((category) => (
-                        <CategoryRow
-                          key={category.id}
-                          category={category}
-                          data={data}
-                          isOpen={expanded === category.id}
-                          onToggle={() => onToggle(category.id)}
-                          jobs={jobs}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+    <DataTableFrame title="Operational Sources">
+      <div className="border-b border-border bg-muted/20 p-3 sm:p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="relative min-w-0 flex-1 lg:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search source, family, or capability"
+              className="pl-9"
+            />
+          </div>
+          <div className="flex gap-1 overflow-x-auto pb-1 lg:pb-0" aria-label="Source health filters">
+            {FILTERS.map((item) => (
+              <Button
+                key={item.id}
+                type="button"
+                size="sm"
+                variant={filter === item.id ? "default" : "ghost"}
+                className="shrink-0"
+                onClick={() => setFilter(item.id)}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-3 sm:p-4">
+        {groups.map((group) => {
+          const isExpanded = expandedGroups.has(group.id) || Boolean(query) || filter !== "all";
+          const visibleRows = isExpanded ? group.rows : collapsedRows(group.rows);
+          return (
+            <section key={group.id} className="overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+              <div className="flex flex-col gap-3 border-b border-border bg-muted/30 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <button type="button" className="flex min-w-0 items-center gap-2 text-left" onClick={() => toggleGroup(group)}>
+                  {isExpanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+                  <Database className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-semibold">{group.label}</span>
+                  <StatusBadge tone={group.tone}>{group.attention ? `${group.attention} attention` : "healthy"}</StatusBadge>
+                  <span className="text-xs tabular-nums text-muted-foreground">{group.healthy}/{group.rows.length} healthy</span>
+                </button>
+                <GroupActions group={group} jobs={jobs} />
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
-          <StatusDot tone="muted" /> Source catalog not available yet. Run a refresh job to initialize it.
-        </div>
-      )}
+
+              <div className="hidden md:block">
+                <SourceTable rows={visibleRows} expandedSource={expandedSource} onToggleSource={setExpandedSource} />
+              </div>
+              <div className="divide-y divide-border md:hidden">
+                {visibleRows.map((row) => (
+                  <SourceCard key={row.source_id} row={row} expanded={expandedSource === row.source_id} onToggle={() => setExpandedSource(expandedSource === row.source_id ? null : row.source_id)} />
+                ))}
+              </div>
+              {!isExpanded && group.rows.length > visibleRows.length ? (
+                <button type="button" className="w-full border-t border-border px-4 py-2 text-xs text-primary hover:bg-accent" onClick={() => toggleGroup(group)}>
+                  Show all {group.rows.length} sources
+                </button>
+              ) : null}
+            </section>
+          );
+        })}
+
+        {!groups.length ? (
+          <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
+            No enabled sources match this filter.
+          </div>
+        ) : null}
+
+        <section className="overflow-hidden rounded-xl border border-border bg-muted/10">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setShowDisabled((value) => !value)}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium">
+              {showDisabled ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
+              Disabled and catalog-only sources
+            </span>
+            <StatusBadge tone="muted">{disabledRows.length}</StatusBadge>
+          </button>
+          {showDisabled ? (
+            <div className="grid gap-2 border-t border-border p-3 sm:grid-cols-2 xl:grid-cols-3">
+              {disabledRows.map((row) => (
+                <div key={row.source_id} className="rounded-lg border border-border bg-background px-3 py-2">
+                  <div className="truncate text-sm font-medium">{row.source_name}</div>
+                  <div className="mt-0.5 truncate text-xs text-muted-foreground">{row.source_family} · {row.source_kind || "catalog"}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      </div>
     </DataTableFrame>
   );
 }
 
-function CategoryRow({
-  category,
-  data,
-  isOpen,
-  onToggle,
-  jobs,
-}: {
-  category: SourceCatalogCategory;
-  data: PanelData;
-  isOpen: boolean;
-  onToggle: () => void;
-  jobs: UseRefreshJobs;
-}) {
-  const job = category.refresh_job || sourceFamilyDef(category.family as SourceFamilyId).job;
-  const running = jobs.pendingJobs.has(job) || jobs.jobStates[job]?.status === "running";
+function GroupActions({ group, jobs }: { group: SourceHealthGroup; jobs: UseRefreshJobs }) {
+  const validJobs = group.jobs.filter((job) => !jobs.allowlist.length || jobs.allowlist.includes(job));
+  if (!validJobs.length) return <span className="text-xs text-muted-foreground">No direct refresh action</span>;
   return (
-    <FragmentRow>
-      <tr className="border-b border-border align-top hover:bg-accent/40">
-        <td className="px-2 py-3">
-          <button
-            type="button"
-            onClick={onToggle}
-            className="text-muted-foreground hover:text-foreground"
-            aria-label={isOpen ? "Collapse" : "Expand"}
-          >
-            {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-          </button>
-        </td>
-        <td className="px-3 py-3">
-          <div className="flex items-center gap-2">
-            <StatusDot tone={catalogTone(category.tone)} />
-            <span className="font-medium">{category.label}</span>
-          </div>
-          {category.stale_after ? (
-            <div className="mt-0.5 text-xs text-muted-foreground">stale after {category.stale_after}</div>
-          ) : null}
-        </td>
-        <td className="whitespace-nowrap px-3 py-3 text-muted-foreground">{category.cadence_label || "-"}</td>
-        <td className="px-3 py-3">
-          <FetcherBadge category={category} />
-        </td>
-        <td className="px-3 py-3">
-          {category.primary ? <ProviderChip provider={category.primary} /> : <span className="text-muted-foreground">-</span>}
-        </td>
-        <td className="px-3 py-3">
-          {category.fallback.length ? (
-            <div className="flex flex-wrap gap-1.5">
-              {category.fallback.map((provider) => (
-                <ProviderChip key={provider.provider} provider={provider} />
-              ))}
-            </div>
-          ) : (
-            <span className="text-muted-foreground">-</span>
-          )}
-        </td>
-        <td className="px-3 py-3">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={running}
-            onClick={() => void jobs.start(job)}
-            title={`Run ${jobDef(job).label}`}
-          >
+    <div className="flex flex-wrap items-center gap-1.5">
+      {validJobs.map((job) => {
+        const running = jobs.pendingJobs.has(job) || jobs.jobStates[job]?.status === "running";
+        return (
+          <Button key={job} type="button" size="sm" variant="outline" disabled={running} onClick={() => void jobs.start(job)} title={jobDef(job).description}>
             {running ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-            Refresh
+            {jobDef(job).label}
           </Button>
-        </td>
-      </tr>
-      {isOpen ? (
-        <tr className="border-b border-border bg-muted/30">
-          <td />
-          <td colSpan={6} className="px-3 py-3">
-            <CategoryDrillDown category={category} data={data} job={job} />
-          </td>
-        </tr>
-      ) : null}
-    </FragmentRow>
-  );
-}
-
-function FetcherBadge({ category }: { category: SourceCatalogCategory }) {
-  if (category.primary?.rate_limited) {
-    return <StatusBadge tone="warn">Rate-limited</StatusBadge>;
-  }
-  if (!category.live_fetcher) {
-    return <StatusBadge tone="muted">No fetcher</StatusBadge>;
-  }
-  return <StatusBadge tone="good">Live</StatusBadge>;
-}
-
-function ProviderChip({ provider }: { provider: SourceCatalogProvider }) {
-  const tone = catalogTone(provider.tone);
-  const title = [
-    `Status: ${provider.status}`,
-    provider.last_observed_at ? `Updated: ${formatDateTime(provider.last_observed_at)}` : "No observation yet",
-    provider.stale_after ? `Stale after: ${provider.stale_after}` : null,
-    provider.detail ? truncate(provider.detail) : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <span
-      title={title}
-      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs"
-    >
-      <StatusDot tone={tone} />
-      <span className="font-medium">{provider.provider}</span>
-      <span className="text-muted-foreground">{provider.last_observed_at ? formatDateTime(provider.last_observed_at) : "—"}</span>
-    </span>
-  );
-}
-
-type FreshnessRow = { sourceKey: string; provider: string; sourceType: string; status: string; tone: ReturnType<typeof freshnessTone>; latestAt: string; staleAfter: string; detail: string };
-
-function categoryFreshnessRows(category: SourceCatalogCategory, data: PanelData): FreshnessRow[] {
-  const types = new Set(category.source_types);
-  const providers = new Set(
-    [category.primary?.provider, ...category.fallback.map((block) => block.provider)].filter(Boolean).map((name) => baseProvider(String(name))),
-  );
-  const out: FreshnessRow[] = [];
-  for (const row of rows(data.sourceFreshness)) {
-    const sourceType = displayField(row, ["source_type"], "");
-    const provider = displayField(row, ["provider", "source_key", "source"], "unknown");
-    const typeMatch = types.size ? types.has(sourceType) : false;
-    const providerMatch = providers.has(baseProvider(provider));
-    if (!typeMatch && !providerMatch) continue;
-    out.push({
-      sourceKey: displayField(row, ["source_key", "provider", "source"], provider),
-      provider,
-      sourceType,
-      status: displayField(row, ["freshness_status", "status"], "not_loaded"),
-      tone: freshnessTone(displayField(row, ["freshness_status"], ""), displayField(row, ["status"], "")),
-      latestAt: displayField(row, ["last_observed_at", "checked_at"], ""),
-      staleAfter: displayField(row, ["stale_after"], ""),
-      detail: displayField(row, ["detail"], ""),
-    });
-  }
-  return out.sort((a, b) => dateMs(b.latestAt) - dateMs(a.latestAt) || a.sourceKey.localeCompare(b.sourceKey));
-}
-
-function CategoryDrillDown({ category, data, job }: { category: SourceCatalogCategory; data: PanelData; job: string }) {
-  const freshnessRows = categoryFreshnessRows(category, data);
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-        <span>Refresh job: <span className="text-foreground">{jobDef(job).label}</span></span>
-        <span>Cadence: <span className="text-foreground">{category.cadence_label || "-"}</span></span>
-        <span>Source types: <span className="text-foreground">{category.source_types.join(", ") || "-"}</span></span>
-        {category.primary?.symbol_count ? (
-          <span>Symbols tracked: <span className="text-foreground tabular-nums">{category.primary.symbol_count.toLocaleString()}</span></span>
-        ) : null}
-      </div>
-      {freshnessRows.length ? (
-        <table className="w-full min-w-[680px] text-xs">
-          <thead className="text-left text-muted-foreground">
-            <tr>
-              <th className="py-1 pr-3">Source</th>
-              <th className="py-1 pr-3">Type</th>
-              <th className="py-1 pr-3">Status</th>
-              <th className="py-1 pr-3">Latest</th>
-              <th className="py-1 pr-3">Stale After</th>
-              <th className="py-1 pr-3">Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {freshnessRows.slice(0, 40).map((row) => (
-              <tr key={row.sourceKey} className="border-t border-border/60 align-top">
-                <td className="py-1 pr-3 font-medium">{row.sourceKey}</td>
-                <td className="py-1 pr-3 text-muted-foreground">{row.sourceType || "-"}</td>
-                <td className="py-1 pr-3"><StatusBadge tone={row.tone}>{statusLabel(row.tone)}</StatusBadge></td>
-                <td className="whitespace-nowrap py-1 pr-3 text-muted-foreground">{formatDateTime(row.latestAt)}</td>
-                <td className="whitespace-nowrap py-1 pr-3 text-muted-foreground">{row.staleAfter || "-"}</td>
-                <td className="max-w-[320px] truncate py-1 pr-3 text-muted-foreground" title={row.detail}>{row.detail || "-"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div className="text-xs text-muted-foreground">No live freshness rows for this category yet.</div>
-      )}
-      {freshnessRows.length > 40 ? (
-        <div className="text-xs text-muted-foreground">Showing 40 of {freshnessRows.length} freshness rows (most recent first).</div>
-      ) : null}
+        );
+      })}
     </div>
   );
+}
+
+function SourceTable({
+  rows,
+  expandedSource,
+  onToggleSource,
+}: {
+  rows: SourceCatalogRow[];
+  expandedSource: string | null;
+  onToggleSource: (sourceId: string | null) => void;
+}) {
+  return (
+    <table className="w-full table-fixed text-sm">
+      <thead className="bg-muted/20 text-left text-xs text-muted-foreground">
+        <tr>
+          <th className="w-[30%] px-3 py-2.5">Source</th>
+          <th className="w-[13%] px-3 py-2.5">Health</th>
+          <th className="w-[17%] px-3 py-2.5">Last Check</th>
+          <th className="w-[17%] px-3 py-2.5">Last Data</th>
+          <th className="w-[23%] px-3 py-2.5">Coverage</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => {
+          const expanded = expandedSource === row.source_id;
+          return (
+            <Fragment key={row.source_id}>
+              <tr className="cursor-pointer border-t border-border/70 align-top hover:bg-accent/40" onClick={() => onToggleSource(expanded ? null : row.source_id)}>
+                <td className="px-3 py-3">
+                  <div className="flex items-start gap-2">
+                    <StatusDot tone={sourceHealthTone(row.effective_status)} className="mt-1" />
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{row.source_name}</div>
+                      <div className="truncate text-xs text-muted-foreground">{row.source_kind || row.source_family} · {row.cadence_label}</div>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-3 py-3"><HealthBadge row={row} /></td>
+                <td className="px-3 py-3"><TimeCell value={row.last_attempt_at} inherited={row.inherited_check} /></td>
+                <td className="px-3 py-3"><TimeCell value={row.last_data_at} emptyLabel="Checked, no rows" /></td>
+                <td className="px-3 py-3"><Coverage row={row} /></td>
+              </tr>
+              {expanded ? <SourceDetail row={row} colSpan={5} /> : null}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function SourceCard({ row, expanded, onToggle }: { row: SourceCatalogRow; expanded: boolean; onToggle: () => void }) {
+  return (
+    <div className="p-3">
+      <button type="button" className="w-full text-left" onClick={onToggle}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-2">
+            <StatusDot tone={sourceHealthTone(row.effective_status)} className="mt-1.5" />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{row.source_name}</div>
+              <div className="truncate text-xs text-muted-foreground">{row.source_kind || row.source_family}</div>
+            </div>
+          </div>
+          <HealthBadge row={row} />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+          <CompactFact label="Checked" value={formatAge(row.last_attempt_at)} />
+          <CompactFact label="Data" value={formatAge(row.last_data_at)} />
+          <CompactFact label="Coverage" value={`${row.item_count.toLocaleString()} items`} />
+        </div>
+      </button>
+      {expanded ? <DetailBody row={row} /> : null}
+    </div>
+  );
+}
+
+function HealthBadge({ row }: { row: SourceCatalogRow }) {
+  return <StatusBadge tone={sourceHealthTone(row.effective_status)}>{row.effective_status.replaceAll("_", " ")}</StatusBadge>;
+}
+
+function TimeCell({ value, inherited = false, emptyLabel = "Never checked" }: { value: string | null; inherited?: boolean; emptyLabel?: string }) {
+  if (!value) return <span className="text-xs text-muted-foreground">{emptyLabel}</span>;
+  return (
+    <div>
+      <div className="text-xs font-medium">{formatAge(value)}</div>
+      <div className="truncate text-[11px] text-muted-foreground">{formatDateTime(value)}{inherited ? " · inherited" : ""}</div>
+    </div>
+  );
+}
+
+function Coverage({ row }: { row: SourceCatalogRow }) {
+  return (
+    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs tabular-nums">
+      <span>{row.item_count.toLocaleString()} <span className="text-muted-foreground">items</span></span>
+      <span>{row.ticker_count.toLocaleString()} <span className="text-muted-foreground">tickers</span></span>
+    </div>
+  );
+}
+
+function SourceDetail({ row, colSpan }: { row: SourceCatalogRow; colSpan: number }) {
+  return (
+    <tr className="border-t border-border bg-muted/20">
+      <td colSpan={colSpan} className="px-4 py-3"><DetailBody row={row} /></td>
+    </tr>
+  );
+}
+
+function DetailBody({ row }: { row: SourceCatalogRow }) {
+  return (
+    <div className="mt-3 grid gap-3 rounded-lg border border-border bg-background p-3 text-xs md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+      <div className="space-y-1 text-muted-foreground">
+        <div><span className="text-foreground">ID:</span> {row.source_id}</div>
+        <div><span className="text-foreground">Mode:</span> {row.ingestion_mode || "not declared"}</div>
+        <div><span className="text-foreground">Capability:</span> {row.latest_capability || "not checked"}</div>
+        <div><span className="text-foreground">Run outcome:</span> {row.run_status}</div>
+        <div><span className="text-foreground">Status observed:</span> {formatDateTime(row.status_at)}</div>
+        <div><span className="text-foreground">Last success:</span> {formatDateTime(row.last_success_at)}</div>
+        {row.capability_health.length > 1 ? (
+          <div className="pt-1">
+            <div className="mb-1 text-foreground">Acquisition paths</div>
+            <div className="flex flex-wrap gap-1">
+              {row.capability_health.map((capability) => (
+                <StatusBadge key={capability.capability} tone={capability.status === "succeeded" ? "good" : capability.status === "failed" ? "bad" : "warn"}>
+                  {capability.capability}: {capability.status}
+                </StatusBadge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="space-y-2">
+        {row.remediation ? <div className="font-medium text-amber-700 dark:text-amber-300">{row.remediation}</div> : null}
+        {row.failure_detail ? <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-[11px] text-muted-foreground">{row.failure_detail}</pre> : <div className="text-muted-foreground">No active failure detail.</div>}
+      </div>
+    </div>
+  );
+}
+
+function CompactFact({ label, value }: { label: string; value: string }) {
+  return <div><div className="text-muted-foreground">{label}</div><div className="mt-0.5 truncate font-medium">{value}</div></div>;
+}
+
+function matchesQuery(row: SourceCatalogRow, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [row.source_name, row.source_id, row.source_family, row.source_kind].some((value) => value.toLowerCase().includes(needle));
+}
+
+function collapsedRows(rows: SourceCatalogRow[]): SourceCatalogRow[] {
+  const attention = rows.filter((row) => row.effective_status !== "healthy");
+  const healthy = rows.filter((row) => row.effective_status === "healthy").slice(0, Math.max(0, 6 - attention.length));
+  return [...attention, ...healthy];
 }

@@ -136,5 +136,5 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
     news_source = next(row for row in tables["sources"] if row["source_id"] == "news")
     assert news_source["items_count"] == 1
     assert news_source["tickers_count"] == 1
-    assert any(row["id"] == "legacy-analyst-estimates" for row in tables["source_catalog"])
-    assert len({row["id"] for row in tables["source_catalog"]}) == len(tables["source_catalog"])
+    assert any(row["source_id"] == "legacy-analyst-estimates" for row in tables["source_catalog"])
+    assert len({row["source_id"] for row in tables["source_catalog"]}) == len(tables["source_catalog"])
