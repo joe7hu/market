@@ -212,6 +212,29 @@ This job runs `options_radar -> run_option_agents -> deterministic options_radar
 once, so agent hypotheses affect the grouped opportunity read model without
 starting a second agent queue.
 
+The premarket workflow intentionally composes already-ingested facts. Run a
+separate source-plus-publication refresh after the options market opens so
+`/options-radar` does not merely republish an older Robinhood snapshot. The
+checked-in weekday market-open definition runs at 9:40 AM Eastern:
+
+```text
+ops/launchd/com.joehu.market.market-open-options-radar.plist
+```
+
+Install or refresh it with:
+
+```bash
+cp ops/launchd/com.joehu.market.market-open-options-radar.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.market-open-options-radar.plist 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.market-open-options-radar.plist
+launchctl print gui/$(id -u)/com.joehu.market.market-open-options-radar
+```
+
+This job runs `options_radar_hard_refresh`, which pulls Robinhood option chains
+before rebuilding the visible publication. It raises the incremental batch to
+the configured 80-symbol radar universe for the once-daily market-open pass;
+the collector's existing time and response bounds still apply.
+
 Keep the separate disclosure automation if it already exists; this full refresh
 is the missing broad-market workflow that ensures the decision desk has current
 market, evidence, event, analysis, and snapshot state.

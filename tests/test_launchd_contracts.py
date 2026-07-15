@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+import plistlib
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_market_open_options_radar_runs_full_hard_refresh_at_0940_weekdays() -> None:
+    plist_path = (
+        PROJECT_ROOT
+        / "ops"
+        / "launchd"
+        / "com.joehu.market.market-open-options-radar.plist"
+    )
+
+    with plist_path.open("rb") as handle:
+        payload = plistlib.load(handle)
+
+    intervals = payload["StartCalendarInterval"]
+    assert intervals == [
+        {"Weekday": weekday, "Hour": 9, "Minute": 40}
+        for weekday in range(1, 6)
+    ]
+    command = payload["ProgramArguments"][2]
+    assert "investment_panel.core.refresh_jobs options_radar_hard_refresh" in command
+    assert "MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS=80" in command

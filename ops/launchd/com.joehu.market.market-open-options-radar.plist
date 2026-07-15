@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.joehu.market.market-open-options-radar</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/joehu/proj/market &amp;&amp; MARKET_DATABASE_URL=postgresql:///market MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS=80 /opt/homebrew/bin/uv run python -m investment_panel.core.refresh_jobs options_radar_hard_refresh --config config.yaml</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>40</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>40</integer></dict>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/tmp/market-market-open-options-radar.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/market-market-open-options-radar.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/joehu/proj/market</string>
+</dict>
+</plist>
