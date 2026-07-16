@@ -103,6 +103,9 @@ export type KnownPanelTables = {
   opportunitySources: TablePayload;
   candidates: TablePayload;
   portfolio: TablePayload;
+  portfolioSummary: TablePayload;
+  portfolioPerformance: TablePayload;
+  portfolioTransactions: TablePayload;
   theses: TablePayload;
   thesisMonitor: TablePayload;
   traderTwins: TablePayload;

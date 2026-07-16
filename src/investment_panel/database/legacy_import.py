@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, date, datetime
+from decimal import Decimal, ROUND_HALF_EVEN
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
+from zoneinfo import ZoneInfo
 
 from psycopg.types.json import Jsonb
 
@@ -47,6 +49,11 @@ DURABLE_TABLES = (
     "options_chain",
 )
 EXCLUDED_DERIVED_TABLES = ("option_snapshot", "option_features", "candidate_event", "radar_alert", "shadow_trade")
+
+
+def _database_decimal(value: Any, scale: int) -> Decimal:
+    quantum = Decimal(1).scaleb(-scale)
+    return Decimal(str(value or 0)).quantize(quantum, rounding=ROUND_HALF_EVEN)
 
 
 class LegacyImporter:
@@ -156,20 +163,70 @@ class LegacyImporter:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for row in rows:
                 instrument_id = _upsert_instrument(connection, row["symbol"], row["symbol"], "equity", "portfolio")
+                quantity = _database_decimal(row.get("quantity"), 8)
+                price = _database_decimal(row.get("avg_cost"), 6)
+                amount = _database_decimal(quantity * price, 6)
+                purchase_date = row.get("purchase_date")
+                executed_at = (
+                    datetime.combine(
+                        date.fromisoformat(str(purchase_date)[:10]),
+                        datetime.min.time().replace(hour=12),
+                        tzinfo=ZoneInfo("America/New_York"),
+                    )
+                    if purchase_date
+                    else datetime.now(UTC)
+                )
+                existing = connection.execute(
+                    """
+                    SELECT quantity, price, notes,
+                           (executed_at AT TIME ZONE 'UTC')::date AS executed_date
+                    FROM app.portfolio_transaction
+                    WHERE idempotency_key = %s
+                    """,
+                    [f"opening:{instrument_id}"],
+                ).fetchone()
+                if existing:
+                    expected_date = executed_at.astimezone(UTC).date() if purchase_date else None
+                    matches = (
+                        Decimal(existing["quantity"] or 0) == quantity
+                        and Decimal(existing["price"] or 0) == price
+                        and str(existing.get("notes") or "") == str(row.get("notes") or "")
+                        and (expected_date is None or existing["executed_date"] == expected_date)
+                    )
+                    if not matches:
+                        raise ValueError(f"legacy portfolio drift for {row['symbol']}; target opening balance differs")
+                    continue
+                inserted = connection.execute(
+                    """
+                    INSERT INTO app.portfolio_transaction
+                        (instrument_id, transaction_type, quantity, price, amount, fees,
+                         realized_pnl, executed_at, notes, idempotency_key)
+                    VALUES (%s, 'opening_balance', %s, %s, %s, 0, 0, %s, %s, %s)
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    RETURNING id
+                    """,
+                    [
+                        instrument_id,
+                        quantity,
+                        price,
+                        amount,
+                        executed_at,
+                        row.get("notes") or "",
+                        f"opening:{instrument_id}",
+                    ],
+                ).fetchone()
+                if not inserted:
+                    continue
                 connection.execute(
                     """
                     INSERT INTO app.portfolio_position
                         (instrument_id, quantity, average_cost, purchase_date, notes, updated_at)
                     VALUES (%s, %s, %s, %s, %s, now())
-                    ON CONFLICT (instrument_id) DO UPDATE
-                    SET quantity = EXCLUDED.quantity, average_cost = EXCLUDED.average_cost,
-                        purchase_date = EXCLUDED.purchase_date, notes = EXCLUDED.notes,
-                        updated_at = now()
+                    ON CONFLICT (instrument_id) DO NOTHING
                     """,
-                    [instrument_id, row.get("quantity") or 0, row.get("avg_cost") or 0, row.get("purchase_date"), row.get("notes") or ""],
+                    [instrument_id, quantity, price, row.get("purchase_date"), row.get("notes") or ""],
                 )
         return len(rows)
-
     def _import_watchlist(self, rows: list[dict[str, Any]]) -> int:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for row in rows:
@@ -433,6 +490,7 @@ class LegacyImporter:
     def _target_counts(self) -> dict[str, int]:
         queries = {
             "portfolio_positions": "SELECT count(*) FROM app.portfolio_position",
+            "portfolio_transactions": "SELECT count(*) FROM app.portfolio_transaction",
             "manual_watchlist": "SELECT count(*) FROM app.watchlist_item",
             "theses_current": "SELECT count(*) FROM app.thesis WHERE status = 'current'",
             "trade_journal": "SELECT count(*) FROM app.trade_journal",

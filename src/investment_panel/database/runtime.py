@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from psycopg import Connection
+from psycopg import Connection, IsolationLevel
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -63,6 +63,22 @@ class DatabaseRuntime:
                 connection.execute("SET TRANSACTION READ ONLY")
                 _set_local_timeouts(connection, profile)
                 yield connection
+
+    @contextmanager
+    def snapshot(self, profile: RuntimeProfile = API_PROFILE) -> Iterator[Connection[dict[str, Any]]]:
+        """Read a related model bundle from one repeatable PostgreSQL snapshot."""
+        with self.pool.connection() as connection:
+            previous_isolation = connection.isolation_level
+            previous_read_only = connection.read_only
+            connection.isolation_level = IsolationLevel.REPEATABLE_READ
+            connection.read_only = True
+            try:
+                with connection.transaction():
+                    _set_local_timeouts(connection, profile)
+                    yield connection
+            finally:
+                connection.read_only = previous_read_only
+                connection.isolation_level = previous_isolation
 
     @contextmanager
     def transaction(self, profile: RuntimeProfile = API_PROFILE) -> Iterator[Connection[dict[str, Any]]]:

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
 
 import duckdb
 import psycopg
+import pytest
 
 from app.data_access.postgres_panel import load_postgres_tables
 from investment_panel.database.legacy_import import LegacyImporter
@@ -18,7 +20,10 @@ from investment_panel.database.runtime import DatabaseRuntime
 def _legacy_database(path: Path) -> None:
     with closing(duckdb.connect(str(path))) as connection:
         connection.execute("CREATE TABLE portfolio_positions (symbol TEXT PRIMARY KEY, quantity DOUBLE, avg_cost DOUBLE, notes TEXT, purchase_date DATE)")
-        connection.execute("INSERT INTO portfolio_positions VALUES ('NVDA', 3, 125.5, 'core', DATE '2024-01-15')")
+        connection.execute(
+            "INSERT INTO portfolio_positions VALUES "
+            "('NVDA', 3.123456789, 100.1234567, 'core', DATE '2024-01-15')"
+        )
         connection.execute("CREATE TABLE manual_watchlist (symbol TEXT PRIMARY KEY, name TEXT, asset_class TEXT, notes TEXT, created_at TIMESTAMP, updated_at TIMESTAMP, watch_state TEXT)")
         connection.execute("INSERT INTO manual_watchlist VALUES ('BTC-USD', 'Bitcoin', 'crypto', 'macro', now(), now(), 'watched')")
         connection.execute("CREATE TABLE theses (symbol TEXT PRIMARY KEY, thesis_json JSON, updated_at TIMESTAMP)")
@@ -76,6 +81,11 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
         importer = LegacyImporter(runtime, legacy_path)
         first = importer.run(report_path=report_path)
         second = importer.run()
+        with pytest.raises(ValueError, match="legacy portfolio drift"):
+            importer._import_portfolio([{
+                "symbol": "NVDA", "quantity": 4, "avg_cost": 125.5,
+                "purchase_date": "2024-01-15", "notes": "core",
+            }])
     finally:
         runtime.close()
 
@@ -84,6 +94,7 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
     assert first["excluded_derived"] == {"option_snapshot": 100, "option_features": 0, "candidate_event": 0, "radar_alert": 25, "shadow_trade": 0}
     assert first["target_counts"] == {
         "portfolio_positions": 1,
+        "portfolio_transactions": 1,
         "manual_watchlist": 1,
         "theses_current": 1,
         "trade_journal": 1,
@@ -110,6 +121,9 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
         position = connection.execute(
             "SELECT i.symbol, p.quantity, p.average_cost FROM app.portfolio_position p JOIN catalog.instrument i ON i.id = p.instrument_id"
         ).fetchone()
+        portfolio_transaction = connection.execute(
+            "SELECT transaction_type, quantity, price FROM app.portfolio_transaction"
+        ).fetchone()
         thesis_revisions = connection.execute("SELECT count(*) FROM app.thesis").fetchone()[0]
         feed = connection.execute(
             "SELECT sentiment, thesis FROM analysis.source_signal"
@@ -119,7 +133,12 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
             "WHERE metric_set = 'market_valuation:shiller_pe'"
         ).fetchone()[0]
         latest_option_quotes = connection.execute("SELECT count(*) FROM raw.option_quote").fetchone()[0]
-    assert position == ("NVDA", 3, 125.5)
+    assert position == ("NVDA", Decimal("3.12345679"), Decimal("100.123457"))
+    assert portfolio_transaction == (
+        "opening_balance",
+        Decimal("3.12345679"),
+        Decimal("100.123457"),
+    )
     assert thesis_revisions == 1
     assert feed == ("bullish", "AI demand is firm")
     assert len(market_history) == 2
@@ -138,3 +157,27 @@ def test_selective_legacy_import_is_idempotent_and_reconciled(
     assert news_source["tickers_count"] == 1
     assert any(row["source_id"] == "legacy-analyst-estimates" for row in tables["source_catalog"])
     assert len({row["source_id"] for row in tables["source_catalog"]}) == len(tables["source_catalog"])
+
+
+def test_legacy_portfolio_without_purchase_date_is_stable_across_days(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    row = {
+        "symbol": "MSFT",
+        "quantity": 2.5,
+        "avg_cost": 100.1234567,
+        "purchase_date": None,
+        "notes": "date unavailable",
+    }
+    try:
+        importer = LegacyImporter(runtime, Path("unused.duckdb"))
+        assert importer._import_portfolio([row]) == 1
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.portfolio_transaction SET executed_at = executed_at - interval '2 days' "
+                "WHERE idempotency_key LIKE 'opening:%'"
+            )
+        assert importer._import_portfolio([row]) == 1
+    finally:
+        runtime.close()

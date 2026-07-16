@@ -1,7 +1,9 @@
 """Portfolio, portfolio-risk, and watchlist management routes."""
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -15,46 +17,134 @@ def portfolio() -> dict[str, Any]:
     return deps.user_state_table_payload(deps.portfolio_rows(deps.load_config()))
 
 
+@router.get("/api/portfolio/summary")
+def portfolio_summary() -> dict[str, Any]:
+    return deps.portfolio_summary(deps.load_config())
+
+
+@router.get("/api/portfolio/performance")
+def portfolio_performance() -> dict[str, Any]:
+    return deps.user_state_table_payload(deps.portfolio_performance_rows(deps.load_config()))
+
+
 @router.post("/api/portfolio/positions")
-def save_position(position: deps.PortfolioPositionInput) -> dict[str, Any]:
+def save_position(position: deps.PortfolioPositionInput, request: Request) -> dict[str, Any]:
+    """Compatibility import path for a new opening balance; subsequent changes must be trades."""
+    deps._require_local_request(request)
     config = deps.load_config()
+    symbol = position.symbol.strip().upper()
+    if any(str(row.get("symbol") or "") == symbol for row in deps.portfolio_rows(config)):
+        raise HTTPException(status_code=409, detail="position already exists; record a buy or sell transaction")
     try:
-        saved = deps.save_portfolio_position(config, position.model_dump())
+        executed_at = (
+            datetime.combine(
+                date.fromisoformat(position.purchase_date.strip()[:10]),
+                time(12),
+                tzinfo=ZoneInfo("America/New_York"),
+            ).isoformat()
+            if position.purchase_date
+            else datetime.now(UTC).isoformat()
+        )
+        saved = deps.record_portfolio_transaction(
+            config,
+            {
+                "symbol": symbol,
+                "transaction_type": "opening_balance",
+                "quantity": position.quantity,
+                "price": position.avg_cost,
+                "fees": 0,
+                "executed_at": executed_at,
+                "notes": position.notes,
+                "idempotency_key": (
+                    f"position-import:{symbol}:{executed_at}:{position.quantity:g}:{position.avg_cost:g}"
+                ),
+            },
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = deps.portfolio_rows(config)
-    return {"position": saved, "portfolio": deps.user_state_table_payload(rows)}
+    return {"transaction": saved, "portfolio": deps.user_state_table_payload(rows)}
 
 
 @router.delete("/api/portfolio/positions/{symbol}")
 def delete_position(symbol: str) -> dict[str, Any]:
-    config = deps.load_config()
+    raise HTTPException(
+        status_code=410,
+        detail=f"direct deletion is retired; record a sell or transfer-out transaction for {symbol.upper()}",
+    )
+
+
+@router.get("/api/portfolio/transactions")
+def portfolio_transactions(limit: int = 100) -> dict[str, Any]:
+    return deps.user_state_table_payload(deps.portfolio_transaction_rows(deps.load_config(), limit=limit))
+
+
+@router.post("/api/portfolio/transactions/preview")
+def preview_transaction(transaction: deps.PortfolioTransactionInput, request: Request) -> dict[str, Any]:
+    deps._require_local_request(request)
     try:
-        deleted = deps.delete_portfolio_position(config, symbol)
+        return deps.preview_portfolio_transaction(deps.load_config(), transaction.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    rows = deps.portfolio_rows(config)
-    return {"position": deleted, "portfolio": deps.user_state_table_payload(rows)}
+
+
+@router.post("/api/portfolio/transactions")
+def create_portfolio_transaction(transaction: deps.PortfolioTransactionInput, request: Request) -> dict[str, Any]:
+    deps._require_local_request(request)
+    config = deps.load_config()
+    try:
+        saved = deps.record_portfolio_transaction(config, transaction.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    deps._invalidate_context_cache()
+    return {
+        "transaction": saved,
+        "portfolio": deps.user_state_table_payload(deps.portfolio_rows(config)),
+    }
+
+
+@router.post("/api/portfolio/transactions/{transaction_id}/reverse")
+def reverse_transaction(
+    transaction_id: str,
+    reversal: deps.PortfolioTransactionReversalInput,
+    request: Request,
+) -> dict[str, Any]:
+    deps._require_local_request(request)
+    config = deps.load_config()
+    try:
+        saved = deps.reverse_portfolio_transaction(
+            config,
+            transaction_id,
+            idempotency_key=reversal.idempotency_key,
+            notes=reversal.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    deps._invalidate_context_cache()
+    return {
+        "transaction": saved,
+        "portfolio": deps.user_state_table_payload(deps.portfolio_rows(config)),
+    }
 
 
 @router.get("/api/portfolio-risk/exposure-clusters")
 def portfolio_risk_exposure_clusters() -> dict[str, Any]:
-    return deps._table_payload("exposure_clusters")
+    return deps.user_state_table_payload(deps.portfolio_exposure_rows(deps.load_config()))
 
 
 @router.get("/api/portfolio-risk/correlation-edges")
 def portfolio_risk_correlation_edges() -> dict[str, Any]:
-    return deps._table_payload("correlation_edges")
+    return deps.user_state_table_payload(deps.portfolio_correlation_rows(deps.load_config()))
 
 
 @router.get("/api/portfolio-risk/cards")
 def portfolio_risk_cards() -> dict[str, Any]:
-    return deps._table_payload("portfolio_risk_cards")
+    return deps.user_state_table_payload(deps.portfolio_risk_rows(deps.load_config()))
 
 
 @router.get("/api/portfolio-risk/review-actions")
 def portfolio_risk_review_actions() -> dict[str, Any]:
-    return deps._table_payload("review_actions")
+    return deps.user_state_table_payload(deps.portfolio_review_action_rows(deps.load_config()))
 
 
 @router.get("/api/watchlist-screen")

@@ -8,7 +8,7 @@ from investment_panel.database.legacy_bootstrap import import_source_signals
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.today_analysis import _option_item, refresh_today_publication
-from app.data_access.user_state import save_position
+from app.data_access.portfolio_ledger import record_portfolio_transaction
 
 
 def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_postgres_dsn: str) -> None:
@@ -16,7 +16,13 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
     runtime.open()
     try:
         config = {"database": {"url": migrated_postgres_dsn}}
-        save_position(config, {"symbol": "NVDA", "quantity": 2, "avg_cost": 100})
+        record_portfolio_transaction(
+            config,
+            {
+                "symbol": "NVDA", "transaction_type": "opening_balance", "quantity": 2, "price": 100,
+                "executed_at": "2026-07-01T00:00:00Z", "idempotency_key": "today-publication-nvda",
+            },
+        )
 
         ingestion = IngestionRepository(runtime)
         ingestion.register_source("test-quotes", name="Test quotes", family="test", kind="quote")
@@ -79,9 +85,12 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
     runtime.open()
     as_of = datetime(2026, 7, 13, 13, tzinfo=UTC)
     try:
-        save_position(
+        record_portfolio_transaction(
             {"database": {"url": migrated_postgres_dsn}},
-            {"symbol": "NVDA", "quantity": 2, "avg_cost": 100},
+            {
+                "symbol": "NVDA", "transaction_type": "opening_balance", "quantity": 2, "price": 100,
+                "executed_at": "2026-07-01T00:00:00Z", "idempotency_key": "today-source-changes-nvda",
+            },
         )
         ingestion = IngestionRepository(runtime)
         facts = SourceFactRepository(runtime)

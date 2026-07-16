@@ -28,79 +28,75 @@ INVALIDATION_PRICE_RE = re.compile(
 )
 
 
-def save_position(config: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
-    runtime = runtime_for_config(config)
-    symbol = _symbol(position.get("symbol"))
-    quantity = float(position["quantity"])
-    average_cost = float(position["avg_cost"])
-    purchase_date = position.get("purchase_date")
-    notes = str(position.get("notes") or "").strip()
-    with runtime.transaction() as connection:
-        instrument_id = _upsert_instrument(
-            connection, symbol, symbol, _infer_asset_class(symbol), replace_asset_class=False
-        )
-        connection.execute(
+def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> list[dict[str, Any]]:
+    if connection is None:
+        runtime = runtime_for_config(config)
+        with runtime.read() as owned_connection:
+            return portfolio_rows(config, connection=owned_connection)
+    rows = connection.execute(
             """
-            INSERT INTO app.portfolio_position
-                (instrument_id, quantity, average_cost, purchase_date, notes, updated_at)
-            VALUES (%s, %s, %s, %s, %s, now())
-            ON CONFLICT (instrument_id) DO UPDATE
-            SET quantity = EXCLUDED.quantity,
-                average_cost = EXCLUDED.average_cost,
-                purchase_date = EXCLUDED.purchase_date,
-                notes = EXCLUDED.notes,
-                updated_at = now()
-            """,
-            [instrument_id, quantity, average_cost, purchase_date, notes],
-        )
-        connection.execute(
-            """
-            INSERT INTO app.thesis (instrument_id, revision, status, thesis)
-            SELECT %s, 1, 'current', %s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM app.thesis WHERE instrument_id = %s AND status = 'current'
-            )
-            """,
-            [instrument_id, Jsonb(DEFAULT_OWNED_THESIS), instrument_id],
-        )
-    return {
-        "symbol": symbol,
-        "quantity": quantity,
-        "avg_cost": average_cost,
-        "purchase_date": purchase_date,
-        "notes": notes,
-    }
-
-
-def delete_position(config: dict[str, Any], symbol: str) -> dict[str, Any]:
-    runtime = runtime_for_config(config)
-    normalized = _symbol(symbol)
-    with runtime.transaction() as connection:
-        row = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [normalized]).fetchone()
-        if row:
-            connection.execute("DELETE FROM app.portfolio_position WHERE instrument_id = %s", [row["id"]])
-            connection.execute(
-                "DELETE FROM app.thesis WHERE instrument_id = %s AND revision = 1 AND thesis = %s",
-                [row["id"], Jsonb(DEFAULT_OWNED_THESIS)],
-            )
-    return {"symbol": normalized, "deleted": True}
-
-
-def portfolio_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
-    runtime = runtime_for_config(config)
-    with runtime.read() as connection:
-        rows = connection.execute(
-            """
-            SELECT i.symbol, i.name, i.asset_class, i.category,
+            SELECT i.symbol, i.name, i.asset_class, i.sector, i.industry, i.category,
                    p.quantity, p.average_cost, p.purchase_date, p.notes, p.updated_at,
-                   q.price, q.change_pct, q.change_abs, q.source_id AS quote_source
+                   q.price, q.change_pct, q.change_abs, q.observed_at AS quote_observed_at,
+                   q.source_id AS quote_source, q.valuation_status
             FROM app.portfolio_position p
             JOIN catalog.instrument i ON i.id = p.instrument_id
             LEFT JOIN LATERAL (
-                SELECT quote.price, quote.change_pct, quote.change_abs, quote.source_id
-                FROM raw.quote quote
-                WHERE quote.instrument_id = p.instrument_id
-                ORDER BY quote.observed_at DESC
+                SELECT max(transaction.executed_at) AS executed_at
+                FROM app.portfolio_transaction transaction
+                WHERE transaction.instrument_id = p.instrument_id
+                  AND transaction.transaction_type = 'split'
+                  AND transaction.reverses_transaction_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app.portfolio_transaction reversal
+                      WHERE reversal.reverses_transaction_id = transaction.id
+                  )
+            ) latest_split ON true
+            LEFT JOIN LATERAL (
+                SELECT candidate.price, candidate.change_pct, candidate.change_abs,
+                       candidate.observed_at, candidate.source_id, candidate.valuation_status
+                FROM (
+                    SELECT quote.price, quote.change_pct, quote.change_abs,
+                           quote.observed_at, quote.source_id, 'market_quote' AS valuation_status
+                    FROM raw.quote quote
+                    WHERE quote.instrument_id = p.instrument_id
+                      AND quote.observed_at >= now() - interval '7 days'
+                      AND (
+                          p.purchase_date IS NULL
+                          OR (quote.observed_at AT TIME ZONE 'America/New_York')::date >= p.purchase_date - 7
+                      )
+                      AND (latest_split.executed_at IS NULL OR quote.observed_at >= latest_split.executed_at)
+                    UNION ALL
+                    SELECT latest.close AS price,
+                           CASE WHEN previous.close > 0 THEN (latest.close / previous.close - 1) * 100 END AS change_pct,
+                           CASE WHEN previous.close IS NOT NULL THEN latest.close - previous.close END AS change_abs,
+                           ((latest.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York') AS observed_at,
+                           latest.source_id,
+                           'daily_close' AS valuation_status
+                    FROM LATERAL (
+                        SELECT bar.trading_date, bar.close, bar.source_id
+                        FROM raw.price_bar bar
+                        WHERE bar.instrument_id = p.instrument_id AND bar.interval = '1d' AND bar.close > 0
+                          AND bar.trading_date >= current_date - 7
+                          AND (p.purchase_date IS NULL OR bar.trading_date >= p.purchase_date - 7)
+                          AND (
+                              latest_split.executed_at IS NULL
+                              OR ((bar.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York')
+                                  >= latest_split.executed_at
+                          )
+                        ORDER BY bar.trading_date DESC, bar.observed_at DESC
+                        LIMIT 1
+                    ) latest
+                    LEFT JOIN LATERAL (
+                        SELECT bar.close
+                        FROM raw.price_bar bar
+                        WHERE bar.instrument_id = p.instrument_id AND bar.interval = '1d'
+                          AND bar.trading_date < latest.trading_date AND bar.close > 0
+                        ORDER BY bar.trading_date DESC, bar.observed_at DESC
+                        LIMIT 1
+                    ) previous ON true
+                ) candidate
+                ORDER BY candidate.observed_at DESC
                 LIMIT 1
             ) q ON true
             ORDER BY i.symbol
@@ -113,10 +109,13 @@ def portfolio_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
         row["quantity"] = float(row["quantity"])
         price = float(row["price"]) if row.get("price") is not None else None
         row["price"] = price
-        if price is not None and row["avg_cost"] is not None:
-            row["market_value"] = row["quantity"] * price
-            row["unrealized_pnl"] = row["quantity"] * (price - row["avg_cost"])
-            row["unrealized_pnl_pct"] = ((price - row["avg_cost"]) / row["avg_cost"]) * 100 if row["avg_cost"] else None
+        valuation_price = price if price is not None else row["avg_cost"]
+        if valuation_price is not None and row["avg_cost"] is not None:
+            row["valuation_price"] = valuation_price
+            row["valuation_status"] = str(row.get("valuation_status") or "market_quote") if price is not None else "cost_basis_fallback"
+            row["market_value"] = row["quantity"] * valuation_price
+            row["unrealized_pnl"] = row["quantity"] * (valuation_price - row["avg_cost"])
+            row["unrealized_pnl_pct"] = ((valuation_price - row["avg_cost"]) / row["avg_cost"]) * 100 if row["avg_cost"] else None
         output.append(_without_none(row))
     total = sum(float(row.get("market_value") or 0) for row in output)
     for row in output:

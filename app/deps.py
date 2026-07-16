@@ -33,12 +33,20 @@ from app.data_access import (
     panel_snapshot_payload,
     panel_contract_payload,
     portfolio_rows,
+    portfolio_correlation_rows,
+    portfolio_exposure_rows,
+    portfolio_performance_rows,
+    portfolio_review_action_rows,
+    portfolio_risk_rows,
+    portfolio_summary,
+    portfolio_transaction_rows,
+    preview_portfolio_transaction,
     options_radar_rows,
     populate_watchlist_symbol_data,
-    delete_portfolio_position,
     delete_watchlist_symbol,
     mark_thesis_reviewed,
-    save_portfolio_position,
+    record_portfolio_transaction,
+    reverse_portfolio_transaction,
     save_thesis,
     save_watchlist_symbol,
     settings_payload,
@@ -83,6 +91,35 @@ class PortfolioPositionInput(BaseModel):
     quantity: float
     avg_cost: float
     purchase_date: str | None = None
+    notes: str = ""
+
+
+class PortfolioTransactionInput(BaseModel):
+    symbol: str | None = None
+    transaction_type: Literal[
+        "opening_balance",
+        "buy",
+        "sell",
+        "dividend",
+        "fee",
+        "split",
+        "transfer_in",
+        "transfer_out",
+    ]
+    quantity: float | None = None
+    price: float | None = None
+    amount: float | None = None
+    fees: float = 0
+    currency: str = "USD"
+    account: str = "manual"
+    executed_at: str
+    notes: str = ""
+    idempotency_key: str
+    expected_position_version: str | None = None
+
+
+class PortfolioTransactionReversalInput(BaseModel):
+    idempotency_key: str
     notes: str = ""
 
 

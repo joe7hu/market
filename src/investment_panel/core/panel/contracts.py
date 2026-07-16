@@ -162,7 +162,11 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     ),
     "portfolio": (
         "portfolio",
+        "portfolio_summary",
+        "portfolio_performance",
+        "portfolio_transactions",
         "quotes",
+        "correlation_edges",
         "exposure_clusters",
         "portfolio_risk_cards",
         "review_actions",

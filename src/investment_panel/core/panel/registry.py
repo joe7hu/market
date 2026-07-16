@@ -66,6 +66,10 @@ READ_MODELS: dict[str, ReadLoader] = {
     "symbol_decision_snapshots": lambda ctx: ctx.decision_snapshots,
     "candidates": lambda ctx: candidates(ctx.con),
     "portfolio": lambda ctx: portfolio(ctx.con),
+    # PostgreSQL authority supplies these through app.data_access.portfolio_intelligence.
+    "portfolio_summary": lambda ctx: [],
+    "portfolio_performance": lambda ctx: [],
+    "portfolio_transactions": lambda ctx: [],
     "theses": lambda ctx: theses(ctx.con),
     "manual_watchlist": lambda ctx: manual_watchlist_rows(ctx.con),
     "thesis_monitor": lambda ctx: thesis_monitor_rows(ctx.con, ctx.active_watchlist),

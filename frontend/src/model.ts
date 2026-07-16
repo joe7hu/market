@@ -6,10 +6,16 @@ export type Holding = {
   ticker: string;
   quantity: number;
   price: number;
+  averageCost: number;
   marketValue: number;
   hasMarketValue: boolean;
   weight: number;
   unrealizedPnl: number;
+  unrealizedPnlPct: number;
+  dayChange: number;
+  dayChangePct: number;
+  quoteObservedAt: string;
+  valuationStatus: string;
   nextStep: string;
 };
 
@@ -70,21 +76,28 @@ function buildHoldings(portfolioRows: RowRecord[], quoteRows: RowRecord[]): Hold
   return portfolioRows.map((row) => {
     const ticker = textField(row, ["symbol", "ticker", "security"], "UNKNOWN").toUpperCase();
     const quantity = numberField(row, ["quantity", "shares", "position", "units"], 0);
-    const explicitPrice = numberField(row, ["price", "latest_price", "market_price"], Number.NaN);
+    const explicitPrice = numberField(row, ["price", "valuation_price", "latest_price", "market_price"], Number.NaN);
     const price = Number.isFinite(explicitPrice) && explicitPrice > 0 ? explicitPrice : prices.get(ticker) ?? 0;
     const explicitValue = numberField(row, ["market_value", "value"], Number.NaN);
     const marketValue = Number.isFinite(explicitValue) && explicitValue > 0 ? explicitValue : quantity * price;
-    const costBasis = numberField(row, ["cost_basis", "average_cost", "avg_cost"], Number.NaN);
-    const unrealizedPnl = Number.isFinite(costBasis) && quantity ? (price - costBasis) * quantity : numberField(row, ["unrealized_pnl", "pnl"], 0);
+    const costBasis = numberField(row, ["cost_basis", "average_cost", "avg_cost"], 0);
+    const explicitPnl = numberField(row, ["unrealized_pnl", "pnl"], Number.NaN);
+    const unrealizedPnl = Number.isFinite(explicitPnl) ? explicitPnl : quantity ? (price - costBasis) * quantity : 0;
     const nextStep = textField(row, ["next_step", "review_reason", "status"], "Review sizing, thesis, and latest evidence.");
     return {
       ticker,
       quantity,
       price,
+      averageCost: costBasis,
       marketValue,
       hasMarketValue: marketValue > 0,
       weight: 0,
       unrealizedPnl,
+      unrealizedPnlPct: numberField(row, ["unrealized_pnl_pct"], costBasis ? ((price / costBasis) - 1) * 100 : 0),
+      dayChange: numberField(row, ["change_abs"]) * quantity,
+      dayChangePct: numberField(row, ["change_pct"]),
+      quoteObservedAt: textField(row, ["quote_observed_at", "observed_at"]),
+      valuationStatus: textField(row, ["valuation_status"], "market_quote"),
       nextStep,
     };
   });

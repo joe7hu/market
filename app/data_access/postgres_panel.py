@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.data_access.postgres_queries import OWNED_CORRELATIONS_QUERY
 from app.data_access.postgres_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
+from app.data_access.portfolio_intelligence import portfolio_intelligence_tables
 from app.data_access.user_state import portfolio_rows, thesis_monitor_rows, thesis_rows, watchlist_rows
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
@@ -538,6 +539,8 @@ PUBLICATION_MODELS = {
 SPECIAL_MODELS = {
     "portfolio", "manual_watchlist", "theses", "thesis_monitor",
     "refresh_jobs", "broker_status",
+    "portfolio_summary", "portfolio_performance", "portfolio_transactions",
+    "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
 }
 
 
@@ -545,7 +548,17 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
     tables = _published_tables(runtime, requested)
-    if "portfolio" in requested:
+    intelligence_models = {
+        "portfolio",
+        "portfolio_summary", "portfolio_performance", "portfolio_transactions",
+        "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
+    }
+    bundle_models = intelligence_models - {"portfolio"}
+    if bundle_models.intersection(requested):
+        live_tables = portfolio_intelligence_tables(config)
+        for name in intelligence_models.intersection(requested):
+            tables[name] = live_tables[name]
+    elif "portfolio" in requested:
         tables["portfolio"] = portfolio_rows(config)
     if "manual_watchlist" in requested:
         tables["manual_watchlist"] = watchlist_rows(config)

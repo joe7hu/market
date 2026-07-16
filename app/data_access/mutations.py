@@ -4,34 +4,12 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time
 from typing import Any, Iterable
 
-from app.data_access.coerce import _optional_date, _positive_number
 from app.data_access.user_state import (
-    delete_position as delete_postgres_position,
     delete_watchlist_item,
-    save_position as save_postgres_position,
     save_thesis as save_postgres_thesis,
     save_watchlist_item,
     mark_thesis_reviewed as mark_postgres_thesis_reviewed,
 )
-
-
-
-def save_portfolio_position(config: dict[str, Any], position: dict[str, Any]) -> dict[str, Any]:
-    """Insert or update a manually entered portfolio position."""
-
-    symbol = str(position.get("symbol", "")).strip().upper()
-    if not symbol:
-        raise ValueError("symbol is required")
-    quantity = _positive_number(position.get("quantity"), "quantity")
-    avg_cost = _positive_number(position.get("avg_cost"), "avg_cost", allow_zero=True)
-    purchase_date = _optional_date(position.get("purchase_date"))
-    notes = str(position.get("notes", "") or "").strip()
-
-    return save_postgres_position(
-        config,
-        {"symbol": symbol, "quantity": quantity, "avg_cost": avg_cost, "purchase_date": purchase_date, "notes": notes},
-    )
-
 
 
 
@@ -136,14 +114,6 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
     return delete_watchlist_item(config, normalized)
 
 
-
-
-def delete_portfolio_position(config: dict[str, Any], symbol: str) -> dict[str, Any]:
-    normalized = symbol.strip().upper()
-    if not normalized:
-        raise ValueError("symbol is required")
-
-    return delete_postgres_position(config, normalized)
 
 
 def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:

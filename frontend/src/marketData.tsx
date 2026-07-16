@@ -27,6 +27,12 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
   dataRef.current = data;
 
   const loadScope = useCallback(async (scope: PanelScope, options?: PanelScopeOptions) => {
+    if (options?.force) {
+      const pending = [...inFlightScopesRef.current.entries()]
+        .filter(([key]) => key.startsWith(`${scope}:`))
+        .map(([, request]) => request);
+      if (pending.length) await Promise.allSettled(pending);
+    }
     const requestKey = `${scope}:${JSON.stringify(options ?? {})}`;
     const inFlight = inFlightScopesRef.current.get(requestKey);
     if (inFlight) return inFlight;

@@ -715,24 +715,28 @@ def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch)
     assert config["runtime_overrides"]["MARKET_DATABASE_URL"] == runtime_url
 
 
-def test_save_and_delete_portfolio_position(migrated_postgres_dsn: str) -> None:
+def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
 
-    saved = data_access.save_portfolio_position(
+    saved = data_access.record_portfolio_transaction(
         config,
-        {"symbol": "nvda", "quantity": 3, "avg_cost": 125.5, "purchase_date": "2024-01-15", "notes": "core"},
+        {
+            "symbol": "nvda",
+            "transaction_type": "opening_balance",
+            "quantity": 3,
+            "price": 125.5,
+            "executed_at": "2024-01-15T00:00:00Z",
+            "idempotency_key": "test-opening-nvda",
+            "notes": "core",
+        },
     )
     rows = data_access.portfolio_rows(config)
 
     assert saved["symbol"] == "NVDA"
-    assert saved["purchase_date"] == "2024-01-15"
+    assert saved["transaction_type"] == "opening_balance"
     assert rows[0]["symbol"] == "NVDA"
     assert rows[0]["quantity"] == 3
-    assert str(rows[0]["purchase_date"]) == "2024-01-15"
-
-    deleted = data_access.delete_portfolio_position(config, "NVDA")
-    assert deleted == {"symbol": "NVDA", "deleted": True}
-    assert data_access.portfolio_rows(config) == []
+    assert str(rows[0]["purchase_date"]) == "2024-01-14"
 
 
 def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str) -> None:

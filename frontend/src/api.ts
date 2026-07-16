@@ -142,6 +142,7 @@ export type PanelScopeOptions = {
   offset?: number;
   limit?: number;
   append?: boolean;
+  force?: boolean;
 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -321,22 +322,45 @@ export async function loadTicker(symbol: string): Promise<TickerPayload> {
   return getJson<TickerPayload>(`/api/tickers/${encodeURIComponent(symbol)}`);
 }
 
-export type PortfolioPositionInput = {
+export type PortfolioTransactionInput = {
   symbol: string;
+  transaction_type: "buy" | "sell";
   quantity: number;
-  avg_cost: number;
-  purchase_date?: string;
+  price: number;
+  fees: number;
+  executed_at: string;
   notes?: string;
+  idempotency_key: string;
+  expected_position_version?: string;
 };
 
-export async function savePortfolioPosition(position: PortfolioPositionInput): Promise<TablePayload> {
-  const payload = await sendJson<{ portfolio: TablePayload }>("/api/portfolio/positions", "POST", position);
-  return payload.portfolio;
+export type PortfolioTransactionPreview = {
+  symbol?: string;
+  transaction_type?: string;
+  amount?: number;
+  fees?: number;
+  realized_pnl?: number;
+  old_quantity?: number;
+  new_quantity?: number;
+  old_average_cost?: number;
+  new_average_cost?: number;
+  position_version: string;
+};
+
+export async function previewPortfolioTransaction(transaction: PortfolioTransactionInput): Promise<PortfolioTransactionPreview> {
+  return sendJson<PortfolioTransactionPreview>("/api/portfolio/transactions/preview", "POST", transaction);
 }
 
-export async function deletePortfolioPosition(symbol: string): Promise<TablePayload> {
-  const payload = await sendJson<{ portfolio: TablePayload }>(`/api/portfolio/positions/${encodeURIComponent(symbol)}`, "DELETE");
-  return payload.portfolio;
+export async function recordPortfolioTransaction(transaction: PortfolioTransactionInput): Promise<{ transaction: RowRecord; portfolio: TablePayload }> {
+  return sendJson<{ transaction: RowRecord; portfolio: TablePayload }>("/api/portfolio/transactions", "POST", transaction);
+}
+
+export async function reversePortfolioTransaction(transactionId: string, idempotencyKey: string): Promise<{ transaction: RowRecord; portfolio: TablePayload }> {
+  return sendJson<{ transaction: RowRecord; portfolio: TablePayload }>(
+    `/api/portfolio/transactions/${encodeURIComponent(transactionId)}/reverse`,
+    "POST",
+    { idempotency_key: idempotencyKey, notes: "Reversed from portfolio activity" },
+  );
 }
 
 export type ThesisInput = {
