@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { loadRefreshJobs, startRefreshJob, type RefreshJob, type RefreshJobsPayload } from "../api";
 import { useMarketData } from "../marketData";
 import { WatchlistPage } from "@/views/watchlist";
+import { CANDIDATE_PAGE_SIZE, loadVisibleWatchlistScopes } from "./watchlistScopeLoader";
 
-const CANDIDATE_PAGE_SIZE = 80;
 const WATCHLIST_REFRESH_JOB = "full_market_refresh";
 const POLL_INTERVAL_MS = 5000;
 // Pull fresh rows + the latest refresh status on a timer so a tab left open
@@ -20,15 +20,14 @@ export function WatchlistRoute() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const loadWatchlist = useCallback(async () => {
-    await loadScope("watchlist-watched");
+    await loadVisibleWatchlistScopes(loadScope);
   }, [loadScope]);
   const loadUnwatchedPage = useCallback(async (offset: number) => {
     await loadScope("watchlist-unwatched", { offset, limit: CANDIDATE_PAGE_SIZE, append: offset > 0 });
   }, [loadScope]);
   const reloadVisibleWatchlist = useCallback(async () => {
     await loadWatchlist();
-    await loadUnwatchedPage(0);
-  }, [loadWatchlist, loadUnwatchedPage]);
+  }, [loadWatchlist]);
 
   const updateRefreshState = useCallback(async (payload: RefreshJobsPayload, targetJobId: string | null = activeRefreshJobId.current) => {
     const latestJob = latestFullRefreshJob(payload.rows ?? []);
