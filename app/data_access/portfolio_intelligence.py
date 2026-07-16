@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import nullcontext
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from itertools import combinations
 from math import isfinite, sqrt
 from statistics import fmean
@@ -12,8 +12,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.data_access.portfolio_ledger import portfolio_transaction_rows
+from app.data_access.portfolio_math import adjacent_session_dates, aligned_pair_returns
 from app.data_access.user_state import portfolio_rows
-from investment_panel.core.decision import is_us_market_day
 from investment_panel.database.authority import runtime_for_config
 
 
@@ -49,7 +49,7 @@ def portfolio_summary(
     total_pnl = portfolio_value - net_contributions
     invested_capital = accounting["invested_capital"]
     prior_performance = performance[-2] if len(performance) > 1 else {}
-    adjacent_session = _adjacent_session_dates(
+    adjacent_session = adjacent_session_dates(
         str(prior_performance.get("date") or ""),
         str(latest_performance.get("date") or ""),
         continuous=any(str(row.get("asset_class") or "") == "crypto" for row in positions),
@@ -114,11 +114,15 @@ def portfolio_performance_rows(
             """
             SELECT DISTINCT ON (bar.instrument_id, bar.trading_date)
                    bar.instrument_id, instrument.symbol, bar.trading_date, bar.close,
-                   ((bar.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York') AS observed_at
-            FROM raw.price_bar bar
+                   ((bar.trading_date::timestamp + time '16:00')
+                       AT TIME ZONE 'America/New_York') AS observed_at
+            FROM raw.confirmed_price_bar bar
             JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
             WHERE bar.interval = '1d' AND bar.instrument_id = ANY(%s)
-            ORDER BY bar.instrument_id, bar.trading_date, bar.observed_at DESC
+              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
+              AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
+              AND bar.available_at <= now()
+            ORDER BY bar.instrument_id, bar.trading_date, bar.observed_at DESC, bar.available_at DESC
             """,
             [instrument_ids],
         ).fetchall()] if instrument_ids else []
@@ -126,23 +130,40 @@ def portfolio_performance_rows(
             """
             SELECT DISTINCT ON (quote.instrument_id)
                    quote.instrument_id, instrument.symbol,
-                   (quote.observed_at AT TIME ZONE 'America/New_York')::date AS trading_date,
+                   CASE
+                       WHEN quote_source.kind IN ('daily_bars', 'daily_quote')
+                       THEN (quote.observed_at AT TIME ZONE 'UTC')::date
+                       ELSE (quote.observed_at AT TIME ZONE instrument.market_timezone)::date
+                   END AS trading_date,
                    quote.price AS close, quote.observed_at
-            FROM raw.quote quote
+            FROM raw.confirmed_quote quote
             JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
+            JOIN ingest.source quote_source ON quote_source.id = quote.source_id
             WHERE quote.instrument_id = ANY(%s)
               AND quote.observed_at >= now() - interval '7 days'
-            ORDER BY quote.instrument_id, quote.observed_at DESC
+              AND quote.available_at <= now()
+              AND (
+                  quote.observed_at <= now()
+                  OR (
+                      quote_source.kind IN ('daily_bars', 'daily_quote')
+                      AND (quote.observed_at AT TIME ZONE 'UTC')::date
+                          <= (now() AT TIME ZONE instrument.market_timezone)::date
+                  )
+              )
+            ORDER BY quote.instrument_id, quote.observed_at DESC, quote.available_at DESC
             """,
             [instrument_ids],
         ).fetchall()] if instrument_ids else []
         benchmark = [dict(row) for row in connection.execute(
             """
             SELECT DISTINCT ON (bar.trading_date) bar.trading_date, bar.close
-            FROM raw.price_bar bar
+            FROM raw.confirmed_price_bar bar
             JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
             WHERE bar.interval = '1d' AND instrument.symbol = 'SPY'
-            ORDER BY bar.trading_date, bar.observed_at DESC
+              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
+              AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
+              AND bar.available_at <= now()
+            ORDER BY bar.trading_date, bar.observed_at DESC, bar.available_at DESC
             """
         ).fetchall()]
     return _performance_rows(transactions, [*bars, *current_quotes], benchmark)
@@ -165,10 +186,12 @@ def portfolio_correlation_rows(
             """
             SELECT DISTINCT ON (instrument.symbol, bar.trading_date)
                    instrument.symbol, bar.trading_date, bar.close
-            FROM raw.price_bar bar
+            FROM raw.confirmed_price_bar bar
             JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
             WHERE bar.interval = '1d' AND instrument.symbol = ANY(%s)
-            ORDER BY instrument.symbol, bar.trading_date, bar.observed_at DESC
+              AND bar.trading_date <= (now() AT TIME ZONE instrument.market_timezone)::date
+              AND bar.available_at <= now()
+            ORDER BY instrument.symbol, bar.trading_date, bar.observed_at DESC, bar.available_at DESC
             """,
             [symbols],
         ).fetchall()]
@@ -198,7 +221,7 @@ def portfolio_correlation_rows(
         split_dates[str(row["symbol"])].add(row["split_date"])
     output: list[dict[str, Any]] = []
     for symbol, peer_symbol in combinations(symbols, 2):
-        interval_dates, left_returns, right_returns = _aligned_pair_returns(
+        interval_dates, left_returns, right_returns = aligned_pair_returns(
             prices.get(symbol, {}),
             prices.get(peer_symbol, {}),
             excluded_dates=split_dates.get(symbol, set()) | split_dates.get(peer_symbol, set()),
@@ -315,17 +338,17 @@ def portfolio_risk_rows(
                 next_step="Give the pair one shared risk budget unless the theses justify independent exposure.",
             )
         )
-    max_drawdown = min((float(row.get("drawdown_pct") or 0) for row in performance), default=0.0)
-    if max_drawdown <= -10:
+    current_drawdown = float(performance[-1].get("drawdown_pct") or 0) if performance else 0.0
+    if current_drawdown <= -10:
         cards.append(
             _risk_card(
                 card_id="portfolio-drawdown",
                 risk_type="drawdown",
-                severity="critical" if max_drawdown <= -20 else "watch",
-                title=f"Portfolio drawdown reached {max_drawdown:.1f}%",
+                severity="critical" if current_drawdown <= -20 else "watch",
+                title=f"Portfolio is {abs(current_drawdown):.1f}% below its high-water mark",
                 summary="The external-flow-adjusted portfolio path is below its prior high-water mark.",
                 symbols=[],
-                impact=f"{max_drawdown:.1f}% from peak",
+                impact=f"{current_drawdown:.1f}% from peak",
                 next_step="Review which positions contributed most before adding risk.",
             )
         )
@@ -581,56 +604,6 @@ def _invested_capital_flow(row: dict[str, Any]) -> float:
     if str(row.get("transaction_type") or "") not in {"opening_balance", "buy", "transfer_in"}:
         return 0.0
     return float(row.get("amount") or 0) + float(row.get("fees") or 0)
-
-
-def _aligned_pair_returns(
-    left_prices: dict[date, float],
-    right_prices: dict[date, float],
-    *,
-    excluded_dates: set[date] | None = None,
-) -> tuple[list[date], dict[date, float], dict[date, float]]:
-    common_dates = sorted(
-        day for day in set(left_prices) & set(right_prices)
-        if isfinite(left_prices[day]) and left_prices[day] > 0
-        and isfinite(right_prices[day]) and right_prices[day] > 0
-    )
-    excluded_dates = excluded_dates or set()
-    intervals = [
-        (previous, current)
-        for previous, current in zip(common_dates, common_dates[1:])
-        if not any(previous <= split_date <= current for split_date in excluded_dates)
-    ]
-    interval_dates = [current for _previous, current in intervals]
-    left_returns = {
-        current: left_prices[current] / left_prices[previous] - 1
-        for previous, current in intervals
-    }
-    right_returns = {
-        current: right_prices[current] / right_prices[previous] - 1
-        for previous, current in intervals
-    }
-    return interval_dates, left_returns, right_returns
-
-
-def _adjacent_session_dates(previous: str, current: str, *, continuous: bool = False) -> bool:
-    if not previous or not current:
-        return False
-    try:
-        previous_date = date.fromisoformat(previous)
-        current_date = date.fromisoformat(current)
-    except ValueError:
-        return False
-    if continuous:
-        return (current_date - previous_date).days == 1
-    if current_date <= previous_date or not is_us_market_day(previous_date) or not is_us_market_day(current_date):
-        return False
-    sessions = 0
-    cursor = previous_date + timedelta(days=1)
-    while cursor <= current_date:
-        if is_us_market_day(cursor):
-            sessions += 1
-        cursor += timedelta(days=1)
-    return sessions == 1
 
 
 def _correlation(left: list[float], right: list[float]) -> float | None:

@@ -4,7 +4,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app.data_access.portfolio_intelligence import _adjacent_session_dates, _aligned_pair_returns, _performance_rows
+from app.data_access.portfolio_intelligence import _performance_rows, portfolio_risk_rows
+from app.data_access.portfolio_math import adjacent_session_dates, aligned_pair_returns
 
 
 def test_aligned_pair_returns_use_identical_price_intervals() -> None:
@@ -12,7 +13,7 @@ def test_aligned_pair_returns_use_identical_price_intervals() -> None:
     middle = date(2026, 7, 2)
     last = date(2026, 7, 3)
 
-    dates, left, right = _aligned_pair_returns(
+    dates, left, right = aligned_pair_returns(
         {first: 100, middle: 110, last: 121},
         {first: 200, last: 242},
     )
@@ -25,7 +26,7 @@ def test_aligned_pair_returns_use_identical_price_intervals() -> None:
 def test_aligned_pair_returns_ignore_nonpositive_prices() -> None:
     first = date(2026, 7, 1)
     last = date(2026, 7, 2)
-    dates, left, right = _aligned_pair_returns({first: 0, last: 100}, {first: 50, last: 55})
+    dates, left, right = aligned_pair_returns({first: 0, last: 100}, {first: 50, last: 55})
     assert dates == []
     assert left == {}
     assert right == {}
@@ -36,7 +37,7 @@ def test_aligned_pair_returns_excludes_intervals_touching_a_split() -> None:
     split_day = date(2026, 7, 2)
     last = date(2026, 7, 3)
 
-    dates, left, right = _aligned_pair_returns(
+    dates, left, right = aligned_pair_returns(
         {first: 100, split_day: 50, last: 55},
         {first: 100, split_day: 101, last: 102},
         excluded_dates={split_day},
@@ -173,7 +174,18 @@ def test_performance_adjusts_pre_split_same_day_close_for_after_close_split() ->
 
 
 def test_adjacent_session_dates_respect_missing_weekdays_weekends_and_holidays() -> None:
-    assert _adjacent_session_dates("2026-07-13", "2026-07-16") is False
-    assert _adjacent_session_dates("2026-07-10", "2026-07-13") is True
-    assert _adjacent_session_dates("2026-07-02", "2026-07-06") is True
-    assert _adjacent_session_dates("2026-07-11", "2026-07-12", continuous=True) is True
+    assert adjacent_session_dates("2026-07-13", "2026-07-16") is False
+    assert adjacent_session_dates("2026-07-10", "2026-07-13") is True
+    assert adjacent_session_dates("2026-07-02", "2026-07-06") is True
+    assert adjacent_session_dates("2026-07-11", "2026-07-12", continuous=True) is True
+
+
+def test_recovered_historical_drawdown_is_not_an_active_warning() -> None:
+    cards = portfolio_risk_rows(
+        {},
+        positions=[],
+        summary={"holdings_count": 0},
+        correlations=[],
+        performance=[{"drawdown_pct": -18}, {"drawdown_pct": 0}],
+    )
+    assert all(card["risk_type"] != "drawdown" for card in cards)

@@ -58,9 +58,19 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
                 FROM (
                     SELECT quote.price, quote.change_pct, quote.change_abs,
                            quote.observed_at, quote.source_id, 'market_quote' AS valuation_status
-                    FROM raw.quote quote
+                    FROM raw.confirmed_quote quote
+                    JOIN ingest.source quote_source ON quote_source.id = quote.source_id
                     WHERE quote.instrument_id = p.instrument_id
                       AND quote.observed_at >= now() - interval '7 days'
+                      AND quote.available_at <= now()
+                      AND (
+                          quote.observed_at <= now()
+                          OR (
+                              quote_source.kind IN ('daily_bars', 'daily_quote')
+                              AND (quote.observed_at AT TIME ZONE 'UTC')::date
+                                  <= (now() AT TIME ZONE i.market_timezone)::date
+                          )
+                      )
                       AND (
                           p.purchase_date IS NULL
                           OR (quote.observed_at AT TIME ZONE 'America/New_York')::date >= p.purchase_date - 7
@@ -70,29 +80,35 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
                     SELECT latest.close AS price,
                            CASE WHEN previous.close > 0 THEN (latest.close / previous.close - 1) * 100 END AS change_pct,
                            CASE WHEN previous.close IS NOT NULL THEN latest.close - previous.close END AS change_abs,
-                           ((latest.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York') AS observed_at,
+                           ((latest.trading_date::timestamp + time '16:00')
+                               AT TIME ZONE 'America/New_York') AS observed_at,
                            latest.source_id,
                            'daily_close' AS valuation_status
                     FROM LATERAL (
-                        SELECT bar.trading_date, bar.close, bar.source_id
-                        FROM raw.price_bar bar
+                        SELECT bar.trading_date, bar.close, bar.source_id, bar.observed_at,
+                               bar.available_at
+                        FROM raw.confirmed_price_bar bar
                         WHERE bar.instrument_id = p.instrument_id AND bar.interval = '1d' AND bar.close > 0
                           AND bar.trading_date >= current_date - 7
+                          AND bar.trading_date <= (now() AT TIME ZONE i.market_timezone)::date
+                          AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
+                          AND bar.available_at <= now()
                           AND (p.purchase_date IS NULL OR bar.trading_date >= p.purchase_date - 7)
                           AND (
                               latest_split.executed_at IS NULL
-                              OR ((bar.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York')
-                                  >= latest_split.executed_at
+                              OR ((bar.trading_date::timestamp + time '16:00')
+                                  AT TIME ZONE 'America/New_York') >= latest_split.executed_at
                           )
-                        ORDER BY bar.trading_date DESC, bar.observed_at DESC
+                        ORDER BY bar.trading_date DESC, bar.observed_at DESC, bar.available_at DESC
                         LIMIT 1
                     ) latest
                     LEFT JOIN LATERAL (
                         SELECT bar.close
-                        FROM raw.price_bar bar
+                        FROM raw.confirmed_price_bar bar
                         WHERE bar.instrument_id = p.instrument_id AND bar.interval = '1d'
                           AND bar.trading_date < latest.trading_date AND bar.close > 0
-                        ORDER BY bar.trading_date DESC, bar.observed_at DESC
+                          AND bar.available_at <= now()
+                        ORDER BY bar.trading_date DESC, bar.observed_at DESC, bar.available_at DESC
                         LIMIT 1
                     ) previous ON true
                 ) candidate
@@ -290,8 +306,19 @@ def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
             LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
             LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
             LEFT JOIN LATERAL (
-                SELECT price, observed_at FROM raw.quote
-                WHERE instrument_id = i.id ORDER BY observed_at DESC LIMIT 1
+                SELECT quote.price, quote.observed_at
+                FROM raw.confirmed_quote quote
+                JOIN ingest.source quote_source ON quote_source.id = quote.source_id
+                WHERE quote.instrument_id = i.id
+                  AND (
+                      quote.observed_at <= now()
+                      OR (
+                          quote_source.kind IN ('daily_bars', 'daily_quote')
+                          AND (quote.observed_at AT TIME ZONE 'UTC')::date
+                              <= (now() AT TIME ZONE i.market_timezone)::date
+                      )
+                  )
+                ORDER BY quote.observed_at DESC LIMIT 1
             ) q ON true
             WHERE p.instrument_id IS NOT NULL
                OR (w.instrument_id IS NOT NULL AND w.watch_state <> 'excluded')

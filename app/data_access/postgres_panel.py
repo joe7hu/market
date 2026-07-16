@@ -553,8 +553,8 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
         "portfolio_summary", "portfolio_performance", "portfolio_transactions",
         "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
     }
-    bundle_models = intelligence_models - {"portfolio"}
-    if bundle_models.intersection(requested):
+    bundle_triggers = intelligence_models - {"portfolio"}
+    if bundle_triggers.intersection(requested):
         live_tables = portfolio_intelligence_tables(config)
         for name in intelligence_models.intersection(requested):
             tables[name] = live_tables[name]

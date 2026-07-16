@@ -13,7 +13,29 @@ from app.routers.portfolio import router
 from app.routers.panel import router as panel_router
 from app.routers.theses import router as theses_router
 from investment_panel.database.authority import close_cached_runtimes
+from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
+from investment_panel.database.runtime import DatabaseRuntime
+
+
+def _confirm_price_facts(connection: psycopg.Connection, run_id: object) -> None:
+    connection.execute("UPDATE ingest.run SET finished_at = now() WHERE id = %s", [run_id])
+    connection.execute(
+        """
+        INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id)
+        SELECT id, available_at, %s FROM raw.quote WHERE ingest_run_id = %s
+        ON CONFLICT DO NOTHING
+        """,
+        [run_id, run_id],
+    )
+    connection.execute(
+        """
+        INSERT INTO raw.price_bar_confirmation (fact_id, fact_available_at, ingest_run_id)
+        SELECT id, available_at, %s FROM raw.price_bar WHERE ingest_run_id = %s
+        ON CONFLICT DO NOTHING
+        """,
+        [run_id, run_id],
+    )
 
 
 @pytest.fixture
@@ -91,6 +113,7 @@ def test_portfolio_route_round_trip_and_latest_quote_metrics(client: TestClient,
             "VALUES (%s, %s, %s, now(), 125, 5, 4.1667)",
             [instrument_id, source_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     row = client.get("/api/portfolio").json()["rows"][0]
@@ -250,6 +273,7 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
             """,
             [instrument_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     summary = client.get("/api/portfolio/summary")
@@ -324,6 +348,7 @@ def test_first_trade_uses_same_prior_close_for_holding_summary_and_performance(
             "VALUES (%s, 'prior-close-test', %s, '1d', '2026-07-14', '2026-07-14T20:00:00Z', 90)",
             [instrument_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     holding = client.get("/api/portfolio").json()["rows"][0]
@@ -543,6 +568,7 @@ def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, 
             "VALUES (%s, 'sparse-test', %s, '2026-07-15T20:00:00Z', 120)",
             [instrument_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     summary = client.get("/api/portfolio/summary").json()
@@ -761,6 +787,7 @@ def test_portfolio_rejects_arbitrarily_stale_quote_for_current_valuation(
             "VALUES (%s, 'stale-valuation-test', %s, '2026-07-01T20:00:00Z', 200)",
             [instrument_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     holding = client.get("/api/portfolio").json()["rows"][0]
@@ -806,6 +833,7 @@ def test_summary_holdings_and_performance_share_latest_daily_bar_price(
             "VALUES (%s, 'bar-price-test', %s, '2026-07-15T14:00:00Z', 105)",
             [instrument_id, run_id],
         )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     holding = client.get("/api/portfolio").json()["rows"][0]
@@ -1071,6 +1099,7 @@ def test_portfolio_correlation_explains_window_weight_and_risk(client: TestClien
                 "VALUES (%s, 'correlation-test', %s, '2026-07-15T20:00:00Z', %s)",
                 [ids[symbol], run_id, multiplier * 169],
             )
+        _confirm_price_facts(connection, run_id)
         connection.commit()
 
     payload = client.get("/api/portfolio-risk/correlation-edges")
@@ -1139,6 +1168,156 @@ def test_portfolio_only_panel_read_skips_full_intelligence_bundle(
     )
 
     assert tables["portfolio"] == []
+
+
+def test_shared_risk_models_use_live_portfolio_contracts(
+    client: TestClient,
+    postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access import postgres_panel
+
+    published = {
+        "portfolio_risk_cards": [{"card_id": "published-card"}],
+        "review_actions": [{"action_id": "published-action"}],
+    }
+    live = {
+        "portfolio": [], "portfolio_summary": [], "portfolio_performance": [], "portfolio_transactions": [],
+        "correlation_edges": [], "exposure_clusters": [],
+        "portfolio_risk_cards": [{"card_id": "live-card", "risk_type": "concentration"}],
+        "review_actions": [{"action_id": "live-action", "next_step": "Review sizing"}],
+    }
+    monkeypatch.setattr(postgres_panel, "_published_tables", lambda _runtime, _requested: published.copy())
+    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
+    tables, _metadata = postgres_panel.load_postgres_tables(
+        {"database": {"url": postgres_dsn}},
+        ("portfolio_risk_cards", "review_actions"),
+    )
+    assert tables["portfolio_risk_cards"] == live["portfolio_risk_cards"]
+    assert tables["review_actions"] == live["review_actions"]
+
+
+def test_shared_scopes_load_one_live_portfolio_contract_bundle(
+    client: TestClient,
+    postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_access import postgres_panel
+
+    published = {
+        "portfolio_risk_cards": [{"card_id": "published-card"}],
+        "review_actions": [{"action_id": "published-action"}],
+    }
+    live = {
+        "portfolio": [],
+        "portfolio_summary": [],
+        "portfolio_performance": [],
+        "portfolio_transactions": [],
+        "correlation_edges": [{"edge_id": "live-edge", "lookback_days": 60}],
+        "exposure_clusters": [{"cluster_id": "live-cluster"}],
+        "portfolio_risk_cards": [{"card_id": "live-card"}],
+        "review_actions": [{"action_id": "live-action"}],
+    }
+    monkeypatch.setattr(postgres_panel, "_published_tables", lambda _runtime, _requested: published.copy())
+    monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
+
+    tables, _metadata = postgres_panel.load_postgres_tables(
+        {"database": {"url": postgres_dsn}},
+        ("correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions"),
+    )
+    assert tables["correlation_edges"] == live["correlation_edges"]
+    assert tables["exposure_clusters"] == live["exposure_clusters"]
+    assert tables["portfolio_risk_cards"] == live["portfolio_risk_cards"]
+    assert tables["review_actions"] == live["review_actions"]
+
+
+def test_future_prices_cannot_become_current_portfolio_value(client: TestClient, postgres_dsn: str) -> None:
+    now = datetime.now(UTC)
+    assert client.post(
+        "/api/portfolio/transactions",
+        json={
+            "symbol": "MSFT",
+            "transaction_type": "buy",
+            "quantity": 1,
+            "price": 100,
+            "executed_at": (now - timedelta(days=2)).isoformat(),
+            "idempotency_key": "future-price-msft-buy",
+        },
+    ).status_code == 200
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'MSFT'").fetchone()[0]
+        connection.execute(
+            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('future-price-test', 'Future Price Test', 'test', 'quote')"
+        )
+        run_id = connection.execute(
+            "INSERT INTO ingest.run (source_id, capability, started_at, status) "
+            "VALUES ('future-price-test', 'quotes', now(), 'succeeded') RETURNING id"
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO raw.quote
+                (instrument_id, source_id, ingest_run_id, observed_at, price)
+            VALUES
+                (%s, 'future-price-test', %s, %s, 110),
+                (%s, 'future-price-test', %s, %s, 1000)
+            """,
+            [instrument_id, run_id, now - timedelta(hours=1), instrument_id, run_id, now + timedelta(days=1)],
+        )
+        connection.execute(
+            """
+            INSERT INTO raw.price_bar
+                (instrument_id, source_id, ingest_run_id, interval, trading_date, observed_at, close)
+            VALUES (%s, 'future-price-test', %s, '1d', %s, %s, 2000)
+            """,
+            [instrument_id, run_id, (now + timedelta(days=1)).date(), now + timedelta(days=1)],
+        )
+        _confirm_price_facts(connection, run_id)
+        connection.commit()
+
+    summary = client.get("/api/portfolio/summary").json()
+    assert summary["portfolio_value"] == 110.0
+    performance = client.get("/api/portfolio/performance").json()["rows"]
+    assert performance[-1]["portfolio_value"] == 110.0
+    assert performance[-1]["date"] <= now.date().isoformat()
+
+
+def test_failed_price_correction_falls_back_to_last_confirmed_fact(
+    client: TestClient,
+    postgres_dsn: str,
+) -> None:
+    now = datetime.now(UTC)
+    assert client.post(
+        "/api/portfolio/transactions",
+        json={
+            "symbol": "MSFT", "transaction_type": "buy", "quantity": 1, "price": 90,
+            "executed_at": (now - timedelta(days=2)).isoformat(),
+            "idempotency_key": "failed-correction-msft-buy",
+        },
+    ).status_code == 200
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        repository = IngestionRepository(runtime)
+        repository.register_source("correction", name="Correction", family="market_data", kind="quote")
+        observed_at = now - timedelta(hours=1)
+        successful_run = repository.start_run("correction", "quotes")
+        repository.store_quotes(
+            successful_run, "correction",
+            [{"symbol": "MSFT", "observed_at": observed_at, "price": 100}],
+        )
+        repository.finish_run(successful_run, "succeeded", item_count=1, instrument_count=1)
+        failed_run = repository.start_run("correction", "quotes")
+        repository.store_quotes(
+            failed_run, "correction",
+            [{"symbol": "MSFT", "observed_at": observed_at, "price": 200}],
+        )
+        repository.finish_run(failed_run, "failed", failure_detail="provider validation failed")
+    finally:
+        runtime.close()
+
+    holding = client.get("/api/portfolio").json()["rows"][0]
+    assert holding["price"] == 100
+    assert holding["market_value"] == 100
 
 
 def test_watchlist_route_round_trip_and_soft_exclusion(client: TestClient, postgres_dsn: str) -> None:

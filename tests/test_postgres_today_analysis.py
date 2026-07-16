@@ -30,9 +30,26 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
         ingestion.store_quotes(
             run_id,
             "test-quotes",
-            [{"symbol": "NVDA", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC), "price": 150}],
+            [
+                {"symbol": "NVDA", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC), "price": 150},
+                {"symbol": "NVDA", "observed_at": datetime(2026, 7, 12, 12, tzinfo=UTC), "price": 999},
+            ],
         )
-        ingestion.finish_run(run_id, "succeeded", item_count=1, instrument_count=1)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.quote SET available_at = %s WHERE ingest_run_id = %s",
+                [datetime(2026, 7, 11, 12, 30, tzinfo=UTC), run_id],
+            )
+            connection.execute(
+                "UPDATE raw.quote_confirmation SET fact_available_at = %s WHERE ingest_run_id = %s",
+                [datetime(2026, 7, 11, 12, 30, tzinfo=UTC), run_id],
+            )
+        ingestion.finish_run(run_id, "succeeded", item_count=2, instrument_count=1)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
+                [datetime(2026, 7, 11, 12, 31, tzinfo=UTC), run_id],
+            )
         ingestion.register_source("test-content", name="Test content", family="news", kind="article")
         content_run = ingestion.start_run("test-content", "content")
         SourceFactRepository(runtime).store_content_items(
@@ -63,8 +80,33 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
         assert pulse["unrealized_pnl"] == 100
         assert "provider_payload" not in pulse
 
+        correction_run = ingestion.start_run("test-quotes", "quotes")
+        ingestion.store_quotes(
+            correction_run,
+            "test-quotes",
+            [{"symbol": "NVDA", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC), "price": 160}],
+        )
+        ingestion.finish_run(correction_run, "succeeded", item_count=1, instrument_count=1)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.quote SET available_at = %s WHERE ingest_run_id = %s",
+                [datetime(2026, 7, 11, 14, tzinfo=UTC), correction_run],
+            )
+            connection.execute(
+                "UPDATE raw.quote_confirmation SET fact_available_at = %s WHERE ingest_run_id = %s",
+                [datetime(2026, 7, 11, 14, tzinfo=UTC), correction_run],
+            )
+            connection.execute(
+                "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
+                [datetime(2026, 7, 11, 14, tzinfo=UTC), correction_run],
+            )
+        refresh_today_publication(runtime, now=datetime(2026, 7, 11, 13, tzinfo=UTC))
+        replayed = AnalysisRepository(runtime).publication_rows("today", "daily_brief")
+        replayed_pulse = next(row for row in replayed if row["category"] == "portfolio_pulse")
+        assert replayed_pulse["market_value"] == 300
+
         with runtime.read() as connection:
-            assert connection.execute("SELECT count(*) AS count FROM raw.quote").fetchone()["count"] == 1
+            assert connection.execute("SELECT count(*) AS count FROM raw.quote").fetchone()["count"] == 2
             validation = connection.execute(
                 "SELECT validation FROM app.publication WHERE id = %s", [result["publication_id"]]
             ).fetchone()["validation"]
@@ -76,6 +118,52 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
 def test_today_option_item_preserves_published_rationale() -> None:
     row = _option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
     assert row["summary"] == "liquidity_supported; convexity_supported"
+
+
+def test_today_uses_available_same_day_daily_close_before_synthetic_session_marker(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    as_of = datetime(2026, 7, 11, 13, tzinfo=UTC)
+    try:
+        record_portfolio_transaction(
+            {"database": {"url": migrated_postgres_dsn}},
+            {
+                "symbol": "7203.T", "transaction_type": "opening_balance", "quantity": 1, "price": 100,
+                "executed_at": "2026-07-01T00:00:00Z", "idempotency_key": "today-daily-close",
+            },
+        )
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("daily-close", name="Daily close", family="market_data", kind="daily_bars")
+        run_id = ingestion.start_run("daily-close", "price_bars")
+        ingestion.store_price_bars(
+            run_id,
+            "daily-close",
+            [{"symbol": "7203.T", "date": "2026-07-11", "close": 120}],
+            asset_classes={"7203.T": "equity"},
+        )
+        ingestion.finish_run(run_id, "succeeded", item_count=1, instrument_count=1)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE raw.quote SET available_at = %s WHERE ingest_run_id = %s",
+                [as_of - timedelta(minutes=30), run_id],
+            )
+            connection.execute(
+                "UPDATE raw.quote_confirmation SET fact_available_at = %s WHERE ingest_run_id = %s",
+                [as_of - timedelta(minutes=30), run_id],
+            )
+            connection.execute(
+                "UPDATE ingest.run SET finished_at = %s WHERE id = %s",
+                [as_of - timedelta(minutes=29), run_id],
+            )
+
+        refresh_today_publication(runtime, now=as_of)
+        brief = AnalysisRepository(runtime).publication_rows("today", "daily_brief")
+        pulse = next(row for row in brief if row["category"] == "portfolio_pulse")
+        assert pulse["market_value"] == 120
+    finally:
+        runtime.close()
 
 
 def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(

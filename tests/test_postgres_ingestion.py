@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import hashlib
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
 
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options import _market_session
 from investment_panel.database.runtime import DatabaseRuntime
@@ -115,6 +117,127 @@ def test_daily_price_bars_are_idempotent_and_materialize_latest_quote(repository
     assert (latest["symbol"], latest["asset_class"], latest["price"], latest["observed_at"]) == (
         "QQQ", "etf", 609.0, date(2026, 7, 10)
     )
+
+
+def test_current_provider_bar_preserves_effective_time_and_rejects_future_date(
+    repository: IngestionRepository,
+) -> None:
+    repository.register_source("current-prices", name="Current", family="market_data", kind="daily_bars")
+    before = datetime.now(UTC)
+    tokyo_date = before.astimezone(ZoneInfo("Asia/Tokyo")).date()
+    run_id = repository.start_run("current-prices", "price_bars")
+    stored = repository.store_price_bars(
+        run_id,
+        "current-prices",
+        [
+            {"symbol": "7203.T", "date": tokyo_date.isoformat(), "close": 3000},
+            {"symbol": "QQQ", "date": (before.date() + timedelta(days=1)).isoformat(), "close": 9999},
+        ],
+        asset_classes={"7203.T": "equity", "QQQ": "etf"},
+    )
+    with repository.runtime.read() as connection:
+        quote = connection.execute("SELECT observed_at, price FROM raw.quote").fetchone()
+        bar = connection.execute("SELECT observed_at, close FROM raw.price_bar").fetchone()
+    assert stored == 1
+    assert quote["price"] == 3000
+    assert bar["close"] == 3000
+    expected_effective_at = datetime.combine(tokyo_date, datetime.min.time(), tzinfo=UTC).replace(hour=20)
+    assert quote["observed_at"] == expected_effective_at
+    assert bar["observed_at"] == expected_effective_at
+
+
+def test_quote_availability_changes_only_when_the_fact_changes(repository: IngestionRepository) -> None:
+    repository.register_source("availability", name="Availability", family="market_data", kind="quote")
+    observed_at = datetime(2026, 7, 15, 15, tzinfo=UTC)
+
+    def store(price: float) -> datetime:
+        run_id = repository.start_run("availability", "quotes")
+        repository.store_quotes(
+            run_id,
+            "availability",
+            [{"symbol": "QQQ", "observed_at": observed_at, "price": price}],
+        )
+        with repository.runtime.read() as connection:
+            return connection.execute(
+                "SELECT available_at FROM raw.quote ORDER BY available_at DESC LIMIT 1"
+            ).fetchone()["available_at"]
+
+    first = store(500)
+    unchanged = store(500)
+    corrected = store(501)
+
+    assert unchanged == first
+    assert corrected > unchanged
+    with repository.runtime.read() as connection:
+        versions = connection.execute(
+            """
+            SELECT price, available_at FROM raw.quote
+            UNION ALL
+            SELECT price, available_at FROM raw.quote_history
+            ORDER BY available_at
+            """
+        ).fetchall()
+    assert [(row["price"], row["available_at"]) for row in versions] == [
+        (500, first),
+        (501, corrected),
+    ]
+
+
+def test_daily_bar_correction_updates_current_and_archives_prior_fact(
+    repository: IngestionRepository,
+) -> None:
+    repository.register_source("bar-correction", name="Correction", family="market_data", kind="daily_bars")
+    row = {"symbol": "QQQ", "date": "2026-07-15", "close": 500}
+    first_run = repository.start_run("bar-correction", "price_bars")
+    repository.store_price_bars(first_run, "bar-correction", [row], asset_classes={"QQQ": "etf"})
+    second_run = repository.start_run("bar-correction", "price_bars")
+    repository.store_price_bars(
+        second_run,
+        "bar-correction",
+        [{**row, "close": 501}],
+        asset_classes={"QQQ": "etf"},
+    )
+
+    with repository.runtime.read() as connection:
+        current_bar = connection.execute("SELECT close FROM raw.price_bar").fetchone()["close"]
+        prior_bar = connection.execute("SELECT close FROM raw.price_bar_history").fetchone()["close"]
+        current_quote = connection.execute("SELECT price FROM raw.quote").fetchone()["price"]
+        prior_quote = connection.execute("SELECT price FROM raw.quote_history").fetchone()["price"]
+    assert (current_bar, prior_bar) == (501, 500)
+    assert (current_quote, prior_quote) == (501, 500)
+
+
+def test_unchanged_quote_records_successful_retry_confirmation(repository: IngestionRepository) -> None:
+    repository.register_source("retry", name="Retry", family="market_data", kind="quote")
+    row = {"symbol": "QQQ", "observed_at": datetime(2026, 7, 15, 15, tzinfo=UTC), "price": 500}
+    failed_run = repository.start_run("retry", "quotes")
+    repository.store_quotes(failed_run, "retry", [row])
+    repository.finish_run(failed_run, "failed", failure_detail="downstream failure")
+    successful_run = repository.start_run("retry", "quotes")
+    repository.store_quotes(successful_run, "retry", [row])
+    repository.finish_run(successful_run, "succeeded", item_count=1, instrument_count=1)
+
+    with repository.runtime.read() as connection:
+        quote_count = connection.execute("SELECT count(*) AS count FROM raw.quote").fetchone()["count"]
+        statuses = connection.execute(
+            """
+            SELECT run.status FROM raw.quote_confirmation confirmation
+            JOIN ingest.run run ON run.id = confirmation.ingest_run_id
+            ORDER BY run.status
+            """
+        ).fetchall()
+        base_run_id = connection.execute("SELECT ingest_run_id FROM raw.quote").fetchone()["ingest_run_id"]
+    assert quote_count == 1
+    assert [row["status"] for row in statuses] == ["failed", "succeeded"]
+    assert base_run_id == successful_run
+
+
+def test_market_timezone_resolves_provider_aliases() -> None:
+    assert market_timezone_for_symbol("RWE") == "Europe/Berlin"
+    assert market_timezone_for_symbol("NI225") == "Asia/Tokyo"
+    assert market_timezone_for_symbol("XRPUSD") == "UTC"
+    assert market_timezone_for_symbol("SOLUSD") == "UTC"
+    assert market_timezone_for_symbol("USDJPY") == "UTC"
 
 
 def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(

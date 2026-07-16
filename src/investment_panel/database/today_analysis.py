@@ -24,11 +24,39 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
                 FROM app.portfolio_position position
                 JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
                 LEFT JOIN LATERAL (
-                    SELECT price, observed_at FROM raw.quote
-                    WHERE instrument_id = instrument.id ORDER BY observed_at DESC LIMIT 1
+                    SELECT quote.price, quote.observed_at
+                    FROM (
+                        SELECT id, instrument_id, source_id, price, observed_at, available_at
+                        FROM raw.quote
+                        UNION ALL
+                        SELECT id, instrument_id, source_id, price, observed_at, available_at
+                        FROM raw.quote_history
+                    ) quote
+                    JOIN ingest.source price_source ON price_source.id = quote.source_id
+                    WHERE quote.instrument_id = instrument.id
+                      AND quote.available_at <= %s
+                      AND EXISTS (
+                          SELECT 1
+                          FROM raw.quote_confirmation confirmation
+                          JOIN ingest.run price_run ON price_run.id = confirmation.ingest_run_id
+                          WHERE confirmation.fact_id = quote.id
+                            AND confirmation.fact_available_at = quote.available_at
+                            AND price_run.status IN ('succeeded', 'partial')
+                            AND price_run.finished_at <= %s
+                      )
+                      AND (
+                          quote.observed_at <= %s
+                          OR (
+                              price_source.kind IN ('daily_bars', 'daily_quote')
+                              AND (quote.observed_at AT TIME ZONE 'UTC')::date
+                                  <= (%s AT TIME ZONE instrument.market_timezone)::date
+                          )
+                      )
+                    ORDER BY quote.observed_at DESC, quote.available_at DESC LIMIT 1
                 ) quote ON true
                 ORDER BY instrument.symbol
-                """
+                """,
+                [as_of, as_of, as_of, as_of],
             ).fetchall()
         ]
         reviews = [
@@ -189,8 +217,6 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         {
             "preopen_daily_brief": preopen,
             "daily_brief": daily_brief,
-            "portfolio_risk_cards": portfolio_rows,
-            "review_actions": review_rows,
             "decision_queue": decision_queue,
             "option_action_queue": option_action_queue,
             "decision_readiness": decision_readiness,
