@@ -290,6 +290,7 @@ export type DailyResearchPrompt = {
   generated_at: string;
   prompt: string;
   character_count: number;
+  estimated_tokens: number;
   coverage: {
     portfolio_positions: number;
     portfolio_symbols: string[];

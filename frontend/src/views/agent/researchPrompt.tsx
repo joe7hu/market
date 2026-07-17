@@ -62,7 +62,7 @@ export function DailyResearchPromptPanel({ research }: { research?: DailyResearc
         <div className="flex flex-col justify-between gap-4 border-t border-border bg-muted/35 p-4 sm:p-5 lg:border-l lg:border-t-0">
           <div className="space-y-2">
             <div className="flex flex-wrap gap-2">
-              {research ? <StatusBadge tone="muted">{research.character_count.toLocaleString()} characters</StatusBadge> : null}
+              {research ? <StatusBadge tone="muted">~{research.estimated_tokens.toLocaleString()} tokens</StatusBadge> : null}
               {research?.generated_at ? <StatusBadge tone="muted">Generated {formatTime(research.generated_at)}</StatusBadge> : null}
             </div>
             <p className="text-xs leading-5 text-muted-foreground">
