@@ -260,6 +260,7 @@ def watchlist_universe_rows(rows_for_table: RowsForTable) -> list[dict[str, Any]
             row["watch_state"] = watch_state or "watched"
             row["name"] = manual.get("name") or row.get("name") or symbol
             row["asset_class"] = manual.get("asset_class") or row.get("asset_class")
+            row["notes"] = manual.get("notes") or row.get("notes")
         rows.append(row)
 
     for symbol, manual in manual_by_symbol.items():
@@ -274,6 +275,7 @@ def watchlist_universe_rows(rows_for_table: RowsForTable) -> list[dict[str, Any]
                 "name": manual.get("name") or symbol,
                 "asset_class": manual.get("asset_class") or ("crypto" if symbol.endswith("-USD") else "equity"),
                 "watch_state": "watched",
+                "notes": manual.get("notes"),
                 "source_count": 0,
                 "rating": "-",
                 "quality_score": None,

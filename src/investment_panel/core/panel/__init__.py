@@ -59,6 +59,7 @@ _CALLABLES = {
     "technicals": "technicals",
     "universe_screen": "feed",
     "valuations": "read_market_data",
+    "watchlist_universe_rows": "payloads",
 }
 
 
@@ -97,5 +98,5 @@ __all__ = [
     "market_freshness", "market_valuation_charts", "market_valuation_reference_charts",
     "ownership_consensus", "panel_snapshot_payload", "quotes", "read_model_names",
     "screener", "sepa", "source_consensus", "source_ticker_ranking_rows",
-    "technicals", "universe_screen", "valuations",
+    "technicals", "universe_screen", "valuations", "watchlist_universe_rows",
 ]

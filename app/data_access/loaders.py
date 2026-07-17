@@ -15,6 +15,9 @@ def load_panel_data(
     table_names: Iterable[str] | None = None,
     ensure_decision_models: bool | None = None,
     ensure_source_models: bool | None = None,
+    query_row_limits: dict[str, int] | None = None,
+    query_symbol_filter: set[str] | None = None,
+    query_symbol_tables: set[str] | frozenset[str] | None = None,
 ) -> PanelData:
     del ensure_decision_models, ensure_source_models
     active_config = config or load_config()
@@ -26,7 +29,14 @@ def load_panel_data(
             metadata={"database": "postgresql", "table_count": 0},
         )
     try:
-        tables, metadata = load_postgres_tables(active_config, requested)
+        query_options: dict[str, Any] = {}
+        if query_row_limits:
+            query_options["query_row_limits"] = query_row_limits
+        if query_symbol_filter is not None:
+            query_options["query_symbol_filter"] = query_symbol_filter
+        if query_symbol_tables:
+            query_options["query_symbol_tables"] = query_symbol_tables
+        tables, metadata = load_postgres_tables(active_config, requested, **query_options)
     except Exception as exc:
         return PanelData(
             status=DataStatus(False, f"PostgreSQL read models unavailable: {exc}", "postgresql-error"),
@@ -43,6 +53,47 @@ def load_panel_data(
     return PanelData(
         status=status,
         tables=tables,
+        metadata=metadata,
+    )
+
+
+def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> PanelData:
+    """Load the prompt seed first, then SQL-bound symbol detail for that universe."""
+
+    from investment_panel.core.daily_research_prompt_fields import (
+        DAILY_RESEARCH_QUERY_LIMITS,
+        DAILY_RESEARCH_MACRO_SYMBOLS,
+        DAILY_RESEARCH_SYMBOL_TABLES,
+        DAILY_RESEARCH_TABLES,
+    )
+
+    active_config = config or load_config()
+    seed_names = ("portfolio", "manual_watchlist", "universe_screen", "option_radar_opportunity")
+    seed = load_panel_data(active_config, table_names=seed_names)
+    symbols: set[str] = set()
+    for name in seed_names:
+        for row in seed.rows(name):
+            watch_state = str(row.get("watch_state") or "").lower()
+            if watch_state == "excluded" or (name == "universe_screen" and watch_state not in {"owned", "watched"}):
+                continue
+            symbol = str(row.get("symbol") or row.get("ticker") or row.get("underlying") or "").strip().upper()
+            if symbol:
+                symbols.add(symbol)
+    symbols.update(DAILY_RESEARCH_MACRO_SYMBOLS)
+    remaining = tuple(name for name in DAILY_RESEARCH_TABLES if name not in seed_names)
+    detail = load_panel_data(
+        active_config,
+        table_names=remaining,
+        query_row_limits=DAILY_RESEARCH_QUERY_LIMITS,
+        query_symbol_filter=symbols,
+        query_symbol_tables=DAILY_RESEARCH_SYMBOL_TABLES,
+    )
+    metadata = {**detail.metadata, "daily_research_bounded": True, "daily_research_symbol_count": len(symbols)}
+    ready = seed.status.ready and detail.status.ready
+    message = "PostgreSQL daily research context loaded with bounded symbol queries." if ready else detail.status.message
+    return PanelData(
+        status=DataStatus(ready, message, detail.status.source),
+        tables={**seed.tables, **detail.tables},
         metadata=metadata,
     )
 

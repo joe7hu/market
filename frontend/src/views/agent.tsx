@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   analyzeTicker,
   loadAgent,
+  loadAgentResearchPrompt,
   startRefreshJob,
   updateAgentSettings,
   type AgentOverview,
   type AgentRun,
+  type DailyResearchPrompt,
   type OptionAgentSettingsInput,
 } from "@/api";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
@@ -16,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import type { Tone } from "@/ui/tone";
 import { titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
+import { DailyResearchPromptPanel } from "@/views/agent/researchPrompt";
 
 // Manual / on-demand runs force the consolidated pass regardless of auto-run.
 const FORCE_JOB = "run_option_agents_force";
@@ -37,6 +40,7 @@ type ControlForm = {
 
 export function AgentPage() {
   const [data, setData] = useState<AgentOverview | null>(null);
+  const [research, setResearch] = useState<DailyResearchPrompt | null>(null);
   const [draft, setDraft] = useState<ControlForm | null>(null);
   const [ticker, setTicker] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -55,6 +59,9 @@ export function AgentPage() {
 
   useEffect(() => {
     void refresh();
+    void loadAgentResearchPrompt()
+      .then(setResearch)
+      .catch((exc) => setError(exc instanceof Error ? exc.message : "Failed to load daily research prompt"));
   }, [refresh]);
 
   // While a run is pending, poll until a new agent_runs row lands (confirms success).
@@ -144,6 +151,7 @@ export function AgentPage() {
   const cost = data?.cost;
   const queue = data?.queue;
   const metrics: MetricSpec[] = [
+    ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : "loading context", research ? "info" : "muted"],
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
     ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
@@ -155,7 +163,7 @@ export function AgentPage() {
     <WorkspacePage
       eyebrow="Control plane"
       title="Agent"
-      subtitle="Full control over how the option agent analyzes each ticker — config, on-demand runs, context, and cost."
+      subtitle="Daily cross-asset research handoff plus full control over the option thesis and postmortem agent."
       metrics={metrics}
       actions={
         <Button type="button" variant="outline" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? `Run all ${queue?.total_open ?? 0} open queued requests now` : "Set the agent command first"}>
@@ -167,6 +175,8 @@ export function AgentPage() {
       {pending ? <Notice tone="info"><span className="inline-flex items-center gap-2"><Loader2 className="size-4 animate-spin" /> {pending.label} running… confirming in Run history below.</span></Notice> : null}
       {message ? <Notice tone="good">{message}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
+
+      <DailyResearchPromptPanel research={research ?? undefined} />
 
       {/* On-demand analysis */}
       <DataTableFrame title="On-demand analysis">

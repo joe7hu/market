@@ -284,6 +284,27 @@ export type AgentRun = {
 
 export type AgentCostWindow = { runs: number; input_tokens: number; output_tokens: number; est_cost_usd: number };
 
+export type DailyResearchPrompt = {
+  ready: boolean;
+  message: string;
+  generated_at: string;
+  prompt: string;
+  character_count: number;
+  coverage: {
+    portfolio_positions: number;
+    portfolio_symbols: string[];
+    watchlist_symbols: number;
+    watchlist: string[];
+    option_signals: number;
+    macro_indicators: number;
+    events: number;
+    theses: number;
+    market_intelligence_items: number;
+    future_dated_rows_excluded: number;
+  };
+  freshness: Array<{ table: string; rows: number; latest_observed?: string | null; future_dated_rows_excluded?: number }>;
+};
+
 export type AgentOverview = {
   config: Record<string, unknown>;
   pricing: Record<string, { input_per_1m?: number; output_per_1m?: number }>;
@@ -295,6 +316,10 @@ export type AgentOverview = {
 
 export async function loadAgent(): Promise<AgentOverview> {
   return getJson<AgentOverview>("/api/agent");
+}
+
+export async function loadAgentResearchPrompt(): Promise<DailyResearchPrompt> {
+  return getJson<DailyResearchPrompt>("/api/agent/research-prompt");
 }
 
 export async function analyzeTicker(ticker: string, prompt?: string): Promise<{ ticker: string; request_id: string; job: RefreshJob }> {

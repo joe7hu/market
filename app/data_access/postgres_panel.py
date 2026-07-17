@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from app.data_access.postgres_queries import OWNED_CORRELATIONS_QUERY
 from app.data_access.postgres_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
@@ -16,6 +16,18 @@ from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
 from app.data_access.postgres_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows
+
+
+RESEARCH_PACKETS_BASE_QUERY = """
+    SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
+           item.published_at,
+           item.title, item.summary, item.url AS source_url, item.source_id AS source,
+           item.metadata
+    FROM raw.content_item_instrument link
+    JOIN raw.content_item item ON item.id = link.content_item_id
+    JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+    ORDER BY item.observed_at DESC
+"""
 
 
 DIRECT_QUERIES: dict[str, str] = {
@@ -102,15 +114,7 @@ DIRECT_QUERIES: dict[str, str] = {
         WHERE observation.metric_set IN ('analyst_estimates', 'consensus')
         ORDER BY observation.observed_at DESC
     """,
-    "research_packets": """
-        SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
-               item.title, item.summary, item.url AS source_url, item.source_id AS source,
-               item.metadata
-        FROM raw.content_item_instrument link
-        JOIN raw.content_item item ON item.id = link.content_item_id
-        JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
-        ORDER BY item.observed_at DESC LIMIT 500
-    """,
+    "research_packets": RESEARCH_PACKETS_BASE_QUERY + " LIMIT 500",
     "source_freshness": """
         SELECT source.id AS source_id, source.name AS source_name,
                source.family AS source_family, source.kind AS source_kind,
@@ -544,7 +548,14 @@ SPECIAL_MODELS = {
 }
 
 
-def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+def load_postgres_tables(
+    config: dict[str, Any],
+    table_names: Iterable[str],
+    *,
+    query_row_limits: Mapping[str, int] | None = None,
+    query_symbol_filter: set[str] | None = None,
+    query_symbol_tables: set[str] | frozenset[str] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
     tables = _published_tables(runtime, requested)
@@ -572,7 +583,7 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
         tables["broker_status"] = broker_status_rows(runtime)
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
-    query_cache: dict[str, list[dict[str, Any]]] = {}
+    query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}
     with runtime.read() as connection:
         for name in requested:
             if name in tables:
@@ -580,12 +591,37 @@ def load_postgres_tables(config: dict[str, Any], table_names: Iterable[str]) -> 
             alias = MODEL_ALIASES.get(name)
             query = DIRECT_QUERIES.get(alias or name)
             if query:
-                cache_key = alias or name
+                limit = int((query_row_limits or {}).get(name) or 0) or None
+                symbol_scoped = query_symbol_filter is not None and name in (query_symbol_tables or set())
+                cache_key = (alias or name, limit, symbol_scoped)
                 if cache_key not in query_cache:
-                    if cache_key == "options_ticker_signals":
-                        query_cache[cache_key] = options_ticker_signal_rows(connection)
+                    if (alias or name) == "options_ticker_signals":
+                        rows = options_ticker_signal_rows(connection, symbols=query_symbol_filter if symbol_scoped else None)
+                        query_cache[cache_key] = rows[:limit] if limit else rows
                     else:
-                        query_cache[cache_key] = [dict(row) for row in connection.execute(query).fetchall()]
+                        selected_query = RESEARCH_PACKETS_BASE_QUERY if symbol_scoped and (alias or name) == "research_packets" else query
+                        bounded_query = f"SELECT * FROM ({selected_query}) AS daily_research_rows"
+                        parameters: list[Any] = []
+                        conditions: list[str] = []
+                        if name in {"catalysts", "earnings"}:
+                            conditions.append("daily_research_rows.starts_at >= current_date")
+                        if name in {"research_packets", "ticker_memos"}:
+                            conditions.append("COALESCE(daily_research_rows.published_at, daily_research_rows.generated_at) <= now()")
+                        if symbol_scoped:
+                            allow_symbol_less = name in {"catalysts", "earnings"}
+                            symbol_clause = "UPPER(daily_research_rows.symbol) = ANY(%s)"
+                            if allow_symbol_less:
+                                symbol_clause = f"({symbol_clause} OR daily_research_rows.symbol IS NULL)"
+                            conditions.append(symbol_clause)
+                            parameters.append(sorted(query_symbol_filter))
+                        if conditions:
+                            bounded_query += " WHERE " + " AND ".join(conditions)
+                        if name in {"catalysts", "earnings"}:
+                            bounded_query += " ORDER BY daily_research_rows.starts_at"
+                        if limit:
+                            bounded_query += f" LIMIT {limit}"
+                        result = connection.execute(bounded_query, parameters) if parameters else connection.execute(bounded_query)
+                        query_cache[cache_key] = [dict(row) for row in result.fetchall()]
                 tables[name] = query_cache[cache_key]
             elif alias in PUBLICATION_MODELS:
                 tables[name] = AnalysisRepository(runtime).publication_rows("today", alias)

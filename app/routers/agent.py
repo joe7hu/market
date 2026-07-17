@@ -15,7 +15,8 @@ router = APIRouter()
 @router.get("/api/agent")
 def agent_overview() -> dict[str, Any]:
     app_config = deps.load_core_config()
-    agents = deps.config_to_dict(app_config)["agents"]
+    config = deps.config_to_dict(app_config)
+    agents = config["agents"]
     from investment_panel.database.agents import AgentRepository
     from investment_panel.database.authority import runtime_for_config
 
@@ -28,6 +29,24 @@ def agent_overview() -> dict[str, Any]:
         "cost": overview["cost"],
         "scheduler": {"agent_refresh_seconds": _scheduler_agent_seconds(app_config)},
     }
+
+
+@router.get("/api/agent/research-prompt")
+def agent_research_prompt() -> dict[str, Any]:
+    _, research_data = deps._context(
+        cache_key="agent:daily-research",
+        loader=deps.load_daily_research_panel_data,
+    )
+    research_prompt = deps.build_daily_research_prompt(
+        research_data.tables,
+        status={
+            "ready": research_data.status.ready,
+            "message": research_data.status.message,
+            "source": research_data.status.source,
+            "metadata": research_data.metadata,
+        },
+    )
+    return research_prompt
 
 
 @router.post("/api/agent/analyze")

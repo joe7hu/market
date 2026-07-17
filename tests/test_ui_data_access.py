@@ -315,6 +315,52 @@ def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> Non
     assert calls == [("source_items",)]
 
 
+def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if "portfolio" in table_names:
+            return {
+                "portfolio": [{"symbol": "MSFT"}],
+                "manual_watchlist": [{"symbol": "ETH-USD", "watch_state": "watched"}],
+                "universe_screen": [
+                    {"symbol": "NVDA", "watch_state": "watched"},
+                    {"symbol": "NOISE", "watch_state": "unwatched"},
+                ],
+                "option_radar_opportunity": [{"ticker": "AAOI"}],
+            }, {"database": "postgresql", "available_model_count": 4, "unavailable_models": []}
+        return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
+
+    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+
+    panel = data_access.load_daily_research_panel_data({"database": {"url": "postgresql:///test"}})
+
+    assert panel.status.ready is True
+    assert {"AAOI", "ETH-USD", "MSFT", "NVDA", "SPY", "QQQ", "TLT", "BTC-USD"} <= calls[1]["query_symbol_filter"]
+    assert "NOISE" not in calls[1]["query_symbol_filter"]
+    assert calls[1]["query_row_limits"]
+
+
+def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> None:
+    received: dict[str, object] = {}
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        received.update(kwargs)
+        return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
+
+    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+
+    data_access.load_panel_data(
+        {"database": {"url": "postgresql:///test"}},
+        table_names=("fundamentals",),
+        query_symbol_filter=set(),
+        query_symbol_tables={"fundamentals"},
+    )
+
+    assert received["query_symbol_filter"] == set()
+
+
 def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 

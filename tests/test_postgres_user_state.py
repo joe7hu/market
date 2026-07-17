@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
@@ -539,7 +540,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
     assert summary["portfolio_value"] == 0.0
     assert summary["day_pnl"] == 99.0
     assert summary["day_pnl_pct"] == 9.9
-    assert summary["day_pnl_as_of"] == now.date().isoformat()
+    assert summary["day_pnl_as_of"] == now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
 
 
 def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, postgres_dsn: str) -> None:

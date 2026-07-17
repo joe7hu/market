@@ -25,6 +25,7 @@ from app.data_access import (
     database_url,
     dashboard_payload,
     load_config,
+    load_daily_research_panel_data,
     load_market_panel_data,
     load_panel_data,
     load_panel_scope_data,
@@ -71,6 +72,7 @@ from investment_panel.core.refresh_jobs import (
     start_refresh_job,
 )
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
+from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, build_daily_research_prompt
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 
 

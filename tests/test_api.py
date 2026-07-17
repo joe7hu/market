@@ -62,6 +62,8 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     try:
         paths = [
         "/api/status",
+        "/api/agent",
+        "/api/agent/research-prompt",
         "/api/panel-contract",
         "/api/dashboard",
         "/api/panel-snapshot?scope=feed",

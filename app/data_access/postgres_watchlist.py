@@ -109,18 +109,22 @@ TECHNICALS_QUERY = """
 """
 
 
-def options_ticker_signal_rows(connection: Any) -> list[dict[str, Any]]:
+def options_ticker_signal_rows(connection: Any, *, symbols: set[str] | None = None) -> list[dict[str, Any]]:
     """Compose current per-ticker option context from PostgreSQL chain facts."""
-    chain_rows = [
-        dict(row)
-        for row in connection.execute(
-            """
+    if symbols is not None and not symbols:
+        return []
+    symbol_filter = sorted(symbols or set())
+    cte_symbol_clause = " AND scoped_instrument.symbol = ANY(%s)" if symbol_filter else ""
+    outer_symbol_clause = " AND instrument.symbol = ANY(%s)" if symbol_filter else ""
+    parameters = [symbol_filter, symbol_filter] if symbol_filter else []
+    query = f"""
             WITH latest AS (
                 SELECT contract.underlying_instrument_id,
                        max(quote.observed_at) AS observed_at
                 FROM raw.option_quote quote
                 JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-                WHERE contract.expiration >= current_date
+                JOIN catalog.instrument scoped_instrument ON scoped_instrument.id = contract.underlying_instrument_id
+                WHERE contract.expiration >= current_date{cte_symbol_clause}
                 GROUP BY contract.underlying_instrument_id
             )
             SELECT instrument.symbol, snapshot.source_id AS source,
@@ -136,11 +140,13 @@ def options_ticker_signal_rows(connection: Any) -> list[dict[str, Any]]:
             JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
             JOIN latest ON latest.underlying_instrument_id = contract.underlying_instrument_id
                        AND latest.observed_at = quote.observed_at
-            WHERE contract.expiration >= current_date
+            WHERE contract.expiration >= current_date{outer_symbol_clause}
             ORDER BY instrument.symbol, snapshot.source_id, contract.expiration, contract.strike,
                      contract.option_type
             """
-        ).fetchall()
+    chain_rows = [
+        dict(row)
+        for row in (connection.execute(query, parameters) if parameters else connection.execute(query)).fetchall()
     ]
     by_expiry: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for row in chain_rows:
