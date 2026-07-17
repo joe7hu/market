@@ -167,7 +167,9 @@ def job_intervals(config: Any | None = None) -> dict[str, int]:
     market_data_seconds = _env_int("MARKET_MARKET_DATA_REFRESH_SECONDS", 3600, allow_zero=True)
     if market_data_seconds > 0:
         intervals["update_market_data"] = market_data_seconds
-    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 0, allow_zero=True)
+    # Broad-market valuation charts are a user-facing decision surface; refresh
+    # their source-backed series hourly unless the deployment explicitly opts out.
+    market_environment_seconds = _env_int("MARKET_ENVIRONMENT_REFRESH_SECONDS", 3600, allow_zero=True)
     if market_environment_seconds > 0:
         intervals["update_market_environment"] = market_environment_seconds
     preopen_brief_seconds = _env_int("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0, allow_zero=True)

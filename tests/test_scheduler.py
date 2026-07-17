@@ -113,7 +113,7 @@ def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
     assert "options_radar_hard_refresh" not in intervals
     assert "refresh_options_radar_learning_marks" not in intervals
     assert "refresh_options_radar_deterministic" not in intervals
-    assert "update_market_environment" not in intervals
+    assert intervals["update_market_environment"] == 3600
     assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
@@ -180,7 +180,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["options_hard_refresh_seconds"] == "0"
     assert status["learning_mark_refresh_seconds"] == "0"
     assert status["learning_refresh_seconds"] == "21600"
-    assert status["market_environment_refresh_seconds"] == "0"
+    assert status["market_environment_refresh_seconds"] == "3600"
     assert status["preopen_brief_refresh_seconds"] == "0"
     assert status["jobs"]["run_option_agents"] == 123
 

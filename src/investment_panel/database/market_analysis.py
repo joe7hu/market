@@ -61,13 +61,14 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
             dict(row)
             for row in connection.execute(
                 """
-                SELECT instrument.symbol, observation.period_end, observation.observed_at,
-                       observation.values, observation.source_id
+                SELECT DISTINCT ON (observation.metric_set)
+                       instrument.symbol, observation.period_end, observation.observed_at,
+                       observation.values, observation.source_id, observation.metric_set
                 FROM raw.fundamental_observation observation
                 JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
                 WHERE observation.metric_set = 'market_valuation'
                    OR observation.metric_set LIKE 'market_valuation:%'
-                ORDER BY observation.observed_at DESC LIMIT 20
+                ORDER BY observation.metric_set, observation.observed_at DESC
                 """
             ).fetchall()
         ]

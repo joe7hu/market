@@ -27,6 +27,7 @@ from investment_panel.jobs import (
     update_content_sources,
     update_disclosure_sources,
     update_market_data,
+    update_market_environment,
     update_market_events,
     update_robinhood_options,
 )
@@ -122,7 +123,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     # PostgreSQL-native implementations.
     "update_free_sources": lambda config_path: update_market_data.run(config_path),
     "update_free_sources_radar": lambda config_path: update_market_data.run(config_path),
-    "update_market_environment": lambda config_path: update_market_data.run(config_path),
+    "update_market_environment": lambda config_path: update_market_environment.run(config_path),
     "update_research_sources": lambda config_path: update_content_sources.run_research(config_path),
     "update_social_sources": lambda config_path: update_content_sources.run_social(config_path),
     "update_event_calendar": lambda config_path: update_market_events.run(config_path),
