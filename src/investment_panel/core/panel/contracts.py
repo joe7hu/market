@@ -425,6 +425,12 @@ FRONTEND_TABLE_KEY_OVERRIDES = {
     "ticker_memos": "memos",
 }
 
+FRONTEND_ADDITIONAL_TABLES = (
+    "broker_market_snapshots",
+    "broker_scanner_signals",
+    "market_valuation_charts",
+)
+
 WATCHLIST_SECTION_OUTPUT_TABLES = (
     "watchlist_watched",
     "watchlist_unwatched",
@@ -472,6 +478,16 @@ def panel_snapshot_table_names() -> frozenset[str]:
     return frozenset(names)
 
 
+def frontend_table_names() -> frozenset[str]:
+    """Every backend table name that the frontend PanelData model may expose."""
+
+    names = set(panel_snapshot_table_names())
+    names.update(ENDPOINT_TABLES.values())
+    names.update(TICKER_TABLES)
+    names.update(FRONTEND_ADDITIONAL_TABLES)
+    return frozenset(names)
+
+
 def frontend_key_for_table(table_name: str) -> str:
     if table_name in FRONTEND_TABLE_KEY_OVERRIDES:
         return FRONTEND_TABLE_KEY_OVERRIDES[table_name]
@@ -488,6 +504,6 @@ def panel_contract_payload() -> dict[str, Any]:
         "endpoint_tables": dict(ENDPOINT_TABLES),
         "frontend_table_keys": {
             table_name: frontend_key_for_table(table_name)
-            for table_name in sorted(panel_snapshot_table_names())
+            for table_name in sorted(frontend_table_names())
         },
     }

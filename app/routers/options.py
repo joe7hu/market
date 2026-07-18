@@ -7,8 +7,13 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 
 from app import deps
+from app.actions.options import OptionsActions
 
 router = APIRouter()
+
+
+def _actions() -> OptionsActions:
+    return OptionsActions(deps.load_config())
 
 
 @router.get("/api/options-expiries")
@@ -68,11 +73,7 @@ def option_radar_opportunities() -> dict[str, Any]:
 
 @router.get("/api/options-radar/signals/{decision_id}")
 def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
-    config = deps.load_config()
-    from investment_panel.database.analysis import AnalysisRepository
-    from investment_panel.database.authority import runtime_for_config
-
-    detail = AnalysisRepository(runtime_for_config(config)).option_signal_detail(decision_id)
+    detail = _actions().signal_detail(decision_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Options-radar signal not found")
     return detail
@@ -85,17 +86,8 @@ def stage_option_radar_paper_entry(
     request: Request,
 ) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
-    from investment_panel.database.actions import ActionRepository
-    from investment_panel.database.authority import runtime_for_config
-
     try:
-        result = ActionRepository(runtime_for_config(config)).stage_option_paper_entry(
-            decision_id=decision_id,
-            idempotency_key=payload.idempotency_key,
-            expected_contract_version=payload.expected_contract_version,
-            limit_price=payload.limit_price,
-        )
+        result = _actions().stage_paper_entry(decision_id, payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     deps._invalidate_context_cache()
@@ -110,22 +102,12 @@ def agent_thesis() -> dict[str, Any]:
 @router.post("/api/agent-thesis")
 def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
-    strategy_version = deps._payload_strategy_version(payload)
-    from investment_panel.database.agents import AgentRepository
-    from investment_panel.database.authority import runtime_for_config
-
     try:
-        thesis_id = AgentRepository(runtime_for_config(config)).submit("option_thesis", payload)
+        result = _actions().submit_thesis(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
-    return {
-        "status": "accepted",
-        "thesis_id": thesis_id,
-        "strategy_version": strategy_version,
-        "agent_thesis_validations": 1,
-    }
+    return result
 
 
 @router.get("/api/agent-thesis-requests")
@@ -151,24 +133,12 @@ def agent_postmortems() -> dict[str, Any]:
 @router.post("/api/agent-postmortems")
 def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
-    strategy_version = deps._payload_strategy_version(payload)
-    from investment_panel.database.agents import AgentRepository
-    from investment_panel.database.authority import runtime_for_config
-
     try:
-        runtime = runtime_for_config(config)
-        postmortem_id, evaluations = AgentRepository(runtime).submit_postmortem(payload)
+        result = _actions().submit_postmortem(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
-    return {
-        "status": "accepted",
-        "postmortem_id": postmortem_id,
-        "strategy_version": strategy_version,
-        "strategy_evaluations": evaluations["strategy_backtests"] + evaluations["strategy_forward_tests"],
-        **evaluations,
-    }
+    return result
 
 
 @router.get("/api/candidate-events")
@@ -184,15 +154,11 @@ def radar_alerts() -> dict[str, Any]:
 @router.post("/api/radar-alerts/{alert_id}/ack")
 def acknowledge_radar_alert_endpoint(alert_id: str, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
-    from investment_panel.database.actions import ActionRepository
-    from investment_panel.database.authority import runtime_for_config
-
-    acknowledged = ActionRepository(runtime_for_config(config)).acknowledge_alert(alert_id)
+    acknowledged = _actions().acknowledge_alert(alert_id)
     deps._invalidate_context_cache()
     if not acknowledged:
         raise HTTPException(status_code=404, detail="Radar alert not found")
-    return {"status": "acknowledged", "alert_id": alert_id}
+    return acknowledged
 
 
 @router.get("/api/candidate-event-marks")
@@ -238,24 +204,9 @@ def trade_journal() -> dict[str, Any]:
 @router.post("/api/trade-journal")
 def create_trade_journal_entry(payload: deps.TradeJournalInput, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
-    from investment_panel.database.actions import ActionRepository
-    from investment_panel.database.authority import runtime_for_config
-
-    journal_id = ActionRepository(runtime_for_config(config)).record_trade_journal(
-        ticker=payload.ticker,
-        contract_id=payload.contract_id,
-        event_id=payload.event_id,
-        strategy_version=payload.strategy_version,
-        opportunity=payload.opportunity,
-        notes=payload.notes,
-        action=payload.action,
-        idempotency_key=payload.idempotency_key,
-        publication_id=payload.publication_id,
-        expected_contract_version=payload.expected_contract_version,
-    )
+    result = _actions().record_trade_journal(payload.model_dump())
     deps._invalidate_context_cache()
-    return {"status": "recorded", "journal_id": journal_id}
+    return result
 
 
 @router.get("/api/option-attributions")
@@ -280,31 +231,13 @@ def promote_strategy_mutation_endpoint(
     payload: deps.StrategyPromotionInput | None = None,
 ) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_config()
     approved_by = payload.approved_by.strip() if payload else "joe"
-    from investment_panel.database.actions import ActionRepository
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.options_analysis import refresh_options_radar
-
     try:
-        runtime = runtime_for_config(config)
-        strategy_version = ActionRepository(runtime).promote_strategy_proposal(
-            proposal_id, approved_by=approved_by
-        )
+        result = _actions().promote_strategy(proposal_id, approved_by=approved_by)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        radar_refresh = refresh_options_radar(runtime, code_version="strategy-promotion")
-    except Exception as exc:
-        radar_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     deps._invalidate_context_cache()
-    return {
-        "status": "promoted",
-        "proposal_id": proposal_id,
-        "strategy_version": strategy_version,
-        "approved_by": approved_by,
-        "radar_refresh": radar_refresh,
-    }
+    return result
 
 
 @router.get("/api/strategy-backtests")

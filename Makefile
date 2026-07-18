@@ -13,10 +13,14 @@
 PY := uv run python
 RUFF := uvx ruff
 
-.PHONY: check guards lint typecheck test coverage build
+.PHONY: check contracts guards lint typecheck test coverage build
 
-check: guards lint typecheck
+check: contracts guards lint typecheck
 	@echo "✓ check passed"
+
+contracts:
+	@echo "→ generated panel contract"
+	@$(PY) scripts/generate_panel_contract.py --check
 
 guards:
 	@echo "→ architecture guards (module size + facade imports)"

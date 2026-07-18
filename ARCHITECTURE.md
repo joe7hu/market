@@ -32,6 +32,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 |---|---|---|
 | `app/main.py` | **Thin app factory**: builds FastAPI, includes `app/routers/`, mounts SPA, runs the scheduler lifespan | app wiring / startup |
 | `app/routers/` | HTTP routes by domain (`panel`, `tickers`, `portfolio`, `theses`, `sources`, `market_data`, `options`, `brokers`, `system`); registered via `ALL_ROUTERS`. Add a router here, don't grow `main.py` | an API endpoint / route shape |
+| `app/actions/` | **Application action layer**: domain workflows for options, portfolio/watchlist, sources, brokers, and agents. Routers are transport adapters; actions select repositories, sequence mutations, and assemble results | a user-triggered workflow / mutation sequence |
 | `app/deps.py` | Shared route service layer: loaders, the `_context`/`_table_payload` helpers, request guard, Pydantic input models, constants. Routers reference these as `deps.X` (single patch seam) | a shared route helper / request model |
 | `app/data_access/` | **API adapters only**: request PostgreSQL-owned read models and normalize them into API payloads. Compatibility modules re-export database-owned portfolio and panel behavior without owning SQL or transactions | how database rows are shaped for the UI / a payload field |
 | `app/panel_contracts.py` | Scope→table contracts (which tables each page needs) | which tables a page scope loads |
@@ -41,6 +42,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 | `database/user_state.py`, `portfolio_ledger.py`, `portfolio_intelligence.py` | Durable portfolio/watchlist/thesis operations, append-only transactions, projections, and reconciled portfolio read models | user-owned investment state or portfolio accounting |
 | `database/panel_models.py` | Model catalog: SQL/publication/repository source, aliases, symbol scope, future-row policy, and availability metadata | how a named panel model is retrieved |
 | `database/ingestion.py:IngestionRun` | Managed ingestion lifecycle with one terminal state and automatic exception recording | ingestion run completion, counts, summaries, or failure semantics |
+| `database/options_analysis.py`, `options_cash_secured_put.py` | Thin options publication orchestration plus strategy-lane modules that own selection, gates, sizing, scoring, and persistence end to end | live options decision publication or one strategy lane |
 | `core/panel/` | **Read-model layer**: ~120 `con→list[dict]` accessors + `load_panel_data` dispatcher. Submodules: `snapshot` (orchestration), `read_equity`/`read_options`/`read_learning` (accessors), `market_environment`, `feed`, `technicals`, `disclosures`, `sources`, `metrics`, `coerce` | a read model / what a table returns |
 | `core/decision/` | **Decision engine**: universe build, freshness, queue, readiness, grading, watchlist, market calendar. Submodules: `builders`, `read_models`, `grading`, `readiness`, `freshness`, `calendar`, `watchlist`, `portfolio`, `quotes`, `service`, `coerce`, `constants` | decision grades, gating, freshness rules |
 | `core/options_radar/` | Options-radar pipeline: candidates, gates, scoring, opportunities, alerts, learning loop | options-radar logic |
@@ -52,6 +54,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 | `core/portfolio_intelligence/` | Portfolio-level risk read models. Submodules: `exposure` (clusters), `correlation` (edges), `cards` (risk cards + review actions), `holdings` (shared accessors), `coerce` | portfolio risk/exposure read models |
 | `core/db.py` + `core/schema.py` | Retired DuckDB compatibility used only by legacy tests/import-era code; never a live authority | legacy compatibility only; new persistence belongs in `database/` and Alembic |
 | `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
+| `core/job_policy.py`, `core/job_execution.py` | Canonical refresh-job identity/cadence/freshness/source routing and one subprocess lifecycle contract shared by API, scheduler, and health surfaces | job policy, scheduling, timeout, cancellation, or process semantics |
 | `core/robinhood_options/` | Read-only Robinhood option-chain collector. Submodules: `auth` (MCP OAuth/PKCE token dance + Codex credential bridge), `collector` (chain collection + `store_options_chain` normalization) | Robinhood auth or chain collection |
 | `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `thesis_monitor`, `daily_brief`, `ibkr_options`, `options_intelligence`, `option_agent_runner`/`option_agent_postmortem`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
 | `analysis/` | Pure computations: `valuation`, `sepa`, `liquidity`, `correlation`, `earnings_setup`, `option_ev`, `options_payoff`, `market_environment`, `stats` (+ `registry`, `run`) | a quantitative model |
@@ -67,6 +70,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 | `views/` | Feature view modules. Larger features are folders: `health/`, `optionsRadar/`, `watchlist/` (`index` composition, `columns`, `format`, `cells`, `table`, `controls`), `market/` (`panels`, `chart`, `cells`, `format`, `types`), `ticker/` (`index` composition, `panels`, `cells`, `data`). Shared: `rowFormat.ts`, `workspacePage.tsx` |
 | `components/` | Reusable UI primitives (incl. `components/ui/`, `components/market/`) |
 | `api.ts`, `marketData.tsx`, `model.ts`, `types.ts`, `hooks.ts`, `utils.ts` | API client, data context/model, shared types/hooks/utils |
+| `generated/panelContract.ts`, `adapters/` | Generated backend-owned panel table keys plus feature-owned row normalization before view code | panel contract drift or feature payload adaptation |
 
 ## Conventions (read before adding code)
 
@@ -90,7 +94,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 
 The conventions above are checked mechanically so they can't silently rot:
 
-- **`make check`** — the fast pre-commit gate (~1s): architecture guards + ruff + frontend typecheck.
+- **`make check`** — the fast pre-commit gate: generated panel-contract check + architecture guards + ruff + frontend typecheck.
 - **`tests/test_architecture_guards.py`** — turns two conventions into tests:
   - *Module-size guard*: fails if any module exceeds **700 lines** (the "don't re-grow a
     monolith" rule). Deliberate exceptions live in `SIZE_ALLOWLIST` with a reason.
@@ -98,6 +102,8 @@ The conventions above are checked mechanically so they can't silently rot:
     (`core.panel.feed`) instead of the package (`core.panel`). Pre-existing leaks are
     frozen in `FACADE_IMPORT_ALLOWLIST` (a ratchet — new ones are blocked; shrink the
     list over time). Both allowlists have staleness tests so dead entries get removed.
+  - *Transport/action guard*: fails if an HTTP router imports a database Module instead of calling `app.actions`.
+- **`scripts/generate_panel_contract.py --check`** — ensures frontend panel table keys are generated from the backend contract owner rather than maintained as a second handwritten interface.
 - **ruff** (`pyproject.toml [tool.ruff]`) — a curated, green-today set of real bug-class
   rules (syntax/runtime errors, `%`-format bugs, `== None`, bare `except`). `F401`
   unused-import is intentionally *not* enabled yet: this codebase has implicit

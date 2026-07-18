@@ -6,8 +6,13 @@ from typing import Any
 from fastapi import APIRouter
 
 from app import deps
+from app.actions.sources import SourceActions
 
 router = APIRouter()
+
+
+def _actions() -> SourceActions:
+    return SourceActions(deps.load_config())
 
 
 @router.get("/api/source-health")
@@ -22,11 +27,7 @@ def sources() -> dict[str, Any]:
 
 @router.get("/api/sources/{source_id}")
 def source_detail(source_id: str) -> dict[str, Any]:
-    config = deps.load_config()
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.sources import SourceRepository
-
-    return SourceRepository(runtime_for_config(config)).detail(source_id)
+    return _actions().detail(source_id)
 
 
 @router.get("/api/source-items")
@@ -47,11 +48,7 @@ def source_runs() -> dict[str, Any]:
 @router.get("/api/source-catalog")
 def source_catalog() -> dict[str, Any]:
     """Authoritative data-source catalog joined with live freshness/health status."""
-    config = deps.load_config()
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.sources import SourceRepository
-
-    return SourceRepository(runtime_for_config(config)).catalog()
+    return _actions().catalog()
 
 
 @router.get("/api/ticker-source-signals")
@@ -61,11 +58,7 @@ def ticker_source_signals() -> dict[str, Any]:
 
 @router.get("/api/source-ingestion-audit")
 def source_audit() -> dict[str, Any]:
-    config = deps.load_config()
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.sources import SourceRepository
-
-    return SourceRepository(runtime_for_config(config)).audit()
+    return _actions().audit()
 
 
 @router.get("/api/source-consensus")

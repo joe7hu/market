@@ -6,8 +6,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import deps
+from app.actions.brokers import BrokerActions
 
 router = APIRouter()
+
+
+def _actions() -> BrokerActions:
+    return BrokerActions(deps.load_core_config("config.yaml"))
 
 
 @router.get("/api/broker/status")
@@ -33,13 +38,9 @@ def agent_recommendations() -> dict[str, Any]:
 @router.post("/api/agent/review")
 def run_agent_review(request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_core_config("config.yaml")
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.brokers import BrokerRepository
-
-    rows = BrokerRepository(runtime_for_config(config)).build_recommendations()
+    result = _actions().review()
     deps._invalidate_context_cache()
-    return {"status": "ok", "count": len(rows), "rows": rows[:25]}
+    return result
 
 
 @router.get("/api/paper-orders")
@@ -50,12 +51,8 @@ def paper_orders() -> dict[str, Any]:
 @router.post("/api/paper-orders")
 def stage_paper_order_endpoint(payload: deps.PaperOrderInput, request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    config = deps.load_core_config("config.yaml")
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.brokers import BrokerRepository
-
     try:
-        result = BrokerRepository(runtime_for_config(config)).stage_paper_order(payload.recommendation_id)
+        result = _actions().stage_paper_order(payload.recommendation_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()

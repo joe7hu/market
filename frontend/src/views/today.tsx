@@ -2,6 +2,7 @@ import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucid
 import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
+import { adaptOptionDecision } from "@/adapters/optionsDecision";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
 import { cn } from "@/lib/utils";
@@ -81,6 +82,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
 
 function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
   if (!rows.length) return null;
+  const decisions = rows.map(adaptOptionDecision);
   return (
     <section className="mb-6">
       <div className="mb-3 flex items-end justify-between gap-3">
@@ -88,27 +90,24 @@ function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker
           <h2 className="text-lg font-semibold">Options decisions</h2>
           <p className="text-xs text-muted-foreground">Top current actions from the same immutable Options Radar publication.</p>
         </div>
-        <StatusBadge tone="info">{rows.length} current</StatusBadge>
+        <StatusBadge tone="info">{decisions.length} current</StatusBadge>
       </div>
       <div className="grid gap-3 lg:grid-cols-3">
-        {rows.slice(0, 3).map((row) => {
-          const symbol = textField(row, ["symbol", "ticker"]);
-          const structure = textField(row, ["structure"], "option").replaceAll("_", " ");
-          const cashSecured = textField(row, ["structure"]) === "cash_secured_put";
+        {decisions.slice(0, 3).map((decision) => {
           return (
-            <Card key={textField(row, ["stable_key", "decision_id"], `${symbol}-${structure}`)}>
+            <Card key={decision.key}>
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(symbol)}>{symbol}</button>
-                  <StatusBadge tone="warn">{structure}</StatusBadge>
+                  <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(decision.symbol)}>{decision.symbol}</button>
+                  <StatusBadge tone="warn">{decision.structure}</StatusBadge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <OptionMetric label={cashSecured ? "Credit" : "Entry"} value={formatMoney(numberField(row, ["entry_price"], Number.NaN))} />
-                  <OptionMetric label={cashSecured ? "Assignment basis" : "Max loss"} value={formatMoney(numberField(row, cashSecured ? ["effective_assignment_price"] : ["max_loss"], Number.NaN))} />
-                  <OptionMetric label={cashSecured ? "Secured cash" : "Expected value"} value={formatMoney(numberField(row, cashSecured ? ["secured_cash"] : ["expected_value"], Number.NaN))} />
-                  <OptionMetric label={cashSecured ? "Assignment" : "State"} value={cashSecured ? `${(numberField(row, ["probability_assignment"], 0) * 100).toFixed(1)}%` : textField(row, ["action"], "setup")} />
+                  <OptionMetric label={decision.cashSecured ? "Credit" : "Entry"} value={formatMoney(decision.entryPrice)} />
+                  <OptionMetric label={decision.cashSecured ? "Assignment basis" : "Max loss"} value={formatMoney(decision.cashSecured ? decision.effectiveAssignmentPrice : decision.maxLoss)} />
+                  <OptionMetric label={decision.cashSecured ? "Secured cash" : "Expected value"} value={formatMoney(decision.cashSecured ? decision.securedCash : decision.expectedValue)} />
+                  <OptionMetric label={decision.cashSecured ? "Assignment" : "State"} value={decision.cashSecured ? `${(decision.probabilityAssignment * 100).toFixed(1)}%` : decision.action} />
                 </div>
-                <p className="line-clamp-2 text-sm text-muted-foreground">{textField(row, ["summary"], "Review entry, risk, and invalidation in Options Radar.")}</p>
+                <p className="line-clamp-2 text-sm text-muted-foreground">{decision.summary}</p>
               </CardContent>
             </Card>
           );

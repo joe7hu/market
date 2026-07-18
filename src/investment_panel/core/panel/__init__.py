@@ -13,6 +13,7 @@ from typing import Any
 from investment_panel.core.panel.contracts import (
     DECISION_REPAIR_TABLES,
     ENDPOINT_TABLES,
+    FRONTEND_ADDITIONAL_TABLES,
     FRONTEND_TABLE_KEY_OVERRIDES,
     PANEL_SCOPE_TABLES,
     SOURCE_REPAIR_TABLES,
@@ -20,6 +21,7 @@ from investment_panel.core.panel.contracts import (
     WATCHLIST_SECTION_OUTPUT_TABLES,
     WATCHLIST_SECTION_TABLES,
     frontend_key_for_table,
+    frontend_table_names,
     panel_contract_payload,
     panel_snapshot_table_names,
     table_for_endpoint,
@@ -87,10 +89,10 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "DECISION_REPAIR_TABLES", "ENDPOINT_TABLES", "FRONTEND_TABLE_KEY_OVERRIDES",
+    "DECISION_REPAIR_TABLES", "ENDPOINT_TABLES", "FRONTEND_ADDITIONAL_TABLES", "FRONTEND_TABLE_KEY_OVERRIDES",
     "PANEL_SCOPE_TABLES", "SOURCE_REPAIR_TABLES", "TICKER_TABLES",
     "WATCHLIST_SECTION_OUTPUT_TABLES", "WATCHLIST_SECTION_TABLES",
-    "frontend_key_for_table", "panel_contract_payload", "panel_snapshot_table_names",
+    "frontend_key_for_table", "frontend_table_names", "panel_contract_payload", "panel_snapshot_table_names",
     "table_for_endpoint", "tables_for_scope",
     "build_source_catalog_health", "build_ticker_dossier", "dashboard_payload",
     "disclosures", "feed_signals", "liquidity", "load_panel_data",

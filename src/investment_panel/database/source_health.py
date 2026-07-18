@@ -11,8 +11,10 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from investment_panel.core.job_policy import source_primary_refresh_job_sql, source_refresh_jobs_sql
 
-SOURCE_HEALTH_QUERY = """
+
+SOURCE_HEALTH_QUERY = f"""
 WITH eligible_run AS (
     SELECT run.*
     FROM ingest.run run
@@ -89,40 +91,8 @@ WITH eligible_run AS (
            source.origin, source.enabled, source.ingestion_mode,
            source.source_url, source.capabilities,
            COALESCE(capability_health.rows, '[]'::jsonb) AS capability_health,
-           CASE
-             WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
-               OR source.id LIKE 'legacy-%' THEN ARRAY[]::text[]
-             WHEN source.id = 'ibkr' THEN ARRAY['update_broker_sources', 'update_ibkr_options']::text[]
-             WHEN source.id = 'moomoo' THEN ARRAY['update_broker_sources']::text[]
-             WHEN source.id = 'robinhood' THEN ARRAY['options_radar_hard_refresh']::text[]
-             WHEN source.id = 'birdclaw_primary_tweets' THEN ARRAY['update_social_sources']::text[]
-             WHEN source.id = 'arco' THEN ARRAY['update_arco_data']::text[]
-             WHEN source.id LIKE 'news_%' OR source.id LIKE 'blog_%' THEN ARRAY['update_research_sources']::text[]
-             WHEN source.id = 'official-event-calendar' THEN ARRAY['update_event_calendar']::text[]
-             WHEN source.id LIKE 'house_%' OR source.id LIKE 'sec_13f_%'
-               OR source.id LIKE 'disclosure_csv_%'
-               OR source.id = 'sec_disclosures' THEN ARRAY['update_disclosures']::text[]
-             WHEN source.id IN ('watchlist_quote', 'daily-market-prices', 'tradingview',
-                                'yfinance_info', 'coingecko', 'yfinance') THEN ARRAY['update_market_data']::text[]
-             ELSE ARRAY[]::text[]
-           END AS refresh_jobs,
-           CASE
-             WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
-               OR source.id LIKE 'legacy-%' THEN NULL
-             WHEN source.id = 'robinhood' THEN 'options_radar_hard_refresh'
-             WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
-             WHEN source.id IN ('ibkr', 'moomoo') THEN 'update_broker_sources'
-             WHEN source.id = 'birdclaw_primary_tweets' THEN 'update_social_sources'
-             WHEN source.id = 'arco' THEN 'update_arco_data'
-             WHEN source.id LIKE 'news_%' OR source.id LIKE 'blog_%' THEN 'update_research_sources'
-             WHEN source.id = 'official-event-calendar' THEN 'update_event_calendar'
-             WHEN source.id LIKE 'house_%' OR source.id LIKE 'sec_13f_%'
-               OR source.id LIKE 'disclosure_csv_%'
-               OR source.id = 'sec_disclosures' THEN 'update_disclosures'
-             WHEN source.id IN ('watchlist_quote', 'daily-market-prices', 'tradingview',
-                                'yfinance_info', 'coingecko', 'yfinance') THEN 'update_market_data'
-             ELSE NULL
-           END AS refresh_job,
+           {source_refresh_jobs_sql()} AS refresh_jobs,
+           {source_primary_refresh_job_sql()} AS refresh_job,
            CASE
              WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
                OR source.id LIKE 'legacy-%' THEN NULL

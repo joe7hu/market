@@ -203,3 +203,20 @@ def test_ingestion_clients_use_managed_run_lifecycle() -> None:
         "Ingestion clients must use IngestionRepository.run so exceptions and terminal state "
         "stay owned by the ingestion module:\n  " + "\n  ".join(sorted(violations))
     )
+
+
+def test_http_routers_do_not_construct_database_repositories() -> None:
+    """Transport adapters call application actions instead of persistence adapters."""
+
+    violations = []
+    for path in (REPO_ROOT / "app" / "routers").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "investment_panel.database"
+            ):
+                violations.append(f"{path.name}:{node.lineno} imports {node.module}")
+    assert not violations, (
+        "HTTP routers must use app.actions Modules instead of constructing database repositories:\n  "
+        + "\n  ".join(sorted(violations))
+    )

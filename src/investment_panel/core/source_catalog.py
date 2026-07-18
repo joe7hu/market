@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from investment_panel.core.job_policy import job_definition
+
 from investment_panel.core.decision import stale_after_label
 
 
@@ -41,10 +43,8 @@ class DataCategory:
     live_fetcher: bool = False
 
 
-# Cadence seconds mirror the scheduler defaults so the two cannot drift:
-#   MARKET_RADAR_REFRESH_SECONDS (900), MARKET_SOURCE_REFRESH_SECONDS (3600),
-#   MARKET_SOCIAL_REFRESH_SECONDS (1800), MARKET_RESEARCH_REFRESH_SECONDS (3600),
-#   MARKET_ENVIRONMENT_REFRESH_SECONDS (3600).
+# Cadence is the freshness expectation, not necessarily an enabled in-process
+# schedule. Operational job metadata comes from core.job_policy.
 SOURCE_CATALOG: list[DataCategory] = [
     DataCategory(
         id="options",
@@ -52,8 +52,8 @@ SOURCE_CATALOG: list[DataCategory] = [
         family="market_data",
         primary="robinhood",
         fallback=["ibkr", "tradingview", "yfinance"],
-        cadence_label="hourly",
-        cadence_seconds=3600,
+        cadence_label="daily / premarket",
+        cadence_seconds=job_definition("options_radar_hard_refresh").freshness_seconds,
         # Health actions should complete the user-visible contract: ingest the
         # provider chains and republish the radar from those fresh rows.
         refresh_job="options_radar_hard_refresh",

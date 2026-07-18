@@ -7,13 +7,19 @@ from contextlib import contextmanager
 from datetime import timedelta
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 from threading import Event, Thread
 import traceback
 from typing import Any, Callable, Iterator
 from investment_panel.core.config import load_config
+from investment_panel.core.job_execution import (
+    PROJECT_ROOT,
+    SOURCE_ROOT,
+    RefreshProcessSpec,
+    execute_sync,
+)
+from investment_panel.core.job_policy import default_job_timeouts, job_timeout_seconds
 from investment_panel.database.authority import database_url, runtime_for_url
 from investment_panel.database.jobs import JobRepository
 from investment_panel.jobs import (
@@ -36,24 +42,10 @@ from investment_panel.database.retention import RetentionRepository
 
 JobRunner = Callable[[str | None], dict[str, Any]]
 
-JOB_TIMEOUT_SECONDS: dict[str, int] = {
-    "options_radar_hard_refresh": 5400,
-}
+JOB_TIMEOUT_SECONDS: dict[str, int] = default_job_timeouts()
 JOB_HEARTBEAT_SECONDS = 30.0
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SOURCE_ROOT = PROJECT_ROOT / "src"
-
-
 def _job_timeout_seconds(job_name: str) -> int | None:
-    env_key = f"MARKET_REFRESH_JOB_TIMEOUT_{job_name.upper()}"
-    raw = os.environ.get(env_key)
-    if raw is not None:
-        try:
-            value = int(raw.strip())
-            return value if value > 0 else None
-        except ValueError:
-            pass
-    return JOB_TIMEOUT_SECONDS.get(job_name)
+    return job_timeout_seconds(job_name, JOB_TIMEOUT_SECONDS)
 
 
 def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> dict[str, Any]:
@@ -230,57 +222,18 @@ def execute_refresh_job_subprocess(
     config_path: str | None = "config.yaml",
 ) -> dict[str, Any]:
     repository = _job_repository(db_path, config_path)
-    command = [
-        sys.executable,
-        "-m",
-        "investment_panel.core.refresh_jobs",
-        job_name,
-        "--job-id",
-        job_id,
-        "--config",
-        config_path or "config.yaml",
-    ]
-    existing_pythonpath = os.environ.get("PYTHONPATH", "")
-    child_pythonpath = os.pathsep.join(
-        part for part in (str(SOURCE_ROOT), existing_pythonpath) if part
+    spec = RefreshProcessSpec(
+        job_id=job_id,
+        job_name=job_name,
+        database_url=repository.runtime.dsn,
+        config_path=config_path or "config.yaml",
     )
-    child_environment = {
-        **os.environ,
-        "MARKET_DATABASE_URL": repository.runtime.dsn,
-        "PYTHONPATH": child_pythonpath,
-    }
-    timeout_seconds = _job_timeout_seconds(job_name)
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-            env=child_environment,
-            cwd=PROJECT_ROOT,
-        )
-    except subprocess.TimeoutExpired:
-        return finish_refresh_job_failed(
-            job_id,
-            job_name,
-            db_path,
-            f"refresh subprocess timed out after {timeout_seconds}s",
-        )
-    stdout = (completed.stdout or "").strip()
-    stderr = (completed.stderr or "").strip()
-    if completed.returncode != 0:
-        detail = stderr or stdout or f"refresh subprocess exited with code {completed.returncode}"
-        return finish_refresh_job_failed(
-            job_id,
-            job_name,
-            db_path,
-            f"refresh subprocess exited with code {completed.returncode}: {detail[-2000:]}",
-        )
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
-        return {"id": job_id, "job_name": job_name, "status": "succeeded", "summary": {"stdout": stdout[-2000:]}}
+    return execute_sync(
+        spec,
+        lambda error: finish_refresh_job_failed(job_id, job_name, db_path, error),
+        timeout_overrides=JOB_TIMEOUT_SECONDS,
+        run_process=subprocess.run,
+    )
 
 
 def run_refresh_job(job_name: str, db_path: Any, config_path: str | None = "config.yaml") -> dict[str, Any]:

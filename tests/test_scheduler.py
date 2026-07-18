@@ -262,6 +262,60 @@ def test_dispatch_swallows_exceptions(monkeypatch) -> None:
     asyncio.run(scheduler._dispatch("update_free_sources", "db", "config.yaml"))
 
 
+def test_dispatch_marks_started_job_failed_when_setup_raises(monkeypatch) -> None:
+    failures: list[tuple[str, str, object, str]] = []
+
+    monkeypatch.setattr(
+        scheduler,
+        "start_refresh_job",
+        lambda job_name, _db_path: {"id": "job-1", "job_name": job_name, "created": True},
+    )
+
+    async def fail_setup(*_args):
+        raise ValueError("invalid config")
+
+    def finish_failed(job_id, job_name, db_path, error):
+        failures.append((job_id, job_name, db_path, error))
+        return {"id": job_id, "status": "failed"}
+
+    monkeypatch.setattr(scheduler, "_execute_started_refresh_job", fail_setup)
+    monkeypatch.setattr(scheduler, "finish_refresh_job_failed", finish_failed)
+
+    asyncio.run(scheduler._dispatch("update_free_sources", "db", "bad-config.yaml"))
+
+    assert failures == [
+        (
+            "job-1",
+            "update_free_sources",
+            "db",
+            "scheduler failed before refresh execution completed: invalid config",
+        )
+    ]
+
+
+def test_execute_started_job_passes_database_url_only_in_process_environment(monkeypatch) -> None:
+    captured_specs = []
+
+    async def execute(spec, _fail):
+        captured_specs.append(spec)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(scheduler, "execute_async", execute)
+
+    result = asyncio.run(
+        scheduler._execute_started_refresh_job(
+            "update_free_sources",
+            "job-1",
+            "postgresql://user:secret@localhost/market",
+            "config.yaml",
+        )
+    )
+
+    assert result == {"status": "succeeded"}
+    assert captured_specs[0].database_url == "postgresql://user:secret@localhost/market"
+    assert captured_specs[0].database_reference is None
+
+
 def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) -> None:
     calls: list[str] = []
 
