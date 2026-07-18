@@ -31,26 +31,25 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         origin=str(config.arco.raw_dir),
         capabilities={"beliefs": True, "bookmarks": True, "source_evidence": True},
     )
-    run_id = repository.start_run(SOURCE_ID, "content")
     try:
-        context = load_arco_context(config.arco)
-        payload_ids = _record_context_payloads(repository, run_id, context)
-        known = _known_symbols(runtime)
-        items = [_normalize(item, known) for item in flatten_arco_items(context)]
-        items = [item for item in items if item is not None]
-        counts = SourceFactRepository(runtime).store_content_items(
-            run_id,
-            SOURCE_ID,
-            items,
-            payload_id=payload_ids.get(str(context.get("manifest_path") or "")),
-        )
-        repository.finish_run(
-            run_id,
-            "succeeded",
-            item_count=counts["items"],
-            instrument_count=counts["instrument_links"],
-            summary={"payload_manifests": len(payload_ids), "source_status": context.get("source_status")},
-        )
+        with repository.run(SOURCE_ID, "content") as ingestion_run:
+            run_id = ingestion_run.id
+            context = load_arco_context(config.arco)
+            payload_ids = _record_context_payloads(repository, run_id, context)
+            known = _known_symbols(runtime)
+            items = [_normalize(item, known) for item in flatten_arco_items(context)]
+            items = [item for item in items if item is not None]
+            counts = SourceFactRepository(runtime).store_content_items(
+                run_id,
+                SOURCE_ID,
+                items,
+                payload_id=payload_ids.get(str(context.get("manifest_path") or "")),
+            )
+            ingestion_run.finish(
+                item_count=counts["items"],
+                instrument_count=counts["instrument_links"],
+                summary={"payload_manifests": len(payload_ids), "source_status": context.get("source_status")},
+            )
         return {
             "status": "ok",
             "database": "postgresql",
@@ -61,7 +60,6 @@ def run(config_path: str | None = None) -> dict[str, Any]:
             "source_status": context.get("source_status"),
         }
     except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {"status": "failed", "database": "postgresql", "items": 0, "error": str(exc)}
 
 

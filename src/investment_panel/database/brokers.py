@@ -8,6 +8,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
@@ -29,9 +30,9 @@ class BrokerRepository:
         )
         if status.status == "disabled":
             ingestion.set_source_enabled(status.provider, False)
-        run_id = ingestion.start_run(status.provider, "broker_sync", started_at=_aware(status.checked_at))
         account_ids: dict[str, int] = {}
-        try:
+        with ingestion.run(status.provider, "broker_sync", started_at=_aware(status.checked_at)) as ingestion_run:
+            run_id = ingestion_run.id
             with self.runtime.transaction(JOB_PROFILE) as connection:
                 connection.execute(
                     "INSERT INTO app.setting (key, value, updated_at) VALUES (%s, %s, now()) "
@@ -72,15 +73,17 @@ class BrokerRepository:
                         account_snapshot_id = account_ids.get(account_key)
                         if account_snapshot_id is None:
                             continue
-                        symbol = str(position.get("symbol") or "").strip().upper()
-                        if not symbol:
+                        try:
+                            symbol = canonical_symbol(position.get("symbol"))
+                        except ValueError:
                             continue
-                        instrument = connection.execute(
-                            "INSERT INTO catalog.instrument (symbol, name, asset_class, category) "
-                            "VALUES (%s, %s, %s, 'broker-position') "
-                            "ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id",
-                            [symbol, position.get("name") or symbol, position.get("asset_class") or "equity"],
-                        ).fetchone()
+                        instrument_id = reconcile_instrument(
+                            connection,
+                            symbol,
+                            name=position.get("name") or symbol,
+                            asset_class=position.get("asset_class"),
+                            category="broker-position",
+                        )
                         connection.execute(
                             """
                             INSERT INTO raw.broker_position_snapshot
@@ -93,7 +96,7 @@ class BrokerRepository:
                                 unrealized_pnl = EXCLUDED.unrealized_pnl, details = EXCLUDED.details
                             """,
                             [
-                                account_snapshot_id, instrument["id"], position.get("quantity") or 0,
+                                account_snapshot_id, instrument_id, position.get("quantity") or 0,
                                 position.get("average_cost") or position.get("avg_cost"), position.get("market_price"),
                                 position.get("market_value"), position.get("unrealized_pnl"),
                                 Jsonb(_jsonable(dict(position.get("raw") or position))),
@@ -104,15 +107,15 @@ class BrokerRepository:
                             activity_key = str(activity.get(f"{activity_type}_id") or activity.get("order_id") or "")
                             if not activity_key:
                                 continue
-                            symbol = str(activity.get("symbol") or "").strip().upper()
+                            raw_symbol = activity.get("symbol")
                             instrument_id = None
-                            if symbol:
-                                instrument_id = connection.execute(
-                                    "INSERT INTO catalog.instrument (symbol, name, asset_class, category) "
-                                    "VALUES (%s, %s, 'equity', 'broker-activity') "
-                                    "ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id",
-                                    [symbol, symbol],
-                                ).fetchone()["id"]
+                            if raw_symbol:
+                                try:
+                                    instrument_id = reconcile_instrument(
+                                        connection, raw_symbol, category="broker-activity"
+                                    )
+                                except ValueError:
+                                    instrument_id = None
                             connection.execute(
                                 """
                                 INSERT INTO raw.broker_activity
@@ -132,17 +135,13 @@ class BrokerRepository:
                             )
             quote_count = ingestion.store_quotes(run_id, status.provider, snapshot.market_snapshots)
             final_status = "succeeded" if status.status == "ok" else "partial" if snapshot.market_snapshots else "skipped"
-            ingestion.finish_run(
-                run_id,
+            ingestion_run.finish(
                 final_status,
                 item_count=len(snapshot.accounts) + len(snapshot.positions) + len(snapshot.orders) + len(snapshot.fills) + quote_count,
                 instrument_count=len(snapshot.positions),
                 failure_detail=None if status.status == "ok" else status.detail,
                 summary={"provider_status": status.status, "scanner_signal_count": len(snapshot.scanner_signals)},
             )
-        except Exception as exc:
-            ingestion.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
-            raise
         return {
             "provider": status.provider,
             "status": status.status,

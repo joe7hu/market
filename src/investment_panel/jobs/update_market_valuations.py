@@ -42,28 +42,32 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
         capabilities={"market_valuation": True},
     )
     fetched_at = datetime.now(UTC)
-    run_id = repository.start_run(SOURCE_ID, "market_valuation")
     try:
-        response = httpx.get(
-            url,
-            timeout=30.0,
-            follow_redirects=True,
-            headers={"User-Agent": "joehu-market-panel/0.1"},
-        )
-        response.raise_for_status()
-        rows, skipped = _valuation_rows(response.json(), fetched_at, url)
-        if not rows:
-            raise ValueError("market valuation source returned no supported series")
-        stored = 0
-        for row in rows:
-            stored += repository.store_fundamental_observations(
-                run_id,
-                SOURCE_ID,
-                f"market_valuation:{row['values']['metric']}",
-                [row],
+        with repository.run(SOURCE_ID, "market_valuation") as ingestion_run:
+            response = httpx.get(
+                url,
+                timeout=30.0,
+                follow_redirects=True,
+                headers={"User-Agent": "joehu-market-panel/0.1"},
+            )
+            response.raise_for_status()
+            rows, skipped = _valuation_rows(response.json(), fetched_at, url)
+            if not rows:
+                raise ValueError("market valuation source returned no supported series")
+            stored = 0
+            for row in rows:
+                stored += repository.store_fundamental_observations(
+                    ingestion_run.id,
+                    SOURCE_ID,
+                    f"market_valuation:{row['values']['metric']}",
+                    [row],
+                )
+            ingestion_run.finish(
+                item_count=stored,
+                instrument_count=1,
+                summary={"series": len(rows), "skipped_series": skipped},
             )
     except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {
             "status": "failed",
             "ok": False,
@@ -71,13 +75,6 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
             "source": SOURCE_ID,
             "error": f"{type(exc).__name__}: {exc}",
         }
-    repository.finish_run(
-        run_id,
-        "succeeded",
-        item_count=stored,
-        instrument_count=1,
-        summary={"series": len(rows), "skipped_series": skipped},
-    )
     return {
         "status": "ok",
         "ok": True,

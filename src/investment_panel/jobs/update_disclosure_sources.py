@@ -61,70 +61,65 @@ def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str,
         origin=f"https://data.sec.gov/submissions/CIK{cik}.json",
         capabilities={"disclosures": True, "holdings": True},
     )
-    run_id = repository.start_run(source_id, "disclosures")
     user_agent = provider_user_agent(config, "sec")
     try:
-        submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-        submissions_payload = _http_bytes(submissions_url, user_agent)
-        submissions = json.loads(submissions_payload)
-        _record_bytes(repository, config, run_id, source_id, "submissions.json", submissions_payload, submissions_url)
-        filings = _recent_13f(submissions, int(tracker.get("max_filings") or 1))
-        existing = _existing_source_keys(runtime, source_id, [row["accession_number"] for row in filings])
-        ingested = 0
-        skipped = 0
-        failures: list[str] = []
-        for filing in filings:
-            accession = filing["accession_number"]
-            if accession in existing:
-                skipped += 1
-                continue
-            try:
-                index_url = sec.filing_index_url(cik, accession)
-                index_payload = _http_bytes(index_url, user_agent)
-                index = json.loads(index_payload)
-                _record_bytes(repository, config, run_id, source_id, f"{accession}-index.json", index_payload, index_url)
-                candidate = _information_table_candidate(index, filing.get("primary_document"))
-                if not candidate:
-                    raise ValueError("13F information table XML not found")
-                document_url = sec.filing_document_url(cik, accession, candidate)
-                document_payload = _http_bytes(document_url, user_agent)
-                payload_id = _record_bytes(
-                    repository, config, run_id, source_id, f"{accession}-{Path(candidate).name}",
-                    document_payload, document_url,
-                )
-                holdings = _resolve_holdings(_parse_information_table(document_payload), tracker.get("ticker_map") or {})
-                total_value = sum(int(row.get("value_thousands") or 0) for row in holdings)
-                row = {
-                    "source_key": accession,
-                    "source_type": "13f",
-                    "trader_name": tracker["name"],
-                    "filer_name": filing.get("filer_name") or tracker["name"],
-                    "event_date": filing.get("report_date"),
-                    "filed_date": filing.get("filed_date"),
-                    "action": filing.get("form"),
-                    "amount_text": str(total_value) if holdings else None,
-                    "source_url": document_url,
-                    "details": {
-                        "cik": cik, "accession_number": accession, "report_date": filing.get("report_date"),
-                        "holdings": holdings, "holdings_count": len(holdings),
-                        "holdings_value_thousands": total_value, "source_document": candidate,
-                    },
-                }
-                ingested += SourceFactRepository(runtime).store_disclosures(run_id, source_id, [row], payload_id=payload_id)
-            except Exception as exc:
-                failures.append(f"{accession}: {type(exc).__name__}: {exc}")
-        status = "partial" if failures else "succeeded"
-        repository.finish_run(
-            run_id, status, item_count=ingested,
-            failure_detail="; ".join(failures[:10]) or None,
-            summary={"filings_found": len(filings), "filings_skipped": skipped},
-        )
+        with repository.run(source_id, "disclosures") as ingestion_run:
+            run_id = ingestion_run.id
+            submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+            submissions_payload = _http_bytes(submissions_url, user_agent)
+            submissions = json.loads(submissions_payload)
+            _record_bytes(repository, config, run_id, source_id, "submissions.json", submissions_payload, submissions_url)
+            filings = _recent_13f(submissions, int(tracker.get("max_filings") or 1))
+            existing = _existing_source_keys(runtime, source_id, [row["accession_number"] for row in filings])
+            ingested = 0
+            skipped = 0
+            failures: list[str] = []
+            for filing in filings:
+                accession = filing["accession_number"]
+                if accession in existing:
+                    skipped += 1
+                    continue
+                try:
+                    index_url = sec.filing_index_url(cik, accession)
+                    index_payload = _http_bytes(index_url, user_agent)
+                    index = json.loads(index_payload)
+                    _record_bytes(repository, config, run_id, source_id, f"{accession}-index.json", index_payload, index_url)
+                    candidate = _information_table_candidate(index, filing.get("primary_document"))
+                    if not candidate:
+                        raise ValueError("13F information table XML not found")
+                    document_url = sec.filing_document_url(cik, accession, candidate)
+                    document_payload = _http_bytes(document_url, user_agent)
+                    payload_id = _record_bytes(
+                        repository, config, run_id, source_id, f"{accession}-{Path(candidate).name}",
+                        document_payload, document_url,
+                    )
+                    holdings = _resolve_holdings(_parse_information_table(document_payload), tracker.get("ticker_map") or {})
+                    total_value = sum(int(row.get("value_thousands") or 0) for row in holdings)
+                    row = {
+                        "source_key": accession, "source_type": "13f", "trader_name": tracker["name"],
+                        "filer_name": filing.get("filer_name") or tracker["name"],
+                        "event_date": filing.get("report_date"), "filed_date": filing.get("filed_date"),
+                        "action": filing.get("form"), "amount_text": str(total_value) if holdings else None,
+                        "source_url": document_url,
+                        "details": {
+                            "cik": cik, "accession_number": accession, "report_date": filing.get("report_date"),
+                            "holdings": holdings, "holdings_count": len(holdings),
+                            "holdings_value_thousands": total_value, "source_document": candidate,
+                        },
+                    }
+                    ingested += SourceFactRepository(runtime).store_disclosures(run_id, source_id, [row], payload_id=payload_id)
+                except Exception as exc:
+                    failures.append(f"{accession}: {type(exc).__name__}: {exc}")
+            ingestion_run.finish(
+                "partial" if failures else "succeeded", item_count=ingested,
+                failure_detail="; ".join(failures[:10]) or None,
+                summary={"filings_found": len(filings), "filings_skipped": skipped},
+            )
         return {
             "source_id": source_id, "status": "partial" if failures else "ok", "rows": ingested,
             "filings_found": len(filings), "filings_skipped": skipped, "errors": failures,
         }
     except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
 
 
@@ -239,50 +234,46 @@ def _ingest_house(runtime: Any, config: Any, trader: dict[str, Any]) -> dict[str
         origin="https://disclosures-clerk.house.gov/",
         capabilities={"disclosures": True},
     )
-    run_id = repository.start_run(source_id, "disclosures")
     user_agent = str(house.get("user_agent") or config.market_data.user_agent)
     current_year = date.today().year
     start_year = max(int(house.get("start_year") or current_year), current_year - 1)
     end_year = min(int(house.get("end_year") or current_year), current_year)
     try:
-        filings = search_house_member_filings(
-            str(house.get("last_name") or trader["trader_name"].split()[-1]),
-            start_year,
-            end_year,
-            user_agent,
-            state=house.get("state"),
-            district=str(house.get("district")) if house.get("district") else None,
-        )
-        wanted = set(house.get("filing_types") or ["PTR Original", "FD Original"])
-        existing = _existing_document_ids(runtime, source_id)
-        ingested = 0
-        skipped = 0
-        for filing in filings:
-            document_id = str(filing.get("document_id") or "")
-            if (wanted and filing.get("filing_type") not in wanted) or document_id in existing:
-                skipped += 1
-                continue
-            payload = fetch_house_pdf_bytes(str(filing["url"]), user_agent)
-            archive = _archive_house_pdf(config, source_id, document_id, payload)
-            payload_id = repository.record_payload_file(
-                run_id, archive, source_url=filing["url"], source_document_id=document_id
+        with repository.run(source_id, "disclosures") as ingestion_run:
+            run_id = ingestion_run.id
+            filings = search_house_member_filings(
+                str(house.get("last_name") or trader["trader_name"].split()[-1]),
+                start_year, end_year, user_agent, state=house.get("state"),
+                district=str(house.get("district")) if house.get("district") else None,
             )
-            text = parse_house_pdf_bytes(payload)
-            rows = [
-                _normalize_house(row, filing, trader)
-                for row in parse_house_disclosure_text(text, filing, trader["trader_name"])
-            ]
-            count = SourceFactRepository(runtime).store_disclosures(run_id, source_id, rows, payload_id=payload_id)
-            ingested += count
-        repository.finish_run(
-            run_id,
-            "succeeded",
-            item_count=ingested,
-            summary={"filings_found": len(filings), "filings_skipped": skipped, "years": [start_year, end_year]},
-        )
+            wanted = set(house.get("filing_types") or ["PTR Original", "FD Original"])
+            existing = _existing_document_ids(runtime, source_id)
+            ingested = 0
+            skipped = 0
+            for filing in filings:
+                document_id = str(filing.get("document_id") or "")
+                if (wanted and filing.get("filing_type") not in wanted) or document_id in existing:
+                    skipped += 1
+                    continue
+                payload = fetch_house_pdf_bytes(str(filing["url"]), user_agent)
+                archive = _archive_house_pdf(config, source_id, document_id, payload)
+                payload_id = repository.record_payload_file(
+                    run_id, archive, source_url=filing["url"], source_document_id=document_id
+                )
+                text = parse_house_pdf_bytes(payload)
+                rows = [
+                    _normalize_house(row, filing, trader)
+                    for row in parse_house_disclosure_text(text, filing, trader["trader_name"])
+                ]
+                ingested += SourceFactRepository(runtime).store_disclosures(
+                    run_id, source_id, rows, payload_id=payload_id
+                )
+            ingestion_run.finish(
+                item_count=ingested,
+                summary={"filings_found": len(filings), "filings_skipped": skipped, "years": [start_year, end_year]},
+            )
         return {"source_id": source_id, "status": "ok", "rows": ingested, "filings_found": len(filings), "filings_skipped": skipped}
     except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
 
 
@@ -330,20 +321,22 @@ def _ingest_csv(runtime: Any, source: dict[str, Any]) -> dict[str, Any]:
         origin=path.resolve().as_uri(),
         capabilities={"disclosures": True},
     )
-    run_id = repository.start_run(source_id, "disclosures")
-    if not path.is_file():
-        repository.finish_run(run_id, "failed", failure_detail=f"file not found: {path}")
-        return {"source_id": source_id, "status": "failed", "rows": 0, "error": f"file not found: {path}"}
     try:
-        payload_id = repository.record_payload_file(run_id, path, source_kind=source.get("source_kind"))
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = [_normalize(row, source) for row in csv.DictReader(handle)]
-        rows = [row for row in rows if row is not None]
-        count = SourceFactRepository(runtime).store_disclosures(run_id, source_id, rows, payload_id=payload_id)
-        repository.finish_run(run_id, "succeeded", item_count=count, summary={"source_file": path.name})
+        with repository.run(source_id, "disclosures") as ingestion_run:
+            if not path.is_file():
+                raise FileNotFoundError(f"file not found: {path}")
+            payload_id = repository.record_payload_file(
+                ingestion_run.id, path, source_kind=source.get("source_kind")
+            )
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = [_normalize(row, source) for row in csv.DictReader(handle)]
+            rows = [row for row in rows if row is not None]
+            count = SourceFactRepository(runtime).store_disclosures(
+                ingestion_run.id, source_id, rows, payload_id=payload_id
+            )
+            ingestion_run.finish(item_count=count, summary={"source_file": path.name})
         return {"source_id": source_id, "status": "ok", "rows": count}
     except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
 
 

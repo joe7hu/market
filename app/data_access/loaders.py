@@ -17,7 +17,6 @@ def load_panel_data(
     ensure_source_models: bool | None = None,
     query_row_limits: dict[str, int] | None = None,
     query_symbol_filter: set[str] | None = None,
-    query_symbol_tables: set[str] | frozenset[str] | None = None,
 ) -> PanelData:
     del ensure_decision_models, ensure_source_models
     active_config = config or load_config()
@@ -34,8 +33,6 @@ def load_panel_data(
             query_options["query_row_limits"] = query_row_limits
         if query_symbol_filter is not None:
             query_options["query_symbol_filter"] = query_symbol_filter
-        if query_symbol_tables:
-            query_options["query_symbol_tables"] = query_symbol_tables
         tables, metadata = load_postgres_tables(active_config, requested, **query_options)
     except Exception as exc:
         return PanelData(
@@ -63,7 +60,6 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
     from investment_panel.core.daily_research_prompt_fields import (
         DAILY_RESEARCH_QUERY_LIMITS,
         DAILY_RESEARCH_MACRO_SYMBOLS,
-        DAILY_RESEARCH_SYMBOL_TABLES,
         DAILY_RESEARCH_TABLES,
     )
 
@@ -86,7 +82,6 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
         table_names=remaining,
         query_row_limits=DAILY_RESEARCH_QUERY_LIMITS,
         query_symbol_filter=symbols,
-        query_symbol_tables=DAILY_RESEARCH_SYMBOL_TABLES,
     )
     metadata = {**detail.metadata, "daily_research_bounded": True, "daily_research_symbol_count": len(symbols)}
     ready = seed.status.ready and detail.status.ready

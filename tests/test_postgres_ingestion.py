@@ -51,16 +51,16 @@ def repository(postgres_dsn: str) -> IngestionRepository:
 def test_ingestion_run_records_one_archived_payload_manifest(repository: IngestionRepository, postgres_dsn: str) -> None:
     payload = b'{"chain": "raw-provider-payload"}'
     digest = hashlib.sha256(payload).hexdigest()
-    with repository.run("robinhood", "option_quotes", source_run_key="2026-07-11-premarket") as run_id:
+    with repository.run("robinhood", "option_quotes", source_run_key="2026-07-11-premarket") as run:
         first_id = repository.record_payload(
-            run_id,
+            run.id,
             "file:///archive/robinhood/2026-07-11.json.gz",
             sha256=digest,
             byte_count=len(payload),
             metadata={"compression": "gzip"},
         )
         second_id = repository.record_payload(
-            run_id,
+            run.id,
             "file:///archive/duplicate-location.json.gz",
             sha256=digest,
             byte_count=len(payload),
@@ -73,7 +73,7 @@ def test_ingestion_run_records_one_archived_payload_manifest(repository: Ingesti
             "SELECT archive_uri, byte_count, metadata FROM ingest.payload"
         ).fetchall()
         run = connection.execute(
-            "SELECT status, finished_at FROM ingest.run WHERE id = %s", [run_id]
+            "SELECT status, finished_at FROM ingest.run WHERE id = %s", [run.id]
         ).fetchone()
     assert manifest == [
         ("file:///archive/robinhood/2026-07-11.json.gz", len(payload), {"compression": "gzip", "verified": True})
@@ -84,11 +84,11 @@ def test_ingestion_run_records_one_archived_payload_manifest(repository: Ingesti
 
 def test_failed_ingestion_run_persists_failure(repository: IngestionRepository, postgres_dsn: str) -> None:
     with pytest.raises(RuntimeError, match="provider unavailable"):
-        with repository.run("robinhood", "option_quotes") as run_id:
+        with repository.run("robinhood", "option_quotes") as run:
             raise RuntimeError("provider unavailable")
     with closing(psycopg.connect(postgres_dsn)) as connection:
         row = connection.execute(
-            "SELECT status, failure_detail FROM ingest.run WHERE id = %s", [run_id]
+            "SELECT status, failure_detail FROM ingest.run WHERE id = %s", [run.id]
         ).fetchone()
     assert row == ("failed", "RuntimeError: provider unavailable")
 

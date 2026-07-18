@@ -48,7 +48,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     if not config.event_sources.enabled:
         repository.set_source_enabled(SOURCE_ID, False)
         return {"status": "disabled", "database": "postgresql", "events": 0}
-    run_id = repository.start_run(SOURCE_ID, "macro_events")
+    run_started_at = datetime.now(UTC)
     events: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     payloads: list[dict[str, str]] = []
@@ -59,23 +59,20 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         events.extend(_weekly_events("dol", "Weekly unemployment insurance claims", time(8, 30), "labor"))
     if config.event_sources.federal_reserve_enabled:
         events.extend(_weekly_events("federal_reserve", "Federal Reserve H.4.1 balance sheet release", time(16, 30), "central_bank"))
-    try:
+    with repository.run(SOURCE_ID, "macro_events", started_at=run_started_at) as ingestion_run:
+        run_id = ingestion_run.id
         payload_id = None
         if payloads:
             archive = _archive_payload(config, run_id, payloads)
             payload_id = repository.record_payload_file(run_id, archive, source_pages=len(payloads))
         count = SourceFactRepository(runtime).store_market_events(run_id, SOURCE_ID, events, payload_id=payload_id)
         status = "partial" if errors else "succeeded"
-        repository.finish_run(
-            run_id,
+        ingestion_run.finish(
             status,
             item_count=count,
             failure_detail="; ".join(row["error"] for row in errors[:10]) or None,
             summary={"source_errors": errors},
         )
-    except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
-        raise
     return {
         "status": "partial" if errors else "ok",
         "database": "postgresql",

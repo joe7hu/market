@@ -39,7 +39,7 @@ def run(
     requested = {str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()}
     if requested:
         universe_rows = [row for row in universe_rows if row["symbol"] in requested]
-    run_id = repository.start_run(SOURCE_ID, "price_bars")
+    run_started_at = datetime.now(UTC)
     bars: list[dict[str, Any]] = []
     errors: dict[str, str] = {}
     for row in universe_rows:
@@ -63,7 +63,8 @@ def run(
                 metric_rows.append(_market_metrics_row(symbol, row["asset_class"], provider.market_metrics(symbol), observed_at))
             except Exception as exc:
                 metric_errors[symbol] = f"{type(exc).__name__}: {exc}"
-    try:
+    with repository.run(SOURCE_ID, "price_bars", started_at=run_started_at) as ingestion_run:
+        run_id = ingestion_run.id
         stored = repository.store_price_bars(
             run_id,
             SOURCE_ID,
@@ -77,8 +78,7 @@ def run(
             metric_rows,
         )
         status = "partial" if errors or metric_errors else "succeeded"
-        repository.finish_run(
-            run_id,
+        ingestion_run.finish(
             status,
             item_count=stored + market_metrics_stored,
             instrument_count=len(universe_rows) - len(errors),
@@ -93,9 +93,6 @@ def run(
                 "market_metric_failures": len(metric_errors),
             },
         )
-    except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
-        raise
     market = refresh_market_publication(runtime) if publish else {"status": "deferred"}
     return {
         "status": "partial" if errors or metric_errors else "ok",

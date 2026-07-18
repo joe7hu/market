@@ -9,6 +9,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -58,23 +59,19 @@ class SourceFactRepository:
                 ).fetchone()
                 stored += 1
                 for raw_symbol in source.get("symbols") or source.get("tickers") or []:
-                    symbol = str(raw_symbol).strip().upper().lstrip("$")
-                    if not symbol:
+                    try:
+                        symbol = canonical_symbol(raw_symbol)
+                    except ValueError:
                         continue
-                    instrument = connection.execute(
-                        """
-                        INSERT INTO catalog.instrument (symbol, name, asset_class, category)
-                        VALUES (%s, %s, 'equity', 'content_reference')
-                        ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id
-                        """,
-                        [symbol, symbol],
-                    ).fetchone()
+                    instrument_id = reconcile_instrument(
+                        connection, symbol, name=symbol, category="content_reference"
+                    )
                     result = connection.execute(
                         """
                         INSERT INTO raw.content_item_instrument (content_item_id, instrument_id, relevance)
                         VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
                         """,
-                        [item["id"], instrument["id"], _number(source.get("relevance"))],
+                        [item["id"], instrument_id, _number(source.get("relevance"))],
                     )
                     linked += int(result.rowcount)
         return {"items": stored, "instrument_links": linked}
@@ -174,17 +171,12 @@ class SourceFactRepository:
 
 
 def _optional_instrument(connection: Any, raw_symbol: Any, category: str) -> int | None:
-    symbol = str(raw_symbol or "").strip().upper()
-    if not symbol:
+    if raw_symbol in (None, ""):
         return None
-    return int(connection.execute(
-        """
-        INSERT INTO catalog.instrument (symbol, name, asset_class, category)
-        VALUES (%s, %s, 'equity', %s)
-        ON CONFLICT (symbol) DO UPDATE SET updated_at = now() RETURNING id
-        """,
-        [symbol, symbol, category],
-    ).fetchone()["id"])
+    try:
+        return reconcile_instrument(connection, raw_symbol, category=category)
+    except ValueError:
+        return None
 
 
 def _number(value: Any) -> float | None:

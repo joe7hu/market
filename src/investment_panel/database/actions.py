@@ -8,6 +8,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_parameters import (
     EVALUABLE_GATES,
@@ -34,19 +35,13 @@ class ActionRepository:
         publication_id: str | None = None,
         expected_contract_version: int | None = None,
     ) -> str:
-        symbol = ticker.strip().upper()
         with self.runtime.transaction() as connection:
-            instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()
-            if instrument is None:
-                instrument = connection.execute(
-                    "INSERT INTO catalog.instrument (symbol, name, asset_class, category) VALUES (%s, %s, 'equity', 'journal') RETURNING id",
-                    [symbol, symbol],
-                ).fetchone()
+            instrument_id = reconcile_instrument(connection, ticker, category="journal")
             decision_id = _uuid_or_none(event_id or opportunity.get("opportunity_id"))
             if decision_id is None:
                 decision = connection.execute(
                     "SELECT id FROM analysis.decision WHERE instrument_id = %s ORDER BY as_of DESC LIMIT 1",
-                    [instrument["id"]],
+                    [instrument_id],
                 ).fetchone()
                 decision_id = decision["id"] if decision else None
             if expected_contract_version is not None and expected_contract_version != 3:
@@ -64,7 +59,7 @@ class ActionRepository:
                 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 [
-                    decision_id, instrument["id"], action,
+                    decision_id, instrument_id, action,
                     opportunity.get("entry_price") or opportunity.get("premium_mid") or opportunity.get("entry_premium"), notes,
                     Jsonb({
                         "contract_id": contract_id,

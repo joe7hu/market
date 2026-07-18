@@ -56,11 +56,10 @@ def persist_collected_option_chains(
         for symbol, rows in (collected.get("rows") or {}).items()
         for row in rows
     ]
-    run_id = repository.start_run(source_id, "option_quotes", started_at=observed_at)
-    try:
-        quote_count = repository.store_quotes(run_id, source_id, collected.get("quotes") or [])
+    with repository.run(source_id, "option_quotes", started_at=observed_at) as run:
+        quote_count = repository.store_quotes(run.id, source_id, collected.get("quotes") or [])
         snapshot = repository.store_option_snapshot(
-            run_id,
+            run.id,
             source_id=source_id,
             observed_at=observed_at,
             market_session=_market_session(observed_at),
@@ -69,8 +68,7 @@ def persist_collected_option_chains(
             completeness=_completeness(collected),
         )
         errors = list(collected.get("errors") or [])
-        repository.finish_run(
-            run_id,
+        run.finish(
             "partial" if errors else "succeeded",
             item_count=len(flattened),
             instrument_count=len(collected.get("rows") or {}),
@@ -82,10 +80,7 @@ def persist_collected_option_chains(
                 "errors": list(collected.get("errors") or [])[:25],
             },
         )
-    except Exception as exc:
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
-        raise
-    return {**snapshot, "quote_count": quote_count, "run_id": str(run_id)}
+    return {**snapshot, "quote_count": quote_count, "run_id": str(run.id)}
 
 
 def _coerce_observed_at(value: Any) -> datetime:

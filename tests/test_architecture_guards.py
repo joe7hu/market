@@ -151,3 +151,55 @@ def test_facade_import_allowlist_has_no_stale_entries() -> None:
         "Stale FACADE_IMPORT_ALLOWLIST entries (import is gone — drop them):\n  "
         + "\n  ".join(sorted(stale))
     )
+
+
+# --- PostgreSQL owner guards -----------------------------------------------
+
+CATALOG_WRITE_OWNERS = {
+    "src/investment_panel/database/instruments.py",
+    "src/investment_panel/database/legacy_bootstrap.py",
+    "src/investment_panel/database/legacy_import.py",
+}
+
+
+def test_live_catalog_writes_use_instrument_owner() -> None:
+    violations = []
+    for path in _prod_py_files():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel in CATALOG_WRITE_OWNERS:
+            continue
+        if "INSERT INTO catalog.instrument" in path.read_text(encoding="utf-8", errors="replace"):
+            violations.append(rel)
+    assert not violations, (
+        "Live catalog writes must use database.instruments.reconcile_instrument; "
+        "only explicit legacy import code may retain direct SQL:\n  " + "\n  ".join(sorted(violations))
+    )
+
+
+def test_ingestion_clients_use_managed_run_lifecycle() -> None:
+    violations = []
+    for path in _prod_py_files():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel.endswith("database/ingestion.py") or "legacy_" in path.name:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=rel)
+        repository_names = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "IngestionRepository"
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if isinstance(node.func.value, ast.Name) and node.func.value.id in repository_names:
+                if node.func.attr in {"start_run", "finish_run"}:
+                    violations.append(f"{rel}:{node.lineno} calls {node.func.attr}")
+    assert not violations, (
+        "Ingestion clients must use IngestionRepository.run so exceptions and terminal state "
+        "stay owned by the ingestion module:\n  " + "\n  ".join(sorted(violations))
+    )

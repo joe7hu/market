@@ -55,8 +55,6 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
     from investment_panel.database.ingestion import IngestionRepository
 
     market_data = config.get("market_data", {})
-    repository = None
-    run_id = None
     try:
         frame = fetch_prices(
             normalized,
@@ -71,21 +69,14 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
             "watchlist_quote", name="Watchlist quote", family="market_data",
             kind="daily_quote", capabilities={"quotes": True},
         )
-        run_id = repository.start_run("watchlist_quote", "quotes")
-        stored = repository.store_quotes(
-            run_id,
-            "watchlist_quote",
-            [{"symbol": normalized, "observed_at": observed_at, "price": latest["close"], "currency": "USD"}],
-        )
-        repository.finish_run(run_id, "succeeded", item_count=stored, instrument_count=1)
+        with repository.run("watchlist_quote", "quotes") as ingestion_run:
+            stored = repository.store_quotes(
+                ingestion_run.id,
+                "watchlist_quote",
+                [{"symbol": normalized, "observed_at": observed_at, "price": latest["close"], "currency": "USD"}],
+            )
+            ingestion_run.finish(item_count=stored, instrument_count=1)
     except Exception as exc:  # provider boundary
-        if repository is not None and run_id is not None:
-            try:
-                repository.finish_run(
-                    run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}"
-                )
-            except Exception:
-                pass
         return {"status": "error", "symbol": normalized, "quote_rows": 0, "error": f"{type(exc).__name__}: {exc}"}
     return {
         "status": "ok",

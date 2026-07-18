@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app.data_access.portfolio_intelligence import _performance_rows, portfolio_risk_rows
+from investment_panel.database.portfolio_intelligence import _performance_rows, portfolio_risk_rows
 from app.data_access.portfolio_math import adjacent_session_dates, aligned_pair_returns
 
 

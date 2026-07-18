@@ -6,8 +6,9 @@ from datetime import UTC, date, datetime, time
 from typing import Any, Sequence
 from uuid import UUID
 
-from investment_panel.core.market_time import current_market_date, market_timezone_for_symbol
+from investment_panel.core.market_time import current_market_date
 from investment_panel.database.ingestion_coerce import calendar_date, number
+from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.price_fact_versions import confirm_price_fact, lock_price_fact
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -20,13 +21,16 @@ def store_price_bars(
     asset_classes: dict[str, str] | None = None,
 ) -> int:
     normalized_asset_classes = {
-        str(symbol).strip().upper(): str(asset_class or "equity")
+        canonical_symbol(symbol): str(asset_class or "equity")
         for symbol, asset_class in (asset_classes or {}).items()
     }
     prepared: list[tuple[dict[str, Any], str, date, float]] = []
     examples: dict[str, dict[str, Any]] = {}
     for source in rows:
-        symbol = str(source.get("symbol") or "").strip().upper()
+        try:
+            symbol = canonical_symbol(source.get("symbol"))
+        except ValueError:
+            continue
         trading_date = calendar_date(source.get("date") or source.get("trading_date"))
         close = number(source.get("close"))
         if symbol and trading_date is not None and close is not None:
@@ -39,21 +43,13 @@ def store_price_bars(
         instruments: dict[str, int] = {}
         for symbol, source in examples.items():
             asset_class = normalized_asset_classes.get(symbol, str(source.get("asset_class") or "equity"))
-            instrument = connection.execute(
-                """
-                INSERT INTO catalog.instrument (symbol, name, asset_class, category, market_timezone)
-                VALUES (%s, %s, %s, 'market_data', %s)
-                ON CONFLICT (symbol) DO UPDATE
-                SET asset_class = CASE
-                        WHEN catalog.instrument.asset_class IN ('unknown', 'equity')
-                        THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
-                    market_timezone = EXCLUDED.market_timezone,
-                    updated_at = now()
-                RETURNING id
-                """,
-                [symbol, str(source.get("name") or symbol), asset_class, market_timezone_for_symbol(symbol)],
-            ).fetchone()
-            instruments[symbol] = int(instrument["id"])
+            instruments[symbol] = reconcile_instrument(
+                connection,
+                symbol,
+                name=source.get("name") or symbol,
+                asset_class=asset_class,
+                category="market_data",
+            )
         for source, symbol, trading_date, close in prepared:
             if trading_date > current_market_date(symbol, stored_at):
                 continue

@@ -122,28 +122,34 @@ def _run_source(config: Any, runtime: Any, known: set[str], spec: dict[str, Any]
             else {str(spec["capability"]): True}
         ),
     )
-    run_id = repository.start_run(source_id, str(spec["capability"]))
     try:
-        payload = spec["fetch"]()
-        raw_rows = ensure_list(payload)
-        archive = _archive_payload(config, source_id, run_id, payload)
-        payload_id = repository.record_payload_file(run_id, archive, source_key=str(spec["key"]))
-        rows = [_content_row(source_id, spec["kind"], row, known) for row in raw_rows]
-        rows = [row for row in rows if row is not None]
-        counts = SourceFactRepository(runtime).store_content_items(run_id, source_id, rows, payload_id=payload_id)
-        repository.finish_run(
-            run_id,
-            "succeeded",
-            item_count=counts["items"],
-            instrument_count=counts["instrument_links"],
-            summary={"archive_uri": archive.resolve().as_uri()},
-        )
+        with repository.run(source_id, str(spec["capability"])) as ingestion_run:
+            try:
+                payload = spec["fetch"]()
+            except OpenCliRateLimitError as exc:
+                ingestion_run.finish("partial", failure_detail=str(exc))
+                return {
+                    "source_id": source_id,
+                    "status": "rate_limited",
+                    "items": 0,
+                    "instrument_links": 0,
+                    "error": str(exc),
+                }
+            raw_rows = ensure_list(payload)
+            archive = _archive_payload(config, source_id, ingestion_run.id, payload)
+            payload_id = repository.record_payload_file(ingestion_run.id, archive, source_key=str(spec["key"]))
+            rows = [_content_row(source_id, spec["kind"], row, known) for row in raw_rows]
+            rows = [row for row in rows if row is not None]
+            counts = SourceFactRepository(runtime).store_content_items(
+                ingestion_run.id, source_id, rows, payload_id=payload_id
+            )
+            ingestion_run.finish(
+                item_count=counts["items"],
+                instrument_count=counts["instrument_links"],
+                summary={"archive_uri": archive.resolve().as_uri()},
+            )
         return {"source_id": source_id, "status": "ok", **counts}
-    except OpenCliRateLimitError as exc:
-        repository.finish_run(run_id, "partial", failure_detail=str(exc))
-        return {"source_id": source_id, "status": "rate_limited", "items": 0, "instrument_links": 0, "error": str(exc)}
     except Exception as exc:  # every configured source remains independently observable
-        repository.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
         return {"source_id": source_id, "status": "failed", "items": 0, "instrument_links": 0, "error": str(exc)}
 
 

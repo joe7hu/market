@@ -34,18 +34,6 @@ DAILY_RESEARCH_QUERY_LIMITS = {
     "earnings": 200,
 }
 
-DAILY_RESEARCH_SYMBOL_TABLES = frozenset(
-    {
-        "quotes",
-        "fundamentals",
-        "technicals",
-        "analyst_estimates",
-        "options_ticker_signals",
-        "catalysts",
-        "earnings",
-    }
-)
-
 DAILY_RESEARCH_MACRO_SYMBOLS = frozenset(
     {
         "SPY",

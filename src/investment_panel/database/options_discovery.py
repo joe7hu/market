@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.instruments import reconcile_instrument
 
 
 GATES = (
@@ -79,13 +80,12 @@ def materialize_discovery_foundation(
     })
     with runtime.transaction(JOB_PROFILE) as connection:
         for symbol in requested_symbols:
-            connection.execute(
-                """
-                INSERT INTO catalog.instrument (symbol, name, asset_class, category)
-                VALUES (%s, %s, 'unknown', 'option-discovery')
-                ON CONFLICT (symbol) DO NOTHING
-                """,
-                [symbol, symbol],
+            reconcile_instrument(
+                connection,
+                symbol,
+                name=symbol,
+                asset_class="unknown",
+                category="option-discovery",
             )
     decision_set = {str(row["symbol"]) for row in rows}
     if requested_symbols:

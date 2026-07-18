@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import hashlib
 from pathlib import Path
@@ -13,7 +14,6 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
-from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.database.price_bar_ingestion import store_price_bars as _store_price_bars
 from investment_panel.database.price_fact_versions import confirm_price_fact, lock_price_fact
 from investment_panel.database.ingestion_coerce import (
@@ -22,7 +22,38 @@ from investment_panel.database.ingestion_coerce import (
     integer as _integer,
     number as _number,
 )
+from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
+
+
+@dataclass
+class IngestionRun:
+    """One ingestion lifecycle with exactly one terminal state."""
+
+    repository: "IngestionRepository"
+    id: UUID
+    finalized: bool = False
+
+    def finish(
+        self,
+        status: str = "succeeded",
+        *,
+        item_count: int | None = None,
+        instrument_count: int | None = None,
+        failure_detail: str | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        if self.finalized:
+            raise ValueError(f"ingestion run is already finalized: {self.id}")
+        self.repository.finish_run(
+            self.id,
+            status,
+            item_count=item_count,
+            instrument_count=instrument_count,
+            failure_detail=failure_detail,
+            summary=summary,
+        )
+        self.finalized = True
 
 
 class IngestionRepository:
@@ -186,25 +217,25 @@ class IngestionRepository:
         stored = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for source in rows:
-                symbol = str(source.get("symbol") or "").strip().upper()
+                try:
+                    symbol = canonical_symbol(source.get("symbol"))
+                except ValueError:
+                    continue
                 observed_at = _aware_datetime(source.get("observed_at") or source.get("time"))
                 price = _number(source.get("price") if "price" in source else source.get("close"))
                 if not symbol or observed_at is None or price is None:
                     continue
-                instrument = connection.execute(
-                    """
-                    INSERT INTO catalog.instrument (symbol, name, asset_class, category, market_timezone)
-                    VALUES (%s, %s, 'equity', 'quote', %s)
-                    ON CONFLICT (symbol) DO UPDATE
-                    SET market_timezone = EXCLUDED.market_timezone, updated_at = now()
-                    RETURNING id
-                    """,
-                    [symbol, symbol, market_timezone_for_symbol(symbol)],
-                ).fetchone()
+                instrument_id = reconcile_instrument(
+                    connection,
+                    symbol,
+                    name=source.get("name") or symbol,
+                    asset_class=source.get("asset_class"),
+                    category="quote",
+                )
                 change_abs = _number(source.get("change_abs"))
                 change_pct = _number(source.get("change_pct") if "change_pct" in source else source.get("change"))
                 currency = str(source.get("currency") or "USD")
-                lock_price_fact(connection, "quote", instrument["id"], source_id, observed_at)
+                lock_price_fact(connection, "quote", instrument_id, source_id, observed_at)
                 latest = connection.execute(
                     """
                     SELECT quote.id, quote.available_at, quote.price, quote.change_abs,
@@ -214,7 +245,7 @@ class IngestionRepository:
                     WHERE quote.instrument_id = %s AND quote.source_id = %s AND quote.observed_at = %s
                     FOR UPDATE
                     """,
-                    [instrument["id"], source_id, observed_at],
+                    [instrument_id, source_id, observed_at],
                 ).fetchone()
                 current_fact = (price, change_abs, change_pct, currency)
                 if latest is not None and tuple(latest[key] for key in ("price", "change_abs", "change_pct", "currency")) == current_fact:
@@ -235,7 +266,7 @@ class IngestionRepository:
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id, available_at
                         """,
-                        [instrument["id"], source_id, run_id, observed_at, price,
+                        [instrument_id, source_id, run_id, observed_at, price,
                          change_abs, change_pct, currency],
                     )
                 else:
@@ -275,7 +306,10 @@ class IngestionRepository:
         stored = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for source in rows:
-                symbol = str(source.get("symbol") or "").strip().upper()
+                try:
+                    symbol = canonical_symbol(source.get("symbol"))
+                except ValueError:
+                    continue
                 observed_at = _aware_datetime(source.get("observed_at"))
                 period_end = _date(source.get("period_end") or observed_at)
                 values = source.get("values")
@@ -283,23 +317,13 @@ class IngestionRepository:
                     continue
                 name = str(source.get("name") or symbol).strip() or symbol
                 asset_class = str(source.get("asset_class") or "equity")
-                instrument = connection.execute(
-                    """
-                    INSERT INTO catalog.instrument (symbol, name, asset_class, category)
-                    VALUES (%s, %s, %s, 'fundamentals')
-                    ON CONFLICT (symbol) DO UPDATE
-                    SET name = CASE
-                            WHEN catalog.instrument.name IS NULL OR catalog.instrument.name = ''
-                              OR catalog.instrument.name = catalog.instrument.symbol
-                            THEN EXCLUDED.name ELSE catalog.instrument.name END,
-                        asset_class = CASE
-                            WHEN catalog.instrument.asset_class IN ('unknown', 'equity')
-                            THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
-                        updated_at = now()
-                    RETURNING id
-                    """,
-                    [symbol, name, asset_class],
-                ).fetchone()
+                instrument_id = reconcile_instrument(
+                    connection,
+                    symbol,
+                    name=name,
+                    asset_class=asset_class,
+                    category="fundamentals",
+                )
                 connection.execute(
                     """
                     INSERT INTO raw.fundamental_observation
@@ -310,7 +334,7 @@ class IngestionRepository:
                     DO UPDATE SET ingest_run_id = EXCLUDED.ingest_run_id,
                         values = EXCLUDED.values
                     """,
-                    [instrument["id"], source_id, run_id, metric_set, period_end, observed_at, Jsonb(values)],
+                    [instrument_id, source_id, run_id, metric_set, period_end, observed_at, Jsonb(values)],
                 )
                 stored += 1
         return stored
@@ -323,15 +347,18 @@ class IngestionRepository:
         *,
         source_run_key: str | None = None,
         started_at: datetime | None = None,
-    ) -> Iterator[UUID]:
+    ) -> Iterator[IngestionRun]:
         run_id = self.start_run(source_id, capability, source_run_key=source_run_key, started_at=started_at)
+        run = IngestionRun(self, run_id)
         try:
-            yield run_id
+            yield run
         except Exception as exc:
-            self.finish_run(run_id, "failed", failure_detail=f"{type(exc).__name__}: {exc}")
+            if not run.finalized:
+                run.finish("failed", failure_detail=f"{type(exc).__name__}: {exc}")
             raise
         else:
-            self.finish_run(run_id, "succeeded")
+            if not run.finalized:
+                run.finish()
 
     def start_run(
         self,
@@ -483,21 +510,10 @@ class IngestionRepository:
             snapshot_id = int(snapshot["id"])
             if normalized:
                 _stage_option_rows(connection, normalized)
-                connection.execute(
-                    """
-                    INSERT INTO catalog.instrument (symbol, name, asset_class, category)
-                    SELECT DISTINCT underlying_symbol, underlying_symbol, 'equity', 'option-underlying'
-                    FROM option_quote_stage
-                    ON CONFLICT (symbol) DO UPDATE
-                    SET asset_class = CASE
-                            WHEN catalog.instrument.asset_class = 'unknown' THEN EXCLUDED.asset_class
-                            ELSE catalog.instrument.asset_class END,
-                        category = CASE
-                            WHEN catalog.instrument.category = 'option-discovery' THEN EXCLUDED.category
-                            ELSE catalog.instrument.category END,
-                        updated_at = now()
-                    """
-                )
+                for symbol in sorted({str(row["underlying_symbol"]) for row in normalized}):
+                    reconcile_instrument(
+                        connection, symbol, name=symbol, category="option-underlying"
+                    )
                 connection.execute(
                     """
                     INSERT INTO catalog.option_contract
@@ -575,10 +591,8 @@ def _stage_option_rows(connection: Any, rows: Sequence[dict[str, Any]]) -> None:
 
 
 def _normalize_option_row(row: dict[str, Any]) -> dict[str, Any]:
-    symbol = str(row.get("underlying_symbol") or row.get("symbol") or row.get("ticker") or "").strip().upper()
+    symbol = canonical_symbol(row.get("underlying_symbol") or row.get("symbol") or row.get("ticker"))
     option_type = str(row.get("option_type") or row.get("type") or "").strip().lower()
-    if not symbol:
-        raise ValueError("option row requires underlying_symbol")
     if option_type not in {"call", "put"}:
         raise ValueError("option row option_type must be call or put")
     try:

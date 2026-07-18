@@ -355,7 +355,6 @@ def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> Non
         {"database": {"url": "postgresql:///test"}},
         table_names=("fundamentals",),
         query_symbol_filter=set(),
-        query_symbol_tables={"fundamentals"},
     )
 
     assert received["query_symbol_filter"] == set()

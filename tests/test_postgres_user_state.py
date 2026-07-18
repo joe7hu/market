@@ -511,7 +511,8 @@ def test_portfolio_transactions_reject_future_account_and_duplicate_opening(clie
 
 
 def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
-    now = datetime.now(UTC)
+    buy_at = datetime(2026, 7, 16, 15, 30, tzinfo=UTC)
+    sell_at = datetime(2026, 7, 17, 15, 30, tzinfo=UTC)
     assert client.post(
         "/api/portfolio/transactions",
         json={
@@ -519,7 +520,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
             "transaction_type": "buy",
             "quantity": 10,
             "price": 100,
-            "executed_at": (now - timedelta(days=1)).isoformat(),
+            "executed_at": buy_at.isoformat(),
             "idempotency_key": "session-msft-buy",
         },
     ).status_code == 200
@@ -531,7 +532,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
             "quantity": 10,
             "price": 110,
             "fees": 1,
-            "executed_at": now.isoformat(),
+            "executed_at": sell_at.isoformat(),
             "idempotency_key": "session-msft-sell",
         },
     ).status_code == 200
@@ -540,7 +541,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
     assert summary["portfolio_value"] == 0.0
     assert summary["day_pnl"] == 99.0
     assert summary["day_pnl_pct"] == 9.9
-    assert summary["day_pnl_as_of"] == now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    assert summary["day_pnl_as_of"] == sell_at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
 
 
 def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, postgres_dsn: str) -> None:
@@ -1156,7 +1157,7 @@ def test_portfolio_only_panel_read_skips_full_intelligence_bundle(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.data_access import postgres_panel
+    from investment_panel.database import panel_models as postgres_panel
 
     def fail_if_bundled(_config: dict[str, object]) -> dict[str, list[dict[str, object]]]:
         raise AssertionError("portfolio-only reads must not build the full intelligence bundle")
@@ -1176,7 +1177,7 @@ def test_shared_risk_models_use_live_portfolio_contracts(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.data_access import postgres_panel
+    from investment_panel.database import panel_models as postgres_panel
 
     published = {
         "portfolio_risk_cards": [{"card_id": "published-card"}],
@@ -1203,7 +1204,7 @@ def test_shared_scopes_load_one_live_portfolio_contract_bundle(
     postgres_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.data_access import postgres_panel
+    from investment_panel.database import panel_models as postgres_panel
 
     published = {
         "portfolio_risk_cards": [{"card_id": "published-card"}],
