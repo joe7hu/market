@@ -104,6 +104,11 @@ export const JOB_CATALOG: Record<string, JobDef> = {
     description: "Store Robinhood chains only; use Options Radar Hard Refresh to republish visible signals.",
     group: "ingestion",
   },
+  robinhood_option_history: {
+    label: "QQQ Full Option History",
+    description: "Captures the complete tradable QQQ call/put chain in one 15-minute regular-session slot.",
+    group: "ingestion",
+  },
   update_arco_data: {
     label: "Social Graph (X / Arco)",
     description: "Private social-graph signal pull.",

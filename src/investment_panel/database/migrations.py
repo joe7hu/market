@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 
 
-HEAD_REVISION = "20260716_0009"
+HEAD_REVISION = "20260718_0010"
 
 
 def alembic_config(dsn: str) -> Config:

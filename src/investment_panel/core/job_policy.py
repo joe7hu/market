@@ -46,6 +46,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("premarket_options_intelligence"),
         _job("update_ibkr_options", freshness_seconds=3600, initial_delay="one_interval"),
         _job("update_robinhood_options", freshness_seconds=259200, initial_delay="one_interval"),
+        _job("robinhood_option_history", timeout_seconds=840, freshness_seconds=900, initial_delay="one_interval"),
         _job("refresh_options_radar"),
         _job("refresh_options_radar_deterministic"),
         _job("refresh_options_radar_signal"),
@@ -138,6 +139,10 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
 
     heavy_refresh = heavy_refresh_enabled()
     intervals: dict[str, int] = {}
+    history_seconds = _env_int_optional("MARKET_OPTION_HISTORY_REFRESH_SECONDS")
+    history_seconds = 900 if history_seconds is None else history_seconds
+    if history_seconds > 0:
+        intervals["robinhood_option_history"] = history_seconds
     if option_source == "robinhood":
         hard_seconds = _env_int_optional("MARKET_OPTIONS_RADAR_HARD_REFRESH_SECONDS")
         if hard_seconds and hard_seconds > 0:

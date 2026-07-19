@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/market/workstation";
 import { MarketDataProvider } from "./marketData";
@@ -17,6 +18,8 @@ import { TickerRoute } from "./pages/TickerRoute";
 import { TodayRoute } from "./pages/TodayRoute";
 import { WatchlistRoute } from "./pages/WatchlistRoute";
 
+const OptionsChainRoute = lazy(async () => ({ default: (await import("./pages/OptionsChainRoute")).OptionsChainRoute }));
+
 export function App() {
   return (
     <MarketDataProvider>
@@ -35,6 +38,7 @@ export function App() {
           <Route path="research" element={<Navigate to="/watchlist" replace />} />
           <Route path="research-queue" element={<Navigate to="/watchlist" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
+          <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />
           <Route path="calendar" element={<CalendarRoute />} />

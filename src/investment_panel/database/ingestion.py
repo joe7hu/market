@@ -475,11 +475,23 @@ class IngestionRepository:
         rows: Sequence[dict[str, Any]],
         payload_id: int | None = None,
         completeness: float | None = None,
+        collection_profile: str = "radar",
+        history_symbol: str | None = None,
+        slot_at: datetime | None = None,
+        capture_started_at: datetime | None = None,
+        capture_finished_at: datetime | None = None,
+        expected_contract_count: int | None = None,
+        received_contract_count: int | None = None,
+        capture_state: str = "complete",
     ) -> dict[str, int]:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
         if market_session not in {"premarket", "regular", "afterhours", "closed", "unknown"}:
             raise ValueError("market_session is invalid")
+        if collection_profile not in {"radar", "history_full"}:
+            raise ValueError("collection_profile is invalid")
+        if capture_state not in {"running", "complete", "partial", "failed"}:
+            raise ValueError("capture_state is invalid")
         normalized = [_normalize_option_row(row) for row in rows]
         partition = _partition_name(observed_at.date())
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -495,17 +507,32 @@ class IngestionRepository:
                 """
                 INSERT INTO raw.option_snapshot
                     (source_id, ingest_run_id, payload_id, observed_at, trading_date,
-                     market_session, universe, completeness, contract_count)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     market_session, universe, completeness, contract_count, collection_profile,
+                     history_symbol, slot_at, capture_started_at, capture_finished_at,
+                     expected_contract_count, received_contract_count, capture_state)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (source_id, observed_at, universe) DO UPDATE
                 SET ingest_run_id = EXCLUDED.ingest_run_id,
                     payload_id = COALESCE(EXCLUDED.payload_id, raw.option_snapshot.payload_id),
                     market_session = EXCLUDED.market_session,
                     completeness = EXCLUDED.completeness,
-                    contract_count = EXCLUDED.contract_count
+                    contract_count = EXCLUDED.contract_count,
+                    collection_profile = EXCLUDED.collection_profile,
+                    history_symbol = EXCLUDED.history_symbol,
+                    slot_at = EXCLUDED.slot_at,
+                    capture_started_at = EXCLUDED.capture_started_at,
+                    capture_finished_at = EXCLUDED.capture_finished_at,
+                    expected_contract_count = EXCLUDED.expected_contract_count,
+                    received_contract_count = EXCLUDED.received_contract_count,
+                    capture_state = EXCLUDED.capture_state
                 RETURNING id
                 """,
-                [source_id, run_id, payload_id, observed_at, observed_at.date(), market_session, universe, completeness, len(normalized)],
+                [
+                    source_id, run_id, payload_id, observed_at, observed_at.date(), market_session,
+                    universe, completeness, len(normalized), collection_profile, history_symbol,
+                    slot_at, capture_started_at, capture_finished_at, expected_contract_count,
+                    received_contract_count, capture_state,
+                ],
             ).fetchone()
             snapshot_id = int(snapshot["id"])
             if normalized:
@@ -533,10 +560,13 @@ class IngestionRepository:
                     INSERT INTO raw.option_quote
                         (observed_at, snapshot_id, contract_id, underlying_price, bid, ask, mid, last,
                          bid_size, ask_size, last_trade_at, captured_at, market_data_status, volume, open_interest, provider_iv, provider_delta, provider_gamma,
-                         provider_theta, provider_vega)
+                         provider_theta, provider_vega, previous_close, provider_rho,
+                         chance_of_profit_long, chance_of_profit_short, provider_updated_at, provider_payload)
                     SELECT %s, %s, c.id, s.underlying_price, s.bid, s.ask, s.mid, s.last,
                            s.bid_size, s.ask_size, s.last_trade_at, s.captured_at, s.market_data_status, s.volume, s.open_interest, s.provider_iv, s.provider_delta,
-                           s.provider_gamma, s.provider_theta, s.provider_vega
+                           s.provider_gamma, s.provider_theta, s.provider_vega, s.previous_close,
+                           s.provider_rho, s.chance_of_profit_long, s.chance_of_profit_short,
+                           s.provider_updated_at, s.provider_payload
                     FROM option_quote_stage s
                     JOIN catalog.instrument i ON i.symbol = s.underlying_symbol
                     JOIN catalog.option_contract c
@@ -553,7 +583,12 @@ class IngestionRepository:
                         market_data_status = EXCLUDED.market_data_status,
                         open_interest = EXCLUDED.open_interest, provider_iv = EXCLUDED.provider_iv,
                         provider_delta = EXCLUDED.provider_delta, provider_gamma = EXCLUDED.provider_gamma,
-                        provider_theta = EXCLUDED.provider_theta, provider_vega = EXCLUDED.provider_vega
+                        provider_theta = EXCLUDED.provider_theta, provider_vega = EXCLUDED.provider_vega,
+                        previous_close = EXCLUDED.previous_close, provider_rho = EXCLUDED.provider_rho,
+                        chance_of_profit_long = EXCLUDED.chance_of_profit_long,
+                        chance_of_profit_short = EXCLUDED.chance_of_profit_short,
+                        provider_updated_at = EXCLUDED.provider_updated_at,
+                        provider_payload = EXCLUDED.provider_payload
                     """,
                     [observed_at, snapshot_id],
                 )
@@ -576,7 +611,10 @@ def _stage_option_rows(connection: Any, rows: Sequence[dict[str, Any]]) -> None:
             volume BIGINT, open_interest BIGINT,
             provider_iv DOUBLE PRECISION, provider_delta DOUBLE PRECISION,
             provider_gamma DOUBLE PRECISION, provider_theta DOUBLE PRECISION,
-            provider_vega DOUBLE PRECISION
+            provider_vega DOUBLE PRECISION, previous_close DOUBLE PRECISION,
+            provider_rho DOUBLE PRECISION, chance_of_profit_long DOUBLE PRECISION,
+            chance_of_profit_short DOUBLE PRECISION, provider_updated_at TIMESTAMPTZ,
+            provider_payload JSONB
         ) ON COMMIT DROP
         """
     )
@@ -626,6 +664,12 @@ def _normalize_option_row(row: dict[str, Any]) -> dict[str, Any]:
         "provider_gamma": _number(row.get("provider_gamma") if "provider_gamma" in row else row.get("gamma")),
         "provider_theta": _number(row.get("provider_theta") if "provider_theta" in row else row.get("theta")),
         "provider_vega": _number(row.get("provider_vega") if "provider_vega" in row else row.get("vega")),
+        "previous_close": _number(row.get("previous_close") if "previous_close" in row else row.get("close")),
+        "provider_rho": _number(row.get("provider_rho") if "provider_rho" in row else row.get("rho")),
+        "chance_of_profit_long": _number(row.get("chance_of_profit_long")),
+        "chance_of_profit_short": _number(row.get("chance_of_profit_short")),
+        "provider_updated_at": _aware_datetime(row.get("provider_updated_at") or row.get("updated_at")),
+        "provider_payload": Jsonb(dict(row.get("provider_payload") or {})),
     }
 
 

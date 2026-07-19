@@ -1,5 +1,5 @@
 import { RefreshCw } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
@@ -15,6 +15,7 @@ import { SourceHealthControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
 import { formatDateTime } from "@/views/health/format";
+import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api";
 
 export function HealthRoute() {
   const { data, loadScope } = useMarketData();
@@ -22,6 +23,9 @@ export function HealthRoute() {
 
   const jobs = useRefreshJobs();
   const [reloading, setReloading] = useState(false);
+  const [optionHistory, setOptionHistory] = useState<OptionHistoryHealth | null>(null);
+
+  useEffect(() => { void loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null)); }, []);
 
   const sourceRows = useMemo(() => parseSourceCatalog(data), [data]);
   const summary = useMemo(() => summarizeSourceHealth(sourceRows), [sourceRows]);
@@ -40,6 +44,8 @@ export function HealthRoute() {
     ["Failed", summary.failed.toLocaleString(), "latest attempt failed", summary.failed ? "bad" : "good"],
     ["Disabled", summary.disabled.toLocaleString(), "excluded from health alerts", "muted"],
     ["Last Success", formatDateTime(summary.lastSuccessAt), "freshest successful source check", summary.lastSuccessAt ? "info" : "muted"],
+    ["Option history", optionHistory ? `${optionHistory.complete_snapshots.toLocaleString()}/${optionHistory.snapshots.toLocaleString()} complete` : "Unavailable", optionHistory ? `${formatBytes(optionHistory.storage_bytes)} retained for ${optionHistory.retention_days} days` : "Waiting for database status", optionHistory ? "info" : "muted"],
+    ["History coverage", optionHistory?.average_completeness !== null && optionHistory?.average_completeness !== undefined ? optionHistory.average_completeness.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "Collecting", optionHistory?.latest_complete_slot ? `Latest complete ${formatDateTime(optionHistory.latest_complete_slot)}` : "No complete full-chain slot yet", optionHistory?.complete_snapshots ? "good" : "warn"],
   ];
 
   // Note: a background scheduler job is almost always "running", so the Reload
@@ -47,7 +53,7 @@ export function HealthRoute() {
   const reload = useCallback(async () => {
     setReloading(true);
     try {
-      await Promise.all([loadScope("health").catch(() => undefined), jobs.refresh()]);
+      await Promise.all([loadScope("health").catch(() => undefined), jobs.refresh(), loadOptionHistoryHealth().then(setOptionHistory).catch(() => setOptionHistory(null))]);
     } finally {
       setReloading(false);
     }
@@ -97,3 +103,5 @@ export function HealthRoute() {
     </WorkspacePage>
   );
 }
+
+function formatBytes(value: number): string { return value >= 1024 * 1024 ? `${(value / (1024 * 1024)).toFixed(1)} MB` : `${(value / 1024).toFixed(1)} KB`; }

@@ -1,13 +1,21 @@
 """Options radar, agent thesis/postmortem, learning-loop, and strategy routes."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app import deps
 from app.actions.options import OptionsActions
+from app.options_history_contracts import (
+    IVSurfaceGrid,
+    IVCurveSet,
+    OptionAnomalyPage,
+    OptionChainPage,
+    OptionSnapshotPage,
+)
 
 router = APIRouter()
 
@@ -24,6 +32,69 @@ def options_expiries() -> dict[str, Any]:
 @router.get("/api/options-chain")
 def options_chain() -> dict[str, Any]:
     return deps._table_payload("options_chain")
+
+
+@router.get("/api/options/history/snapshots", response_model=OptionSnapshotPage)
+def historical_option_snapshots(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    include_partial: bool = False,
+) -> dict[str, Any]:
+    return _actions().history_snapshots(symbol=symbol, offset=offset, limit=limit, include_partial=include_partial)
+
+
+@router.get("/api/options/history/chain", response_model=OptionChainPage)
+def historical_option_chain(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    expiration: date | None = None,
+    option_type: str | None = Query(None, pattern="^(call|put)$"),
+    min_moneyness: float | None = Query(None, ge=-2, le=2),
+    max_moneyness: float | None = Query(None, ge=-2, le=2),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(250, ge=1, le=1000),
+) -> dict[str, Any]:
+    if min_moneyness is not None and max_moneyness is not None and min_moneyness > max_moneyness:
+        raise HTTPException(status_code=422, detail="min_moneyness cannot exceed max_moneyness")
+    return _actions().history_chain(
+        symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type,
+        min_moneyness=min_moneyness, max_moneyness=max_moneyness, offset=offset, limit=limit,
+    )
+
+
+@router.get("/api/options/history/surface", response_model=IVSurfaceGrid)
+def historical_option_surface(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    option_type: str | None = Query(None, pattern="^(call|put)$"),
+) -> dict[str, Any]:
+    return _actions().history_surface(symbol=symbol, snapshot=snapshot, option_type=option_type)
+
+
+@router.get("/api/options/history/curves", response_model=IVCurveSet)
+def historical_option_curves(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    expiration: date | None = None,
+) -> dict[str, Any]:
+    return _actions().history_curves(symbol=symbol, snapshot=snapshot, expiration=expiration)
+
+
+@router.get("/api/options/history/anomalies", response_model=OptionAnomalyPage)
+def historical_option_anomalies(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(250, ge=1, le=1000),
+) -> dict[str, Any]:
+    return _actions().history_anomalies(symbol=symbol, snapshot=snapshot, offset=offset, limit=limit)
+
+
+@router.get("/api/options/history/health")
+def historical_option_health() -> dict[str, Any]:
+    """Operational storage and completeness reporting for the Health surface."""
+    return _actions().history_health()
 
 
 @router.get("/api/options-payoff-scenarios")

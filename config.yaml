@@ -78,6 +78,10 @@ data_sources:
       quote_limit: 50
     robinhood:
       enabled: true
+      # Full-chain history is intentionally separate from sampled Options Radar.
+      history_enabled: true
+      history_symbols: [QQQ]
+      history_min_completeness: 0.98
       # Read-only MCP market-data endpoint. The token itself must come from the
       # local OAuth cache or the named override environment variable; do not put
       # Robinhood credentials in config.

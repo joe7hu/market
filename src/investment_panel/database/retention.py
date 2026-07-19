@@ -30,6 +30,7 @@ class RetentionRepository:
             raise ValueError("retention reference time must be timezone-aware")
         cutoffs = {
             "option": reference - timedelta(days=option_days),
+            "history": reference - timedelta(days=730),
             "analysis": reference - timedelta(days=analysis_days),
             "publication": reference - timedelta(days=publication_days),
             "job": reference - timedelta(days=job_days),
@@ -66,7 +67,10 @@ class RetentionRepository:
             counts["option_quotes"] = connection.execute(
                 """
                 DELETE FROM raw.option_quote quote
-                WHERE quote.observed_at < %s
+                USING raw.option_snapshot snapshot
+                WHERE snapshot.id = quote.snapshot_id
+                  AND quote.observed_at < CASE
+                        WHEN snapshot.collection_profile = 'history_full' THEN %s ELSE %s END
                   AND NOT EXISTS (
                       SELECT 1 FROM analysis.option_feature feature
                       WHERE feature.snapshot_id = quote.snapshot_id
@@ -80,15 +84,16 @@ class RetentionRepository:
                         AND decision.quote_observed_at = quote.observed_at
                   )
                 """,
-                [cutoffs["option"]],
+                [cutoffs["history"], cutoffs["option"]],
             ).rowcount
             counts["option_snapshots"] = connection.execute(
                 """
                 DELETE FROM raw.option_snapshot snapshot
-                WHERE snapshot.observed_at < %s
+                WHERE snapshot.observed_at < CASE
+                        WHEN snapshot.collection_profile = 'history_full' THEN %s ELSE %s END
                   AND NOT EXISTS (SELECT 1 FROM raw.option_quote quote WHERE quote.snapshot_id = snapshot.id)
                 """,
-                [cutoffs["option"]],
+                [cutoffs["history"], cutoffs["option"]],
             ).rowcount
             counts["job_runs"] = connection.execute(
                 "DELETE FROM ops.job_run WHERE status <> 'running' AND started_at < %s",

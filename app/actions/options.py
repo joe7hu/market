@@ -10,6 +10,7 @@ from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_analysis import refresh_options_radar
+from investment_panel.database.options_history import OptionHistoryRepository
 
 
 class OptionsActions:
@@ -18,6 +19,25 @@ class OptionsActions:
         self.actions = ActionRepository(self.runtime)
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
+        self.history = OptionHistoryRepository(self.runtime)
+
+    def history_snapshots(self, **filters: Any) -> dict[str, Any]:
+        return self.history.snapshots(**filters)
+
+    def history_chain(self, **filters: Any) -> dict[str, Any]:
+        return self.history.chain(**filters)
+
+    def history_surface(self, **filters: Any) -> dict[str, Any]:
+        return self.history.surface(**filters)
+
+    def history_curves(self, **filters: Any) -> dict[str, Any]:
+        return self.history.curves(**filters)
+
+    def history_anomalies(self, **filters: Any) -> dict[str, Any]:
+        return self.history.anomalies(**filters)
+
+    def history_health(self) -> dict[str, Any]:
+        return self.history.health()
 
     def signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
         return self.analysis.option_signal_detail(decision_id)

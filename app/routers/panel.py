@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app import deps
+from app.actions.options import OptionsActions
 
 router = APIRouter()
 
@@ -19,7 +20,12 @@ def status() -> dict[str, Any]:
         ensure_decision_models=False,
         ensure_source_models=False,
     )
-    return deps.status_payload(panel_data)
+    payload = deps.status_payload(panel_data)
+    try:
+        payload["options_history"] = OptionsActions(config).history_health()
+    except Exception as exc:  # status must stay available during a migration outage
+        payload["options_history"] = {"available": False, "message": f"{type(exc).__name__}: {exc}"}
+    return payload
 
 
 @router.get("/api/panel-contract")

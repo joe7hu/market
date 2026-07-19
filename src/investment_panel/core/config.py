@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
 def project_root() -> Path:
@@ -85,7 +84,6 @@ class IBKRConfig:
     market_data_type: str = "live_or_delayed"
     quote_limit: int = 50
 
-
 @dataclass(frozen=True)
 class RobinhoodConfig:
     enabled: bool = False
@@ -109,7 +107,9 @@ class RobinhoodConfig:
     quote_batch_size: int = 20
     collect_puts: bool = False
     near_term_dte: int = 35
-
+    history_enabled: bool = True
+    history_symbols: list[str] = field(default_factory=lambda: ["QQQ"])
+    history_min_completeness: float = 0.98
 
 @dataclass(frozen=True)
 class MoomooConfig:
@@ -285,8 +285,6 @@ class AppConfig:
     prompt_dir: Path = project_root() / "prompts"
     report_dir: Path = project_root() / "data" / "reports"
     packet_dir: Path = project_root() / "data" / "packets"
-
-
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = resolve_path(path or "config.yaml")
     raw: dict[str, Any] = {}
@@ -400,6 +398,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
                 quote_batch_size=int(robinhood_raw.get("quote_batch_size", 20)),
                 collect_puts=bool(robinhood_raw.get("collect_puts", False)),
                 near_term_dte=int(robinhood_raw.get("near_term_dte", 35)),
+                history_enabled=bool(robinhood_raw.get("history_enabled", True)), history_symbols=[str(symbol).upper() for symbol in robinhood_raw.get("history_symbols", ["QQQ"]) if str(symbol).strip()], history_min_completeness=float(robinhood_raw.get("history_min_completeness", 0.98)),
             ),
             moomoo=MoomooConfig(
                 enabled=bool(moomoo_raw.get("enabled", False)),

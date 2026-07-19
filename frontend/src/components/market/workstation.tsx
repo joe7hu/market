@@ -45,7 +45,8 @@ const navItems: NavItem[] = [
   { to: "/feed", label: "Feed", icon: Activity },
   { to: "/watchlist", label: "Watchlist", icon: Eye },
   { to: "/portfolio", label: "Portfolio", icon: Landmark },
-  { to: "/options-radar", label: "Options", icon: Target },
+  { to: "/options-radar", label: "Options Radar", icon: Target },
+  { to: "/options-chain", label: "Options Chain", icon: Target },
   { to: "/thesis-monitor", label: "Theses", icon: AlertTriangle },
   { to: "/superinvestors", label: "Superinvestors", icon: UsersRound, aliases: ["/filings"] },
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
@@ -62,7 +63,7 @@ export function AppShell() {
   const { model, loading, lastRefresh } = useMarketData();
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const widePage = location.pathname.startsWith("/watchlist") || location.pathname.startsWith("/options-radar");
+  const widePage = location.pathname.startsWith("/watchlist") || location.pathname.startsWith("/options-radar") || location.pathname.startsWith("/options-chain");
 
   const onSearch = (event: FormEvent) => {
     event.preventDefault();

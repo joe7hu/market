@@ -39,6 +39,29 @@ export type RefreshJobsPayload = {
   } | null;
 };
 
+export type OptionHistorySnapshot = {
+  snapshot_id: number; symbol: string; slot_at: string | null; observed_at: string;
+  capture_started_at: string | null; capture_finished_at: string | null;
+  expected_contract_count: number | null; received_contract_count: number | null;
+  completeness: number | null; capture_state: string; contract_count: number;
+};
+
+export type OptionHistoryChainRow = {
+  snapshot_id: number; symbol: string; slot_at: string | null; contract_id: number;
+  expiration: string; strike: number; option_type: "call" | "put"; dte: number;
+  log_moneyness: number | null; underlying_price: number | null; bid: number | null; ask: number | null;
+  mid: number | null; last: number | null; previous_close: number | null; bid_size: number | null; ask_size: number | null;
+  provider_iv: number | null; provider_delta: number | null; provider_gamma: number | null; provider_theta: number | null;
+  provider_vega: number | null; provider_rho: number | null; volume: number | null; open_interest: number | null;
+  chance_of_profit_long: number | null; chance_of_profit_short: number | null; market_data_status: string | null;
+};
+
+export type OptionHistoryPage<T> = { rows: T[]; count: number; offset: number; limit: number; snapshot_id?: number | null };
+export type OptionHistorySurface = { snapshot_id: number | null; symbol: string; x: number[]; y: number[]; surfaces: Record<string, Array<Array<number | null>>>; observed: Array<Record<string, unknown>> };
+export type OptionHistoryCurves = { snapshot_id: number | null; smiles: Array<Record<string, unknown>>; term_structure: Array<Record<string, unknown>>; history: Array<Record<string, unknown>>; history_state: string };
+export type OptionHistoryAnomaly = { id: number; snapshot_id: number; contract_id: number | null; expiration: string | null; option_type: string | null; anomaly_type: string; state: string; observed_value: number | null; expected_value: number | null; z_score: number | null; details: Record<string, unknown>; created_at: string; strike: number | null };
+export type OptionHistoryHealth = { snapshots: number; complete_snapshots: number; latest_complete_slot: string | null; average_completeness: number | null; option_quote_bytes: number; surface_summary_bytes: number; storage_bytes: number; retention_days: number };
+
 // --- Source catalog (GET /api/source-catalog) ------------------------------
 export type SourceCatalogRow = {
   source_id: string;
@@ -238,6 +261,36 @@ export async function deleteWatchlistSymbol(symbol: string): Promise<TablePayloa
 
 export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
   return getJson<RefreshJobsPayload>("/api/refresh-jobs");
+}
+
+export async function loadOptionHistorySnapshots(symbol = "QQQ"): Promise<OptionHistoryPage<OptionHistorySnapshot>> {
+  return getJson(`/api/options/history/snapshots?symbol=${encodeURIComponent(symbol)}&limit=500`);
+}
+
+export async function loadOptionHistoryChain(params: Record<string, string | number | undefined>): Promise<OptionHistoryPage<OptionHistoryChainRow>> {
+  return getJson(`/api/options/history/chain?${optionHistoryParams(params)}`);
+}
+
+export async function loadOptionHistorySurface(params: Record<string, string | number | undefined>): Promise<OptionHistorySurface> {
+  return getJson(`/api/options/history/surface?${optionHistoryParams(params)}`);
+}
+
+export async function loadOptionHistoryCurves(params: Record<string, string | number | undefined>): Promise<OptionHistoryCurves> {
+  return getJson(`/api/options/history/curves?${optionHistoryParams(params)}`);
+}
+
+export async function loadOptionHistoryAnomalies(params: Record<string, string | number | undefined>): Promise<OptionHistoryPage<OptionHistoryAnomaly>> {
+  return getJson(`/api/options/history/anomalies?${optionHistoryParams(params)}`);
+}
+
+export async function loadOptionHistoryHealth(): Promise<OptionHistoryHealth> {
+  return getJson("/api/options/history/health");
+}
+
+function optionHistoryParams(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== "") search.set(key, String(value));
+  return search.toString();
 }
 
 export async function loadSourceCatalog(): Promise<SourceCatalogPayload> {
