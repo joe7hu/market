@@ -282,7 +282,7 @@ class OptionHistoryRepository:
                            SELECT sum(pg_total_relation_size(inhrelid))
                            FROM pg_inherits
                            WHERE inhparent = 'raw.option_quote'::regclass
-                       ), 0) AS option_quote_bytes,
+                       ), 0)::bigint AS option_quote_bytes,
                        coalesce(pg_total_relation_size('analysis.option_surface_summary'), 0) AS surface_summary_bytes
                 FROM raw.option_snapshot WHERE collection_profile = %s
                 """, [HISTORY_PROFILE]
