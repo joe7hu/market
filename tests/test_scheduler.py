@@ -204,6 +204,9 @@ def test_option_history_starts_on_the_next_quarter_hour() -> None:
     assert scheduler._is_slot_boundary(
         "robinhood_option_history", 900, datetime(2026, 7, 20, 9, 30, 0, 500_000, tzinfo=eastern)
     )
+    assert scheduler._is_slot_boundary(
+        "robinhood_option_history", 900, datetime(2026, 7, 20, 9, 30, 22, tzinfo=eastern)
+    )
     assert not scheduler._is_slot_boundary(
         "robinhood_option_history", 900, datetime(2026, 7, 20, 9, 29, 59, 999_000, tzinfo=eastern)
     )

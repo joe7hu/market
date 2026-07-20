@@ -28,7 +28,7 @@ logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history"})
-SLOT_ALIGNMENT_TOLERANCE_SECONDS = 1.0
+SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
 
 
 def _initial_delay_seconds(
