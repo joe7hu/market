@@ -20,6 +20,8 @@ from investment_panel.core.robinhood_options.collector import (
 )
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 
+MAX_QUOTE_RESULT_ATTEMPTS = 3
+
 
 def collect_robinhood_full_option_chain(
     config: Any,
@@ -68,34 +70,61 @@ def collect_robinhood_full_option_chain(
             break
     instruments = [row for row in instruments if str(row.get("tradability") or "tradable").lower() == "tradable"]
     by_id = {str(row.get("id")): row for row in instruments if row.get("id")}
-    rows: list[dict[str, Any]] = []
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    missing_quote_ids: set[str] = set()
+    malformed_quote_ids: set[str] = set()
+    unmatched_quote_results = 0
+    quote_attempts = 0
+    initial_quote_attempts = 0
+    quote_batch_errors = 0
     for batch in _batches(list(by_id), batch_size):
+        pending = set(batch)
+        for attempt in range(MAX_QUOTE_RESULT_ATTEMPTS):
+            if not pending:
+                break
+            if time.monotonic() > deadline:
+                errors.append("collection_timeout")
+                break
+            quote_attempts += 1
+            if attempt == 0:
+                initial_quote_attempts += 1
+            try:
+                payload = client.get_option_quotes(sorted(pending))
+            except Exception:
+                quote_batch_errors += 1
+                continue
+            for result in _payload_list(payload, "results"):
+                quote = dict(result.get("quote") or {})
+                instrument_id = str(quote.get("instrument_id") or result.get("instrument_id") or "")
+                if instrument_id not in pending:
+                    unmatched_quote_results += 1
+                    continue
+                instrument = by_id[instrument_id]
+                row = option_quote_row(instrument, quote)
+                if row is None:
+                    malformed_quote_ids.add(instrument_id)
+                    continue
+                row["underlying_symbol"] = symbol
+                row["underlying_price"] = spot
+                row["provider_payload"] = {"instrument": instrument, "quote": quote}
+                row["previous_close"] = row.get("close")
+                row["provider_updated_at"] = quote.get("updated_at")
+                rows_by_id[instrument_id] = row
+                pending.remove(instrument_id)
+            if pending and attempt + 1 < MAX_QUOTE_RESULT_ATTEMPTS:
+                time.sleep(0.05 * (attempt + 1))
+        missing_quote_ids.update(pending)
         if time.monotonic() > deadline:
-            errors.append("collection_timeout")
             break
-        try:
-            payload = client.get_option_quotes(batch)
-        except Exception as exc:
-            errors.append(f"quote_batch:{type(exc).__name__}: {exc}")
-            continue
-        for result in _payload_list(payload, "results"):
-            quote = dict(result.get("quote") or {})
-            instrument_id = str(quote.get("instrument_id") or result.get("instrument_id") or "")
-            instrument = by_id.get(instrument_id)
-            if not instrument:
-                continue
-            row = option_quote_row(instrument, quote)
-            if row is None:
-                continue
-            row["underlying_symbol"] = symbol
-            row["underlying_price"] = spot
-            row["provider_payload"] = {"instrument": instrument, "quote": quote}
-            row["previous_close"] = row.get("close")
-            row["provider_updated_at"] = quote.get("updated_at")
-            rows.append(row)
+    if malformed_quote_ids:
+        errors.append(f"malformed_quote_results:{len(malformed_quote_ids)}")
     finished_at = datetime.now(UTC)
     expected = len(by_id)
+    rows = list(rows_by_id.values())
     received = len(rows)
+    missing_quote_count = max(0, expected - received)
+    if missing_quote_count:
+        errors.append(f"missing_quote_results:{missing_quote_count}")
     return {
         "symbol": symbol,
         "rows": rows,
@@ -103,6 +132,14 @@ def collect_robinhood_full_option_chain(
         "received_contract_count": received,
         "completeness": (received / expected) if expected else 0.0,
         "errors": errors,
+        "quote_diagnostics": {
+            "attempts": quote_attempts,
+            "retries": max(0, quote_attempts - initial_quote_attempts),
+            "batch_errors": quote_batch_errors,
+            "missing_quote_count": missing_quote_count,
+            "malformed_quote_count": len(malformed_quote_ids),
+            "unmatched_result_count": unmatched_quote_results,
+        },
         "capture_started_at": started_at,
         "capture_finished_at": finished_at,
         "underlying_payload": equity,

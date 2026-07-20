@@ -184,8 +184,9 @@ def execute_refresh_job(
         repository.finish(job_id, "failed", error=failure, summary=summary)
         return {"id": job_id, "job_name": job_name, "status": "failed", "error": failure, "summary": summary}
 
-    repository.finish(job_id, "succeeded", summary=summary)
-    return {"id": job_id, "job_name": job_name, "status": "succeeded", "summary": summary}
+    status = summary_terminal_status(summary)
+    repository.finish(job_id, status, summary=summary)
+    return {"id": job_id, "job_name": job_name, "status": status, "summary": summary}
 
 
 def finish_refresh_job_failed(job_id: str, job_name: str, db_path: Any, error: str) -> dict[str, Any]:
@@ -276,6 +277,12 @@ def summary_failure_message(summary: Any) -> str | None:
     if isinstance(failed_step, str) and failed_step:
         return f"Refresh failed at {failed_step}"
     return "Refresh failed"
+
+
+def summary_terminal_status(summary: Any) -> str:
+    if isinstance(summary, dict) and summary.get("status") in {"partial", "skipped"}:
+        return str(summary["status"])
+    return "succeeded"
 
 
 def main(argv: list[str] | None = None) -> int:

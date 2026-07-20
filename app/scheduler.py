@@ -7,6 +7,7 @@ the async scheduling loop; process execution is delegated separately.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 import logging
 import os
 import time
@@ -21,13 +22,26 @@ from investment_panel.core.job_policy import (
 )
 from investment_panel.core.job_execution import RefreshProcessSpec, execute_async, terminate_process
 from investment_panel.core.refresh_jobs import finish_refresh_job_failed, start_refresh_job
+from investment_panel.core.decision import MARKET_TZ
 
 logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
+SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history"})
 
 
-def _initial_delay_seconds(job: str, interval: int, offset: int) -> float:
+def _initial_delay_seconds(
+    job: str,
+    interval: int,
+    offset: int,
+    *,
+    reference_time: datetime | None = None,
+) -> float:
+    if job in SLOT_ALIGNED_JOBS:
+        reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
+        elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+        remainder = elapsed % interval
+        return 0.0 if remainder == 0 else float(interval - remainder)
     return initial_delay_seconds(job, interval, offset, stagger_seconds=STAGGER_SECONDS)
 
 
@@ -52,8 +66,9 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     logger.info("market scheduler starting (warmup=%ss, intervals=%s)", warmup, intervals)
 
     start = time.monotonic() + warmup
+    start_wall_time = datetime.now(MARKET_TZ) + timedelta(seconds=warmup)
     next_due: dict[str, float] = {
-        job: start + _initial_delay_seconds(job, interval, offset)
+        job: start + _initial_delay_seconds(job, interval, offset, reference_time=start_wall_time)
         for offset, (job, interval) in enumerate(intervals.items())
     }
     in_flight: dict[str, asyncio.Task] = {}
@@ -67,8 +82,10 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
                     in_flight[job] = asyncio.create_task(_dispatch(job, db_path, config_path))
-                    next_due[job] = time.monotonic() + interval
-            await asyncio.sleep(TICK_SECONDS)
+                    next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
+            slot_due = [next_due[job] for job in SLOT_ALIGNED_JOBS.intersection(intervals) if job not in in_flight]
+            sleep_seconds = min(TICK_SECONDS, max(0.05, min(slot_due) - time.monotonic())) if slot_due else TICK_SECONDS
+            await asyncio.sleep(sleep_seconds)
     except asyncio.CancelledError:
         logger.info("market scheduler stopping")
         for task in in_flight.values():
