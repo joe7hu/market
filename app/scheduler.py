@@ -28,6 +28,7 @@ logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history"})
+SLOT_ALIGNMENT_TOLERANCE_SECONDS = 1.0
 
 
 def _initial_delay_seconds(
@@ -43,6 +44,14 @@ def _initial_delay_seconds(
         remainder = elapsed % interval
         return 0.0 if remainder == 0 else float(interval - remainder)
     return initial_delay_seconds(job, interval, offset, stagger_seconds=STAGGER_SECONDS)
+
+
+def _is_slot_boundary(job: str, interval: int, reference_time: datetime | None = None) -> bool:
+    if job not in SLOT_ALIGNED_JOBS:
+        return True
+    reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
+    elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+    return elapsed % interval < SLOT_ALIGNMENT_TOLERANCE_SECONDS
 
 
 def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
@@ -81,6 +90,9 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
                     in_flight.pop(job, None)
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
+                    if not _is_slot_boundary(job, interval):
+                        next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
+                        continue
                     in_flight[job] = asyncio.create_task(_dispatch(job, db_path, config_path))
                     next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
             slot_due = [next_due[job] for job in SLOT_ALIGNED_JOBS.intersection(intervals) if job not in in_flight]
