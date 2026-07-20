@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from investment_panel.core.robinhood_options.history import collect_robinhood_full_option_chain
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_history import OptionHistoryRepository
+from investment_panel.database.options_history import OptionHistoryRepository, _residual_eligible, _surface_summaries
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs.robinhood_option_history import history_slot
@@ -107,7 +109,12 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
     ingestion.finish_run(run_id, "succeeded", summary=stored)
     assert stored["capture_state"] == "complete"
     assert history.chain(symbol="QQQ")["count"] == 6
-    assert history.surface(symbol="QQQ")["surfaces"]["call"]
+    surface = history.surface(symbol="QQQ")
+    assert surface["surfaces"]["call"]
+    call_grid = surface["surfaces"]["call"]
+    x_index = {x: index for index, x in enumerate(surface["x"])}
+    call_dte_index = surface["y"].index(32)
+    assert all(call_grid[call_dte_index][x_index[row["log_moneyness"]]] is not None for row in history.chain(symbol="QQQ", option_type="call")["rows"])
     curves = history.curves(symbol="QQQ")
     assert curves["history_state"] == "collecting"
     assert all(row["skew_25"] is not None for row in curves["term_structure"])
@@ -130,6 +137,62 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
     second_run = ingestion.start_run("robinhood", "option_history_full")
     assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=second_run) is None
     ingestion.finish_run(second_run, "skipped")
+    runtime.close()
+
+
+def test_surface_summaries_keep_term_slopes_separate_by_option_type() -> None:
+    rows = [
+        {
+            "symbol": "QQQ", "expiration": expiry, "option_type": option_type, "dte": dte,
+            "log_moneyness": 0.0, "provider_iv": iv, "provider_delta": 0.5 if option_type == "call" else -0.5,
+            "bid": 2.0, "ask": 2.2, "mid": 2.1, "bid_size": 10, "ask_size": 10,
+        }
+        for option_type, ivs in (("call", (0.20, 0.22, 0.24)), ("put", (0.30, 0.31, 0.32)))
+        for expiry, dte, iv in zip(("2026-08-01", "2026-08-11", "2026-08-21"), (10, 20, 30), ivs)
+    ]
+    summaries = _surface_summaries(rows)
+    call_slopes = [summary["term_slope"] for summary in summaries if summary["option_type"] == "call"]
+    put_slopes = [summary["term_slope"] for summary in summaries if summary["option_type"] == "put"]
+    assert call_slopes == pytest.approx([0.002, 0.002, 0.002])
+    assert put_slopes == pytest.approx([0.001, 0.001, 0.001])
+
+
+def test_residual_eligibility_requires_a_liquid_delta_band() -> None:
+    valid = {"provider_delta": 0.25, "bid": 2.0, "ask": 2.2, "mid": 2.1}
+    assert _residual_eligible(valid)
+    assert not _residual_eligible({**valid, "provider_delta": 0.01})
+    assert not _residual_eligible({**valid, "bid": 1.0, "ask": 2.2, "mid": 1.0})
+
+
+def test_rematerializing_an_older_snapshot_never_uses_future_changes(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    history = OptionHistoryRepository(runtime)
+    ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+    base_rows = [
+        {
+            "underlying_symbol": "QQQ", "expiry": "2026-08-21", "strike": strike, "type": option_type,
+            "underlying_price": 500, "bid": 2.0, "ask": 2.2, "mid": 2.1, "iv": 0.20 + index * 0.01,
+            "delta": 0.25 if option_type == "call" else -0.25,
+        }
+        for index, (option_type, strike) in enumerate((kind, strike) for kind in ("call", "put") for strike in (495, 500, 505))
+    ]
+    slots = (datetime(2026, 7, 20, 14, 30, tzinfo=UTC), datetime(2026, 7, 20, 14, 45, tzinfo=UTC))
+    snapshot_ids = []
+    for slot, iv_shift in zip(slots, (0.0, 0.05)):
+        run_id = ingestion.start_run("robinhood", "option_history_full")
+        assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=run_id)
+        rows = [{**row, "iv": row["iv"] + iv_shift} for row in base_rows]
+        stored = history.store_capture(run_id=run_id, source_id="robinhood", symbol="QQQ", slot_at=slot, captured={"rows": rows, "expected_contract_count": 6, "received_contract_count": 6, "capture_started_at": slot, "capture_finished_at": slot})
+        ingestion.finish_run(run_id, "succeeded", summary=stored)
+        snapshot_ids.append(stored["snapshot_id"])
+    history.materialize_snapshot(snapshot_ids[0])
+    with runtime.read() as connection:
+        first_change = connection.execute("SELECT atm_iv_change FROM analysis.option_surface_summary WHERE snapshot_id = %s LIMIT 1", [snapshot_ids[0]]).fetchone()["atm_iv_change"]
+        second_change = connection.execute("SELECT atm_iv_change FROM analysis.option_surface_summary WHERE snapshot_id = %s LIMIT 1", [snapshot_ids[1]]).fetchone()["atm_iv_change"]
+    assert first_change is None
+    assert second_change == pytest.approx(0.05)
     runtime.close()
 
 

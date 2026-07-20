@@ -15,8 +15,12 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
 HISTORY_PROFILE = "history_full"
-FEATURE_VERSION = "history-v1"
+FEATURE_VERSION = "history-v2"
 MIN_HISTORY_SAMPLES = 20
+MIN_RESIDUAL_POINTS = 10
+MIN_RESIDUAL_ABS_DELTA = 0.05
+MAX_RESIDUAL_ABS_DELTA = 0.95
+MAX_RESIDUAL_SPREAD_PCT = 0.50
 
 
 class OptionHistoryRepository:
@@ -114,6 +118,11 @@ class OptionHistoryRepository:
             return {"surface_summaries": 0, "anomalies": 0}
         summaries = _surface_summaries(rows)
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            current = connection.execute(
+                "SELECT slot_at FROM raw.option_snapshot WHERE id = %s", [snapshot_id]
+            ).fetchone()
+            if current is None:
+                return {"surface_summaries": 0, "anomalies": 0}
             connection.execute("DELETE FROM analysis.option_surface_summary WHERE snapshot_id = %s", [snapshot_id])
             connection.execute("DELETE FROM analysis.option_history_anomaly WHERE snapshot_id = %s", [snapshot_id])
             for summary in summaries:
@@ -125,9 +134,13 @@ class OptionHistoryRepository:
                     WHERE snapshot.history_symbol = %s AND snapshot.collection_profile = %s
                       AND snapshot.capture_state = 'complete' AND prior.expiration = %s
                       AND prior.option_type = %s AND prior.snapshot_id <> %s
+                      AND snapshot.slot_at < %s
                     ORDER BY snapshot.slot_at DESC NULLS LAST, snapshot.observed_at DESC LIMIT 1
                     """,
-                    [summary["symbol"], HISTORY_PROFILE, summary["expiration"], summary["option_type"], snapshot_id],
+                    [
+                        summary["symbol"], HISTORY_PROFILE, summary["expiration"], summary["option_type"],
+                        snapshot_id, current["slot_at"],
+                    ],
                 ).fetchone()
                 summary["atm_iv_change"] = _difference(summary["atm_iv"], previous["atm_iv"] if previous else None)
                 summary["skew_25_change"] = _difference(summary["skew_25"], previous["skew_25"] if previous else None)
@@ -148,7 +161,7 @@ class OptionHistoryRepository:
                         summary["term_slope_change"], Jsonb(summary["metrics"]),
                     ],
                 )
-            anomalies = self._insert_anomalies(connection, snapshot_id, rows, summaries)
+            anomalies = self._insert_anomalies(connection, snapshot_id, current["slot_at"], rows, summaries)
         return {"surface_summaries": len(summaries), "anomalies": anomalies}
 
     def snapshots(
@@ -200,7 +213,7 @@ class OptionHistoryRepository:
             return {"snapshot_id": None, "symbol": symbol.upper(), "x": [], "y": [], "surfaces": {}, "observed": []}
         rows, _ = self._chain_rows(snapshot_id, offset=0, limit=50_000)
         by_type = [option_type] if option_type else ["call", "put"]
-        x_values = sorted({round(float(row["log_moneyness"]), 6) for row in rows if row.get("log_moneyness") is not None})
+        x_values = sorted({float(row["log_moneyness"]) for row in rows if row.get("log_moneyness") is not None})
         y_values = sorted({int(row["dte"]) for row in rows})
         surfaces: dict[str, list[list[float | None]]] = {}
         for kind in by_type:
@@ -354,34 +367,42 @@ class OptionHistoryRepository:
             ).fetchall()
         return [dict(row) for row in rows], int(count)
 
-    def _insert_anomalies(self, connection: Any, snapshot_id: int, rows: list[dict[str, Any]], summaries: list[dict[str, Any]]) -> int:
+    def _insert_anomalies(
+        self, connection: Any, snapshot_id: int, slot_at: datetime, rows: list[dict[str, Any]], summaries: list[dict[str, Any]]
+    ) -> int:
         created = 0
         by_curve = {(summary["expiration"], summary["option_type"]): summary for summary in summaries}
-        residuals: list[tuple[dict[str, Any], float, float]] = []
+        residuals_by_curve: dict[tuple[Any, Any], list[tuple[dict[str, Any], float, float]]] = {}
         for row in rows:
             summary = by_curve.get((row["expiration"], row["option_type"]))
             iv, x = row.get("provider_iv"), row.get("log_moneyness")
-            if summary is None or iv is None or x is None or summary["atm_iv"] is None:
+            if summary is None or iv is None or x is None or summary["atm_iv"] is None or not _residual_eligible(row):
                 continue
             expected = summary["atm_iv"] + (summary["smile_slope"] or 0) * x + (summary["smile_curvature"] or 0) * x * x
-            residuals.append((row, float(iv) - expected, expected))
-        sigma = pstdev([entry[1] for entry in residuals]) if len(residuals) >= 3 else 0.0
-        for row, residual, expected in residuals:
-            z_score = residual / sigma if sigma > 0 else None
-            if z_score is None or abs(z_score) < 2.5:
+            key = (row["expiration"], row["option_type"])
+            residuals_by_curve.setdefault(key, []).append((row, float(iv) - expected, expected))
+        for residuals in residuals_by_curve.values():
+            if len(residuals) < MIN_RESIDUAL_POINTS:
                 continue
-            connection.execute(
-                """INSERT INTO analysis.option_history_anomaly
-                    (snapshot_id, contract_id, expiration, option_type, anomaly_type, state,
-                     observed_value, expected_value, z_score, details)
-                    VALUES (%s, %s, %s, %s, 'smile_residual', 'active', %s, %s, %s, %s)""",
-                [snapshot_id, row["contract_id"], row["expiration"], row["option_type"], row["provider_iv"], expected, z_score, Jsonb({"label": "cross-sectional IV residual; not a trade recommendation"})],
-            )
-            created += 1
+            sigma = pstdev([entry[1] for entry in residuals])
+            if sigma <= 0:
+                continue
+            for row, residual, expected in residuals:
+                z_score = residual / sigma
+                if abs(z_score) < 2.5:
+                    continue
+                connection.execute(
+                    """INSERT INTO analysis.option_history_anomaly
+                        (snapshot_id, contract_id, expiration, option_type, anomaly_type, state,
+                         observed_value, expected_value, z_score, details)
+                        VALUES (%s, %s, %s, %s, 'smile_residual', 'active', %s, %s, %s, %s)""",
+                    [snapshot_id, row["contract_id"], row["expiration"], row["option_type"], row["provider_iv"], expected, z_score, Jsonb({"label": "cross-sectional IV residual within the current expiry/type smile; not a trade recommendation"})],
+                )
+                created += 1
         history_count = connection.execute(
             """SELECT count(*) AS count FROM raw.option_snapshot
-                WHERE collection_profile = %s AND capture_state = 'complete' AND id <> %s""",
-            [HISTORY_PROFILE, snapshot_id],
+                WHERE collection_profile = %s AND capture_state = 'complete' AND slot_at < %s""",
+            [HISTORY_PROFILE, slot_at],
         ).fetchone()["count"]
         state = "active" if history_count >= MIN_HISTORY_SAMPLES else "collecting"
         for summary in summaries:
@@ -395,8 +416,12 @@ class OptionHistoryRepository:
                          WHERE snapshot.history_symbol = %s AND snapshot.collection_profile = %s
                            AND snapshot.capture_state = 'complete' AND summary.expiration = %s
                            AND summary.option_type = %s AND summary.snapshot_id <> %s
+                           AND snapshot.slot_at < %s
                            AND summary.{field} IS NOT NULL ORDER BY snapshot.slot_at DESC LIMIT %s""",
-                    [summary["symbol"], HISTORY_PROFILE, summary["expiration"], summary["option_type"], snapshot_id, MIN_HISTORY_SAMPLES],
+                    [
+                        summary["symbol"], HISTORY_PROFILE, summary["expiration"], summary["option_type"],
+                        snapshot_id, slot_at, MIN_HISTORY_SAMPLES,
+                    ],
                 ).fetchall()
                 values = [float(row["value"]) for row in historic]
                 mean = fmean(values) if values else None
@@ -416,27 +441,28 @@ class OptionHistoryRepository:
 
 def _surface_summaries(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
-    global_atm: list[tuple[int, float]] = []
     for expiration, option_type in sorted({(row["expiration"], row["option_type"]) for row in rows}):
         curve = [row for row in rows if row["expiration"] == expiration and row["option_type"] == option_type and row.get("provider_iv") is not None and row.get("log_moneyness") is not None]
         if not curve:
             continue
         curve.sort(key=lambda row: abs(float(row["log_moneyness"])))
         atm = curve[0]
-        xs = [float(row["log_moneyness"]) for row in curve]
-        ys = [float(row["provider_iv"]) for row in curve]
+        fitted_curve = [row for row in curve if _residual_eligible(row)]
+        if len(fitted_curve) < MIN_RESIDUAL_POINTS:
+            fitted_curve = curve
+        xs = [float(row["log_moneyness"]) for row in fitted_curve]
+        ys = [float(row["provider_iv"]) for row in fitted_curve]
         slope = _linear_slope(xs, ys)
         curvature = _curvature(xs, ys)
         spreads = [((row["ask"] - row["bid"]) / row["mid"]) for row in curve if row.get("ask") is not None and row.get("bid") is not None and row.get("mid") and row["mid"] > 0]
         sizes = [float((row.get("bid_size") or 0) + (row.get("ask_size") or 0)) for row in curve]
-        global_atm.append((int(atm["dte"]), float(atm["provider_iv"])))
         summaries.append({
             "symbol": str(atm["symbol"]), "expiration": expiration, "option_type": option_type, "dte": int(atm["dte"]),
             "atm_iv": float(atm["provider_iv"]), "delta_25_iv": _closest_delta_iv(curve, 0.25), "skew_25": None,
             "smile_slope": slope, "smile_curvature": curvature, "term_slope": None,
             "average_spread_pct": fmean(spreads) if spreads else None,
             "liquidity_score": math.log1p(fmean(sizes)) if sizes else 0.0,
-            "metrics": {"observed_strikes": len(curve), "iv_points": len(ys), "provider": "robinhood"},
+            "metrics": {"observed_strikes": len(curve), "iv_points": len(ys), "fitted_iv_points": len(fitted_curve), "provider": "robinhood"},
         })
     by_expiration = {(summary["expiration"], summary["option_type"]): summary for summary in summaries}
     for expiration in {summary["expiration"] for summary in summaries}:
@@ -446,9 +472,13 @@ def _surface_summaries(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             skew_25 = _difference(call["delta_25_iv"], put["delta_25_iv"])
             call["skew_25"] = skew_25
             put["skew_25"] = skew_25
-    term_slope = _linear_slope([point[0] for point in global_atm], [point[1] for point in global_atm])
-    for summary in summaries:
-        summary["term_slope"] = term_slope
+    for option_type in {summary["option_type"] for summary in summaries}:
+        term = sorted((summary for summary in summaries if summary["option_type"] == option_type), key=lambda summary: summary["dte"])
+        for index, summary in enumerate(term):
+            neighbors = term[max(0, index - 1): min(len(term), index + 2)]
+            summary["term_slope"] = _linear_slope(
+                [float(point["dte"]) for point in neighbors], [float(point["atm_iv"]) for point in neighbors]
+            )
     return summaries
 
 
@@ -488,6 +518,18 @@ def _interpolate(points: Sequence[tuple[float, Any]], x: float) -> float | None:
                 return left[1]
             return left[1] + (right[1] - left[1]) * ((x - left[0]) / (right[0] - left[0]))
     return cleaned[0][1] if x == cleaned[0][0] else cleaned[-1][1]
+
+
+def _residual_eligible(row: dict[str, Any]) -> bool:
+    delta = row.get("provider_delta")
+    bid, ask, mid = row.get("bid"), row.get("ask"), row.get("mid")
+    if delta is None or bid is None or ask is None or mid is None:
+        return False
+    if not MIN_RESIDUAL_ABS_DELTA <= abs(float(delta)) <= MAX_RESIDUAL_ABS_DELTA:
+        return False
+    if bid < 0 or ask < bid or mid <= 0:
+        return False
+    return ((ask - bid) / mid) <= MAX_RESIDUAL_SPREAD_PCT
 
 
 def _difference(value: float | None, previous: float | None) -> float | None:

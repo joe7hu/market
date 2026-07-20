@@ -43,11 +43,11 @@ export function OptionsChainPage() {
       .catch(asError(setError));
   }, [symbol, snapshot, expiration, optionType]);
 
-  const expiries = useMemo(() => [...new Set(chain.rows.map((row) => row.expiration))], [chain.rows]);
+  const expiries = useMemo(() => [...new Set((surface?.observed ?? []).flatMap((row) => typeof row.expiration === "string" ? [row.expiration] : []))].sort(), [surface]);
   const selected = snapshots.find((row) => row.snapshot_id === snapshot);
   const maxPage = Math.max(0, Math.ceil(chain.count / PAGE_SIZE) - 1);
   const filters = <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-    <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => { setSnapshot(Number(value) || undefined); setPage(0); }}><option value="">No complete capture</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatDate(row.slot_at ?? row.observed_at)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
+    <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => { setSnapshot(Number(value) || undefined); setPage(0); }}><option value="">No complete capture</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatCaptureWindow(row)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
     <Select label="Expiry" value={expiration} onChange={(value) => { setExpiration(value); setPage(0); }}><option value="">All expiries</option>{expiries.map((value) => <option key={value}>{value}</option>)}</Select>
     <Select label="Type" value={optionType} onChange={(value) => { setOptionType(value as "call" | "put" | ""); setPage(0); }}><option value="">Calls and puts</option><option value="call">Calls</option><option value="put">Puts</option></Select>
     <Input label="Min log-moneyness" value={minMoneyness} onChange={setMinMoneyness} />
@@ -55,7 +55,7 @@ export function OptionsChainPage() {
   </div>;
 
   return <WorkspacePage eyebrow="Options History" title="QQQ Options Chain" subtitle="Full tradable Robinhood chain history. IV surfaces and anomalies are descriptive statistics, not trade recommendations." metrics={[
-    ["As of", selected ? formatDate(selected.slot_at ?? selected.observed_at) : "Collecting", selected ? `${selected.contract_count.toLocaleString()} contracts` : "No complete snapshot yet", selected ? "good" : "warn"],
+    ["As of", selected ? formatDate(selected.capture_finished_at ?? selected.slot_at ?? selected.observed_at) : "Collecting", selected ? `${formatCaptureWindow(selected)} capture · ${selected.contract_count.toLocaleString()} contracts` : "No complete snapshot yet", selected ? "good" : "warn"],
     ["Coverage", selected?.completeness !== null && selected?.completeness !== undefined ? selected.completeness.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "—", "Complete snapshots only feed models and this workstation", "info"],
     ["History", `${snapshots.length.toLocaleString()} captures`, curves?.history_state === "ready" ? "History-dependent signals are active" : "History-dependent signals are collecting", curves?.history_state === "ready" ? "good" : "warn"],
     ["Anomalies", `${anomalies.count.toLocaleString()}`, "Statistical labels only", "info"],
@@ -97,6 +97,7 @@ function Input({ label, value, onChange }: { label: string; value: string; onCha
 function Empty({ text }: { text: string }) { return <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">{text}</p>; }
 function asError(setter: (value: string | null) => void) { return (error: unknown) => setter(error instanceof Error ? error.message : "Unable to load option history"); }
 function formatDate(value: string) { return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+function formatCaptureWindow(snapshot: OptionHistorySnapshot) { const start = snapshot.capture_started_at ?? snapshot.slot_at ?? snapshot.observed_at; const finish = snapshot.capture_finished_at; return finish ? `${formatDate(start)}–${new Date(finish).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : formatDate(start); }
 function money(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "currency", currency: "USD" }); }
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 2 }); }
 function number(value: number | null | undefined, digits = 2) { return value === null || value === undefined ? "—" : value.toFixed(digits); }
