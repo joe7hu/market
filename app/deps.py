@@ -18,7 +18,7 @@ from threading import RLock
 from typing import Any, Callable, Literal
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.data_access import (
     database_path,
@@ -137,8 +137,22 @@ class ThesisInput(BaseModel):
     why: str = ""
     invalidation: str = ""
     invalidation_price: float | None = None
+    schema_version: Literal[1, 2] = 1
+    direction: Literal["bullish", "bearish"] | None = None
+    horizon_date: str | None = None
+    max_loss: float | None = None
+    catalyst: str | None = None
     status: str | None = None
     evidence_links: list[str] | None = None
+
+    @model_validator(mode="after")
+    def validate_options_v2(self) -> "ThesisInput":
+        if self.schema_version == 2:
+            if not self.direction or not self.horizon_date or not self.invalidation.strip():
+                raise ValueError("schema_version 2 requires direction, horizon_date, and invalidation")
+            if self.max_loss is None or self.max_loss <= 0:
+                raise ValueError("schema_version 2 requires positive max_loss")
+        return self
 
 
 class PaperOrderInput(BaseModel):

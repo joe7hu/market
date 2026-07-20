@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -15,6 +15,11 @@ from app.options_history_contracts import (
     OptionAnomalyPage,
     OptionChainPage,
     OptionSnapshotPage,
+    OptionSurfaceEvidence,
+    OptionsCandidatePage,
+    OptionsDecisionBrief,
+    OptionsPaperJournalPage,
+    RelativeValuePage,
 )
 
 router = APIRouter()
@@ -63,13 +68,24 @@ def historical_option_chain(
     )
 
 
-@router.get("/api/options/history/surface", response_model=IVSurfaceGrid)
+@router.get("/api/options/history/surface", response_model=OptionSurfaceEvidence)
 def historical_option_surface(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    expiration: date = Query(...),
+    option_type: str = Query(..., pattern="^(call|put)$"),
+) -> dict[str, Any]:
+    return _actions().history_surface(symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type)
+
+
+@router.get("/api/options/history/surface/legacy", response_model=IVSurfaceGrid, deprecated=True)
+def historical_option_surface_legacy(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
     option_type: str | None = Query(None, pattern="^(call|put)$"),
 ) -> dict[str, Any]:
-    return _actions().history_surface(symbol=symbol, snapshot=snapshot, option_type=option_type)
+    """Compatibility grid for one release; new clients must select expiry and type."""
+    return _actions().history_legacy_surface(symbol=symbol, snapshot=snapshot, option_type=option_type)
 
 
 @router.get("/api/options/history/curves", response_model=IVCurveSet)
@@ -95,6 +111,59 @@ def historical_option_anomalies(
 def historical_option_health() -> dict[str, Any]:
     """Operational storage and completeness reporting for the Health surface."""
     return _actions().history_health()
+
+
+@router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief)
+def options_decision_brief(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    lane: Literal["thesis", "anomaly"] = "thesis",
+) -> dict[str, Any]:
+    return _actions().decision_brief(symbol=symbol, lane=lane)
+
+
+@router.get("/api/options/candidates", response_model=OptionsCandidatePage)
+def options_candidates(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    lane: Literal["thesis", "anomaly"] | None = None,
+    paper_state: Literal["COLLECTING", "WATCH", "PAPER_READY", "REJECT"] | None = None,
+    structure: Literal["long_call", "long_put", "call_debit_spread", "put_debit_spread"] | None = None,
+    expiration: date | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict[str, Any]:
+    return _actions().candidates(
+        symbol=symbol, lane=lane, paper_state=paper_state, structure=structure,
+        expiration=expiration, offset=offset, limit=limit,
+    )
+
+
+@router.get("/api/options/history/relative-values", response_model=RelativeValuePage)
+def historical_relative_values(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    classification: Literal["relative_cheap", "relative_rich", "historical_static_arbitrage_candidate", "verified_static_arbitrage_candidate", "rejected"] | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict[str, Any]:
+    return _actions().relative_values(symbol=symbol, snapshot=snapshot, classification=classification, offset=offset, limit=limit)
+
+
+@router.post("/api/options/history/static-arbitrage-candidates/{candidate_id}/verify")
+def verify_static_arbitrage_candidate(candidate_id: int, request: Request) -> dict[str, Any]:
+    deps._require_local_request(request)
+    try:
+        return _actions().verify_static_arbitrage(candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/api/options/paper-journal", response_model=OptionsPaperJournalPage)
+def options_paper_journal(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict[str, Any]:
+    return _actions().paper_journal(symbol=symbol, offset=offset, limit=limit)
 
 
 @router.get("/api/options-payoff-scenarios")

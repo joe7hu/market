@@ -3,12 +3,17 @@ import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tan
 import { loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "./workspacePage";
+import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
 
 const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfacePlot }));
 const OptionCurvePlots = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionCurvePlots }));
 const PAGE_SIZE = 100;
 
 export function OptionsChainPage() {
+  return <DecisionFirstOptionsChainPage EvidenceWorkspace={EvidenceWorkspace} />;
+}
+
+export function EvidenceWorkspace() {
   const [symbol] = useState("QQQ");
   const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
   const [snapshot, setSnapshot] = useState<number | undefined>();

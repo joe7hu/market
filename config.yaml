@@ -26,6 +26,12 @@ market_data:
   crypto_provider: coingecko
   user_agent: "joehu-market-panel/0.1 contact:local"
 
+analysis:
+  # Reversible rollout: disabled serves legacy surfaces, shadow shows v3 evidence,
+  # paper additionally permits the already-calibrated local paper-entry action.
+  options_decision_system:
+    mode: shadow
+
 data_sources:
   opencli:
     enabled: true

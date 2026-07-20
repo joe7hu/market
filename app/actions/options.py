@@ -11,15 +11,20 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.options_history import OptionHistoryRepository
+from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
+from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
+from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
 
 
 class OptionsActions:
     def __init__(self, config: Any) -> None:
+        self.config = config
         self.runtime = runtime_for_config(config)
         self.actions = ActionRepository(self.runtime)
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
         self.history = OptionHistoryRepository(self.runtime)
+        self.decision_system = OptionsDecisionSystemRepository(self.runtime)
 
     def history_snapshots(self, **filters: Any) -> dict[str, Any]:
         return self.history.snapshots(**filters)
@@ -30,6 +35,9 @@ class OptionsActions:
     def history_surface(self, **filters: Any) -> dict[str, Any]:
         return self.history.surface(**filters)
 
+    def history_legacy_surface(self, **filters: Any) -> dict[str, Any]:
+        return self.history.legacy_surface(**filters)
+
     def history_curves(self, **filters: Any) -> dict[str, Any]:
         return self.history.curves(**filters)
 
@@ -37,12 +45,41 @@ class OptionsActions:
         return self.history.anomalies(**filters)
 
     def history_health(self) -> dict[str, Any]:
-        return self.history.health()
+        result = self.history.health()
+        result["mode"] = getattr(getattr(getattr(self.config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        return result
+
+    def decision_brief(self, **filters: Any) -> dict[str, Any]:
+        return self.decision_system.decision_brief(**filters)
+
+    def candidates(self, **filters: Any) -> dict[str, Any]:
+        return self.decision_system.candidates(**filters)
+
+    def relative_values(self, **filters: Any) -> dict[str, Any]:
+        return self.decision_system.relative_values(**filters)
+
+    def paper_journal(self, **filters: Any) -> dict[str, Any]:
+        return self.decision_system.paper_journal(**filters)
+
+    def verify_static_arbitrage(self, candidate_id: int) -> dict[str, Any]:
+        robinhood = getattr(getattr(getattr(self.config, "data_sources", None), "brokers", None), "robinhood", None)
+        if robinhood is None or not bool(getattr(robinhood, "enabled", False)):
+            return self.decision_system.verification_result(candidate_id)
+        client = RobinhoodMcpClient(
+            str(getattr(robinhood, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
+            auth_token=load_robinhood_access_token(robinhood),
+            timeout_seconds=min(10, int(getattr(robinhood, "timeout_seconds", 10))),
+            max_response_bytes=int(getattr(robinhood, "max_response_bytes", 8 * 1024 * 1024)),
+        )
+        return self.decision_system.verification_result(candidate_id, client)
 
     def signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
         return self.analysis.option_signal_detail(decision_id)
 
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
+        mode = getattr(getattr(getattr(self.config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        if mode != "paper":
+            raise ValueError("options decision system is in shadow mode; paper entry is disabled")
         return self.actions.stage_option_paper_entry(
             decision_id=decision_id,
             idempotency_key=payload.get("idempotency_key"),

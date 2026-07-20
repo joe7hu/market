@@ -61,6 +61,9 @@ export type OptionHistorySurface = { snapshot_id: number | null; symbol: string;
 export type OptionHistoryCurves = { snapshot_id: number | null; smiles: Array<Record<string, unknown>>; term_structure: Array<Record<string, unknown>>; history: Array<Record<string, unknown>>; history_state: string };
 export type OptionHistoryAnomaly = { id: number; snapshot_id: number; contract_id: number | null; expiration: string | null; option_type: string | null; anomaly_type: string; state: string; observed_value: number | null; expected_value: number | null; z_score: number | null; details: Record<string, unknown>; created_at: string; strike: number | null };
 export type OptionHistoryHealth = { snapshots: number; complete_snapshots: number; latest_complete_slot: string | null; average_completeness: number | null; option_quote_bytes: number; surface_summary_bytes: number; storage_bytes: number; retention_days: number };
+export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: "COLLECTING" | "WATCH" | "PAPER_READY" | "REJECT" | string; summary: Record<string, unknown>; strongest_candidate: Record<string, unknown> | null; paper_only: boolean };
+export type OptionsDecisionCandidate = Record<string, unknown> & { decision_id: string; paper_state: string; discovery_lane: string; structure: string; expiration: string; strike: number; option_type: string };
+export type OptionsPaperJournalRow = Record<string, unknown> & { shadow_id: string; decision_id: string; status: string };
 
 // --- Source catalog (GET /api/source-catalog) ------------------------------
 export type SourceCatalogRow = {
@@ -168,9 +171,10 @@ export type PanelScopeOptions = {
   force?: boolean;
 };
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${path}${path.includes("?") ? "&" : "?"}_=${Date.now()}`, {
     cache: "no-store",
+    signal,
     headers: { Accept: "application/json" },
   });
   if (!response.ok) {
@@ -272,7 +276,7 @@ export async function loadOptionHistoryChain(params: Record<string, string | num
 }
 
 export async function loadOptionHistorySurface(params: Record<string, string | number | undefined>): Promise<OptionHistorySurface> {
-  return getJson(`/api/options/history/surface?${optionHistoryParams(params)}`);
+  return getJson(`/api/options/history/surface/legacy?${optionHistoryParams(params)}`);
 }
 
 export async function loadOptionHistoryCurves(params: Record<string, string | number | undefined>): Promise<OptionHistoryCurves> {
@@ -285,6 +289,18 @@ export async function loadOptionHistoryAnomalies(params: Record<string, string |
 
 export async function loadOptionHistoryHealth(): Promise<OptionHistoryHealth> {
   return getJson("/api/options/history/health");
+}
+
+export async function loadOptionsDecisionBrief(symbol = "QQQ", lane: "thesis" | "anomaly" = "thesis", signal?: AbortSignal): Promise<OptionsDecisionBrief> {
+  return getJson(`/api/options/decision-brief?symbol=${encodeURIComponent(symbol)}&lane=${lane}`, signal);
+}
+
+export async function loadOptionsCandidates(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionsDecisionCandidate>> {
+  return getJson(`/api/options/candidates?${optionHistoryParams(params)}`, signal);
+}
+
+export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
+  return getJson(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
 }
 
 function optionHistoryParams(params: Record<string, string | number | undefined>): string {

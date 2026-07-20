@@ -1,7 +1,5 @@
 """Idempotent PostgreSQL ingestion for archived payloads and normalized facts."""
-
 from __future__ import annotations
-
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -9,7 +7,6 @@ import hashlib
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 from uuid import UUID
-
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
@@ -24,8 +21,6 @@ from investment_panel.database.ingestion_coerce import (
 )
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
-
-
 @dataclass
 class IngestionRun:
     """One ingestion lifecycle with exactly one terminal state."""
@@ -54,12 +49,9 @@ class IngestionRun:
             summary=summary,
         )
         self.finalized = True
-
-
 class IngestionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
-
     def register_source(
         self,
         source_id: str,
@@ -483,6 +475,8 @@ class IngestionRepository:
         expected_contract_count: int | None = None,
         received_contract_count: int | None = None,
         capture_state: str = "complete",
+        capture_generation_id: int | None = None,
+        quote_observed_at: datetime | None = None,
     ) -> dict[str, int]:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
@@ -558,15 +552,19 @@ class IngestionRepository:
                 connection.execute(
                     """
                     INSERT INTO raw.option_quote
-                        (observed_at, snapshot_id, contract_id, underlying_price, bid, ask, mid, last,
+                        (observed_at, snapshot_id, capture_generation_id, contract_id, underlying_price, bid, ask, mid, last,
                          bid_size, ask_size, last_trade_at, captured_at, market_data_status, volume, open_interest, provider_iv, provider_delta, provider_gamma,
                          provider_theta, provider_vega, previous_close, provider_rho,
-                         chance_of_profit_long, chance_of_profit_short, provider_updated_at, provider_payload)
-                    SELECT %s, %s, c.id, s.underlying_price, s.bid, s.ask, s.mid, s.last,
+                         chance_of_profit_long, chance_of_profit_short, provider_updated_at, provider_payload,
+                         capture_group_key, group_started_at, group_finished_at, provider_observed_at,
+                         available_at, underlying_observed_at, underlying_available_at)
+                    SELECT %s, %s, %s, c.id, s.underlying_price, s.bid, s.ask, s.mid, s.last,
                            s.bid_size, s.ask_size, s.last_trade_at, s.captured_at, s.market_data_status, s.volume, s.open_interest, s.provider_iv, s.provider_delta,
                            s.provider_gamma, s.provider_theta, s.provider_vega, s.previous_close,
                            s.provider_rho, s.chance_of_profit_long, s.chance_of_profit_short,
-                           s.provider_updated_at, s.provider_payload
+                           s.provider_updated_at, s.provider_payload, s.capture_group_key,
+                           s.group_started_at, s.group_finished_at, s.provider_observed_at,
+                           coalesce(s.available_at, %s), s.underlying_observed_at, s.underlying_available_at
                     FROM option_quote_stage s
                     JOIN catalog.instrument i ON i.symbol = s.underlying_symbol
                     JOIN catalog.option_contract c
@@ -588,9 +586,16 @@ class IngestionRepository:
                         chance_of_profit_long = EXCLUDED.chance_of_profit_long,
                         chance_of_profit_short = EXCLUDED.chance_of_profit_short,
                         provider_updated_at = EXCLUDED.provider_updated_at,
-                        provider_payload = EXCLUDED.provider_payload
+                        provider_payload = EXCLUDED.provider_payload,
+                        capture_group_key = EXCLUDED.capture_group_key,
+                        group_started_at = EXCLUDED.group_started_at,
+                        group_finished_at = EXCLUDED.group_finished_at,
+                        provider_observed_at = EXCLUDED.provider_observed_at,
+                        available_at = EXCLUDED.available_at,
+                        underlying_observed_at = EXCLUDED.underlying_observed_at,
+                        underlying_available_at = EXCLUDED.underlying_available_at
                     """,
-                    [observed_at, snapshot_id],
+                    [quote_observed_at or observed_at, snapshot_id, capture_generation_id, observed_at],
                 )
             connection.execute(
                 "UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s",
@@ -614,7 +619,10 @@ def _stage_option_rows(connection: Any, rows: Sequence[dict[str, Any]]) -> None:
             provider_vega DOUBLE PRECISION, previous_close DOUBLE PRECISION,
             provider_rho DOUBLE PRECISION, chance_of_profit_long DOUBLE PRECISION,
             chance_of_profit_short DOUBLE PRECISION, provider_updated_at TIMESTAMPTZ,
-            provider_payload JSONB
+            provider_payload JSONB, capture_group_key TEXT, group_started_at TIMESTAMPTZ,
+            group_finished_at TIMESTAMPTZ, provider_observed_at TIMESTAMPTZ,
+            available_at TIMESTAMPTZ, underlying_observed_at TIMESTAMPTZ,
+            underlying_available_at TIMESTAMPTZ
         ) ON COMMIT DROP
         """
     )
@@ -670,6 +678,13 @@ def _normalize_option_row(row: dict[str, Any]) -> dict[str, Any]:
         "chance_of_profit_short": _number(row.get("chance_of_profit_short")),
         "provider_updated_at": _aware_datetime(row.get("provider_updated_at") or row.get("updated_at")),
         "provider_payload": Jsonb(dict(row.get("provider_payload") or {})),
+        "capture_group_key": str(row.get("capture_group_key") or f"{expiration}:{option_type}"),
+        "group_started_at": _aware_datetime(row.get("group_started_at")),
+        "group_finished_at": _aware_datetime(row.get("group_finished_at")),
+        "provider_observed_at": _aware_datetime(row.get("provider_observed_at") or row.get("provider_updated_at") or row.get("updated_at")),
+        "available_at": _aware_datetime(row.get("available_at") or row.get("captured_at")),
+        "underlying_observed_at": _aware_datetime(row.get("underlying_observed_at")),
+        "underlying_available_at": _aware_datetime(row.get("underlying_available_at")),
     }
 
 

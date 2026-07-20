@@ -116,7 +116,7 @@ class ActionRepository:
                 }
             signal = connection.execute(
                 """
-                SELECT decision.instrument_id, decision.state, option_decision.structure,
+                SELECT decision.instrument_id, decision.state, option_decision.paper_state, option_decision.structure,
                        option_decision.entry_price, option_decision.secured_cash,
                        option_decision.max_loss, option_decision.details,
                        (
@@ -145,10 +145,21 @@ class ActionRepository:
             ).fetchone()
             if signal is None:
                 raise ValueError("options-radar signal not found")
+            if signal["paper_state"] is not None and str(signal["paper_state"]) != "PAPER_READY":
+                raise ValueError("decision is not PAPER_READY")
             if not signal["currently_published"]:
                 raise ValueError("signal is stale or not execution-ready in the current publication")
             if str(signal["state"]) != "READY":
                 raise ValueError("signal decision state is not READY")
+            shadow = connection.execute(
+                "SELECT status, entry_at FROM analysis.shadow_trade WHERE decision_id = %s FOR UPDATE",
+                [decision_id],
+            ).fetchone()
+            if signal["paper_state"] is not None:
+                if shadow is None or str(shadow["status"]) != "pending":
+                    raise ValueError("pending system shadow is required before paper staging")
+                if shadow["entry_at"] is not None:
+                    raise ValueError("paper entry is stale because the shadow already entered")
             from investment_panel.database.options_publication import _contract_readiness
 
             publication_payload = dict(signal["publication_payload"] or {})

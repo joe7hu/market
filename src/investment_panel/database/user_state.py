@@ -236,6 +236,26 @@ def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> 
             cleaned = [str(link).strip() for link in evidence_links if str(link).strip()]
             if cleaned:
                 thesis["evidence_links"] = cleaned
+        schema_version = int(fields.get("schema_version") or 1)
+        if schema_version == 2:
+            direction = str(fields.get("direction") or "").strip().lower()
+            horizon_date = str(fields.get("horizon_date") or "").strip()
+            option_invalidation = str(fields.get("invalidation") or "").strip()
+            try:
+                max_loss = float(fields.get("max_loss"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("schema_version 2 requires positive max_loss") from exc
+            if direction not in {"bullish", "bearish"} or not horizon_date or not option_invalidation or max_loss <= 0:
+                raise ValueError("schema_version 2 requires direction, horizon_date, positive max_loss, and invalidation")
+            thesis.update({
+                "schema_version": 2, "direction": direction, "horizon_date": horizon_date,
+                "max_loss": max_loss, "invalidation": option_invalidation,
+            })
+            catalyst = str(fields.get("catalyst") or "").strip()
+            if catalyst:
+                thesis["catalyst"] = catalyst
+        else:
+            thesis["schema_version"] = 1
         thesis["last_reviewed"] = datetime.now(UTC).isoformat()
         revision = int(current["revision"]) + 1 if current else 1
         connection.execute(

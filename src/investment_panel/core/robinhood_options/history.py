@@ -53,16 +53,15 @@ def collect_robinhood_full_option_chain(
         )
     batch_size = max(1, min(50, int(quote_batch_size or getattr(config, "quote_batch_size", 20))))
     deadline = time.monotonic() + max(1, int(getattr(config, "max_collection_seconds", DEFAULT_MAX_COLLECTION_SECONDS)))
-    equity = _equity_quote(client, symbol, deadline)
-    spot = as_float(equity.get("last_trade_price")) or as_float(equity.get("adjusted_mark_price"))
-    instruments: list[dict[str, Any]] = []
+    groups: dict[str, list[dict[str, Any]]] = {}
     errors: list[str] = []
     for chain in _payload_list(client.get_option_chains(symbol), "chains"):
         chain_id = str(chain.get("id") or "")
         for expiry in chain.get("expiration_dates") or []:
             for option_type in ("call", "put"):
                 try:
-                    instruments.extend(_all_instruments(client, chain_id, str(expiry), option_type, deadline))
+                    key = f"{expiry}:{option_type}"
+                    groups[key] = _all_instruments(client, chain_id, str(expiry), option_type, deadline)
                 except Exception as exc:  # keep independently auditable partial captures
                     errors.append(f"{expiry}:{option_type}:{type(exc).__name__}: {exc}")
                 if time.monotonic() > deadline:
@@ -72,52 +71,96 @@ def collect_robinhood_full_option_chain(
                 break
         if time.monotonic() > deadline:
             break
-    instruments = [row for row in instruments if str(row.get("tradability") or "tradable").lower() == "tradable"]
-    by_id = {str(row.get("id")): row for row in instruments if row.get("id")}
+    groups = {
+        key: [row for row in instruments if str(row.get("tradability") or "tradable").lower() == "tradable"]
+        for key, instruments in groups.items()
+    }
+    by_id = {
+        str(row.get("id")): (key, row)
+        for key, instruments in groups.items()
+        for row in instruments
+        if row.get("id")
+    }
     rows_by_id: dict[str, dict[str, Any]] = {}
-    missing_quote_ids: set[str] = set()
     malformed_quote_ids: set[str] = set()
     unmatched_quote_results = 0
     quote_attempts = 0
     initial_quote_attempts = 0
     quote_batch_errors = 0
-    for batch in _batches(list(by_id), batch_size):
-        pending = set(batch)
-        for attempt in range(MAX_QUOTE_RESULT_ATTEMPTS):
-            if not pending:
-                break
+    group_diagnostics: dict[str, dict[str, Any]] = {}
+    underlying_payload: dict[str, Any] = {}
+    # Each expiry/type is a coherent capture group: get the underlying once,
+    # then retrieve every quote batch before advancing to the next group.  Do
+    # not attach a shared end timestamp after fetching the whole chain.
+    for group_key, instruments in sorted(groups.items()):
+        group_started_at = datetime.now(UTC)
+        group_ids = {str(row.get("id")) for row in instruments if row.get("id")}
+        diagnostic: dict[str, Any] = {
+            "expected_contract_count": len(group_ids),
+            "received_contract_count": 0,
+            "started_at": group_started_at,
+        }
+        group_diagnostics[group_key] = diagnostic
+        try:
+            equity = _equity_quote(client, symbol, deadline)
+            spot = as_float(equity.get("last_trade_price")) or as_float(equity.get("adjusted_mark_price"))
+        except Exception as exc:
+            errors.append(f"{group_key}:underlying:{type(exc).__name__}: {exc}")
+            diagnostic["error"] = "underlying_quote_failed"
+            diagnostic["finished_at"] = datetime.now(UTC)
+            continue
+        underlying_payload = underlying_payload or equity
+        diagnostic["underlying_observed_at"] = equity.get("updated_at") or group_started_at
+        for batch in _batches(sorted(group_ids), batch_size):
+            pending = set(batch)
+            for attempt in range(MAX_QUOTE_RESULT_ATTEMPTS):
+                if not pending:
+                    break
+                if time.monotonic() > deadline:
+                    errors.append("collection_timeout")
+                    break
+                quote_attempts += 1
+                if attempt == 0:
+                    initial_quote_attempts += 1
+                try:
+                    payload = client.get_option_quotes(sorted(pending))
+                except Exception:
+                    quote_batch_errors += 1
+                    continue
+                for result in _payload_list(payload, "results"):
+                    quote = dict(result.get("quote") or {})
+                    instrument_id = str(quote.get("instrument_id") or result.get("instrument_id") or "")
+                    if instrument_id not in pending:
+                        unmatched_quote_results += 1
+                        continue
+                    _row_group, instrument = by_id[instrument_id]
+                    row = option_quote_row(instrument, quote)
+                    if row is None:
+                        malformed_quote_ids.add(instrument_id)
+                        continue
+                    row["underlying_symbol"] = symbol
+                    row["underlying_price"] = spot
+                    row["provider_payload"] = {"instrument": instrument, "quote": quote, "underlying": equity}
+                    row["previous_close"] = row.get("close")
+                    row["provider_updated_at"] = quote.get("updated_at")
+                    row["provider_observed_at"] = quote.get("updated_at")
+                    row["underlying_observed_at"] = equity.get("updated_at") or group_started_at
+                    row["underlying_available_at"] = group_started_at
+                    row["capture_group_key"] = group_key
+                    row["group_started_at"] = group_started_at
+                    rows_by_id[instrument_id] = row
+                    pending.remove(instrument_id)
+                    diagnostic["received_contract_count"] += 1
+                if pending and attempt + 1 < MAX_QUOTE_RESULT_ATTEMPTS:
+                    time.sleep(0.05 * (attempt + 1))
             if time.monotonic() > deadline:
-                errors.append("collection_timeout")
                 break
-            quote_attempts += 1
-            if attempt == 0:
-                initial_quote_attempts += 1
-            try:
-                payload = client.get_option_quotes(sorted(pending))
-            except Exception:
-                quote_batch_errors += 1
-                continue
-            for result in _payload_list(payload, "results"):
-                quote = dict(result.get("quote") or {})
-                instrument_id = str(quote.get("instrument_id") or result.get("instrument_id") or "")
-                if instrument_id not in pending:
-                    unmatched_quote_results += 1
-                    continue
-                instrument = by_id[instrument_id]
-                row = option_quote_row(instrument, quote)
-                if row is None:
-                    malformed_quote_ids.add(instrument_id)
-                    continue
-                row["underlying_symbol"] = symbol
-                row["underlying_price"] = spot
-                row["provider_payload"] = {"instrument": instrument, "quote": quote}
-                row["previous_close"] = row.get("close")
-                row["provider_updated_at"] = quote.get("updated_at")
-                rows_by_id[instrument_id] = row
-                pending.remove(instrument_id)
-            if pending and attempt + 1 < MAX_QUOTE_RESULT_ATTEMPTS:
-                time.sleep(0.05 * (attempt + 1))
-        missing_quote_ids.update(pending)
+        group_finished_at = datetime.now(UTC)
+        for instrument_id in group_ids:
+            if instrument_id in rows_by_id:
+                rows_by_id[instrument_id]["group_finished_at"] = group_finished_at
+                rows_by_id[instrument_id]["available_at"] = group_finished_at
+        diagnostic["finished_at"] = group_finished_at
         if time.monotonic() > deadline:
             break
     if malformed_quote_ids:
@@ -143,10 +186,11 @@ def collect_robinhood_full_option_chain(
             "missing_quote_count": missing_quote_count,
             "malformed_quote_count": len(malformed_quote_ids),
             "unmatched_result_count": unmatched_quote_results,
+            "groups": group_diagnostics,
         },
         "capture_started_at": started_at,
         "capture_finished_at": finished_at,
-        "underlying_payload": equity,
+        "underlying_payload": underlying_payload,
         "timed_out": "collection_timeout" in errors,
     }
 

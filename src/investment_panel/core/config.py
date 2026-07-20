@@ -1,12 +1,9 @@
 """Configuration loading for the investment panel."""
-
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from typing import Any
-
 import yaml
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
@@ -33,8 +30,6 @@ class ArcoConfig:
     source_manifest_glob: str = "source-manifest-*.json"
     birdclaw_bookmarks_glob: str = "birdclaw-bookmarks-*.json"
     web_captures_glob: str = "web-captures-*.json"
-
-
 @dataclass(frozen=True)
 class MarketDataConfig:
     mode: str = "online"
@@ -42,15 +37,11 @@ class MarketDataConfig:
     equity_provider: str = "yfinance"
     crypto_provider: str = "coingecko"
     user_agent: str = "joehu-market-panel/0.1 contact:local"
-
-
 @dataclass(frozen=True)
 class OpenCliConfig:
     enabled: bool = True
     command: str = "opencli"
     timeout_seconds: int = 25
-
-
 @dataclass(frozen=True)
 class TradingViewConfig:
     enabled: bool = True
@@ -64,13 +55,9 @@ class TradingViewConfig:
     news_limit: int = 50
     strikes_around_spot: int = 6
     option_scan_limit: int = 80
-
-
 @dataclass(frozen=True)
 class YFinanceConfig:
     enabled: bool = True
-
-
 @dataclass(frozen=True)
 class IBKRConfig:
     enabled: bool = False
@@ -119,8 +106,6 @@ class MoomooConfig:
     paper_only: bool = True
     stale_after_minutes: int = 15
     scanner_limit: int = 50
-
-
 @dataclass(frozen=True)
 class BrokerPolicyConfig:
     require_account_for_recommendations: bool = False
@@ -129,8 +114,6 @@ class BrokerPolicyConfig:
     min_primary_evidence_count: int = 1
     min_total_evidence_count: int = 2
     earnings_blackout_days: int = 2
-
-
 @dataclass(frozen=True)
 class BrokerSourcesConfig:
     enabled: bool = True
@@ -139,16 +122,12 @@ class BrokerSourcesConfig:
     robinhood: RobinhoodConfig = RobinhoodConfig()
     moomoo: MoomooConfig = MoomooConfig()
     policy: BrokerPolicyConfig = BrokerPolicyConfig()
-
-
 @dataclass(frozen=True)
 class DataSourcesConfig:
     opencli: OpenCliConfig = OpenCliConfig()
     tradingview: TradingViewConfig = TradingViewConfig()
     yfinance: YFinanceConfig = YFinanceConfig()
     brokers: BrokerSourcesConfig = BrokerSourcesConfig()
-
-
 @dataclass(frozen=True)
 class ResearchXConfig:
     enabled: bool = True
@@ -159,15 +138,11 @@ class ResearchXConfig:
     limit: int = 30
     # Per-cycle cap on per-account fallback requests (the list call is one request).
     account_fetch_cap: int = 2
-
-
 @dataclass(frozen=True)
 class ResearchNewsConfig:
     enabled: bool = True
     providers: list[str] = field(default_factory=lambda: ["bloomberg", "reuters", "google-news", "hackernews"])
     limit: int = 30
-
-
 @dataclass(frozen=True)
 class ResearchBlogsConfig:
     enabled: bool = True
@@ -195,10 +170,16 @@ class EventSourcesConfig:
 
 
 @dataclass(frozen=True)
+class OptionsDecisionSystemConfig:
+    mode: str = "shadow"
+
+
+@dataclass(frozen=True)
 class AnalysisConfig:
     enabled: bool = True
     correlation_lookback_days: int = 180
     max_correlation_peers: int = 8
+    options_decision_system: OptionsDecisionSystemConfig = OptionsDecisionSystemConfig()
 
 @dataclass(frozen=True)
 class AgentCommandConfig:
@@ -285,6 +266,13 @@ class AppConfig:
     prompt_dir: Path = project_root() / "prompts"
     report_dir: Path = project_root() / "data" / "reports"
     packet_dir: Path = project_root() / "data" / "packets"
+def _options_decision_mode(raw: Any) -> str:
+    mode = str((raw or {}).get("mode", "shadow")).strip().lower() if isinstance(raw, dict) else "shadow"
+    if mode not in {"disabled", "shadow", "paper"}:
+        raise ValueError("analysis.options_decision_system.mode must be disabled, shadow, or paper")
+    return mode
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = resolve_path(path or "config.yaml")
     raw: dict[str, Any] = {}
@@ -461,6 +449,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         enabled=bool(analysis_raw.get("enabled", True)),
         correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
+        options_decision_system=OptionsDecisionSystemConfig(
+            mode=_options_decision_mode(analysis_raw.get("options_decision_system", {})),
+        ),
     )
     agents_raw = raw.get("agents", {})
     option_thesis_raw = agents_raw.get("option_thesis", {})
@@ -640,6 +631,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "enabled": config.analysis.enabled,
             "correlation_lookback_days": config.analysis.correlation_lookback_days,
             "max_correlation_peers": config.analysis.max_correlation_peers,
+            "options_decision_system": {"mode": config.analysis.options_decision_system.mode},
         },
         "agents": {
             "option_thesis": {

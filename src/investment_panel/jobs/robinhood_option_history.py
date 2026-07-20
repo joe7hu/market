@@ -71,6 +71,7 @@ def run(
                 )
                 captures.append({"symbol": symbol, "status": status, **stored})
             except Exception as exc:
+                history.fail_capture(source_id="robinhood", symbol=symbol, slot_at=slot_at, run_id=run.id, error=exc)
                 run.finish("failed", failure_detail=f"{type(exc).__name__}: {exc}", summary={"symbol": symbol, "slot_at": slot_at.isoformat()})
                 captures.append({"symbol": symbol, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
     complete = [capture for capture in captures if capture.get("status") == "succeeded"]

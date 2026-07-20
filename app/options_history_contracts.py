@@ -65,6 +65,18 @@ class IVSurfaceGrid(BaseModel):
     observed: list[dict[str, Any]]
 
 
+class OptionSurfaceEvidence(BaseModel):
+    snapshot_id: int | None = None
+    symbol: str
+    expiration: date
+    option_type: str
+    observed: list[dict[str, Any]]
+    fitted: list[dict[str, Any]]
+    uncertainty: list[dict[str, Any]]
+    fit_status: str
+    diagnostics: dict[str, Any]
+
+
 class IVCurveSet(BaseModel):
     snapshot_id: int | None = None
     smiles: list[dict[str, Any]]
@@ -110,3 +122,56 @@ class OptionAnomalyPage(BaseModel):
     offset: int
     limit: int
     snapshot_id: int | None = None
+
+
+class RelativeValueRow(BaseModel):
+    id: int
+    analysis_run_id: str
+    capture_generation_id: int
+    classification: str
+    fair_low: float | None = None
+    fair_high: float | None = None
+    modeled_net_edge: float | None = None
+    edge_side: str | None = None
+    confidence: float | None = None
+    quality_status: str
+    blockers: list[str]
+    evidence: dict[str, Any]
+    contract_id: int
+    expiration: date
+    strike: float
+    option_type: str
+    snapshot_id: int
+
+
+class RelativeValuePage(BaseModel):
+    rows: list[RelativeValueRow]
+    count: int
+    offset: int
+    limit: int
+
+
+class OptionsDecisionBrief(BaseModel):
+    symbol: str
+    lane: str
+    mode: str
+    analysis_run_id: str | None = None
+    as_of: datetime | None = None
+    state: str
+    summary: dict[str, Any]
+    strongest_candidate: dict[str, Any] | None = None
+    paper_only: bool
+
+
+class OptionsCandidatePage(BaseModel):
+    rows: list[dict[str, Any]]
+    count: int
+    offset: int
+    limit: int
+
+
+class OptionsPaperJournalPage(BaseModel):
+    rows: list[dict[str, Any]]
+    count: int
+    offset: int
+    limit: int
