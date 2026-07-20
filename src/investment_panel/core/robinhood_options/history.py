@@ -20,7 +20,11 @@ from investment_panel.core.robinhood_options.collector import (
 )
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 
-MAX_QUOTE_RESULT_ATTEMPTS = 3
+# Robinhood can return a short ``results`` page even for otherwise valid quote
+# requests.  Four total attempts keeps the retry budget below a second per
+# batch while giving the final stragglers a chance to arrive before a snapshot
+# is marked partial.
+MAX_QUOTE_RESULT_ATTEMPTS = 4
 
 
 def collect_robinhood_full_option_chain(

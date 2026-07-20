@@ -38,6 +38,15 @@ class PartialQuoteClient(FullChainClient):
         return super().get_option_quotes(returned)
 
 
+class FourthAttemptQuoteClient(FullChainClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_option_quotes(self, instrument_ids):
+        self.calls += 1
+        return super().get_option_quotes([] if self.calls < 4 else instrument_ids)
+
+
 def test_full_collector_covers_all_expiries_types_and_preserves_payload() -> None:
     captured = collect_robinhood_full_option_chain(SimpleNamespace(quote_batch_size=2, max_collection_seconds=30), "QQQ", client=FullChainClient())
     assert captured["expected_contract_count"] == 6
@@ -56,6 +65,17 @@ def test_full_collector_retries_incomplete_quote_batches() -> None:
     assert captured["errors"] == []
     assert captured["quote_diagnostics"]["retries"] == 3
     assert captured["quote_diagnostics"]["missing_quote_count"] == 0
+
+
+def test_full_collector_uses_final_retry_for_missing_quote_batch() -> None:
+    client = FourthAttemptQuoteClient()
+    captured = collect_robinhood_full_option_chain(
+        SimpleNamespace(quote_batch_size=6, max_collection_seconds=30), "QQQ", client=client
+    )
+    assert captured["received_contract_count"] == captured["expected_contract_count"] == 6
+    assert captured["errors"] == []
+    assert client.calls == 4
+    assert captured["quote_diagnostics"]["retries"] == 3
 
 
 def test_history_slot_skips_holiday_and_includes_close() -> None:
