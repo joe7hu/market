@@ -27,6 +27,17 @@ class FullChainClient:
         return {"data": {"results": [{"quote": {"instrument_id": instrument_id, "bid_price": "2.0", "ask_price": "2.2", "mark_price": "2.1", "previous_close_price": "1.9", "implied_volatility": "0.20", "delta": "0.25", "gamma": "0.02", "theta": "-0.01", "vega": "0.10", "rho": "0.03", "open_interest": 100, "volume": 20, "updated_at": "2026-07-20T14:30:00Z"}} for instrument_id in instrument_ids]}}
 
 
+class PartialQuoteClient(FullChainClient):
+    def __init__(self) -> None:
+        self.calls: dict[tuple[str, ...], int] = {}
+
+    def get_option_quotes(self, instrument_ids):
+        key = tuple(sorted(instrument_ids))
+        self.calls[key] = self.calls.get(key, 0) + 1
+        returned = instrument_ids[:1] if self.calls[key] == 1 else instrument_ids
+        return super().get_option_quotes(returned)
+
+
 def test_full_collector_covers_all_expiries_types_and_preserves_payload() -> None:
     captured = collect_robinhood_full_option_chain(SimpleNamespace(quote_batch_size=2, max_collection_seconds=30), "QQQ", client=FullChainClient())
     assert captured["expected_contract_count"] == 6
@@ -34,6 +45,17 @@ def test_full_collector_covers_all_expiries_types_and_preserves_payload() -> Non
     assert {row["type"] for row in captured["rows"]} == {"call", "put"}
     assert all(row["provider_payload"]["instrument"]["id"] for row in captured["rows"])
     assert all(row["provider_payload"]["quote"]["rho"] == "0.03" for row in captured["rows"])
+
+
+def test_full_collector_retries_incomplete_quote_batches() -> None:
+    client = PartialQuoteClient()
+    captured = collect_robinhood_full_option_chain(
+        SimpleNamespace(quote_batch_size=2, max_collection_seconds=30), "QQQ", client=client
+    )
+    assert captured["received_contract_count"] == captured["expected_contract_count"] == 6
+    assert captured["errors"] == []
+    assert captured["quote_diagnostics"]["retries"] == 3
+    assert captured["quote_diagnostics"]["missing_quote_count"] == 0
 
 
 def test_history_slot_skips_holiday_and_includes_close() -> None:

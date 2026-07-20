@@ -100,6 +100,7 @@ class OptionHistoryRepository:
             "completeness": completeness,
             "capture_state": state,
             "errors": errors,
+            "quote_diagnostics": dict(captured.get("quote_diagnostics") or {}),
         }
         if complete:
             result.update(self.materialize_snapshot(int(snapshot["snapshot_id"])))

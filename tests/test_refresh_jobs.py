@@ -31,6 +31,18 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
     assert rows[0]["summary"] == {"ok": True, "rows": 3}
 
 
+def test_refresh_job_preserves_partial_result_status(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    summary = {"status": "partial", "captures": [{"symbol": "QQQ", "completeness": 0.64}]}
+    monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: summary)
+
+    job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
+    result = refresh_jobs.execute_refresh_job(job["id"], "unit_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "partial"
+    assert refresh_jobs.refresh_job_rows(db_path)[0]["status"] == "partial"
+
+
 def test_refresh_job_rows_reads_completed_postgresql_job(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})

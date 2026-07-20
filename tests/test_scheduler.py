@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from app import scheduler
 from investment_panel.core.refresh_jobs import ALLOWLIST
@@ -189,6 +191,22 @@ def test_source_writers_wait_one_interval_before_first_run() -> None:
     assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
     assert scheduler._initial_delay_seconds("update_robinhood_options", 120, 1) == 120
     assert scheduler._initial_delay_seconds("refresh_options_radar_signal_robinhood", 60, 2) == 2 * scheduler.STAGGER_SECONDS
+
+
+def test_option_history_starts_on_the_next_quarter_hour() -> None:
+    eastern = ZoneInfo("America/New_York")
+    assert scheduler._initial_delay_seconds(
+        "robinhood_option_history", 900, 0, reference_time=datetime(2026, 7, 20, 9, 30, tzinfo=eastern)
+    ) == 0
+    assert scheduler._initial_delay_seconds(
+        "robinhood_option_history", 900, 0, reference_time=datetime(2026, 7, 20, 9, 30, 5, tzinfo=eastern)
+    ) == 895
+    assert scheduler._is_slot_boundary(
+        "robinhood_option_history", 900, datetime(2026, 7, 20, 9, 30, 0, 500_000, tzinfo=eastern)
+    )
+    assert not scheduler._is_slot_boundary(
+        "robinhood_option_history", 900, datetime(2026, 7, 20, 9, 29, 59, 999_000, tzinfo=eastern)
+    )
 
 
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:
