@@ -115,6 +115,9 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
         raw = connection.execute("SELECT provider_rho, provider_payload FROM raw.option_quote LIMIT 1").fetchone()
     assert raw["provider_rho"] == 0.03
     assert raw["provider_payload"]["quote"]["rho"] == "0.03"
+    health = history.health()
+    assert health["option_quote_bytes"] > 0
+    assert health["storage_bytes"] >= health["option_quote_bytes"]
 
     partial_slot = datetime(2026, 7, 20, 14, 45, tzinfo=UTC)
     partial_run = ingestion.start_run("robinhood", "option_history_full")

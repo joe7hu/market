@@ -278,7 +278,11 @@ class OptionHistoryRepository:
                        count(*) FILTER (WHERE capture_state = 'complete') AS complete_snapshots,
                        max(slot_at) FILTER (WHERE capture_state = 'complete') AS latest_complete_slot,
                        avg(completeness) FILTER (WHERE capture_state = 'complete') AS average_completeness,
-                       coalesce(pg_total_relation_size('raw.option_quote'), 0) AS option_quote_bytes,
+                       coalesce((
+                           SELECT sum(pg_total_relation_size(inhrelid))
+                           FROM pg_inherits
+                           WHERE inhparent = 'raw.option_quote'::regclass
+                       ), 0) AS option_quote_bytes,
                        coalesce(pg_total_relation_size('analysis.option_surface_summary'), 0) AS surface_summary_bytes
                 FROM raw.option_snapshot WHERE collection_profile = %s
                 """, [HISTORY_PROFILE]
