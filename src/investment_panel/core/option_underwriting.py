@@ -10,6 +10,7 @@ Paper-state transition diagram:
 
 from __future__ import annotations
 
+import random
 from typing import Any, Literal
 
 
@@ -122,6 +123,61 @@ def conservative_mark(legs: list[dict[str, Any]], structure: str) -> tuple[float
         value = leg.get("bid") if side == "long" else leg.get("ask")
         total += float(value) if side == "long" else -float(value)
     return total, []
+
+
+def historical_payoff_statistics(
+    *,
+    spot: float,
+    legs: list[dict[str, Any]],
+    terminal_returns: tuple[float, ...] | list[float],
+    seed: int,
+    bootstrap_samples: int = 10_000,
+) -> dict[str, Any]:
+    """Evaluate conservative one-unit expiry payoffs over point-in-time return paths.
+
+    The function accepts returns that have already been selected by the database
+    as-of query.  It therefore owns deterministic payoff/bootstrapping only and
+    cannot silently read a current market source during historical replay.
+    """
+
+    entry_price, blockers = conservative_entry(legs, "debit_spread" if len(legs) > 1 else "long_option")
+    if entry_price is None or blockers or spot <= 0:
+        return {
+            "scenario_count": 0, "entry_price": entry_price, "max_loss": None,
+            "expected_value": None, "lower_95_expected_value": None,
+            "probability_profit": None, "seed": seed, "blockers": blockers or ["invalid_entry"],
+        }
+    premiums = [float(leg["ask"] if leg.get("side") == "long" else leg["bid"]) for leg in legs]
+    payoffs: list[float] = []
+    for terminal_return in terminal_returns:
+        terminal_spot = spot * (1.0 + float(terminal_return))
+        payoff = 0.0
+        for leg, premium in zip(legs, premiums, strict=True):
+            option_type = str(leg.get("option_type") or "").lower()
+            strike = float(leg["strike"])
+            intrinsic = max(terminal_spot - strike, 0.0) if option_type == "call" else max(strike - terminal_spot, 0.0)
+            direction = 1.0 if str(leg.get("side")) == "long" else -1.0
+            payoff += direction * (intrinsic - premium) * 100.0
+        payoffs.append(payoff)
+    if not payoffs:
+        return {
+            "scenario_count": 0, "entry_price": entry_price, "max_loss": entry_price * 100.0,
+            "expected_value": None, "lower_95_expected_value": None,
+            "probability_profit": None, "seed": seed, "blockers": ["insufficient_return_paths"],
+        }
+    expected = sum(payoffs) / len(payoffs)
+    rng = random.Random(seed)
+    means = sorted(
+        sum(payoffs[rng.randrange(len(payoffs))] for _ in range(len(payoffs))) / len(payoffs)
+        for _ in range(max(1, bootstrap_samples))
+    )
+    lower_index = max(0, int(0.05 * (len(means) - 1)))
+    return {
+        "scenario_count": len(payoffs), "entry_price": entry_price, "max_loss": entry_price * 100.0,
+        "expected_value": expected, "lower_95_expected_value": means[lower_index],
+        "probability_profit": sum(payoff > 0 for payoff in payoffs) / len(payoffs),
+        "seed": seed, "blockers": [],
+    }
 
 
 def _coherent_legs(legs: list[dict[str, Any]]) -> list[str]:

@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from investment_panel.analysis.history_v3 import analyze_group, static_arbitrage_findings
-from investment_panel.core.option_underwriting import conservative_entry, conservative_mark, paper_state
+from investment_panel.core.option_underwriting import (
+    conservative_entry,
+    conservative_mark,
+    historical_payoff_statistics,
+    paper_state,
+)
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.actions import _v3_paper_readiness
 from investment_panel.database.options_history import OptionHistoryRepository
+from investment_panel.database.options_history_v3 import is_later_capture_cohort
+from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -68,6 +78,8 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     complete = history.store_capture(run_id=second_run, source_id="robinhood", symbol="QQQ", slot_at=slot, captured={"rows": rows, "expected_contract_count": len(rows), "received_contract_count": len(rows), "capture_started_at": slot, "capture_finished_at": slot + timedelta(seconds=1)})
     ingestion.finish_run(second_run, "succeeded", summary=complete)
     assert history.chain(symbol="QQQ", snapshot=complete["snapshot_id"])["count"] == len(rows)
+    groups = history.surface_groups(symbol="QQQ", snapshot=complete["snapshot_id"])
+    assert groups["rows"] == [{"expiration": datetime(2026, 8, 21).date(), "option_type": "call", "dte": 32, "contract_count": len(rows)}]
     with runtime.read() as connection:
         generations = connection.execute("SELECT capture_state, received_contract_count FROM raw.option_capture_generation ORDER BY generation").fetchall()
         pointer = connection.execute("SELECT latest_complete_generation_id FROM raw.option_snapshot WHERE id = %s", [complete["snapshot_id"]]).fetchone()
@@ -82,6 +94,24 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     )
     assert first_replay["deterministic_hash"] == second_replay["deterministic_hash"]
     assert first_replay["analysis_run_id"] != second_replay["analysis_run_id"]
+    with runtime.transaction() as connection:
+        candidate = connection.execute(
+            "SELECT id FROM analysis.option_relative_value WHERE analysis_run_id = %s LIMIT 1",
+            [second_replay["analysis_run_id"]],
+        ).fetchone()
+        connection.execute(
+            "UPDATE analysis.option_relative_value SET classification = 'historical_static_arbitrage_candidate' WHERE id = %s",
+            [candidate["id"]],
+        )
+        connection.execute(
+            "INSERT INTO analysis.option_relative_value_verification (relative_value_id, status, blockers, evidence) VALUES (%s, 'verified', ARRAY[]::text[], '{}'::jsonb)",
+            [candidate["id"]],
+        )
+    verified = OptionsDecisionSystemRepository(runtime).relative_values(
+        symbol="QQQ", snapshot=complete["snapshot_id"], classification="verified_static_arbitrage_candidate"
+    )
+    assert [row["id"] for row in verified["rows"]] == [candidate["id"]]
+    assert verified["rows"][0]["verification_status"] == "verified"
     runtime.close()
 
 
@@ -96,6 +126,15 @@ def test_underwriting_never_uses_midpoint_for_debit_fill_or_mark() -> None:
     result = paper_state(structure="put_debit_spread", lane="anomaly", thesis=None, fit_status="succeeded")
     assert result["paper_state"] == "WATCH"
     assert result["blockers"] == ["thesis_upgrade_required"]
+
+
+def test_shadow_entry_requires_a_strictly_later_capture_cohort() -> None:
+    earlier = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    later = earlier + timedelta(minutes=15)
+
+    assert is_later_capture_cohort(earlier, later)
+    assert not is_later_capture_cohort(earlier, earlier)
+    assert not is_later_capture_cohort(later, earlier)
 
 
 def test_paper_state_requires_exact_gates_and_all_structures_can_watch() -> None:
@@ -118,6 +157,35 @@ def test_paper_state_requires_exact_gates_and_all_structures_can_watch() -> None
         calibration={"sample_size": 30, "lower_95_expectancy": 0.01, "brier_score": 0.2, "other_regime_monitoring_count": 5},
     )
     assert ready["paper_state"] == "PAPER_READY"
+
+
+def test_historical_payoff_statistics_is_seeded_and_never_uses_midpoint_entry() -> None:
+    legs = [
+        {"option_type": "call", "side": "long", "strike": 100.0, "bid": 4.8, "ask": 5.0, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC)},
+        {"option_type": "call", "side": "short", "strike": 105.0, "bid": 2.0, "ask": 2.2, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC)},
+    ]
+    returns = (-0.10, -0.02, 0.01, 0.04, 0.08) * 4
+
+    first = historical_payoff_statistics(spot=100.0, legs=legs, terminal_returns=returns, seed=7)
+    second = historical_payoff_statistics(spot=100.0, legs=legs, terminal_returns=returns, seed=7)
+
+    assert first == second
+    assert first["scenario_count"] == 20
+    assert first["entry_price"] == pytest.approx(3.0)  # long ask minus short bid
+    assert first["max_loss"] == pytest.approx(300.0)
+    assert first["lower_95_expected_value"] is not None
+
+
+def test_v3_paper_readiness_requires_a_fresh_coherent_leg_package() -> None:
+    now = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    payload = {
+        "quote_observed_at": now.isoformat(),
+        "leg_quotes": [{"bid": 2.0, "ask": 2.2, "size_available": True}],
+    }
+
+    assert _v3_paper_readiness(payload, now) == "A"
+    assert _v3_paper_readiness(payload, now + timedelta(minutes=6)) == "C"
+    assert _v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.2, "ask": 2.0}]}, now) == "C"
 
 
 def test_claimed_generation_is_terminal_after_collector_failure(migrated_postgres_dsn: str) -> None:

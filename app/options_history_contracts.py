@@ -77,6 +77,18 @@ class OptionSurfaceEvidence(BaseModel):
     diagnostics: dict[str, Any]
 
 
+class OptionSurfaceGroup(BaseModel):
+    expiration: date
+    option_type: str
+    dte: int
+    contract_count: int
+
+
+class OptionSurfaceGroups(BaseModel):
+    snapshot_id: int | None = None
+    rows: list[OptionSurfaceGroup]
+
+
 class IVCurveSet(BaseModel):
     snapshot_id: int | None = None
     smiles: list[dict[str, Any]]
@@ -129,6 +141,8 @@ class RelativeValueRow(BaseModel):
     analysis_run_id: str
     capture_generation_id: int
     classification: str
+    verification_status: str | None = None
+    verified_at: datetime | None = None
     fair_low: float | None = None
     fair_high: float | None = None
     modeled_net_edge: float | None = None

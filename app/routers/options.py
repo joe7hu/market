@@ -16,6 +16,7 @@ from app.options_history_contracts import (
     OptionChainPage,
     OptionSnapshotPage,
     OptionSurfaceEvidence,
+    OptionSurfaceGroups,
     OptionsCandidatePage,
     OptionsDecisionBrief,
     OptionsPaperJournalPage,
@@ -76,6 +77,14 @@ def historical_option_surface(
     option_type: str = Query(..., pattern="^(call|put)$"),
 ) -> dict[str, Any]:
     return _actions().history_surface(symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type)
+
+
+@router.get("/api/options/history/surface-groups", response_model=OptionSurfaceGroups)
+def historical_option_surface_groups(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+) -> dict[str, Any]:
+    return _actions().history_surface_groups(symbol=symbol, snapshot=snapshot)
 
 
 @router.get("/api/options/history/surface/legacy", response_model=IVSurfaceGrid, deprecated=True)

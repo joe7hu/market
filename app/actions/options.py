@@ -24,7 +24,8 @@ class OptionsActions:
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
         self.history = OptionHistoryRepository(self.runtime)
-        self.decision_system = OptionsDecisionSystemRepository(self.runtime)
+        mode = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
 
     def history_snapshots(self, **filters: Any) -> dict[str, Any]:
         return self.history.snapshots(**filters)
@@ -34,6 +35,9 @@ class OptionsActions:
 
     def history_surface(self, **filters: Any) -> dict[str, Any]:
         return self.history.surface(**filters)
+
+    def history_surface_groups(self, **filters: Any) -> dict[str, Any]:
+        return self.history.surface_groups(**filters)
 
     def history_legacy_surface(self, **filters: Any) -> dict[str, Any]:
         return self.history.legacy_surface(**filters)

@@ -3,24 +3,22 @@ import Plot from "react-plotly.js";
 import type { OptionHistoryCurves, OptionHistorySurface } from "@/api";
 import { buildOptionCurvePlotData, curveChoices } from "./optionsChainPlotData";
 
-export function OptionSurfacePlot({ surface, optionType }: { surface: OptionHistorySurface; optionType: "call" | "put" }) {
-  const z = surface.surfaces[optionType] ?? [];
-  const observed = surface.observed
-    .filter((row) => row.option_type === optionType && finiteNumber(row.log_moneyness) && finiteNumber(row.dte) && finiteNumber(row.provider_iv));
+export function OptionSurfacePlot({ surface }: { surface: OptionHistorySurface }) {
+  const observed = surface.observed.filter((row) => finiteNumber(row.strike) && finiteNumber(row.provider_iv));
+  const fitted = surface.fitted.filter((row) => finiteNumber(row.strike) && finiteNumber(row.fair_low) && finiteNumber(row.fair_high));
   const data: any[] = [{
-    type: "surface", name: "Interpolated grid", x: surface.x, y: surface.y, z, colorscale: "Viridis", connectgaps: false,
-    hovertemplate: "Interpolated grid IV<br>log-moneyness %{x:.3f}<br>DTE %{y}<br>IV %{z:.2%}<extra></extra>",
-    contours: { z: { show: true, usecolormap: true, project: { z: true } } },
+    type: "scatter", mode: "markers", name: "Observed provider IV",
+    x: observed.map((row) => row.strike), y: observed.map((row) => row.provider_iv),
+    marker: { size: 5, color: "#38bdf8" }, hovertemplate: "Strike %{x:.2f}<br>Provider IV %{y:.2%}<extra></extra>",
   }, {
-    type: "scatter3d", mode: "markers", name: "Observed provider IV",
-    x: observed.map((row) => row.log_moneyness), y: observed.map((row) => row.dte), z: observed.map((row) => row.provider_iv),
-    marker: { size: 2, color: "#f8fafc", opacity: 0.7 },
-    hovertemplate: "Observed provider IV<br>log-moneyness %{x:.3f}<br>DTE %{y}<br>IV %{z:.2%}<extra></extra>",
+    type: "scatter", mode: "lines", name: "Fair-value band",
+    x: fitted.map((row) => row.strike), y: fitted.map((row) => midpoint(row.fair_low, row.fair_high)),
+    line: { color: "#a78bfa" }, hovertemplate: "Strike %{x:.2f}<br>Fitted IV %{y:.2%}<extra></extra>",
   }];
   const layout: any = {
     autosize: true, height: 560, margin: { l: 0, r: 0, b: 0, t: 30 },
-    title: { text: `${optionType === "call" ? "Call" : "Put"} IV surface` },
-    scene: { xaxis: { title: { text: "Log-moneyness" } }, yaxis: { title: { text: "DTE" } }, zaxis: { title: { text: "Provider IV" } } },
+    title: { text: `${surface.expiration} ${surface.option_type} evidence` },
+    xaxis: { title: { text: "Strike" } }, yaxis: { title: { text: "Provider / fitted IV" }, tickformat: ".0%" },
   };
   return <Plot data={data} layout={layout} config={{ responsive: true, displaylogo: false }} className="h-[560px] w-full" />;
 }
@@ -42,3 +40,4 @@ export function OptionCurvePlots({ curves }: { curves: OptionHistoryCurves }) {
 }
 
 function finiteNumber(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
+function midpoint(low: unknown, high: unknown) { return finiteNumber(low) && finiteNumber(high) ? (low + high) / 2 : null; }

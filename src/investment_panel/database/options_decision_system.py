@@ -14,10 +14,13 @@ from investment_panel.database.runtime import DatabaseRuntime
 
 
 class OptionsDecisionSystemRepository:
-    def __init__(self, runtime: DatabaseRuntime) -> None:
+    def __init__(self, runtime: DatabaseRuntime, *, mode: str = "shadow") -> None:
         self.runtime = runtime
+        self.mode = mode
 
     def decision_brief(self, *, symbol: str = "QQQ", lane: str = "thesis") -> dict[str, Any]:
+        if self.mode == "disabled":
+            return _empty_brief(symbol, lane, "The options decision system is disabled.", mode=self.mode)
         with self.runtime.read() as connection:
             latest = connection.execute(
                 """
@@ -32,26 +35,33 @@ class OptionsDecisionSystemRepository:
                 [symbol.upper()],
             ).fetchone()
             if latest is None:
-                return _empty_brief(symbol, lane, "No complete v3 capture is available yet.")
-            classes = ["relative_cheap", "historical_static_arbitrage_candidate"] if lane == "anomaly" else ["relative_cheap"]
+                return _empty_brief(symbol, lane, "No complete v3 capture is available yet.", mode=self.mode)
             candidate = connection.execute(
                 """
-                SELECT value.id, value.classification, value.fair_low, value.fair_high, value.modeled_net_edge,
-                       value.confidence, value.blockers, value.evidence, contract.expiration, contract.strike,
-                       contract.option_type, snapshot.id AS snapshot_id, generation.id AS capture_generation_id
-                FROM analysis.option_relative_value value
-                JOIN catalog.option_contract contract ON contract.id = value.contract_id
-                JOIN raw.option_capture_generation generation ON generation.id = value.capture_generation_id
-                JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
-                WHERE value.analysis_run_id = %s AND value.classification = ANY(%s)
-                ORDER BY value.modeled_net_edge DESC NULLS LAST, value.id LIMIT 1
+                SELECT decision.id::text AS decision_id, option_decision.paper_state, option_decision.discovery_lane,
+                       option_decision.structure, option_decision.expected_value, option_decision.max_loss,
+                       option_decision.data_confidence, option_decision.execution_confidence,
+                       option_decision.market_regime, value.id AS relative_value_id, value.classification,
+                       value.fair_low, value.fair_high, value.modeled_net_edge, value.confidence,
+                       decision.blockers, value.evidence, contract.expiration, contract.strike, contract.option_type,
+                       option_decision.snapshot_id, value.capture_generation_id
+                FROM analysis.decision decision
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                JOIN analysis.option_relative_value value ON value.id = option_decision.relative_value_id
+                JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                WHERE decision.run_id = %s AND option_decision.discovery_lane = %s
+                ORDER BY CASE option_decision.paper_state
+                    WHEN 'PAPER_READY' THEN 1 WHEN 'WATCH' THEN 2 WHEN 'COLLECTING' THEN 3 ELSE 4 END,
+                    option_decision.modeled_net_edge DESC NULLS LAST, decision.id
+                LIMIT 1
                 """,
-                [latest["id"], classes],
+                [latest["id"], lane],
             ).fetchone()
+        candidate_data = dict(candidate) if candidate else None
         return {
-            "symbol": symbol.upper(), "lane": lane, "mode": "shadow", "analysis_run_id": str(latest["id"]),
-            "as_of": latest["finished_at"], "state": "WATCH" if candidate else "COLLECTING",
-            "summary": dict(latest["summary"] or {}), "strongest_candidate": _candidate_payload(dict(candidate)) if candidate else None,
+            "symbol": symbol.upper(), "lane": lane, "mode": self.mode, "analysis_run_id": str(latest["id"]),
+            "as_of": latest["finished_at"], "state": candidate_data["paper_state"] if candidate_data else "COLLECTING",
+            "summary": dict(latest["summary"] or {}), "strongest_candidate": _candidate_payload(candidate_data) if candidate_data else None,
             "paper_only": True,
         }
 
@@ -66,7 +76,7 @@ class OptionsDecisionSystemRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        filters = ["instrument.symbol = %s", "option_decision.paper_state IS NOT NULL"]
+        filters = ["instrument.symbol = %s", "option_decision.paper_state IS NOT NULL", "option_decision.model_version LIKE 'history-v3%%'"]
         values: list[Any] = [symbol.upper()]
         if lane:
             filters.append("option_decision.discovery_lane = %s")
@@ -130,10 +140,16 @@ class OptionsDecisionSystemRepository:
             if current is None:
                 return {"rows": [], "count": 0, "offset": offset, "limit": limit}
             snapshot = int(current["id"])
+        effective_classification = """
+            CASE WHEN verification.status = 'verified'
+                      AND value.classification = 'historical_static_arbitrage_candidate'
+                 THEN 'verified_static_arbitrage_candidate'
+                 ELSE value.classification END
+        """
         filters = ["snapshot.history_symbol = %s", "snapshot.id = %s"]
         values: list[Any] = [symbol.upper(), snapshot]
         if classification:
-            filters.append("value.classification = %s")
+            filters.append(f"({effective_classification}) = %s")
             values.append(classification)
         where = " AND ".join(filters)
         with self.runtime.read() as connection:
@@ -148,6 +164,12 @@ class OptionsDecisionSystemRepository:
                     SELECT count(*) AS count FROM analysis.option_relative_value value
                     JOIN raw.option_capture_generation generation ON generation.id = value.capture_generation_id
                     JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
+                    LEFT JOIN LATERAL (
+                        SELECT status, verified_at
+                        FROM analysis.option_relative_value_verification
+                        WHERE relative_value_id = value.id
+                        ORDER BY verified_at DESC, id DESC LIMIT 1
+                    ) verification ON true
                     WHERE {where}
                       AND value.analysis_run_id = (SELECT id FROM latest)""", [snapshot, *values],
             ).fetchone()["count"]
@@ -160,7 +182,9 @@ class OptionsDecisionSystemRepository:
                         ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
                     )
                 SELECT value.id, value.analysis_run_id::text AS analysis_run_id, value.capture_generation_id,
-                       value.classification, value.fair_low, value.fair_high, value.modeled_net_edge,
+                       {effective_classification} AS classification,
+                       verification.status AS verification_status, verification.verified_at,
+                       value.fair_low, value.fair_high, value.modeled_net_edge,
                        value.edge_side, value.confidence, value.quality_status, value.blockers, value.evidence,
                        contract.id AS contract_id, contract.expiration, contract.strike, contract.option_type,
                        snapshot.id AS snapshot_id
@@ -168,6 +192,12 @@ class OptionsDecisionSystemRepository:
                 JOIN catalog.option_contract contract ON contract.id = value.contract_id
                 JOIN raw.option_capture_generation generation ON generation.id = value.capture_generation_id
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
+                LEFT JOIN LATERAL (
+                    SELECT status, verified_at
+                    FROM analysis.option_relative_value_verification
+                    WHERE relative_value_id = value.id
+                    ORDER BY verified_at DESC, id DESC LIMIT 1
+                ) verification ON true
                 WHERE {where}
                   AND value.analysis_run_id = (SELECT id FROM latest)
                 ORDER BY value.modeled_net_edge DESC NULLS LAST, value.id
@@ -182,7 +212,9 @@ class OptionsDecisionSystemRepository:
                 """SELECT count(*) AS count FROM analysis.shadow_trade shadow
                     JOIN analysis.decision decision ON decision.id = shadow.decision_id
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    WHERE instrument.symbol = %s""", [symbol.upper()],
+                    JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                    WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
+                      AND option_decision.model_version LIKE 'history-v3%%'""", [symbol.upper()],
             ).fetchone()["count"]
             rows = connection.execute(
                 """
@@ -193,7 +225,9 @@ class OptionsDecisionSystemRepository:
                 FROM analysis.shadow_trade shadow
                 JOIN analysis.decision decision ON decision.id = shadow.decision_id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                WHERE instrument.symbol = %s
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
+                  AND option_decision.model_version LIKE 'history-v3%%'
                 ORDER BY coalesce(shadow.entry_at, shadow.created_at) DESC
                 LIMIT %s OFFSET %s
                 """, [symbol.upper(), limit, offset],
@@ -308,17 +342,22 @@ class OptionsDecisionSystemRepository:
 
 def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
     return {
-        "relative_value_id": value["id"], "classification": value["classification"],
+        "decision_id": str(value["decision_id"]), "relative_value_id": value["relative_value_id"],
+        "classification": value["classification"], "paper_state": value["paper_state"],
+        "discovery_lane": value["discovery_lane"], "structure": value["structure"],
         "fair_low": value["fair_low"], "fair_high": value["fair_high"],
         "modeled_net_edge": value["modeled_net_edge"], "confidence": value["confidence"],
-        "blockers": value["blockers"], "expiration": value["expiration"], "strike": float(value["strike"]),
+        "expected_value": value["expected_value"], "max_loss": value["max_loss"],
+        "data_confidence": value["data_confidence"], "execution_confidence": value["execution_confidence"],
+        "market_regime": value["market_regime"], "blockers": value["blockers"],
+        "expiration": value["expiration"], "strike": float(value["strike"]),
         "option_type": value["option_type"], "snapshot_id": value["snapshot_id"],
         "capture_generation_id": value["capture_generation_id"], "paper_only": True,
     }
 
 
-def _empty_brief(symbol: str, lane: str, message: str) -> dict[str, Any]:
-    return {"symbol": symbol.upper(), "lane": lane, "mode": "shadow", "analysis_run_id": None,
+def _empty_brief(symbol: str, lane: str, message: str, *, mode: str) -> dict[str, Any]:
+    return {"symbol": symbol.upper(), "lane": lane, "mode": mode, "analysis_run_id": None,
             "as_of": None, "state": "COLLECTING", "summary": {"message": message},
             "strongest_candidate": None, "paper_only": True}
 

@@ -8,6 +8,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
+from investment_panel.database.options_history_surface import surface_groups as _surface_groups
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 HISTORY_PROFILE = "history_full"
 FEATURE_VERSION = "history-v2"
@@ -242,7 +243,6 @@ class OptionHistoryRepository:
             max_moneyness=max_moneyness, offset=offset, limit=limit,
         )
         return {"rows": rows, "count": count, "offset": offset, "limit": limit, "snapshot_id": snapshot_id}
-
     def legacy_surface(self, *, symbol: str = "QQQ", snapshot: int | None = None, option_type: str | None = None) -> dict[str, Any]:
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         if snapshot_id is None:
@@ -263,12 +263,15 @@ class OptionHistoryRepository:
             for row in rows if row.get("provider_iv") is not None
         ]
         return {"snapshot_id": snapshot_id, "symbol": symbol.upper(), "x": x_values, "y": y_values, "surfaces": surfaces, "observed": observed}
-
+    def surface_groups(self, *, symbol: str = "QQQ", snapshot: int | None = None) -> dict[str, Any]:
+        snapshot_id = self._resolve_snapshot(symbol, snapshot)
+        if snapshot_id is None:
+            return {"snapshot_id": None, "rows": []}
+        return {"snapshot_id": snapshot_id, "rows": _surface_groups(self.runtime, snapshot_id)}
     def surface(
         self, *, symbol: str = "QQQ", snapshot: int | None = None, expiration: date, option_type: str
     ) -> dict[str, Any]:
         """Return one bounded expiry/type evidence series, never a full-chain grid."""
-
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         empty = {
             "snapshot_id": snapshot_id, "symbol": symbol.upper(), "expiration": expiration,
@@ -438,7 +441,7 @@ class OptionHistoryRepository:
                        count(*) FILTER (WHERE status = 'entered') AS entered,
                        count(*) FILTER (WHERE status = 'unfilled') AS unfilled,
                        count(*) FILTER (WHERE status = 'pending') AS pending
-                FROM analysis.shadow_trade WHERE source_kind = 'system'
+                FROM analysis.shadow_trade WHERE source_kind = 'options_history_v3'
                 """
             ).fetchone()
         history_bytes = int(row["option_quote_bytes"]) + int(row["surface_summary_bytes"])
@@ -672,7 +675,6 @@ def _interpolate(points: Sequence[tuple[float, Any]], x: float) -> float | None:
             return left[1] + (right[1] - left[1]) * ((x - left[0]) / (right[0] - left[0]))
     return cleaned[0][1] if x == cleaned[0][0] else cleaned[-1][1]
 
-
 def _residual_eligible(row: dict[str, Any]) -> bool:
     delta = row.get("provider_delta")
     bid, ask, mid = row.get("bid"), row.get("ask"), row.get("mid")
@@ -684,16 +686,13 @@ def _residual_eligible(row: dict[str, Any]) -> bool:
         return False
     return ((ask - bid) / mid) <= MAX_RESIDUAL_SPREAD_PCT
 
-
 def _difference(value: float | None, previous: float | None) -> float | None:
     return (value - previous) if value is not None and previous is not None else None
-
 
 def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
-
 
 def _history_universe(symbol: str) -> str:
     return f"history_full:{symbol.upper()}"

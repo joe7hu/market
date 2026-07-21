@@ -17,6 +17,24 @@ from investment_panel.database.strategy_parameters import (
 )
 
 
+def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
+    """Grade an immutable v3 quote package without turning it into a live order."""
+
+    from investment_panel.database.options_publication import _as_datetime
+
+    quote_at = _as_datetime(payload.get("quote_observed_at"))
+    if quote_at is None or (evaluated_at - quote_at).total_seconds() > 5 * 60:
+        return "C"
+    legs = list(payload.get("leg_quotes") or [])
+    if not legs:
+        return "C"
+    for leg in legs:
+        bid, ask = leg.get("bid"), leg.get("ask")
+        if bid is None or ask is None or float(ask) < float(bid) or leg.get("size_available") is False:
+            return "C"
+    return "A"
+
+
 class ActionRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
@@ -119,27 +137,24 @@ class ActionRepository:
                 SELECT decision.instrument_id, decision.state, option_decision.paper_state, option_decision.structure,
                        option_decision.entry_price, option_decision.secured_cash,
                        option_decision.max_loss, option_decision.details,
-                       (
-                           SELECT item.payload FROM app.publication publication
-                           JOIN app.publication_item item ON item.publication_id = publication.id
-                           WHERE publication.scope = 'options-radar'
-                             AND publication.status = 'published'
-                             AND item.model_name = 'option_radar_opportunity'
-                             AND item.payload->>'decision_id' = decision.id::text
-                           LIMIT 1
-                       ) AS publication_payload,
-                       EXISTS (
-                           SELECT 1 FROM app.publication publication
-                           JOIN app.publication_item item ON item.publication_id = publication.id
-                           WHERE publication.scope = 'options-radar'
-                             AND publication.status = 'published'
-                             AND item.model_name = 'option_radar_opportunity'
-                             AND item.payload->>'decision_id' = decision.id::text
-                             AND item.payload->>'execution_ready' = 'true'
-                       ) AS currently_published
+                       publication.scope AS publication_scope, publication.payload AS publication_payload,
+                       coalesce((publication.payload->>'execution_ready')::boolean, false) AS currently_published
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-                WHERE decision.id = %s FOR UPDATE
+                LEFT JOIN LATERAL (
+                    SELECT publication.scope, item.payload
+                    FROM app.publication publication
+                    JOIN app.publication_item item ON item.publication_id = publication.id
+                    WHERE publication.status = 'published'
+                      AND item.payload->>'decision_id' = decision.id::text
+                      AND (
+                        (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
+                        OR (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
+                      )
+                    ORDER BY publication.published_at DESC NULLS LAST, publication.created_at DESC
+                    LIMIT 1
+                ) publication ON true
+                WHERE decision.id = %s FOR UPDATE OF decision
                 """,
                 [decision_id],
             ).fetchone()
@@ -163,7 +178,12 @@ class ActionRepository:
             from investment_panel.database.options_publication import _contract_readiness
 
             publication_payload = dict(signal["publication_payload"] or {})
-            if _contract_readiness(publication_payload, datetime.now(UTC)) != "A":
+            now = datetime.now(UTC)
+            if str(signal["publication_scope"] or "") == "options-decision-system":
+                readiness = _v3_paper_readiness(publication_payload, now)
+            else:
+                readiness = _contract_readiness(publication_payload, now)
+            if readiness != "A":
                 raise ValueError("signal quote is no longer execution-grade")
             structure = str(signal["structure"] or "long_option")
             collateral = float(signal["secured_cash"] or 0)

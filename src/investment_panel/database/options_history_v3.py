@@ -5,15 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from math import sqrt
+from statistics import mean, pstdev
 from typing import Any
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group, rejected_value
-from investment_panel.core.option_underwriting import paper_state
+from investment_panel.core.option_underwriting import (
+    conservative_entry,
+    conservative_mark,
+    historical_payoff_statistics,
+    paper_state,
+    permitted_structures,
+    thesis_v2_blocker,
+)
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
 
 
 class OptionHistoryV3Materializer:
@@ -34,6 +44,8 @@ class OptionHistoryV3Materializer:
         metadata, rows = self._generation_rows(snapshot_id, capture_generation_id)
         if metadata is None:
             raise ValueError("capture generation does not belong to snapshot")
+        if metadata["capture_state"] != "complete":
+            raise ValueError("only complete capture generations can be materialized")
         run_id = self.analysis.start_run(
             "option_history_v3",
             input_cutoff=metadata["available_at"],
@@ -56,7 +68,8 @@ class OptionHistoryV3Materializer:
                 rows=rows,
                 model_revision=model_revision,
             )
-            self.analysis.finish_run(run_id, "succeeded", result)
+            publication_id = self._publish_decision_system(run_id, result)
+            result["publication_id"] = str(publication_id)
             return {"analysis_run_id": str(run_id), **result}
         except Exception as exc:
             self.analysis.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
@@ -68,6 +81,7 @@ class OptionHistoryV3Materializer:
                 """
                 SELECT generation.id, generation.capture_state, generation.capture_finished_at,
                        snapshot.history_symbol AS symbol, snapshot.slot_at,
+                       snapshot.latest_complete_generation_id,
                        coalesce(generation.capture_finished_at, snapshot.observed_at) AS available_at
                 FROM raw.option_capture_generation generation
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
@@ -84,7 +98,7 @@ class OptionHistoryV3Materializer:
                        greatest(contract.expiration - snapshot.trading_date, 0) AS dte,
                        quote.observed_at AS quote_observed_at, contract.underlying_instrument_id AS instrument_id,
                        quote.underlying_price, quote.bid, quote.ask, quote.mid,
-                       quote.open_interest, quote.provider_delta, quote.market_data_status,
+                       quote.bid_size, quote.ask_size, quote.open_interest, quote.provider_delta, quote.market_data_status,
                        quote.capture_group_key, quote.group_started_at, quote.group_finished_at,
                        quote.provider_observed_at, quote.available_at,
                        quote.underlying_observed_at, quote.underlying_available_at,
@@ -113,7 +127,7 @@ class OptionHistoryV3Materializer:
         for row in rows:
             grouped.setdefault((row["expiration"], str(row["option_type"])), []).append(row)
         summary_count, relative_count, failures = 0, 0, 0
-        eligible_groups, fit_attempts, succeeded_groups = 0, 0, 0
+        eligible_groups, fit_attempts, succeeded_groups, decision_count = 0, 0, 0, 0
         persisted: list[dict[str, Any]] = []
         with self.runtime.transaction(JOB_PROFILE) as connection:
             theses = {
@@ -122,6 +136,11 @@ class OptionHistoryV3Materializer:
                     "SELECT id, instrument_id, thesis FROM app.thesis WHERE status = 'current'"
                 ).fetchall()
             }
+            bars_by_instrument = self._confirmed_bars(
+                connection,
+                {int(row["instrument_id"]) for row in rows},
+                metadata["available_at"],
+            )
             for (expiration, option_type), group in grouped.items():
                 temporal_blockers = _temporal_blockers(group)
                 spot = _group_spot(group)
@@ -185,16 +204,22 @@ class OptionHistoryV3Materializer:
                     persisted.append(value)
                     quote = next(row for row in group if row["contract_id"] == value["contract_id"])
                     if value["classification"] in {"relative_cheap", "historical_static_arbitrage_candidate"} and _long_delta_eligible(quote):
-                        self._store_research_candidate(
+                        decision_count += self._store_candidates(
                             connection, run_id=run_id, snapshot_id=snapshot_id, generation_id=capture_generation_id,
-                            relative_value_id=int(stored_value["id"]), value=value, quote=quote,
+                            relative_value_id=int(stored_value["id"]), value=value, quote=quote, group=group,
                             thesis=theses.get(int(quote["instrument_id"])),
+                            bars=bars_by_instrument.get(int(quote["instrument_id"]), []),
+                            as_of=metadata["available_at"],
+                            current_complete_generation=metadata["latest_complete_generation_id"] == capture_generation_id,
                         )
             self._advance_pending_shadows(
                 connection, snapshot_id=snapshot_id, generation_id=capture_generation_id,
                 current_slot=metadata.get("slot_at"), symbol=str(metadata.get("symbol") or "QQQ"),
             )
-            self._mark_entered_shadows(connection, generation_id=capture_generation_id, symbol=str(metadata.get("symbol") or "QQQ"))
+            self._mark_entered_shadows(
+                connection, generation_id=capture_generation_id, current_slot=metadata.get("slot_at"),
+                symbol=str(metadata.get("symbol") or "QQQ"),
+            )
         digest = _hash(persisted)
         return {
             "snapshot_id": snapshot_id,
@@ -206,22 +231,61 @@ class OptionHistoryV3Materializer:
             "eligible_groups": eligible_groups,
             "fit_attempts": fit_attempts,
             "succeeded_groups": succeeded_groups,
+            "decision_candidates": decision_count,
             "deterministic_hash": digest,
             "diff_count": relative_count,
         }
 
-    def _store_research_candidate(
+    def _store_candidates(
+        self, connection: Any, *, run_id: UUID, snapshot_id: int, generation_id: int,
+        relative_value_id: int, value: dict[str, Any], quote: dict[str, Any], group: list[dict[str, Any]],
+        thesis: dict[str, Any] | None, bars: list[dict[str, Any]], as_of: datetime,
+        current_complete_generation: bool,
+    ) -> int:
+        """Persist thesis-led or research-only candidates from immutable v3 evidence."""
+
+        long_structure = "long_call" if quote["option_type"] == "call" else "long_put"
+        lane = "anomaly"
+        if thesis_v2_blocker(thesis) is None and long_structure in permitted_structures(str(thesis.get("direction"))):
+            lane = "thesis"
+        specs: list[tuple[str, list[dict[str, Any]]]] = [(long_structure, [_candidate_leg(quote, "long")])]
+        if lane == "thesis":
+            spread_structure = "call_debit_spread" if quote["option_type"] == "call" else "put_debit_spread"
+            short_leg = _spread_short_leg(group, quote)
+            if short_leg is not None:
+                specs.append((spread_structure, [_candidate_leg(quote, "long"), _candidate_leg(short_leg, "short")]))
+        created = 0
+        for structure, legs in specs:
+            scenario = historical_payoff_statistics(
+                spot=float(quote["underlying_price"]), legs=legs,
+                terminal_returns=_non_overlapping_returns(bars, int(quote.get("dte") or 0)),
+                seed=_candidate_seed(generation_id, relative_value_id, structure),
+            )
+            calibration = self._calibration(connection, structure, _market_regime(bars), MODEL_REVISION)
+            blockers = [*value["blockers"], *scenario["blockers"]]
+            state = paper_state(
+                structure=structure, lane=lane, thesis=thesis, fit_status="succeeded", blockers=blockers,
+                scenario_count=int(scenario["scenario_count"]), expected_value=scenario["expected_value"],
+                lower_95_expected_value=scenario["lower_95_expected_value"], max_loss=scenario["max_loss"],
+                data_confidence=value["confidence"], execution_confidence=_execution_confidence(legs),
+                calibration=calibration, current_complete_generation=current_complete_generation,
+            )
+            self._store_candidate(
+                connection, run_id=run_id, snapshot_id=snapshot_id, generation_id=generation_id,
+                relative_value_id=relative_value_id, value=value, quote=quote, thesis=thesis,
+                structure=structure, legs=legs, lane=lane, state=state, scenario=scenario,
+                market_regime=_market_regime(bars), calibration=calibration, as_of=as_of,
+            )
+            created += 1
+        return created
+
+    def _store_candidate(
         self, connection: Any, *, run_id: UUID, snapshot_id: int, generation_id: int,
         relative_value_id: int, value: dict[str, Any], quote: dict[str, Any], thesis: dict[str, Any] | None,
+        structure: str, legs: list[dict[str, Any]], lane: str, state: dict[str, Any],
+        scenario: dict[str, Any], market_regime: str, calibration: dict[str, Any], as_of: datetime,
     ) -> None:
-        structure = "long_call" if quote["option_type"] == "call" else "long_put"
-        state = paper_state(
-            structure=structure, lane="anomaly", thesis=thesis, fit_status="succeeded",
-            blockers=value["blockers"], scenario_count=0, expected_value=None,
-            lower_95_expected_value=None, max_loss=(quote.get("ask") or 0) * 100,
-            data_confidence=value["confidence"], execution_confidence=0.0,
-        )
-        decision_key = f"history-v3:{relative_value_id}"
+        decision_key = f"history-v3:{relative_value_id}:{structure}"
         decision = connection.execute(
             """
             INSERT INTO analysis.decision
@@ -230,73 +294,190 @@ class OptionHistoryV3Materializer:
             VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id, decision_key) DO UPDATE
             SET state = EXCLUDED.state, score = EXCLUDED.score, reasons = EXCLUDED.reasons,
-                blockers = EXCLUDED.blockers
+                blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash
             RETURNING id
             """,
             [run_id, decision_key, quote["instrument_id"], quote["quote_observed_at"],
-             "READY" if state["paper_state"] == "PAPER_READY" else state["paper_state"].lower(),
-             value.get("modeled_net_edge"), value["quality_status"], state["reasons"], state["blockers"], _hash(value)],
+             _decision_state(state["paper_state"]), value.get("modeled_net_edge"), value["quality_status"],
+             state["reasons"], state["blockers"], _hash({"value": value, "structure": structure, "scenario": scenario})],
         ).fetchone()
         decision_id = decision["id"]
+        execution_confidence = _execution_confidence(legs)
+        details = {
+            "paper_only": True, "relative_value_evidence": value.get("evidence"),
+            "historical_paths": scenario, "calibration": calibration, "as_of": as_of.isoformat(),
+        }
         connection.execute(
             """
             INSERT INTO analysis.option_decision
                 (decision_id, contract_id, snapshot_id, quote_observed_at, premium_mid, fill_assumption,
-                 structure, entry_price, max_loss, expected_value, data_confidence, execution_confidence,
-                 details, paper_state, discovery_lane, thesis_id, relative_value_id, model_version,
-                 fair_low, fair_high, modeled_net_edge)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, 'anomaly', %s, %s, %s, %s, %s, %s)
+                 synthetic_legs, structure, entry_price, max_loss, probability_profit, expected_value,
+                 data_confidence, execution_confidence, details, paper_state, discovery_lane, thesis_id,
+                 relative_value_id, model_version, market_regime, fair_low, fair_high, modeled_net_edge)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (decision_id) DO UPDATE
-            SET paper_state = EXCLUDED.paper_state, relative_value_id = EXCLUDED.relative_value_id,
-                modeled_net_edge = EXCLUDED.modeled_net_edge, details = EXCLUDED.details
+            SET fill_assumption = EXCLUDED.fill_assumption, synthetic_legs = EXCLUDED.synthetic_legs,
+                structure = EXCLUDED.structure, entry_price = EXCLUDED.entry_price, max_loss = EXCLUDED.max_loss,
+                probability_profit = EXCLUDED.probability_profit, expected_value = EXCLUDED.expected_value,
+                data_confidence = EXCLUDED.data_confidence, execution_confidence = EXCLUDED.execution_confidence,
+                details = EXCLUDED.details, paper_state = EXCLUDED.paper_state, discovery_lane = EXCLUDED.discovery_lane,
+                thesis_id = EXCLUDED.thesis_id, relative_value_id = EXCLUDED.relative_value_id,
+                model_version = EXCLUDED.model_version, market_regime = EXCLUDED.market_regime,
+                fair_low = EXCLUDED.fair_low, fair_high = EXCLUDED.fair_high,
+                modeled_net_edge = EXCLUDED.modeled_net_edge
             """,
-            [decision_id, quote["contract_id"], snapshot_id, quote["quote_observed_at"], quote.get("mid"), quote.get("ask"),
-             structure, quote.get("ask"), (quote.get("ask") or 0) * 100, value.get("confidence"), 0.0,
-             Jsonb({"paper_only": True, "relative_value_evidence": value.get("evidence")}), state["paper_state"],
-             thesis.get("id") if thesis else None, relative_value_id, MODEL_REVISION,
-             value.get("fair_low"), value.get("fair_high"), value.get("modeled_net_edge")],
+            [
+                decision_id, quote["contract_id"], snapshot_id, quote["quote_observed_at"], quote.get("mid"),
+                scenario["entry_price"], Jsonb(legs), structure, scenario["entry_price"], scenario["max_loss"],
+                scenario["probability_profit"], scenario["expected_value"], value.get("confidence"), execution_confidence,
+                Jsonb(details), state["paper_state"], lane, thesis.get("id") if thesis else None, relative_value_id,
+                MODEL_REVISION, market_regime, value.get("fair_low"), value.get("fair_high"), value.get("modeled_net_edge"),
+            ],
         )
         connection.execute(
             """
-            INSERT INTO analysis.shadow_trade
-                (decision_id, status, pending_entry_reason, entry_cohort_id, structure, source_kind, metrics)
-            VALUES (%s, 'pending', 'next_valid_cohort_required', %s, %s, 'system', %s)
-            ON CONFLICT (decision_id) DO NOTHING
+            INSERT INTO analysis.decision_evidence (decision_id, evidence_kind, reference_key, detail)
+            VALUES (%s, 'option_relative_value', %s, %s)
+            ON CONFLICT (decision_id, evidence_kind, reference_key) DO UPDATE SET detail = EXCLUDED.detail
             """,
-            [decision_id, generation_id, structure, Jsonb({"no_same_capture_entry": True, "fill_basis": "pending_next_cohort"})],
+            [decision_id, str(relative_value_id), Jsonb({"capture_generation_id": generation_id, "structure": structure})],
+        )
+        if state["paper_state"] in {"WATCH", "PAPER_READY"}:
+            connection.execute(
+                """
+                INSERT INTO analysis.shadow_trade
+                    (decision_id, status, pending_entry_reason, entry_cohort_id, structure, market_regime, source_kind, metrics)
+                VALUES (%s, 'pending', 'next_valid_cohort_required', %s, %s, %s, 'options_history_v3', %s)
+                ON CONFLICT (decision_id) DO NOTHING
+                """,
+                [decision_id, generation_id, structure, market_regime,
+                 Jsonb({"no_same_capture_entry": True, "fill_basis": "pending_next_cohort", "paper_only": True})],
+            )
+
+    def _confirmed_bars(self, connection: Any, instrument_ids: set[int], as_of: datetime) -> dict[int, list[dict[str, Any]]]:
+        if not instrument_ids:
+            return {}
+        rows = connection.execute(
+            """
+            SELECT DISTINCT ON (instrument_id, trading_date) instrument_id, trading_date, close
+            FROM raw.confirmed_price_bar
+            WHERE instrument_id = ANY(%s) AND interval = '1d' AND close > 0
+              AND observed_at <= %s AND available_at <= %s
+            ORDER BY instrument_id, trading_date, available_at DESC
+            """,
+            [sorted(instrument_ids), as_of, as_of],
+        ).fetchall()
+        bars: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            bars.setdefault(int(row["instrument_id"]), []).append(dict(row))
+        return bars
+
+    def _calibration(self, connection: Any, structure: str, market_regime: str, model_version: str) -> dict[str, Any]:
+        rows = connection.execute(
+            """
+            SELECT option_decision.market_regime, option_decision.probability_profit, outcome.current_return
+            FROM analysis.option_outcome outcome
+            JOIN analysis.decision decision ON decision.id = outcome.decision_id
+            JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+            JOIN analysis.shadow_trade shadow ON shadow.decision_id = decision.id
+            WHERE shadow.source_kind = 'options_history_v3' AND option_decision.structure = %s
+              AND option_decision.model_version = %s AND outcome.maturity_state IN ('mature', 'expired')
+              AND outcome.current_return IS NOT NULL
+            """,
+            [structure, model_version],
+        ).fetchall()
+        exact = [dict(row) for row in rows if row["market_regime"] == market_regime]
+        returns = [float(row["current_return"]) for row in exact]
+        predictions = [
+            (float(row["probability_profit"]), 1.0 if float(row["current_return"]) > 0 else 0.0)
+            for row in exact if row["probability_profit"] is not None
+        ]
+        standard_error = pstdev(returns) / sqrt(len(returns)) if len(returns) > 1 else None
+        return {
+            "sample_size": len(returns),
+            "lower_95_expectancy": mean(returns) - 1.96 * standard_error if standard_error is not None else None,
+            "brier_score": mean((prediction - actual) ** 2 for prediction, actual in predictions) if predictions else None,
+            "other_regime_monitoring_count": sum(1 for row in rows if row["market_regime"] != market_regime),
+        }
+
+    def _publish_decision_system(self, run_id: UUID, summary: dict[str, Any]) -> UUID:
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                SELECT decision.id::text AS decision_id, decision.instrument_id, decision.as_of,
+                       option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
+                       option_decision.entry_price, option_decision.max_loss, option_decision.expected_value,
+                       option_decision.data_confidence, option_decision.execution_confidence,
+                       option_decision.market_regime, option_decision.model_version,
+                       option_decision.relative_value_id, option_decision.modeled_net_edge,
+                       option_decision.quote_observed_at, option_decision.synthetic_legs,
+                       contract.expiration, contract.strike, contract.option_type
+                FROM analysis.decision decision
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                WHERE decision.run_id = %s AND option_decision.paper_state IS NOT NULL
+                ORDER BY option_decision.paper_state = 'PAPER_READY' DESC,
+                         option_decision.modeled_net_edge DESC NULLS LAST, decision.id
+                """,
+                [run_id],
+            ).fetchall()
+        candidates = [
+            {
+                "stable_key": str(row["decision_id"]), "decision_id": str(row["decision_id"]),
+                "instrument_id": int(row["instrument_id"]), "as_of": row["as_of"],
+                "paper_state": row["paper_state"], "discovery_lane": row["discovery_lane"],
+                "structure": row["structure"], "entry_price": row["entry_price"], "max_loss": row["max_loss"],
+                "expected_value": row["expected_value"], "data_confidence": row["data_confidence"],
+                "execution_confidence": row["execution_confidence"], "market_regime": row["market_regime"],
+                "model_version": row["model_version"], "relative_value_id": row["relative_value_id"],
+                "modeled_net_edge": row["modeled_net_edge"], "quote_observed_at": row["quote_observed_at"],
+                "leg_quotes": list(row["synthetic_legs"] or []),
+                "expiration": row["expiration"], "strike": row["strike"], "option_type": row["option_type"],
+                "execution_ready": row["paper_state"] == "PAPER_READY", "paper_only": True,
+            }
+            for row in rows
+        ]
+        return self.analysis.publish(
+            run_id, "options-decision-system", {"options_decision_candidate": candidates},
+            validation={"paper_only": True, "candidate_count": len(candidates)}, complete_run_summary=summary,
         )
 
     def _advance_pending_shadows(
         self, connection: Any, *, snapshot_id: int, generation_id: int, current_slot: Any, symbol: str) -> None:
-        """Enter only older pending long shadows at a later cohort's ask-side mark."""
+        """Enter v3 shadows only from an ordered later, coherent quote cohort."""
 
         rows = connection.execute(
             """
             SELECT shadow.id, shadow.decision_id, pending_snapshot.slot_at AS pending_slot,
-                   quote.ask, quote.bid, quote.available_at, quote.provider_observed_at
+                   option_decision.structure, option_decision.synthetic_legs
             FROM analysis.shadow_trade shadow
             JOIN analysis.decision decision ON decision.id = shadow.decision_id
             JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
             JOIN raw.option_capture_generation pending_generation ON pending_generation.id = shadow.entry_cohort_id
             JOIN raw.option_snapshot pending_snapshot ON pending_snapshot.id = pending_generation.snapshot_id
-            LEFT JOIN raw.option_quote quote
-              ON quote.capture_generation_id = %s AND quote.contract_id = option_decision.contract_id
-            WHERE shadow.status = 'pending' AND shadow.source_kind = 'system'
+            WHERE shadow.status = 'pending' AND shadow.source_kind = 'options_history_v3'
               AND shadow.entry_cohort_id <> %s AND pending_snapshot.history_symbol = %s
+              AND pending_snapshot.slot_at < %s
             FOR UPDATE OF shadow
             """,
-            [generation_id, generation_id, symbol],
+            [generation_id, symbol, current_slot],
         ).fetchall()
-        for row in rows:
-            if row["ask"] is not None and row["bid"] is not None and float(row["ask"]) >= float(row["bid"]):
+        legs_by_shadow = cohort_legs(connection, generation_id, [dict(row) for row in rows])
+        for raw in rows:
+            row, legs = dict(raw), legs_by_shadow.get(raw["id"], [])
+            if not is_later_capture_cohort(row["pending_slot"], current_slot):
+                continue
+            entry, blockers = conservative_entry(legs, str(row["structure"]))
+            if entry is not None:
                 connection.execute(
                     """
                     UPDATE analysis.shadow_trade
                     SET status = 'entered', entry_at = %s, entry_price = %s, entry_cohort_id = %s,
-                        fill_basis = 'later_capture_long_ask'
+                        fill_basis = 'later_capture_worst_side', metrics = metrics || %s
                     WHERE id = %s AND status = 'pending'
                     """,
-                    [row["available_at"] or datetime.now(UTC), row["ask"], generation_id, row["id"]],
+                    [latest_available_at(legs) or datetime.now(UTC), entry, generation_id,
+                     Jsonb({"entry_leg_count": len(legs), "entry_blockers": blockers}), row["id"]],
                 )
             elif current_slot is not None and row["pending_slot"] is not None and (current_slot - row["pending_slot"]).total_seconds() >= 30 * 60:
                 connection.execute(
@@ -308,28 +489,32 @@ class OptionHistoryV3Materializer:
                     [row["id"]],
                 )
 
-    def _mark_entered_shadows(self, connection: Any, *, generation_id: int, symbol: str) -> None:
-        """Persist later bid-side marks; missing bids are explicitly recorded, never synthesized."""
+    def _mark_entered_shadows(self, connection: Any, *, generation_id: int, current_slot: Any, symbol: str) -> None:
+        """Persist later worst-side package marks; missing legs are never synthesized."""
 
         rows = connection.execute(
             """
-            SELECT shadow.id, shadow.decision_id, shadow.entry_price, quote.bid, quote.available_at
+            SELECT shadow.id, shadow.decision_id, shadow.entry_price, option_decision.structure,
+                   option_decision.synthetic_legs
             FROM analysis.shadow_trade shadow
             JOIN analysis.decision decision ON decision.id = shadow.decision_id
             JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
             JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-            LEFT JOIN raw.option_quote quote
-              ON quote.capture_generation_id = %s AND quote.contract_id = option_decision.contract_id
-            WHERE shadow.status = 'entered' AND shadow.source_kind = 'system'
-              AND shadow.entry_cohort_id <> %s AND instrument.symbol = %s
+            JOIN raw.option_capture_generation entry_generation ON entry_generation.id = shadow.entry_cohort_id
+            JOIN raw.option_snapshot entry_snapshot ON entry_snapshot.id = entry_generation.snapshot_id
+            WHERE shadow.status = 'entered' AND shadow.source_kind = 'options_history_v3'
+              AND shadow.entry_cohort_id <> %s AND instrument.symbol = %s AND entry_snapshot.slot_at < %s
             FOR UPDATE OF shadow
             """,
-            [generation_id, generation_id, symbol],
+            [generation_id, symbol, current_slot],
         ).fetchall()
-        for row in rows:
-            mark = float(row["bid"]) if row["bid"] is not None else None
+        legs_by_shadow = cohort_legs(connection, generation_id, [dict(row) for row in rows])
+        for raw in rows:
+            row, legs = dict(raw), legs_by_shadow.get(raw["id"], [])
+            mark, blockers = conservative_mark(legs, str(row["structure"]))
             entry = float(row["entry_price"])
-            metrics = {"mark_generation_id": generation_id, "mark_price": mark, "mark_missing": mark is None}
+            metrics = {"mark_generation_id": generation_id, "mark_price": mark, "mark_missing": mark is None,
+                       "mark_leg_count": len(legs), "mark_blockers": blockers}
             connection.execute(
                 "UPDATE analysis.shadow_trade SET metrics = metrics || %s WHERE id = %s",
                 [Jsonb(metrics), row["id"]],
@@ -342,7 +527,8 @@ class OptionHistoryV3Materializer:
                 SET maturity_state = EXCLUDED.maturity_state, observed_through = EXCLUDED.observed_through,
                     current_return = EXCLUDED.current_return, updated_at = now()
                 """,
-                [row["decision_id"], row["available_at"] or datetime.now(UTC), (mark / entry - 1.0) if mark is not None and entry > 0 else None],
+                [row["decision_id"], latest_available_at(legs) or datetime.now(UTC),
+                 (mark / entry - 1.0) if mark is not None and entry > 0 else None],
             )
 
 
@@ -367,6 +553,12 @@ def _temporal_blockers(rows: list[dict[str, Any]]) -> list[str]:
     if any(row.get("underlying_observed_at") is None for row in rows):
         blockers.append("missing_aligned_underlying")
     return blockers
+
+
+def is_later_capture_cohort(pending_slot: datetime | None, current_slot: datetime | None) -> bool:
+    """True only when a candidate can enter after its own evidence cohort."""
+
+    return pending_slot is not None and current_slot is not None and current_slot > pending_slot
 
 
 def _group_spot(rows: list[dict[str, Any]]) -> float | None:
@@ -417,3 +609,67 @@ def _long_delta_eligible(quote: dict[str, Any]) -> bool:
     if not 0.35 <= delta <= 0.65:
         return False
     return observed is not None and available is not None and (available - observed).total_seconds() <= 180
+
+
+def _candidate_leg(quote: dict[str, Any], side: str) -> dict[str, Any]:
+    bid_size, ask_size = quote.get("bid_size"), quote.get("ask_size")
+    size_available = (bid_size is None or bid_size >= 1) and (ask_size is None or ask_size >= 1)
+    return {
+        "contract_id": int(quote["contract_id"]), "option_type": quote["option_type"], "side": side,
+        "strike": float(quote["strike"]), "bid": quote.get("bid"), "ask": quote.get("ask"),
+        "observed_at": quote.get("provider_observed_at"), "size_available": size_available,
+    }
+
+
+def _spread_short_leg(group: list[dict[str, Any]], long_leg: dict[str, Any]) -> dict[str, Any] | None:
+    long_delta = abs(float(long_leg.get("provider_delta") or 0))
+    if not 0.35 <= long_delta <= 0.65:
+        return None
+    candidates = [
+        row for row in group
+        if row.get("provider_delta") is not None and 0.15 <= abs(float(row["provider_delta"])) <= 0.40
+        and ((long_leg["option_type"] == "call" and float(row["strike"]) > float(long_leg["strike"]))
+             or (long_leg["option_type"] == "put" and float(row["strike"]) < float(long_leg["strike"])))
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda row: abs(abs(float(row["provider_delta"])) - 0.25))
+
+
+def _non_overlapping_returns(bars: list[dict[str, Any]], dte: int) -> tuple[float, ...]:
+    horizon = max(1, min(dte, 120))
+    closes = [float(row["close"]) for row in bars if row.get("close") is not None and float(row["close"]) > 0]
+    return tuple(closes[index + horizon] / closes[index] - 1.0 for index in range(0, len(closes) - horizon, horizon))
+
+
+def _market_regime(bars: list[dict[str, Any]]) -> str:
+    closes = [float(row["close"]) for row in bars if row.get("close") is not None and float(row["close"]) > 0]
+    if len(closes) < 200:
+        return "unavailable"
+    recent_returns = [closes[index] / closes[index - 1] - 1.0 for index in range(len(closes) - 19, len(closes))]
+    realized_vol = pstdev(recent_returns) * sqrt(252) if len(recent_returns) > 1 else 0.0
+    bucket = "low" if realized_vol < 0.15 else "normal" if realized_vol < 0.30 else "high"
+    trend = "above_200d" if closes[-1] >= mean(closes[-200:]) else "below_200d"
+    return f"{trend}:{bucket}"
+
+
+def _execution_confidence(legs: list[dict[str, Any]]) -> float:
+    scores = []
+    for leg in legs:
+        bid, ask = leg.get("bid"), leg.get("ask")
+        if bid is None or ask is None or float(ask) < float(bid):
+            return 0.0
+        midpoint = (float(bid) + float(ask)) / 2.0
+        if midpoint <= 0 or leg.get("size_available") is False:
+            return 0.0
+        scores.append(max(0.0, min(1.0, 1.0 - (float(ask) - float(bid)) / midpoint)))
+    return min(scores, default=0.0)
+
+
+def _candidate_seed(generation_id: int, relative_value_id: int, structure: str) -> int:
+    digest = hashlib.sha256(f"{generation_id}:{relative_value_id}:{structure}".encode()).hexdigest()
+    return int(digest[:16], 16)
+
+
+def _decision_state(value: str) -> str:
+    return "READY" if value == "PAPER_READY" else "REJECTED" if value == "REJECT" else "WATCH"
