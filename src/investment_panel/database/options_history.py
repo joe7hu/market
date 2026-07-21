@@ -452,6 +452,15 @@ class OptionHistoryRepository:
             FROM raw.option_quote quote
             JOIN catalog.option_contract contract ON contract.id = quote.contract_id
             JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            LEFT JOIN LATERAL (
+                SELECT value.quality_status, value.classification, value.blockers
+                FROM analysis.option_relative_value value
+                JOIN analysis.run run ON run.id = value.analysis_run_id
+                WHERE value.capture_generation_id = quote.capture_generation_id
+                  AND value.contract_id = quote.contract_id
+                ORDER BY run.finished_at DESC NULLS LAST, value.id DESC
+                LIMIT 1
+            ) evidence ON true
             WHERE {where}
         """
         select = f"""
@@ -463,6 +472,8 @@ class OptionHistoryRepository:
                    quote.provider_updated_at, quote.provider_iv, quote.provider_delta, quote.provider_gamma,
                    quote.provider_theta, quote.provider_vega, quote.provider_rho, quote.volume, quote.open_interest,
                    quote.chance_of_profit_long, quote.chance_of_profit_short, quote.market_data_status,
+                   evidence.quality_status, evidence.classification AS evidence_classification,
+                   coalesce(evidence.blockers, ARRAY[]::text[]) AS evidence_blockers,
                    quote.capture_generation_id, quote.capture_group_key, quote.group_started_at,
                    quote.group_finished_at, quote.provider_observed_at, quote.available_at,
                    quote.underlying_observed_at, quote.underlying_available_at

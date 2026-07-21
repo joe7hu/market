@@ -54,6 +54,7 @@ export type OptionHistoryChainRow = {
   provider_iv: number | null; provider_delta: number | null; provider_gamma: number | null; provider_theta: number | null;
   provider_vega: number | null; provider_rho: number | null; volume: number | null; open_interest: number | null;
   chance_of_profit_long: number | null; chance_of_profit_short: number | null; market_data_status: string | null;
+  quality_status: string | null; evidence_classification: string | null; evidence_blockers: string[];
 };
 
 export type OptionHistoryPage<T> = { rows: T[]; count: number; offset: number; limit: number; snapshot_id?: number | null };

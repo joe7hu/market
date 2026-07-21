@@ -54,6 +54,9 @@ class OptionChainRow(BaseModel):
     chance_of_profit_long: float | None = None
     chance_of_profit_short: float | None = None
     market_data_status: str | None = None
+    quality_status: str | None = None
+    evidence_classification: str | None = None
+    evidence_blockers: list[str]
 
 
 class IVSurfaceGrid(BaseModel):
