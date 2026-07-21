@@ -180,6 +180,7 @@ def test_option_quote_row_maps_robinhood_fields() -> None:
         "ask_size": 98,
         "venue_last_trade_time": "2026-06-12T19:59:59Z",
         "updated_at": "2026-06-12T19:59:59Z",
+        "market_data_status": "live",
     }
 
     row = option_quote_row(instrument, quote)
@@ -197,6 +198,7 @@ def test_option_quote_row_maps_robinhood_fields() -> None:
     assert row["bid_size"] == 133
     assert row["ask_size"] == 98
     assert row["last_trade_at"] == "2026-06-12T19:59:59Z"
+    assert row["market_data_status"] == "live"
     assert row["contract_symbol"] == "deba9035-f70b-4257-917c-7bbc9ef06097"
 
 

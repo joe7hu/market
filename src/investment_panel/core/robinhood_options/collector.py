@@ -270,6 +270,13 @@ def option_quote_row(instrument: dict[str, Any], quote: dict[str, Any]) -> dict[
     ask = as_float(quote.get("ask_price"))
     mark = as_float(quote.get("mark_price") if quote.get("mark_price") is not None else quote.get("adjusted_mark_price"))
     mid = mark if mark is not None else ((bid + ask) / 2 if bid is not None and ask is not None else None)
+    # Preserve Robinhood's native status when supplied.  The history analysis
+    # owns the shared tradability policy (including ``live``); this capture
+    # layer only supplies a stable normalized token for replay.  Older quote
+    # payloads omit the field, and Robinhood's full-chain endpoint is live in
+    # that case.
+    provider_status = quote.get("market_data_status") or quote.get("data_status")
+    normalized_status = str(provider_status).strip().lower() if provider_status is not None else "live"
     return {
         "expiry": str(expiry),
         "strike": strike,
@@ -282,7 +289,7 @@ def option_quote_row(instrument: dict[str, Any], quote: dict[str, Any]) -> dict[
         "ask_size": as_int(quote.get("ask_size")),
         "last_trade_at": quote.get("venue_last_trade_time"),
         "captured_at": quote.get("updated_at"),
-        "market_data_status": "live",
+        "market_data_status": normalized_status,
         "close": as_float(quote.get("previous_close_price")),
         "iv": as_float(quote.get("implied_volatility")),
         "delta": as_float(quote.get("delta")),
