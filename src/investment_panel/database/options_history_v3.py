@@ -614,10 +614,14 @@ def _long_delta_eligible(quote: dict[str, Any]) -> bool:
 def _candidate_leg(quote: dict[str, Any], side: str) -> dict[str, Any]:
     bid_size, ask_size = quote.get("bid_size"), quote.get("ask_size")
     size_available = (bid_size is None or bid_size >= 1) and (ask_size is None or ask_size >= 1)
+    observed_at = quote.get("provider_observed_at")
     return {
         "contract_id": int(quote["contract_id"]), "option_type": quote["option_type"], "side": side,
         "strike": float(quote["strike"]), "bid": quote.get("bid"), "ask": quote.get("ask"),
-        "observed_at": quote.get("provider_observed_at"), "size_available": size_available,
+        # Synthetic legs are JSONB evidence.  Keep the timestamp explicit but
+        # JSON-safe so a valid live capture cannot fail after collection.
+        "observed_at": observed_at.isoformat() if observed_at is not None else None,
+        "size_available": size_available,
     }
 
 

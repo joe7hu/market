@@ -115,6 +115,71 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     runtime.close()
 
 
+def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_postgres_dsn: str) -> None:
+    """A candidate-producing live capture must not fail while writing its evidence legs."""
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        history = OptionHistoryRepository(runtime)
+        ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+        slot = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+        finished_at = slot + timedelta(seconds=5)
+        rows = [
+            {
+                "underlying_symbol": "QQQ",
+                "expiry": "2026-08-21",
+                "strike": 470 + index * 5,
+                "type": "call",
+                "underlying_price": 500,
+                # The first quote is below intrinsic value and intentionally produces a
+                # static-arbitrage candidate with fresh, in-band delta evidence.
+                "bid": 29.8 if index == 0 else max(0.4, 30 - index * 4 - 0.1),
+                "ask": 29.9 if index == 0 else max(0.5, 30 - index * 4),
+                "mid": 29.85 if index == 0 else max(0.45, 30 - index * 4 - 0.05),
+                "open_interest": 500,
+                "provider_delta": 0.5,
+                "market_data_status": "open",
+            }
+            for index in range(12)
+        ]
+        run_id = ingestion.start_run("robinhood", "option_history_full")
+        assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=run_id)
+
+        captured = history.store_capture(
+            run_id=run_id,
+            source_id="robinhood",
+            symbol="QQQ",
+            slot_at=slot,
+            captured={
+                "rows": rows,
+                "expected_contract_count": len(rows),
+                "received_contract_count": len(rows),
+                "capture_started_at": slot,
+                "capture_finished_at": finished_at,
+            },
+        )
+        assert captured["decision_candidates"] >= 1
+        ingestion.finish_run(run_id, "succeeded", summary=captured)
+
+        with runtime.read() as connection:
+            evidence = connection.execute(
+                """
+                SELECT option_decision.synthetic_legs -> 0 ->> 'observed_at' AS observed_at
+                FROM analysis.option_decision option_decision
+                JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+                WHERE decision.run_id = %s
+                LIMIT 1
+                """,
+                [captured["analysis_run_id"]],
+            ).fetchone()
+        assert evidence is not None
+        assert datetime.fromisoformat(evidence["observed_at"]) == finished_at
+    finally:
+        runtime.close()
+
+
 def test_underwriting_never_uses_midpoint_for_debit_fill_or_mark() -> None:
     now = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
     legs = [
