@@ -167,7 +167,17 @@ function Tab({ active, onClick, children }: { active: boolean; onClick: () => vo
 function Select({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) { return <label className="grid gap-1 text-xs text-muted-foreground">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="min-h-11 rounded-md border border-input bg-background px-2 text-sm text-foreground">{children}</select></label>; }
 function Input({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) { return <label className="grid gap-1 text-xs text-muted-foreground">{label}<input value={value} inputMode="decimal" onChange={(event) => onChange(event.target.value)} className="min-h-11 rounded-md border border-input bg-background px-2 text-sm text-foreground" /></label>; }
 function Empty({ text }: { text: string }) { return <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">{text}</p>; }
-function asError(setter: (value: string | null) => void) { return (error: unknown) => setter(error instanceof Error ? error.message : "Unable to load option history"); }
+function asError(setter: (value: string | null) => void) {
+  return (error: unknown) => {
+    // Every filter request owns an AbortController.  React's development
+    // remount and a fast URL/filter change legitimately cancel the previous
+    // request; treating that cancellation as an error leaves a misleading
+    // red alert next to fresh evidence.
+    const message = error instanceof Error ? error.message : "";
+    if ((error as { name?: string } | null)?.name === "AbortError" || /aborted/i.test(message)) return;
+    setter(message || "Unable to load option history");
+  };
+}
 function formatDate(value: string) { return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function formatCaptureWindow(snapshot: OptionHistorySnapshot) { const start = snapshot.capture_started_at ?? snapshot.slot_at ?? snapshot.observed_at; const finish = snapshot.capture_finished_at; return finish ? `${formatDate(start)}–${new Date(finish).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : formatDate(start); }
 function money(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "currency", currency: "USD" }); }
