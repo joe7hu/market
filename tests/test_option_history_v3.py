@@ -158,9 +158,20 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 "received_contract_count": len(rows),
                 "capture_started_at": slot,
                 "capture_finished_at": finished_at,
+                "quote_diagnostics": {
+                    "groups": {
+                        "2026-08-21:call": {
+                            "started_at": slot,
+                            "finished_at": finished_at,
+                            "underlying_observed_at": slot,
+                        }
+                    }
+                },
             },
         )
         assert captured["decision_candidates"] >= 1
+        diagnostic = captured["quote_diagnostics"]["groups"]["2026-08-21:call"]
+        assert datetime.fromisoformat(diagnostic["finished_at"]) == finished_at
         ingestion.finish_run(run_id, "succeeded", summary=captured)
 
         with runtime.read() as connection:

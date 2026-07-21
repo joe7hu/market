@@ -76,6 +76,7 @@ class OptionHistoryRepository:
         errors = [str(error) for error in captured.get("errors") or []]
         complete = expected > 0 and completeness >= minimum_completeness and not errors and not captured.get("timed_out")
         state = "complete" if complete else "partial"
+        quote_diagnostics = _jsonable(dict(captured.get("quote_diagnostics") or {}))
         generation = self._generation_for_run(source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id)
         if generation is None:
             raise ValueError("capture generation was not claimed")
@@ -120,7 +121,7 @@ class OptionHistoryRepository:
                 WHERE id = %s AND capture_state = 'running'
                 """,
                 [state, expected, received, completeness, started_at, finished_at, "; ".join(errors) or None,
-                 Jsonb({"quote_diagnostics": dict(captured.get("quote_diagnostics") or {})}), generation],
+                 Jsonb({"quote_diagnostics": quote_diagnostics}), generation],
             )
             connection.execute(
                 """
@@ -142,7 +143,7 @@ class OptionHistoryRepository:
             "capture_state": state,
             "capture_generation_id": generation,
             "errors": errors,
-            "quote_diagnostics": dict(captured.get("quote_diagnostics") or {}),
+            "quote_diagnostics": quote_diagnostics,
         }
         if complete:
             result.update(self.materialize_snapshot(int(snapshot["snapshot_id"])))
@@ -693,6 +694,19 @@ def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _jsonable(value: Any) -> Any:
+    """Normalize collector diagnostics before they cross the JSONB boundary."""
+
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
 
 def _history_universe(symbol: str) -> str:
     return f"history_full:{symbol.upper()}"
