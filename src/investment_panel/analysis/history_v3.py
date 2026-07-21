@@ -15,10 +15,16 @@ import numpy as np
 from scipy.optimize import LinearConstraint, minimize
 
 
-MODEL_REVISION = "history-v3-price-shape"
+MODEL_REVISION = "history-v3-price-shape-r2"
 MIN_ELIGIBLE_POINTS = 12
 MIN_PACKAGE_EDGE = 0.05
 COST_ALLOWANCE_PER_LEG = 0.02
+MAX_QUOTE_AGE_SECONDS = 180
+
+# These values are normalized capture states, not a claim about the provider's
+# native status vocabulary.  Robinhood full-chain quotes are live by design;
+# the unmodified provider payload remains attached to each raw quote.
+TRADABLE_MARKET_STATUSES = frozenset({"", "open", "regular", "tradable", "active", "live"})
 
 
 @dataclass(frozen=True)
@@ -35,6 +41,7 @@ def analyze_group(
     spot: float | None,
     option_type: str,
     model_revision: str = MODEL_REVISION,
+    group_blockers: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Return quality, static-arbitrage, fit, and leave-one-out evidence.
 
@@ -42,18 +49,27 @@ def analyze_group(
     """
 
     normalized = [dict(row) for row in rows]
-    eligible, blockers = eligible_rows(normalized, spot=spot, option_type=option_type)
+    eligible, row_blockers, metrics = eligible_rows(normalized, spot=spot, option_type=option_type)
+    blockers = sorted(set(group_blockers))
     static_findings = static_arbitrage_findings(eligible, spot=spot, option_type=option_type)
-    if blockers or len(eligible) < MIN_ELIGIBLE_POINTS:
-        terminal = blockers or ["insufficient_eligible_points"]
+    if len(eligible) < MIN_ELIGIBLE_POINTS:
+        blockers.append("insufficient_eligible_points")
+    if blockers:
+        terminal = sorted(set(blockers))
         return {
             "model_revision": model_revision,
             "fit": FitResult((), "fit_failed", None, {"blockers": terminal}),
             "eligible_count": len(eligible),
+            "row_metrics": metrics,
             "blockers": terminal,
             "static_findings": static_findings,
             "relative_values": [
-                rejected_value(row, model_revision, terminal, static_findings)
+                rejected_value(
+                    row,
+                    model_revision,
+                    [*row_blockers.get(_row_key(row), []), *terminal],
+                    static_findings,
+                )
                 for row in normalized
             ],
         }
@@ -64,9 +80,18 @@ def analyze_group(
             "model_revision": model_revision,
             "fit": fit,
             "eligible_count": len(eligible),
+            "row_metrics": metrics,
             "blockers": blockers,
             "static_findings": static_findings,
-            "relative_values": [rejected_value(row, model_revision, blockers, static_findings) for row in normalized],
+            "relative_values": [
+                rejected_value(
+                    row,
+                    model_revision,
+                    [*row_blockers.get(_row_key(row), []), *blockers],
+                    static_findings,
+                )
+                for row in normalized
+            ],
         }
     values = relative_values(
         eligible,
@@ -81,10 +106,14 @@ def analyze_group(
         "model_revision": model_revision,
         "fit": fit,
         "eligible_count": len(eligible),
+        "row_metrics": metrics,
         "blockers": [],
         "static_findings": static_findings,
         "relative_values": [
-            by_contract.get(row.get("contract_id"), rejected_value(row, model_revision, ["quality_gate"], static_findings))
+            by_contract.get(
+                row.get("contract_id"),
+                rejected_value(row, model_revision, row_blockers.get(_row_key(row), ["quality_gate"]), static_findings),
+            )
             for row in normalized
         ],
     }
@@ -92,32 +121,54 @@ def analyze_group(
 
 def eligible_rows(
     rows: Iterable[dict[str, Any]], *, spot: float | None, option_type: str
-) -> tuple[list[dict[str, Any]], list[str]]:
-    if spot is None or not _positive(spot):
-        return [], ["missing_or_stale_underlying"]
+) -> tuple[list[dict[str, Any]], dict[tuple[Any, ...], list[str]], dict[str, int]]:
+    """Filter contracts independently, retaining a durable reason for each reject."""
+
     accepted: list[dict[str, Any]] = []
-    blockers: list[str] = []
+    blockers_by_row: dict[tuple[Any, ...], list[str]] = {}
+    metrics = {
+        "total_rows": 0,
+        "eligible_rows": 0,
+        "stale_rows": 0,
+        "invalid_status_rows": 0,
+        "missing_underlying_rows": 0,
+        "rejected_rows": 0,
+    }
+    group_finished = max((row.get("group_finished_at") for row in rows if row.get("group_finished_at")), default=None)
     for row in rows:
+        metrics["total_rows"] += 1
         bid, ask, strike = _number(row.get("bid")), _number(row.get("ask")), _number(row.get("strike"))
         mid, oi = _number(row.get("mid")), _number(row.get("open_interest"))
         dte = _number(row.get("dte"))
         status = str(row.get("market_data_status") or "open").lower()
+        row_blockers: list[str] = []
+        if spot is None or not _positive(spot) or not _positive(row.get("underlying_price")):
+            row_blockers.append("missing_or_stale_underlying")
+            metrics["missing_underlying_rows"] += 1
+        if status not in TRADABLE_MARKET_STATUSES:
+            row_blockers.append("invalid_market_status")
+            metrics["invalid_status_rows"] += 1
+        observed_at = row.get("provider_observed_at")
+        if group_finished is None or observed_at is None or (group_finished - observed_at).total_seconds() > MAX_QUOTE_AGE_SECONDS:
+            row_blockers.append("quote_age_stale")
+            metrics["stale_rows"] += 1
         if not (_positive(bid) and ask is not None and ask >= bid and _positive(mid) and _positive(strike)):
-            continue
-        if dte is not None and not 7 <= dte <= 120:
-            continue
-        if not (0.70 <= strike / float(spot) <= 1.30):
-            continue
-        if oi is None or oi < 100:
-            continue
-        spread = ask - bid
-        if spread > max(0.10, 0.15 * mid):
-            continue
-        if status not in {"", "open", "regular", "tradable", "active"}:
-            blockers.append("invalid_market_status")
+            row_blockers.append("incomplete_or_crossed_quote")
+        elif dte is not None and not 7 <= dte <= 120:
+            row_blockers.append("unsupported_dte")
+        elif spot is not None and _positive(spot) and not (0.70 <= strike / float(spot) <= 1.30):
+            row_blockers.append("outside_moneyness_window")
+        elif oi is None or oi < 100:
+            row_blockers.append("illiquid_open_interest")
+        elif ask - bid > max(0.10, 0.15 * mid):
+            row_blockers.append("illiquid_spread")
+        if row_blockers:
+            blockers_by_row[_row_key(row)] = sorted(set(row_blockers))
+            metrics["rejected_rows"] += 1
             continue
         accepted.append({**row, "option_type": option_type, "mid": mid, "bid": bid, "ask": ask, "strike": strike})
-    return sorted(accepted, key=lambda item: float(item["strike"])), sorted(set(blockers))
+        metrics["eligible_rows"] += 1
+    return sorted(accepted, key=lambda item: float(item["strike"])), blockers_by_row, metrics
 
 
 def static_arbitrage_findings(
@@ -291,3 +342,12 @@ def _number(value: Any) -> float | None:
 def _positive(value: Any) -> bool:
     parsed = _number(value)
     return parsed is not None and parsed > 0
+
+
+def _row_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Use the contract identity when present; tests/replay rows may omit it."""
+
+    return (
+        row.get("contract_id"), row.get("strike"), row.get("option_type"),
+        row.get("provider_observed_at"),
+    )

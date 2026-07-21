@@ -40,6 +40,7 @@ export function App() {
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
+          <Route path="theses" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />
           <Route path="calendar" element={<CalendarRoute />} />
           <Route path="agent" element={<AgentRoute />} />

@@ -12,7 +12,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group, rejected_value
+from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group
 from investment_panel.core.option_underwriting import (
     conservative_entry,
     conservative_mark,
@@ -24,6 +24,7 @@ from investment_panel.core.option_underwriting import (
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
+from investment_panel.database.options_history_v3_evidence import quote_package
 
 
 class OptionHistoryV3Materializer:
@@ -142,17 +143,16 @@ class OptionHistoryV3Materializer:
                 metadata["available_at"],
             )
             for (expiration, option_type), group in grouped.items():
-                temporal_blockers = _temporal_blockers(group)
-                spot = _group_spot(group)
-                result = analyze_group(group, spot=spot, option_type=option_type, model_revision=model_revision)
-                if temporal_blockers:
-                    result["blockers"] = sorted(set(result["blockers"] + temporal_blockers))
-                    result["relative_values"] = [
-                        rejected_value(row, model_revision, result["blockers"], result["static_findings"])
-                        for row in group
-                    ]
+                spot, group_blockers = _capture_group_quality(group)
+                result = analyze_group(
+                    group,
+                    spot=spot,
+                    option_type=option_type,
+                    model_revision=model_revision,
+                    group_blockers=group_blockers,
+                )
                 fit = result["fit"]
-                group_is_eligible = result["eligible_count"] >= 12 and not temporal_blockers
+                group_is_eligible = result["eligible_count"] >= 12 and not group_blockers
                 if group_is_eligible:
                     eligible_groups += 1
                     fit_attempts += 1
@@ -306,6 +306,14 @@ class OptionHistoryV3Materializer:
         details = {
             "paper_only": True, "relative_value_evidence": value.get("evidence"),
             "historical_paths": scenario, "calibration": calibration, "as_of": as_of.isoformat(),
+            "thesis": {
+                "id": thesis.get("id") if thesis else None,
+                "revision": thesis.get("revision") if thesis else None,
+                "invalidation": thesis.get("invalidation") if thesis else None,
+                "horizon_date": thesis.get("horizon_date") if thesis else None,
+            },
+            "quote_package": quote_package(legs, as_of),
+            "reassessment_date": str(quote.get("expiration") or "") or None,
         }
         connection.execute(
             """
@@ -532,38 +540,36 @@ class OptionHistoryV3Materializer:
             )
 
 
-def _temporal_blockers(rows: list[dict[str, Any]]) -> list[str]:
+def _capture_group_quality(rows: list[dict[str, Any]]) -> tuple[float | None, list[str]]:
+    """Return the only capture-wide rejection reasons.
+
+    Individual quote freshness, status, completeness, and liquidity problems are
+    preserved as row-level evidence by ``analyze_group``.  Only an incoherent
+    underlying or an overlong capture makes the whole expiry/type unusable.
+    """
+
     if not rows:
-        return ["empty_capture_group"]
+        return None, ["empty_capture_group"]
     started = min((row.get("group_started_at") for row in rows if row.get("group_started_at")), default=None)
     finished = max((row.get("group_finished_at") for row in rows if row.get("group_finished_at")), default=None)
-    if started is None or finished is None:
-        return ["missing_group_timestamps"]
     blockers: list[str] = []
-    if (finished - started).total_seconds() > 60:
+    if started is None or finished is None:
+        blockers.append("missing_group_timestamps")
+    elif (finished - started).total_seconds() > 60:
         blockers.append("group_duration_stale")
-    ages = [
-        (finished - observed).total_seconds()
-        for row in rows
-        for observed in [row.get("provider_observed_at")]
-        if observed is not None
-    ]
-    if not ages or max(ages) > 180:
-        blockers.append("quote_age_stale")
-    if any(row.get("underlying_observed_at") is None for row in rows):
+    values = [float(row["underlying_price"]) for row in rows if row.get("underlying_price") is not None]
+    observed_at = [row.get("underlying_observed_at") for row in rows]
+    if len(values) != len(rows) or any(value is None for value in observed_at):
         blockers.append("missing_aligned_underlying")
-    return blockers
+    elif len({round(value, 8) for value in values}) != 1 or len({value for value in observed_at}) != 1:
+        blockers.append("inconsistent_aligned_underlying")
+    return (values[0] if not blockers and values else None), sorted(set(blockers))
 
 
 def is_later_capture_cohort(pending_slot: datetime | None, current_slot: datetime | None) -> bool:
     """True only when a candidate can enter after its own evidence cohort."""
 
     return pending_slot is not None and current_slot is not None and current_slot > pending_slot
-
-
-def _group_spot(rows: list[dict[str, Any]]) -> float | None:
-    values = [float(row["underlying_price"]) for row in rows if row.get("underlying_price") is not None]
-    return values[0] if values and all(value == values[0] for value in values) else None
 
 
 def _summary(rows: list[dict[str, Any]], result: dict[str, Any], spot: float | None) -> dict[str, Any]:
@@ -581,7 +587,10 @@ def _summary(rows: list[dict[str, Any]], result: dict[str, Any], spot: float | N
         "group_duration_seconds": (finished - started).total_seconds() if started and finished else None,
         "max_quote_age_seconds": max(ages) if ages else None,
         "candidate_count": candidate_count,
-        "metrics": {"blockers": result["blockers"], "static_arbitrage": result["static_findings"], "fit": result["fit"].diagnostics},
+        "metrics": {
+            "blockers": result["blockers"], "static_arbitrage": result["static_findings"],
+            "fit": result["fit"].diagnostics, "row_metrics": result["row_metrics"],
+        },
     }
 
 
@@ -622,6 +631,9 @@ def _candidate_leg(quote: dict[str, Any], side: str) -> dict[str, Any]:
         # JSON-safe so a valid live capture cannot fail after collection.
         "observed_at": observed_at.isoformat() if observed_at is not None else None,
         "size_available": size_available,
+        "bid_size": bid_size, "ask_size": ask_size, "open_interest": quote.get("open_interest"),
+        "volume": quote.get("volume"), "provider_iv": quote.get("provider_iv"),
+        "provider_delta": quote.get("provider_delta"),
     }
 
 

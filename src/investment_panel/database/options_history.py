@@ -8,6 +8,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
+from investment_panel.database.options_history_health import history_health
 from investment_panel.database.options_history_surface import surface_groups as _surface_groups
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 HISTORY_PROFILE = "history_full"
@@ -405,57 +406,7 @@ class OptionHistoryRepository:
         return {"rows": [dict(row) for row in rows], "count": int(count), "offset": offset, "limit": limit, "snapshot_id": snapshot_id}
 
     def health(self) -> dict[str, Any]:
-        with self.runtime.read() as connection:
-            row = connection.execute(
-                """
-                SELECT count(*) AS snapshots,
-                       count(*) FILTER (WHERE latest_complete_generation_id IS NOT NULL) AS complete_snapshots,
-                       max(slot_at) FILTER (WHERE latest_complete_generation_id IS NOT NULL) AS latest_complete_slot,
-                       avg(completeness) FILTER (WHERE latest_complete_generation_id IS NOT NULL) AS average_completeness,
-                       coalesce((
-                           SELECT sum(pg_total_relation_size(inhrelid))
-                           FROM pg_inherits
-                           WHERE inhparent = 'raw.option_quote'::regclass
-                       ), 0)::bigint AS option_quote_bytes,
-                       coalesce(pg_total_relation_size('analysis.option_surface_summary'), 0) AS surface_summary_bytes
-                FROM raw.option_snapshot WHERE collection_profile = %s
-                """, [HISTORY_PROFILE]
-            ).fetchone()
-            v3 = connection.execute(
-                """
-                WITH latest AS (
-                    SELECT DISTINCT ON ((run.summary->>'capture_generation_id')::bigint) run.*
-                    FROM analysis.run run
-                    WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
-                    ORDER BY (run.summary->>'capture_generation_id')::bigint, run.finished_at DESC NULLS LAST
-                )
-                SELECT count(*) AS runs,
-                       coalesce(sum((summary->>'solver_failures')::integer), 0) AS solver_failures,
-                       coalesce(sum((summary->>'fit_attempts')::integer), 0) AS fit_attempts,
-                       coalesce(sum((summary->>'succeeded_groups')::integer), 0) AS succeeded_groups
-                FROM latest
-                """
-            ).fetchone()
-            shadows = connection.execute(
-                """
-                SELECT count(*) AS total,
-                       count(*) FILTER (WHERE status = 'entered') AS entered,
-                       count(*) FILTER (WHERE status = 'unfilled') AS unfilled,
-                       count(*) FILTER (WHERE status = 'pending') AS pending
-                FROM analysis.shadow_trade WHERE source_kind = 'options_history_v3'
-                """
-            ).fetchone()
-        history_bytes = int(row["option_quote_bytes"]) + int(row["surface_summary_bytes"])
-        v3_payload = dict(v3)
-        fit_attempts = int(v3_payload["fit_attempts"])
-        succeeded_groups = int(v3_payload["succeeded_groups"])
-        return {
-            **dict(row), "storage_bytes": history_bytes, "retention_days": 730,
-            "v3_runs": int(v3_payload["runs"]), "v3_succeeded_runs": int(v3_payload["runs"]),
-            "solver_failures": int(v3_payload["solver_failures"]), "solver_success_rate": succeeded_groups / fit_attempts if fit_attempts else None,
-            "shadow": {key: int(value) for key, value in dict(shadows).items()},
-            "canary": {"required_regular_sessions": 5, "completed_sessions": int(row["complete_snapshots"]), "paper_mode_eligible": fit_attempts > 0 and succeeded_groups / fit_attempts >= 0.99 and int(row["complete_snapshots"]) >= 5},
-        }
+        return history_health(self.runtime)
 
     def _resolve_snapshot(self, symbol: str, snapshot: int | None) -> int | None:
         with self.runtime.read() as connection:

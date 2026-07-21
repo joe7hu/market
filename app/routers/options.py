@@ -19,6 +19,7 @@ from app.options_history_contracts import (
     OptionSurfaceGroups,
     OptionsCandidatePage,
     OptionsDecisionBrief,
+    OptionsLearningProgressPage,
     OptionsPaperJournalPage,
     RelativeValuePage,
 )
@@ -173,6 +174,13 @@ def options_paper_journal(
     limit: int = Query(100, ge=1, le=100),
 ) -> dict[str, Any]:
     return _actions().paper_journal(symbol=symbol, offset=offset, limit=limit)
+
+
+@router.get("/api/options/learning-progress", response_model=OptionsLearningProgressPage)
+def options_learning_progress(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+) -> dict[str, Any]:
+    return _actions().learning_progress(symbol=symbol)
 
 
 @router.get("/api/options-payoff-scenarios")

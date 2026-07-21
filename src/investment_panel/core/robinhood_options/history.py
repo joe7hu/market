@@ -140,7 +140,16 @@ def collect_robinhood_full_option_chain(
                         continue
                     row["underlying_symbol"] = symbol
                     row["underlying_price"] = spot
-                    row["provider_payload"] = {"instrument": instrument, "quote": quote, "underlying": equity}
+                    # Keep the unmodified provider payload alongside the normalized
+                    # tradability state.  A later status-policy change can replay
+                    # this evidence without guessing which provider value we saw.
+                    row["provider_payload"] = {
+                        "instrument": instrument,
+                        "quote": quote,
+                        "underlying": equity,
+                        "provider_market_data_status": quote.get("market_data_status") or quote.get("data_status"),
+                        "normalized_market_data_status": row.get("market_data_status"),
+                    }
                     row["previous_close"] = row.get("close")
                     row["provider_updated_at"] = quote.get("updated_at")
                     row["provider_observed_at"] = quote.get("updated_at")

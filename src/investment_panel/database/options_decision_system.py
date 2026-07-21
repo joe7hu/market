@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.analysis.history_v3 import static_arbitrage_findings
+from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrage_findings
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.options_history_canary import canary_health
 
 
 class OptionsDecisionSystemRepository:
@@ -29,26 +31,32 @@ class OptionsDecisionSystemRepository:
                 JOIN raw.option_capture_generation generation ON generation.id = (run.summary->>'capture_generation_id')::bigint
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
                 WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
+                  AND run.summary->>'model_revision' = %s
                   AND snapshot.history_symbol = %s
                 ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
                 """,
-                [symbol.upper()],
+                [MODEL_REVISION, symbol.upper()],
             ).fetchone()
             if latest is None:
-                return _empty_brief(symbol, lane, "No complete v3 capture is available yet.", mode=self.mode)
+                return _empty_brief(symbol, lane, "No post-fix v3 capture is available yet.", mode=self.mode)
             candidate = connection.execute(
                 """
-                SELECT decision.id::text AS decision_id, option_decision.paper_state, option_decision.discovery_lane,
-                       option_decision.structure, option_decision.expected_value, option_decision.max_loss,
+                SELECT decision.id::text AS decision_id, decision.reasons, decision.blockers,
+                       option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
+                       option_decision.entry_price, option_decision.fill_assumption,
+                       option_decision.probability_profit, option_decision.expected_value, option_decision.max_loss,
+                       option_decision.synthetic_legs, option_decision.details,
                        option_decision.data_confidence, option_decision.execution_confidence,
                        option_decision.market_regime, value.id AS relative_value_id, value.classification,
                        value.fair_low, value.fair_high, value.modeled_net_edge, value.confidence,
-                       decision.blockers, value.evidence, contract.expiration, contract.strike, contract.option_type,
-                       option_decision.snapshot_id, value.capture_generation_id
+                       value.evidence, contract.expiration, contract.strike, contract.option_type,
+                       option_decision.snapshot_id, value.capture_generation_id,
+                       thesis.thesis AS thesis_payload, thesis.updated_at AS thesis_updated_at
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 JOIN analysis.option_relative_value value ON value.id = option_decision.relative_value_id
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
                 WHERE decision.run_id = %s AND option_decision.discovery_lane = %s
                 ORDER BY CASE option_decision.paper_state
                     WHEN 'PAPER_READY' THEN 1 WHEN 'WATCH' THEN 2 WHEN 'COLLECTING' THEN 3 ELSE 4 END,
@@ -57,11 +65,13 @@ class OptionsDecisionSystemRepository:
                 """,
                 [latest["id"], lane],
             ).fetchone()
+            readiness = _readiness(connection, latest=dict(latest), symbol=symbol.upper())
         candidate_data = dict(candidate) if candidate else None
         return {
             "symbol": symbol.upper(), "lane": lane, "mode": self.mode, "analysis_run_id": str(latest["id"]),
             "as_of": latest["finished_at"], "state": candidate_data["paper_state"] if candidate_data else "COLLECTING",
-            "summary": dict(latest["summary"] or {}), "strongest_candidate": _candidate_payload(candidate_data) if candidate_data else None,
+            "summary": dict(latest["summary"] or {}), "readiness": readiness,
+            "strongest_candidate": _candidate_payload(candidate_data) if candidate_data else None,
             "paper_only": True,
         }
 
@@ -76,8 +86,8 @@ class OptionsDecisionSystemRepository:
         offset: int = 0,
         limit: int = 100,
     ) -> dict[str, Any]:
-        filters = ["instrument.symbol = %s", "option_decision.paper_state IS NOT NULL", "option_decision.model_version LIKE 'history-v3%%'"]
-        values: list[Any] = [symbol.upper()]
+        filters = ["instrument.symbol = %s", "option_decision.paper_state IS NOT NULL", "option_decision.model_version = %s"]
+        values: list[Any] = [symbol.upper(), MODEL_REVISION]
         if lane:
             filters.append("option_decision.discovery_lane = %s")
             values.append(lane)
@@ -104,22 +114,31 @@ class OptionsDecisionSystemRepository:
                 f"""
                 SELECT decision.id::text AS decision_id, decision.as_of, decision.reasons, decision.blockers,
                        option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
-                       option_decision.max_loss, option_decision.entry_price, option_decision.expected_value,
+                       option_decision.max_loss, option_decision.entry_price, option_decision.fill_assumption,
+                       option_decision.probability_profit, option_decision.expected_value,
+                       option_decision.synthetic_legs, option_decision.details,
                        option_decision.data_confidence, option_decision.execution_confidence,
                        option_decision.fair_low, option_decision.fair_high, option_decision.modeled_net_edge,
                        option_decision.market_regime, option_decision.model_version,
-                       contract.expiration, contract.strike, contract.option_type
+                       value.id AS relative_value_id, value.classification, value.confidence, value.evidence,
+                       contract.expiration, contract.strike, contract.option_type,
+                       thesis.thesis AS thesis_payload, thesis.updated_at AS thesis_updated_at
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                JOIN analysis.option_relative_value value ON value.id = option_decision.relative_value_id
+                LEFT JOIN app.thesis thesis ON thesis.id = option_decision.thesis_id
                 WHERE {where}
                 ORDER BY decision.as_of DESC, option_decision.modeled_net_edge DESC NULLS LAST
                 LIMIT %s OFFSET %s
                 """,
                 [*values, limit, offset],
             ).fetchall()
-        return {"rows": [dict(row) for row in rows], "count": int(count), "offset": offset, "limit": limit}
+        return {
+            "rows": [_candidate_payload(dict(row)) for row in rows],
+            "count": int(count), "offset": offset, "limit": limit,
+        }
 
     def relative_values(
         self,
@@ -214,25 +233,71 @@ class OptionsDecisionSystemRepository:
                     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                     JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                     WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
-                      AND option_decision.model_version LIKE 'history-v3%%'""", [symbol.upper()],
+                      AND option_decision.model_version = %s""", [symbol.upper(), MODEL_REVISION],
             ).fetchone()["count"]
             rows = connection.execute(
                 """
                 SELECT shadow.id::text AS shadow_id, shadow.decision_id::text AS decision_id, shadow.status,
                        shadow.entry_at, shadow.entry_price, shadow.exit_at, shadow.exit_price,
                        shadow.pending_entry_reason, shadow.entry_cohort_id, shadow.structure,
-                       shadow.market_regime, shadow.fill_basis, shadow.source_kind, shadow.metrics
+                       shadow.market_regime, shadow.fill_basis, shadow.source_kind, shadow.metrics,
+                       outcome.maturity_state AS outcome_state, outcome.observed_through,
+                       outcome.current_return
                 FROM analysis.shadow_trade shadow
                 JOIN analysis.decision decision ON decision.id = shadow.decision_id
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
                 WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
-                  AND option_decision.model_version LIKE 'history-v3%%'
+                  AND option_decision.model_version = %s
                 ORDER BY coalesce(shadow.entry_at, shadow.created_at) DESC
                 LIMIT %s OFFSET %s
-                """, [symbol.upper(), limit, offset],
+                """, [symbol.upper(), MODEL_REVISION, limit, offset],
             ).fetchall()
-        return {"rows": [dict(row) for row in rows], "count": int(count), "offset": offset, "limit": limit}
+        return {
+            "rows": [_journal_payload(dict(row)) for row in rows],
+            "count": int(count), "offset": offset, "limit": limit,
+        }
+
+    def learning_progress(self, *, symbol: str = "QQQ") -> dict[str, Any]:
+        """Exact-structure/regime/revision learning gates; no pooled shortcut."""
+
+        with self.runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT option_decision.structure, option_decision.market_regime,
+                       option_decision.model_version,
+                       count(*) FILTER (
+                           WHERE outcome.maturity_state IN ('mature', 'expired')
+                             AND outcome.current_return IS NOT NULL
+                       ) AS mature_outcomes,
+                       avg(outcome.current_return) FILTER (
+                           WHERE outcome.maturity_state IN ('mature', 'expired')
+                             AND outcome.current_return IS NOT NULL
+                       ) AS mean_return,
+                       stddev_pop(outcome.current_return) FILTER (
+                           WHERE outcome.maturity_state IN ('mature', 'expired')
+                             AND outcome.current_return IS NOT NULL
+                       ) AS return_stddev,
+                       avg(power(option_decision.probability_profit -
+                           CASE WHEN outcome.current_return > 0 THEN 1.0 ELSE 0.0 END, 2)
+                       ) FILTER (
+                           WHERE outcome.maturity_state IN ('mature', 'expired')
+                             AND outcome.current_return IS NOT NULL
+                             AND option_decision.probability_profit IS NOT NULL
+                       ) AS brier_score
+                FROM analysis.option_decision option_decision
+                JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                WHERE instrument.symbol = %s AND option_decision.model_version = %s
+                GROUP BY option_decision.structure, option_decision.market_regime, option_decision.model_version
+                ORDER BY option_decision.structure, option_decision.market_regime, option_decision.model_version
+                """,
+                [symbol.upper(), MODEL_REVISION],
+            ).fetchall()
+        progress = [_learning_payload(dict(row)) for row in rows]
+        return {"rows": progress, "count": len(progress)}
 
     def verification_result(self, candidate_id: int, client: RobinhoodClient | None = None) -> dict[str, Any]:
         """Read through to a live, size/skew-aware package re-quote and persist the result."""
@@ -341,25 +406,247 @@ class OptionsDecisionSystemRepository:
 
 
 def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
+    details = dict(value.get("details") or {})
+    scenario = dict(details.get("historical_paths") or {})
+    calibration = dict(details.get("calibration") or {})
+    quote_package = dict(details.get("quote_package") or {})
+    thesis = {**dict(value.get("thesis_payload") or {}), **dict(details.get("thesis") or {})}
+    legs = [dict(leg) for leg in value.get("synthetic_legs") or []]
+    fair_low, fair_high = _number(value.get("fair_low")), _number(value.get("fair_high"))
     return {
         "decision_id": str(value["decision_id"]), "relative_value_id": value["relative_value_id"],
-        "classification": value["classification"], "paper_state": value["paper_state"],
-        "discovery_lane": value["discovery_lane"], "structure": value["structure"],
-        "fair_low": value["fair_low"], "fair_high": value["fair_high"],
-        "modeled_net_edge": value["modeled_net_edge"], "confidence": value["confidence"],
-        "expected_value": value["expected_value"], "max_loss": value["max_loss"],
-        "data_confidence": value["data_confidence"], "execution_confidence": value["execution_confidence"],
-        "market_regime": value["market_regime"], "blockers": value["blockers"],
-        "expiration": value["expiration"], "strike": float(value["strike"]),
-        "option_type": value["option_type"], "snapshot_id": value["snapshot_id"],
-        "capture_generation_id": value["capture_generation_id"], "paper_only": True,
+        "paper_state": value["paper_state"], "discovery_lane": value["discovery_lane"],
+        "structure": value["structure"], "expiration": value["expiration"],
+        "strike": float(value["strike"]), "option_type": value["option_type"],
+        "legs": legs,
+        "conservative_entry": {
+            "price": _number(value.get("entry_price")),
+            "fill_basis": value.get("fill_assumption") or "worst_side_quote",
+        },
+        "one_unit_max_loss": _number(value.get("max_loss")),
+        "fair_value_interval": {"low": fair_low, "high": fair_high},
+        "expected_value_interval": {
+            "expected": _number(value.get("expected_value")),
+            "lower_95": _number(scenario.get("lower_95_expected_value")),
+        },
+        "uncertainty": {
+            "fair_value_width": fair_high - fair_low if fair_low is not None and fair_high is not None else None,
+            "data_confidence": _number(value.get("data_confidence")),
+            "execution_confidence": _number(value.get("execution_confidence")),
+            "relative_value_confidence": _number(value.get("confidence")),
+        },
+        "modeled_net_edge": _number(value.get("modeled_net_edge")),
+        "quote_quality": {
+            "max_quote_age_seconds": _number(quote_package.get("max_quote_age_seconds")),
+            "interleg_skew_seconds": _number(quote_package.get("interleg_skew_seconds")),
+        },
+        "liquidity": dict(quote_package.get("liquidity") or {}),
+        "thesis": {
+            "id": thesis.get("id"),
+            "revision": thesis.get("revision") or _revision(value.get("thesis_updated_at")),
+            "invalidation": thesis.get("invalidation"),
+            "eligible": bool(thesis.get("schema_version") == 2 and thesis.get("invalidation")),
+        },
+        "state_reasons": list(value.get("reasons") or []),
+        "blockers": list(value.get("blockers") or []),
+        "reassessment_date": details.get("reassessment_date") or value.get("expiration"),
+        "comparable_exact_structure_outcomes": calibration,
+        "paper_only": True,
     }
 
 
 def _empty_brief(symbol: str, lane: str, message: str, *, mode: str) -> dict[str, Any]:
     return {"symbol": symbol.upper(), "lane": lane, "mode": mode, "analysis_run_id": None,
             "as_of": None, "state": "COLLECTING", "summary": {"message": message},
-            "strongest_candidate": None, "paper_only": True}
+            "readiness": _empty_readiness(), "strongest_candidate": None, "paper_only": True}
+
+
+def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[str, Any]:
+    summary = dict(latest.get("summary") or {})
+    generation_id = int(summary["capture_generation_id"])
+    capture = connection.execute(
+        """
+        SELECT generation.capture_state, generation.completeness, snapshot.latest_complete_generation_id
+        FROM raw.option_capture_generation generation
+        JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
+        WHERE generation.id = %s
+        """,
+        [generation_id],
+    ).fetchone()
+    group = connection.execute(
+        """
+        SELECT count(*) AS group_count,
+               count(*) FILTER (WHERE surface.metrics->'blockers' ? 'missing_aligned_underlying') AS missing_underlying,
+               count(*) FILTER (WHERE surface.metrics->'blockers' ? 'inconsistent_aligned_underlying') AS inconsistent_underlying
+        FROM analysis.option_surface_summary surface
+        WHERE surface.analysis_run_id = %s
+        """,
+        [latest["id"]],
+    ).fetchone()
+    thesis = connection.execute(
+        """
+        SELECT thesis.thesis, thesis.updated_at
+        FROM app.thesis thesis
+        JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
+        WHERE instrument.symbol = %s AND thesis.status = 'current'
+        ORDER BY thesis.updated_at DESC, thesis.id DESC LIMIT 1
+        """,
+        [symbol],
+    ).fetchone()
+    calibration_rows = connection.execute(
+        """
+        SELECT option_decision.structure, option_decision.market_regime, option_decision.model_version,
+               option_decision.details->'calibration' AS calibration
+        FROM analysis.option_decision option_decision
+        JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+        WHERE decision.run_id = %s
+        ORDER BY option_decision.structure, option_decision.market_regime
+        """,
+        [latest["id"]],
+    ).fetchall()
+    blocker_rows = connection.execute(
+        """
+        SELECT blocker, count(*) AS count
+        FROM (
+            SELECT unnest(decision.blockers) AS blocker
+            FROM analysis.decision decision WHERE decision.run_id = %s
+            UNION ALL
+            SELECT unnest(value.blockers) AS blocker
+            FROM analysis.option_relative_value value WHERE value.analysis_run_id = %s
+        ) blockers
+        GROUP BY blocker ORDER BY count(*) DESC, blocker LIMIT 8
+        """,
+        [latest["id"], latest["id"]],
+    ).fetchall()
+    canary = canary_health(connection, symbol=symbol, model_revision=MODEL_REVISION)
+    thesis_payload = dict(thesis["thesis"] or {}) if thesis else {}
+    calibration = [_calibration_readiness(dict(row)) for row in calibration_rows]
+    top_blockers = [{"blocker": row["blocker"], "count": int(row["count"])} for row in blocker_rows]
+    analysis = {
+        "eligible_groups": int(summary.get("eligible_groups") or 0),
+        "fit_attempts": int(summary.get("fit_attempts") or 0),
+        "succeeded_groups": int(summary.get("succeeded_groups") or 0),
+        "solver_failures": int(summary.get("solver_failures") or 0),
+    }
+    return {
+        "capture": {
+            "capture_state": capture["capture_state"] if capture else None,
+            "completeness": _number(capture["completeness"]) if capture else None,
+            "capture_generation_id": generation_id,
+            "complete_captures": int(canary["complete_captures"]),
+        },
+        "underlying": {
+            "group_count": int(group["group_count"]),
+            "groups_with_missing_underlying": int(group["missing_underlying"]),
+            "groups_with_inconsistent_underlying": int(group["inconsistent_underlying"]),
+        },
+        "analysis": analysis,
+        "thesis": {
+            "eligible": bool(thesis_payload.get("schema_version") == 2 and thesis_payload.get("invalidation")),
+            "revision": thesis_payload.get("revision") or _revision(thesis["updated_at"] if thesis else None),
+            "invalidation": thesis_payload.get("invalidation"),
+        },
+        "calibration": calibration,
+        "canary": {
+            "observed_regular_session_dates": int(canary["observed_regular_session_dates"]),
+            "qualified_regular_sessions": int(canary["qualified_regular_sessions"]),
+            "required_regular_sessions": int(canary["required_regular_sessions"]),
+            "canary_revision": str(canary["canary_revision"]),
+            "canary_started_at": canary["canary_started_at"],
+            "disqualification_reasons": list(canary["disqualification_reasons"]),
+        },
+        "top_blockers": top_blockers,
+        "next_required_action": _next_action(analysis, thesis_payload, canary),
+    }
+
+
+def _empty_readiness() -> dict[str, Any]:
+    return {
+        "capture": {"capture_state": None, "completeness": None, "capture_generation_id": None, "complete_captures": 0},
+        "underlying": {"group_count": 0, "groups_with_missing_underlying": 0, "groups_with_inconsistent_underlying": 0},
+        "analysis": {"eligible_groups": 0, "fit_attempts": 0, "succeeded_groups": 0, "solver_failures": 0},
+        "thesis": {"eligible": False, "revision": None, "invalidation": None},
+        "calibration": [],
+        "canary": {
+            "observed_regular_session_dates": 0, "qualified_regular_sessions": 0,
+            "required_regular_sessions": 5, "canary_revision": MODEL_REVISION,
+            "canary_started_at": None, "disqualification_reasons": [],
+        },
+        "top_blockers": [], "next_required_action": "collect_post_fix_complete_capture",
+    }
+
+
+def _calibration_readiness(row: dict[str, Any]) -> dict[str, Any]:
+    calibration = dict(row.get("calibration") or {})
+    sample_size = int(calibration.get("sample_size") or 0)
+    missing = []
+    if sample_size < 30:
+        missing.append("30_mature_exact_structure_outcomes_required")
+    if _number(calibration.get("lower_95_expectancy")) is None or _number(calibration.get("lower_95_expectancy")) <= 0:
+        missing.append("positive_lower_95_expectancy_required")
+    if _number(calibration.get("brier_score")) is None or _number(calibration.get("brier_score")) > 0.25:
+        missing.append("brier_score_at_or_below_0_25_required")
+    return {
+        "structure": row["structure"], "market_regime": row.get("market_regime"),
+        "model_revision": row.get("model_version") or MODEL_REVISION,
+        "mature_outcomes": sample_size, "lower_95_expectancy": _number(calibration.get("lower_95_expectancy")),
+        "brier_score": _number(calibration.get("brier_score")), "missing_prerequisites": missing,
+    }
+
+
+def _next_action(analysis: dict[str, int], thesis: dict[str, Any], canary: dict[str, Any]) -> str:
+    if int(canary["post_fix_complete_captures"]) == 0:
+        return "collect_post_fix_complete_capture"
+    if analysis["eligible_groups"] == 0:
+        return "restore_eligible_fresh_quote_groups"
+    if not (thesis.get("schema_version") == 2 and thesis.get("invalidation")):
+        return "create_or_update_qqq_thesis_v2"
+    if int(canary["qualified_regular_sessions"]) < int(canary["required_regular_sessions"]):
+        return "complete_five_qualified_post_fix_sessions"
+    return "collect_exact_structure_mature_outcomes"
+
+
+def _journal_payload(row: dict[str, Any]) -> dict[str, Any]:
+    metrics = dict(row.get("metrics") or {})
+    status = str(row.get("status") or "pending")
+    outcome_state = row.get("outcome_state")
+    lifecycle = str(outcome_state) if outcome_state in {"mature", "expired", "observing"} else status
+    latest_mark = _number(metrics.get("mark_price"))
+    return {
+        "shadow_id": str(row["shadow_id"]), "decision_id": str(row["decision_id"]),
+        "lifecycle": lifecycle, "structure": row.get("structure"), "entry_at": row.get("entry_at"),
+        "conservative_entry_price": _number(row.get("entry_price")),
+        "conservative_fill_basis": row.get("fill_basis") or metrics.get("fill_basis"),
+        "latest_mark": latest_mark, "missing_mark_gap": status == "entered" and latest_mark is None,
+        "current_return": _number(row.get("current_return")), "outcome_state": outcome_state,
+        "pending_entry_reason": row.get("pending_entry_reason"),
+        "assignment_warning": metrics.get("assignment_warning") or "American-style assignment risk remains paper-observed.",
+        "metrics": metrics,
+    }
+
+
+def _learning_payload(row: dict[str, Any]) -> dict[str, Any]:
+    outcomes = int(row.get("mature_outcomes") or 0)
+    mean_return, stddev = _number(row.get("mean_return")), _number(row.get("return_stddev"))
+    lower = mean_return - 1.96 * stddev / outcomes**0.5 if mean_return is not None and stddev is not None and outcomes > 1 else None
+    brier = _number(row.get("brier_score"))
+    missing = []
+    if outcomes < 30:
+        missing.append("30_mature_exact_structure_outcomes_required")
+    if lower is None or lower <= 0:
+        missing.append("positive_lower_95_expectancy_required")
+    if brier is None or brier > 0.25:
+        missing.append("brier_score_at_or_below_0_25_required")
+    return {
+        "structure": row["structure"], "market_regime": row.get("market_regime"),
+        "model_revision": row["model_version"], "mature_outcomes": outcomes,
+        "required_mature_outcomes": 30, "lower_95_expectancy": lower,
+        "brier_score": brier, "missing_prerequisites": missing,
+    }
+
+
+def _revision(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 def _number(value: Any) -> float | None:

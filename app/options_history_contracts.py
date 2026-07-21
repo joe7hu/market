@@ -173,19 +173,159 @@ class OptionsDecisionBrief(BaseModel):
     as_of: datetime | None = None
     state: str
     summary: dict[str, Any]
-    strongest_candidate: dict[str, Any] | None = None
+    readiness: "OptionsDecisionReadiness"
+    strongest_candidate: "OptionsDecisionCandidate | None" = None
+    paper_only: bool
+
+
+class OptionBlockerCount(BaseModel):
+    blocker: str
+    count: int
+
+
+class OptionsCaptureReadiness(BaseModel):
+    capture_state: str | None = None
+    completeness: float | None = None
+    capture_generation_id: int | None = None
+    complete_captures: int
+
+
+class OptionsUnderlyingReadiness(BaseModel):
+    group_count: int
+    groups_with_missing_underlying: int
+    groups_with_inconsistent_underlying: int
+
+
+class OptionsAnalysisReadiness(BaseModel):
+    eligible_groups: int
+    fit_attempts: int
+    succeeded_groups: int
+    solver_failures: int
+
+
+class OptionsThesisReadiness(BaseModel):
+    eligible: bool
+    revision: str | None = None
+    invalidation: str | None = None
+
+
+class OptionsCalibrationReadiness(BaseModel):
+    structure: str
+    market_regime: str | None = None
+    model_revision: str
+    mature_outcomes: int
+    lower_95_expectancy: float | None = None
+    brier_score: float | None = None
+    missing_prerequisites: list[str]
+
+
+class OptionsCanaryReadiness(BaseModel):
+    observed_regular_session_dates: int
+    qualified_regular_sessions: int
+    required_regular_sessions: int
+    canary_revision: str
+    canary_started_at: datetime | None = None
+    disqualification_reasons: list[dict[str, Any]]
+
+
+class OptionsDecisionReadiness(BaseModel):
+    capture: OptionsCaptureReadiness
+    underlying: OptionsUnderlyingReadiness
+    analysis: OptionsAnalysisReadiness
+    thesis: OptionsThesisReadiness
+    calibration: list[OptionsCalibrationReadiness]
+    canary: OptionsCanaryReadiness
+    top_blockers: list[OptionBlockerCount]
+    next_required_action: str
+
+
+class OptionCandidateLeg(BaseModel):
+    contract_id: int
+    option_type: str
+    side: str
+    strike: float
+    bid: float | None = None
+    ask: float | None = None
+    observed_at: datetime | None = None
+    bid_size: int | None = None
+    ask_size: int | None = None
+    open_interest: int | None = None
+    volume: int | None = None
+    provider_iv: float | None = None
+    provider_delta: float | None = None
+
+
+class OptionsDecisionCandidate(BaseModel):
+    decision_id: str
+    relative_value_id: int
+    paper_state: str
+    discovery_lane: str
+    structure: str
+    expiration: date
+    strike: float
+    option_type: str
+    legs: list[OptionCandidateLeg]
+    conservative_entry: dict[str, Any]
+    one_unit_max_loss: float | None = None
+    fair_value_interval: dict[str, float | None]
+    expected_value_interval: dict[str, float | None]
+    uncertainty: dict[str, float | None]
+    modeled_net_edge: float | None = None
+    quote_quality: dict[str, Any]
+    liquidity: dict[str, Any]
+    thesis: dict[str, Any]
+    state_reasons: list[str]
+    blockers: list[str]
+    reassessment_date: date | None = None
+    comparable_exact_structure_outcomes: dict[str, Any]
     paper_only: bool
 
 
 class OptionsCandidatePage(BaseModel):
-    rows: list[dict[str, Any]]
+    rows: list[OptionsDecisionCandidate]
     count: int
     offset: int
     limit: int
+
+
+class OptionsPaperJournalRow(BaseModel):
+    shadow_id: str
+    decision_id: str
+    lifecycle: str
+    structure: str | None = None
+    entry_at: datetime | None = None
+    conservative_entry_price: float | None = None
+    conservative_fill_basis: str | None = None
+    latest_mark: float | None = None
+    missing_mark_gap: bool
+    current_return: float | None = None
+    outcome_state: str | None = None
+    pending_entry_reason: str | None = None
+    assignment_warning: str | None = None
+    metrics: dict[str, Any]
 
 
 class OptionsPaperJournalPage(BaseModel):
-    rows: list[dict[str, Any]]
+    rows: list[OptionsPaperJournalRow]
     count: int
     offset: int
     limit: int
+
+
+class OptionsLearningProgress(BaseModel):
+    structure: str
+    market_regime: str | None = None
+    model_revision: str
+    mature_outcomes: int
+    required_mature_outcomes: int
+    lower_95_expectancy: float | None = None
+    brier_score: float | None = None
+    missing_prerequisites: list[str]
+
+
+class OptionsLearningProgressPage(BaseModel):
+    rows: list[OptionsLearningProgress]
+    count: int
+
+
+OptionsDecisionBrief.model_rebuild()

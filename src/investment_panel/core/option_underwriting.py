@@ -11,6 +11,7 @@ Paper-state transition diagram:
 from __future__ import annotations
 
 import random
+from datetime import datetime
 from typing import Any, Literal
 
 
@@ -191,10 +192,22 @@ def _coherent_legs(legs: list[dict[str, Any]]) -> list[str]:
             return ["crossed_or_missing_leg"]
         if leg.get("size_available") is False:
             return ["displayed_size_unavailable"]
-        if leg.get("observed_at") is not None:
-            timestamps.append(leg["observed_at"])
+        observed_at = _as_datetime(leg.get("observed_at"))
+        if observed_at is not None:
+            timestamps.append(observed_at)
     if len(timestamps) >= 2:
         first, last = min(timestamps), max(timestamps)
         if (last - first).total_seconds() > 5:
             return ["interleg_timestamp_skew"]
     return []
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None

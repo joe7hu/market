@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from investment_panel.analysis.history_v3 import analyze_group, static_arbitrage_findings
+from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group, static_arbitrage_findings
 from investment_panel.core.option_underwriting import (
     conservative_entry,
     conservative_mark,
@@ -42,6 +42,41 @@ def test_price_shape_fit_is_deterministic_and_clean_chain_has_no_static_candidat
     assert first["fit"].fitted == second["fit"].fitted
     assert not first["static_findings"]
     assert {row["classification"] for row in first["relative_values"]} <= {"rejected", "relative_cheap", "relative_rich"}
+
+
+def test_live_status_and_mixed_bad_quotes_are_row_scoped() -> None:
+    rows = _rows() + [
+        {**_rows()[0], "contract_id": 100, "strike": 530.0, "market_data_status": "live"},
+        {**_rows()[1], "contract_id": 101, "strike": 535.0, "market_data_status": "live"},
+    ]
+    rows[0]["market_data_status"] = "live"
+    rows[1]["market_data_status"] = "delayed"
+    rows[2]["provider_observed_at"] = rows[2]["group_finished_at"] - timedelta(minutes=4)
+    result = analyze_group(rows, spot=500.0, option_type="call")
+    assert result["fit"].status == "succeeded"
+    assert result["eligible_count"] == 12
+    assert result["row_metrics"] == {
+        "total_rows": 14, "eligible_rows": 12, "stale_rows": 1,
+        "invalid_status_rows": 1, "missing_underlying_rows": 0, "rejected_rows": 2,
+    }
+    by_id = {row["contract_id"]: row for row in result["relative_values"]}
+    assert "invalid_market_status" in by_id[2]["blockers"]
+    assert "quote_age_stale" in by_id[3]["blockers"]
+
+
+def test_stale_and_missing_underlying_groups_retain_rejection_reasons() -> None:
+    stale = _rows()
+    for row in stale:
+        row["provider_observed_at"] = row["group_finished_at"] - timedelta(minutes=4)
+    stale_result = analyze_group(stale, spot=500.0, option_type="call")
+    assert stale_result["fit"].status == "fit_failed"
+    assert all("quote_age_stale" in row["blockers"] for row in stale_result["relative_values"])
+
+    missing = _rows()
+    missing[0]["underlying_price"] = None
+    missing_result = analyze_group(missing, spot=None, option_type="call", group_blockers=["missing_aligned_underlying"])
+    assert missing_result["fit"].status == "fit_failed"
+    assert all("missing_aligned_underlying" in row["blockers"] for row in missing_result["relative_values"])
 
 
 def test_static_arbitrage_uses_executable_worst_side_and_detects_bounds() -> None:
@@ -187,6 +222,59 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
             ).fetchone()
         assert evidence is not None
         assert datetime.fromisoformat(evidence["observed_at"]) == finished_at
+        candidate_payload = OptionsDecisionSystemRepository(runtime).candidates(symbol="QQQ")
+        assert candidate_payload["rows"]
+        assert candidate_payload["rows"][0]["legs"]
+        assert candidate_payload["rows"][0]["conservative_entry"]["fill_basis"]
+        assert "expected" in candidate_payload["rows"][0]["expected_value_interval"]
+        brief = OptionsDecisionSystemRepository(runtime).decision_brief(symbol="QQQ", lane="anomaly")
+        assert brief["readiness"]["analysis"]["eligible_groups"] >= 1
+        assert brief["strongest_candidate"] is not None
+    finally:
+        runtime.close()
+
+
+def test_health_counts_observed_dates_and_qualified_sessions_not_snapshots(
+    migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from investment_panel.database import options_history_canary
+
+    monkeypatch.setattr(options_history_canary, "SCHEDULED_REGULAR_SLOTS", 2)
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        history = OptionHistoryRepository(runtime)
+        ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+        with runtime.transaction() as connection:
+            connection.execute("DELETE FROM analysis.option_history_canary")
+            connection.execute(
+                "INSERT INTO analysis.option_history_canary (model_revision, started_at) VALUES (%s, %s)",
+                [MODEL_REVISION, datetime(2026, 7, 19, tzinfo=UTC)],
+            )
+        for day in (20, 21):
+            for minute in (30, 45):
+                slot = datetime(2026, 7, day, 14, minute, tzinfo=UTC)
+                rows = [
+                    {"underlying_symbol": "QQQ", "expiry": "2026-08-21", "strike": 470 + index * 5,
+                     "type": "call", "underlying_price": 500, "bid": 30 - index * 2,
+                     "ask": 30.1 - index * 2, "mid": 30.05 - index * 2, "open_interest": 500,
+                     "market_data_status": "live"}
+                    for index in range(12)
+                ]
+                run_id = ingestion.start_run("robinhood", "option_history_full")
+                assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=run_id)
+                stored = history.store_capture(
+                    run_id=run_id, source_id="robinhood", symbol="QQQ", slot_at=slot,
+                    captured={"rows": rows, "expected_contract_count": 12, "received_contract_count": 12,
+                              "capture_started_at": slot, "capture_finished_at": slot + timedelta(seconds=2)},
+                )
+                ingestion.finish_run(run_id, "succeeded", summary=stored)
+        health = history.health()
+        assert health["complete_captures"] == 4
+        assert health["observed_regular_session_dates"] == 2
+        assert health["qualified_regular_sessions"] == 2
+        assert health["canary_revision"] == MODEL_REVISION
     finally:
         runtime.close()
 

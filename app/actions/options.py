@@ -65,6 +65,9 @@ class OptionsActions:
     def paper_journal(self, **filters: Any) -> dict[str, Any]:
         return self.decision_system.paper_journal(**filters)
 
+    def learning_progress(self, **filters: Any) -> dict[str, Any]:
+        return self.decision_system.learning_progress(**filters)
+
     def verify_static_arbitrage(self, candidate_id: int) -> dict[str, Any]:
         robinhood = getattr(getattr(getattr(self.config, "data_sources", None), "brokers", None), "robinhood", None)
         if robinhood is None or not bool(getattr(robinhood, "enabled", False)):
