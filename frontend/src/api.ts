@@ -58,6 +58,14 @@ export type OptionHistoryChainRow = {
 
 export type OptionHistoryPage<T> = { rows: T[]; count: number; offset: number; limit: number; snapshot_id?: number | null };
 export type OptionHistorySurface = { snapshot_id: number | null; symbol: string; expiration: string; option_type: "call" | "put"; observed: Array<Record<string, unknown>>; fitted: Array<Record<string, unknown>>; uncertainty: Array<Record<string, unknown>>; fit_status: string; diagnostics: Record<string, unknown> };
+export type OptionHistorySurfaceGrid = {
+  snapshot_id: number | null;
+  symbol: string;
+  x: number[];
+  y: number[];
+  surfaces: Partial<Record<"call" | "put", Array<Array<number | null>>>>;
+  observed: Array<Record<string, unknown>>;
+};
 export type OptionHistorySurfaceGroup = { expiration: string; option_type: "call" | "put"; dte: number; contract_count: number };
 export type OptionHistorySurfaceGroups = { snapshot_id: number | null; rows: OptionHistorySurfaceGroup[] };
 export type OptionHistoryCurves = { snapshot_id: number | null; smiles: Array<Record<string, unknown>>; term_structure: Array<Record<string, unknown>>; history: Array<Record<string, unknown>>; history_state: string };
@@ -279,6 +287,10 @@ export async function loadOptionHistoryChain(params: Record<string, string | num
 
 export async function loadOptionHistorySurface(params: Record<string, string | number | undefined>): Promise<OptionHistorySurface> {
   return getJson(`/api/options/history/surface?${optionHistoryParams(params)}`);
+}
+
+export async function loadOptionHistorySurfaceGrid(params: Record<string, string | number | undefined>): Promise<OptionHistorySurfaceGrid> {
+  return getJson(`/api/options/history/surface/legacy?${optionHistoryParams(params)}`);
 }
 
 export async function loadOptionHistorySurfaceGroups(params: Record<string, string | number | undefined>): Promise<OptionHistorySurfaceGroups> {

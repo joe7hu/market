@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import Plot from "react-plotly.js";
-import type { OptionHistoryCurves, OptionHistorySurface } from "@/api";
-import { buildOptionCurvePlotData, curveChoices } from "./optionsChainPlotData";
+import type { OptionHistoryCurves, OptionHistorySurface, OptionHistorySurfaceGrid } from "@/api";
+import { buildOptionCurvePlotData, buildProviderIVSurfaceData, curveChoices } from "./optionsChainPlotData";
 
 export function OptionSurfacePlot({ surface }: { surface: OptionHistorySurface }) {
   const observed = surface.observed.filter((row) => finiteNumber(row.strike) && finiteNumber(row.provider_iv));
@@ -21,6 +21,34 @@ export function OptionSurfacePlot({ surface }: { surface: OptionHistorySurface }
     xaxis: { title: { text: "Strike" } }, yaxis: { title: { text: "Provider / fitted IV" }, tickformat: ".0%" },
   };
   return <Plot data={data} layout={layout} config={{ responsive: true, displaylogo: false }} className="h-[560px] w-full" />;
+}
+
+export function OptionSurface3dPlot({ surface, optionType }: { surface: OptionHistorySurfaceGrid; optionType: "call" | "put" }) {
+  const plot = useMemo(() => buildProviderIVSurfaceData(surface, optionType), [surface, optionType]);
+  const hasGrid = plot.z.some((row) => row.some((value) => value !== null));
+  if (!hasGrid) return <p className="p-4 text-sm text-muted-foreground">No provider-IV grid is available for this snapshot.</p>;
+  const data: any[] = [{
+    type: "surface", name: "Interpolated provider IV", x: plot.x, y: plot.y, z: plot.z,
+    colorscale: "Viridis", connectgaps: false, showscale: true,
+    colorbar: { title: { text: "Provider IV" }, tickformat: ".0%" },
+    hovertemplate: "Interpolated provider IV<br>Log-moneyness %{x:.3f}<br>DTE %{y}<br>IV %{z:.2%}<extra></extra>",
+  }, {
+    type: "scatter3d", mode: "markers", name: "Observed provider IV",
+    x: plot.observed.map((row) => row.logMoneyness), y: plot.observed.map((row) => row.dte), z: plot.observed.map((row) => row.providerIV),
+    text: plot.observed.map((row) => row.strike === null ? "Strike —" : `Strike ${row.strike.toFixed(2)}`),
+    marker: { size: 2, color: "#f8fafc", opacity: 0.7 },
+    hovertemplate: "%{text}<br>Observed provider IV<br>Log-moneyness %{x:.3f}<br>DTE %{y}<br>IV %{z:.2%}<extra></extra>",
+  }];
+  const layout: any = {
+    autosize: true, height: 620, margin: { l: 0, r: 0, b: 0, t: 34 },
+    title: { text: `${surface.symbol} ${optionType} provider-IV surface` },
+    scene: {
+      xaxis: { title: { text: "Log-moneyness" } },
+      yaxis: { title: { text: "DTE" } },
+      zaxis: { title: { text: "Provider IV" }, tickformat: ".0%" },
+    },
+  };
+  return <Plot data={data} layout={layout} config={{ responsive: true, displaylogo: false }} className="h-[620px] w-full" />;
 }
 
 export function OptionCurvePlots({ curves }: { curves: OptionHistoryCurves }) {

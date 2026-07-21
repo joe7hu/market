@@ -1,9 +1,33 @@
-import type { OptionHistoryCurves } from "@/api";
+import type { OptionHistoryCurves, OptionHistorySurfaceGrid } from "@/api";
 
 type CurveRecord = Record<string, unknown>;
 
 export type CurveChoice = { key: string; label: string };
 export type CurveTrace = { name: string; x: Array<number | string>; y: number[]; text: string[] };
+export type ProviderIVSurfaceData = {
+  x: number[];
+  y: number[];
+  z: Array<Array<number | null>>;
+  observed: Array<{ logMoneyness: number; dte: number; providerIV: number; strike: number | null }>;
+};
+
+/**
+ * The grid is deliberately a display interpolation of provider IV only. The
+ * observed trace remains the source-faithful evidence, and null cells preserve
+ * the no-extrapolation boundary from the API.
+ */
+export function buildProviderIVSurfaceData(surface: OptionHistorySurfaceGrid, optionType: "call" | "put"): ProviderIVSurfaceData {
+  const z = (surface.surfaces[optionType] ?? []).map((row) => row.map((value) => finiteNumber(value) ? value : null));
+  const observed = surface.observed
+    .filter((row) => row.option_type === optionType && finiteNumber(row.log_moneyness) && finiteNumber(row.dte) && finiteNumber(row.provider_iv))
+    .map((row) => ({
+      logMoneyness: numberValue(row.log_moneyness),
+      dte: numberValue(row.dte),
+      providerIV: numberValue(row.provider_iv),
+      strike: finiteNumber(row.strike) ? row.strike : null,
+    }));
+  return { x: surface.x.filter(finiteNumber), y: surface.y.filter(finiteNumber), z, observed };
+}
 
 export function curveChoices(curves: OptionHistoryCurves): CurveChoice[] {
   return curves.smiles
