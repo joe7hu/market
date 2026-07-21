@@ -33,7 +33,11 @@ class OptionsDecisionSystemRepository:
                 WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
                   AND run.summary->>'model_revision' = %s
                   AND snapshot.history_symbol = %s
-                ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
+                -- Replay completion order is not market chronology.  The
+                -- decision brief must continue to select the newest captured
+                -- QQQ cohort after an append-only historical rematerialization.
+                ORDER BY snapshot.slot_at DESC NULLS LAST, generation.id DESC,
+                         run.finished_at DESC NULLS LAST LIMIT 1
                 """,
                 [MODEL_REVISION, symbol.upper()],
             ).fetchone()
