@@ -22,6 +22,7 @@ from investment_panel.core.job_execution import (
 from investment_panel.core.job_policy import default_job_timeouts, job_timeout_seconds
 from investment_panel.database.authority import database_url, runtime_for_url
 from investment_panel.database.jobs import JobRepository
+from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository
 from investment_panel.jobs import (
     postgres_refresh,
     refresh_options_radar,
@@ -52,7 +53,15 @@ def _job_timeout_seconds(job_name: str) -> int | None:
 def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> dict[str, Any]:
     """Pull fresh option chains, then rematerialize the visible radar snapshot."""
 
-    source = update_robinhood_options.run(config_path)
+    config = load_config(config_path)
+    policy = OptionHistoryPolicyRepository(runtime_for_url(database_url(config)))
+    lease = policy.acquire_provider_lease(provider="robinhood", workload="options_radar", symbol="RADAR")
+    if lease is None:
+        return {"ok": False, "status": "skipped", "reason": "provider_capacity_deferred"}
+    try:
+        source = update_robinhood_options.run(config_path)
+    finally:
+        policy.release_provider_lease(lease.id)
     source_status = str(source.get("status") or "").strip().lower()
     if source_status not in {"ok", "partial"}:
         return {

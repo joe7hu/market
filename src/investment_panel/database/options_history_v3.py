@@ -34,6 +34,7 @@ from investment_panel.database.options_history_v3_candidates import (
 )
 from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
 from investment_panel.database.options_history_v3_evidence import quote_package
+from investment_panel.database.options_history_policy import apply_publication_cap
 
 
 class OptionHistoryV3Materializer:
@@ -190,6 +191,7 @@ class OptionHistoryV3Materializer:
                 metadata["available_at"],
             )
             for (expiration, option_type), group in grouped.items():
+                policy = _policy_for_instrument(connection, int(group[0]["instrument_id"]))
                 spot, group_blockers = _capture_group_quality(group)
                 result = analyze_group(
                     group,
@@ -260,6 +262,7 @@ class OptionHistoryV3Materializer:
                             current_complete_generation=metadata["latest_complete_generation_id"] == capture_generation_id,
                             model_revision=model_revision,
                             lifecycle_enabled=mode == "live_lifecycle",
+                            policy=policy,
                         )
             if mode == "live_lifecycle":
                 self._advance_pending_shadows(
@@ -292,6 +295,7 @@ class OptionHistoryV3Materializer:
         relative_value_id: int, value: dict[str, Any], quote: dict[str, Any], group: list[dict[str, Any]],
         thesis: dict[str, Any] | None, bars: list[dict[str, Any]], as_of: datetime,
         current_complete_generation: bool, model_revision: str, lifecycle_enabled: bool,
+        policy: dict[str, Any] | None,
     ) -> int:
         """Persist thesis-led or research-only candidates from immutable v3 evidence."""
 
@@ -312,15 +316,18 @@ class OptionHistoryV3Materializer:
                 terminal_returns=non_overlapping_returns(bars, int(quote.get("dte") or 0)),
                 seed=candidate_seed(generation_id, relative_value_id, structure),
             )
-            calibration = self._calibration(connection, structure, market_regime(bars), model_revision, as_of)
+            calibration = self._calibration(
+                connection, int(quote["instrument_id"]), structure, market_regime(bars), model_revision, as_of
+            )
             blockers = [*value["blockers"], *scenario["blockers"]]
-            state = paper_state(
+            computed_state = paper_state(
                 structure=structure, lane=lane, thesis=thesis, fit_status="succeeded", blockers=blockers,
                 scenario_count=int(scenario["scenario_count"]), expected_value=scenario["expected_value"],
                 lower_95_expected_value=scenario["lower_95_expected_value"], max_loss=scenario["max_loss"],
                 data_confidence=value["confidence"], execution_confidence=calculate_execution_confidence(legs),
                 calibration=calibration, current_complete_generation=current_complete_generation,
             )
+            state = apply_publication_cap(computed_state, policy)
             self._store_candidate(
                 connection, run_id=run_id, snapshot_id=snapshot_id, generation_id=generation_id,
                 relative_value_id=relative_value_id, value=value, quote=quote, thesis=thesis,
@@ -359,6 +366,8 @@ class OptionHistoryV3Materializer:
         details = {
             "paper_only": True, "relative_value_evidence": value.get("evidence"),
             "historical_paths": scenario, "calibration": calibration, "as_of": as_of.isoformat(),
+            "computed_paper_state": state.get("computed_paper_state", state["paper_state"]),
+            "effective_paper_state": state["paper_state"],
             "thesis": {
                 "id": thesis.get("id") if thesis else None,
                 "revision": thesis.get("revision") if thesis else None,
@@ -433,7 +442,10 @@ class OptionHistoryV3Materializer:
             bars.setdefault(int(row["instrument_id"]), []).append(dict(row))
         return bars
 
-    def _calibration(self, connection: Any, structure: str, market_regime: str, model_version: str, as_of: datetime) -> dict[str, Any]:
+    def _calibration(
+        self, connection: Any, instrument_id: int, structure: str, market_regime: str,
+        model_version: str, as_of: datetime,
+    ) -> dict[str, Any]:
         rows = connection.execute(
             """
             SELECT option_decision.market_regime, option_decision.probability_profit, outcome.current_return
@@ -444,8 +456,9 @@ class OptionHistoryV3Materializer:
             WHERE shadow.source_kind = 'options_history_v3' AND option_decision.structure = %s
               AND option_decision.model_version = %s AND outcome.maturity_state IN ('mature', 'expired')
               AND outcome.current_return IS NOT NULL AND outcome.observed_through <= %s
+              AND decision.instrument_id = %s
             """,
-            [structure, model_version, as_of],
+            [structure, model_version, as_of, instrument_id],
         ).fetchall()
         exact = [dict(row) for row in rows if row["market_regime"] == market_regime]
         returns = [float(row["current_return"]) for row in exact]
@@ -673,3 +686,15 @@ def _long_delta_eligible(quote: dict[str, Any]) -> bool:
     if not 0.35 <= delta <= 0.65:
         return False
     return observed is not None and available is not None and (available - observed).total_seconds() <= 180
+
+
+def _policy_for_instrument(connection: Any, instrument_id: int) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT publication_cap, effective_state, policy_revision, lock_version
+        FROM app.option_history_policy
+        WHERE instrument_id = %s
+        """,
+        [instrument_id],
+    ).fetchone()
+    return dict(row) if row else None

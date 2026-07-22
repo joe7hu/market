@@ -1,0 +1,18 @@
+# Options Chain Defect Ledger - 2026-07-22
+
+Scope: `/options-chain`, historical option analysis, decision publication, and the first multi-symbol expansion gate.
+
+This ledger freezes the review findings that must stay closed before any expansion stage begins. New critical or high-severity defects block additional symbol activation.
+
+| ID | Severity | Finding | Owner | Closure Evidence | Status |
+|---|---:|---|---|---|---|
+| OCH-001 | Critical | Failed fits or missing coherent spot data could be interpreted as usable ATM, delta, curve, or relative-value evidence. | `analysis/history_v3.py`, `database/options_history_v3.py` | `tests/test_option_history_v3.py::test_stale_and_missing_underlying_groups_retain_rejection_reasons`; failed groups persist rejected relative values with null fair value fields. | Closed |
+| OCH-002 | High | Curve and summary responses needed explicit quality metadata so excluded groups cannot silently look valid. | `database/options_history_v3.py`, `database/options_history.py` | Surface summaries persist `fit_status`, eligible point counts, blocker metrics, and solver failure counts; curve reads consume persisted summaries rather than fallback fit values. | Closed |
+| OCH-003 | High | Readiness denominators and canary status could count snapshots instead of qualified regular sessions. | `database/options_history_canary.py`, `database/options_decision_system.py` | `tests/test_option_history_v3.py::test_health_counts_observed_dates_and_qualified_sessions_not_snapshots`. | Closed |
+| OCH-004 | High | Relative-value rejected totals and blocker breakdowns were not explicit enough for decision safety. | `analysis/history_v3.py`, `database/options_decision_system.py` | Every non-eligible row produces a rejected relative value with blockers; read models expose `count`, classification filters, verification status, and blockers. | Closed |
+| OCH-005 | Medium | A stale snapshot inventory could keep the UI pinned to old evidence after a newer complete generation. | `frontend/src/views/optionsChain.tsx`, `frontend/src/views/optionsChain/decisionFirst.tsx` | Existing request effects own `AbortController`s and snapshot state is URL-owned; Landing 4 will add explicit Follow-latest controls before multi-symbol UI is activated. | Deferred, blocks Landing 4 only |
+| OCH-006 | High | Multi-symbol learning could pool QQQ and NVDA calibration or outcomes. | `database/options_history_v3.py` | `OptionHistoryV3Materializer._calibration` now filters by `decision.instrument_id`; policy cap tests cover NVDA shadow publication. | Closed |
+| OCH-007 | Critical | NVDA could become `PAPER_READY` before QQQ expansion readiness gates complete. | `database/options_history_policy.py`, `database/options_history_v3.py` | NVDA seed has `publication_cap = WATCH`; `apply_publication_cap` downgrades computed `PAPER_READY` to effective `WATCH` with blocker `symbol_shadow_only`. | Closed |
+| OCH-008 | High | Provider pulls could exceed the approved two-collector Robinhood limit across history and Radar. | `database/options_history_policy.py`, `jobs/robinhood_option_history.py`, `core/refresh_jobs.py` | `ops.provider_lease` enforces max two active Robinhood leases; history and hard Radar refresh acquire/release leases. | Closed |
+
+Expansion rule: Landing 3 may activate NVDA hourly shadow only after Landing 2 QQQ capacity parity passes and this ledger has no open Critical or High finding that affects backend correctness, provider capacity, publication safety, or cross-symbol isolation.

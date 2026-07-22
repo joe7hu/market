@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import deps
+from app.actions.options import OptionsActions
 from app.actions.portfolio import PortfolioActions
 
 router = APIRouter()
@@ -149,6 +150,24 @@ def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str,
     try:
         result = _actions().delete_watchlist_symbol(symbol)
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    deps._invalidate_context_cache()
+    return result
+
+
+@router.patch("/api/watchlist/symbols/{symbol}/options-history")
+def set_watchlist_options_history_endpoint(
+    symbol: str,
+    payload: deps.OptionsHistoryToggleInput,
+    request: Request,
+) -> dict[str, Any]:
+    deps._require_local_request(request)
+    actions = OptionsActions(deps.load_config())
+    try:
+        result = actions.set_history_requested_state(symbol, payload.model_dump())
+    except Exception as exc:
+        if actions.is_policy_conflict(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
     return result

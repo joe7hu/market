@@ -60,6 +60,11 @@ def historical_option_snapshots(
     return _actions().history_snapshots(symbol=symbol, offset=offset, limit=limit, include_partial=include_partial)
 
 
+@router.get("/api/options/history/symbols")
+def historical_option_symbols() -> dict[str, Any]:
+    return _actions().history_symbols()
+
+
 @router.get("/api/options/history/chain", response_model=OptionChainPage)
 def historical_option_chain(
     symbol: str = Query("QQQ", min_length=1, max_length=16),

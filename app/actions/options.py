@@ -12,6 +12,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
+from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
 
@@ -56,8 +57,25 @@ class OptionsActions:
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
         self.history = OptionHistoryRepository(self.runtime)
+        self.policy = OptionHistoryPolicyRepository(self.runtime)
         mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
+
+    def history_symbols(self) -> dict[str, Any]:
+        return self.policy.symbols()
+
+    def set_history_requested_state(self, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "options_history_policy": self.policy.set_requested_state(
+                symbol,
+                requested_state=str(payload.get("requested_state") or ""),
+                lock_version=int(payload.get("lock_version") or 0),
+            )
+        }
+
+    @staticmethod
+    def is_policy_conflict(exc: Exception) -> bool:
+        return isinstance(exc, PolicyConflict)
 
     def history_snapshots(self, **filters: Any) -> dict[str, Any]:
         return self.history.snapshots(**filters)

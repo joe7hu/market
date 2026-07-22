@@ -80,6 +80,27 @@ export type OptionHistoryHealth = {
   latest_complete_slot: string | null; average_completeness: number | null;
   option_quote_bytes: number; surface_summary_bytes: number; storage_bytes: number; retention_days: number;
 };
+export type OptionHistorySymbolPolicy = {
+  instrument_id: number;
+  symbol: string;
+  requested_state: "on" | "off";
+  effective_state: "disabled" | "pending_gate" | "shadow" | "active" | "paused";
+  collection_tier: "core" | "standard";
+  cadence_minutes: 15 | 60;
+  publication_cap: "WATCH" | "PAPER_READY";
+  provider: string;
+  normalized_retention_days: number;
+  derived_retention_days: number;
+  provider_payload_retention_days: number;
+  policy_revision: string;
+  lock_version: number;
+  reason: string | null;
+  latest_complete_capture: string | null;
+  latest_snapshot_id: number | null;
+  complete_captures: number;
+  readiness: string;
+};
+export type OptionHistorySymbolsPayload = { rows: OptionHistorySymbolPolicy[]; count: number; policy_revision: string };
 export type OptionsDecisionState = "COLLECTING" | "WATCH" | "PAPER_READY" | "REJECT";
 export type OptionsDecisionReadiness = {
   capture: { capture_state: string | null; completeness: number | null; capture_generation_id: number | null; complete_captures: number };
@@ -351,6 +372,14 @@ export async function loadOptionHistoryAnomalies(params: Record<string, string |
 
 export async function loadOptionHistoryHealth(): Promise<OptionHistoryHealth> {
   return getJson("/api/options/history/health");
+}
+
+export async function loadOptionHistorySymbols(signal?: AbortSignal): Promise<OptionHistorySymbolsPayload> {
+  return getJson("/api/options/history/symbols", signal);
+}
+
+export async function setWatchlistOptionsHistory(symbol: string, requested_state: "on" | "off", lock_version: number): Promise<{ options_history_policy: OptionHistorySymbolPolicy }> {
+  return patchJson(`/api/watchlist/symbols/${encodeURIComponent(symbol)}/options-history`, { requested_state, lock_version });
 }
 
 export async function loadOptionsDecisionBrief(symbol = "QQQ", lane: "thesis" | "anomaly" = "thesis", signal?: AbortSignal): Promise<OptionsDecisionBrief> {

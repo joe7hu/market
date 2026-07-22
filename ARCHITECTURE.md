@@ -46,7 +46,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 | `core/panel/` | **Read-model layer**: ~120 `con→list[dict]` accessors + `load_panel_data` dispatcher. Submodules: `snapshot` (orchestration), `read_equity`/`read_options`/`read_learning` (accessors), `market_environment`, `feed`, `technicals`, `disclosures`, `sources`, `metrics`, `coerce` | a read model / what a table returns |
 | `core/decision/` | **Decision engine**: universe build, freshness, queue, readiness, grading, watchlist, market calendar. Submodules: `builders`, `read_models`, `grading`, `readiness`, `freshness`, `calendar`, `watchlist`, `portfolio`, `quotes`, `service`, `coerce`, `constants` | decision grades, gating, freshness rules |
 | `core/options_radar/` | Options-radar pipeline: candidates, gates, scoring, opportunities, alerts, learning loop | options-radar logic |
-| `analysis/history_v3.py`, `database/options_history_v3.py`, `database/options_decision_system.py` | Immutable QQQ capture generations, price-space evidence/replay, and bounded decision read models | QQQ underwriting/evidence, not broad discovery |
+| `analysis/history_v3.py`, `database/options_history_v3.py`, `database/options_decision_system.py`, `database/options_history_policy.py` | Immutable option-history capture generations, price-space evidence/replay, policy-gated symbol enrollment, provider leases, and bounded decision read models | QQQ underwriting/evidence, the NVDA hourly shadow exception, policy/capacity gates; not broad discovery |
 | `core/brokers/` | Broker integration: `ibkr`, `moomoo` providers, `persistence`, `read_models`, `policy`, `recommendations`, `service` | broker data, paper orders, agent recs |
 | `core/free_sources/` | Free market-data updates: `tradingview_sources`, `yfinance_sources`, `options`, `store`, `provenance`, `coerce` | TradingView/yfinance ingestion + storage |
 | `core/source_ingestion/` | Followed-source directory ingestion (canonical, health, definitions). `raw_sources/` is a sub-package: `sync` (orchestration), `tweets`, `browser`, `io`, `coerce`, `constants` | followed-source pipeline / raw Birdclaw+browser ingest |
@@ -72,7 +72,7 @@ only for legacy-import/test compatibility and are not installed or scheduled.
 | `components/` | Reusable UI primitives (incl. `components/ui/`, `components/market/`) |
 | `api.ts`, `marketData.tsx`, `model.ts`, `types.ts`, `hooks.ts`, `utils.ts` | API client, data context/model, shared types/hooks/utils |
 
-`/options-radar` owns broad-universe discovery. `/options-chain` owns the QQQ-only paper-underwriting workflow: compact decision brief first, then optional discovery, evidence, journal, and learning reads. The chain and 3D surface remain secondary evidence and are not decision signals.
+`/options-radar` owns broad-universe discovery. `/options-chain` owns the policy-driven option-history underwriting workflow: QQQ is the core 15-minute `PAPER_READY` symbol, and NVDA is the sole early hourly `WATCH`-capped shadow collection exception. Compact decision brief comes first, then optional discovery, evidence, journal, and learning reads. The chain and 3D surface remain secondary evidence and are not decision signals.
 | `generated/panelContract.ts`, `adapters/` | Generated backend-owned panel table keys plus feature-owned row normalization before view code | panel contract drift or feature payload adaptation |
 
 ## Conventions (read before adding code)

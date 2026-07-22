@@ -176,6 +176,24 @@ class OptionHistoryRepository:
                 "UPDATE raw.option_snapshot SET capture_state = 'failed', capture_finished_at = now() WHERE id = %s",
                 [generation["snapshot_id"]],
             )
+    def defer_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, reason: str) -> None:
+        """Record a capacity deferral as terminal evidence without making the slot retryable."""
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            generation = connection.execute(
+                """
+                SELECT generation.id, snapshot.id AS snapshot_id
+                FROM raw.option_capture_generation generation
+                JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
+                WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
+                  AND generation.ingest_run_id = %s AND generation.capture_state = 'running'
+                FOR UPDATE
+                """,
+                [source_id, symbol.upper(), slot_at, run_id],
+            ).fetchone()
+            if generation is None:
+                return
+            connection.execute("UPDATE raw.option_capture_generation SET capture_state = 'deferred', capture_finished_at = now(), terminal_error = %s WHERE id = %s", [reason, generation["id"]])
+            connection.execute("UPDATE raw.option_snapshot SET capture_state = 'deferred', capture_finished_at = now() WHERE id = %s", [generation["snapshot_id"]])
     def _generation_for_run(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID) -> int | None:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(

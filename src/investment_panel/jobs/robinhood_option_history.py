@@ -13,6 +13,7 @@ from investment_panel.core.robinhood_options import RobinhoodClient, collect_rob
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history import OptionHistoryRepository
+from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository
 
 
 def history_slot(now: datetime | None = None) -> datetime | None:
@@ -46,24 +47,48 @@ def run(
         return {"status": "skipped", "reason": "history_disabled", "symbols": []}
     if slot_at is None:
         return {"status": "skipped", "reason": "outside_regular_session", "symbols": []}
-    symbols = list(dict.fromkeys(symbol for symbol in provider.history_symbols if symbol))
     runtime = runtime_for_config(config)
     ingestion = IngestionRepository(runtime)
     history = OptionHistoryRepository(runtime)
+    policy = OptionHistoryPolicyRepository(runtime)
+    use_policy = True
+    try:
+        scheduled = policy.due_symbols(now)
+    except Exception:
+        use_policy = False
+        scheduled = [
+            {"symbol": symbol, "slot_at": slot_at, "publication_cap": "PAPER_READY"}
+            for symbol in dict.fromkeys(symbol for symbol in provider.history_symbols if symbol)
+        ]
+    symbols = [str(item["symbol"]).upper() for item in scheduled]
     ingestion.register_source(
         "robinhood", name="Robinhood", family="broker", kind="option_chain",
         capabilities={"option_quotes": True, "option_history_full": True},
     )
     captures: list[dict[str, Any]] = []
-    for symbol in symbols:
+    for schedule in scheduled:
+        symbol = str(schedule["symbol"]).upper()
+        capture_slot_at = schedule.get("slot_at") or slot_at
         with ingestion.run("robinhood", "option_history_full") as run:
-            if history.claim_slot(source_id="robinhood", symbol=symbol, slot_at=slot_at, run_id=run.id) is None:
-                run.finish("skipped", summary={"symbol": symbol, "slot_at": slot_at.isoformat(), "reason": "slot_already_claimed"})
+            if history.claim_slot(source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id) is None:
+                run.finish("skipped", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat(), "reason": "slot_already_claimed"})
                 captures.append({"symbol": symbol, "status": "skipped", "reason": "slot_already_claimed"})
                 continue
+            lease_id = None
+            if use_policy:
+                lease = policy.acquire_provider_lease(provider="robinhood", workload="option_history", symbol=symbol)
+                if lease is None:
+                    history.defer_capture(
+                        source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id,
+                        reason="provider_capacity_deferred",
+                    )
+                    run.finish("skipped", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat(), "reason": "provider_capacity_deferred"})
+                    captures.append({"symbol": symbol, "status": "skipped", "reason": "provider_capacity_deferred"})
+                    continue
+                lease_id = lease.id
             try:
                 captured = collect_robinhood_full_option_chain(provider, symbol, client=client)
-                stored = history.store_capture(run_id=run.id, source_id="robinhood", symbol=symbol, slot_at=slot_at, captured=captured, minimum_completeness=provider.history_min_completeness)
+                stored = history.store_capture(run_id=run.id, source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, captured=captured, minimum_completeness=provider.history_min_completeness)
                 status = "succeeded" if stored["capture_state"] == "complete" else "partial"
                 run.finish(
                     status, item_count=stored["received_contract_count"], instrument_count=1,
@@ -71,9 +96,12 @@ def run(
                 )
                 captures.append({"symbol": symbol, "status": status, **stored})
             except Exception as exc:
-                history.fail_capture(source_id="robinhood", symbol=symbol, slot_at=slot_at, run_id=run.id, error=exc)
-                run.finish("failed", failure_detail=f"{type(exc).__name__}: {exc}", summary={"symbol": symbol, "slot_at": slot_at.isoformat()})
+                history.fail_capture(source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id, error=exc)
+                run.finish("failed", failure_detail=f"{type(exc).__name__}: {exc}", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat()})
                 captures.append({"symbol": symbol, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                if lease_id is not None:
+                    policy.release_provider_lease(lease_id)
     complete = [capture for capture in captures if capture.get("status") == "succeeded"]
     failed = [capture for capture in captures if capture.get("status") == "failed"]
     return {

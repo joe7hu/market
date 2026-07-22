@@ -132,6 +132,11 @@ class WatchlistSymbolInput(BaseModel):
     notes: str = ""
 
 
+class OptionsHistoryToggleInput(BaseModel):
+    requested_state: Literal["on", "off"]
+    lock_version: int
+
+
 class ThesisInput(BaseModel):
     thesis: str
     why: str = ""
