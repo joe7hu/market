@@ -90,7 +90,7 @@ export function EvidenceWorkspace() {
       .then(setSurfaceGrid)
       .catch(asError(setError));
     return () => controller.abort();
-  }, [symbol, snapshot, optionType, surfaceView, view, webgl]);
+  }, [symbol, snapshot, optionType, surfaceView, view]);
   useEffect(() => {
     if (view !== "curves" || !snapshot || !expiration) return;
     const controller = new AbortController();
