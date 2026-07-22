@@ -26,12 +26,6 @@ market_data:
   crypto_provider: coingecko
   user_agent: "joehu-market-panel/0.1 contact:local"
 
-analysis:
-  # Reversible rollout: disabled serves legacy surfaces, shadow shows v3 evidence,
-  # paper additionally permits the already-calibrated local paper-entry action.
-  options_decision_system:
-    mode: shadow
-
 data_sources:
   opencli:
     enabled: true
@@ -144,6 +138,10 @@ analysis:
   enabled: true
   correlation_lookback_days: 180
   max_correlation_peers: 8
+  # Personal runtime: expose the full paper workflow.  This remains local and
+  # paper-only; it does not submit broker orders.
+  options_decision_system:
+    mode: paper
 
 # Live opencli research ingestion (X/social, news, blogs). Cadence env knobs in
 # app/scheduler.py: MARKET_SOCIAL_REFRESH_SECONDS (default 1800),
