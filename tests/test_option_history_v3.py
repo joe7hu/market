@@ -128,7 +128,13 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
         snapshot_id=complete["snapshot_id"], capture_generation_id=complete["capture_generation_id"], code_version="test-replay"
     )
     assert first_replay["deterministic_hash"] == second_replay["deterministic_hash"]
-    assert first_replay["analysis_run_id"] != second_replay["analysis_run_id"]
+    assert first_replay["analysis_run_id"] == second_replay["analysis_run_id"]
+    assert second_replay["idempotent_replay"] is True
+    assert first_replay["mode"] == "historical_evidence"
+    with runtime.read() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM analysis.shadow_trade WHERE source_kind = 'options_history_v3'"
+        ).fetchone()["count"] == 0
     with runtime.transaction() as connection:
         candidate = connection.execute(
             "SELECT id FROM analysis.option_relative_value WHERE analysis_run_id = %s LIMIT 1",
@@ -282,8 +288,8 @@ def test_health_counts_observed_dates_and_qualified_sessions_not_snapshots(
 def test_underwriting_never_uses_midpoint_for_debit_fill_or_mark() -> None:
     now = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
     legs = [
-        {"side": "long", "bid": 2.0, "ask": 2.2, "observed_at": now},
-        {"side": "short", "bid": 0.8, "ask": 1.0, "observed_at": now + timedelta(seconds=2)},
+        {"side": "long", "option_type": "call", "strike": 500, "bid": 2.0, "ask": 2.2, "observed_at": now, "size_available": True},
+        {"side": "short", "option_type": "call", "strike": 505, "bid": 0.8, "ask": 1.0, "observed_at": now + timedelta(seconds=2), "size_available": True},
     ]
     assert conservative_entry(legs, "call_debit_spread") == (1.4000000000000001, [])
     assert conservative_mark(legs, "call_debit_spread") == (1.0, [])
@@ -325,8 +331,8 @@ def test_paper_state_requires_exact_gates_and_all_structures_can_watch() -> None
 
 def test_historical_payoff_statistics_is_seeded_and_never_uses_midpoint_entry() -> None:
     legs = [
-        {"option_type": "call", "side": "long", "strike": 100.0, "bid": 4.8, "ask": 5.0, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC)},
-        {"option_type": "call", "side": "short", "strike": 105.0, "bid": 2.0, "ask": 2.2, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC)},
+        {"option_type": "call", "side": "long", "strike": 100.0, "bid": 4.8, "ask": 5.0, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC), "size_available": True},
+        {"option_type": "call", "side": "short", "strike": 105.0, "bid": 2.0, "ask": 2.2, "observed_at": datetime(2026, 7, 20, 14, 30, tzinfo=UTC), "size_available": True},
     ]
     returns = (-0.10, -0.02, 0.01, 0.04, 0.08) * 4
 
@@ -344,12 +350,14 @@ def test_v3_paper_readiness_requires_a_fresh_coherent_leg_package() -> None:
     now = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
     payload = {
         "quote_observed_at": now.isoformat(),
-        "leg_quotes": [{"bid": 2.0, "ask": 2.2, "size_available": True}],
+        "leg_quotes": [{"bid": 2.0, "ask": 2.2, "size_available": True, "observed_at": now.isoformat(), "available_at": now.isoformat()}],
     }
 
     assert _v3_paper_readiness(payload, now) == "A"
     assert _v3_paper_readiness(payload, now + timedelta(minutes=6)) == "C"
     assert _v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.2, "ask": 2.0}]}, now) == "C"
+    assert _v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.0, "ask": 2.2}]}, now) == "C"
+    assert conservative_entry([{**payload["leg_quotes"][0], "side": "long", "option_type": "call", "strike": 500, "size_available": None}], "long_call")[0] is None
 
 
 def test_claimed_generation_is_terminal_after_collector_failure(migrated_postgres_dsn: str) -> None:

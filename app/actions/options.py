@@ -24,6 +24,30 @@ def _decision_mode(config: Any) -> str:
     return str(getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "mode", "shadow"))
 
 
+def _paper_actions_enabled(config: Any) -> bool:
+    """Read the paper-action kill switch from web dict or typed job config."""
+
+    if isinstance(config, dict):
+        raw = (config.get("analysis") or {}).get("options_decision_system", {})
+        return bool(raw.get("options_paper_actions_enabled", False))
+    raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_paper_actions_enabled", False)
+    return bool(raw)
+
+
+def _robinhood_config(config: Any) -> Any:
+    """Return Robinhood config from dict-backed web config or typed config."""
+
+    if isinstance(config, dict):
+        return (((config.get("data_sources") or {}).get("brokers") or {}).get("robinhood") or {})
+    return getattr(getattr(getattr(config, "data_sources", None), "brokers", None), "robinhood", None)
+
+
+def _cfg_get(raw: Any, key: str, default: Any = None) -> Any:
+    if isinstance(raw, dict):
+        return raw.get(key, default)
+    return getattr(raw, key, default)
+
+
 class OptionsActions:
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -67,6 +91,16 @@ class OptionsActions:
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
         return self.decision_system.decision_brief(**filters)
 
+    def workspace(self, **filters: Any) -> dict[str, Any]:
+        payload = self.decision_system.workspace(**filters)
+        payload["paper_action_capability"]["enabled"] = _decision_mode(self.config) == "paper" and _paper_actions_enabled(self.config)
+        payload["paper_action_capability"]["reason"] = (
+            "enabled"
+            if payload["paper_action_capability"]["enabled"]
+            else "options_paper_actions_enabled_false"
+        )
+        return payload
+
     def candidates(self, **filters: Any) -> dict[str, Any]:
         return self.decision_system.candidates(**filters)
 
@@ -80,14 +114,14 @@ class OptionsActions:
         return self.decision_system.learning_progress(**filters)
 
     def verify_static_arbitrage(self, candidate_id: int) -> dict[str, Any]:
-        robinhood = getattr(getattr(getattr(self.config, "data_sources", None), "brokers", None), "robinhood", None)
-        if robinhood is None or not bool(getattr(robinhood, "enabled", False)):
+        robinhood = _robinhood_config(self.config)
+        if robinhood is None or not bool(_cfg_get(robinhood, "enabled", False)):
             return self.decision_system.verification_result(candidate_id)
         client = RobinhoodMcpClient(
-            str(getattr(robinhood, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
+            str(_cfg_get(robinhood, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
             auth_token=load_robinhood_access_token(robinhood),
-            timeout_seconds=min(10, int(getattr(robinhood, "timeout_seconds", 10))),
-            max_response_bytes=int(getattr(robinhood, "max_response_bytes", 8 * 1024 * 1024)),
+            timeout_seconds=min(10, int(_cfg_get(robinhood, "timeout_seconds", 10))),
+            max_response_bytes=int(_cfg_get(robinhood, "max_response_bytes", 8 * 1024 * 1024)),
         )
         return self.decision_system.verification_result(candidate_id, client)
 
@@ -98,6 +132,8 @@ class OptionsActions:
         mode = _decision_mode(self.config)
         if mode != "paper":
             raise ValueError("options decision system is in shadow mode; paper entry is disabled")
+        if not _paper_actions_enabled(self.config):
+            raise ValueError("options paper actions kill switch is disabled")
         return self.actions.stage_option_paper_entry(
             decision_id=decision_id,
             idempotency_key=payload.get("idempotency_key"),

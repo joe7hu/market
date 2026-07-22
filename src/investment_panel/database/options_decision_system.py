@@ -13,6 +13,8 @@ from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrag
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.options_history_canary import canary_health
+from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
+from investment_panel.database.options_decision_verification import candidate_finding, same_finding_identity
 
 
 class OptionsDecisionSystemRepository:
@@ -83,6 +85,7 @@ class OptionsDecisionSystemRepository:
         self,
         *,
         symbol: str = "QQQ",
+        scope: str = "current",
         lane: str | None = None,
         paper_state: str | None = None,
         structure: str | None = None,
@@ -92,6 +95,20 @@ class OptionsDecisionSystemRepository:
     ) -> dict[str, Any]:
         filters = ["instrument.symbol = %s", "option_decision.paper_state IS NOT NULL", "option_decision.model_version = %s"]
         values: list[Any] = [symbol.upper(), MODEL_REVISION]
+        latest_run_id: str | None = None
+        as_of: Any = None
+        capture_generation_id: int | None = None
+        if scope != "history":
+            latest = latest_run(self.runtime, symbol=symbol)
+            if latest is None:
+                return {"items": [], "total": 0, "next_cursor": None, "as_of": None, "capture_generation_id": None,
+                        "model_revision": MODEL_REVISION, "scope": scope, "analysis_run_id": None,
+                        "rows": [], "count": 0, "offset": offset, "limit": limit}
+            latest_run_id = str(latest["id"])
+            as_of = latest["finished_at"]
+            capture_generation_id = (latest.get("summary") or {}).get("capture_generation_id")
+            filters.append("decision.run_id = %s")
+            values.append(latest_run_id)
         if lane:
             filters.append("option_decision.discovery_lane = %s")
             values.append(lane)
@@ -139,10 +156,12 @@ class OptionsDecisionSystemRepository:
                 """,
                 [*values, limit, offset],
             ).fetchall()
-        return {
-            "rows": [_candidate_payload(dict(row)) for row in rows],
-            "count": int(count), "offset": offset, "limit": limit,
-        }
+        items = [_candidate_payload(dict(row)) for row in rows]
+        next_cursor = str(offset + limit) if offset + len(items) < int(count) else None
+        return {"items": items, "total": int(count), "next_cursor": next_cursor, "as_of": as_of,
+                "capture_generation_id": capture_generation_id, "model_revision": MODEL_REVISION,
+                "scope": scope, "analysis_run_id": latest_run_id,
+                "rows": items, "count": int(count), "offset": offset, "limit": limit}
 
     def relative_values(
         self,
@@ -182,6 +201,7 @@ class OptionsDecisionSystemRepository:
                         JOIN raw.option_capture_generation generation ON generation.id = (run.summary->>'capture_generation_id')::bigint
                         WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
                           AND generation.snapshot_id = %s
+                          AND run.summary->>'model_revision' = %s
                         ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
                     )
                     SELECT count(*) AS count FROM analysis.option_relative_value value
@@ -194,15 +214,16 @@ class OptionsDecisionSystemRepository:
                         ORDER BY verified_at DESC, id DESC LIMIT 1
                     ) verification ON true
                     WHERE {where}
-                      AND value.analysis_run_id = (SELECT id FROM latest)""", [snapshot, *values],
+                      AND value.analysis_run_id = (SELECT id FROM latest)""", [snapshot, MODEL_REVISION, *values],
             ).fetchone()["count"]
             rows = connection.execute(
                 f"""WITH latest AS (
                         SELECT run.id FROM analysis.run run
                         JOIN raw.option_capture_generation generation ON generation.id = (run.summary->>'capture_generation_id')::bigint
-                        WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
-                          AND generation.snapshot_id = %s
-                        ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
+                    WHERE run.run_type = 'option_history_v3' AND run.status = 'succeeded'
+                      AND generation.snapshot_id = %s
+                      AND run.summary->>'model_revision' = %s
+                    ORDER BY run.finished_at DESC NULLS LAST LIMIT 1
                     )
                 SELECT value.id, value.analysis_run_id::text AS analysis_run_id, value.capture_generation_id,
                        {effective_classification} AS classification,
@@ -225,9 +246,12 @@ class OptionsDecisionSystemRepository:
                   AND value.analysis_run_id = (SELECT id FROM latest)
                 ORDER BY value.modeled_net_edge DESC NULLS LAST, value.id
                 LIMIT %s OFFSET %s
-                """, [snapshot, *values, limit, offset],
+                """, [snapshot, MODEL_REVISION, *values, limit, offset],
             ).fetchall()
         return {"rows": [dict(row) for row in rows], "count": int(count), "offset": offset, "limit": limit}
+
+    def workspace(self, *, symbol: str = "QQQ", lane: str = "thesis") -> dict[str, Any]:
+        return workspace_payload(self.runtime, symbol=symbol, lane=lane, mode=self.mode, decision_brief=self.decision_brief)
 
     def paper_journal(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100) -> dict[str, Any]:
         with self.runtime.read() as connection:
@@ -348,8 +372,7 @@ class OptionsDecisionSystemRepository:
             if len(usable_times) != len(timestamps) or (usable_times and (max(usable_times) - min(usable_times)).total_seconds() > 5):
                 blockers.append("live_package_timestamp_skew")
             findings = static_arbitrage_findings(live_rows, spot=spot, option_type=context["option_type"]) if not blockers else []
-            expected = set(context["contract_ids"])
-            verified = any(expected.issubset(set(finding["contract_ids"])) for finding in findings)
+            verified = any(same_finding_identity(context["finding"], finding) for finding in findings)
             if not verified and not blockers:
                 blockers.append("live_worst_side_edge_not_present")
             status = "verified" if verified and not blockers else "rejected"
@@ -377,9 +400,11 @@ class OptionsDecisionSystemRepository:
                 return None
             evidence = dict(candidate["evidence"] or {})
             findings = [item for item in evidence.get("static_findings", []) if isinstance(item, dict)]
-            contract_ids = sorted({int(contract_id) for item in findings for contract_id in item.get("contract_ids", [])})
-            if not contract_ids:
-                contract_ids = [connection.execute("SELECT contract_id FROM analysis.option_relative_value WHERE id = %s", [candidate_id]).fetchone()["contract_id"]]
+            fallback_contract = connection.execute(
+                "SELECT contract_id FROM analysis.option_relative_value WHERE id = %s", [candidate_id]
+            ).fetchone()["contract_id"]
+            finding = candidate_finding(findings, int(fallback_contract))
+            contract_ids = [int(value) for value in finding.get("contract_ids", [])] if finding else [int(fallback_contract)]
             rows = connection.execute(
                 """
                 SELECT quote.contract_id, quote.provider_payload
@@ -394,7 +419,7 @@ class OptionsDecisionSystemRepository:
             instrument_id = instrument.get("id")
             if instrument_id:
                 packed.append({"contract_id": int(row["contract_id"]), "instrument": str(instrument_id), "provider_instrument": instrument})
-        return {**dict(candidate), "contract_ids": contract_ids, "rows": packed}
+        return {**dict(candidate), "finding": finding or {}, "contract_ids": contract_ids, "rows": packed}
 
     def _record_verification(self, candidate_id: int, status: str, blockers: list[str], evidence: dict[str, Any]) -> dict[str, Any]:
         with self.runtime.transaction() as connection:

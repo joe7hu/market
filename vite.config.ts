@@ -15,6 +15,18 @@ export default defineConfig({
   build: {
     outDir: "frontend/dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("echarts-gl")) return "echarts-gl";
+          if (id.includes("echarts")) return "echarts-core";
+          if (id.includes("@tanstack")) return "tanstack";
+          if (id.includes("lucide-react")) return "icons";
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     allowedHosts: [".tail46d3fb.ts.net"],

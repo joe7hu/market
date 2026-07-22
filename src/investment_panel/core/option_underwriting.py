@@ -99,7 +99,7 @@ def paper_state(
 def conservative_entry(legs: list[dict[str, Any]], structure: str) -> tuple[float | None, list[str]]:
     """Use ask for long legs and bid for short legs; never invent a midpoint fill."""
 
-    blockers = _coherent_legs(legs)
+    blockers = [*_structure_blockers(legs, structure), *_coherent_legs(legs)]
     if blockers:
         return None, blockers
     total = 0.0
@@ -115,7 +115,7 @@ def conservative_entry(legs: list[dict[str, Any]], structure: str) -> tuple[floa
 def conservative_mark(legs: list[dict[str, Any]], structure: str) -> tuple[float | None, list[str]]:
     """Use bid for long legs and ask for short legs from the same later cohort."""
 
-    blockers = _coherent_legs(legs)
+    blockers = [*_structure_blockers(legs, structure), *_coherent_legs(legs)]
     if blockers:
         return None, blockers
     total = 0.0
@@ -190,15 +190,50 @@ def _coherent_legs(legs: list[dict[str, Any]]) -> list[str]:
             return ["invalid_leg_side"]
         if leg.get("bid") is None or leg.get("ask") is None or float(leg["bid"]) < 0 or float(leg["ask"]) < float(leg["bid"]):
             return ["crossed_or_missing_leg"]
-        if leg.get("size_available") is False:
+        if leg.get("size_available") is not True:
             return ["displayed_size_unavailable"]
         observed_at = _as_datetime(leg.get("observed_at"))
-        if observed_at is not None:
-            timestamps.append(observed_at)
+        if observed_at is None:
+            return ["missing_leg_timestamp"]
+        available_at = _as_datetime(leg.get("available_at")) or observed_at
+        quote_age = (available_at - observed_at).total_seconds()
+        if quote_age < 0 or quote_age > 180:
+            return ["quote_age_stale"]
+        timestamps.append(observed_at)
     if len(timestamps) >= 2:
         first, last = min(timestamps), max(timestamps)
         if (last - first).total_seconds() > 5:
             return ["interleg_timestamp_skew"]
+    return []
+
+
+def _structure_blockers(legs: list[dict[str, Any]], structure: str) -> list[str]:
+    if structure in {"long_call", "long_put", "long_option"}:
+        if len(legs) != 1 or str(legs[0].get("side")) != "long":
+            return ["invalid_long_option_structure"]
+        option_type = str(legs[0].get("option_type") or "").lower()
+        if structure == "long_call" and option_type != "call":
+            return ["invalid_long_option_structure"]
+        if structure == "long_put" and option_type != "put":
+            return ["invalid_long_option_structure"]
+        return []
+    if structure not in {"call_debit_spread", "put_debit_spread", "debit_spread"}:
+        return []
+    if len(legs) != 2:
+        return ["missing_spread_leg"]
+    long_legs = [leg for leg in legs if str(leg.get("side")) == "long"]
+    short_legs = [leg for leg in legs if str(leg.get("side")) == "short"]
+    if len(long_legs) != 1 or len(short_legs) != 1:
+        return ["invalid_spread_sides"]
+    long_leg, short_leg = long_legs[0], short_legs[0]
+    if long_leg.get("option_type") != short_leg.get("option_type"):
+        return ["spread_type_mismatch"]
+    long_strike, short_strike = float(long_leg["strike"]), float(short_leg["strike"])
+    option_type = str(long_leg.get("option_type") or "").lower()
+    if structure == "call_debit_spread" and (option_type != "call" or long_strike >= short_strike):
+        return ["invalid_call_debit_spread_order"]
+    if structure == "put_debit_spread" and (option_type != "put" or long_strike <= short_strike):
+        return ["invalid_put_debit_spread_order"]
     return []
 
 

@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app import deps
 from app.actions.options import OptionsActions
@@ -37,8 +37,17 @@ def options_expiries() -> dict[str, Any]:
 
 
 @router.get("/api/options-chain")
-def options_chain() -> dict[str, Any]:
-    return deps._table_payload("options_chain")
+def options_chain(
+    response: Response,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=250),
+) -> dict[str, Any]:
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "2026-08-22"
+    response.headers["Link"] = '</api/options/history/chain>; rel="successor-version"'
+    payload = deps._table_payload("options_chain")
+    rows = list(payload.get("rows") or [])
+    return {**payload, "rows": rows[offset:offset + limit], "count": len(rows), "offset": offset, "limit": limit}
 
 
 @router.get("/api/options/history/snapshots", response_model=OptionSnapshotPage)
@@ -153,18 +162,33 @@ def options_decision_brief(
     return _actions().decision_brief(symbol=symbol, lane=lane)
 
 
+@router.get("/api/options/workspace")
+def options_workspace(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    lane: Literal["thesis", "anomaly"] = "thesis",
+) -> dict[str, Any]:
+    return _actions().workspace(symbol=symbol, lane=lane)
+
+
 @router.get("/api/options/candidates", response_model=OptionsCandidatePage)
 def options_candidates(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
+    scope: Literal["current", "history"] = "current",
     lane: Literal["thesis", "anomaly"] | None = None,
     paper_state: Literal["COLLECTING", "WATCH", "PAPER_READY", "REJECT"] | None = None,
     structure: Literal["long_call", "long_put", "call_debit_spread", "put_debit_spread"] | None = None,
     expiration: date | None = None,
+    cursor: str | None = Query(None),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
 ) -> dict[str, Any]:
+    if cursor is not None:
+        try:
+            offset = int(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="cursor must be an integer offset") from exc
     return _actions().candidates(
-        symbol=symbol, lane=lane, paper_state=paper_state, structure=structure,
+        symbol=symbol, scope=scope, lane=lane, paper_state=paper_state, structure=structure,
         expiration=expiration, offset=offset, limit=limit,
     )
 

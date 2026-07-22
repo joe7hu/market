@@ -285,6 +285,15 @@ class OptionsDecisionCandidate(BaseModel):
 
 
 class OptionsCandidatePage(BaseModel):
+    items: list[OptionsDecisionCandidate]
+    total: int
+    next_cursor: str | None = None
+    as_of: datetime | None = None
+    capture_generation_id: int | None = None
+    model_revision: str
+    scope: str
+    analysis_run_id: str | None = None
+    # Compatibility aliases for the existing frontend release.
     rows: list[OptionsDecisionCandidate]
     count: int
     offset: int

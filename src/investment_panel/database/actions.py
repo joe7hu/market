@@ -28,10 +28,24 @@ def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
     legs = list(payload.get("leg_quotes") or [])
     if not legs:
         return "C"
+    timestamps = []
     for leg in legs:
         bid, ask = leg.get("bid"), leg.get("ask")
-        if bid is None or ask is None or float(ask) < float(bid) or leg.get("size_available") is False:
+        if bid is None or ask is None or float(ask) < float(bid) or leg.get("size_available") is not True:
             return "C"
+        observed_at = _as_datetime(leg.get("observed_at"))
+        if observed_at is not None:
+            timestamps.append(observed_at)
+            available_at = _as_datetime(leg.get("available_at")) or quote_at
+            if available_at is None:
+                return "C"
+            age = (available_at - observed_at).total_seconds()
+            if age < 0 or age > 180:
+                return "C"
+    if len(timestamps) != len(legs):
+        return "C"
+    if timestamps and (max(timestamps) - min(timestamps)).total_seconds() > 5:
+        return "C"
     return "A"
 
 

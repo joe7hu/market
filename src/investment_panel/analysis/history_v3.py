@@ -15,7 +15,7 @@ import numpy as np
 from scipy.optimize import LinearConstraint, minimize
 
 
-MODEL_REVISION = "history-v3-price-shape-r2"
+MODEL_REVISION = "history-v3-price-shape-r3"
 MIN_ELIGIBLE_POINTS = 12
 MIN_PACKAGE_EDGE = 0.05
 COST_ALLOWANCE_PER_LEG = 0.02
@@ -322,7 +322,15 @@ def rejected_value(row: dict[str, Any], model_revision: str, blockers: list[str]
 
 
 def _finding(kind: str, contract_ids: tuple[Any, ...], edge: float, side: str) -> dict[str, Any]:
-    return {"kind": kind, "contract_ids": [int(value) for value in contract_ids], "edge": float(edge), "side": side}
+    ordered = [int(value) for value in contract_ids]
+    return {
+        "kind": kind,
+        "contract_ids": ordered,
+        "leg_sides": [side] if len(ordered) == 1 else ["package"] * len(ordered),
+        "package_identity": {"kind": kind, "ordered_contract_ids": ordered, "leg_sides": [side] if len(ordered) == 1 else ["package"] * len(ordered)},
+        "edge": float(edge),
+        "side": side,
+    }
 
 
 def _confidence(row: dict[str, Any], fair_low: float, fair_high: float) -> float:

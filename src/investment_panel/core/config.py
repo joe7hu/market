@@ -172,6 +172,7 @@ class EventSourcesConfig:
 @dataclass(frozen=True)
 class OptionsDecisionSystemConfig:
     mode: str = "shadow"
+    options_paper_actions_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -451,6 +452,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
         options_decision_system=OptionsDecisionSystemConfig(
             mode=_options_decision_mode(analysis_raw.get("options_decision_system", {})),
+            options_paper_actions_enabled=bool(
+                (analysis_raw.get("options_decision_system", {}) or {}).get("options_paper_actions_enabled", False)
+            ),
         ),
     )
     agents_raw = raw.get("agents", {})
@@ -631,7 +635,10 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "enabled": config.analysis.enabled,
             "correlation_lookback_days": config.analysis.correlation_lookback_days,
             "max_correlation_peers": config.analysis.max_correlation_peers,
-            "options_decision_system": {"mode": config.analysis.options_decision_system.mode},
+            "options_decision_system": {
+                "mode": config.analysis.options_decision_system.mode,
+                "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
+            },
         },
         "agents": {
             "option_thesis": {

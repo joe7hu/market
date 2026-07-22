@@ -52,6 +52,12 @@ class OutcomeRepository:
                  AND short_quote.observed_at = quote.observed_at
                 WHERE decision.kind = 'option' AND decision.state <> 'REJECTED'
                   AND decision.as_of >= %s - make_interval(days => %s)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM analysis.shadow_trade shadow
+                      WHERE shadow.decision_id = decision.id
+                        AND shadow.source_kind = 'options_history_v3'
+                  )
                   AND (outcome.decision_id IS NULL OR outcome.maturity_state = 'observing'
                        OR option_decision.structure = 'call_debit_spread')
                 ORDER BY decision.id, quote.observed_at
@@ -139,9 +145,9 @@ class OutcomeRepository:
                         peak_return, max_drawdown, time_to_2x_days,
                         time_to_5x_days, time_to_10x_days, paper_status,
                         credit_captured, collateral_return, assigned_basis,
-                        strike_touched, updated_at
+                        strike_touched, outcome_source, shadow_trade_id, updated_at
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                              %s, %s, %s, %s, %s, now())
+                              %s, %s, %s, %s, %s, 'generic', NULL, now())
                     ON CONFLICT (decision_id) DO UPDATE
                     SET maturity_state = EXCLUDED.maturity_state,
                         observed_through = GREATEST(analysis.option_outcome.observed_through, EXCLUDED.observed_through),

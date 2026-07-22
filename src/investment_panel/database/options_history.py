@@ -148,7 +148,7 @@ class OptionHistoryRepository:
             "quote_diagnostics": quote_diagnostics,
         }
         if complete:
-            result.update(self.materialize_snapshot(int(snapshot["snapshot_id"])))
+            result.update(self.materialize_snapshot(int(snapshot["snapshot_id"]), mode="live_lifecycle"))
         return result
     def fail_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, error: Exception | str) -> None:
         """Terminate a claimed generation so no slot remains permanently running."""
@@ -189,7 +189,7 @@ class OptionHistoryRepository:
                 [source_id, symbol.upper(), slot_at, run_id],
             ).fetchone()
         return int(row["id"]) if row else None
-    def materialize_snapshot(self, snapshot_id: int) -> dict[str, Any]:
+    def materialize_snapshot(self, snapshot_id: int, *, mode: str = "historical_evidence") -> dict[str, Any]:
         """Write only immutable v3 evidence; v2 rows are rollback-only diagnostics."""
         with self.runtime.read(JOB_PROFILE) as connection:
             current = connection.execute(
@@ -197,7 +197,11 @@ class OptionHistoryRepository:
             ).fetchone()
         if current is None or current["latest_complete_generation_id"] is None:
             return {"surface_summaries": 0, "anomalies": 0, "relative_values": 0}
-        v3 = self.v3.materialize(snapshot_id=snapshot_id, capture_generation_id=int(current["latest_complete_generation_id"]))
+        v3 = self.v3.materialize(
+            snapshot_id=snapshot_id,
+            capture_generation_id=int(current["latest_complete_generation_id"]),
+            mode=mode,
+        )
         return {"anomalies": 0, **v3}
     def snapshots(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100, include_partial: bool = False) -> dict[str, Any]:
         filters = ["snapshot.history_symbol = %s", "snapshot.collection_profile = %s"]

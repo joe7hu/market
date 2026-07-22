@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.data_access import load_table_panel_data
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.outcomes import OutcomeRepository
@@ -90,6 +91,83 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         runtime.close()
 
 
+def test_generic_outcome_refresh_skips_options_history_v3_shadows(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    analysis = AnalysisRepository(runtime)
+    ingestion.register_source("v3-outcome-test", name="V3 Outcome", family="test", kind="option_chain")
+    try:
+        run_id = ingestion.start_run("v3-outcome-test", "option_quotes")
+        snapshot = ingestion.store_option_snapshot(
+            run_id,
+            source_id="v3-outcome-test",
+            observed_at=datetime(2026, 7, 11, 12, tzinfo=UTC),
+            market_session="regular",
+            universe="test",
+            rows=[_row(5.0, bid=4.8, ask=5.2, open_interest=1500)],
+        )
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.read() as connection:
+            ids = connection.execute(
+                """
+                SELECT decision_instrument.id AS instrument_id, quote.contract_id
+                FROM raw.option_quote quote
+                JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                JOIN catalog.instrument decision_instrument ON decision_instrument.id = contract.underlying_instrument_id
+                WHERE quote.snapshot_id = %s
+                LIMIT 1
+                """,
+                [snapshot["snapshot_id"]],
+            ).fetchone()
+        analysis_run = analysis.start_run(
+            "option_history_v3",
+            input_cutoff=datetime(2026, 7, 11, 12, tzinfo=UTC),
+            code_version="test",
+            inputs={"test": "v3-outcome"},
+        )
+        decision_id = analysis.store_option_decision(
+            analysis_run,
+            decision_key="v3-outcome",
+            instrument_id=ids["instrument_id"],
+            contract_id=ids["contract_id"],
+            snapshot_id=snapshot["snapshot_id"],
+            quote_observed_at=datetime(2026, 7, 11, 12, tzinfo=UTC),
+            state="WATCH",
+            score=1.0,
+            rank=1,
+            inputs={"test": "v3"},
+            details={"structure": "long_call", "premium_mid": 5.0, "quality_status": "ok"},
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE analysis.option_decision
+                SET model_version = 'history-v3-price-shape-r3', paper_state = 'WATCH'
+                WHERE decision_id = %s
+                """,
+                [decision_id],
+            )
+            connection.execute(
+                """
+                INSERT INTO analysis.shadow_trade
+                    (decision_id, status, pending_entry_reason, entry_cohort_id, structure, source_kind)
+                VALUES (%s, 'pending', 'test_pending', NULL, 'long_call', 'options_history_v3')
+                """,
+                [decision_id],
+            )
+        _snapshot(ingestion, datetime(2026, 7, 12, 12, tzinfo=UTC), 6.0, source_id="v3-outcome-test")
+        result = OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 13, 12, tzinfo=UTC))
+        assert result["outcomes_updated"] == 0
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM analysis.option_outcome WHERE decision_id = %s",
+                [decision_id],
+            ).fetchone()["count"] == 0
+    finally:
+        runtime.close()
+
+
 def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -126,11 +204,11 @@ def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_pos
         runtime.close()
 
 
-def _snapshot(repository: IngestionRepository, observed_at: datetime, mid: float) -> None:
-    run_id = repository.start_run("outcome-test", "option_quotes")
+def _snapshot(repository: IngestionRepository, observed_at: datetime, mid: float, *, source_id: str = "outcome-test") -> None:
+    run_id = repository.start_run(source_id, "option_quotes")
     repository.store_option_snapshot(
         run_id,
-        source_id="outcome-test",
+        source_id=source_id,
         observed_at=observed_at,
         market_session="regular",
         universe="test",

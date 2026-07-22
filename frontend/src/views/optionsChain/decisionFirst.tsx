@@ -1,9 +1,10 @@
 import { useEffect, useId, useState, type ComponentType, type KeyboardEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  loadOptionHistorySnapshots, loadOptionRelativeValues, loadOptionsCandidates, loadOptionsDecisionBrief,
+  loadOptionHistorySnapshots, loadOptionRelativeValues, loadOptionsCandidates, loadOptionsWorkspace,
   loadOptionsLearningProgress, loadOptionsPaperJournal, type OptionHistorySnapshot, type OptionRelativeValue,
   type OptionsDecisionBrief, type OptionsDecisionCandidate, type OptionsLearningProgress, type OptionsPaperJournalRow,
+  type OptionsWorkspacePayload,
 } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "../workspacePage";
@@ -15,7 +16,9 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   const [search, setSearch] = useSearchParams();
   const tab = isTab(search.get("tab")) ? search.get("tab") as Tab : "decision";
   const lane = search.get("lane") === "anomaly" ? "anomaly" : "thesis";
+  const historyScope = search.get("scope") === "history";
   const [brief, setBrief] = useState<OptionsDecisionBrief | null>(null);
+  const [workspace, setWorkspace] = useState<OptionsWorkspacePayload | null>(null);
   const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
   const [thesisCandidates, setThesisCandidates] = useState<OptionsDecisionCandidate[]>([]);
   const [anomalyCandidates, setAnomalyCandidates] = useState<OptionsDecisionCandidate[]>([]);
@@ -37,20 +40,32 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
     return () => controller.abort();
   }, []);
   useEffect(() => {
-    const controller = new AbortController();
-    void loadOptionsDecisionBrief("QQQ", lane, controller.signal).then((next) => { setBrief(next); setError(null); }).catch((cause: unknown) => ignoreAbort(cause, setError));
-    return () => controller.abort();
+    let controller: AbortController | null = null;
+    const refresh = () => {
+      controller?.abort();
+      controller = new AbortController();
+      void loadOptionsWorkspace("QQQ", lane, controller.signal)
+        .then((next) => { setWorkspace(next); setBrief(next.decision_brief); setError(null); })
+        .catch((cause: unknown) => ignoreAbort(cause, setError));
+    };
+    refresh();
+    const interval = window.setInterval(refresh, regularSessionNow() ? 30_000 : 300_000);
+    const onFocus = () => refresh();
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { controller?.abort(); window.clearInterval(interval); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisible); };
   }, [lane]);
   useEffect(() => {
     if (tab !== "discover") return;
     const controller = new AbortController();
     void Promise.all([
-      loadOptionsCandidates({ symbol: "QQQ", lane: "thesis", limit: 100 }, controller.signal),
-      loadOptionsCandidates({ symbol: "QQQ", lane: "anomaly", limit: 100 }, controller.signal),
+      loadOptionsCandidates({ symbol: "QQQ", lane: "thesis", scope: historyScope ? "history" : "current", limit: 25 }, controller.signal),
+      loadOptionsCandidates({ symbol: "QQQ", lane: "anomaly", scope: historyScope ? "history" : "current", limit: 25 }, controller.signal),
       loadOptionRelativeValues({ symbol: "QQQ", classification: "rejected", limit: 50 }, controller.signal),
     ]).then(([thesis, anomaly, rejected]) => { setThesisCandidates(thesis.rows); setAnomalyCandidates(anomaly.rows); setRejections(rejected.rows); setError(null); }).catch((cause: unknown) => ignoreAbort(cause, setError));
     return () => controller.abort();
-  }, [tab]);
+  }, [tab, historyScope]);
   useEffect(() => {
     if (tab !== "journal") return;
     const controller = new AbortController();
@@ -65,13 +80,17 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   }, [tab]);
 
   return <WorkspacePage eyebrow="QQQ underwriting" title="Options Decision System" subtitle="Paper-only underwriting. Options Radar remains the broad discovery surface." metrics={[
-    ["State", brief?.state ?? "COLLECTING", "Paper-only; no live order submission.", tone(brief?.state)],
-    ["Lane", lane === "thesis" ? "Thesis-led" : "Anomaly research", "Lanes are deliberately not universally ranked.", "info"],
+    ["State", brief?.state ?? "COLLECTING", workspace?.paper_action_capability.enabled ? "Local paper staging enabled." : "Paper staging disabled by kill switch.", tone(brief?.state)],
+    ["Revision", workspace?.active_revision ?? "r3", workspace?.evidence_as_of ? `Evidence ${formatDateTime(workspace.evidence_as_of)}` : "Waiting for r3 evidence.", "info"],
+    ["Lane", lane === "thesis" ? "Thesis-led" : "Anomaly research", workspace ? `${workspace.tab_counts.candidates} candidates · ${workspace.tab_counts.rejections} rejects` : "Lanes are deliberately not universally ranked.", "info"],
     ["Captures", `${snapshots.length}`, snapshots[0] ? "Latest complete generation is available as evidence." : "Waiting for a complete capture.", snapshots[0] ? "good" : "warn"],
   ]} actions={<div className="flex items-center gap-2"><label className="text-xs">Lane <select aria-label="Decision lane" className="ml-1 min-h-11 rounded border bg-background px-2 text-sm" value={lane} onChange={(event) => select({ lane: event.target.value as "thesis" | "anomaly" })}><option value="thesis">Thesis</option><option value="anomaly">Anomaly</option></select></label><StatusBadge tone={brief?.mode === "paper" ? "warn" : "info"}>{brief?.mode ?? "shadow"} mode</StatusBadge></div>}>
     {error ? <p role="alert" className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
-    <div role="tablist" aria-label="Options decision workspaces" className="grid w-full grid-cols-5 gap-1 rounded-md border border-border bg-muted p-1">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div role="tablist" aria-label="Options decision workspaces" className="grid flex-1 grid-cols-5 gap-1 rounded-md border border-border bg-muted p-1">
       {TABS.map((value) => <button key={value} id={`${panelId}-${value}`} role="tab" type="button" aria-selected={tab === value} aria-controls={`${panelId}-panel`} tabIndex={tab === value ? 0 : -1} onKeyDown={(event) => tabKey(event, value, select)} onClick={() => select({ tab: value })} className={`min-h-11 rounded px-1 text-xs font-medium sm:px-3 sm:text-sm ${tab === value ? "bg-background shadow-sm" : "text-muted-foreground"}`}>{label(value)}</button>)}
+      </div>
+      {tab === "discover" ? <label className="min-h-11 inline-flex items-center gap-2 rounded border px-3 text-sm"><input type="checkbox" checked={historyScope} onChange={(event) => { const values = new URLSearchParams(search); if (event.target.checked) values.set("scope", "history"); else values.delete("scope"); setSearch(values, { replace: true }); }} /> History</label> : null}
     </div>
     <div id={`${panelId}-panel`} role="tabpanel" aria-labelledby={`${panelId}-${tab}`} className="pt-1">
       {tab === "decision" ? <Decision brief={brief} candidate={brief?.strongest_candidate} /> : null}
@@ -99,6 +118,13 @@ function Metric({ label, value }: { label: string; value: string }) { return <di
 function Empty({ text }: { text: string }) { return <p className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">{text}</p>; }
 function label(tab: Tab) { return tab === "decision" ? "Decision" : tab === "discover" ? "Discover" : tab === "evidence" ? "Evidence" : tab === "journal" ? "Journal" : "Learn"; }
 function tone(state?: string): "good" | "warn" | "info" | "muted" { return state === "PAPER_READY" ? "good" : state === "REJECT" ? "warn" : state === "WATCH" ? "info" : "muted"; }
+function regularSessionNow() {
+  const now = new Date();
+  const day = now.getDay();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  return day >= 1 && day <= 5 && minutes >= 9 * 60 + 30 && minutes <= 16 * 60;
+}
+function formatDateTime(value: string) { return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function money(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "currency", currency: "USD" }); }
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }); }
 function number(value: number | null | undefined, digits = 0) { return value === null || value === undefined ? "—" : value.toFixed(digits); }

@@ -104,6 +104,18 @@ export type OptionsDecisionCandidate = {
   comparable_exact_structure_outcomes: { sample_size?: number; lower_95_expectancy?: number | null; brier_score?: number | null; other_regime_monitoring_count?: number }; paper_only: boolean;
 };
 export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: OptionsDecisionState; summary: { message?: string; [key: string]: unknown }; readiness: OptionsDecisionReadiness; strongest_candidate: OptionsDecisionCandidate | null; paper_only: boolean };
+export type OptionsWorkspacePayload = {
+  symbol: string;
+  decision_brief: OptionsDecisionBrief;
+  capture_generation_id: number | null;
+  evidence_as_of: string | null;
+  generated_at: string | null;
+  freshness_state: string;
+  canary_status: OptionsDecisionReadiness["canary"];
+  active_revision: string;
+  paper_action_capability: { mode: string; enabled: boolean; reason: string };
+  tab_counts: { candidates: number; rejections: number; journal: number };
+};
 export type OptionsPaperJournalRow = { shadow_id: string; decision_id: string; lifecycle: "pending" | "entered" | "unfilled" | "observing" | "mature" | "expired" | string; structure: string | null; entry_at: string | null; conservative_entry_price: number | null; conservative_fill_basis: string | null; latest_mark: number | null; missing_mark_gap: boolean; current_return: number | null; outcome_state: string | null; pending_entry_reason: string | null; assignment_warning: string | null; metrics: Record<string, unknown> };
 export type OptionsLearningProgress = { structure: string; market_regime: string | null; model_revision: string; mature_outcomes: number; required_mature_outcomes: number; lower_95_expectancy: number | null; brier_score: number | null; missing_prerequisites: string[] };
 
@@ -343,6 +355,10 @@ export async function loadOptionHistoryHealth(): Promise<OptionHistoryHealth> {
 
 export async function loadOptionsDecisionBrief(symbol = "QQQ", lane: "thesis" | "anomaly" = "thesis", signal?: AbortSignal): Promise<OptionsDecisionBrief> {
   return getJson(`/api/options/decision-brief?symbol=${encodeURIComponent(symbol)}&lane=${lane}`, signal);
+}
+
+export async function loadOptionsWorkspace(symbol = "QQQ", lane: "thesis" | "anomaly" = "thesis", signal?: AbortSignal): Promise<OptionsWorkspacePayload> {
+  return getJson(`/api/options/workspace?symbol=${encodeURIComponent(symbol)}&lane=${lane}`, signal);
 }
 
 export async function loadOptionsCandidates(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionsDecisionCandidate>> {

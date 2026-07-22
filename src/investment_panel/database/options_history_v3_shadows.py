@@ -21,7 +21,7 @@ def cohort_legs(connection: Any, generation_id: int, shadows: list[dict[str, Any
         for stored in shadow.get("synthetic_legs", []):
             if (quote := quotes.get(int(stored["contract_id"]))) is not None:
                 legs.append({**dict(stored), "bid": quote["bid"], "ask": quote["ask"], "observed_at": quote["provider_observed_at"],
-                             "size_available": (quote["bid_size"] is None or quote["bid_size"] >= 1) and (quote["ask_size"] is None or quote["ask_size"] >= 1),
+                             "size_available": quote["bid_size"] is not None and quote["bid_size"] >= 1 and quote["ask_size"] is not None and quote["ask_size"] >= 1,
                              "available_at": quote["available_at"]})
         result[shadow["id"]] = legs
     return result

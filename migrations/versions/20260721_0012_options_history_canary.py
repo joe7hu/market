@@ -14,7 +14,7 @@ down_revision = "20260720_0012"
 branch_labels = None
 depends_on = None
 
-MODEL_REVISION = "history-v3-price-shape-r2"
+MODEL_REVISION = "history-v3-price-shape-r3"
 
 
 def upgrade() -> None:

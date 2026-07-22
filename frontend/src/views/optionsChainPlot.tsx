@@ -3,15 +3,13 @@ import * as echarts from "echarts/core";
 import { AriaComponent, DataZoomComponent, GridComponent, LegendComponent, TitleComponent, ToolboxComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { HeatmapChart, LineChart, ScatterChart } from "echarts/charts";
 import { CanvasRenderer } from "echarts/renderers";
-import { Grid3DComponent } from "echarts-gl/components";
-import { Scatter3DChart, SurfaceChart } from "echarts-gl/charts";
 import type { EChartsCoreOption, EChartsType } from "echarts/core";
 import type { OptionHistoryCurves, OptionHistorySurface, OptionHistorySurfaceGrid } from "@/api";
 import { buildOptionCurvePlotData, buildProviderIVSurfaceData, curveChoices, type SurfaceViewportPreset } from "./optionsChainPlotData";
 
 echarts.use([
-  AriaComponent, CanvasRenderer, DataZoomComponent, GridComponent, Grid3DComponent, HeatmapChart,
-  LegendComponent, LineChart, Scatter3DChart, ScatterChart, SurfaceChart, TitleComponent,
+  AriaComponent, CanvasRenderer, DataZoomComponent, GridComponent, HeatmapChart,
+  LegendComponent, LineChart, ScatterChart, TitleComponent,
   ToolboxComponent, TooltipComponent, VisualMapComponent,
 ]);
 
@@ -21,6 +19,17 @@ const GRID = "#dfe6e1";
 const ACCENT = "#0f766e";
 const OBSERVED = "#f8fafc";
 const SURFACE_COLORS = ["#16324f", "#1f5f78", "#2f8992", "#70ad91", "#d0c978", "#f2bd45"];
+let registered3D = false;
+
+async function register3DCharts() {
+  if (registered3D) return;
+  const [{ Grid3DComponent }, { Scatter3DChart, SurfaceChart }] = await Promise.all([
+    import("echarts-gl/components"),
+    import("echarts-gl/charts"),
+  ]);
+  echarts.use([Grid3DComponent, Scatter3DChart, SurfaceChart]);
+  registered3D = true;
+}
 
 type SurfaceObserved = {
   contract_id?: unknown;
@@ -84,10 +93,17 @@ export function OptionSurfacePlot({ surface }: { surface: OptionHistorySurface }
 export function OptionSurfaceExplorer({ surface, optionType, selectedDte, selectedExpiration, webgl }: { surface: OptionHistorySurfaceGrid; optionType: "call" | "put"; selectedDte?: number; selectedExpiration?: string; webgl: boolean | null }) {
   const [preset, setPreset] = useState<SurfaceViewportPreset>("focus");
   const [mode, setMode] = useState<"map" | "3d">("map");
+  const [threeDReady, setThreeDReady] = useState(false);
   const compact = useCompactChart();
   useEffect(() => { if (webgl === false && mode === "3d") setMode("map"); }, [mode, webgl]);
+  useEffect(() => {
+    if (mode !== "3d" || threeDReady) return;
+    let cancelled = false;
+    void register3DCharts().then(() => { if (!cancelled) setThreeDReady(true); });
+    return () => { cancelled = true; };
+  }, [mode, threeDReady]);
   const plot = useMemo(() => buildProviderIVSurfaceData(surface, optionType, preset, selectedDte), [optionType, preset, selectedDte, surface]);
-  const option = useMemo(() => mode === "3d" ? surface3dOption(plot, surface.symbol, optionType) : surfaceMapOption(plot, surface.symbol, optionType, compact), [compact, mode, optionType, plot, surface.symbol]);
+  const option = useMemo(() => mode === "3d" && threeDReady ? surface3dOption(plot, surface.symbol, optionType) : surfaceMapOption(plot, surface.symbol, optionType, compact), [compact, mode, optionType, plot, surface.symbol, threeDReady]);
   const hasGrid = plot.heatmap.length > 0;
   if (!hasGrid) return <p className="p-4 text-sm text-muted-foreground">No provider-IV grid is available for this snapshot and viewport.</p>;
   return <div className="space-y-3 p-2">
@@ -110,7 +126,8 @@ export function OptionSurfaceExplorer({ surface, optionType, selectedDte, select
       <Metric label="Observed overlay" value={`${plot.observed.length.toLocaleString()} points`} />
       <Metric label="Color range" value={`${formatPercent(plot.ivDomain[0])}–${formatPercent(plot.ivDomain[1])}`} />
     </div>
-    <EChart option={option} className="h-[620px] w-full rounded-lg border border-border bg-[#fbfcfa] sm:h-[680px]" label={`${surface.symbol} ${optionType} provider implied volatility ${mode === "3d" ? "3D surface" : "heatmap and linked expiry slice"}`} />
+    {mode === "3d" && !threeDReady ? <p className="rounded-lg border border-border p-4 text-sm text-muted-foreground">Loading 3D adapter…</p> : null}
+    <EChart option={option} className="h-[620px] w-full rounded-lg border border-border bg-[#fbfcfa] sm:h-[680px]" label={`${surface.symbol} ${optionType} provider implied volatility ${mode === "3d" && threeDReady ? "3D surface" : "heatmap and linked expiry slice"}`} />
     <p className="px-2 text-xs text-muted-foreground">Color and height show provider IV. Blank cells preserve the no-extrapolation boundary. The default view prioritizes the near-ATM, near-term region; 3D is available as a secondary inspection mode.</p>
   </div>;
 }

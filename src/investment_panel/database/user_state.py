@@ -90,7 +90,6 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
                                bar.available_at
                         FROM raw.confirmed_price_bar bar
                         WHERE bar.instrument_id = p.instrument_id AND bar.interval = '1d' AND bar.close > 0
-                          AND bar.trading_date >= current_date - 7
                           AND bar.trading_date <= (now() AT TIME ZONE i.market_timezone)::date
                           AND (bar.observed_at AT TIME ZONE 'UTC')::date = bar.trading_date
                           AND bar.available_at <= now()
