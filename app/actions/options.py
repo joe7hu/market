@@ -16,6 +16,14 @@ from investment_panel.core.robinhood_options.auth import load_robinhood_access_t
 from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
 
 
+def _decision_mode(config: Any) -> str:
+    """Read the mode from either the web dict config or typed job config."""
+
+    if isinstance(config, dict):
+        return str((config.get("analysis") or {}).get("options_decision_system", {}).get("mode", "shadow"))
+    return str(getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "mode", "shadow"))
+
+
 class OptionsActions:
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -24,7 +32,7 @@ class OptionsActions:
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
         self.history = OptionHistoryRepository(self.runtime)
-        mode = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
 
     def history_snapshots(self, **filters: Any) -> dict[str, Any]:
@@ -50,7 +58,7 @@ class OptionsActions:
 
     def history_health(self) -> dict[str, Any]:
         result = self.history.health()
-        result["mode"] = getattr(getattr(getattr(self.config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        result["mode"] = _decision_mode(self.config)
         return result
 
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
@@ -84,7 +92,7 @@ class OptionsActions:
         return self.analysis.option_signal_detail(decision_id)
 
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
-        mode = getattr(getattr(getattr(self.config, "analysis", None), "options_decision_system", None), "mode", "shadow")
+        mode = _decision_mode(self.config)
         if mode != "paper":
             raise ValueError("options decision system is in shadow mode; paper entry is disabled")
         return self.actions.stage_option_paper_entry(
