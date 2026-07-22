@@ -47,6 +47,9 @@ class OptionsActions:
     def history_surface_groups(self, **filters: Any) -> dict[str, Any]:
         return self.history.surface_groups(**filters)
 
+    def history_surface_grid(self, **filters: Any) -> dict[str, Any]:
+        return self.history.surface_grid(**filters)
+
     def history_legacy_surface(self, **filters: Any) -> dict[str, Any]:
         return self.history.legacy_surface(**filters)
 

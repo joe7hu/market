@@ -115,6 +115,11 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
     x_index = {x: index for index, x in enumerate(surface["x"])}
     call_dte_index = surface["y"].index(32)
     assert all(call_grid[call_dte_index][x_index[row["log_moneyness"]]] is not None for row in history.chain(symbol="QQQ", option_type="call")["rows"])
+    bounded_surface = history.surface_grid(symbol="QQQ", option_type="call", max_dte=40)
+    assert bounded_surface["y"] == [32]
+    assert set(bounded_surface["surfaces"]) == {"call"}
+    assert all(abs(x) <= 0.30 for x in bounded_surface["x"])
+    assert history.surface_grid(symbol="QQQ", option_type="call", max_dte=20)["x"] == []
     evidence = history.surface(symbol="QQQ", expiration=date(2026, 8, 21), option_type="call")
     assert len(evidence["observed"]) == 3
     assert evidence["fit_status"] in {"succeeded", "fit_failed"}

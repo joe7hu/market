@@ -88,6 +88,28 @@ def historical_option_surface_groups(
     return _actions().history_surface_groups(symbol=symbol, snapshot=snapshot)
 
 
+@router.get("/api/options/history/surface-grid", response_model=IVSurfaceGrid)
+def historical_option_surface_grid(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    snapshot: int | None = Query(None, ge=1),
+    option_type: str = Query(..., pattern="^(call|put)$"),
+    min_moneyness: float = Query(-0.30, ge=-2, le=2),
+    max_moneyness: float = Query(0.30, ge=-2, le=2),
+    max_dte: int = Query(365, ge=1, le=1095),
+) -> dict[str, Any]:
+    """Bounded provider-IV grid for the interactive surface explorer."""
+    if min_moneyness >= max_moneyness:
+        raise HTTPException(status_code=422, detail="min_moneyness must be less than max_moneyness")
+    return _actions().history_surface_grid(
+        symbol=symbol,
+        snapshot=snapshot,
+        option_type=option_type,
+        min_moneyness=min_moneyness,
+        max_moneyness=max_moneyness,
+        max_dte=max_dte,
+    )
+
+
 @router.get("/api/options/history/surface/legacy", response_model=IVSurfaceGrid, deprecated=True)
 def historical_option_surface_legacy(
     symbol: str = Query("QQQ", min_length=1, max_length=16),

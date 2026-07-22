@@ -94,6 +94,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
         "/api/options/history/chain",
         "/api/options/history/surface?expiration=2026-08-21&option_type=call",
         "/api/options/history/surface-groups",
+        "/api/options/history/surface-grid?option_type=call",
         "/api/options/history/surface/legacy",
         "/api/options/history/curves",
         "/api/options/history/anomalies",

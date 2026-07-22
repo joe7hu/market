@@ -10,6 +10,7 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
 from investment_panel.database.options_history_health import history_health
 from investment_panel.database.options_history_surface import surface_groups as _surface_groups
+from investment_panel.database.options_surface_grid import surface_grid_payload
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 HISTORY_PROFILE = "history_full"
 FEATURE_VERSION = "history-v2"
@@ -245,26 +246,38 @@ class OptionHistoryRepository:
             max_moneyness=max_moneyness, offset=offset, limit=limit,
         )
         return {"rows": rows, "count": count, "offset": offset, "limit": limit, "snapshot_id": snapshot_id}
+    def surface_grid(
+        self,
+        *,
+        symbol: str = "QQQ",
+        snapshot: int | None = None,
+        option_type: str,
+        min_moneyness: float = -0.30,
+        max_moneyness: float = 0.30,
+        max_dte: int = 365,
+    ) -> dict[str, Any]:
+        """Return a bounded provider-IV grid for interactive visual exploration."""
+        snapshot_id = self._resolve_snapshot(symbol, snapshot)
+        if snapshot_id is None:
+            return {"snapshot_id": None, "symbol": symbol.upper(), "x": [], "y": [], "surfaces": {}, "observed": []}
+        rows, _ = self._chain_rows(
+            snapshot_id,
+            option_type=option_type,
+            min_moneyness=min_moneyness,
+            max_moneyness=max_moneyness,
+            offset=0,
+            limit=50_000,
+        )
+        rows = [row for row in rows if int(row["dte"]) <= max_dte]
+        return surface_grid_payload(symbol=symbol, snapshot_id=snapshot_id, rows=rows, option_types=[option_type])
+
     def legacy_surface(self, *, symbol: str = "QQQ", snapshot: int | None = None, option_type: str | None = None) -> dict[str, Any]:
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         if snapshot_id is None:
             return {"snapshot_id": None, "symbol": symbol.upper(), "x": [], "y": [], "surfaces": {}, "observed": []}
         rows, _ = self._chain_rows(snapshot_id, offset=0, limit=50_000)
         by_type = [option_type] if option_type else ["call", "put"]
-        x_values = sorted({float(row["log_moneyness"]) for row in rows if row.get("log_moneyness") is not None})
-        y_values = sorted({int(row["dte"]) for row in rows})
-        surfaces: dict[str, list[list[float | None]]] = {}
-        for kind in by_type:
-            grouped = {(int(row["dte"]), float(row["log_moneyness"])): row.get("provider_iv") for row in rows if row["option_type"] == kind and row.get("provider_iv") is not None and row.get("log_moneyness") is not None}
-            surfaces[kind] = [
-                [_interpolate([(x, iv) for (dte, x), iv in grouped.items() if dte == y], point) for point in x_values]
-                for y in y_values
-            ]
-        observed = [
-            {key: row.get(key) for key in ("expiration", "option_type", "dte", "log_moneyness", "provider_iv", "strike")}
-            for row in rows if row.get("provider_iv") is not None
-        ]
-        return {"snapshot_id": snapshot_id, "symbol": symbol.upper(), "x": x_values, "y": y_values, "surfaces": surfaces, "observed": observed}
+        return surface_grid_payload(symbol=symbol, snapshot_id=snapshot_id, rows=rows, option_types=by_type)
     def surface_groups(self, *, symbol: str = "QQQ", snapshot: int | None = None) -> dict[str, Any]:
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         if snapshot_id is None:
@@ -626,17 +639,6 @@ def _closest_delta_iv(rows: Sequence[dict[str, Any]], target: float) -> float | 
     nearest = min(eligible, key=lambda row: abs(abs(float(row["provider_delta"])) - target))
     return float(nearest["provider_iv"])
 
-
-def _interpolate(points: Sequence[tuple[float, Any]], x: float) -> float | None:
-    cleaned = sorted((float(point_x), float(value)) for point_x, value in points if value is not None)
-    if not cleaned or x < cleaned[0][0] or x > cleaned[-1][0]:
-        return None
-    for left, right in zip(cleaned, cleaned[1:]):
-        if left[0] <= x <= right[0]:
-            if right[0] == left[0]:
-                return left[1]
-            return left[1] + (right[1] - left[1]) * ((x - left[0]) / (right[0] - left[0]))
-    return cleaned[0][1] if x == cleaned[0][0] else cleaned[-1][1]
 
 def _residual_eligible(row: dict[str, Any]) -> bool:
     delta = row.get("provider_delta")
