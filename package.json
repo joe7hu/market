@@ -22,12 +22,12 @@
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "echarts": "^6.1.0",
+    "echarts-gl": "^2.1.0",
     "lightweight-charts": "^5.2.0",
-    "plotly.js-dist-min": "^3.3.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-plotly.js": "^2.6.0",
     "react-router-dom": "^7.15.1",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.0"
@@ -35,7 +35,6 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@types/react-plotly.js": "^2.6.3",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",

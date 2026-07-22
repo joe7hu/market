@@ -322,7 +322,7 @@ export async function loadOptionHistorySurface(params: Record<string, string | n
 }
 
 export async function loadOptionHistorySurfaceGrid(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistorySurfaceGrid> {
-  return getJson(`/api/options/history/surface/legacy?${optionHistoryParams(params)}`, signal);
+  return getJson(`/api/options/history/surface-grid?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionHistorySurfaceGroups(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistorySurfaceGroups> {

@@ -7,7 +7,7 @@ import { WorkspacePage } from "./workspacePage";
 import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
 
 const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfacePlot }));
-const OptionSurface3dPlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurface3dPlot }));
+const OptionSurfaceExplorer = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfaceExplorer }));
 const OptionCurvePlots = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionCurvePlots }));
 const PAGE_SIZE = 100;
 
@@ -35,7 +35,7 @@ export function EvidenceWorkspace() {
   const maxMoneyness = fullChain ? "" : search.get("max") ?? "0.10";
   const page = Math.max(0, Number(search.get("page") ?? "0") || 0);
   const view = search.get("evidence_view") === "surface" || search.get("evidence_view") === "curves" ? search.get("evidence_view") : "chain";
-  const surfaceView = search.get("surface_view") === "evidence" ? "evidence" : "3d";
+  const surfaceView = search.get("surface_view") === "evidence" ? "evidence" : "explorer";
   const update = (changes: Record<string, string | undefined>) => {
     const next = new URLSearchParams(search);
     for (const [key, value] of Object.entries(changes)) {
@@ -77,16 +77,16 @@ export function EvidenceWorkspace() {
     return () => controller.abort();
   }, [symbol, snapshot, expiration, optionType, minMoneyness, maxMoneyness, page]);
   useEffect(() => {
-    if (view !== "surface" || !snapshot || !expiration || !optionType || (surfaceView !== "evidence" && webgl !== false)) return;
+    if (view !== "surface" || !snapshot || !expiration || !optionType || surfaceView !== "evidence") return;
     const controller = new AbortController();
     void loadOptionHistorySurface({ symbol, snapshot, expiration, option_type: optionType }, controller.signal).then(setSurface).catch(asError(setError));
     return () => controller.abort();
-  }, [symbol, snapshot, expiration, optionType, surfaceView, view, webgl]);
+  }, [symbol, snapshot, expiration, optionType, surfaceView, view]);
   useEffect(() => {
-    if (view !== "surface" || surfaceView !== "3d" || webgl !== true || !snapshot || !optionType) return;
+    if (view !== "surface" || surfaceView !== "explorer" || !snapshot || !optionType) return;
     setSurfaceGrid(null);
     const controller = new AbortController();
-    void loadOptionHistorySurfaceGrid({ symbol, snapshot, option_type: optionType }, controller.signal)
+    void loadOptionHistorySurfaceGrid({ symbol, snapshot, option_type: optionType, min_moneyness: -0.30, max_moneyness: 0.30, max_dte: 365 }, controller.signal)
       .then(setSurfaceGrid)
       .catch(asError(setError));
     return () => controller.abort();
@@ -122,7 +122,7 @@ export function EvidenceWorkspace() {
     <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="min-h-11 rounded border px-3 text-sm" onClick={() => update(fullChain ? { full_chain: undefined, min: "-0.10", max: "0.10", page: "0" } : { full_chain: "1", min: undefined, max: undefined, page: "0" })}>{fullChain ? "Use liquid near-ATM chain" : "Full chain"}</button>{error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}</div>
     <div className="flex w-fit rounded-md border border-border bg-muted p-1"><Tab active={view === "chain"} onClick={() => update({ evidence_view: "chain" })}>Chain</Tab><Tab active={view === "surface"} onClick={() => update({ evidence_view: "surface" })}>IV Surface</Tab><Tab active={view === "curves"} onClick={() => update({ evidence_view: "curves" })}>Curves & History</Tab></div>
     {view === "chain" ? <ChainTable rows={chain.rows} page={page} maxPage={maxPage} count={chain.count} onPage={(next) => update({ page: String(next) })} /> : null}
-    {view === "surface" ? <SurfacePanel snapshot={selected} surface={surface} surfaceGrid={surfaceGrid} optionType={(optionType || "call") as "call" | "put"} surfaceView={surfaceView} onSurfaceViewChange={(next) => update({ surface_view: next })} webgl={webgl} /> : null}
+    {view === "surface" ? <SurfacePanel snapshot={selected} surface={surface} surfaceGrid={surfaceGrid} optionType={(optionType || "call") as "call" | "put"} selectedDte={groups.find((group) => group.expiration === expiration && group.option_type === optionType)?.dte} selectedExpiration={expiration} surfaceView={surfaceView} onSurfaceViewChange={(next) => update({ surface_view: next })} webgl={webgl} /> : null}
     {view === "curves" ? <CurvesPanel curves={curves} anomalies={anomalies.rows} /> : null}
   </WorkspacePage>;
 }
@@ -138,25 +138,20 @@ function ChainTable({ rows, page, maxPage, count, onPage }: { rows: OptionHistor
   return <section className="rounded-lg border border-border bg-card"><div className="flex items-center justify-between gap-3 border-b border-border p-3 text-sm"><span>{count.toLocaleString()} contracts</span><div className="flex items-center gap-2"><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button><span>Page {page + 1} / {maxPage + 1}</span><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page >= maxPage} onClick={() => onPage(page + 1)}>Next</button></div></div><div className="divide-y md:hidden">{rows.map((row) => <article key={row.contract_id} className="grid gap-1 p-3 text-sm"><strong>{row.option_type.toUpperCase()} {row.expiration} · {money(row.strike)} · {row.dte} DTE</strong><span>Bid/ask {money(row.bid)} / {money(row.ask)} · IV {percent(row.provider_iv)}</span><span>Δ {number(row.provider_delta, 3)} · Γ {number(row.provider_gamma, 3)} · Θ {number(row.provider_theta, 3)}</span><span>OI / volume {integer(row.open_interest)} / {integer(row.volume)} · displayed sizes {integer(row.bid_size)} / {integer(row.ask_size)}</span><span className="text-muted-foreground">{row.evidence_classification ?? row.quality_status ?? "Unscored evidence"} · {(row.evidence_blockers ?? []).join(" · ") || (row.evidence_classification === "rejected" ? "No relative-value edge" : `Status ${row.market_data_status ?? "unknown"}`)}</span></article>)}</div><div className="hidden overflow-x-auto md:block"><table className="min-w-[1100px] w-full text-left text-xs"><thead className="bg-muted text-muted-foreground">{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th className="whitespace-nowrap px-3 py-2 font-medium" key={header.id}>{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr className="border-t border-border" key={row.id}>{row.getVisibleCells().map((cell) => <td className="whitespace-nowrap px-3 py-2 tabular-nums" key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table></div>{rows.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No complete-chain contracts match these filters.</p> : null}</section>;
 }
 
-function SurfacePanel({ snapshot, surface, surfaceGrid, optionType, surfaceView, onSurfaceViewChange, webgl }: { snapshot: OptionHistorySnapshot | undefined; surface: OptionHistorySurface | null; surfaceGrid: OptionHistorySurfaceGrid | null; optionType: "call" | "put"; surfaceView: "3d" | "evidence"; onSurfaceViewChange: (view: "3d" | "evidence") => void; webgl: boolean | null }) {
+function SurfacePanel({ snapshot, surface, surfaceGrid, optionType, selectedDte, selectedExpiration, surfaceView, onSurfaceViewChange, webgl }: { snapshot: OptionHistorySnapshot | undefined; surface: OptionHistorySurface | null; surfaceGrid: OptionHistorySurfaceGrid | null; optionType: "call" | "put"; selectedDte?: number; selectedExpiration: string; surfaceView: "explorer" | "evidence"; onSurfaceViewChange: (view: "explorer" | "evidence") => void; webgl: boolean | null }) {
   if (!snapshot) return <Empty text="A complete snapshot is required before a surface can be shown." />;
   return <section className="rounded-lg border border-border bg-card p-2">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-2 pb-2 text-sm">
       <p className="text-muted-foreground">Provider IV is market-implied; realized volatility remains a separate underwriting input.</p>
       <div className="flex rounded border border-border bg-muted p-0.5">
-        <Tab active={surfaceView === "3d"} onClick={() => onSurfaceViewChange("3d")}>3D surface</Tab>
-        <Tab active={surfaceView === "evidence"} onClick={() => onSurfaceViewChange("evidence")}>Selected expiry</Tab>
+        <Tab active={surfaceView === "explorer"} onClick={() => onSurfaceViewChange("explorer")}>Surface explorer</Tab>
+        <Tab active={surfaceView === "evidence"} onClick={() => onSurfaceViewChange("evidence")}>Expiry smile</Tab>
       </div>
     </div>
     {surfaceView === "evidence" ? (!surface?.snapshot_id ? <p className="p-4 text-sm text-muted-foreground">Loading bounded expiry evidence…</p> : <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading bounded evidence chart…</p>}><OptionSurfacePlot surface={surface} /></Suspense>) : null}
-    {surfaceView === "3d" && webgl === null ? <p className="p-4 text-sm text-muted-foreground">Checking interactive chart support…</p> : null}
-    {surfaceView === "3d" && webgl === false ? (!surface?.snapshot_id ? <p className="p-4 text-sm text-muted-foreground">Loading selected-expiry evidence…</p> : <SurfaceEvidenceTable surface={surface} />) : null}
-    {surfaceView === "3d" && webgl === true ? (!surfaceGrid?.snapshot_id ? <p className="p-4 text-sm text-muted-foreground">Loading lazy 3D provider-IV surface…</p> : <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading WebGL surface…</p>}><OptionSurface3dPlot surface={surfaceGrid} optionType={optionType} /></Suspense>) : null}
-    {surfaceView === "3d" ? <p className="px-2 pb-1 text-xs text-muted-foreground">The colored grid interpolates only between observed strikes; white points are the underlying Robinhood provider-IV observations. It does not show realized volatility or a trade signal.</p> : null}
+    {surfaceView === "explorer" ? (!surfaceGrid?.snapshot_id ? <p className="p-4 text-sm text-muted-foreground">Loading bounded provider-IV surface…</p> : <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading surface explorer…</p>}><OptionSurfaceExplorer surface={surfaceGrid} optionType={optionType} selectedDte={selectedDte} selectedExpiration={selectedExpiration} webgl={webgl} /></Suspense>) : null}
   </section>;
 }
-
-function SurfaceEvidenceTable({ surface }: { surface: OptionHistorySurface }) { return <section className="rounded-lg border border-border p-4"><StatusBadge tone="warn">Interactive chart unavailable</StatusBadge><p className="mt-2 text-sm text-muted-foreground">Showing the selected expiry/type's bounded observed and fitted evidence.</p><div className="mt-3 max-h-[460px] overflow-auto"><table className="w-full text-left text-xs"><thead className="text-muted-foreground"><tr><th>Strike</th><th>Bid / Ask</th><th>IV</th><th>Classification</th></tr></thead><tbody>{surface.observed.map((row, index) => <tr className="border-t" key={`${String(row.contract_id)}-${index}`}><td className="py-2">{String(row.strike ?? "—")}</td><td>{String(row.bid ?? "—")} / {String(row.ask ?? "—")}</td><td>{String(row.provider_iv ?? "—")}</td><td>{String(surface.fitted[index]?.classification ?? "—")}</td></tr>)}</tbody></table></div></section>; }
 
 function CurvesPanel({ curves, anomalies }: { curves: OptionHistoryCurves | null; anomalies: OptionHistoryAnomaly[] }) {
   return <div className="space-y-4"><section className="rounded-lg border border-border p-4"><div className="mb-3 flex items-center justify-between"><h2 className="font-medium">Curves and historical comparisons</h2><StatusBadge tone={curves?.history_state === "ready" ? "good" : "warn"}>{curves?.history_state ?? "collecting"}</StatusBadge></div>{curves ? <Suspense fallback={<p className="text-sm text-muted-foreground">Loading curves…</p>}><OptionCurvePlots curves={curves} /></Suspense> : <Empty text="A complete snapshot is required before curves can be shown." />}</section><div className="grid gap-4 xl:grid-cols-2"><section className="rounded-lg border border-border p-4"><h2 className="mb-3 font-medium">Observed smile points</h2><SmileTable curves={curves} /></section><section className="rounded-lg border border-border p-4"><h2 className="mb-3 font-medium">Statistical anomalies</h2><div className="max-h-[460px] overflow-auto"><table className="w-full text-left text-xs"><thead className="text-muted-foreground"><tr><th>Signal</th><th>State</th><th>Expiry</th><th>Z-score</th></tr></thead><tbody>{anomalies.map((row) => <tr className="border-t" key={row.id}><td className="py-2">{row.anomaly_type}</td><td><StatusBadge tone={row.state === "active" ? "warn" : "muted"}>{row.state}</StatusBadge></td><td>{row.expiration ?? "—"}</td><td>{number(row.z_score, 2)}</td></tr>)}</tbody></table>{anomalies.length === 0 ? <p className="py-4 text-sm text-muted-foreground">No threshold anomalies in this snapshot.</p> : null}</div></section></div></div>;

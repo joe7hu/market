@@ -50,5 +50,24 @@ describe("option-curve plot data", () => {
     const plot = buildProviderIVSurfaceData(surface, "call");
     expect(plot.z).toEqual([[0.24, null, 0.21]]);
     expect(plot.observed).toEqual([{ logMoneyness: -0.1, dte: 20, providerIV: 0.24, strike: 490 }]);
+    expect(plot.heatmap).toEqual([[0, 0, 0.24], [2, 0, 0.21]]);
+    expect(plot.dataShape).toEqual([1, 3]);
+  });
+
+  it("defaults to an actionable near-ATM, near-term window and builds the selected DTE slice", () => {
+    const surface: OptionHistorySurfaceGrid = {
+      snapshot_id: 1, symbol: "QQQ", x: [-0.4, -0.1, 0, 0.1, 0.4], y: [7, 45, 500],
+      surfaces: { call: [
+        [0.80, 0.30, 0.25, 0.29, 0.90],
+        [0.70, 0.28, 0.24, 0.27, 0.85],
+        [0.60, 0.26, 0.23, 0.25, 0.75],
+      ] },
+      observed: [],
+    };
+    const plot = buildProviderIVSurfaceData(surface, "call", "focus", 45);
+    expect(plot.x).toEqual([-0.1, 0, 0.1]);
+    expect(plot.y).toEqual([7, 45]);
+    expect(plot.selectedDte).toBe(45);
+    expect(plot.selectedSlice).toEqual([[-0.1, 0.28], [0, 0.24], [0.1, 0.27]]);
   });
 });
