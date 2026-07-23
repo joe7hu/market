@@ -255,13 +255,14 @@ def eligible_policy_slot(now: datetime, *, cadence_minutes: int) -> datetime | N
     if reference.time() < MARKET_OPEN or reference.time() >= time(16, 15):
         return None
     if reference.time() >= MARKET_CLOSE:
-        local_slot = reference.replace(hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute, second=0, microsecond=0)
-    else:
-        local_slot = reference.replace(minute=30, second=0, microsecond=0)
-        if local_slot > reference:
-            local_slot -= timedelta(hours=1)
-        if local_slot.time() < MARKET_OPEN:
-            local_slot = reference.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0)
+        return reference.replace(
+            hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute, second=0, microsecond=0
+        ).astimezone(UTC)
+    if reference.minute < 30 or reference.minute >= 45:
+        return None
+    local_slot = reference.replace(minute=30, second=0, microsecond=0)
+    if local_slot.time() < MARKET_OPEN:
+        return None
     return local_slot.astimezone(UTC)
 
 

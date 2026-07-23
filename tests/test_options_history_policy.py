@@ -58,9 +58,11 @@ def test_watchlist_toggle_is_optimistic_and_preserves_policy_row(migrated_postgr
 
 
 def test_policy_due_slots_keep_core_15_and_standard_hourly() -> None:
-    now = datetime(2026, 7, 20, 14, 45, tzinfo=UTC)
-    assert eligible_policy_slot(now, cadence_minutes=15) == datetime(2026, 7, 20, 14, 45, tzinfo=UTC)
+    now = datetime(2026, 7, 20, 14, 35, tzinfo=UTC)
+    assert eligible_policy_slot(now, cadence_minutes=15) == datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
     assert eligible_policy_slot(now, cadence_minutes=60) == datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    assert eligible_policy_slot(datetime(2026, 7, 20, 14, 45, tzinfo=UTC), cadence_minutes=60) is None
+    assert eligible_policy_slot(datetime(2026, 7, 20, 15, 15, tzinfo=UTC), cadence_minutes=60) is None
     close_grace = datetime(2026, 7, 20, 20, 5, tzinfo=UTC)
     assert eligible_policy_slot(close_grace, cadence_minutes=60) == datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
     assert eligible_policy_slot(datetime(2026, 7, 19, 14, 45, tzinfo=UTC), cadence_minutes=15) is None
