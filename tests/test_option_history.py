@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -145,6 +145,59 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
     second_run = ingestion.start_run("robinhood", "option_history_full")
     assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=second_run) is None
     ingestion.finish_run(second_run, "skipped")
+    runtime.close()
+
+
+def test_stale_running_capture_is_deferred_after_lease_expiry(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    history = OptionHistoryRepository(runtime)
+    ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+    slot = datetime(2026, 7, 20, 15, 0, tzinfo=UTC)
+    run_id = ingestion.start_run("robinhood", "option_history_full")
+    assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=run_id)
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.option_capture_generation SET capture_started_at = %s WHERE ingest_run_id = %s",
+            [slot, run_id],
+        )
+        connection.execute(
+            """
+            INSERT INTO ops.provider_lease (provider, workload, symbol, owner, heartbeat_at, expires_at)
+            VALUES ('robinhood', 'option_history', 'QQQ', 'test', %s, %s)
+            """,
+            [slot, slot + timedelta(minutes=5)],
+        )
+    assert history.defer_stale_running_captures(
+        source_id="robinhood",
+        stale_after=timedelta(minutes=10),
+        now=slot + timedelta(minutes=6),
+    ) == 0
+    assert history.defer_stale_running_captures(
+        source_id="robinhood",
+        stale_after=timedelta(minutes=10),
+        now=slot + timedelta(minutes=11),
+    ) == 1
+    with runtime.read() as connection:
+        row = connection.execute(
+            """
+            SELECT snapshot.capture_state AS snapshot_state, generation.capture_state AS generation_state,
+                   ingest.status AS ingest_status, generation.terminal_error
+            FROM raw.option_snapshot snapshot
+            JOIN raw.option_capture_generation generation ON generation.snapshot_id = snapshot.id
+            JOIN ingest.run ingest ON ingest.id = generation.ingest_run_id
+            WHERE generation.ingest_run_id = %s
+            """,
+            [run_id],
+        ).fetchone()
+    assert row["snapshot_state"] == "deferred"
+    assert row["generation_state"] == "deferred"
+    assert row["ingest_status"] == "failed"
+    assert row["terminal_error"] == "collector_orphaned_after_shutdown"
+    retry_run = ingestion.start_run("robinhood", "option_history_full")
+    assert history.claim_slot(source_id="robinhood", symbol="QQQ", slot_at=slot, run_id=retry_run) is None
+    ingestion.finish_run(retry_run, "skipped")
     runtime.close()
 
 

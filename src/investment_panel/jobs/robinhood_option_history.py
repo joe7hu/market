@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 import json
 from typing import Any
 
@@ -51,6 +51,10 @@ def run(
     ingestion = IngestionRepository(runtime)
     history = OptionHistoryRepository(runtime)
     policy = OptionHistoryPolicyRepository(runtime)
+    history.defer_stale_running_captures(
+        source_id="robinhood",
+        stale_after=timedelta(seconds=int(provider.max_collection_seconds) + 120),
+    )
     use_policy = True
     try:
         scheduled = policy.due_symbols(now)

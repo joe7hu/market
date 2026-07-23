@@ -7,6 +7,9 @@ from typing import Any, Sequence
 from uuid import UUID
 from psycopg.types.json import Jsonb
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.options_history_stale import defer_stale_running_captures
+from investment_panel.database.options_history_terminal import defer_capture as _defer_capture
+from investment_panel.database.options_history_terminal import fail_capture as _fail_capture
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
 from investment_panel.database.options_history_health import history_health
 from investment_panel.database.options_history_surface import surface_groups as _surface_groups
@@ -152,48 +155,28 @@ class OptionHistoryRepository:
         return result
     def fail_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, error: Exception | str) -> None:
         """Terminate a claimed generation so no slot remains permanently running."""
-        detail = str(error)
-        universe = _history_universe(symbol)
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            generation = connection.execute(
-                """
-                SELECT generation.id, snapshot.id AS snapshot_id
-                FROM raw.option_capture_generation generation
-                JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
-                WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
-                  AND generation.ingest_run_id = %s AND generation.capture_state = 'running'
-                FOR UPDATE
-                """,
-                [source_id, symbol.upper(), slot_at, run_id],
-            ).fetchone()
-            if generation is None:
-                return
-            connection.execute(
-                "UPDATE raw.option_capture_generation SET capture_state = 'failed', capture_finished_at = now(), terminal_error = %s WHERE id = %s",
-                [detail, generation["id"]],
-            )
-            connection.execute(
-                "UPDATE raw.option_snapshot SET capture_state = 'failed', capture_finished_at = now() WHERE id = %s",
-                [generation["snapshot_id"]],
-            )
+        _fail_capture(self.runtime, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id, error=error)
+
+    def defer_stale_running_captures(
+        self,
+        *,
+        source_id: str,
+        stale_after: timedelta,
+        reason: str = "collector_orphaned_after_shutdown",
+        now: datetime | None = None,
+    ) -> int:
+        return defer_stale_running_captures(
+            self.runtime,
+            source_id=source_id,
+            collection_profile=HISTORY_PROFILE,
+            stale_after=stale_after,
+            reason=reason,
+            now=now,
+        )
+
     def defer_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, reason: str) -> None:
         """Record a capacity deferral as terminal evidence without making the slot retryable."""
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            generation = connection.execute(
-                """
-                SELECT generation.id, snapshot.id AS snapshot_id
-                FROM raw.option_capture_generation generation
-                JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
-                WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
-                  AND generation.ingest_run_id = %s AND generation.capture_state = 'running'
-                FOR UPDATE
-                """,
-                [source_id, symbol.upper(), slot_at, run_id],
-            ).fetchone()
-            if generation is None:
-                return
-            connection.execute("UPDATE raw.option_capture_generation SET capture_state = 'deferred', capture_finished_at = now(), terminal_error = %s WHERE id = %s", [reason, generation["id"]])
-            connection.execute("UPDATE raw.option_snapshot SET capture_state = 'deferred', capture_finished_at = now() WHERE id = %s", [generation["snapshot_id"]])
+        _defer_capture(self.runtime, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id, reason=reason)
     def _generation_for_run(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID) -> int | None:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(
