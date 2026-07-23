@@ -83,6 +83,37 @@ def test_provider_leases_enforce_two_concurrent_pulls(migrated_postgres_dsn: str
         runtime.close()
 
 
+def test_provider_leases_prioritize_radar_over_shadow_history(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = OptionHistoryPolicyRepository(runtime)
+        radar = repository.acquire_provider_lease(provider="robinhood", workload="options_radar", symbol="RADAR")
+        assert radar is not None
+        assert repository.acquire_provider_lease(provider="robinhood", workload="option_history", symbol="NVDA") is None
+        qqq = repository.acquire_provider_lease(provider="robinhood", workload="option_history", symbol="QQQ")
+        assert qqq is not None
+    finally:
+        runtime.close()
+
+
+def test_provider_lease_heartbeat_extends_active_work(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = OptionHistoryPolicyRepository(runtime)
+        lease = repository.acquire_provider_lease(
+            provider="robinhood", workload="options_radar", symbol="RADAR", ttl_seconds=60
+        )
+        assert lease is not None
+        assert repository.heartbeat_provider_lease(lease.id, ttl_seconds=3600)
+        with runtime.read() as connection:
+            row = connection.execute("SELECT expires_at FROM ops.provider_lease WHERE id = %s", [lease.id]).fetchone()
+        assert row["expires_at"] > lease.expires_at
+    finally:
+        runtime.close()
+
+
 def test_shadow_publication_cap_downgrades_only_paper_ready() -> None:
     ready = {"paper_state": "PAPER_READY", "blockers": [], "reasons": []}
     capped = apply_publication_cap(ready, {"publication_cap": "WATCH"})

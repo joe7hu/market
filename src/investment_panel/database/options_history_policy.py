@@ -18,6 +18,9 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 POLICY_REVISION = "options-chain-reliability-20260722"
 MAX_PROVIDER_LEASES = 2
 LEASE_SECONDS = 14 * 60
+CORE_HISTORY_SYMBOLS = frozenset({"QQQ"})
+RADAR_WORKLOADS = frozenset({"options_radar"})
+HISTORY_WORKLOADS = frozenset({"option_history"})
 
 
 class PolicyConflict(ValueError):
@@ -196,6 +199,8 @@ class OptionHistoryPolicyRepository:
             ).fetchone()["count"])
             if active >= MAX_PROVIDER_LEASES:
                 return None
+            if _uses_shared_history_slot(workload, normalized) and _active_radar_lease(connection, provider, acquired_at):
+                return None
             row = connection.execute(
                 """
                 INSERT INTO ops.provider_lease (provider, workload, symbol, owner, heartbeat_at, expires_at, metadata)
@@ -217,6 +222,20 @@ class OptionHistoryPolicyRepository:
     def release_provider_lease(self, lease_id: int) -> None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("DELETE FROM ops.provider_lease WHERE id = %s", [lease_id])
+
+    def heartbeat_provider_lease(self, lease_id: int, *, ttl_seconds: int = LEASE_SECONDS) -> bool:
+        now = datetime.now(UTC)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            row = connection.execute(
+                """
+                UPDATE ops.provider_lease
+                SET heartbeat_at = %s, expires_at = %s
+                WHERE id = %s AND expires_at > %s
+                RETURNING id
+                """,
+                [now, now + timedelta(seconds=ttl_seconds), lease_id, now],
+            ).fetchone()
+        return row is not None
 
 
 def eligible_policy_slot(now: datetime, *, cadence_minutes: int) -> datetime | None:
@@ -244,6 +263,23 @@ def eligible_policy_slot(now: datetime, *, cadence_minutes: int) -> datetime | N
         if local_slot.time() < MARKET_OPEN:
             local_slot = reference.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0)
     return local_slot.astimezone(UTC)
+
+
+def _uses_shared_history_slot(workload: str, symbol: str) -> bool:
+    return workload in HISTORY_WORKLOADS and symbol not in CORE_HISTORY_SYMBOLS
+
+
+def _active_radar_lease(connection: Any, provider: str, now: datetime) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM ops.provider_lease
+        WHERE provider = %s AND expires_at > %s AND workload = ANY(%s)
+        LIMIT 1
+        """,
+        [provider, now, sorted(RADAR_WORKLOADS)],
+    ).fetchone()
+    return row is not None
 
 
 def apply_publication_cap(state: dict[str, Any], policy: dict[str, Any] | None) -> dict[str, Any]:

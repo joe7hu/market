@@ -55,7 +55,12 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
 
     config = load_config(config_path)
     policy = OptionHistoryPolicyRepository(runtime_for_url(database_url(config)))
-    lease = policy.acquire_provider_lease(provider="robinhood", workload="options_radar", symbol="RADAR")
+    lease = policy.acquire_provider_lease(
+        provider="robinhood",
+        workload="options_radar",
+        symbol="RADAR",
+        ttl_seconds=_job_timeout_seconds("options_radar_hard_refresh") or JOB_TIMEOUT_SECONDS["options_radar_hard_refresh"],
+    )
     if lease is None:
         return {"ok": False, "status": "skipped", "reason": "provider_capacity_deferred"}
     try:

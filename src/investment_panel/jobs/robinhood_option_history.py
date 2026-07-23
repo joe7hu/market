@@ -76,7 +76,12 @@ def run(
                 continue
             lease_id = None
             if use_policy:
-                lease = policy.acquire_provider_lease(provider="robinhood", workload="option_history", symbol=symbol)
+                lease = policy.acquire_provider_lease(
+                    provider="robinhood",
+                    workload="option_history",
+                    symbol=symbol,
+                    ttl_seconds=int(provider.max_collection_seconds) + 120,
+                )
                 if lease is None:
                     history.defer_capture(
                         source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id,
