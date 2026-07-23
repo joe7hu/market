@@ -101,8 +101,8 @@ class OptionsActions:
     def history_anomalies(self, **filters: Any) -> dict[str, Any]:
         return self.history.anomalies(**filters)
 
-    def history_health(self) -> dict[str, Any]:
-        result = self.history.health()
+    def history_health(self, *, symbol: str | None = None) -> dict[str, Any]:
+        result = self.history.health(symbol=symbol)
         result["mode"] = _decision_mode(self.config)
         return result
 

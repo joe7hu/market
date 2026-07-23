@@ -13,6 +13,7 @@ from typing import Any
 
 
 SCHEDULED_REGULAR_SLOTS = 27  # 09:30 through 16:00 ET, inclusive, every 15m.
+STANDARD_SCHEDULED_REGULAR_SLOTS = 8  # 09:30-15:30 hourly plus official close.
 REQUIRED_SLOT_COVERAGE = 0.95
 REQUIRED_CONTRACT_COVERAGE = 0.98
 
@@ -31,6 +32,7 @@ def canary_health(connection: Any, *, symbol: str, model_revision: str) -> dict[
     if canary is None:
         return _empty(model_revision)
     started_at = canary["started_at"]
+    scheduled_slots = _scheduled_regular_slots(connection, symbol=symbol)
     complete_captures = connection.execute(
         """
         SELECT count(*) AS count
@@ -73,7 +75,7 @@ def canary_health(connection: Any, *, symbol: str, model_revision: str) -> dict[
         by_date[row["trading_date"]].append(row)
     sessions: list[dict[str, Any]] = []
     reason_counts: Counter[str] = Counter()
-    required_slots = int(SCHEDULED_REGULAR_SLOTS * REQUIRED_SLOT_COVERAGE + 0.999999)
+    required_slots = int(scheduled_slots * REQUIRED_SLOT_COVERAGE + 0.999999)
     for trading_date, session_rows in sorted(by_date.items()):
         slots = {row["slot_at"] for row in session_rows if row.get("slot_at") is not None}
         reasons: list[str] = []
@@ -100,8 +102,8 @@ def canary_health(connection: Any, *, symbol: str, model_revision: str) -> dict[
         sessions.append({
             "trading_date": trading_date,
             "observed_slots": len(slots),
-            "scheduled_slots": SCHEDULED_REGULAR_SLOTS,
-            "scheduled_slot_coverage": len(slots) / SCHEDULED_REGULAR_SLOTS,
+            "scheduled_slots": scheduled_slots,
+            "scheduled_slot_coverage": len(slots) / scheduled_slots,
             "minimum_contract_coverage": min((float(row["completeness"] or 0.0) for row in session_rows), default=0.0),
             "qualified": not unique_reasons,
             "disqualification_reasons": unique_reasons,
@@ -123,6 +125,20 @@ def canary_health(connection: Any, *, symbol: str, model_revision: str) -> dict[
             for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
         ],
     }
+
+
+def _scheduled_regular_slots(connection: Any, *, symbol: str) -> int:
+    row = connection.execute(
+        """
+        SELECT policy.cadence_minutes
+        FROM app.option_history_policy policy
+        JOIN catalog.instrument instrument ON instrument.id = policy.instrument_id
+        WHERE instrument.symbol = %s
+        """,
+        [symbol.upper()],
+    ).fetchone()
+    cadence = int(row["cadence_minutes"]) if row else 15
+    return STANDARD_SCHEDULED_REGULAR_SLOTS if cadence == 60 else SCHEDULED_REGULAR_SLOTS
 
 
 def _empty(model_revision: str) -> dict[str, Any]:

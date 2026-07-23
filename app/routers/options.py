@@ -154,9 +154,9 @@ def historical_option_anomalies(
 
 
 @router.get("/api/options/history/health")
-def historical_option_health() -> dict[str, Any]:
+def historical_option_health(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
     """Operational storage and completeness reporting for the Health surface."""
-    return _actions().history_health()
+    return _actions().history_health(symbol=symbol)
 
 
 @router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief)

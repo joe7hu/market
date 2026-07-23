@@ -201,6 +201,50 @@ def test_stale_running_capture_is_deferred_after_lease_expiry(migrated_postgres_
     runtime.close()
 
 
+def test_history_health_can_scope_to_symbol_policy_cadence(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    history = OptionHistoryRepository(runtime)
+    ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+    for symbol, slot in (
+        ("QQQ", datetime(2026, 7, 20, 14, 30, tzinfo=UTC)),
+        ("NVDA", datetime(2026, 7, 20, 15, 30, tzinfo=UTC)),
+    ):
+        run_id = ingestion.start_run("robinhood", "option_history_full")
+        assert history.claim_slot(source_id="robinhood", symbol=symbol, slot_at=slot, run_id=run_id)
+        row = {
+            "underlying_symbol": symbol, "expiry": "2026-08-21", "strike": 500, "type": "call",
+            "underlying_price": 500, "bid": 2.0, "ask": 2.2, "mid": 2.1,
+            "iv": 0.2, "delta": 0.25, "open_interest": 100, "volume": 20,
+        }
+        stored = history.store_capture(
+            run_id=run_id,
+            source_id="robinhood",
+            symbol=symbol,
+            slot_at=slot,
+            captured={
+                "rows": [row],
+                "expected_contract_count": 1,
+                "received_contract_count": 1,
+                "capture_started_at": slot,
+                "capture_finished_at": slot,
+            },
+        )
+        ingestion.finish_run(run_id, "succeeded", summary=stored)
+    qqq = history.health(symbol="QQQ")
+    nvda = history.health(symbol="NVDA")
+    assert qqq["symbol"] == "QQQ"
+    assert qqq["snapshots"] == 1
+    assert qqq["complete_captures"] == 1
+    assert qqq["sessions"][0]["scheduled_slots"] == 27
+    assert nvda["symbol"] == "NVDA"
+    assert nvda["snapshots"] == 1
+    assert nvda["complete_captures"] == 1
+    assert nvda["sessions"][0]["scheduled_slots"] == 8
+    runtime.close()
+
+
 def test_surface_summaries_keep_term_slopes_separate_by_option_type() -> None:
     rows = [
         {

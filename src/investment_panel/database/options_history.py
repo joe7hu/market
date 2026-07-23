@@ -423,8 +423,8 @@ class OptionHistoryRepository:
             ).fetchall()
         return {"rows": [dict(row) for row in rows], "count": int(count), "offset": offset, "limit": limit, "snapshot_id": snapshot_id}
 
-    def health(self) -> dict[str, Any]:
-        return history_health(self.runtime)
+    def health(self, *, symbol: str | None = None) -> dict[str, Any]:
+        return history_health(self.runtime, symbol=symbol)
 
     def _resolve_snapshot(self, symbol: str, snapshot: int | None) -> int | None:
         with self.runtime.read() as connection:
