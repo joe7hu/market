@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api";
-import type { PanelData } from "@/types";
+import { ScopeStatusNotice } from "@/components/market/scopeStatus";
+import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { buildWatchlistViewModel, type WatchState, type WatchlistFilters } from "@/viewModels/watchlist";
 import { WorkspacePage, type OpenTicker } from "@/views/workspacePage";
 
@@ -12,6 +13,7 @@ import { WatchlistSection } from "./table";
 
 export function WatchlistPage({
   data,
+  scopeStatus,
   refreshStatus,
   refreshFinishedAt,
   refreshError,
@@ -21,6 +23,7 @@ export function WatchlistPage({
   onLoadUnwatchedPage,
 }: {
   data: PanelData;
+  scopeStatus?: ScopeSnapshotStatus;
   refreshStatus: WatchlistRefreshStatus;
   refreshFinishedAt: Date | null;
   refreshError: string | null;
@@ -112,6 +115,7 @@ export function WatchlistPage({
         />
       }
     >
+      <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh()} />
       <WatchlistControls
         filters={filters}
         counts={viewModel.counts}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import inspect
 import time
+from datetime import datetime
 from copy import deepcopy
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -84,6 +85,12 @@ _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key"
 _CONTEXT_LOCK = RLock()
 _LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
+    "today": {"daily_brief", "preopen_daily_brief", "portfolio", "decision_queue"},
+    "watchlist": {"universe_screen", "manual_watchlist", "portfolio"},
+    "watchlist-watched": {"universe_screen", "manual_watchlist", "portfolio"},
+    "watchlist-unwatched": {"universe_screen", "manual_watchlist", "portfolio"},
+    "portfolio": {"portfolio", "portfolio_summary", "portfolio_performance"},
+    "research": {"research_packets", "theses", "thesis_monitor", "news"},
     "options-radar": {"option_radar_summary", "option_radar_symbol_summary", "option_radar_opportunity", "option_discovery_candidate", "option_gate_result", "candidate_event", "radar_alert"},
 }
 
@@ -291,26 +298,28 @@ def scope_panel_snapshot_payload(
     limit: int | None = None,
 ) -> dict[str, Any]:
     payload = panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
-    if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES or offset != 0 or limit is not None:
-        return payload
-    if _scope_snapshot_has_rows(scope, payload):
-        _store_last_good_scope_snapshot(config, scope, payload)
+    if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES:
         return payload
     status = payload.get("status")
     if isinstance(status, dict) and status.get("ready") is True:
+        _mark_snapshot_state(payload, "current")
+        _store_last_good_scope_snapshot(config, scope, payload, offset=offset, limit=limit)
         return payload
-    fallback = _load_last_good_scope_snapshot(config, scope)
+    fallback = _load_last_good_scope_snapshot(config, scope, offset=offset, limit=limit)
     if fallback is None:
-        return payload
+        message = str(status.get("message") if isinstance(status, dict) else "") or "No current or last-good snapshot is available."
+        raise HTTPException(status_code=503, detail=message)
     status = dict(fallback.get("status") or {})
+    captured_at = str(status.get("metadata", {}).get("last_good_at") or "") if isinstance(status.get("metadata"), dict) else ""
     status.update(
         {
             "ready": True,
             "source": "panel-snapshot-cache",
-            "message": "Serving the last good options-radar publication while PostgreSQL is unavailable.",
+            "message": f"Serving last-good {scope} data while PostgreSQL is unavailable.",
         }
     )
     fallback["status"] = status
+    _mark_snapshot_state(fallback, "stale", error=str(payload.get("status", {}).get("message") or "PostgreSQL read models unavailable."), last_good_at=captured_at)
     return fallback
 
 
@@ -326,10 +335,14 @@ def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
     return False
 
 
-def _store_last_good_scope_snapshot(config: dict[str, Any], scope: str, payload: dict[str, Any]) -> None:
+def _store_last_good_scope_snapshot(
+    config: dict[str, Any], scope: str, payload: dict[str, Any], *, offset: int = 0, limit: int | None = None
+) -> None:
     snapshot = deepcopy(payload)
-    _LAST_GOOD_SCOPE_SNAPSHOTS[scope] = snapshot
-    path = _scope_snapshot_cache_path(config, scope)
+    _mark_snapshot_state(snapshot, "current", last_good_at=datetime.now().astimezone().isoformat())
+    key = _scope_snapshot_cache_key(scope, offset, limit)
+    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = snapshot
+    path = _scope_snapshot_cache_path(config, key)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -339,23 +352,45 @@ def _store_last_good_scope_snapshot(config: dict[str, Any], scope: str, payload:
         return
 
 
-def _load_last_good_scope_snapshot(config: dict[str, Any], scope: str) -> dict[str, Any] | None:
-    cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(scope)
+def _load_last_good_scope_snapshot(
+    config: dict[str, Any], scope: str, *, offset: int = 0, limit: int | None = None
+) -> dict[str, Any] | None:
+    key = _scope_snapshot_cache_key(scope, offset, limit)
+    cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(key)
     if cached is not None:
         return deepcopy(cached)
-    path = _scope_snapshot_cache_path(config, scope)
+    path = _scope_snapshot_cache_path(config, key)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-    if not isinstance(payload, dict) or not _scope_snapshot_has_rows(scope, payload):
+    if not isinstance(payload, dict):
         return None
-    _LAST_GOOD_SCOPE_SNAPSHOTS[scope] = payload
+    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = payload
     return deepcopy(payload)
 
 
-def _scope_snapshot_cache_path(config: dict[str, Any], scope: str) -> Path:
-    return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{scope}.json"
+def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str:
+    suffix = f"-{offset}-{limit}" if offset or limit is not None else ""
+    return f"{scope}{suffix}"
+
+
+def _scope_snapshot_cache_path(config: dict[str, Any], cache_key: str) -> Path:
+    return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{cache_key}.json"
+
+
+def _mark_snapshot_state(
+    payload: dict[str, Any], state: str, *, error: str | None = None, last_good_at: str | None = None
+) -> None:
+    status = dict(payload.get("status") or {})
+    metadata = dict(status.get("metadata") or {})
+    metadata["snapshot_state"] = state
+    if last_good_at:
+        metadata["last_good_at"] = last_good_at
+    if error:
+        metadata["snapshot_error"] = error
+    status["metadata"] = metadata
+    payload["status"] = status
 
 
 def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:

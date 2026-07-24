@@ -395,37 +395,49 @@ def portfolio_review_action_rows(
     ]
 
 
-def portfolio_intelligence_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def portfolio_intelligence_tables(
+    config: dict[str, Any], *, models: set[str] | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Build only the portfolio read models requested by the caller.
+
+    Portfolio pages used to rebuild every expensive intelligence model whenever
+    one sibling table was requested.  Read scopes now retain a single snapshot
+    transaction, but avoid correlation/performance work unless its model needs
+    it.
+    """
+    requested = models or {
+        "portfolio", "portfolio_summary", "portfolio_performance", "portfolio_transactions",
+        "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
+    }
     runtime = runtime_for_config(config)
     with runtime.snapshot() as connection:
-        positions = portfolio_rows(config, connection=connection)
-        performance = portfolio_performance_rows(config, connection=connection)
-        transactions = portfolio_transaction_rows(config, connection=connection)
-        summary = portfolio_summary(
-            config,
-            positions=positions,
-            performance=performance,
-            connection=connection,
-        )
-        correlations = portfolio_correlation_rows(config, positions=positions, connection=connection)
-        exposures = portfolio_exposure_rows(config, positions=positions)
-        risks = portfolio_risk_rows(
-            config,
-            positions=positions,
-            summary=summary,
-            correlations=correlations,
-            performance=performance,
-        )
-    return {
-        "portfolio": positions,
-        "portfolio_summary": [summary],
-        "portfolio_performance": performance,
-        "portfolio_transactions": transactions,
-        "correlation_edges": correlations,
-        "exposure_clusters": exposures,
-        "portfolio_risk_cards": risks,
-        "review_actions": portfolio_review_action_rows(config, risk_rows=risks),
-    }
+        needs_positions = bool(requested & {"portfolio", "portfolio_summary", "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions"})
+        needs_performance = bool(requested & {"portfolio_summary", "portfolio_performance", "portfolio_risk_cards", "review_actions"})
+        needs_correlations = bool(requested & {"correlation_edges", "portfolio_risk_cards", "review_actions"})
+        needs_summary = bool(requested & {"portfolio_summary", "portfolio_risk_cards", "review_actions"})
+        positions = portfolio_rows(config, connection=connection) if needs_positions else []
+        performance = portfolio_performance_rows(config, connection=connection) if needs_performance else []
+        summary = portfolio_summary(config, positions=positions, performance=performance, connection=connection) if needs_summary else {}
+        correlations = portfolio_correlation_rows(config, positions=positions, connection=connection) if needs_correlations else []
+        risks = portfolio_risk_rows(config, positions=positions, summary=summary, correlations=correlations, performance=performance) if requested & {"portfolio_risk_cards", "review_actions"} else []
+        tables: dict[str, list[dict[str, Any]]] = {}
+        if "portfolio" in requested:
+            tables["portfolio"] = positions
+        if "portfolio_summary" in requested:
+            tables["portfolio_summary"] = [summary]
+        if "portfolio_performance" in requested:
+            tables["portfolio_performance"] = performance
+        if "portfolio_transactions" in requested:
+            tables["portfolio_transactions"] = portfolio_transaction_rows(config, connection=connection)
+        if "correlation_edges" in requested:
+            tables["correlation_edges"] = correlations
+        if "exposure_clusters" in requested:
+            tables["exposure_clusters"] = portfolio_exposure_rows(config, positions=positions)
+        if "portfolio_risk_cards" in requested:
+            tables["portfolio_risk_cards"] = risks
+        if "review_actions" in requested:
+            tables["review_actions"] = portfolio_review_action_rows(config, risk_rows=risks)
+    return tables
 
 
 def _performance_rows(

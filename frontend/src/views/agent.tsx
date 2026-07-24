@@ -41,6 +41,7 @@ type ControlForm = {
 export function AgentPage() {
   const [data, setData] = useState<AgentOverview | null>(null);
   const [research, setResearch] = useState<DailyResearchPrompt | null>(null);
+  const [researchError, setResearchError] = useState("");
   const [draft, setDraft] = useState<ControlForm | null>(null);
   const [ticker, setTicker] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -60,8 +61,8 @@ export function AgentPage() {
   useEffect(() => {
     void refresh();
     void loadAgentResearchPrompt()
-      .then(setResearch)
-      .catch((exc) => setError(exc instanceof Error ? exc.message : "Failed to load daily research prompt"));
+      .then((payload) => { setResearch(payload); setResearchError(""); })
+      .catch((exc) => setResearchError(exc instanceof Error ? exc.message : "Failed to load daily research prompt"));
   }, [refresh]);
 
   // While a run is pending, poll until a new agent_runs row lands (confirms success).
@@ -151,7 +152,7 @@ export function AgentPage() {
   const cost = data?.cost;
   const queue = data?.queue;
   const metrics: MetricSpec[] = [
-    ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : "loading context", research ? "info" : "muted"],
+    ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : researchError ? "Unavailable" : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : researchError || "loading context", research ? "info" : researchError ? "warn" : "muted"],
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
     ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
@@ -176,6 +177,7 @@ export function AgentPage() {
       {message ? <Notice tone="good">{message}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
 
+      {researchError ? <Notice tone="bad">Daily research context unavailable: {researchError}</Notice> : null}
       <DailyResearchPromptPanel research={research ?? undefined} />
 
       {/* On-demand analysis */}

@@ -185,7 +185,9 @@ def _symbols(text: str, known: set[str]) -> list[str]:
     found: set[str] = set()
     for match in TOKEN_RE.finditer(text):
         symbol = str(match.group(1) or match.group(2) or "").upper()
-        if match.group(1) or symbol in known:
+        # Bare one-letter tokens are prose/punctuation collisions.  Keep the
+        # explicit cashtag branch so $C and $F remain valid source evidence.
+        if match.group(1) or (len(symbol) > 1 and symbol in known):
             found.add(symbol)
     return sorted(found)
 

@@ -434,6 +434,23 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
     assert payload["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
 
 
+def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "unavailable-watchlist-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    app_deps._scope_snapshot_cache_path({}, "watchlist").unlink(missing_ok=True)
+    monkeypatch.setattr(
+        app_deps,
+        "load_panel_scope_data",
+        lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
+    )
+
+    response = TestClient(app).get("/api/panel-snapshot?scope=watchlist")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "PostgreSQL timed out"
+
+
 def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailable(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "ready-empty-api.duckdb"
     _use_temp_api_db(monkeypatch, db_path)

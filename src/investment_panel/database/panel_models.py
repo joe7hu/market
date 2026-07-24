@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import inspect
 from typing import Any, Iterable, Mapping
 
 from investment_panel.database.panel_queries import OWNED_CORRELATIONS_QUERY, build_query_policies
@@ -566,13 +567,20 @@ def load_postgres_tables(
         "portfolio_summary", "portfolio_performance", "portfolio_transactions",
         "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
     }
-    bundle_triggers = intelligence_models - {"portfolio"}
-    if bundle_triggers.intersection(requested):
-        live_tables = portfolio_intelligence_tables(config)
-        for name in intelligence_models.intersection(requested):
-            tables[name] = live_tables[name]
-    elif "portfolio" in requested:
+    requested_intelligence = intelligence_models.intersection(requested)
+    if requested_intelligence == {"portfolio"}:
+        # The position list is the inexpensive primitive; do not construct the
+        # intelligence bundle for callers that only need holdings.
         tables["portfolio"] = portfolio_rows(config)
+    elif requested_intelligence:
+        # Keep existing test/facade seams compatible while the concrete owner
+        # accepts the selected model set for bounded production reads.
+        if "models" in inspect.signature(portfolio_intelligence_tables).parameters:
+            live_tables = portfolio_intelligence_tables(config, models=requested_intelligence)
+        else:
+            live_tables = portfolio_intelligence_tables(config)
+        for name in requested_intelligence:
+            tables[name] = live_tables.get(name, [])
     if "manual_watchlist" in requested:
         tables["manual_watchlist"] = watchlist_rows(config)
     if "theses" in requested:

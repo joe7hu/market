@@ -66,7 +66,10 @@ def extract_symbols(text: str, known: set[str] | None = None) -> list[str]:
     found = set(symbols_from_text(text or ""))
     if known:
         for token in _bare_upper_tokens(text or ""):
-            if token in known and token not in _STOPWORDS:
+            # One-letter exchange symbols collide with normal prose (C++, F-16,
+            # S&P).  They are only evidence when the author used $C/$F or an
+            # explicit provider ticker field, never from a bare text token.
+            if len(token) > 1 and token in known and token not in _STOPWORDS:
                 found.add(token)
     return sorted(found)
 

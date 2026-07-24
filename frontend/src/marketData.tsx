@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { emptyPanelData, loadPanelScope, type PanelScopeOptions } from "./api";
+import { withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
-import type { PanelData } from "./types";
+import type { PanelData, ScopeSnapshotStatus } from "./types";
 
 export type PanelScope = "feed" | "today" | "watchlist" | "watchlist-watched" | "watchlist-unwatched" | "sources" | "superinvestors" | "market" | "portfolio" | "research" | "thesis-monitor" | "options-radar" | "filings" | "calendar" | "health" | "settings";
 
@@ -11,6 +12,7 @@ type MarketDataContextValue = {
   model: AppModel;
   loading: boolean;
   lastRefresh: Date | null;
+  scopeStatus: Record<string, ScopeSnapshotStatus>;
   loadScope: (scope: PanelScope, options?: PanelScopeOptions) => Promise<void>;
   openTicker: (symbol: string) => void;
 };
@@ -38,11 +40,18 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
     if (inFlight) return inFlight;
     const request = (async () => {
       setLoading(true);
+      setData((current) => withScopeStatus(current, scope, { state: "loading" }));
       try {
         const nextData = await loadPanelScope(scope, dataRef.current, options);
         dataRef.current = nextData;
         setData(nextData);
         setLastRefresh(new Date());
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to load this page.";
+        const failed = withScopeStatus(dataRef.current, scope, { state: "failed", error: message });
+        dataRef.current = failed;
+        setData(failed);
+        throw error;
       } finally {
         inFlightScopesRef.current.delete(requestKey);
         setLoading(false);
@@ -65,6 +74,7 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
     model,
     loading,
     lastRefresh,
+    scopeStatus: data.scopeStatus,
     loadScope,
     openTicker,
   }), [data, model, loading, lastRefresh, loadScope, openTicker]);

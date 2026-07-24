@@ -212,6 +212,21 @@ def test_option_history_starts_on_the_next_quarter_hour() -> None:
     )
 
 
+def test_recurring_jobs_wait_the_configured_interval_after_completion_or_skip() -> None:
+    assert scheduler._recurring_delay_seconds("update_market_data", 3600) == 3600
+    assert scheduler._recurring_delay_seconds("update_social_sources", 1800) == 1800
+
+
+def test_option_history_recurrence_uses_the_next_quarter_hour_not_the_startup_stagger() -> None:
+    eastern = ZoneInfo("America/New_York")
+    assert scheduler._recurring_delay_seconds(
+        "robinhood_option_history", 900, reference_time=datetime(2026, 7, 20, 9, 30, 5, tzinfo=eastern)
+    ) == 895
+    assert scheduler._recurring_delay_seconds(
+        "robinhood_option_history", 900, reference_time=datetime(2026, 7, 20, 9, 30, tzinfo=eastern)
+    ) == 900
+
+
 def test_agent_pass_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_AGENT_REFRESH_SECONDS", "0")

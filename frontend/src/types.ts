@@ -12,6 +12,13 @@ export type ApiStatus = {
   metadata?: Record<string, JsonValue>;
 };
 
+export type ScopeSnapshotStatus = {
+  state: "loading" | "ready" | "stale" | "failed";
+  message?: string;
+  error?: string;
+  lastGoodAt?: string;
+};
+
 export type TablePayload = {
   rows?: RowRecord[];
   count?: number;
@@ -101,7 +108,8 @@ export type PanelData = KnownPanelTables & {
   dashboard: DashboardPayload;
   settings: SettingsPayload;
   errors: Partial<Record<PanelEndpoint, string>>;
-  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | undefined;
+  scopeStatus: Record<string, ScopeSnapshotStatus>;
+  [key: string]: DashboardPayload | SettingsPayload | TablePayload | Partial<Record<PanelEndpoint, string>> | Record<string, ScopeSnapshotStatus> | undefined;
 };
 
 export type PanelEndpoint = keyof KnownPanelTables | "dashboard" | "settings";

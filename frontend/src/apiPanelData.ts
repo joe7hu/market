@@ -1,4 +1,4 @@
-import type { DashboardPayload, KnownPanelTables, PanelData, RowRecord, TablePayload } from "./types";
+import type { DashboardPayload, KnownPanelTables, PanelData, RowRecord, ScopeSnapshotStatus, TablePayload } from "./types";
 
 export const EMPTY_TABLE: TablePayload = { rows: [], count: 0 };
 
@@ -25,11 +25,12 @@ export function emptyPanelData(): PanelData {
     dashboard: {},
     settings: {},
     errors: {},
+    scopeStatus: {},
   } as PanelData;
 }
 
 export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayload, options: { append?: boolean } = {}): PanelData {
-  const next: PanelData = { ...existing, errors: { ...existing.errors } };
+  const next: PanelData = { ...existing, errors: { ...existing.errors }, scopeStatus: { ...existing.scopeStatus } };
   if (snapshot.dashboard) {
     next.dashboard = snapshot.dashboard;
   } else if (snapshot.status) {
@@ -42,7 +43,21 @@ export function mergeSnapshot(existing: PanelData, snapshot: PanelSnapshotPayloa
       next[dataKey] = options.append ? appendTable(existingTable ?? EMPTY_TABLE, table ?? EMPTY_TABLE) : table ?? EMPTY_TABLE;
     }
   }
+  if (snapshot.scope) {
+    const metadata = snapshot.status?.metadata;
+    const stale = metadata?.snapshot_state === "stale";
+    next.scopeStatus[snapshot.scope] = {
+      state: stale ? "stale" : "ready",
+      message: snapshot.status?.message,
+      error: typeof metadata?.snapshot_error === "string" ? metadata.snapshot_error : undefined,
+      lastGoodAt: typeof metadata?.last_good_at === "string" ? metadata.last_good_at : undefined,
+    };
+  }
   return next;
+}
+
+export function withScopeStatus(data: PanelData, scope: string, status: ScopeSnapshotStatus): PanelData {
+  return { ...data, scopeStatus: { ...data.scopeStatus, [scope]: status } };
 }
 
 function appendTable(existing: TablePayload, incoming: TablePayload): TablePayload {

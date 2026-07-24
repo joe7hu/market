@@ -13,7 +13,7 @@ const AUTO_REFRESH_INTERVAL_MS = 120000;
 export type WatchlistRefreshStatus = "idle" | "starting" | "running" | "succeeded" | "failed";
 
 export function WatchlistRoute() {
-  const { data, loadScope, openTicker } = useMarketData();
+  const { data, loadScope, openTicker, scopeStatus } = useMarketData();
   const activeRefreshJobId = useRef<string | null>(null);
   const [refreshStatus, setRefreshStatus] = useState<WatchlistRefreshStatus>("idle");
   const [refreshFinishedAt, setRefreshFinishedAt] = useState<Date | null>(null);
@@ -118,6 +118,7 @@ export function WatchlistRoute() {
   return (
     <WatchlistPage
       data={data}
+      scopeStatus={scopeStatus["watchlist-watched"]?.state === "failed" ? scopeStatus["watchlist-watched"] : scopeStatus["watchlist-unwatched"]}
       refreshStatus={refreshStatus}
       refreshFinishedAt={refreshFinishedAt}
       refreshError={refreshError}

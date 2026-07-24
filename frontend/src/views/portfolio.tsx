@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { previewPortfolioTransaction, recordPortfolioTransaction, reversePortfolioTransaction, type PortfolioTransactionInput, type PortfolioTransactionPreview } from "@/api";
 import { DecisionCard, EmptyState, StatusBadge } from "@/components/market/workstation";
+import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,18 +11,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
-import type { PanelData, RowRecord } from "@/types";
+import type { PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildPortfolioViewModel, performanceRangeRows, type PerformanceRange } from "@/viewModels/portfolio";
 import { booleanField, displayField, formatMoney, formatPct, listField, numberField, textField, titleLabel, toneFromText } from "./rowFormat";
 import { PortfolioPerformanceChart } from "./portfolio/performanceChart";
 import { WorkspacePage, type OpenTicker } from "./workspacePage";
 
-type Props = { data: PanelData; model: AppModel; loading: boolean; onOpenTicker: OpenTicker; onRefresh: (force?: boolean) => Promise<void> };
+type Props = { data: PanelData; model: AppModel; loading: boolean; scopeStatus?: ScopeSnapshotStatus; onOpenTicker: OpenTicker; onRefresh: (force?: boolean) => Promise<void> };
 type TradeForm = { side: "buy" | "sell"; symbol: string; quantity: string; price: string; fees: string; executedAt: string; notes: string; idempotencyKey: string };
 
 const PERFORMANCE_RANGES: PerformanceRange[] = ["1D", "1W", "1M", "YTD", "1Y", "ALL"];
 
-export function PortfolioPage({ data, model, loading, onOpenTicker, onRefresh }: Props) {
+export function PortfolioPage({ data, model, loading, scopeStatus, onOpenTicker, onRefresh }: Props) {
   const [tradeOpen, setTradeOpen] = useState(false);
   const [range, setRange] = useState<PerformanceRange>("1Y");
   const [correlationWindow, setCorrelationWindow] = useState(60);
@@ -47,6 +48,7 @@ export function PortfolioPage({ data, model, loading, onOpenTicker, onRefresh }:
         ["Realized P&L", formatSignedMoney(summary.realizedPnl), `${formatMoney(summary.income)} income · ${formatMoney(summary.fees)} fees`, summary.realizedPnl >= 0 ? "good" : "bad"],
       ]}
     >
+      <ScopeStatusNotice status={scopeStatus} onRetry={() => void onRefresh(true)} />
       {announcement ? <div role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{announcement}</div> : null}
       {!model.holdings.length ? <EmptyPortfolio onAddTrade={() => setTradeOpen(true)} /> : null}
 

@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 import { adaptOptionDecision } from "@/adapters/optionsDecision";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
+import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
-import type { JsonValue, PanelData, RowRecord } from "@/types";
+import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, toneFromText, type Tone } from "./rowFormat";
 
@@ -16,6 +17,7 @@ type TodayPageProps = {
   model: AppModel;
   lastRefresh: Date | null;
   loading: boolean;
+  scopeStatus?: ScopeSnapshotStatus;
   onRefresh: () => void;
   onOpenTicker: (symbol: string) => void;
 };
@@ -24,7 +26,7 @@ type JsonObject = { [key: string]: JsonValue };
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
 
-export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpenTicker }: TodayPageProps) {
+export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
   const optionActions = data.optionActionQueue?.rows ?? [];
   const hasBrief = vm.briefCount > 0;
@@ -42,6 +44,7 @@ export function TodayPage({ data, model, lastRefresh, loading, onRefresh, onOpen
           </Button>
         }
       />
+      <ScopeStatusNotice status={scopeStatus} onRetry={onRefresh} />
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricTile

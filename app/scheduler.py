@@ -21,7 +21,7 @@ from investment_panel.core.job_policy import (
     scheduler_status,
 )
 from investment_panel.core.job_execution import RefreshProcessSpec, execute_async, terminate_process
-from investment_panel.core.refresh_jobs import finish_refresh_job_failed, start_refresh_job
+from investment_panel.core.refresh_jobs import finish_refresh_job_failed, mark_stale_running_jobs, start_refresh_job
 from investment_panel.core.decision import MARKET_TZ
 
 logger = logging.getLogger("market.scheduler")
@@ -54,6 +54,29 @@ def _is_slot_boundary(job: str, interval: int, reference_time: datetime | None =
     return elapsed % interval < SLOT_ALIGNMENT_TOLERANCE_SECONDS
 
 
+def _recurring_delay_seconds(
+    job: str,
+    interval: int,
+    *,
+    reference_time: datetime | None = None,
+) -> float:
+    """Return the delay after a completed (or skipped) run.
+
+    Initial staggering exists only to spread process startup.  Reusing it for a
+    recurrence turns staggered jobs into a tight loop, so completion always
+    waits a full configured interval.  History collection is intentionally
+    calendar-aligned; its next recurrence is the *next* quarter-hour slot.
+    """
+    if job not in SLOT_ALIGNED_JOBS:
+        return float(interval)
+    reference = (reference_time or datetime.now(MARKET_TZ)).astimezone(MARKET_TZ)
+    elapsed = reference.minute * 60 + reference.second + reference.microsecond / 1_000_000
+    remainder = elapsed % interval
+    # A completed run five seconds into a slot must wait to the *next* slot;
+    # the scheduler's broader boundary tolerance is only for dispatch jitter.
+    return float(interval if remainder < 0.001 else interval - remainder)
+
+
 def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -74,6 +97,10 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20, allow_zero=True)
     logger.info("market scheduler starting (warmup=%ss, intervals=%s)", warmup, intervals)
 
+    # Reconcile stale single-flight records before scheduling.  This also
+    # releases jobs stranded by a prior process exit without touching a healthy
+    # heartbeat.
+    await asyncio.to_thread(mark_stale_running_jobs, db_path)
     start = time.monotonic() + warmup
     start_wall_time = datetime.now(MARKET_TZ) + timedelta(seconds=warmup)
     next_due: dict[str, float] = {
@@ -88,13 +115,14 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
             for job, task in list(in_flight.items()):
                 if task.done():
                     in_flight.pop(job, None)
+                    interval = intervals[job]
+                    next_due[job] = now + _recurring_delay_seconds(job, interval)
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
                     if not _is_slot_boundary(job, interval):
                         next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
                         continue
                     in_flight[job] = asyncio.create_task(_dispatch(job, db_path, config_path))
-                    next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
             slot_due = [next_due[job] for job in SLOT_ALIGNED_JOBS.intersection(intervals) if job not in in_flight]
             sleep_seconds = min(TICK_SECONDS, max(0.05, min(slot_due) - time.monotonic())) if slot_due else TICK_SECONDS
             await asyncio.sleep(sleep_seconds)
