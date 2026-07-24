@@ -97,6 +97,48 @@ def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelDat
     return load_panel_data(config, table_names=tables_for_scope(scope))
 
 
+def load_watchlist_scope_data(
+    config: dict[str, Any] | None, scope: str, *, offset: int = 0, limit: int | None = None
+) -> PanelData:
+    """Load a watchlist page in two bounded passes.
+
+    The universe is small enough to fetch once for totals, but detailed models
+    must be restricted to visible symbols.  This keeps candidate pagination in
+    PostgreSQL and avoids scanning every historical fundamental/option row just
+    to render the first page.
+    """
+    active_config = config or load_config()
+    seed = load_panel_data(active_config, table_names=("universe_screen", "manual_watchlist", "portfolio"))
+    rows = seed.rows("universe_screen")
+    if scope == "watchlist-watched":
+        selected = [row for row in rows if str(row.get("watch_state") or "").lower() in {"watched", "owned"}]
+    elif scope == "watchlist-unwatched":
+        selected = [row for row in rows if str(row.get("watch_state") or "").lower() == "candidate"]
+        selected = selected[max(0, offset): max(0, offset) + max(1, limit or 80)]
+    else:
+        selected = rows
+    symbols = {str(row.get("symbol") or "").upper() for row in selected if row.get("symbol")}
+    detail_names = (
+        "quotes", "fundamentals", "technicals", "valuations", "decision_queue",
+        "research_packets", "ticker_memos", "thesis_monitor", "options_ticker_signals",
+    )
+    detail = load_panel_data(
+        active_config,
+        table_names=detail_names,
+        query_symbol_filter=symbols,
+        query_row_limits={name: max(80, len(symbols) * 8) for name in detail_names},
+    )
+    # ``screener`` is an alias for the already-loaded universe screen; reusing
+    # it prevents a second whole-universe CTE for the same request.
+    tables = {**seed.tables, **detail.tables, "screener": seed.rows("universe_screen")}
+    ready = seed.status.ready and detail.status.ready
+    return PanelData(
+        status=DataStatus(ready, "PostgreSQL loaded bounded watchlist details." if ready else detail.status.message, detail.status.source),
+        tables=tables,
+        metadata={**seed.metadata, **detail.metadata, "watchlist_symbol_count": len(symbols), "watchlist_bounded": True},
+    )
+
+
 def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
     return load_panel_data(config, table_names=(table_name,))
 

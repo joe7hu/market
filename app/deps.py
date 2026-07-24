@@ -32,6 +32,7 @@ from app.data_access import (
     load_panel_scope_data,
     load_table_panel_data,
     load_ticker_panel_data,
+    load_watchlist_scope_data,
     panel_snapshot_payload,
     panel_contract_payload,
     portfolio_rows,
