@@ -54,6 +54,12 @@ def panel_snapshot(scope: str = "dashboard", offset: int = 0, limit: int | None 
             loader=lambda config: deps.load_watchlist_scope_data(config, scope, offset=offset, limit=limit),
         )
         return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+    if scope == "research":
+        # The legacy research route is a redirect in the UI, but its API powers
+        # integrations. Reuse the bounded daily-research owner so it cannot
+        # rebuild every global model and time out under ingestion pressure.
+        config, panel_data = deps._context(cache_key="scope:research", loader=deps.load_daily_research_panel_data)
+        return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     config, panel_data = deps._context(cache_key=f"scope:{scope}", loader=lambda config: deps.load_panel_scope_data(config, scope))
     return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
 
