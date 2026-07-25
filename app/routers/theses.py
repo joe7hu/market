@@ -17,7 +17,7 @@ def theses() -> dict[str, Any]:
 
 @router.get("/api/thesis-monitor")
 def thesis_monitor() -> dict[str, Any]:
-    return deps.user_state_table_payload(deps.thesis_monitor_rows(deps.load_config()))
+    return deps.thesis_monitor_payload(deps.load_config())
 
 
 @router.put("/api/theses/{symbol}")
@@ -33,15 +33,20 @@ def save_thesis_endpoint(symbol: str, payload: deps.ThesisInput, request: Reques
 
 
 @router.post("/api/theses/{symbol}/review")
-def review_thesis_endpoint(symbol: str, request: Request) -> dict[str, Any]:
+def review_thesis_endpoint(symbol: str, request: Request, payload: deps.ThesisReviewInput | None = None) -> dict[str, Any]:
     deps._require_local_request(request)
     config = deps.load_config()
     try:
-        reviewed = deps.mark_thesis_reviewed(config, symbol)
+        reviewed = deps.record_thesis_review(config, symbol, (payload or deps.ThesisReviewInput()).model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     rows = deps.thesis_monitor_rows(config)
     return {"review": reviewed, "thesis_monitor": deps.user_state_table_payload(rows)}
+
+
+@router.get("/api/theses/{symbol}/history")
+def thesis_history_endpoint(symbol: str) -> dict[str, Any]:
+    return deps.thesis_history(deps.load_config(), symbol)
 
 
 @router.get("/api/trader-twins")

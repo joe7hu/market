@@ -48,6 +48,7 @@ from app.data_access import (
     populate_watchlist_symbol_data,
     delete_watchlist_symbol,
     mark_thesis_reviewed,
+    record_thesis_review,
     record_portfolio_transaction,
     reverse_portfolio_transaction,
     save_thesis,
@@ -58,6 +59,8 @@ from app.data_access import (
     status_payload,
     table_payload,
     thesis_monitor_rows,
+    thesis_monitor_payload,
+    thesis_history,
     thesis_rows,
     ticker_payload,
     update_agent_settings_config,
@@ -150,13 +153,26 @@ class ThesisInput(BaseModel):
     why: str = ""
     invalidation: str = ""
     invalidation_price: float | None = None
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 3
     direction: Literal["bullish", "bearish"] | None = None
     horizon_date: str | None = None
     max_loss: float | None = None
     catalyst: str | None = None
     status: str | None = None
     evidence_links: list[str] | None = None
+    timeframe: str | None = None
+    conviction: str | None = None
+    confidence: str | None = None
+    pillars: list[dict[str, Any]] | None = None
+    scenarios: dict[str, Any] | None = None
+    catalysts: list[dict[str, Any]] | None = None
+    invalidation_rules: list[dict[str, Any]] | None = None
+    review_cadence_days: int | None = None
+    next_review_date: str | None = None
+    lifecycle_status: str | None = None
+    evidence_coverage_status: str | None = None
+    automation_policy: Literal["auto", "manual_lock"] | None = None
+    change_rationale: str | None = None
 
     @model_validator(mode="after")
     def validate_options_v2(self) -> "ThesisInput":
@@ -166,6 +182,12 @@ class ThesisInput(BaseModel):
             if self.max_loss is None or self.max_loss <= 0:
                 raise ValueError("schema_version 2 requires positive max_loss")
         return self
+
+
+class ThesisReviewInput(BaseModel):
+    outcome: Literal["unchanged", "updated", "invalidated", "closed"] = "unchanged"
+    notes: str = ""
+    reviewed_evidence_cutoff: str | None = None
 
 
 class PaperOrderInput(BaseModel):

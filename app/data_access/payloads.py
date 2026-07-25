@@ -34,6 +34,7 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
     option_thesis = agents.get("option_thesis", {}) if isinstance(agents.get("option_thesis"), dict) else {}
     option_postmortem = agents.get("option_postmortem", {}) if isinstance(agents.get("option_postmortem"), dict) else {}
     option_agent = agents.get("option_agent", {}) if isinstance(agents.get("option_agent"), dict) else {}
+    thesis_monitor = agents.get("thesis_monitor", {}) if isinstance(agents.get("thesis_monitor"), dict) else {}
     return {
         "agents": {
             # Unified single-pass agent runtime. Sub-limits keep thesis/postmortem
@@ -57,6 +58,7 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
                 "cadence": "daily_premarket",
                 "max_runs_per_day": 1,
             },
+            "thesis_monitor": _thesis_monitor_runtime_metadata(thesis_monitor),
         },
         "options_radar": {
             "deterministic_cadence": "hourly",
@@ -79,6 +81,30 @@ def _agent_runtime_metadata(config: dict[str, Any], *, default_limit: int) -> di
         "status": "active" if enabled and configured else "paused",
         "limit": _int_value(config.get("limit"), default_limit),
         "timeout_seconds": _int_value(config.get("timeout_seconds"), 120),
+    }
+
+
+def _thesis_monitor_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(config.get("enabled", False))
+    provider = str(config.get("provider") or "openai")
+    model = str(config.get("model") or "")
+    return {
+        "enabled": enabled,
+        "configured": bool(model) or provider == "openai",
+        "active": enabled,
+        "status": "active" if enabled else "paused",
+        "provider": provider,
+        "model": model or "configured_default",
+        "reasoning_effort": str(config.get("reasoning_effort") or "medium"),
+        "prompt_version": str(config.get("prompt_version") or "thesis_v3_20260725"),
+        "concurrency": _int_value(config.get("concurrency"), 2),
+        "evidence_items_per_symbol": _int_value(config.get("evidence_items_per_symbol"), 12),
+        "cadence": "preopen_plus_material_events",
+        "preopen_enabled": bool(config.get("preopen_enabled", False)),
+        "material_event_enabled": bool(config.get("material_event_enabled", False)),
+        "debounce_minutes": _int_value(config.get("debounce_minutes"), 30),
+        "max_material_runs_per_symbol_per_day": _int_value(config.get("max_material_runs_per_symbol_per_day"), 2),
+        "authority": "research_ranking_only",
     }
 
 

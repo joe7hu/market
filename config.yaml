@@ -204,6 +204,19 @@ agents:
       catalysts: true
       portfolio: true
       decision: true
+  thesis_monitor:
+    enabled: false
+    provider: openai
+    model: ''
+    reasoning_effort: medium
+    prompt_version: thesis_v3_20260725
+    concurrency: 2
+    evidence_items_per_symbol: 12
+    preopen_enabled: false
+    material_event_enabled: false
+    debounce_minutes: 30
+    max_material_runs_per_symbol_per_day: 2
+    authority: research_ranking_only
   pricing:
     default:
       input_per_1m: 1.25

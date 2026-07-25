@@ -12,7 +12,16 @@ from app.data_access.loaders import load_daily_research_panel_data, load_market_
 from app.data_access.payloads import dashboard_payload, panel_snapshot_payload, signals_payload, status_payload, table_payload, ticker_payload, watchlist_section_payload
 from app.data_access.decision_brief import GATE_LABELS, ticker_decision_brief
 from app.data_access.settings import agent_control_payload, persist_setting_section, settings_payload, update_agent_settings_config, update_research_sources_config
-from app.data_access.user_state import portfolio_rows, table_payload as user_state_table_payload, thesis_monitor_rows, thesis_rows, watchlist_rows
+from app.data_access.user_state import (
+    portfolio_rows,
+    record_thesis_review,
+    table_payload as user_state_table_payload,
+    thesis_history,
+    thesis_monitor_payload,
+    thesis_monitor_rows,
+    thesis_rows,
+    watchlist_rows,
+)
 from app.data_access.publications import options_radar_rows
 from app.data_access.portfolio_ledger import (
     portfolio_transaction_rows,
@@ -67,6 +76,7 @@ __all__ = [
     "populate_watchlist_symbol_data",
     "preview_portfolio_transaction",
     "project_root",
+    "record_thesis_review",
     "record_portfolio_transaction",
     "reverse_portfolio_transaction",
     "save_thesis",
@@ -80,6 +90,8 @@ __all__ = [
     "ticker_decision_brief",
     "ticker_payload",
     "thesis_monitor_rows",
+    "thesis_monitor_payload",
+    "thesis_history",
     "thesis_rows",
     "update_agent_settings_config",
     "update_research_sources_config",
