@@ -566,6 +566,21 @@ export type ThesisInput = {
   why?: string;
   invalidation?: string;
   invalidation_price?: number | null;
+  direction?: string | null;
+  timeframe?: string | null;
+  horizon_date?: string | null;
+  conviction?: string | null;
+  confidence?: string | null;
+  pillars?: RowRecord[];
+  scenarios?: RowRecord;
+  catalysts?: RowRecord[];
+  invalidation_rules?: RowRecord[];
+  review_cadence_days?: number | null;
+  next_review_date?: string | null;
+  lifecycle_status?: string | null;
+  evidence_coverage_status?: string | null;
+  automation_policy?: "auto" | "manual_lock" | null;
+  change_rationale?: string | null;
   status?: string | null;
   evidence_links?: string[];
 };
@@ -574,8 +589,12 @@ export async function saveThesis(symbol: string, input: ThesisInput): Promise<vo
   await sendJson<{ thesis: unknown }>(`/api/theses/${encodeURIComponent(symbol)}`, "PUT", input);
 }
 
-export async function markThesisReviewed(symbol: string): Promise<void> {
-  await sendJson<{ review: unknown }>(`/api/theses/${encodeURIComponent(symbol)}/review`, "POST");
+export async function markThesisReviewed(symbol: string, outcome = "unchanged", notes = ""): Promise<void> {
+  await sendJson<{ review: unknown }>(`/api/theses/${encodeURIComponent(symbol)}/review`, "POST", { outcome, notes });
+}
+
+export async function getThesisHistory(symbol: string): Promise<RowRecord> {
+  return getJson<RowRecord>(`/api/theses/${encodeURIComponent(symbol)}/history`);
 }
 
 export async function runAgentReview(): Promise<TablePayload> {
