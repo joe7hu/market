@@ -1438,19 +1438,22 @@ def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: Te
 
     reviewed = client.post("/api/theses/MU/review")
     assert reviewed.status_code == 200
-    assert reviewed.json()["review"]["revision"] == 4
+    assert reviewed.json()["review"]["revision"] == 3
+    assert reviewed.json()["review"]["outcome"] == "unchanged"
 
     theses = client.get("/api/theses").json()["rows"]
     assert len(theses) == 1
-    assert theses[0]["revision"] == 4
+    assert theses[0]["revision"] == 3
     assert theses[0]["thesis_json"]["core_thesis"].startswith("Memory pricing and HBM")
+    api_history = client.get("/api/theses/MU/history").json()
+    assert api_history["review_events"][0]["outcome"] == "unchanged"
 
     with closing(psycopg.connect(postgres_dsn)) as connection:
         history = connection.execute(
             "SELECT revision, status FROM app.thesis t JOIN catalog.instrument i ON i.id = t.instrument_id "
             "WHERE i.symbol = 'MU' ORDER BY revision"
         ).fetchall()
-    assert history == [(1, "superseded"), (2, "superseded"), (3, "superseded"), (4, "current")]
+    assert history == [(1, "superseded"), (2, "superseded"), (3, "current")]
 
 
 def test_thesis_route_requires_content(client: TestClient) -> None:

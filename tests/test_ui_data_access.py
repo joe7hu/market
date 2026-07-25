@@ -827,6 +827,64 @@ def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> 
     assert reviewed["last_reviewed"]
 
 
+def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "TSLA"}]}
+
+    first = data_access.save_thesis(
+        config,
+        "TSLA",
+        {
+            "thesis": "Multiple compression continues while estimate revisions fall.",
+            "why": "Watched as a short-side risk case.",
+            "direction": "bearish",
+            "confidence": "medium",
+            "invalidation": "Invalidated above $310.",
+            "invalidation_price": 310,
+            "change_rationale": "Initial bearish monitor.",
+        },
+    )
+    second = data_access.save_thesis(
+        config,
+        "TSLA",
+        {
+            "thesis": "Multiple compression continues while deliveries disappoint.",
+            "why": "Watched as a short-side risk case.",
+            "direction": "bearish",
+            "confidence": "medium",
+            "invalidation": "Invalidated above $310.",
+            "invalidation_price": 310,
+            "change_rationale": "Updated delivery pillar.",
+        },
+    )
+    history = data_access.thesis_history(config, "tsla")
+    row = data_access.thesis_monitor_rows(config)[0]
+
+    assert first["revision"] == 1
+    assert second["revision"] == 2
+    assert row["invalidation_operator"] == ">="
+    assert row["schema_version"] == 3
+    assert history["revisions"][0]["diff"]["changed_keys"]
+    assert len(history["review_events"]) == 2
+
+
+def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_dsn: str) -> None:
+    from investment_panel.database.authority import runtime_for_config
+    from investment_panel.database.instruments import reconcile_instrument
+    from psycopg.types.json import Jsonb
+
+    config = {"database": {"url": migrated_postgres_dsn}}
+    runtime = runtime_for_config(config)
+    with runtime.transaction() as connection:
+        instrument_id = reconcile_instrument(connection, "BLNK", name="Blank", category="thesis")
+        connection.execute(
+            "INSERT INTO app.thesis (instrument_id, revision, status, thesis) VALUES (%s, 1, 'current', %s)",
+            [instrument_id, Jsonb({"schema_version": 3, "last_reviewed": "2026-07-01T00:00:00Z"})],
+        )
+
+    with pytest.raises(ValueError, match="empty-thesis"):
+        data_access.mark_thesis_reviewed(config, "BLNK")
+
+
 def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
     config = {
         "database": {"url": migrated_postgres_dsn},

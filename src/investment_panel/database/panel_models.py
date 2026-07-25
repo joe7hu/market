@@ -9,7 +9,8 @@ from typing import Any, Iterable, Mapping
 from investment_panel.database.panel_queries import OWNED_CORRELATIONS_QUERY, build_query_policies
 from investment_panel.database.panel_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
 from investment_panel.database.portfolio_intelligence import portfolio_intelligence_tables
-from investment_panel.database.user_state import portfolio_rows, thesis_monitor_rows, thesis_rows, watchlist_rows
+from investment_panel.database.thesis import thesis_monitor_rows, thesis_rows
+from investment_panel.database.user_state import portfolio_rows, watchlist_rows
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.jobs import JobRepository
 from investment_panel.database.brokers import broker_status_rows
