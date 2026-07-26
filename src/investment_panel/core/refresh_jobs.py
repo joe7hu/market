@@ -27,6 +27,7 @@ from investment_panel.jobs import (
     postgres_refresh,
     refresh_options_radar,
     run_option_agents,
+    run_thesis_monitor,
     snapshot_database,
     update_ibkr_options,
     update_broker_sources,
@@ -125,6 +126,9 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_option_agents_force": lambda config_path: run_option_agents.run(config_path, force=True),
     # On-demand run: processes only user-requested (ondemand:) thesis requests.
     "run_option_agents_ondemand": lambda config_path: run_option_agents.run(config_path, ondemand=True),
+    "run_thesis_monitor": lambda config_path: run_thesis_monitor.run(config_path, trigger="preopen"),
+    "run_thesis_monitor_force": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True),
+    "run_thesis_monitor_preflight": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True, dry_run=True),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     "update_market_data": lambda config_path: update_market_data.run(config_path),
     # Preserve the established UI/automation job names while routing them to

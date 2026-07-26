@@ -17,7 +17,8 @@ def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
     try:
         with runtime.transaction() as connection:
             connection.execute(
-                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('NVDA', 'NVIDIA', 'equity')"
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('NVDA', 'NVIDIA', 'equity') "
+                "ON CONFLICT (symbol) DO NOTHING"
             )
         config = SimpleNamespace(
             database=SimpleNamespace(url=migrated_postgres_dsn),

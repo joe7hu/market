@@ -67,7 +67,7 @@ def reconcile_instrument(
                 THEN EXCLUDED.asset_class ELSE catalog.instrument.asset_class END,
             category = CASE
                 WHEN catalog.instrument.category IS NULL
-                  OR catalog.instrument.category = 'option-discovery'
+                  OR catalog.instrument.category IN ('option-discovery', 'option-history')
                 THEN COALESCE(EXCLUDED.category, catalog.instrument.category)
                 ELSE catalog.instrument.category END,
             market_timezone = EXCLUDED.market_timezone,

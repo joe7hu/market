@@ -79,6 +79,7 @@ from investment_panel.core.refresh_jobs import (
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
 from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, build_daily_research_prompt
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.jobs import run_thesis_monitor
 
 
 APP_TITLE = "Personal Investment Panel"
@@ -190,6 +191,12 @@ class ThesisReviewInput(BaseModel):
     reviewed_evidence_cutoff: str | None = None
 
 
+class ThesisAutomationInput(BaseModel):
+    symbols: list[str] | None = None
+    dry_run: bool = False
+    force: bool = False
+
+
 class PaperOrderInput(BaseModel):
     recommendation_id: str
 
@@ -225,10 +232,25 @@ class OptionAgentSettingsInput(BaseModel):
     context_sources: dict[str, bool] | None = None
 
 
+class ThesisMonitorSettingsInput(BaseModel):
+    enabled: bool | None = None
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    prompt_version: str | None = None
+    concurrency: int | None = None
+    evidence_items_per_symbol: int | None = None
+    preopen_enabled: bool | None = None
+    material_event_enabled: bool | None = None
+    debounce_minutes: int | None = None
+    max_material_runs_per_symbol_per_day: int | None = None
+
+
 class AgentSettingsInput(BaseModel):
     option_thesis: AgentCommandSettingsInput | None = None
     option_postmortem: AgentCommandSettingsInput | None = None
     option_agent: OptionAgentSettingsInput | None = None
+    thesis_monitor: ThesisMonitorSettingsInput | None = None
 
 
 class ResearchXSettingsInput(BaseModel):
@@ -437,6 +459,13 @@ def _invalidate_context_cache() -> None:
 def _execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
     try:
         execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
+    finally:
+        _invalidate_context_cache()
+
+
+def _execute_thesis_monitor_automation(symbols: list[str], *, dry_run: bool, force: bool) -> None:
+    try:
+        run_thesis_monitor.run("config.yaml", symbols=symbols, trigger="ondemand", force=force, dry_run=dry_run)
     finally:
         _invalidate_context_cache()
 

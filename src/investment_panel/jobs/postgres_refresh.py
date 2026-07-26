@@ -11,7 +11,7 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.outcomes import OutcomeRepository
-from investment_panel.jobs import refresh_options_radar, run_option_agents
+from investment_panel.jobs import refresh_options_radar, run_option_agents, run_thesis_monitor
 
 
 def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
@@ -66,6 +66,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
 
     before_agents = refresh_options_radar.run(config_path)
     agents = run_option_agents.run(config_path)
+    thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
     outcomes = OutcomeRepository(runtime_for_config(load_config(config_path))).refresh()
     today = refresh_today_publication(runtime_for_config(load_config(config_path)))
@@ -77,6 +78,7 @@ def premarket(config_path: str | None = None) -> dict[str, Any]:
         "cadence": "daily_premarket",
         "before_agents": before_agents,
         "agents": agents,
+        "thesis_monitor": thesis_monitor,
         "after_agents": after_agents,
         "outcomes": outcomes,
         "today": today,
@@ -117,6 +119,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
         ("option_outcomes", False, lambda: OutcomeRepository(runtime_for_config(config)).refresh()),
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
+        ("thesis_monitor", False, lambda: run_thesis_monitor.run(config_path, trigger="preopen")),
         ("today_publication", True, lambda: refresh_today_publication(runtime_for_config(config))),
         ("market_publication", True, lambda: refresh_market_publication(runtime_for_config(config))),
         ("retention", True, lambda: RetentionRepository(runtime_for_config(config)).prune()),

@@ -9,6 +9,7 @@ import pytest
 
 from investment_panel.jobs import openai_option_agent
 from investment_panel.jobs import openai_option_agent_auth
+from investment_panel.jobs import openai_thesis_monitor
 
 
 class FakeResponse:
@@ -74,6 +75,58 @@ def test_openai_thesis_agent_uses_responses_structured_outputs(monkeypatch) -> N
     assert "not price action, moving averages, IV" in system_prompt
     assert result["ticker"] == "TSLA"
     assert result["evidence_refs"][0] == {"type": "agent_request", "id": "req-1"}
+
+
+def test_openai_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(payload, *, schema_name, schema, system_prompt, compact, meta_sink):
+        captured.update({
+            "payload": payload,
+            "schema_name": schema_name,
+            "schema": schema,
+            "system_prompt": system_prompt,
+            "compact": compact,
+        })
+        meta_sink.update({"usage": {"input_tokens": 10, "output_tokens": 20}, "model": "gpt-test"})
+        return {
+            "symbol": "NVDA",
+            "change_rationale": "Updated from stored evidence.",
+            "thesis": {
+                "core_thesis": "AI demand remains the monitored setup.",
+                "why_owned_watched": "Owned for AI infrastructure exposure.",
+                "direction": "long",
+                "timeframe": "12 months",
+                "horizon_date": "2027-07-25",
+                "conviction": "medium",
+                "confidence": "medium",
+                "pillars": [],
+                "scenarios": {
+                    "base": {"probability": 0.6, "target": None, "rationale": "base"},
+                    "bull": {"probability": 0.25, "target": None, "rationale": "bull"},
+                    "bear": {"probability": 0.15, "target": None, "rationale": "bear"},
+                },
+                "catalysts": [],
+                "invalidation_rules": [],
+                "review_cadence_days": 45,
+                "next_review_date": "2026-09-08",
+                "lifecycle_status": "active",
+                "evidence_coverage_status": "covered",
+                "automation_policy": "auto",
+                "evidence_links": [],
+            },
+            "evidence_assessments": [],
+        }
+
+    monkeypatch.setattr(openai_thesis_monitor, "_call_openai_structured", fake_call)
+
+    result = openai_thesis_monitor.generate_openai_thesis_monitor({"symbol": "NVDA", "evidence": []})
+
+    assert captured["schema_name"] == "thesis_monitor_v3"
+    assert captured["schema"]["additionalProperties"] is False
+    assert captured["compact"] is False
+    assert "never" in captured["system_prompt"].lower()
+    assert result["_meta"]["usage"]["input_tokens"] == 10
 
 
 def test_openai_postmortem_agent_filters_null_parameter_changes(monkeypatch) -> None:

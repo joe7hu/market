@@ -304,7 +304,7 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
     with closing(psycopg.connect(postgres_dsn)) as connection:
         counts = connection.execute(
             "SELECT (SELECT count(*) FROM raw.option_snapshot), "
-            "(SELECT count(*) FROM catalog.instrument), "
+            "(SELECT count(*) FROM catalog.instrument WHERE symbol = 'NVDA'), "
             "(SELECT count(*) FROM catalog.option_contract), "
             "(SELECT count(*) FROM raw.option_quote)"
         ).fetchone()

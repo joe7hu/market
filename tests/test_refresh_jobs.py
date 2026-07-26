@@ -306,6 +306,27 @@ def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     assert result["summary"] == {"job": "run_option_agents", "config_path": "config.yaml"}
 
 
+def test_run_thesis_monitor_jobs_are_allowlisted(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    calls: list[dict[str, object]] = []
+
+    def fake_run(config_path, **kwargs):
+        calls.append({"config_path": config_path, **kwargs})
+        return {"job": "run_thesis_monitor", **kwargs}
+
+    monkeypatch.setattr(refresh_jobs.run_thesis_monitor, "run", fake_run)
+
+    force = refresh_jobs.run_refresh_job("run_thesis_monitor_force", db_path, "config.yaml")
+    preflight = refresh_jobs.run_refresh_job("run_thesis_monitor_preflight", db_path, "config.yaml")
+
+    assert force["status"] == "succeeded"
+    assert preflight["status"] == "succeeded"
+    assert calls == [
+        {"config_path": "config.yaml", "trigger": "manual", "force": True},
+        {"config_path": "config.yaml", "trigger": "manual", "force": True, "dry_run": True},
+    ]
+
+
 def test_premarket_options_intelligence_job_is_allowlisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "jobs.duckdb"
 

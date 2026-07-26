@@ -212,3 +212,18 @@ def test_partial_context_sources_patch_merges_existing(tmp_path) -> None:
 
     sources = yaml.safe_load(cfg.read_text())["agents"]["option_agent"]["context_sources"]
     assert sources["news"] is False and sources["fundamentals"] is True  # merged, not replaced
+
+
+def test_thesis_monitor_agent_settings_are_persisted(tmp_path) -> None:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("agents:\n  thesis_monitor:\n    enabled: false\n    concurrency: 1\n", encoding="utf-8")
+    update_agent_settings_config(
+        cfg,
+        {"thesis_monitor": {"enabled": True, "reasoning_effort": "medium", "concurrency": 2}},
+    )
+    import yaml
+
+    settings = yaml.safe_load(cfg.read_text())["agents"]["thesis_monitor"]
+    assert settings["enabled"] is True
+    assert settings["concurrency"] == 2
+    assert settings["authority"] == "research_ranking_only"

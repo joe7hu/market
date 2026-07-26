@@ -197,8 +197,8 @@ def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_pos
                        (SELECT sum(reject_count) FROM analysis.reject_summary) AS rejects
                 """
             ).fetchone()
-        assert counts["decisions"] == 2
-        assert counts["features"] == 2
+        assert counts["decisions"] == 1
+        assert counts["features"] == 1
         assert counts["rejects"] >= 1
     finally:
         runtime.close()

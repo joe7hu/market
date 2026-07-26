@@ -25,6 +25,9 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
         if isinstance(sanitized.get("context_sources"), dict) and isinstance(current.get("context_sources"), dict):
             sanitized["context_sources"] = {**current["context_sources"], **sanitized["context_sources"]}
         next_agents["option_agent"] = {**current, **sanitized}
+    if "thesis_monitor" in payload:
+        current = next_agents.get("thesis_monitor") if isinstance(next_agents.get("thesis_monitor"), dict) else {}
+        next_agents["thesis_monitor"] = {**current, **_sanitize_thesis_monitor_settings(payload["thesis_monitor"])}
     raw["agents"] = next_agents
     _write_yaml_top_level_block(path, "agents", {"agents": next_agents})
     return raw
@@ -153,6 +156,47 @@ def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
             raise ValueError("context_sources must be an object of name -> bool")
         allowed = {"fundamentals", "technicals", "ownership", "news", "social_signals", "catalysts", "portfolio", "decision"}
         clean["context_sources"] = {key: bool(val) for key, val in sources.items() if key in allowed}
+    return clean
+
+
+def _sanitize_thesis_monitor_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("thesis_monitor settings must be an object")
+    clean: dict[str, Any] = {}
+    if "enabled" in value:
+        clean["enabled"] = bool(value["enabled"])
+    if "provider" in value:
+        provider = str(value["provider"] or "").strip().lower()
+        if provider != "openai":
+            raise ValueError("thesis_monitor provider must be 'openai'")
+        clean["provider"] = provider
+    if "model" in value:
+        clean["model"] = _clean_token(value["model"], "model", maximum=80)
+    if "reasoning_effort" in value:
+        effort = str(value["reasoning_effort"] or "").strip().lower()
+        if effort not in {"low", "medium", "high"}:
+            raise ValueError("reasoning_effort must be low, medium, or high")
+        clean["reasoning_effort"] = effort
+    if "prompt_version" in value:
+        clean["prompt_version"] = _clean_token(value["prompt_version"], "prompt_version", maximum=80)
+    if "concurrency" in value:
+        clean["concurrency"] = _bounded_int(value["concurrency"], "concurrency", minimum=1, maximum=2)
+    if "evidence_items_per_symbol" in value:
+        clean["evidence_items_per_symbol"] = _bounded_int(value["evidence_items_per_symbol"], "evidence_items_per_symbol", minimum=1, maximum=12)
+    if "preopen_enabled" in value:
+        clean["preopen_enabled"] = bool(value["preopen_enabled"])
+    if "material_event_enabled" in value:
+        clean["material_event_enabled"] = bool(value["material_event_enabled"])
+    if "debounce_minutes" in value:
+        clean["debounce_minutes"] = _bounded_int(value["debounce_minutes"], "debounce_minutes", minimum=1, maximum=240)
+    if "max_material_runs_per_symbol_per_day" in value:
+        clean["max_material_runs_per_symbol_per_day"] = _bounded_int(
+            value["max_material_runs_per_symbol_per_day"],
+            "max_material_runs_per_symbol_per_day",
+            minimum=0,
+            maximum=8,
+        )
+    clean["authority"] = "research_ranking_only"
     return clean
 
 

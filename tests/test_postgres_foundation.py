@@ -135,12 +135,12 @@ def test_runtime_commits_writes_and_serves_read_only_transactions(migrated_postg
         with runtime.transaction() as connection:
             row = connection.execute(
                 "INSERT INTO catalog.instrument (symbol, asset_class) VALUES (%s, %s) RETURNING id",
-                ["NVDA", "equity"],
+                ["FNDX", "equity"],
             ).fetchone()
         with runtime.read() as connection:
             stored = connection.execute("SELECT symbol, asset_class FROM catalog.instrument WHERE id = %s", [row["id"]]).fetchone()
             read_only = connection.execute("SHOW transaction_read_only").fetchone()["transaction_read_only"]
-        assert stored == {"symbol": "NVDA", "asset_class": "equity"}
+        assert stored == {"symbol": "FNDX", "asset_class": "equity"}
         assert read_only == "on"
     finally:
         runtime.close()

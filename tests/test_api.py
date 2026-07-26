@@ -921,6 +921,28 @@ def test_local_write_guard_allows_private_lan_clients() -> None:
         _require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
 
 
+def test_thesis_monitor_automation_accepts_symbol_scoped_background_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": "postgresql://test/market"}})
+    monkeypatch.setattr(app_deps, "_invalidate_context_cache", lambda: None)
+    monkeypatch.setattr(
+        app_deps,
+        "_execute_thesis_monitor_automation",
+        lambda symbols, *, dry_run, force: calls.append({"symbols": symbols, "dry_run": dry_run, "force": force}),
+    )
+
+    response = TestClient(app).post(
+        "/api/thesis-monitor/automation",
+        json={"symbols": ["msft", "LLY", "msft"], "dry_run": True, "force": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job"]["status"] == "accepted"
+    assert payload["symbols"] == ["LLY", "MSFT"]
+    assert calls == [{"symbols": ["LLY", "MSFT"], "dry_run": True, "force": False}]
+
+
 def test_ticker_decision_brief_prefers_quote_row_over_decision_snapshot_price() -> None:
     brief = ticker_decision_brief(
         "AMD",

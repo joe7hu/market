@@ -31,7 +31,8 @@ def test_arco_refresh_records_source_files_and_compact_symbol_evidence(
     runtime.open()
     with runtime.transaction() as connection:
         connection.execute(
-            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('NVDA', 'NVIDIA', 'equity')"
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('NVDA', 'NVIDIA', 'equity') "
+            "ON CONFLICT (symbol) DO NOTHING"
         )
     config = SimpleNamespace(
         database=SimpleNamespace(url=migrated_postgres_dsn),

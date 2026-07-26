@@ -545,6 +545,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
 
 
 def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, postgres_dsn: str) -> None:
+    observed_at = datetime.now(UTC) - timedelta(days=1)
     assert client.post(
         "/api/portfolio/transactions",
         json={
@@ -567,8 +568,8 @@ def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, 
         ).fetchone()[0]
         connection.execute(
             "INSERT INTO raw.quote (instrument_id, source_id, ingest_run_id, observed_at, price) "
-            "VALUES (%s, 'sparse-test', %s, '2026-07-15T20:00:00Z', 120)",
-            [instrument_id, run_id],
+            "VALUES (%s, 'sparse-test', %s, %s, 120)",
+            [instrument_id, run_id, observed_at],
         )
         _confirm_price_facts(connection, run_id)
         connection.commit()

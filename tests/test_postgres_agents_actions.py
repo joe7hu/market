@@ -447,7 +447,7 @@ def test_strategy_learning_rejects_source_decisions_outside_core_lineage(
         with runtime.transaction() as connection:
             instrument_id = connection.execute(
                 "INSERT INTO catalog.instrument (symbol, asset_class) "
-                "VALUES ('NVDA', 'equity') RETURNING id"
+                "VALUES ('OUTL', 'equity') RETURNING id"
             ).fetchone()["id"]
             strategy_id = connection.execute(
                 "INSERT INTO analysis.strategy_revision "

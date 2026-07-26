@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from app import deps
 
@@ -47,6 +47,42 @@ def review_thesis_endpoint(symbol: str, request: Request, payload: deps.ThesisRe
 @router.get("/api/theses/{symbol}/history")
 def thesis_history_endpoint(symbol: str) -> dict[str, Any]:
     return deps.thesis_history(deps.load_config(), symbol)
+
+
+@router.post("/api/thesis-monitor/automation")
+def run_thesis_automation_endpoint(
+    payload: deps.ThesisAutomationInput,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    deps._require_local_request(request)
+    config = deps.load_config()
+    if payload.symbols:
+        symbols = sorted({str(symbol).upper() for symbol in payload.symbols if str(symbol).strip()})
+        if not symbols:
+            raise HTTPException(status_code=400, detail="symbols must contain at least one non-empty symbol")
+        background_tasks.add_task(
+            deps._execute_thesis_monitor_automation,
+            symbols,
+            dry_run=payload.dry_run,
+            force=payload.force,
+        )
+        deps._invalidate_context_cache()
+        return {
+            "job": {"job_name": "run_thesis_monitor_ondemand", "status": "accepted", "created": True},
+            "symbols": symbols,
+            "dry_run": payload.dry_run,
+            "force": payload.force,
+        }
+    job_name = "run_thesis_monitor_preflight" if payload.dry_run else "run_thesis_monitor_force"
+    try:
+        job = deps.start_refresh_job(job_name, deps.database_url(config))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if job.get("created"):
+        background_tasks.add_task(deps._execute_background_refresh_job, job["id"], job_name, deps.database_url(config))
+    deps._invalidate_context_cache()
+    return {"job": job, "symbols": "all", "dry_run": payload.dry_run, "force": True}
 
 
 @router.get("/api/trader-twins")

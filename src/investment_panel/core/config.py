@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 import yaml
+from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
 def project_root() -> Path:
@@ -149,13 +150,11 @@ class ResearchBlogsConfig:
     substack_urls: list[str] = field(default_factory=list)
     rss_urls: list[str] = field(default_factory=list)
 
-
 @dataclass(frozen=True)
 class ResearchSourcesConfig:
     x: ResearchXConfig = ResearchXConfig()
     news: ResearchNewsConfig = ResearchNewsConfig()
     blogs: ResearchBlogsConfig = ResearchBlogsConfig()
-
 
 @dataclass(frozen=True)
 class EventSourcesConfig:
@@ -167,7 +166,6 @@ class EventSourcesConfig:
     treasury_enabled: bool = True
     sec_enabled: bool = True
     watchlist_enabled: bool = True
-
 
 @dataclass(frozen=True)
 class OptionsDecisionSystemConfig:
@@ -206,7 +204,6 @@ DEFAULT_AGENT_PRICING: dict[str, dict[str, float]] = {
     "gpt-5.2": {"input_per_1m": 1.25, "output_per_1m": 10.0},
 }
 
-
 @dataclass(frozen=True)
 class OptionAgentConfig:
     """Unified single-pass option agent (consolidated thesis + postmortem)."""
@@ -231,6 +228,7 @@ class AgentsConfig:
     option_thesis: AgentCommandConfig = AgentCommandConfig()
     option_postmortem: AgentCommandConfig = AgentCommandConfig()
     option_agent: OptionAgentConfig = OptionAgentConfig()
+    thesis_monitor: ThesisMonitorAgentConfig = ThesisMonitorAgentConfig()
     pricing: dict[str, dict[str, float]] = field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()})
 
 
@@ -467,6 +465,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     option_agent_raw = agents_raw.get("option_agent", {})
     option_agent_env_command = os.environ.get("MARKET_OPTION_AGENT_COMMAND")
     option_agent_command = str(option_agent_env_command or option_agent_raw.get("command", ""))
+    thesis_monitor_raw = agents_raw.get("thesis_monitor", {}) if isinstance(agents_raw.get("thesis_monitor", {}), dict) else {}
     agents = AgentsConfig(
         option_thesis=AgentCommandConfig(
             enabled=bool(option_thesis_env_command) or bool(option_thesis_raw.get("enabled", bool(option_thesis_command))),
@@ -493,6 +492,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             max_runs_per_day=int(option_agent_raw.get("max_runs_per_day", 1)),
             context_sources={**DEFAULT_AGENT_CONTEXT_SOURCES, **{k: bool(v) for k, v in dict(option_agent_raw.get("context_sources", {})).items()}},
         ),
+        thesis_monitor=thesis_monitor_agent_config(thesis_monitor_raw),
         pricing={**{k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()}, **{k: dict(v) for k, v in dict(agents_raw.get("pricing", {})).items()}},
     )
     scoring_raw = raw.get("scoring", {})
@@ -666,6 +666,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "max_runs_per_day": config.agents.option_agent.max_runs_per_day,
                 "context_sources": dict(config.agents.option_agent.context_sources),
             },
+            "thesis_monitor": thesis_monitor_agent_dict(config.agents.thesis_monitor),
             "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},
         },
         "research_sources": {
