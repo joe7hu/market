@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -7,6 +8,7 @@ import pytest
 
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import reconcile_instrument
+from investment_panel.database.thesis_automation import ThesisAutomationRepository
 from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
 from investment_panel.jobs import run_thesis_monitor
 from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
@@ -116,6 +118,27 @@ def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tm
         revisions = connection.execute("SELECT count(*) FROM app.thesis").fetchone()[0]
     assert runs == 0
     assert revisions == 0
+
+
+def test_thesis_automation_run_serializes_datetime_evidence(migrated_postgres_dsn: str) -> None:
+    _watch(migrated_postgres_dsn, "THIN")
+    repository = ThesisAutomationRepository(runtime_for_config({"database": {"url": migrated_postgres_dsn}}))
+
+    run_id = repository.start_run(
+        "THIN",
+        trigger="manual",
+        model="gpt-test",
+        reasoning_effort="medium",
+        prompt_version="thesis_v3_test",
+        evidence_snapshot=[{"reference": "ref-1", "published_at": datetime(2026, 7, 26, tzinfo=UTC)}],
+    )
+
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        snapshot = connection.execute(
+            "SELECT evidence_snapshot FROM app.thesis_automation_run WHERE id = %s",
+            [run_id],
+        ).fetchone()[0]
+    assert snapshot == [{"reference": "ref-1", "published_at": "2026-07-26T00:00:00+00:00"}]
 
 
 def _cleanup_symbols(dsn: str) -> None:

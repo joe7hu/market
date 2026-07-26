@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
@@ -96,7 +99,7 @@ class ThesisAutomationRepository:
                     reasoning_effort,
                     prompt_version,
                     fingerprint,
-                    Jsonb(evidence_snapshot),
+                    Jsonb(_jsonable(evidence_snapshot)),
                     normalized,
                     status,
                 ],
@@ -188,3 +191,17 @@ class ThesisAutomationRepository:
 def evidence_fingerprint(evidence_snapshot: list[dict[str, Any]]) -> str:
     stable = json.dumps(evidence_snapshot, sort_keys=True, default=str)
     return hashlib.sha256(stable.encode()).hexdigest()
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, UUID):
+        return str(value)
+    return value
