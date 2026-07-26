@@ -97,18 +97,18 @@ stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
 `MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
 for local runs. Use `market-codex-option-thesis-agent` or
 `market-codex-option-postmortem-agent` to run through the signed-in Codex
-OpenAI OAuth session without an API key. These commands run Codex with shell,
-app, browser, plugin, computer-use, multi-agent, image generation, and
-web-search tools disabled, ignore user config/rules, and pass only an
-allowlisted environment to the child process. The Codex adapter timeout defaults
-to `90` seconds so it
+ChatGPT OAuth session without an API key. Thesis Monitor and the pre-open
+narrative use the same restricted Codex path. These commands run Codex with
+shell, app, browser, plugin, computer-use, multi-agent, image generation, and
+web-search tools disabled, ignore user config/rules, and pass only an allowlisted
+environment to the child process. The Codex adapter timeout defaults to `90`
+seconds so it
 exits before the option-agent runner's default `120` second command timeout;
 keep `MARKET_CODEX_TIMEOUT_SECONDS` lower than the configured runner timeout
-when overriding either value. The direct `market-openai-*` commands call the
-OpenAI API directly; set `MARKET_OPENAI_AUTH_MODE=oauth` for a write-scoped
-OAuth access token or use `OPENAI_API_KEY` only when explicitly intended. Use
-`MARKET_OPENAI_MODEL` or `MARKET_CODEX_MODEL` to override the default model for
-the selected path.
+when overriding either value. Market's configured app paths are OAuth-only and
+must use the `market-codex-*` commands. The developer-only `market-openai-*`
+entry points are direct Platform API clients and are not used by the app. Use
+`MARKET_CODEX_MODEL` to override the Codex model.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,

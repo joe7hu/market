@@ -86,11 +86,11 @@ def _agent_runtime_metadata(config: dict[str, Any], *, default_limit: int) -> di
 
 def _thesis_monitor_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(config.get("enabled", False))
-    provider = str(config.get("provider") or "openai")
+    provider = str(config.get("provider") or "codex")
     model = str(config.get("model") or "")
     return {
         "enabled": enabled,
-        "configured": bool(model) or provider == "openai",
+        "configured": provider == "codex",
         "active": enabled,
         "status": "active" if enabled else "paused",
         "provider": provider,

@@ -11,7 +11,7 @@ from investment_panel.core.config import config_to_dict, load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.thesis import save_thesis, thesis_monitor_rows
 from investment_panel.database.thesis_automation import ThesisAutomationRepository
-from investment_panel.jobs.openai_thesis_monitor import OpenAIOptionAgentError, generate_openai_thesis_monitor
+from investment_panel.jobs.codex_thesis_monitor import OpenAIOptionAgentError, generate_codex_thesis_monitor
 
 
 class ThesisAutomationValidationError(ValueError):
@@ -107,7 +107,11 @@ def _run_one(
     if dry_run:
         try:
             request = _request_payload(row, evidence, prompt_version=prompt_version)
-            output = generate_openai_thesis_monitor(request)
+            output = generate_codex_thesis_monitor(
+                request,
+                model=None if model == "configured_default" else model,
+                reasoning_effort=reasoning_effort,
+            )
             validate_model_output(output, row=row, evidence=evidence)
             return {"symbol": symbol, "status": "skipped", "reason": "dry_run_valid"}
         except (OpenAIOptionAgentError, ThesisAutomationValidationError, TimeoutError, ValueError) as exc:
@@ -124,7 +128,11 @@ def _run_one(
     )
     try:
         request = _request_payload(row, evidence, prompt_version=prompt_version)
-        output = generate_openai_thesis_monitor(request)
+        output = generate_codex_thesis_monitor(
+            request,
+            model=None if model == "configured_default" else model,
+            reasoning_effort=reasoning_effort,
+        )
         validated = validate_model_output(output, row=row, evidence=evidence)
         saved = save_thesis(
             config,

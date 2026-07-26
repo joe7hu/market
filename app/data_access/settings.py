@@ -277,8 +277,6 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
             "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),
             "codex_reasoning_effort": os.environ.get("MARKET_CODEX_REASONING_EFFORT", ""),
             "codex_timeout_seconds": os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"),
-            "openai_model": os.environ.get("MARKET_OPENAI_MODEL", "gpt-5.2"),
-            "openai_auth_mode": os.environ.get("MARKET_OPENAI_AUTH_MODE", "api_key_or_access_token"),
-            "openai_max_output_tokens": os.environ.get("MARKET_OPENAI_MAX_OUTPUT_TOKENS", "2000"),
+            "auth_mode": "chatgpt_oauth",
         },
     }

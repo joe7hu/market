@@ -27,7 +27,7 @@ def test_thesis_automation_low_evidence_activation(migrated_postgres_dsn: str, t
     _watch(migrated_postgres_dsn, "THIN")
     cfg = _config(tmp_path, migrated_postgres_dsn)
 
-    monkeypatch.setattr(run_thesis_monitor, "generate_openai_thesis_monitor", lambda _request: _model_output("THIN"))
+    monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("THIN"))
 
     result = run_thesis_monitor.run(str(cfg), force=True)
     rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
@@ -43,7 +43,7 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
     _watch(migrated_postgres_dsn, "HALL")
     cfg = _config(tmp_path, migrated_postgres_dsn)
 
-    def fake_model(_request):
+    def fake_model(_request, **_kwargs):
         output = _model_output("HALL")
         output["evidence_assessments"] = [{
             "evidence_reference": "https://fabricated.example/hall",
@@ -57,7 +57,7 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
         }]
         return output
 
-    monkeypatch.setattr(run_thesis_monitor, "generate_openai_thesis_monitor", fake_model)
+    monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", fake_model)
 
     result = run_thesis_monitor.run(str(cfg), force=True)
     history = thesis_history({"database": {"url": migrated_postgres_dsn}}, "HALL")
@@ -79,8 +79,8 @@ def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(
         run_thesis_monitor,
-        "generate_openai_thesis_monitor",
-        lambda _request: (_ for _ in ()).throw(OpenAIOptionAgentError("missing authentication")),
+        "generate_codex_thesis_monitor",
+        lambda _request, **_kwargs: (_ for _ in ()).throw(OpenAIOptionAgentError("missing authentication")),
     )
 
     result = run_thesis_monitor.run(str(cfg), force=True)
@@ -94,7 +94,7 @@ def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres
 def test_thesis_automation_debounces_material_event_runs(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
     _watch(migrated_postgres_dsn, "DBNC")
     cfg = _config(tmp_path, migrated_postgres_dsn)
-    monkeypatch.setattr(run_thesis_monitor, "generate_openai_thesis_monitor", lambda _request: _model_output("DBNC"))
+    monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("DBNC"))
 
     first = run_thesis_monitor.run(str(cfg), trigger="material_event", force=False)
     second = run_thesis_monitor.run(str(cfg), trigger="material_event", force=False)
@@ -107,7 +107,7 @@ def test_thesis_automation_debounces_material_event_runs(migrated_postgres_dsn: 
 def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
     _watch(migrated_postgres_dsn, "THIN")
     cfg = _config(tmp_path, migrated_postgres_dsn)
-    monkeypatch.setattr(run_thesis_monitor, "generate_openai_thesis_monitor", lambda _request: _model_output("THIN"))
+    monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("THIN"))
 
     result = run_thesis_monitor.run(str(cfg), force=True, dry_run=True)
 
@@ -183,7 +183,7 @@ database:
 agents:
   thesis_monitor:
     enabled: true
-    provider: openai
+    provider: codex
     model: gpt-test
     reasoning_effort: medium
     prompt_version: thesis_v3_test

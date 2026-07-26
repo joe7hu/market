@@ -14,10 +14,8 @@ from statistics import mean, pstdev
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from investment_panel.core.db import json_dumps, query_rows
-from investment_panel.jobs.openai_option_agent import DEFAULT_BASE_URL, OpenAIOptionAgentError, _extract_output_text, _openai_bearer_token
+from investment_panel.jobs.openai_option_agent import _call_codex_structured
 
 
 DEFAULT_PREOPEN_MODEL = "gpt-5.5"
@@ -228,34 +226,16 @@ def backtest_qqq_preopen_model(history: list[dict[str, Any]], *, min_train: int 
 
 
 def generate_preopen_llm_brief(context: dict[str, Any]) -> dict[str, Any]:
-    model = os.environ.get("MARKET_PREOPEN_BRIEF_MODEL", DEFAULT_PREOPEN_MODEL)
-    effort = os.environ.get("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", DEFAULT_REASONING_EFFORT)
-    base_url = os.environ.get("MARKET_OPENAI_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    timeout = float(os.environ.get("MARKET_PREOPEN_BRIEF_TIMEOUT_SECONDS", "90"))
-    body = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": _system_prompt()},
-            {"role": "user", "content": json.dumps(_compact_context(context), default=str)},
-        ],
-        "max_output_tokens": int(os.environ.get("MARKET_PREOPEN_BRIEF_MAX_OUTPUT_TOKENS", "1800")),
-        "store": False,
-        "reasoning": {"effort": effort},
-        "text": {"format": {"type": "json_schema", "name": "preopen_daily_brief", "schema": BRIEF_SCHEMA, "strict": True}},
-    }
-    response = httpx.post(
-        f"{base_url}/responses",
-        headers={"Authorization": f"Bearer {_openai_bearer_token()}", "Content-Type": "application/json"},
-        json=body,
-        timeout=timeout,
+    return _call_codex_structured(
+        _compact_context(context),
+        schema_name="preopen_daily_brief",
+        schema=BRIEF_SCHEMA,
+        system_prompt=_system_prompt(),
+        compact=False,
+        model=os.environ.get("MARKET_PREOPEN_BRIEF_MODEL", DEFAULT_PREOPEN_MODEL),
+        reasoning_effort=os.environ.get("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", DEFAULT_REASONING_EFFORT),
+        timeout=float(os.environ.get("MARKET_PREOPEN_BRIEF_TIMEOUT_SECONDS", "90")),
     )
-    if response.status_code >= 400:
-        raise OpenAIOptionAgentError(f"OpenAI preopen brief failed {response.status_code}: {response.text[:500]}")
-    text = _extract_output_text(response.json())
-    parsed = json.loads(text)
-    if not isinstance(parsed, dict):
-        raise OpenAIOptionAgentError("OpenAI preopen brief output must be a JSON object")
-    return parsed
 
 
 def _brief_payload(context: dict[str, Any], llm: dict[str, Any] | None, *, status: str, error: str) -> dict[str, Any]:

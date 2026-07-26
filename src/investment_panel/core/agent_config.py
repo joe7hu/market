@@ -9,7 +9,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ThesisMonitorAgentConfig:
     enabled: bool = False
-    provider: str = "openai"
+    provider: str = "codex"
     model: str = ""
     reasoning_effort: str = "medium"
     prompt_version: str = "thesis_v3_20260725"
@@ -25,7 +25,7 @@ class ThesisMonitorAgentConfig:
 def thesis_monitor_agent_config(raw: dict[str, Any]) -> ThesisMonitorAgentConfig:
     return ThesisMonitorAgentConfig(
         enabled=bool(raw.get("enabled", False)),
-        provider=str(raw.get("provider", "openai")),
+        provider=str(raw.get("provider", "codex")),
         model=str(raw.get("model", "")),
         reasoning_effort=str(raw.get("reasoning_effort", "medium")),
         prompt_version=str(raw.get("prompt_version", "thesis_v3_20260725")),

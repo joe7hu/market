@@ -1,10 +1,10 @@
-"""OpenAI structured-output adapter for canonical thesis-monitor automation."""
+"""Codex OAuth structured-output adapter for thesis-monitor automation."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError, _call_openai_structured
+from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError, _call_codex_structured
 
 
 THESIS_MONITOR_SCHEMA: dict[str, Any] = {
@@ -79,7 +79,7 @@ THESIS_MONITOR_SCHEMA: dict[str, Any] = {
                         "required": ["id", "type", "operator", "text", "price", "metric", "event", "date"],
                         "properties": {
                             "id": {"type": "string"},
-                            "type": {"type": "string"},
+                            "type": {"type": "string", "enum": ["price", "fundamental", "event", "time"]},
                             "operator": {"type": "string"},
                             "text": {"type": "string"},
                             "price": {"type": ["number", "null"]},
@@ -111,8 +111,8 @@ THESIS_MONITOR_SCHEMA: dict[str, Any] = {
                     "evidence_reference": {"type": "string"},
                     "evidence_title": {"type": "string"},
                     "evidence_date": {"type": ["string", "null"]},
-                    "stance": {"type": "string"},
-                    "materiality": {"type": "string"},
+                    "stance": {"type": "string", "enum": ["support", "contradict", "neutral", "insufficient"]},
+                    "materiality": {"type": "string", "enum": ["low", "medium", "high"]},
                     "affected_pillar_ids": {"type": "array", "items": {"type": "string"}},
                     "confidence": {"type": "number"},
                     "rationale": {"type": "string"},
@@ -135,15 +135,22 @@ THESIS_MONITOR_SCHEMA: dict[str, Any] = {
 }
 
 
-def generate_openai_thesis_monitor(request_payload: dict[str, Any]) -> dict[str, Any]:
+def generate_codex_thesis_monitor(
+    request_payload: dict[str, Any],
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
     meta: dict[str, Any] = {}
-    result = _call_openai_structured(
+    result = _call_codex_structured(
         request_payload,
         schema_name="thesis_monitor_v3",
         schema=THESIS_MONITOR_SCHEMA,
         system_prompt=_system_prompt(),
         compact=False,
         meta_sink=meta,
+        model=model,
+        reasoning_effort=reasoning_effort,
     )
     return {**result, "_meta": meta}
 
@@ -160,4 +167,4 @@ def _system_prompt() -> str:
     )
 
 
-__all__ = ["OpenAIOptionAgentError", "THESIS_MONITOR_SCHEMA", "generate_openai_thesis_monitor"]
+__all__ = ["OpenAIOptionAgentError", "THESIS_MONITOR_SCHEMA", "generate_codex_thesis_monitor"]

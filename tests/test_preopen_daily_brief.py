@@ -65,37 +65,22 @@ def test_qqq_preopen_forecast_and_backtest_are_backtestable() -> None:
 def test_preopen_llm_uses_configured_model_and_medium_reasoning(monkeypatch) -> None:
     captured = {}
 
-    def fake_post(url, headers, json, timeout):
-        captured.update({"url": url, "headers": headers, "json": json, "timeout": timeout})
+    def fake_call(payload, **kwargs):
+        captured.update({"payload": payload, **kwargs})
+        return {
+            "headline": "FOMC digestion",
+            "macro_regime": "Rates up, breadth mixed.",
+            "narrative": "Market is digesting Fed guidance.",
+            "opening_scenario": "Choppy open.",
+            "qqq_path": "Use supplied levels.",
+            "risks": ["Fed speaker surprise"],
+            "watch_items": ["Jobless claims"],
+            "evidence_refs": ["prices_daily"],
+        }
 
-        class Response:
-            status_code = 200
-
-            @staticmethod
-            def json():
-                return {
-                    "output_text": json_module.dumps(
-                        {
-                            "headline": "FOMC digestion",
-                            "macro_regime": "Rates up, breadth mixed.",
-                            "narrative": "Market is digesting Fed guidance.",
-                            "opening_scenario": "Choppy open.",
-                            "qqq_path": "Use supplied levels.",
-                            "risks": ["Fed speaker surprise"],
-                            "watch_items": ["Jobless claims"],
-                            "evidence_refs": ["prices_daily"],
-                        }
-                    )
-                }
-
-        json_module = json_lib
-        return Response()
-
-    json_lib = json
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_MODEL", "gpt-5.5")
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", "medium")
-    monkeypatch.setattr("investment_panel.core.preopen_brief.httpx.post", fake_post)
+    monkeypatch.setattr("investment_panel.core.preopen_brief._call_codex_structured", fake_call)
 
     result = generate_preopen_llm_brief(
         {
@@ -110,8 +95,10 @@ def test_preopen_llm_uses_configured_model_and_medium_reasoning(monkeypatch) -> 
     )
 
     assert result["headline"] == "FOMC digestion"
-    assert captured["json"]["model"] == "gpt-5.5"
-    assert captured["json"]["reasoning"] == {"effort": "medium"}
+    assert captured["model"] == "gpt-5.5"
+    assert captured["reasoning_effort"] == "medium"
+    assert captured["schema_name"] == "preopen_daily_brief"
+    assert captured["compact"] is False
 
 
 def test_preopen_context_excludes_same_day_price_bar(tmp_path) -> None:

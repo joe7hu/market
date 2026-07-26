@@ -375,12 +375,14 @@ def _call_codex_structured(
     system_prompt: str,
     compact: bool = True,
     meta_sink: dict[str, Any] | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
-    # See _call_openai_structured: the batch caller pre-shapes its payload and must
-    # not be re-compacted (that would strip the thesis/postmortem arrays).
+    # Batch callers pre-shape payloads and must not be re-compacted.
     body_payload = _compact_request_payload(request_payload) if compact else request_payload
     codex_bin = os.environ.get("MARKET_CODEX_BIN", "codex")
-    timeout = float(os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"))
+    effective_timeout = timeout if timeout is not None else float(os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"))
     with tempfile.NamedTemporaryFile("w", suffix=f"-{schema_name}.schema.json", delete=False) as schema_file:
         json.dump(schema, schema_file)
         schema_path = schema_file.name
@@ -388,17 +390,24 @@ def _call_codex_structured(
         output_path = output_file.name
     try:
         completed = subprocess.run(
-            _codex_command(codex_bin=codex_bin, schema_path=schema_path, output_path=output_path, system_prompt=system_prompt),
+            _codex_command(
+                codex_bin=codex_bin,
+                schema_path=schema_path,
+                output_path=output_path,
+                system_prompt=system_prompt,
+                model=model,
+                reasoning_effort=reasoning_effort,
+            ),
             input=json.dumps(body_payload, default=str),
             text=True,
             capture_output=True,
-            timeout=timeout,
+            timeout=effective_timeout,
             check=False,
             env=_codex_child_env(),
         )
         output_text = _read_codex_output(output_path, completed.stdout)
     except subprocess.TimeoutExpired as exc:
-        raise OpenAIOptionAgentError(f"Codex option agent timed out after {timeout:g}s") from exc
+        raise OpenAIOptionAgentError(f"Codex agent timed out after {effective_timeout:g}s") from exc
     finally:
         for path in (schema_path, output_path):
             try:
@@ -421,7 +430,7 @@ def _call_codex_structured(
         meta_sink.update(
             {
                 "provider": "codex",
-                "model": os.environ.get("MARKET_CODEX_MODEL", "") or "codex",
+                "model": model or os.environ.get("MARKET_CODEX_MODEL", "") or "codex",
                 "estimated": True,
                 "usage": {
                     "input_tokens": prompt_chars // 4,
@@ -432,7 +441,15 @@ def _call_codex_structured(
     return parsed
 
 
-def _codex_command(*, codex_bin: str, schema_path: str, output_path: str, system_prompt: str) -> list[str]:
+def _codex_command(
+    *,
+    codex_bin: str,
+    schema_path: str,
+    output_path: str,
+    system_prompt: str,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> list[str]:
     cmd = [
         codex_bin,
         "-a",
@@ -474,12 +491,14 @@ def _codex_command(*, codex_bin: str, schema_path: str, output_path: str, system
         "-o",
         output_path,
     ]
-    reasoning_effort = os.environ.get("MARKET_CODEX_REASONING_EFFORT", "").strip()
-    model = os.environ.get("MARKET_CODEX_MODEL", "").strip()
-    if reasoning_effort:
-        cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
-    if model:
-        cmd.extend(["-m", model])
+    selected_effort = (
+        reasoning_effort if reasoning_effort is not None else os.environ.get("MARKET_CODEX_REASONING_EFFORT", "")
+    ).strip()
+    selected_model = (model if model is not None else os.environ.get("MARKET_CODEX_MODEL", "")).strip()
+    if selected_effort:
+        cmd.extend(["-c", f'model_reasoning_effort="{selected_effort}"'])
+    if selected_model:
+        cmd.extend(["-m", selected_model])
     cmd.append(_codex_agent_prompt(system_prompt))
     return cmd
 

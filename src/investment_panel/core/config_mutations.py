@@ -136,8 +136,8 @@ def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
         clean["postmortem_limit"] = _bounded_int(value["postmortem_limit"], "postmortem_limit", minimum=0, maximum=50)
     if "provider" in value:
         provider = str(value["provider"] or "").strip().lower()
-        if provider not in {"codex", "openai"}:
-            raise ValueError("provider must be 'codex' or 'openai'")
+        if provider != "codex":
+            raise ValueError("provider must be 'codex' while Market uses ChatGPT OAuth")
         clean["provider"] = provider
     if "model" in value:
         clean["model"] = _clean_token(value["model"], "model", maximum=80)
@@ -167,8 +167,8 @@ def _sanitize_thesis_monitor_settings(value: Any) -> dict[str, Any]:
         clean["enabled"] = bool(value["enabled"])
     if "provider" in value:
         provider = str(value["provider"] or "").strip().lower()
-        if provider != "openai":
-            raise ValueError("thesis_monitor provider must be 'openai'")
+        if provider != "codex":
+            raise ValueError("thesis_monitor provider must be 'codex'")
         clean["provider"] = provider
     if "model" in value:
         clean["model"] = _clean_token(value["model"], "model", maximum=80)

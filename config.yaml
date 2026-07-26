@@ -206,7 +206,7 @@ agents:
       decision: true
   thesis_monitor:
     enabled: false
-    provider: openai
+    provider: codex
     model: ''
     reasoning_effort: medium
     prompt_version: thesis_v3_20260725

@@ -119,8 +119,8 @@ def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -
         cfg,
         {
             "option_agent": {
-                "provider": "openai",
-                "model": "gpt-5.2",
+                "provider": "codex",
+                "model": "gpt-5.5",
                 "reasoning_effort": "high",
                 "auto_run_seconds": 3600,
                 "max_runs_per_day": 4,
@@ -131,7 +131,7 @@ def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -
     import yaml
 
     clean = yaml.safe_load(cfg.read_text())["agents"]["option_agent"]
-    assert clean["provider"] == "openai" and clean["model"] == "gpt-5.2"
+    assert clean["provider"] == "codex" and clean["model"] == "gpt-5.5"
     assert clean["reasoning_effort"] == "high"
     assert clean["context_sources"] == {"news": False}  # unknown key filtered out
 
@@ -227,3 +227,11 @@ def test_thesis_monitor_agent_settings_are_persisted(tmp_path) -> None:
     assert settings["enabled"] is True
     assert settings["concurrency"] == 2
     assert settings["authority"] == "research_ranking_only"
+
+
+def test_openai_provider_is_rejected_while_market_uses_chatgpt_oauth(tmp_path) -> None:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("agents:\n  option_agent:\n    provider: codex\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ChatGPT OAuth"):
+        update_agent_settings_config(cfg, {"option_agent": {"provider": "openai"}})

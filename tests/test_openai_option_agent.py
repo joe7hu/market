@@ -9,7 +9,7 @@ import pytest
 
 from investment_panel.jobs import openai_option_agent
 from investment_panel.jobs import openai_option_agent_auth
-from investment_panel.jobs import openai_thesis_monitor
+from investment_panel.jobs import codex_thesis_monitor
 
 
 class FakeResponse:
@@ -77,16 +77,18 @@ def test_openai_thesis_agent_uses_responses_structured_outputs(monkeypatch) -> N
     assert result["evidence_refs"][0] == {"type": "agent_request", "id": "req-1"}
 
 
-def test_openai_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> None:
+def test_codex_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> None:
     captured: dict = {}
 
-    def fake_call(payload, *, schema_name, schema, system_prompt, compact, meta_sink):
+    def fake_call(payload, *, schema_name, schema, system_prompt, compact, meta_sink, model, reasoning_effort):
         captured.update({
             "payload": payload,
             "schema_name": schema_name,
             "schema": schema,
             "system_prompt": system_prompt,
             "compact": compact,
+            "model": model,
+            "reasoning_effort": reasoning_effort,
         })
         meta_sink.update({"usage": {"input_tokens": 10, "output_tokens": 20}, "model": "gpt-test"})
         return {
@@ -118,13 +120,20 @@ def test_openai_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> No
             "evidence_assessments": [],
         }
 
-    monkeypatch.setattr(openai_thesis_monitor, "_call_openai_structured", fake_call)
+    monkeypatch.setattr(codex_thesis_monitor, "_call_codex_structured", fake_call)
 
-    result = openai_thesis_monitor.generate_openai_thesis_monitor({"symbol": "NVDA", "evidence": []})
+    result = codex_thesis_monitor.generate_codex_thesis_monitor({"symbol": "NVDA", "evidence": []})
 
     assert captured["schema_name"] == "thesis_monitor_v3"
     assert captured["schema"]["additionalProperties"] is False
+    assessment = captured["schema"]["properties"]["evidence_assessments"]["items"]["properties"]
+    assert assessment["stance"]["enum"] == ["support", "contradict", "neutral", "insufficient"]
+    assert assessment["materiality"]["enum"] == ["low", "medium", "high"]
+    invalidation = captured["schema"]["properties"]["thesis"]["properties"]["invalidation_rules"]["items"]["properties"]
+    assert invalidation["type"]["enum"] == ["price", "fundamental", "event", "time"]
     assert captured["compact"] is False
+    assert captured["model"] is None
+    assert captured["reasoning_effort"] is None
     assert "never" in captured["system_prompt"].lower()
     assert result["_meta"]["usage"]["input_tokens"] == 10
 
