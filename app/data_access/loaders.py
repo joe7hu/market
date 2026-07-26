@@ -147,7 +147,12 @@ def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelD
     normalized = ticker.strip().upper()
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
-    panel = load_panel_data(config, table_names=TICKER_TABLES)
+    panel = load_panel_data(
+        config,
+        table_names=TICKER_TABLES,
+        query_symbol_filter={normalized},
+        query_row_limits={name: 80 for name in TICKER_TABLES},
+    )
     panel.tables = {
         name: [row for row in rows if _row_symbol(row) in {"", normalized}]
         for name, rows in panel.tables.items()

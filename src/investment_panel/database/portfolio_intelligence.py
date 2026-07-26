@@ -412,8 +412,8 @@ def portfolio_intelligence_tables(
     runtime = runtime_for_config(config)
     with runtime.snapshot() as connection:
         needs_positions = bool(requested & {"portfolio", "portfolio_summary", "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions"})
-        needs_performance = bool(requested & {"portfolio_summary", "portfolio_performance", "portfolio_risk_cards", "review_actions"})
-        needs_correlations = bool(requested & {"correlation_edges", "portfolio_risk_cards", "review_actions"})
+        needs_performance = bool(requested & {"portfolio_summary", "portfolio_performance"})
+        needs_correlations = "correlation_edges" in requested
         needs_summary = bool(requested & {"portfolio_summary", "portfolio_risk_cards", "review_actions"})
         positions = portfolio_rows(config, connection=connection) if needs_positions else []
         performance = portfolio_performance_rows(config, connection=connection) if needs_performance else []
