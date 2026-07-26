@@ -18,8 +18,8 @@ from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.jobs.openai_option_agent import _call_codex_structured
 
 
-DEFAULT_PREOPEN_MODEL = "gpt-5.5"
-DEFAULT_REASONING_EFFORT = "medium"
+DEFAULT_PREOPEN_MODEL = "gpt-5.6-luna"
+DEFAULT_REASONING_EFFORT = "high"
 FORECAST_MODEL_VERSION = "qqq_preopen_stat_ensemble_v1"
 MARKET_TZ = ZoneInfo("America/New_York")
 PREOPEN_START = time(5, 0)

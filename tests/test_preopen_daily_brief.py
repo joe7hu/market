@@ -62,7 +62,7 @@ def test_qqq_preopen_forecast_and_backtest_are_backtestable() -> None:
     assert "mae_pct" in backtest
 
 
-def test_preopen_llm_uses_configured_model_and_medium_reasoning(monkeypatch) -> None:
+def test_preopen_llm_uses_configured_luna_model_and_high_reasoning(monkeypatch) -> None:
     captured = {}
 
     def fake_call(payload, **kwargs):
@@ -78,8 +78,8 @@ def test_preopen_llm_uses_configured_model_and_medium_reasoning(monkeypatch) -> 
             "evidence_refs": ["prices_daily"],
         }
 
-    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_MODEL", "gpt-5.5")
-    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_MODEL", "gpt-5.6-luna")
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", "high")
     monkeypatch.setattr("investment_panel.core.preopen_brief._call_codex_structured", fake_call)
 
     result = generate_preopen_llm_brief(
@@ -95,8 +95,8 @@ def test_preopen_llm_uses_configured_model_and_medium_reasoning(monkeypatch) -> 
     )
 
     assert result["headline"] == "FOMC digestion"
-    assert captured["model"] == "gpt-5.5"
-    assert captured["reasoning_effort"] == "medium"
+    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["reasoning_effort"] == "high"
     assert captured["schema_name"] == "preopen_daily_brief"
     assert captured["compact"] is False
 

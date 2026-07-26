@@ -10,8 +10,8 @@ from typing import Any
 class ThesisMonitorAgentConfig:
     enabled: bool = False
     provider: str = "codex"
-    model: str = ""
-    reasoning_effort: str = "medium"
+    model: str = "gpt-5.6-luna"
+    reasoning_effort: str = "high"
     prompt_version: str = "thesis_v3_20260725"
     concurrency: int = 2
     evidence_items_per_symbol: int = 12
@@ -26,8 +26,8 @@ def thesis_monitor_agent_config(raw: dict[str, Any]) -> ThesisMonitorAgentConfig
     return ThesisMonitorAgentConfig(
         enabled=bool(raw.get("enabled", False)),
         provider=str(raw.get("provider", "codex")),
-        model=str(raw.get("model", "")),
-        reasoning_effort=str(raw.get("reasoning_effort", "medium")),
+        model=str(raw.get("model", "gpt-5.6-luna")),
+        reasoning_effort=str(raw.get("reasoning_effort", "high")),
         prompt_version=str(raw.get("prompt_version", "thesis_v3_20260725")),
         concurrency=int(raw.get("concurrency", 2)),
         evidence_items_per_symbol=int(raw.get("evidence_items_per_symbol", 12)),

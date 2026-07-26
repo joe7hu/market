@@ -1068,6 +1068,10 @@ nas:
     assert config.database.url == "postgresql://localhost/market_test"
     assert config.database.duckdb_path.name == "test.duckdb"
     assert config.nas.status_dir == tmp_path / "nas" / "status"
+    assert config.agents.option_agent.model == "gpt-5.6-luna"
+    assert config.agents.option_agent.reasoning_effort == "high"
+    assert config.agents.thesis_monitor.model == "gpt-5.6-luna"
+    assert config.agents.thesis_monitor.reasoning_effort == "high"
 
 
 def test_config_loads_research_sources(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypa
     monkeypatch.setattr(update_broker_sources, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.refresh_options_radar, "run", lambda _path: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.run_option_agents, "run", lambda _path: {"status": "skipped"})
+    monkeypatch.setattr(postgres_refresh.run_thesis_monitor, "run", lambda _path, **_kwargs: {"status": "skipped"})
     monkeypatch.setattr(postgres_refresh, "refresh_today_publication", lambda _runtime: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh, "refresh_market_publication", lambda _runtime: {"status": "ok"})
     monkeypatch.setattr(postgres_refresh.OutcomeRepository, "refresh", lambda _self: {"status": "ok"})

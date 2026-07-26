@@ -107,8 +107,10 @@ exits before the option-agent runner's default `120` second command timeout;
 keep `MARKET_CODEX_TIMEOUT_SECONDS` lower than the configured runner timeout
 when overriding either value. Market's configured app paths are OAuth-only and
 must use the `market-codex-*` commands. The developer-only `market-openai-*`
-entry points are direct Platform API clients and are not used by the app. Use
-`MARKET_CODEX_MODEL` to override the Codex model.
+entry points are direct Platform API clients and are not used by the app.
+Market defaults its configured OAuth workflows to `gpt-5.6-luna` with high
+reasoning. `MARKET_CODEX_MODEL` and `MARKET_CODEX_REASONING_EFFORT` can override
+those defaults for a local run.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
