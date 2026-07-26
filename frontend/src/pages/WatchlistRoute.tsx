@@ -5,6 +5,7 @@ import { WatchlistPage } from "@/views/watchlist";
 import { CANDIDATE_PAGE_SIZE, loadVisibleWatchlistScopes } from "./watchlistScopeLoader";
 
 const WATCHLIST_REFRESH_JOB = "full_market_refresh";
+const WATCHLIST_DATA_REFRESH_JOBS = new Set([WATCHLIST_REFRESH_JOB, "daily_screen", "update_market_data"]);
 const POLL_INTERVAL_MS = 5000;
 // Pull fresh rows + the latest refresh status on a timer so a tab left open
 // reflects the backend scheduler's periodic refreshes without a manual click.
@@ -32,7 +33,7 @@ export function WatchlistRoute() {
   const updateRefreshState = useCallback(async (payload: RefreshJobsPayload, targetJobId: string | null = activeRefreshJobId.current) => {
     const latestJob = latestFullRefreshJob(payload.rows ?? []);
     const targetJob = targetJobId ? (payload.rows ?? []).find((job) => job.id === targetJobId) : latestJob;
-    const latestFinishedAt = latestRefreshFinishedAt(payload, latestJob);
+    const latestFinishedAt = latestWatchlistRefreshFinishedAt(payload.rows ?? []);
     if (latestFinishedAt) {
       setRefreshFinishedAt(latestFinishedAt);
     }
@@ -136,16 +137,13 @@ function latestFullRefreshJob(jobs: RefreshJob[]): RefreshJob | null {
     .sort((a, b) => (parseDate(b.started_at)?.getTime() ?? 0) - (parseDate(a.started_at)?.getTime() ?? 0))[0] ?? null;
 }
 
-function latestRefreshFinishedAt(payload: RefreshJobsPayload, latestJob: RefreshJob | null): Date | null {
-  const fromJob = latestJob?.status === "succeeded" && !refreshFailureMessage(latestJob) ? parseDate(latestJob.finished_at) : null;
-  const status = payload.latest_status;
-  const fromStatus = status && statusDataIsFresh(status) && (status.job === WATCHLIST_REFRESH_JOB || status.dataFinishedAt || status.finishedAt)
-    ? parseDate(status.dataFinishedAt ?? status.finishedAt)
-    : null;
-  if (fromJob && fromStatus) {
-    return fromJob.getTime() >= fromStatus.getTime() ? fromJob : fromStatus;
-  }
-  return fromJob ?? fromStatus ?? null;
+export function latestWatchlistRefreshFinishedAt(jobs: RefreshJob[]): Date | null {
+  const timestamps = jobs
+    .filter((job) => WATCHLIST_DATA_REFRESH_JOBS.has(job.job_name ?? ""))
+    .filter((job) => job.status === "succeeded" && !refreshFailureMessage(job))
+    .map((job) => parseDate(job.finished_at))
+    .filter((finishedAt): finishedAt is Date => finishedAt !== null);
+  return timestamps.reduce<Date | null>((latest, finishedAt) => !latest || finishedAt > latest ? finishedAt : latest, null);
 }
 
 // Data freshness ignores the housekeeping tail (snapshot/prune): a snapshot
