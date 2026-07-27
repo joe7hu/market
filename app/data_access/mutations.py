@@ -44,11 +44,34 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
 
 
 def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_class: str | None = None) -> dict[str, Any]:
-    """Store only the latest provider quote for a newly watched symbol."""
+    """Refresh price and valuation facts for a newly watched symbol."""
 
     normalized = str(symbol or "").strip().upper()
     if not normalized:
         return {"status": "skipped", "error": "symbol is required"}
+
+    # A newly watched symbol must receive the same market-metrics record as the
+    # scheduled watchlist refresh.  Storing only a quote leaves market cap and
+    # valuation columns blank until a later batch job happens to include it.
+    try:
+        from investment_panel.jobs.update_market_data import run as refresh_market_data
+
+        result = refresh_market_data(None, symbols=[normalized], publish=False)
+        if not result.get("price_errors") and not result.get("market_metric_errors"):
+            return {
+                "status": "ok",
+                "symbol": normalized,
+                "asset_class": asset_class,
+                "quote_rows": int(result.get("price_rows") or 0),
+                "market_metric_rows": int(result.get("market_metric_rows") or 0),
+                "provider_rows_received": int(result.get("price_rows") or 0),
+                "history_policy": "full_refresh",
+                "analysis": "next_premarket_publication",
+            }
+    except Exception:
+        # Preserve the previous quote-only fallback when the broader provider
+        # call is temporarily unavailable.
+        pass
 
     from investment_panel.core.prices import fetch_prices
     from investment_panel.database.authority import runtime_for_config
