@@ -127,7 +127,15 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
       <div id={`${panelId}-panel`} role="tabpanel" aria-labelledby={`${panelId}-${view}`}>
         {view === "desk" ? <TradeDesk brief={brief} workspace={workspace} thesis={thesisCandidates} anomaly={anomalyCandidates} snapshots={snapshots} onEvidence={() => select({ view: "evidence" })} onRecord={() => select({ view: "record" })} /> : null}
         {view === "evidence" ? <EvidenceWorkspace embedded /> : null}
-        {view === "record" ? <JournalDesk journal={journal} journalCount={journalCount} shadow={shadow} shadowCount={shadowCount} learning={learning} /> : null}
+        {view === "record" ? <JournalDesk
+          brief={brief}
+          journal={journal}
+          journalCount={journalCount}
+          shadow={shadow}
+          shadowCount={shadowCount}
+          legacyShadowCount={workspace?.tab_counts.legacy_shadow_observations ?? 0}
+          learning={learning}
+        /> : null}
       </div>
     </WorkspacePage>
   );
@@ -147,7 +155,7 @@ function ViewNav({ active, panelId, onSelect }: { active: View; panelId: string;
   const specs: Array<[View, ReactNode, string, string]> = [
     ["desk", <Target className="size-4" />, "Trade desk", "Verdict, gates, and candidates"],
     ["evidence", <Microscope className="size-4" />, "Market evidence", "Chain, volatility, and history"],
-    ["record", <BookOpenCheck className="size-4" />, "Journal", "Paper trades, shadow research, calibration"],
+    ["record", <BookOpenCheck className="size-4" />, "Learning log", "Forecasts, paper outcomes, and proof"],
   ];
   return <div role="tablist" aria-label="Options trade desk views" className="grid gap-2 rounded-xl border border-border bg-muted/50 p-2 md:grid-cols-3">
     {specs.map(([value, icon, title, detail]) => <button

@@ -259,8 +259,21 @@ class OptionsDecisionSystemRepository:
     def paper_journal(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100) -> dict[str, Any]:
         return paper_journal(self.runtime, symbol=symbol, offset=offset, limit=limit)
 
-    def shadow_observations(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        return shadow_observations(self.runtime, symbol=symbol, offset=offset, limit=limit)
+    def shadow_observations(
+        self,
+        *,
+        symbol: str = "QQQ",
+        offset: int = 0,
+        limit: int = 100,
+        include_legacy: bool = False,
+    ) -> dict[str, Any]:
+        return shadow_observations(
+            self.runtime,
+            symbol=symbol,
+            offset=offset,
+            limit=limit,
+            include_legacy=include_legacy,
+        )
 
     def learning_progress(self, *, symbol: str = "QQQ") -> dict[str, Any]:
         return learning_progress(self.runtime, symbol=symbol)

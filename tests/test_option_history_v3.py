@@ -296,6 +296,18 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert observation["execution"]["entry_cohort_id"] is None
         assert observation["outcome"]["current_return"] is None
         with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.decision SET blockers = ARRAY['thesis_upgrade_required'] WHERE id = %s",
+                [decision_id],
+            )
+        assert repository.shadow_observations(symbol="QQQ")["count"] == 0
+        assert repository.shadow_observations(symbol="QQQ", include_legacy=True)["count"] >= 1
+        legacy_counts = repository.workspace(symbol="QQQ")["tab_counts"]
+        assert legacy_counts["shadow_observations"] == 0
+        assert legacy_counts["legacy_shadow_observations"] >= 1
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.decision SET blockers = ARRAY[]::text[] WHERE id = %s", [decision_id])
+        with runtime.transaction() as connection:
             connection.execute("UPDATE analysis.decision SET state = 'READY' WHERE id = %s", [decision_id])
             connection.execute(
                 "UPDATE analysis.option_decision SET paper_state = 'PAPER_READY' WHERE decision_id = %s",

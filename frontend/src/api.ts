@@ -142,7 +142,13 @@ export type OptionsWorkspacePayload = {
   canary_status: OptionsDecisionReadiness["canary"];
   active_revision: string;
   paper_action_capability: { mode: string; enabled: boolean; reason: string };
-  tab_counts: { candidates: number; rejections: number; journal: number; shadow_observations: number };
+  tab_counts: {
+    candidates: number;
+    rejections: number;
+    journal: number;
+    shadow_observations: number;
+    legacy_shadow_observations: number;
+  };
 };
 export type OptionsPaperJournalRow = {
   record_kind: "paper_trade" | "shadow_observation";

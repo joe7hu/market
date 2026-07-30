@@ -47,8 +47,9 @@ def shadow_observations(
     symbol: str,
     offset: int,
     limit: int,
+    include_legacy: bool = False,
 ) -> dict[str, Any]:
-    """Return automatic research observations not promoted into paper orders."""
+    """Return current automatic research observations, with legacy rows opt-in."""
 
     return _journal_page(
         runtime,
@@ -67,9 +68,15 @@ def shadow_observations(
             LEFT JOIN app.paper_order paper_order ON paper_order.decision_id = decision.id
             WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
               AND option_decision.model_version = %s AND paper_order.id IS NULL
+              {legacy_filter}
         """,
         id_sql="NULL::text AS paper_order_id, shadow.id::text AS shadow_id",
         status_sql="NULL::text AS paper_status, shadow.status AS shadow_status",
+        sql_values={
+            "legacy_filter": ""
+            if include_legacy
+            else "AND NOT ('thesis_upgrade_required' = ANY(coalesce(decision.blockers, ARRAY[]::text[])))"
+        },
     )
 
 
@@ -127,7 +134,9 @@ def _journal_page(
     source_sql: str,
     id_sql: str,
     status_sql: str,
+    sql_values: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    source_sql = source_sql.format(**(sql_values or {}))
     with runtime.read() as connection:
         count = connection.execute(f"SELECT count(*) AS count {source_sql}", [symbol.upper(), MODEL_REVISION]).fetchone()["count"]
         rows = connection.execute(
