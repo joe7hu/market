@@ -194,7 +194,12 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
         "current_return": _number(row.get("current_return")),
         "outcome_state": outcome_state,
         "pending_entry_reason": row.get("pending_entry_reason"),
-        "assignment_warning": metrics.get("assignment_warning") or "American-style assignment risk remains paper-observed.",
+        "assignment_warning": metrics.get("assignment_warning")
+        or (
+            "American-style assignment risk remains shadow-observed."
+            if record_kind == "shadow_observation"
+            else "American-style assignment risk remains paper-observed."
+        ),
         "admission": {
             "decision_at": row.get("decision_at"),
             "decision_state": row.get("decision_state"),
@@ -216,7 +221,7 @@ def _journal_payload(row: dict[str, Any], *, record_kind: str) -> dict[str, Any]
             "revision": int(row["thesis_revision"]) if row.get("thesis_revision") is not None else None,
             "direction": thesis.get("direction"),
             "core_thesis": thesis.get("core_thesis") or thesis.get("thesis"),
-            "invalidation": thesis_invalidation(thesis),
+            "invalidation": thesis_invalidation(thesis) or None,
             "horizon_date": thesis.get("horizon_date"),
         },
         "forecast": {
