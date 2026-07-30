@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 import json
+import shlex
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 import psycopg
@@ -101,7 +103,11 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         duplicate = repository.queue_thesis("NVDA", prompt="duplicate", trigger="ondemand")
         assert duplicate["request_id"] == queued["request_id"]
 
-        command = "python -c 'import json,sys; request=json.load(sys.stdin); print(json.dumps({\"core_thesis\": request[\"ticker\"] + \" thesis\", \"confidence\": 0.8}))'"
+        command = (
+            f"{shlex.quote(sys.executable)} -c "
+            "'import json,sys; request=json.load(sys.stdin); "
+            "print(json.dumps({\"core_thesis\": request[\"ticker\"] + \" thesis\", \"confidence\": 0.8}))'"
+        )
         result = repository.run_queued(command, trigger="ondemand", task_kinds=("option_thesis",))
         assert result["completed"] == 1
         thesis = repository.rows("agent_thesis")[0]

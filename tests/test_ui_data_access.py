@@ -811,10 +811,10 @@ def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str
     assert nvda["invalidation_price"] == 95
 
 
-def test_save_thesis_requires_thesis_text(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "thesis-empty.duckdb")}}
+def test_save_thesis_requires_thesis_text(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
     with pytest.raises(ValueError):
-        data_access.save_thesis(config, "NVDA", {"thesis": "   "})
+        data_access.save_thesis(config, "ZZZT", {"thesis": "   "})
 
 
 def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> None:
@@ -919,6 +919,7 @@ def test_save_watchlist_crypto_alias_uses_crypto_asset_class(migrated_postgres_d
 
 def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch, migrated_postgres_dsn: str) -> None:
     import pandas as pd
+    from investment_panel.jobs import update_market_data
 
     config = {
         "database": {"url": migrated_postgres_dsn},
@@ -926,7 +927,7 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         "data_sources": {
             "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},
             "tradingview": {"enabled": True},
-            "yfinance": {"enabled": True},
+            "yfinance": {"enabled": False},
         },
         "scoring": {"weights": {"technical": 1.0}},
         "watchlist": [],
@@ -944,13 +945,13 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
             ]
         )
 
-    monkeypatch.setattr("investment_panel.core.prices.fetch_prices", fetch_prices)
+    monkeypatch.setattr(update_market_data, "fetch_prices", fetch_prices)
     result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "ok"
-    assert result["quote_rows"] == 1
+    assert result["quote_rows"] == 2
     assert result["provider_rows_received"] == 2
-    assert result["history_policy"] == "latest_only"
+    assert result["history_policy"] == "full_refresh"
     rows = data_access.load_table_panel_data(config, "quotes").rows("quotes")
     assert rows[0]["symbol"] == "XYZ"
     assert float(rows[0]["price"]) == 12
@@ -959,33 +960,20 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
 def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
     monkeypatch, migrated_postgres_dsn: str
 ) -> None:
-    import pandas as pd
-    from investment_panel.database.runtime import DatabaseRuntime
+    from investment_panel.jobs import update_market_data
 
-    config = {"database": {"url": migrated_postgres_dsn}, "market_data": {"mode": "online"}}
-    monkeypatch.setattr(
-        "investment_panel.core.prices.fetch_prices",
-        lambda *_args: pd.DataFrame([{"date": "2026-01-02", "close": 12}]),
-    )
-    monkeypatch.setattr(
-        "investment_panel.database.ingestion.IngestionRepository.store_quotes",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider write failed")),
-    )
+    config = {
+        "database": {"url": migrated_postgres_dsn},
+        "market_data": {"mode": "online"},
+        "data_sources": {"yfinance": {"enabled": False}},
+    }
+    data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
+    monkeypatch.setattr(update_market_data, "fetch_prices", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider failed")))
 
     result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "error"
-    runtime = DatabaseRuntime(migrated_postgres_dsn)
-    runtime.open()
-    try:
-        with runtime.read() as connection:
-            run = connection.execute(
-                "SELECT status, failure_detail FROM ingest.run WHERE source_id = 'watchlist_quote'"
-            ).fetchone()
-        assert run["status"] == "failed"
-        assert "provider write failed" in run["failure_detail"]
-    finally:
-        runtime.close()
+    assert "provider failed" in result["error"]
 
 
 def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:

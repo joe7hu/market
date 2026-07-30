@@ -24,7 +24,15 @@ def run(
     symbols: list[str] | None = None,
     publish: bool = True,
 ) -> dict[str, Any]:
-    config = load_config(config_path)
+    return run_for_config(load_config(config_path), symbols=symbols, publish=publish)
+
+
+def run_for_config(
+    config: Any,
+    *,
+    symbols: list[str] | None = None,
+    publish: bool = True,
+) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     repository = IngestionRepository(runtime)
     repository.register_source(
@@ -35,7 +43,8 @@ def run(
         origin="Yahoo chart and CoinGecko",
         capabilities={"price_bars": True, "quotes": True, "market_metrics": True},
     )
-    universe_rows = _universe(runtime, config.watchlist)
+    configured_watchlist = config.watchlist if hasattr(config, "watchlist") else config.get("watchlist", [])
+    universe_rows = _universe(runtime, configured_watchlist)
     requested = {str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()}
     if requested:
         universe_rows = [row for row in universe_rows if row["symbol"] in requested]
@@ -45,14 +54,23 @@ def run(
     for row in universe_rows:
         symbol = row["symbol"]
         try:
-            frame = fetch_prices(symbol, config.market_data.lookback_days, config.market_data.mode)
+            market_data = config.market_data if hasattr(config, "market_data") else config.get("market_data", {})
+            lookback_days = (
+                market_data.lookback_days if hasattr(market_data, "lookback_days")
+                else int(market_data.get("lookback_days", 260))
+            )
+            mode = market_data.mode if hasattr(market_data, "mode") else str(market_data.get("mode", "online"))
+            frame = fetch_prices(symbol, lookback_days, mode)
         except Exception as exc:  # each provider symbol is an independent boundary
             errors[symbol] = f"{type(exc).__name__}: {exc}"
             continue
         bars.extend(frame.to_dict("records"))
     metric_rows: list[dict[str, Any]] = []
     metric_errors: dict[str, str] = {}
-    if config.data_sources.yfinance.enabled:
+    data_sources = config.data_sources if hasattr(config, "data_sources") else config.get("data_sources", {})
+    yfinance = data_sources.yfinance if hasattr(data_sources, "yfinance") else data_sources.get("yfinance", {})
+    yfinance_enabled = yfinance.enabled if hasattr(yfinance, "enabled") else bool(yfinance.get("enabled", True))
+    if yfinance_enabled:
         provider = YFinanceProvider()
         observed_at = datetime.now(UTC)
         for row in universe_rows:

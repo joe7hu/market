@@ -1,7 +1,6 @@
 """Portfolio and watchlist write operations."""
 
 from __future__ import annotations
-from datetime import UTC, date, datetime, time
 from typing import Any, Iterable
 
 from app.data_access.user_state import (
@@ -44,20 +43,21 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
 
 
 def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_class: str | None = None) -> dict[str, Any]:
-    """Refresh price and valuation facts for a newly watched symbol."""
+    """Run the canonical targeted market-data refresh for a newly watched symbol."""
 
     normalized = str(symbol or "").strip().upper()
     if not normalized:
         return {"status": "skipped", "error": "symbol is required"}
 
-    # A newly watched symbol must receive the same market-metrics record as the
-    # scheduled watchlist refresh.  Storing only a quote leaves market cap and
-    # valuation columns blank until a later batch job happens to include it.
     try:
-        from investment_panel.jobs.update_market_data import run as refresh_market_data
+        from investment_panel.jobs.update_market_data import run_for_config
 
-        result = refresh_market_data(None, symbols=[normalized], publish=False)
-        if not result.get("price_errors") and not result.get("market_metric_errors"):
+        result = run_for_config(config, symbols=[normalized], publish=False)
+        if (
+            result.get("status") == "ok"
+            and int(result.get("symbols") or 0) == 1
+            and int(result.get("price_rows") or 0) > 0
+        ):
             return {
                 "status": "ok",
                 "symbol": normalized,
@@ -68,48 +68,11 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
                 "history_policy": "full_refresh",
                 "analysis": "next_premarket_publication",
             }
-    except Exception:
-        # Preserve the previous quote-only fallback when the broader provider
-        # call is temporarily unavailable.
-        pass
-
-    from investment_panel.core.prices import fetch_prices
-    from investment_panel.database.authority import runtime_for_config
-    from investment_panel.database.ingestion import IngestionRepository
-
-    market_data = config.get("market_data", {})
-    try:
-        frame = fetch_prices(
-            normalized,
-            int(market_data.get("lookback_days", 30)),
-            str(market_data.get("mode", "online")),
-        )
-        latest = frame.sort_values("date").iloc[-1].to_dict()
-        observed_date = date.fromisoformat(str(latest["date"])[:10])
-        observed_at = datetime.combine(observed_date, time(21), tzinfo=UTC)
-        repository = IngestionRepository(runtime_for_config(config))
-        repository.register_source(
-            "watchlist_quote", name="Watchlist quote", family="market_data",
-            kind="daily_quote", capabilities={"quotes": True},
-        )
-        with repository.run("watchlist_quote", "quotes") as ingestion_run:
-            stored = repository.store_quotes(
-                ingestion_run.id,
-                "watchlist_quote",
-                [{"symbol": normalized, "observed_at": observed_at, "price": latest["close"], "currency": "USD"}],
-            )
-            ingestion_run.finish(item_count=stored, instrument_count=1)
     except Exception as exc:  # provider boundary
         return {"status": "error", "symbol": normalized, "quote_rows": 0, "error": f"{type(exc).__name__}: {exc}"}
-    return {
-        "status": "ok",
-        "symbol": normalized,
-        "asset_class": asset_class,
-        "quote_rows": stored,
-        "provider_rows_received": len(frame),
-        "history_policy": "latest_only",
-        "analysis": "next_premarket_publication",
-    }
+    errors = {**dict(result.get("price_errors") or {}), **dict(result.get("market_metric_errors") or {})}
+    reason = "; ".join(f"{key}: {value}" for key, value in errors.items()) or "targeted refresh returned no price rows"
+    return {"status": "error", "symbol": normalized, "quote_rows": 0, "error": reason}
 
 
 
