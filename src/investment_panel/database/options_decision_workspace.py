@@ -53,15 +53,21 @@ def workspace_payload(
             SELECT
                 count(*) FILTER (WHERE option_decision.paper_state IS NOT NULL) AS candidates,
                 count(*) FILTER (WHERE option_decision.paper_state = 'REJECT') AS rejections,
+                (SELECT count(*) FROM app.paper_order paper_order
+                 JOIN analysis.decision decision ON decision.id = paper_order.decision_id
+                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                 WHERE instrument.symbol = %s) AS journal,
                 (SELECT count(*) FROM analysis.shadow_trade shadow
                  JOIN analysis.decision decision ON decision.id = shadow.decision_id
                  JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                 WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3') AS journal
+                 LEFT JOIN app.paper_order paper_order ON paper_order.decision_id = decision.id
+                 WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
+                   AND paper_order.id IS NULL) AS shadow_observations
             FROM analysis.option_decision option_decision
             JOIN analysis.decision decision ON decision.id = option_decision.decision_id
             WHERE decision.run_id = (SELECT id FROM latest)
             """,
-            [MODEL_REVISION, symbol.upper(), symbol.upper()],
+            [MODEL_REVISION, symbol.upper(), symbol.upper(), symbol.upper()],
         ).fetchone()
     return {
         "symbol": symbol.upper(),
@@ -81,5 +87,6 @@ def workspace_payload(
             "candidates": int(counts["candidates"] or 0) if counts else 0,
             "rejections": int(counts["rejections"] or 0) if counts else 0,
             "journal": int(counts["journal"] or 0) if counts else 0,
+            "shadow_observations": int(counts["shadow_observations"] or 0) if counts else 0,
         },
     }

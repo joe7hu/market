@@ -102,6 +102,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
         "/api/options/candidates",
         "/api/options/history/relative-values",
         "/api/options/paper-journal",
+        "/api/options/shadow-observations",
         "/api/options-payoff-scenarios",
         "/api/options-provider-capabilities",
         "/api/options-expiry-signals",

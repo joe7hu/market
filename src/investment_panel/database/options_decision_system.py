@@ -14,6 +14,7 @@ from investment_panel.core.robinhood_options.collector import RobinhoodClient, _
 from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.options_decision_readiness import next_required_action
+from investment_panel.database.options_journal import learning_progress, paper_journal, shadow_observations
 from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
 from investment_panel.database.options_decision_verification import candidate_finding, same_finding_identity
@@ -256,78 +257,13 @@ class OptionsDecisionSystemRepository:
         return workspace_payload(self.runtime, symbol=symbol, lane=lane, mode=self.mode, decision_brief=self.decision_brief)
 
     def paper_journal(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100) -> dict[str, Any]:
-        with self.runtime.read() as connection:
-            count = connection.execute(
-                """SELECT count(*) AS count FROM analysis.shadow_trade shadow
-                    JOIN analysis.decision decision ON decision.id = shadow.decision_id
-                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-                    WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
-                      AND option_decision.model_version = %s""", [symbol.upper(), MODEL_REVISION],
-            ).fetchone()["count"]
-            rows = connection.execute(
-                """
-                SELECT shadow.id::text AS shadow_id, shadow.decision_id::text AS decision_id, shadow.status,
-                       shadow.entry_at, shadow.entry_price, shadow.exit_at, shadow.exit_price,
-                       shadow.pending_entry_reason, shadow.entry_cohort_id, shadow.structure,
-                       shadow.market_regime, shadow.fill_basis, shadow.source_kind, shadow.metrics,
-                       outcome.maturity_state AS outcome_state, outcome.observed_through,
-                       outcome.current_return
-                FROM analysis.shadow_trade shadow
-                JOIN analysis.decision decision ON decision.id = shadow.decision_id
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                WHERE instrument.symbol = %s AND shadow.source_kind = 'options_history_v3'
-                  AND option_decision.model_version = %s
-                ORDER BY coalesce(shadow.entry_at, shadow.created_at) DESC
-                LIMIT %s OFFSET %s
-                """, [symbol.upper(), MODEL_REVISION, limit, offset],
-            ).fetchall()
-        return {
-            "rows": [_journal_payload(dict(row)) for row in rows],
-            "count": int(count), "offset": offset, "limit": limit,
-        }
+        return paper_journal(self.runtime, symbol=symbol, offset=offset, limit=limit)
+
+    def shadow_observations(self, *, symbol: str = "QQQ", offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        return shadow_observations(self.runtime, symbol=symbol, offset=offset, limit=limit)
 
     def learning_progress(self, *, symbol: str = "QQQ") -> dict[str, Any]:
-        """Exact-structure/regime/revision learning gates; no pooled shortcut."""
-
-        with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                SELECT option_decision.structure, option_decision.market_regime,
-                       option_decision.model_version,
-                       count(*) FILTER (
-                           WHERE outcome.maturity_state IN ('mature', 'expired')
-                             AND outcome.current_return IS NOT NULL
-                       ) AS mature_outcomes,
-                       avg(outcome.current_return) FILTER (
-                           WHERE outcome.maturity_state IN ('mature', 'expired')
-                             AND outcome.current_return IS NOT NULL
-                       ) AS mean_return,
-                       stddev_pop(outcome.current_return) FILTER (
-                           WHERE outcome.maturity_state IN ('mature', 'expired')
-                             AND outcome.current_return IS NOT NULL
-                       ) AS return_stddev,
-                       avg(power(option_decision.probability_profit -
-                           CASE WHEN outcome.current_return > 0 THEN 1.0 ELSE 0.0 END, 2)
-                       ) FILTER (
-                           WHERE outcome.maturity_state IN ('mature', 'expired')
-                             AND outcome.current_return IS NOT NULL
-                             AND option_decision.probability_profit IS NOT NULL
-                       ) AS brier_score
-                FROM analysis.option_decision option_decision
-                JOIN analysis.decision decision ON decision.id = option_decision.decision_id
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                LEFT JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                WHERE instrument.symbol = %s AND option_decision.model_version = %s
-                GROUP BY option_decision.structure, option_decision.market_regime, option_decision.model_version
-                ORDER BY option_decision.structure, option_decision.market_regime, option_decision.model_version
-                """,
-                [symbol.upper(), MODEL_REVISION],
-            ).fetchall()
-        progress = [_learning_payload(dict(row)) for row in rows]
-        return {"rows": progress, "count": len(progress)}
+        return learning_progress(self.runtime, symbol=symbol)
 
     def verification_result(self, candidate_id: int, client: RobinhoodClient | None = None) -> dict[str, Any]:
         """Read through to a live, size/skew-aware package re-quote and persist the result."""
@@ -629,45 +565,6 @@ def _calibration_readiness(row: dict[str, Any]) -> dict[str, Any]:
         "model_revision": row.get("model_version") or MODEL_REVISION,
         "mature_outcomes": sample_size, "lower_95_expectancy": _number(calibration.get("lower_95_expectancy")),
         "brier_score": _number(calibration.get("brier_score")), "missing_prerequisites": missing,
-    }
-
-
-def _journal_payload(row: dict[str, Any]) -> dict[str, Any]:
-    metrics = dict(row.get("metrics") or {})
-    status = str(row.get("status") or "pending")
-    outcome_state = row.get("outcome_state")
-    lifecycle = str(outcome_state) if outcome_state in {"mature", "expired", "observing"} else status
-    latest_mark = _number(metrics.get("mark_price"))
-    return {
-        "shadow_id": str(row["shadow_id"]), "decision_id": str(row["decision_id"]),
-        "lifecycle": lifecycle, "structure": row.get("structure"), "entry_at": row.get("entry_at"),
-        "conservative_entry_price": _number(row.get("entry_price")),
-        "conservative_fill_basis": row.get("fill_basis") or metrics.get("fill_basis"),
-        "latest_mark": latest_mark, "missing_mark_gap": status == "entered" and latest_mark is None,
-        "current_return": _number(row.get("current_return")), "outcome_state": outcome_state,
-        "pending_entry_reason": row.get("pending_entry_reason"),
-        "assignment_warning": metrics.get("assignment_warning") or "American-style assignment risk remains paper-observed.",
-        "metrics": metrics,
-    }
-
-
-def _learning_payload(row: dict[str, Any]) -> dict[str, Any]:
-    outcomes = int(row.get("mature_outcomes") or 0)
-    mean_return, stddev = _number(row.get("mean_return")), _number(row.get("return_stddev"))
-    lower = mean_return - 1.96 * stddev / outcomes**0.5 if mean_return is not None and stddev is not None and outcomes > 1 else None
-    brier = _number(row.get("brier_score"))
-    missing = []
-    if outcomes < 30:
-        missing.append("30_mature_exact_structure_outcomes_required")
-    if lower is None or lower <= 0:
-        missing.append("positive_lower_95_expectancy_required")
-    if brier is None or brier > 0.25:
-        missing.append("brier_score_at_or_below_0_25_required")
-    return {
-        "structure": row["structure"], "market_regime": row.get("market_regime"),
-        "model_revision": row["model_version"], "mature_outcomes": outcomes,
-        "required_mature_outcomes": 30, "lower_95_expectancy": lower,
-        "brier_score": brier, "missing_prerequisites": missing,
     }
 
 

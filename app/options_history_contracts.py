@@ -301,7 +301,9 @@ class OptionsCandidatePage(BaseModel):
 
 
 class OptionsPaperJournalRow(BaseModel):
-    shadow_id: str
+    record_kind: str
+    paper_order_id: str | None = None
+    shadow_id: str | None = None
     decision_id: str
     lifecycle: str
     structure: str | None = None
@@ -314,6 +316,12 @@ class OptionsPaperJournalRow(BaseModel):
     outcome_state: str | None = None
     pending_entry_reason: str | None = None
     assignment_warning: str | None = None
+    admission: dict[str, Any]
+    contract: dict[str, Any]
+    thesis: dict[str, Any]
+    forecast: dict[str, Any]
+    execution: dict[str, Any]
+    outcome: dict[str, Any]
     metrics: dict[str, Any]
 
 

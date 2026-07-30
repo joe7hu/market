@@ -7,12 +7,14 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import {
   loadOptionHistorySnapshots, loadOptionsCandidates, loadOptionsLearningProgress, loadOptionsPaperJournal,
+  loadOptionsShadowObservations,
   loadOptionsWorkspace, type OptionHistorySnapshot, type OptionsDecisionBrief, type OptionsDecisionCandidate,
   type OptionsLearningProgress, type OptionsPaperJournalRow, type OptionsWorkspacePayload,
 } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "../workspacePage";
 import { blockerCopy, decisionPresentation, sentence, summaryNumber } from "./decisionDesk";
+import { JournalDesk } from "./journalDesk";
 
 type View = "desk" | "evidence" | "record";
 const VIEWS: View[] = ["desk", "evidence", "record"];
@@ -28,6 +30,9 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   const [thesisCandidates, setThesisCandidates] = useState<OptionsDecisionCandidate[]>([]);
   const [anomalyCandidates, setAnomalyCandidates] = useState<OptionsDecisionCandidate[]>([]);
   const [journal, setJournal] = useState<OptionsPaperJournalRow[]>([]);
+  const [journalCount, setJournalCount] = useState(0);
+  const [shadow, setShadow] = useState<OptionsPaperJournalRow[]>([]);
+  const [shadowCount, setShadowCount] = useState(0);
   const [learning, setLearning] = useState<OptionsLearningProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
   const panelId = useId();
@@ -88,9 +93,13 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
     const controller = new AbortController();
     void Promise.all([
       loadOptionsPaperJournal("QQQ", controller.signal),
+      loadOptionsShadowObservations("QQQ", controller.signal),
       loadOptionsLearningProgress("QQQ", controller.signal),
-    ]).then(([nextJournal, nextLearning]) => {
+    ]).then(([nextJournal, nextShadow, nextLearning]) => {
       setJournal(nextJournal.rows);
+      setJournalCount(nextJournal.count);
+      setShadow(nextShadow.rows);
+      setShadowCount(nextShadow.count);
       setLearning(nextLearning.rows);
       setError(null);
     }).catch((cause: unknown) => ignoreAbort(cause, setError));
@@ -118,7 +127,7 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
       <div id={`${panelId}-panel`} role="tabpanel" aria-labelledby={`${panelId}-${view}`}>
         {view === "desk" ? <TradeDesk brief={brief} workspace={workspace} thesis={thesisCandidates} anomaly={anomalyCandidates} snapshots={snapshots} onEvidence={() => select({ view: "evidence" })} onRecord={() => select({ view: "record" })} /> : null}
         {view === "evidence" ? <EvidenceWorkspace embedded /> : null}
-        {view === "record" ? <Record journal={journal} learning={learning} /> : null}
+        {view === "record" ? <JournalDesk journal={journal} journalCount={journalCount} shadow={shadow} shadowCount={shadowCount} learning={learning} /> : null}
       </div>
     </WorkspacePage>
   );
@@ -138,7 +147,7 @@ function ViewNav({ active, panelId, onSelect }: { active: View; panelId: string;
   const specs: Array<[View, ReactNode, string, string]> = [
     ["desk", <Target className="size-4" />, "Trade desk", "Verdict, gates, and candidates"],
     ["evidence", <Microscope className="size-4" />, "Market evidence", "Chain, volatility, and history"],
-    ["record", <BookOpenCheck className="size-4" />, "Track record", "Paper journal and learning"],
+    ["record", <BookOpenCheck className="size-4" />, "Journal", "Paper trades, shadow research, calibration"],
   ];
   return <div role="tablist" aria-label="Options trade desk views" className="grid gap-2 rounded-xl border border-border bg-muted/50 p-2 md:grid-cols-3">
     {specs.map(([value, icon, title, detail]) => <button
@@ -297,19 +306,6 @@ function Candidate({ candidate, state }: { candidate: OptionsDecisionCandidate; 
       <Metric label="Modeled edge" value={money(candidate.modeled_net_edge)} />
     </dl>
   </article>;
-}
-
-function Record({ journal, learning }: { journal: OptionsPaperJournalRow[]; learning: OptionsLearningProgress[] }) {
-  return <div className="grid gap-4 xl:grid-cols-2">
-    <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-      <SectionTitle icon={<BookOpenCheck className="size-4" />} title="Paper journal" detail="Every staged setup stays visible through entry, observation, and maturity." />
-      {journal.length ? <div className="mt-4 divide-y divide-border">{journal.map((row) => <article className="grid gap-1 py-3 text-sm sm:grid-cols-[1fr_auto]" key={row.shadow_id}><strong>{sentence(row.structure ?? row.lifecycle)}</strong><StatusBadge tone={row.lifecycle === "mature" ? "good" : "info"}>{row.lifecycle}</StatusBadge><span className="text-muted-foreground">{row.conservative_fill_basis ?? row.pending_entry_reason ?? "Entry pending"}</span><span className="tabular-nums">{row.latest_mark === null ? "No mark" : `${money(row.latest_mark)} · ${percent(row.current_return)}`}</span>{row.assignment_warning ? <span className="sm:col-span-2 text-xs text-amber-700 dark:text-amber-300">{row.assignment_warning}</span> : null}</article>)}</div> : <Empty text="No paper setups have been staged. This is expected while the trade desk has no qualified candidate." />}
-    </section>
-    <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-      <SectionTitle icon={<FlaskConical className="size-4" />} title="Learning progress" detail="Calibration is exact to structure, regime, and model revision." />
-      {learning.length ? <div className="mt-4 divide-y divide-border">{learning.map((row) => <article className="py-3 text-sm" key={`${row.structure}-${row.market_regime}-${row.model_revision}`}><div className="flex justify-between gap-3"><strong>{sentence(row.structure)}</strong><span className="tabular-nums">{row.mature_outcomes}/{row.required_mature_outcomes}</span></div><p className="mt-1 text-xs text-muted-foreground">{row.market_regime ?? "Regime unavailable"} · lower 95% {percent(row.lower_95_expectancy)} · Brier {number(row.brier_score, 3)}</p>{row.missing_prerequisites.length ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{row.missing_prerequisites.map(sentence).join(" · ")}</p> : null}</article>)}</div> : <Empty text="No exact calibration cohort exists yet. PAPER_READY requires 30 mature outcomes for the same structure, regime, and revision." />}
-    </section>
-  </div>;
 }
 
 function FunnelStep({ label, value, state }: { label: string; value: number; state: "done" | "active" | "open" }) {

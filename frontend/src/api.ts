@@ -142,9 +142,59 @@ export type OptionsWorkspacePayload = {
   canary_status: OptionsDecisionReadiness["canary"];
   active_revision: string;
   paper_action_capability: { mode: string; enabled: boolean; reason: string };
-  tab_counts: { candidates: number; rejections: number; journal: number };
+  tab_counts: { candidates: number; rejections: number; journal: number; shadow_observations: number };
 };
-export type OptionsPaperJournalRow = { shadow_id: string; decision_id: string; lifecycle: "pending" | "entered" | "unfilled" | "observing" | "mature" | "expired" | string; structure: string | null; entry_at: string | null; conservative_entry_price: number | null; conservative_fill_basis: string | null; latest_mark: number | null; missing_mark_gap: boolean; current_return: number | null; outcome_state: string | null; pending_entry_reason: string | null; assignment_warning: string | null; metrics: Record<string, unknown> };
+export type OptionsPaperJournalRow = {
+  record_kind: "paper_trade" | "shadow_observation";
+  paper_order_id: string | null;
+  shadow_id: string | null;
+  decision_id: string;
+  lifecycle: "pending" | "entered" | "unfilled" | "observing" | "mature" | "expired" | string;
+  structure: string | null;
+  entry_at: string | null;
+  conservative_entry_price: number | null;
+  conservative_fill_basis: string | null;
+  latest_mark: number | null;
+  missing_mark_gap: boolean;
+  current_return: number | null;
+  outcome_state: string | null;
+  pending_entry_reason: string | null;
+  assignment_warning: string | null;
+  admission: {
+    decision_at: string | null; decision_state: string | null; paper_state: string | null;
+    discovery_lane: string | null; reasons: string[]; blockers: string[];
+    model_revision: string | null; market_regime: string | null;
+  };
+  contract: {
+    expiration: string | null; strike: number | null; option_type: string | null;
+    multiplier: number; legs: Array<Record<string, unknown>>;
+  };
+  thesis: {
+    revision: number | null; direction: string | null; core_thesis: string | null;
+    invalidation: string | null; horizon_date: string | null;
+  };
+  forecast: {
+    probability_profit: number | null; expected_value: number | null;
+    lower_95_expected_value: number | null; max_loss: number | null;
+    risk_adjusted_expectancy: number | null; modeled_net_edge: number | null;
+    fair_value_low: number | null; fair_value_high: number | null;
+    scenario_count: number; data_confidence: number | null; execution_confidence: number | null;
+  };
+  execution: {
+    staged_at: string | null; signal_quote_at: string | null; entry_cohort_id: string | null;
+    entry_at: string | null; entry_price: number | null; fill_basis: string | null;
+    latest_mark: number | null; exit_at: string | null; exit_price: number | null;
+    holding_period_hours: number | null;
+  };
+  outcome: {
+    state: string | null; observed_through: string | null; current_return: number | null;
+    return_1d: number | null; return_5d: number | null; return_20d: number | null;
+    return_60d: number | null; peak_return: number | null; max_drawdown: number | null;
+    realized_exit_return: number | null; realized_exit_basis: string | null;
+    attribution: { underlying: number | null; iv: number | null; theta: number | null; spread: number | null; unexplained: number | null };
+  };
+  metrics: Record<string, unknown>;
+};
 export type OptionsLearningProgress = { structure: string; market_regime: string | null; model_revision: string; mature_outcomes: number; required_mature_outcomes: number; lower_95_expectancy: number | null; brier_score: number | null; missing_prerequisites: string[] };
 
 // --- Source catalog (GET /api/source-catalog) ------------------------------
@@ -403,6 +453,10 @@ export async function loadOptionsCandidates(params: Record<string, string | numb
 
 export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
   return getJson(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
+}
+
+export async function loadOptionsShadowObservations(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
+  return getJson(`/api/options/shadow-observations?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
 }
 
 export async function loadOptionRelativeValues(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionRelativeValue>> {

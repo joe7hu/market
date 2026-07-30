@@ -227,6 +227,15 @@ def options_paper_journal(
     return _actions().paper_journal(symbol=symbol, offset=offset, limit=limit)
 
 
+@router.get("/api/options/shadow-observations", response_model=OptionsPaperJournalPage)
+def options_shadow_observations(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
+) -> dict[str, Any]:
+    return _actions().shadow_observations(symbol=symbol, offset=offset, limit=limit)
+
+
 @router.get("/api/options/learning-progress", response_model=OptionsLearningProgressPage)
 def options_learning_progress(
     symbol: str = Query("QQQ", min_length=1, max_length=16),

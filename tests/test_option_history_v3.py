@@ -188,11 +188,11 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 "strike": 470 + index * 5,
                 "type": "call",
                 "underlying_price": 500,
-                # The first quote is below intrinsic value and intentionally produces a
-                # static-arbitrage candidate with fresh, in-band delta evidence.
-                "bid": 29.8 if index == 0 else max(0.4, 30 - index * 4 - 0.1),
-                "ask": 29.9 if index == 0 else max(0.5, 30 - index * 4),
-                "mid": 29.85 if index == 0 else max(0.45, 30 - index * 4 - 0.05),
+                    # The first two quotes are below intrinsic value and intentionally
+                    # produce independent research observations for cohort isolation.
+                    "bid": 29.8 - index * 5 if index < 2 else max(0.4, 30 - index * 4 - 0.1),
+                    "ask": 29.9 - index * 5 if index < 2 else max(0.5, 30 - index * 4),
+                    "mid": 29.85 - index * 5 if index < 2 else max(0.45, 30 - index * 4 - 0.05),
                 "open_interest": 500,
                 "provider_delta": 0.5,
                 "market_data_status": "open",
@@ -252,6 +252,127 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert brief["readiness"]["thesis"]["eligible"] is True
         assert brief["readiness"]["thesis"]["invalidation"] == "QQQ closes below 480"
         assert brief["strongest_candidate"] is not None
+        repository = OptionsDecisionSystemRepository(runtime)
+        with runtime.transaction() as connection:
+            decision_id = connection.execute(
+                "SELECT id FROM analysis.decision WHERE run_id = %s ORDER BY created_at LIMIT 1",
+                [captured["analysis_run_id"]],
+            ).fetchone()["id"]
+            connection.execute("UPDATE analysis.decision SET state = 'WATCH' WHERE id = %s", [decision_id])
+            connection.execute(
+                """
+                UPDATE analysis.option_decision
+                SET paper_state = 'WATCH', max_loss = 100, expected_value = 25,
+                    probability_profit = 0.6, structure = 'long_call',
+                    market_regime = 'above_200d:normal'
+                WHERE decision_id = %s
+                """,
+                [decision_id],
+            )
+            connection.execute(
+                """
+                INSERT INTO analysis.shadow_trade
+                    (decision_id, status, structure, market_regime, source_kind, metrics)
+                VALUES (%s, 'pending', 'long_call', 'above_200d:normal', 'options_history_v3', '{}'::jsonb)
+                """,
+                [decision_id],
+            )
+        assert repository.paper_journal(symbol="QQQ")["count"] == 0
+        shadow = repository.shadow_observations(symbol="QQQ")
+        assert shadow["count"] >= 1
+        initial_counts = repository.workspace(symbol="QQQ")["tab_counts"]
+        assert initial_counts["journal"] == 0
+        assert initial_counts["shadow_observations"] >= 1
+        observation = shadow["rows"][0]
+        assert observation["record_kind"] == "shadow_observation"
+        assert observation["admission"]["decision_state"] in {"COLLECTING", "WATCH"}
+        assert observation["admission"]["paper_state"] in {"COLLECTING", "WATCH"}
+        assert observation["contract"]["expiration"] == "2026-08-21"
+        assert observation["contract"]["legs"][0]["strike"] is not None
+        assert observation["thesis"]["revision"] == 1
+        assert observation["thesis"]["invalidation"] == "QQQ closes below 480"
+        assert observation["forecast"]["max_loss"] is not None
+        assert "expected_value" in observation["forecast"]
+        assert observation["execution"]["entry_cohort_id"] is None
+        assert observation["outcome"]["current_return"] is None
+        with runtime.transaction() as connection:
+            connection.execute("UPDATE analysis.decision SET state = 'READY' WHERE id = %s", [decision_id])
+            connection.execute(
+                "UPDATE analysis.option_decision SET paper_state = 'PAPER_READY' WHERE decision_id = %s",
+                [decision_id],
+            )
+            instrument_id = connection.execute(
+                "SELECT instrument_id FROM analysis.decision WHERE id = %s", [decision_id]
+            ).fetchone()["instrument_id"]
+            connection.execute(
+                """
+                INSERT INTO app.paper_order
+                    (decision_id, instrument_id, side, quantity, limit_price, status, structure, idempotency_key)
+                VALUES (%s, %s, 'buy', 1, 29.9, 'staged', 'long_call', 'journal-contract-test')
+                """,
+                [decision_id, instrument_id],
+            )
+        assert repository.shadow_observations(symbol="QQQ")["count"] == 0
+        paper = repository.paper_journal(symbol="QQQ")
+        assert paper["count"] == 1
+        promoted_counts = repository.workspace(symbol="QQQ")["tab_counts"]
+        assert promoted_counts["journal"] == 1
+        assert promoted_counts["shadow_observations"] == 0
+        assert paper["rows"][0]["record_kind"] == "paper_trade"
+        assert paper["rows"][0]["paper_order_id"]
+        assert paper["rows"][0]["admission"]["paper_state"] == "PAPER_READY"
+        with runtime.transaction() as connection:
+            paper_shadow_id = connection.execute(
+                "SELECT id FROM analysis.shadow_trade WHERE decision_id = %s", [decision_id]
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO analysis.option_outcome
+                    (decision_id, maturity_state, observed_through, current_return, outcome_source, shadow_trade_id)
+                VALUES (%s, 'mature', now(), 0.2, 'options_history_v3', %s)
+                """,
+                [decision_id, paper_shadow_id],
+            )
+            other = connection.execute(
+                """
+                SELECT decision.id
+                FROM analysis.decision decision
+                JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
+                WHERE decision.run_id = %s AND decision.id <> %s
+                ORDER BY decision.created_at LIMIT 1
+                """,
+                [captured["analysis_run_id"], decision_id],
+            ).fetchone()["id"]
+            connection.execute("UPDATE analysis.decision SET state = 'WATCH' WHERE id = %s", [other])
+            connection.execute(
+                """
+                UPDATE analysis.option_decision
+                SET paper_state = 'WATCH', structure = 'long_call',
+                    market_regime = 'above_200d:normal', probability_profit = 0.6
+                WHERE decision_id = %s
+                """,
+                [other],
+            )
+            other_shadow_id = connection.execute(
+                """
+                INSERT INTO analysis.shadow_trade
+                    (decision_id, status, structure, market_regime, source_kind, metrics)
+                VALUES (%s, 'entered', 'long_call', 'above_200d:normal', 'options_history_v3', '{}'::jsonb)
+                RETURNING id
+                """,
+                [other],
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO analysis.option_outcome
+                    (decision_id, maturity_state, observed_through, current_return, outcome_source, shadow_trade_id)
+                VALUES (%s, 'mature', now(), -0.5, 'options_history_v3', %s)
+                """,
+                [other, other_shadow_id],
+            )
+        learning = repository.learning_progress(symbol="QQQ")
+        long_call = next(row for row in learning["rows"] if row["structure"] == "long_call")
+        assert long_call["mature_outcomes"] == 1
         save_thesis(
             {"database": {"url": migrated_postgres_dsn}},
             "QQQ",
