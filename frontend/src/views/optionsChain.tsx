@@ -3,7 +3,6 @@ import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tan
 import { useSearchParams } from "react-router-dom";
 import { loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
-import { WorkspacePage } from "./workspacePage";
 import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
 
 const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfacePlot }));
@@ -15,7 +14,7 @@ export function OptionsChainPage() {
   return <DecisionFirstOptionsChainPage EvidenceWorkspace={EvidenceWorkspace} />;
 }
 
-export function EvidenceWorkspace() {
+export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: boolean }) {
   const symbol = "QQQ";
   const [search, setSearch] = useSearchParams();
   const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
@@ -112,19 +111,20 @@ export function EvidenceWorkspace() {
     <Input label="Max log-moneyness" value={maxMoneyness} onChange={(value) => update({ max: value, full_chain: undefined, page: "0" })} />
   </div>;
 
-  return <WorkspacePage eyebrow="Options History" title="QQQ Options Chain" subtitle="Full tradable Robinhood chain history. IV surfaces and anomalies are descriptive statistics, not trade recommendations." metrics={[
-    ["As of", selected ? formatDate(selected.capture_finished_at ?? selected.slot_at ?? selected.observed_at) : "Collecting", selected ? `${formatCaptureWindow(selected)} capture · ${selected.contract_count.toLocaleString()} contracts` : "No complete snapshot yet", selected ? "good" : "warn"],
-    ["Coverage", selected?.completeness !== null && selected?.completeness !== undefined ? selected.completeness.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "—", "Complete snapshots only feed models and this workstation", "info"],
-    ["History", `${snapshots.length.toLocaleString()} captures`, curves?.history_state === "ready" ? "History-dependent signals are active" : "Open Curves & History to load bounded evidence", curves?.history_state === "ready" ? "good" : "warn"],
-    ["Anomalies", view === "curves" ? `${anomalies.count.toLocaleString()}` : "On demand", "Statistical labels only", "info"],
-  ]} actions={<StatusBadge tone={selected ? "good" : "warn"}>{selected ? "Complete capture" : "Collecting full-chain history"}</StatusBadge>}>
+  return <div className="space-y-4">
+    <section className="rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Advanced evidence</p><h2 className="mt-1 text-lg font-semibold">Chain, volatility, and history</h2><p className="mt-1 max-w-3xl text-sm text-muted-foreground">Use this area to challenge the decision, inspect execution quality, and understand volatility structure. It is evidence—not a ranked trade list.</p></div>
+        <div className="flex flex-wrap gap-2"><StatusBadge tone={selected ? "good" : "warn"}>{selected ? "Complete capture" : "No complete capture"}</StatusBadge>{selected ? <StatusBadge tone="info">{selected.contract_count.toLocaleString()} contracts · {(selected.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</StatusBadge> : null}</div>
+      </div>
+    </section>
     {filters}
     <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="min-h-11 rounded border px-3 text-sm" onClick={() => update(fullChain ? { full_chain: undefined, min: "-0.10", max: "0.10", page: "0" } : { full_chain: "1", min: undefined, max: undefined, page: "0" })}>{fullChain ? "Use liquid near-ATM chain" : "Full chain"}</button>{error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}</div>
     <div className="flex w-fit rounded-md border border-border bg-muted p-1"><Tab active={view === "chain"} onClick={() => update({ evidence_view: "chain" })}>Chain</Tab><Tab active={view === "surface"} onClick={() => update({ evidence_view: "surface" })}>IV Surface</Tab><Tab active={view === "curves"} onClick={() => update({ evidence_view: "curves" })}>Curves & History</Tab></div>
     {view === "chain" ? <ChainTable rows={chain.rows} page={page} maxPage={maxPage} count={chain.count} onPage={(next) => update({ page: String(next) })} /> : null}
     {view === "surface" ? <SurfacePanel snapshot={selected} surface={surface} surfaceGrid={surfaceGrid} optionType={(optionType || "call") as "call" | "put"} selectedDte={groups.find((group) => group.expiration === expiration && group.option_type === optionType)?.dte} selectedExpiration={expiration} surfaceView={surfaceView} onSurfaceViewChange={(next) => update({ surface_view: next })} webgl={webgl} /> : null}
     {view === "curves" ? <CurvesPanel curves={curves} anomalies={anomalies.rows} /> : null}
-  </WorkspacePage>;
+  </div>;
 }
 
 function ChainTable({ rows, page, maxPage, count, onPage }: { rows: OptionHistoryChainRow[]; page: number; maxPage: number; count: number; onPage: (page: number) => void }) {
