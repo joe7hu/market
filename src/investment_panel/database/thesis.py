@@ -12,6 +12,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.thesis_evidence import assessments_by_revision, thesis_source_evidence
 from investment_panel.database.thesis_history import with_revision_diffs
+from investment_panel.database.thesis_monitor_universe import monitored_thesis_rows
 
 
 THESIS_STALE_DAYS = 45
@@ -283,43 +284,7 @@ def thesis_monitor_payload(config: dict[str, Any]) -> dict[str, Any]:
 def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
-        rows = [dict(row) for row in connection.execute(
-            """
-            SELECT instrument.id AS instrument_id, instrument.symbol, thesis.id AS revision_id,
-                   thesis.revision, thesis.thesis, thesis.author_kind, thesis.change_rationale,
-                   thesis.last_assessed_at, thesis.last_human_reviewed_at, thesis.created_at,
-                   thesis.updated_at,
-                   (position.instrument_id IS NOT NULL) AS owned,
-                   (watch.instrument_id IS NOT NULL AND watch.watch_state <> 'excluded') AS watched,
-                   position.quantity, position.average_cost,
-                   quote.price AS latest_price, quote.observed_at AS latest_quote_at,
-                   catalyst.starts_at AS next_catalyst_at, catalyst.title AS next_catalyst,
-                   run.status AS latest_automation_status, run.error AS latest_automation_error,
-                   run.started_at AS latest_automation_started_at
-            FROM catalog.instrument instrument
-            LEFT JOIN app.thesis thesis ON thesis.instrument_id = instrument.id AND thesis.status = 'current'
-            LEFT JOIN app.portfolio_position position ON position.instrument_id = instrument.id
-            LEFT JOIN app.watchlist_item watch ON watch.instrument_id = instrument.id
-            LEFT JOIN LATERAL (
-                SELECT price, observed_at FROM raw.confirmed_quote quote
-                WHERE quote.instrument_id = instrument.id AND quote.available_at <= now()
-                ORDER BY observed_at DESC LIMIT 1
-            ) quote ON true
-            LEFT JOIN LATERAL (
-                SELECT starts_at, title FROM app.catalyst
-                WHERE instrument_id = instrument.id AND starts_at >= now()
-                ORDER BY starts_at ASC LIMIT 1
-            ) catalyst ON true
-            LEFT JOIN LATERAL (
-                SELECT status, error, started_at FROM app.thesis_automation_run
-                WHERE instrument_id = instrument.id ORDER BY started_at DESC LIMIT 1
-            ) run ON true
-            WHERE position.instrument_id IS NOT NULL
-               OR (watch.instrument_id IS NOT NULL AND watch.watch_state <> 'excluded')
-               OR thesis.id IS NOT NULL
-            ORDER BY instrument.symbol
-            """
-        ).fetchall()]
+        rows = monitored_thesis_rows(connection)
         evidence_by_symbol = thesis_source_evidence(connection, [str(row["symbol"]) for row in rows])
         assessments_by_revision_map = assessments_by_revision(connection, [row.get("revision_id") for row in rows])
     total_market_value = 0.0
@@ -423,10 +388,15 @@ def _thesis_monitor_row(
         "latest_source_evidence_at": _latest_observed_at(source_evidence),
         "evidence_newer_than_review": evidence_newer_than_review,
         "evidence_coverage_status": thesis.get("evidence_coverage_status") or ("covered" if source_evidence else "low"),
-        "status": thesis.get("lifecycle_status") or ("owned" if row["owned"] else "watched"),
+        "status": thesis.get("lifecycle_status") or (
+            "owned" if row["owned"] else "watched" if row["watched"] else "underwriting"
+        ),
         "owned": bool(row["owned"]),
         "watched": bool(row["watched"]),
-        "source": "theses" if core else "source_evidence" if source_evidence else "portfolio_watchlist",
+        "options_underwriting": bool(row.get("options_underwriting")),
+        "source": "theses" if core else "source_evidence" if source_evidence else (
+            "options_policy" if row.get("options_underwriting") else "portfolio_watchlist"
+        ),
         "stale_thesis": bool(stale_reason),
         "stale_reason": stale_reason,
         "contradiction_flags": flags,
@@ -464,7 +434,9 @@ def _priority(
     contradictions: list[dict[str, Any]],
 ) -> tuple[int, str, str]:
     owned = bool(row.get("owned"))
-    lane = "Owned Risk Exceptions" if owned else "Watchlist Underwriting Gaps"
+    lane = "Owned Risk Exceptions" if owned else (
+        "Options Underwriting Gaps" if row.get("options_underwriting") else "Watchlist Underwriting Gaps"
+    )
     if "invalidation_breached" in flags:
         base, reason = 100, "breached invalidation rule"
     elif contradictions:

@@ -29,14 +29,41 @@ def test_thesis_automation_low_evidence_activation(migrated_postgres_dsn: str, t
 
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("THIN"))
 
-    result = run_thesis_monitor.run(str(cfg), force=True)
+    result = run_thesis_monitor.run(str(cfg), symbols=["THIN"], force=True)
     rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
 
     assert result["completed"] == 1
-    assert rows[0]["symbol"] == "THIN"
-    assert rows[0]["confidence"] == "low"
-    assert rows[0]["evidence_coverage_status"] == "low"
-    assert rows[0]["author_kind"] == "ai"
+    thin = next(row for row in rows if row["symbol"] == "THIN")
+    assert thin["confidence"] == "low"
+    assert thin["evidence_coverage_status"] == "low"
+    assert thin["author_kind"] == "ai"
+
+
+def test_core_options_underwriting_symbol_is_monitored_without_watchlist_enrollment(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = runtime_for_config({"database": {"url": migrated_postgres_dsn}})
+    with runtime.transaction() as connection:
+        instrument_id = reconcile_instrument(connection, "THIN", name="THIN", category="option-history")
+        connection.execute(
+            """
+            INSERT INTO app.option_history_policy (
+                instrument_id, requested_state, effective_state, collection_tier,
+                cadence_minutes, publication_cap, provider, policy_revision
+            )
+            VALUES (%s, 'on', 'active', 'core', 15, 'PAPER_READY', 'robinhood', 'test')
+            """,
+            [instrument_id],
+        )
+
+    rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
+    thin = next(row for row in rows if row["symbol"] == "THIN")
+
+    assert thin["owned"] is False
+    assert thin["watched"] is False
+    assert thin["options_underwriting"] is True
+    assert thin["status"] == "underwriting"
+    assert thin["priority_lane"] == "Options Underwriting Gaps"
 
 
 def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
@@ -59,7 +86,7 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
 
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", fake_model)
 
-    result = run_thesis_monitor.run(str(cfg), force=True)
+    result = run_thesis_monitor.run(str(cfg), symbols=["HALL"], force=True)
     history = thesis_history({"database": {"url": migrated_postgres_dsn}}, "HALL")
 
     assert result["failed"] == 1
@@ -83,7 +110,7 @@ def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres
         lambda _request, **_kwargs: (_ for _ in ()).throw(OpenAIOptionAgentError("missing authentication")),
     )
 
-    result = run_thesis_monitor.run(str(cfg), force=True)
+    result = run_thesis_monitor.run(str(cfg), symbols=["PRES"], force=True)
     history = thesis_history(config, "PRES")
 
     assert result["failed"] == 1
@@ -96,8 +123,8 @@ def test_thesis_automation_debounces_material_event_runs(migrated_postgres_dsn: 
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("DBNC"))
 
-    first = run_thesis_monitor.run(str(cfg), trigger="material_event", force=False)
-    second = run_thesis_monitor.run(str(cfg), trigger="material_event", force=False)
+    first = run_thesis_monitor.run(str(cfg), symbols=["DBNC"], trigger="material_event", force=False)
+    second = run_thesis_monitor.run(str(cfg), symbols=["DBNC"], trigger="material_event", force=False)
 
     assert first["completed"] == 1
     assert second["skipped"] == 1
@@ -109,7 +136,7 @@ def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tm
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("THIN"))
 
-    result = run_thesis_monitor.run(str(cfg), force=True, dry_run=True)
+    result = run_thesis_monitor.run(str(cfg), symbols=["THIN"], force=True, dry_run=True)
 
     assert result["skipped"] == 1
     assert result["results"][0]["reason"] == "dry_run_valid"
@@ -158,6 +185,7 @@ def _cleanup_symbols(dsn: str) -> None:
         connection.execute("DELETE FROM app.thesis WHERE instrument_id = ANY(%s)", [instrument_ids])
         connection.execute("DELETE FROM app.thesis_automation_run WHERE instrument_id = ANY(%s)", [instrument_ids])
         connection.execute("DELETE FROM app.alert WHERE instrument_id = ANY(%s)", [instrument_ids])
+        connection.execute("DELETE FROM app.option_history_policy WHERE instrument_id = ANY(%s)", [instrument_ids])
         connection.execute("DELETE FROM app.watchlist_item WHERE instrument_id = ANY(%s)", [instrument_ids])
         connection.execute("DELETE FROM catalog.instrument WHERE id = ANY(%s)", [instrument_ids])
         connection.commit()

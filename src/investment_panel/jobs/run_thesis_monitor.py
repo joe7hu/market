@@ -266,6 +266,7 @@ def _request_payload(row: dict[str, Any], evidence: list[dict[str, Any]], *, pro
             "invalidation": row.get("invalidation"),
             "latest_price": row.get("latest_price"),
             "next_catalyst": row.get("next_catalyst"),
+            "options_underwriting": bool(row.get("options_underwriting")),
         },
         "evidence": evidence,
         "guardrails": {

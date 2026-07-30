@@ -19,13 +19,15 @@ from investment_panel.core.option_underwriting import (
     historical_payoff_statistics,
     paper_state,
     permitted_structures,
-    thesis_v2_blocker,
+    thesis_blocker,
+    underwriting_direction,
 )
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.options_history_v3_candidates import (
     candidate_leg,
     candidate_seed,
+    candidate_thesis_payload,
     decision_state,
     execution_confidence as calculate_execution_confidence,
     market_regime,
@@ -301,7 +303,7 @@ class OptionHistoryV3Materializer:
 
         long_structure = "long_call" if quote["option_type"] == "call" else "long_put"
         lane = "anomaly"
-        if thesis_v2_blocker(thesis) is None and long_structure in permitted_structures(str(thesis.get("direction"))):
+        if thesis_blocker(thesis) is None and long_structure in permitted_structures(underwriting_direction(thesis)):
             lane = "thesis"
         specs: list[tuple[str, list[dict[str, Any]]]] = [(long_structure, [candidate_leg(quote, "long")])]
         if lane == "thesis":
@@ -368,12 +370,7 @@ class OptionHistoryV3Materializer:
             "historical_paths": scenario, "calibration": calibration, "as_of": as_of.isoformat(),
             "computed_paper_state": state.get("computed_paper_state", state["paper_state"]),
             "effective_paper_state": state["paper_state"],
-            "thesis": {
-                "id": thesis.get("id") if thesis else None,
-                "revision": thesis.get("revision") if thesis else None,
-                "invalidation": thesis.get("invalidation") if thesis else None,
-                "horizon_date": thesis.get("horizon_date") if thesis else None,
-            },
+            "thesis": candidate_thesis_payload(thesis),
             "quote_package": quote_package(legs, as_of),
             "reassessment_date": str(quote.get("expiration") or "") or None,
         }

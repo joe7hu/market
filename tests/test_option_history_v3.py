@@ -17,6 +17,7 @@ from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_v3 import is_later_capture_cohort
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.thesis import save_thesis
 
 
 def _rows(option_type: str = "call") -> list[dict[str, object]]:
@@ -165,7 +166,20 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         ingestion = IngestionRepository(runtime)
         history = OptionHistoryRepository(runtime)
         ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
-        slot = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+        save_thesis(
+            {"database": {"url": migrated_postgres_dsn}},
+            "QQQ",
+            {
+                "thesis": "QQQ remains bullish while the current trend and breadth regime hold.",
+                "why": "Core QQQ options-underwriting benchmark.",
+                "direction": "long",
+                "horizon_date": "2026-08-21",
+                "invalidation_rules": [
+                    {"type": "price", "operator": "<=", "price": 480, "text": "QQQ closes below 480"},
+                ],
+            },
+        )
+        slot = datetime.now(UTC) + timedelta(minutes=1)
         finished_at = slot + timedelta(seconds=5)
         rows = [
             {
@@ -233,8 +247,10 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert candidate_payload["rows"][0]["legs"]
         assert candidate_payload["rows"][0]["conservative_entry"]["fill_basis"]
         assert "expected" in candidate_payload["rows"][0]["expected_value_interval"]
-        brief = OptionsDecisionSystemRepository(runtime).decision_brief(symbol="QQQ", lane="anomaly")
+        brief = OptionsDecisionSystemRepository(runtime).decision_brief(symbol="QQQ", lane="thesis")
         assert brief["readiness"]["analysis"]["eligible_groups"] >= 1
+        assert brief["readiness"]["thesis"]["eligible"] is True
+        assert brief["readiness"]["thesis"]["invalidation"] == "QQQ closes below 480"
         assert brief["strongest_candidate"] is not None
     finally:
         runtime.close()
@@ -327,6 +343,48 @@ def test_paper_state_requires_exact_gates_and_all_structures_can_watch() -> None
         calibration={"sample_size": 30, "lower_95_expectancy": 0.01, "brier_score": 0.2, "other_regime_monitoring_count": 5},
     )
     assert ready["paper_state"] == "PAPER_READY"
+
+
+def test_paper_state_accepts_canonical_v3_thesis_with_deterministic_risk_cap() -> None:
+    thesis = {
+        "schema_version": 3,
+        "direction": "long",
+        "horizon_date": "2026-08-20",
+        "lifecycle_status": "active",
+        "invalidation_rules": [
+            {"type": "price", "operator": "<=", "price": 480, "text": "QQQ closes below 480"},
+        ],
+    }
+
+    watch = paper_state(
+        structure="long_call",
+        lane="thesis",
+        thesis=thesis,
+        fit_status="succeeded",
+        scenario_count=20,
+        expected_value=1,
+        lower_95_expected_value=0.1,
+        max_loss=100,
+        data_confidence=0.9,
+        execution_confidence=0.8,
+    )
+    rejected = paper_state(
+        structure="long_call",
+        lane="thesis",
+        thesis=thesis,
+        fit_status="succeeded",
+        scenario_count=20,
+        expected_value=1,
+        lower_95_expected_value=0.1,
+        max_loss=600,
+        data_confidence=0.9,
+        execution_confidence=0.8,
+    )
+
+    assert watch["paper_state"] == "WATCH"
+    assert watch["reasons"] == ["exact_structure_regime_calibration_collecting"]
+    assert rejected["paper_state"] == "REJECT"
+    assert rejected["blockers"] == ["thesis_max_loss_exceeded"]
 
 
 def test_historical_payoff_statistics_is_seeded_and_never_uses_midpoint_entry() -> None:

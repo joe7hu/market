@@ -8,6 +8,8 @@ from math import sqrt
 from statistics import mean, pstdev
 from typing import Any
 
+from investment_panel.core.option_underwriting import thesis_invalidation
+
 
 def candidate_leg(quote: dict[str, Any], side: str) -> dict[str, Any]:
     bid_size, ask_size = quote.get("bid_size"), quote.get("ask_size")
@@ -78,3 +80,12 @@ def candidate_seed(generation_id: int, relative_value_id: int, structure: str) -
 
 def decision_state(value: str) -> str:
     return "READY" if value == "PAPER_READY" else "REJECTED" if value == "REJECT" else "WATCH"
+
+
+def candidate_thesis_payload(thesis: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "id": thesis.get("id") if thesis else None,
+        "revision": thesis.get("revision") if thesis else None,
+        "invalidation": thesis_invalidation(thesis),
+        "horizon_date": thesis.get("horizon_date") if thesis else None,
+    }

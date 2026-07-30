@@ -11,6 +11,7 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrage_findings
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
+from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
@@ -571,9 +572,9 @@ def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[
         },
         "analysis": analysis,
         "thesis": {
-            "eligible": bool(thesis_payload.get("schema_version") == 2 and thesis_payload.get("invalidation")),
+            "eligible": thesis_blocker(thesis_payload) is None,
             "revision": thesis_payload.get("revision") or _revision(thesis["updated_at"] if thesis else None),
-            "invalidation": thesis_payload.get("invalidation"),
+            "invalidation": thesis_invalidation(thesis_payload),
         },
         "calibration": calibration,
         "canary": {
@@ -628,8 +629,8 @@ def _next_action(analysis: dict[str, int], thesis: dict[str, Any], canary: dict[
         return "collect_post_fix_complete_capture"
     if analysis["eligible_groups"] == 0:
         return "restore_eligible_fresh_quote_groups"
-    if not (thesis.get("schema_version") == 2 and thesis.get("invalidation")):
-        return "create_or_update_qqq_thesis_v2"
+    if thesis_blocker(thesis) is not None:
+        return "create_or_update_qqq_thesis"
     if int(canary["qualified_regular_sessions"]) < int(canary["required_regular_sessions"]):
         return "complete_five_qualified_post_fix_sessions"
     return "collect_exact_structure_mature_outcomes"

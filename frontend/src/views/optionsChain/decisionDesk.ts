@@ -62,11 +62,11 @@ export function decisionPresentation(brief: OptionsDecisionBrief): DecisionPrese
   if (!brief.readiness.thesis.eligible) {
     return {
       eyebrow: "Current verdict",
-      title: "No trade — QQQ thesis required",
-      detail: "The chain and model are producing evidence, but the system will not underwrite a directional option without a current thesis and explicit invalidation.",
+      title: "No trade — QQQ thesis pending",
+      detail: "Canonical Thesis Monitor maintains this automatically from independent QQQ evidence. Underwriting waits for its direction, horizon, and explicit invalidation.",
       tone: "warn",
       action: "thesis",
-      actionLabel: "Create or update QQQ thesis",
+      actionLabel: "Open QQQ thesis monitor",
     };
   }
   if (canaryRemaining > 0) {

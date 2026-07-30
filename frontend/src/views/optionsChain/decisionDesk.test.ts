@@ -27,7 +27,7 @@ function brief(overrides: Partial<OptionsDecisionBrief> = {}): OptionsDecisionBr
         disqualification_reasons: [],
       },
       top_blockers: [],
-      next_required_action: "create_or_update_qqq_thesis_v2",
+      next_required_action: "create_or_update_qqq_thesis",
     },
     strongest_candidate: null,
     paper_only: true,
@@ -38,8 +38,9 @@ function brief(overrides: Partial<OptionsDecisionBrief> = {}): OptionsDecisionBr
 describe("decision desk presentation", () => {
   it("turns a generic collecting state into the actual next decision", () => {
     const result = decisionPresentation(brief());
-    expect(result.title).toBe("No trade — QQQ thesis required");
+    expect(result.title).toBe("No trade — QQQ thesis pending");
     expect(result.action).toBe("thesis");
+    expect(result.actionLabel).toBe("Open QQQ thesis monitor");
   });
 
   it("shows the canary gap after the thesis gate is satisfied", () => {

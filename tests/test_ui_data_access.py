@@ -857,7 +857,7 @@ def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) ->
         },
     )
     history = data_access.thesis_history(config, "tsla")
-    row = data_access.thesis_monitor_rows(config)[0]
+    row = next(row for row in data_access.thesis_monitor_rows(config) if row["symbol"] == "TSLA")
 
     assert first["revision"] == 1
     assert second["revision"] == 2

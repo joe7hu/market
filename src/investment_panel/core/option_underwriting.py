@@ -17,22 +17,62 @@ from typing import Any, Literal
 
 PaperState = Literal["COLLECTING", "WATCH", "PAPER_READY", "REJECT"]
 STRUCTURES = ("long_call", "long_put", "call_debit_spread", "put_debit_spread")
+DEFAULT_MAX_ONE_UNIT_PAPER_LOSS = 500.0
+
+
+def thesis_blocker(thesis: dict[str, Any] | None) -> str | None:
+    if not thesis or int(thesis.get("schema_version") or 1) not in {2, 3}:
+        return "thesis_upgrade_required"
+    if str(thesis.get("lifecycle_status") or "active").lower() in {"invalidated", "closed"}:
+        return "thesis_inactive"
+    if underwriting_direction(thesis) is None:
+        return "thesis_direction_required"
+    if not thesis.get("horizon_date") or not thesis_invalidation(thesis):
+        return "thesis_incomplete"
+    if thesis_risk_limit(thesis) is None:
+        return "thesis_max_loss_required"
+    return None
 
 
 def thesis_v2_blocker(thesis: dict[str, Any] | None) -> str | None:
-    if not thesis or int(thesis.get("schema_version") or 1) != 2:
-        return "thesis_upgrade_required"
-    direction = thesis.get("direction")
-    if direction not in {"bullish", "bearish"}:
-        return "thesis_direction_required"
-    if not thesis.get("horizon_date") or not str(thesis.get("invalidation") or "").strip():
-        return "thesis_v2_incomplete"
-    try:
-        if float(thesis.get("max_loss")) <= 0:
-            return "thesis_max_loss_required"
-    except (TypeError, ValueError):
-        return "thesis_max_loss_required"
+    """Compatibility alias for callers migrating to the canonical thesis gate."""
+
+    return thesis_blocker(thesis)
+
+
+def underwriting_direction(thesis: dict[str, Any] | None) -> str | None:
+    direction = str((thesis or {}).get("direction") or "").lower()
+    if direction in {"bullish", "long"}:
+        return "bullish"
+    if direction in {"bearish", "short"}:
+        return "bearish"
     return None
+
+
+def thesis_invalidation(thesis: dict[str, Any] | None) -> str:
+    if not thesis:
+        return ""
+    direct = str(thesis.get("invalidation") or "").strip()
+    if direct:
+        return direct
+    rules = thesis.get("invalidation_rules")
+    if not isinstance(rules, list):
+        return ""
+    return " · ".join(
+        str(rule.get("text") or "").strip()
+        for rule in rules
+        if isinstance(rule, dict) and str(rule.get("text") or "").strip()
+    )
+
+
+def thesis_risk_limit(thesis: dict[str, Any] | None) -> float | None:
+    if not thesis:
+        return None
+    try:
+        explicit = float(thesis.get("max_loss"))
+        return explicit if explicit > 0 else None
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ONE_UNIT_PAPER_LOSS if int(thesis.get("schema_version") or 1) == 3 else None
 
 
 def permitted_structures(direction: str | None) -> tuple[str, ...]:
@@ -71,15 +111,16 @@ def paper_state(
         return {"paper_state": "REJECT", "reasons": [], "blockers": sorted(set(terminal))}
     if lane == "anomaly" and thesis is None:
         return {"paper_state": "WATCH", "reasons": ["research_evidence_only"], "blockers": ["thesis_upgrade_required"]}
-    thesis_blocker = thesis_v2_blocker(thesis)
-    if thesis_blocker:
-        return {"paper_state": "WATCH", "reasons": ["thesis_required_for_underwriting"], "blockers": [thesis_blocker]}
+    active_thesis_blocker = thesis_blocker(thesis)
+    if active_thesis_blocker:
+        return {"paper_state": "WATCH", "reasons": ["thesis_required_for_underwriting"], "blockers": [active_thesis_blocker]}
     assert thesis is not None
     if scenario_count < 20:
         return {"paper_state": "COLLECTING", "reasons": ["independent_return_samples_collecting"], "blockers": []}
-    if structure not in permitted_structures(str(thesis.get("direction"))):
+    if structure not in permitted_structures(underwriting_direction(thesis)):
         return {"paper_state": "REJECT", "reasons": [], "blockers": ["structure_thesis_direction_mismatch"]}
-    if max_loss is None or max_loss > float(thesis["max_loss"]):
+    risk_limit = thesis_risk_limit(thesis)
+    if max_loss is None or risk_limit is None or max_loss > risk_limit:
         return {"paper_state": "REJECT", "reasons": [], "blockers": ["thesis_max_loss_exceeded"]}
     if expected_value is None or lower_95_expected_value is None or expected_value <= 0 or lower_95_expected_value <= 0:
         return {"paper_state": "REJECT", "reasons": [], "blockers": ["nonpositive_expected_value_lower_bound"]}

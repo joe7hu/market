@@ -26,6 +26,7 @@ export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: Pane
   const cards = viewModel.monitorRows.filter(matchesFocus);
   const ownedRisk = viewModel.ownedRisk.filter(matchesFocus);
   const watchlistGaps = viewModel.watchlistGaps.filter(matchesFocus);
+  const optionsUnderwriting = viewModel.optionsUnderwriting.filter(matchesFocus);
   const current = viewModel.current.filter(matchesFocus);
 
   return (
@@ -43,9 +44,10 @@ export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: Pane
         </div>
       ) : null}
 
-      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <MetricTile label="Owned Risk" value={ownedRisk.length} caption="owned exceptions" tone={ownedRisk.length ? "bad" : "good"} />
         <MetricTile label="Watch Gaps" value={watchlistGaps.length} caption="underwriting gaps" tone={watchlistGaps.length ? "warn" : "good"} />
+        <MetricTile label="Options Core" value={optionsUnderwriting.length} caption="underwriting theses" tone={optionsUnderwriting.length ? "warn" : "good"} />
         <MetricTile label="Active V3" value={viewModel.monitorRows.filter((row) => booleanField(row, ["has_active_revision"])).length} caption={`${viewModel.monitorRows.length} monitored`} tone="info" />
         <MetricTile label="Contradictions" value={viewModel.contradictions.length} caption="evidence conflicts" tone={viewModel.contradictions.length ? "bad" : "good"} />
         <MetricTile label="Invalidation Rules" value={viewModel.monitorRows.filter((row) => numberField(row, ["invalidation_rule_count"], 0) > 0).length} caption="covered names" tone="info" />
@@ -55,6 +57,7 @@ export function ThesisMonitorPage({ data, onOpenTicker, onReload }: { data: Pane
         <div className="space-y-5">
           <LaneSection title="Owned Risk Exceptions" rows={ownedRisk} empty="No owned thesis exceptions." onOpenTicker={onOpenTicker} onViewFeed={viewFeed} onReload={onReload} />
           <LaneSection title="Watchlist Underwriting Gaps" rows={watchlistGaps} empty="No watchlist underwriting gaps." onOpenTicker={onOpenTicker} onViewFeed={viewFeed} onReload={onReload} />
+          <LaneSection title="Options Underwriting Gaps" rows={optionsUnderwriting} empty="No core options-underwriting thesis gaps." onOpenTicker={onOpenTicker} onViewFeed={viewFeed} onReload={onReload} />
           <CurrentSection rows={current} onOpenTicker={onOpenTicker} />
         </div>
       ) : (

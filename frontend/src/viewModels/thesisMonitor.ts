@@ -10,6 +10,7 @@ export type ThesisMonitorViewModel = {
   thesisRows: RowRecord[];
   ownedRisk: RowRecord[];
   watchlistGaps: RowRecord[];
+  optionsUnderwriting: RowRecord[];
   current: RowRecord[];
   needsReview: RowRecord[];
   incomplete: RowRecord[];
@@ -35,6 +36,7 @@ export function buildThesisMonitorViewModel(data: PanelData): ThesisMonitorViewM
     thesisRows: rows(data.theses),
     ownedRisk: monitorRows.filter((row) => textField(row, ["priority_lane"]) === "Owned Risk Exceptions"),
     watchlistGaps: monitorRows.filter((row) => textField(row, ["priority_lane"]) === "Watchlist Underwriting Gaps"),
+    optionsUnderwriting: monitorRows.filter((row) => textField(row, ["priority_lane"]) === "Options Underwriting Gaps"),
     current: monitorRows.filter((row) => !booleanField(row, ["needs_review"])),
     needsReview,
     // Incomplete: a structured field has never been authored.
