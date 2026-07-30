@@ -13,6 +13,7 @@ from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrag
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
 from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.options_decision_readiness import next_required_action
 from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
 from investment_panel.database.options_decision_verification import candidate_finding, same_finding_identity
@@ -558,6 +559,7 @@ def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[
         "succeeded_groups": int(summary.get("succeeded_groups") or 0),
         "solver_failures": int(summary.get("solver_failures") or 0),
     }
+    active_thesis_blocker = thesis_blocker(thesis_payload)
     return {
         "capture": {
             "capture_state": capture["capture_state"] if capture else None,
@@ -572,8 +574,11 @@ def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[
         },
         "analysis": analysis,
         "thesis": {
-            "eligible": thesis_blocker(thesis_payload) is None,
+            "eligible": active_thesis_blocker is None,
+            "present": bool(thesis),
             "revision": thesis_payload.get("revision") or _revision(thesis["updated_at"] if thesis else None),
+            "direction": thesis_payload.get("direction"),
+            "blocker": active_thesis_blocker,
             "invalidation": thesis_invalidation(thesis_payload),
         },
         "calibration": calibration,
@@ -586,7 +591,7 @@ def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[
             "disqualification_reasons": list(canary["disqualification_reasons"]),
         },
         "top_blockers": top_blockers,
-        "next_required_action": _next_action(analysis, thesis_payload, canary),
+        "next_required_action": next_required_action(analysis, thesis_payload, canary),
     }
 
 
@@ -595,7 +600,10 @@ def _empty_readiness() -> dict[str, Any]:
         "capture": {"capture_state": None, "completeness": None, "capture_generation_id": None, "complete_captures": 0},
         "underlying": {"group_count": 0, "groups_with_missing_underlying": 0, "groups_with_inconsistent_underlying": 0},
         "analysis": {"eligible_groups": 0, "fit_attempts": 0, "succeeded_groups": 0, "solver_failures": 0},
-        "thesis": {"eligible": False, "revision": None, "invalidation": None},
+        "thesis": {
+            "eligible": False, "present": False, "revision": None,
+            "direction": None, "blocker": "thesis_upgrade_required", "invalidation": None,
+        },
         "calibration": [],
         "canary": {
             "observed_regular_session_dates": 0, "qualified_regular_sessions": 0,
@@ -622,18 +630,6 @@ def _calibration_readiness(row: dict[str, Any]) -> dict[str, Any]:
         "mature_outcomes": sample_size, "lower_95_expectancy": _number(calibration.get("lower_95_expectancy")),
         "brier_score": _number(calibration.get("brier_score")), "missing_prerequisites": missing,
     }
-
-
-def _next_action(analysis: dict[str, int], thesis: dict[str, Any], canary: dict[str, Any]) -> str:
-    if int(canary["post_fix_complete_captures"]) == 0:
-        return "collect_post_fix_complete_capture"
-    if analysis["eligible_groups"] == 0:
-        return "restore_eligible_fresh_quote_groups"
-    if thesis_blocker(thesis) is not None:
-        return "create_or_update_qqq_thesis"
-    if int(canary["qualified_regular_sessions"]) < int(canary["required_regular_sessions"]):
-        return "complete_five_qualified_post_fix_sessions"
-    return "collect_exact_structure_mature_outcomes"
 
 
 def _journal_payload(row: dict[str, Any]) -> dict[str, Any]:

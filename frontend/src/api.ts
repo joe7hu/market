@@ -106,7 +106,14 @@ export type OptionsDecisionReadiness = {
   capture: { capture_state: string | null; completeness: number | null; capture_generation_id: number | null; complete_captures: number };
   underlying: { group_count: number; groups_with_missing_underlying: number; groups_with_inconsistent_underlying: number };
   analysis: { eligible_groups: number; fit_attempts: number; succeeded_groups: number; solver_failures: number };
-  thesis: { eligible: boolean; revision: string | null; invalidation: string | null };
+  thesis: {
+    eligible: boolean;
+    present?: boolean;
+    revision: string | null;
+    direction?: string | null;
+    blocker?: string | null;
+    invalidation: string | null;
+  };
   calibration: Array<{ structure: string; market_regime: string | null; model_revision: string; mature_outcomes: number; lower_95_expectancy: number | null; brier_score: number | null; missing_prerequisites: string[] }>;
   canary: { observed_regular_session_dates: number; qualified_regular_sessions: number; required_regular_sessions: number; canary_revision: string; canary_started_at: string | null; disqualification_reasons: Array<{ reason: string; count: number }> };
   top_blockers: Array<{ blocker: string; count: number }>;

@@ -252,6 +252,25 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert brief["readiness"]["thesis"]["eligible"] is True
         assert brief["readiness"]["thesis"]["invalidation"] == "QQQ closes below 480"
         assert brief["strongest_candidate"] is not None
+        save_thesis(
+            {"database": {"url": migrated_postgres_dsn}},
+            "QQQ",
+            {
+                "thesis": "QQQ is range-bound pending a decisive macro or breadth signal.",
+                "why": "Core QQQ options-underwriting benchmark.",
+                "direction": "neutral",
+                "horizon_date": "2026-12-31",
+                "invalidation_rules": [
+                    {"type": "time", "text": "Reassess when independent directional evidence improves."},
+                ],
+            },
+        )
+        neutral_brief = OptionsDecisionSystemRepository(runtime).decision_brief(symbol="QQQ", lane="thesis")
+        assert neutral_brief["readiness"]["thesis"]["eligible"] is False
+        assert neutral_brief["readiness"]["thesis"]["present"] is True
+        assert neutral_brief["readiness"]["thesis"]["direction"] == "neutral"
+        assert neutral_brief["readiness"]["thesis"]["blocker"] == "thesis_direction_required"
+        assert neutral_brief["readiness"]["next_required_action"] == "wait_for_directional_qqq_thesis"
     finally:
         runtime.close()
 

@@ -59,6 +59,20 @@ export function decisionPresentation(brief: OptionsDecisionBrief): DecisionPrese
       actionLabel: "Review paper record",
     };
   }
+  if (
+    !brief.readiness.thesis.eligible
+    && brief.readiness.thesis.present
+    && brief.readiness.thesis.blocker === "thesis_direction_required"
+  ) {
+    return {
+      eyebrow: "Current verdict",
+      title: "No trade — QQQ thesis is neutral",
+      detail: "The automatic thesis has no directional edge, so calls and puts stay gated. Thesis Monitor will reassess when independent evidence changes.",
+      tone: "muted",
+      action: "thesis",
+      actionLabel: "Review QQQ thesis",
+    };
+  }
   if (!brief.readiness.thesis.eligible) {
     return {
       eyebrow: "Current verdict",

@@ -208,10 +208,16 @@ function TradeDesk({ brief, workspace, thesis, anomaly, snapshots, onEvidence, o
 
 function GateStack({ brief }: { brief: OptionsDecisionBrief }) {
   const { readiness } = brief;
+  const neutralThesis = readiness.thesis.present && readiness.thesis.blocker === "thesis_direction_required";
   const gates = [
     { label: "Capture", value: readiness.capture.capture_state === "complete" ? "Complete" : "Open", detail: `${readiness.capture.complete_captures} complete generations`, done: readiness.capture.capture_state === "complete" },
     { label: "Model fit", value: `${readiness.analysis.succeeded_groups}/${readiness.analysis.fit_attempts}`, detail: `${readiness.analysis.solver_failures} solver failures`, done: readiness.analysis.fit_attempts > 0 && readiness.analysis.succeeded_groups === readiness.analysis.fit_attempts },
-    { label: "QQQ thesis", value: readiness.thesis.eligible ? readiness.thesis.revision ?? "Eligible" : "Required", detail: readiness.thesis.invalidation ?? "Directional view and invalidation missing", done: readiness.thesis.eligible },
+    {
+      label: "QQQ thesis",
+      value: readiness.thesis.eligible ? readiness.thesis.revision ?? "Eligible" : neutralThesis ? "Neutral" : "Pending",
+      detail: readiness.thesis.invalidation ?? "Automatic directional view and invalidation pending",
+      done: readiness.thesis.eligible,
+    },
     { label: "Canary", value: `${readiness.canary.qualified_regular_sessions}/${readiness.canary.required_regular_sessions}`, detail: readiness.canary.qualified_regular_sessions >= readiness.canary.required_regular_sessions ? "Reliability gate complete" : "Qualified regular sessions", done: readiness.canary.qualified_regular_sessions >= readiness.canary.required_regular_sessions },
   ];
   return <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
@@ -244,10 +250,20 @@ function BlockerBoard({ brief }: { brief: OptionsDecisionBrief }) {
 
 function NextMove({ brief, snapshots, onEvidence }: { brief: OptionsDecisionBrief; snapshots: OptionHistorySnapshot[]; onEvidence: () => void }) {
   const thesisMissing = !brief.readiness.thesis.eligible;
+  const neutralThesis = brief.readiness.thesis.present && brief.readiness.thesis.blocker === "thesis_direction_required";
   return <aside className="rounded-xl border border-border bg-card p-4 sm:p-5">
     <SectionTitle icon={<ArrowRight className="size-4" />} title="Expert workflow" detail="Resolve the first open decision gate; do not browse tabs hoping a trade appears." />
     <ol className="mt-4 space-y-4">
-      <WorkflowStep number="01" title={thesisMissing ? "Write the directional thesis" : "Thesis is current"} detail={thesisMissing ? "Define the expected QQQ move, time horizon, catalyst, and price-based invalidation." : brief.readiness.thesis.invalidation ?? "A valid thesis revision is attached."} done={!thesisMissing} />
+      <WorkflowStep
+        number="01"
+        title={neutralThesis ? "Wait for directional evidence" : thesisMissing ? "Run the automatic thesis monitor" : "Thesis is current"}
+        detail={neutralThesis
+          ? "The current automatic thesis is neutral. Do not force a directional options trade; the monitor will reassess new independent evidence."
+          : thesisMissing
+            ? "Canonical Thesis Monitor owns the QQQ direction, horizon, catalyst, and invalidation."
+            : brief.readiness.thesis.invalidation ?? "A valid thesis revision is attached."}
+        done={!thesisMissing}
+      />
       <WorkflowStep number="02" title="Check execution-quality evidence" detail={`${brief.readiness.analysis.eligible_groups} eligible model groups from the latest complete capture. Inspect spread, OI, quote age, and skew.`} done={brief.readiness.analysis.succeeded_groups > 0} />
       <WorkflowStep number="03" title="Wait for a qualified setup" detail="A paper action appears only after thesis, canary, calibration, and conservative re-quote gates all clear." done={brief.state === "PAPER_READY"} />
     </ol>

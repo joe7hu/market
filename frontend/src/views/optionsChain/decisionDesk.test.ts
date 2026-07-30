@@ -27,7 +27,7 @@ function brief(overrides: Partial<OptionsDecisionBrief> = {}): OptionsDecisionBr
         disqualification_reasons: [],
       },
       top_blockers: [],
-      next_required_action: "create_or_update_qqq_thesis",
+      next_required_action: "run_qqq_thesis_monitor",
     },
     strongest_candidate: null,
     paper_only: true,
@@ -47,6 +47,21 @@ describe("decision desk presentation", () => {
     const current = brief();
     current.readiness.thesis = { eligible: true, revision: "v2", invalidation: "QQQ closes below support" };
     expect(decisionPresentation(current).title).toBe("Wait — 1 qualified session remaining");
+  });
+
+  it("treats an automated neutral thesis as an intentional no-trade view", () => {
+    const current = brief();
+    current.readiness.thesis = {
+      eligible: false,
+      present: true,
+      revision: "1",
+      direction: "neutral",
+      blocker: "thesis_direction_required",
+      invalidation: "Reassess when directional evidence improves",
+    };
+    const result = decisionPresentation(current);
+    expect(result.title).toBe("No trade — QQQ thesis is neutral");
+    expect(result.detail).toContain("Thesis Monitor will reassess");
   });
 
   it("humanizes blocker codes and reads numeric funnel fields", () => {
