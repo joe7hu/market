@@ -1,4 +1,4 @@
-import { Archive, ArrowRight, BookOpenCheck, FlaskConical, Microscope } from "lucide-react";
+import { ArrowRight, BookOpenCheck, FlaskConical, Microscope } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { OptionsDecisionBrief, OptionsLearningProgress, OptionsPaperJournalRow } from "@/api";
@@ -51,7 +51,7 @@ export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount,
       <div className="mt-3 divide-y divide-border">{journal.map((row) => <JournalRow key={row.paper_order_id ?? row.decision_id} row={row} />)}</div>
     </section> : null}
 
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(20rem,0.9fr)]">
+    <div className={learning.length ? "grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(20rem,0.9fr)]" : ""}>
       <section className="rounded-xl border border-sky-500/25 bg-sky-500/[0.04] p-4 sm:p-5">
         <Heading icon={<Microscope className="size-4" />} title="Research mechanics" detail="A compact health check for forecast marking—not a trade list or performance record." />
         <dl className="mt-4 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-sky-500/20 bg-sky-500/20">
@@ -65,22 +65,12 @@ export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount,
             <div className="mt-2 divide-y divide-sky-500/15">{model.visibleExperiments.map((row) => <ShadowRow key={row.shadow_id ?? row.decision_id} row={row} />)}</div>
           </details>
           : <Empty text="No current-model research experiment is active. The system will add one only when a candidate is worth tracking." />}
-        {model.legacyArchived > 0 ? <details className="mt-4 rounded-lg border border-border bg-background/60 p-3 text-xs">
-          <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground hover:text-foreground">
-            <Archive className="size-4" /> {model.legacyArchived.toLocaleString()} pre-v3 observations archived
-          </summary>
-          <p className="mt-2 leading-5 text-muted-foreground">
-            These preserve historical audit truth but used the retired thesis contract. They are hidden from the current tape and never describe today&apos;s readiness.
-          </p>
-        </details> : null}
       </section>
 
-      <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+      {learning.length ? <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
         <Heading icon={<FlaskConical className="size-4" />} title="Validated cohorts" detail="Exact structure × regime × model groups built from staged paper trades only." />
-        {learning.length
-          ? <div className="mt-4 divide-y divide-border">{learning.map((row) => <LearningRow key={`${row.structure}-${row.market_regime}-${row.model_revision}`} row={row} />)}</div>
-          : <Empty text="No cohort yet. This section will compare expectancy, drawdown, and calibration after staged paper outcomes exist." />}
-      </section>
+        <div className="mt-4 divide-y divide-border">{learning.map((row) => <LearningRow key={`${row.structure}-${row.market_regime}-${row.model_revision}`} row={row} />)}</div>
+      </section> : null}
     </div>
   </div>;
 }
