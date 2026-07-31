@@ -142,6 +142,10 @@ analysis:
   # paper-only; it does not submit broker orders.
   options_decision_system:
     mode: paper
+    options_paper_actions_enabled: false
+    # Required sizing authority. Leave unset until Joe chooses the capital
+    # dedicated to options; missing authority always produces quantity zero.
+    options_risk_sleeve_capital:
 
 # Live opencli research ingestion (X/social, news, blogs). Cadence env knobs in
 # app/scheduler.py: MARKET_SOCIAL_REFRESH_SECONDS (default 1800),

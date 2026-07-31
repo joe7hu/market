@@ -183,7 +183,8 @@ DIRECT_QUERIES: dict[str, str] = {
                evaluation.verdict, evaluation.metrics, evaluation.evidence AS raw
         FROM analysis.strategy_evaluation evaluation
         JOIN analysis.strategy_revision strategy ON strategy.id = evaluation.strategy_revision_id
-        WHERE evaluation.evaluation_type = 'backtest' ORDER BY evaluation.evaluated_at DESC
+        WHERE evaluation.evaluation_type = 'backtest'
+        ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
     """,
     "strategy_forward_test_result": """
         SELECT evaluation.id::text, strategy.strategy_key AS strategy_version,
@@ -192,7 +193,7 @@ DIRECT_QUERIES: dict[str, str] = {
         FROM analysis.strategy_evaluation evaluation
         JOIN analysis.strategy_revision strategy ON strategy.id = evaluation.strategy_revision_id
         WHERE evaluation.evaluation_type IN ('forward_test', 'forward_shadow_test', 'shadow')
-        ORDER BY evaluation.evaluated_at DESC
+        ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
     """,
     "quotes": """
         SELECT DISTINCT ON (instrument.id) instrument.symbol, quote.observed_at,
@@ -366,7 +367,7 @@ DIRECT_QUERIES: dict[str, str] = {
         FROM analysis.option_outcome outcome
         JOIN analysis.decision decision ON decision.id = outcome.decision_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        ORDER BY outcome.observed_through DESC
+        ORDER BY outcome.observed_through DESC, decision.id DESC
     """,
     "candidate_event_attribution": """
         SELECT decision.id::text AS candidate_event_id, decision.id::text AS event_id,
@@ -382,7 +383,7 @@ DIRECT_QUERIES: dict[str, str] = {
         FROM analysis.option_outcome outcome
         JOIN analysis.decision decision ON decision.id = outcome.decision_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-        ORDER BY outcome.observed_through DESC
+        ORDER BY outcome.observed_through DESC, decision.id DESC
     """,
     "option_attribution": """
         SELECT decision.id::text AS candidate_event_id, decision.id::text AS event_id,
@@ -404,7 +405,8 @@ DIRECT_QUERIES: dict[str, str] = {
         SELECT NULL::text AS strategy_version, NULL::integer AS bin_index WHERE false
     """,
     "strategy_cohort_result": """
-        SELECT strategy.strategy_key AS strategy_version, decision.state,
+        SELECT coalesce(strategy.strategy_key, '') || ':' || decision.state AS stable_key,
+               strategy.strategy_key AS strategy_version, decision.state,
                count(*) AS n, count(*) FILTER (WHERE outcome.maturity_state <> 'observing') AS mature_n,
                avg((outcome.time_to_2x_days IS NOT NULL)::integer) AS realized_p2x,
                avg((outcome.time_to_5x_days IS NOT NULL)::integer) AS realized_p5x,
@@ -414,7 +416,7 @@ DIRECT_QUERIES: dict[str, str] = {
         JOIN analysis.decision decision ON decision.id = outcome.decision_id
         JOIN analysis.run run ON run.id = decision.run_id
         LEFT JOIN analysis.strategy_revision strategy ON strategy.id = decision.strategy_revision_id
-        WHERE run.feature_versions->>'option' = 'option-professional-v2'
+        WHERE run.feature_versions->>'option' = 'option-professional-v3-ticket'
           AND decision.state <> 'REJECTED'
         GROUP BY strategy.strategy_key, decision.state
         ORDER BY strategy.strategy_key, decision.state
@@ -458,7 +460,7 @@ DIRECT_QUERIES: dict[str, str] = {
                task.status, task.request, task.result AS raw, task.validation
         FROM analysis.agent_task task
         WHERE task.task_kind = 'strategy_mutation_proposal'
-        ORDER BY task.created_at DESC
+        ORDER BY task.created_at DESC, task.id DESC
     """,
     "missed_winner_event": """
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
@@ -472,8 +474,8 @@ DIRECT_QUERIES: dict[str, str] = {
         JOIN analysis.run run ON run.id = decision.run_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         WHERE outcome.peak_return >= 4 AND decision.state NOT IN ('FIRE', 'READY')
-          AND run.feature_versions->>'option' = 'option-professional-v2'
-        ORDER BY outcome.peak_return DESC
+          AND run.feature_versions->>'option' = 'option-professional-v3-ticket'
+        ORDER BY outcome.peak_return DESC, decision.id DESC
     """,
     "radar_state_transition": """
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
@@ -563,6 +565,10 @@ def load_postgres_tables(
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
     tables = _published_tables(runtime, requested)
+    if {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
+        from investment_panel.database.option_ticket_read import reconcile_loaded_radar_tables
+
+        reconcile_loaded_radar_tables(runtime, tables, config)
     intelligence_models = {
         "portfolio",
         "portfolio_summary", "portfolio_performance", "portfolio_transactions",
@@ -655,6 +661,8 @@ def load_postgres_tables(
         "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata
+
+
 
 
 def _published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,10 @@ from investment_panel.database.options_decision_system import OptionsDecisionSys
 from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
+from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
+from investment_panel.core.decision import is_market_open
+from investment_panel.database.options_risk_context import option_risk_contexts
+from investment_panel.database.option_ticket_read import revalidate_published_tickets
 
 
 def _decision_mode(config: Any) -> str:
@@ -33,6 +38,16 @@ def _paper_actions_enabled(config: Any) -> bool:
         return bool(raw.get("options_paper_actions_enabled", False))
     raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_paper_actions_enabled", False)
     return bool(raw)
+
+
+def _options_risk_sleeve_capital(config: Any) -> float | None:
+    if isinstance(config, dict):
+        raw = (config.get("analysis") or {}).get("options_decision_system", {})
+        value = raw.get("options_risk_sleeve_capital")
+    else:
+        raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_risk_sleeve_capital", None)
+        value = raw
+    return float(value) if value is not None and float(value) > 0 else None
 
 
 def _robinhood_config(config: Any) -> Any:
@@ -56,7 +71,10 @@ class OptionsActions:
         self.actions = ActionRepository(self.runtime)
         self.agents = AgentRepository(self.runtime)
         self.analysis = AnalysisRepository(self.runtime)
-        self.history = OptionHistoryRepository(self.runtime)
+        self.history = OptionHistoryRepository(
+            self.runtime,
+            options_risk_sleeve_capital=_options_risk_sleeve_capital(config),
+        )
         self.policy = OptionHistoryPolicyRepository(self.runtime)
         mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
@@ -107,7 +125,21 @@ class OptionsActions:
         return result
 
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
-        return self.decision_system.decision_brief(**filters)
+        payload = self.decision_system.decision_brief(**filters)
+        if payload.get("strongest_candidate"):
+            current_candidate = self._with_ticket(
+                dict(payload["strongest_candidate"]),
+                symbol=str(payload.get("symbol") or filters.get("symbol") or "QQQ"),
+                evaluated_at=payload.get("as_of"),
+            )
+            payload["strongest_candidate"] = current_candidate
+            payload["state"] = current_candidate["paper_state"]
+            payload["summary"] = {
+                **dict(payload.get("summary") or {}),
+                "current_ticket_state": current_candidate["ticket"]["state"],
+                "current_required_next_action": current_candidate["ticket"]["required_next_action"],
+            }
+        return payload
 
     def workspace(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.workspace(**filters)
@@ -120,7 +152,11 @@ class OptionsActions:
         return payload
 
     def candidates(self, **filters: Any) -> dict[str, Any]:
-        return self.decision_system.candidates(**filters)
+        payload = self.decision_system.candidates(**filters)
+        symbol = str(filters.get("symbol") or "QQQ")
+        payload["items"] = [self._with_ticket(dict(row), symbol=symbol, evaluated_at=payload.get("as_of")) for row in payload["items"]]
+        payload["rows"] = payload["items"]
+        return payload
 
     def relative_values(self, **filters: Any) -> dict[str, Any]:
         return self.decision_system.relative_values(**filters)
@@ -147,7 +183,14 @@ class OptionsActions:
         return self.decision_system.verification_result(candidate_id, client)
 
     def signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
-        return self.analysis.option_signal_detail(decision_id)
+        detail = self.analysis.option_signal_detail(decision_id)
+        if detail is None:
+            return None
+        return revalidate_published_tickets(
+            self.runtime,
+            [detail],
+            sleeve_capital=_options_risk_sleeve_capital(self.config),
+        )[0]
 
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
         mode = _decision_mode(self.config)
@@ -158,9 +201,57 @@ class OptionsActions:
         return self.actions.stage_option_paper_entry(
             decision_id=decision_id,
             idempotency_key=payload.get("idempotency_key"),
-            expected_contract_version=payload.get("expected_contract_version"),
+            ticket_version=payload.get("ticket_version"),
+            quantity=payload.get("quantity"),
             limit_price=payload.get("limit_price"),
+            current_options_risk_sleeve_capital=_options_risk_sleeve_capital(self.config),
         )
+
+    def _with_ticket(self, candidate: dict[str, Any], *, symbol: str, evaluated_at: Any) -> dict[str, Any]:
+        thesis = dict(candidate.get("thesis") or {})
+        forecast = {
+            "expected_value": (candidate.get("expected_value_interval") or {}).get("expected"),
+            "lower_95_expected_value": (candidate.get("expected_value_interval") or {}).get("lower_95"),
+            "probability_profit": (candidate.get("forecast") or {}).get("probability_profit"),
+            "probability_semantics": (
+                "calibrated_exact_cohort"
+                if calibrated_cohort_ready(candidate.get("comparable_exact_structure_outcomes"))
+                else "provisional_uncalibrated"
+            ),
+            "effective_sample_size": (candidate.get("comparable_exact_structure_outcomes") or {}).get("sample_size"),
+        }
+        now = datetime.now(UTC)
+        risk_context = option_risk_contexts(
+            self.runtime,
+            [symbol],
+            evaluated_at=now,
+        ).get(symbol.upper(), {})
+        candidate["ticket"] = build_option_trade_ticket(
+            decision_id=str(candidate["decision_id"]),
+            symbol=symbol,
+            structure=str(candidate.get("structure") or ""),
+            expiration=candidate.get("expiration"),
+            legs=list(candidate.get("legs") or []),
+            entry_price=(candidate.get("conservative_entry") or {}).get("price"),
+            one_unit_max_loss=candidate.get("one_unit_max_loss"),
+            state=str(candidate.get("paper_state") or "WATCH"),
+            blockers=list(candidate.get("blockers") or []),
+            evaluated_at=now,
+            market_session="regular" if is_market_open(now) else "closed",
+            sleeve_capital=_options_risk_sleeve_capital(self.config),
+            **risk_context,
+            thesis=thesis,
+            forecast=forecast,
+            provenance={
+                "analysis_evaluated_at": evaluated_at,
+                "revisions": {"model": candidate.get("model_version")},
+            },
+        )
+        candidate["execution_ready"] = candidate["ticket"]["state"] == "READY"
+        if not candidate["execution_ready"] and candidate.get("paper_state") == "PAPER_READY":
+            candidate["paper_state"] = "WATCH"
+        candidate["blockers"] = list(candidate["ticket"]["blockers"])
+        return candidate
 
     def submit_thesis(self, payload: dict[str, Any]) -> dict[str, Any]:
         thesis_id = self.agents.submit("option_thesis", payload)
@@ -193,7 +284,11 @@ class OptionsActions:
     def promote_strategy(self, proposal_id: str, *, approved_by: str) -> dict[str, Any]:
         strategy_version = self.actions.promote_strategy_proposal(proposal_id, approved_by=approved_by)
         try:
-            radar_refresh = refresh_options_radar(self.runtime, code_version="strategy-promotion")
+            radar_refresh = refresh_options_radar(
+                self.runtime,
+                code_version="strategy-promotion",
+                options_risk_sleeve_capital=_options_risk_sleeve_capital(self.config),
+            )
         except Exception as exc:
             radar_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
         return {

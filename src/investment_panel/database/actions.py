@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,8 @@ from investment_panel.database.strategy_parameters import (
     canonical_gate_name,
     normalize_gates,
 )
+from investment_panel.core.option_trade_ticket import TICKET_VERSION, execution_policy
+from investment_panel.core.decision import is_market_open
 
 
 def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
@@ -118,11 +121,17 @@ class ActionRepository:
         *,
         decision_id: UUID,
         idempotency_key: str,
-        expected_contract_version: int,
-        limit_price: float | None,
+        ticket_version: int,
+        quantity: int,
+        limit_price: float,
+        current_options_risk_sleeve_capital: float | None,
     ) -> dict[str, Any]:
-        if expected_contract_version != 3:
-            raise ValueError("stale options-radar contract version")
+        if ticket_version != TICKET_VERSION:
+            raise ValueError("stale option trade ticket version")
+        if quantity <= 0:
+            raise ValueError("paper quantity must be positive")
+        if not isfinite(limit_price) or limit_price <= 0:
+            raise ValueError("paper limit price must be positive")
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency key is required")
@@ -135,15 +144,31 @@ class ActionRepository:
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 ["publication:options-radar"],
             )
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["publication:options-decision-system"],
+            )
             prior = connection.execute(
-                "SELECT id, status, reserved_collateral FROM app.paper_order WHERE idempotency_key = %s",
+                """
+                SELECT id, decision_id, status, reserved_collateral, quantity, limit_price
+                FROM app.paper_order WHERE idempotency_key = %s
+                """,
                 [key],
             ).fetchone()
             if prior:
+                same_request = (
+                    str(prior["decision_id"]) == str(decision_id)
+                    and int(prior["quantity"]) == quantity
+                    and abs(float(prior["limit_price"] or 0) - limit_price) <= 1e-6
+                )
+                if not same_request:
+                    raise ValueError("idempotency key was already used for a different paper order request")
                 return {
                     "status": str(prior["status"]),
                     "paper_order_id": str(prior["id"]),
                     "reserved_collateral": float(prior["reserved_collateral"] or 0),
+                    "quantity": int(prior["quantity"]),
+                    "decision_id": str(prior["decision_id"]),
                     "idempotent_replay": True,
                 }
             signal = connection.execute(
@@ -193,6 +218,66 @@ class ActionRepository:
 
             publication_payload = dict(signal["publication_payload"] or {})
             now = datetime.now(UTC)
+            ticket = dict(publication_payload.get("ticket") or {})
+            if not ticket:
+                raise ValueError("current publication has no option trade ticket")
+            if int(ticket.get("ticket_version") or 0) != ticket_version:
+                raise ValueError("option trade ticket was superseded")
+            if str(ticket.get("decision_id") or "") != str(decision_id):
+                raise ValueError("option trade ticket decision mismatch")
+            if str(ticket.get("state") or "") != "READY" or ticket.get("blockers"):
+                raise ValueError("option trade ticket is not READY")
+            ticket_risk = dict(ticket.get("risk") or {})
+            configured_sleeve = (
+                float(current_options_risk_sleeve_capital)
+                if current_options_risk_sleeve_capital is not None
+                else 0.0
+            )
+            ticket_sleeve = float(ticket_risk.get("sleeve_capital") or 0.0)
+            if (
+                not isfinite(configured_sleeve)
+                or configured_sleeve <= 0
+                or abs(configured_sleeve - ticket_sleeve) > 0.01
+            ):
+                raise ValueError("option trade ticket does not match the current options risk sleeve")
+            conservative_expectancy = float(
+                (ticket.get("forecast") or {}).get("lower_confidence_expected_value")
+                or 0.0
+            )
+            if not isfinite(conservative_expectancy) or conservative_expectancy <= 0:
+                raise ValueError("positive lower-confidence expectancy is required for paper staging")
+            recommended_quantity = int(ticket_risk.get("recommended_quantity") or 0)
+            if quantity > recommended_quantity:
+                raise ValueError("requested quantity exceeds the ticket recommendation")
+            staged_quantity = connection.execute(
+                """
+                SELECT coalesce(sum(quantity), 0) AS quantity
+                FROM app.paper_order
+                WHERE decision_id = %s AND status IN ('staged', 'open', 'entered')
+                """,
+                [decision_id],
+            ).fetchone()["quantity"]
+            if int(staged_quantity or 0) + quantity > recommended_quantity:
+                raise ValueError("active paper quantity would exceed the ticket recommendation")
+            ticket_entry = dict(ticket.get("entry") or {})
+            ticket_structure = str(ticket.get("structure") or signal["structure"] or "")
+            if ticket_structure == "cash_secured_put":
+                minimum_credit = float(ticket_entry.get("minimum_credit") or ticket_entry.get("limit_price") or 0)
+                if minimum_credit <= 0 or limit_price < minimum_credit:
+                    raise ValueError("limit price is below the ticket minimum credit")
+            else:
+                maximum_chase = float(ticket_entry.get("maximum_chase_price") or 0)
+                if maximum_chase <= 0 or limit_price > maximum_chase:
+                    raise ValueError("limit price exceeds the ticket maximum chase price")
+            current_execution = execution_policy(
+                [dict(leg) for leg in ticket.get("legs") or []],
+                structure=ticket_structure,
+                entry_price=float(ticket_entry.get("limit_price") or signal["entry_price"] or 0),
+                market_session="regular" if is_market_open(now) else "closed",
+                evaluated_at=now,
+            )
+            if current_execution["blockers"]:
+                raise ValueError("option trade ticket quote package is stale or no longer executable")
             if str(signal["publication_scope"] or "") == "options-decision-system":
                 readiness = _v3_paper_readiness(publication_payload, now)
             else:
@@ -200,58 +285,182 @@ class ActionRepository:
             if readiness != "A":
                 raise ValueError("signal quote is no longer execution-grade")
             structure = str(signal["structure"] or "long_option")
-            collateral = float(signal["secured_cash"] or 0)
+            unit_risk = float(
+                ticket_risk.get("one_unit_collateral")
+                if structure == "cash_secured_put"
+                else ticket_risk.get("one_unit_max_loss")
+                or 0
+            )
+            total_risk = unit_risk * quantity
+            collateral = total_risk if structure == "cash_secured_put" else 0.0
             account = connection.execute(
                 "SELECT net_liquidation, cash_balance, buying_power, observed_at "
                 "FROM raw.broker_account_snapshot ORDER BY observed_at DESC, id DESC LIMIT 1"
             ).fetchone()
+            if account is None or account["net_liquidation"] is None:
+                raise ValueError("fresh broker NAV and account constraints are required")
+            observed_at = account["observed_at"]
+            if observed_at is None or abs((now - observed_at).total_seconds()) > 5 * 60:
+                raise ValueError("broker account constraints are stale")
+            sleeve_capital = configured_sleeve
+            if sleeve_capital <= 0:
+                raise ValueError("options risk sleeve is not configured")
+            nav = float(account["net_liquidation"])
+            if not isfinite(nav) or nav <= 0:
+                raise ValueError("fresh finite broker NAV is required")
+            if sleeve_capital > nav:
+                raise ValueError("broker NAV vetoes the configured options sleeve")
+            raw_capacity_values = (account["buying_power"], account["cash_balance"])
+            if any(value is None for value in raw_capacity_values):
+                raise ValueError("finite broker buying power and cash constraints are required")
+            account_capacity_values = [float(value) for value in raw_capacity_values]
+            if not all(
+                isfinite(value) and value >= 0 for value in account_capacity_values
+            ):
+                raise ValueError("finite broker buying power and cash constraints are required")
+            available_account_capital = min(account_capacity_values) if account_capacity_values else 0.0
+            symbol = connection.execute(
+                "SELECT symbol FROM catalog.instrument WHERE id = %s",
+                [signal["instrument_id"]],
+            ).fetchone()["symbol"]
+            exposures = connection.execute(
+                """
+                SELECT
+                  coalesce(sum(
+                    CASE WHEN coalesce(paper_order.structure, '') <> 'cash_secured_put'
+                           AND instrument.symbol = %s
+                      THEN coalesce(
+                        (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
+                        paper_order.quantity * option_decision.max_loss
+                      ) ELSE 0 END
+                  ), 0) AS symbol_risk,
+                  coalesce(sum(CASE
+                    WHEN coalesce(paper_order.structure, '') <> 'cash_secured_put'
+                    THEN coalesce(
+                      (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
+                      paper_order.quantity * option_decision.max_loss
+                    ) ELSE 0 END), 0) AS total_risk,
+                  coalesce(sum(commitment.amount), 0) AS total_committed,
+                  count(*) FILTER (WHERE commitment.amount IS NULL) AS unvalued_commitments
+                FROM app.paper_order paper_order
+                JOIN catalog.instrument instrument ON instrument.id = paper_order.instrument_id
+                LEFT JOIN analysis.decision decision ON decision.id = paper_order.decision_id
+                LEFT JOIN analysis.option_decision option_decision
+                  ON option_decision.decision_id = decision.id
+                CROSS JOIN LATERAL (
+                  SELECT CASE
+                    WHEN candidate.amount IS NOT NULL
+                      AND candidate.amount > 0
+                      AND candidate.amount <> 'NaN'::numeric
+                    THEN candidate.amount
+                  END AS amount
+                  FROM (
+                    SELECT CASE
+                      WHEN paper_order.structure = 'cash_secured_put'
+                        THEN paper_order.reserved_collateral
+                      ELSE coalesce(
+                        (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
+                        paper_order.quantity * option_decision.max_loss,
+                        paper_order.reserved_collateral,
+                        abs(paper_order.quantity * paper_order.limit_price)
+                      )
+                    END AS amount
+                  ) candidate
+                ) commitment
+                WHERE paper_order.status IN ('staged', 'open', 'entered')
+                """,
+                [symbol],
+            ).fetchone()
+            if int(exposures["unvalued_commitments"] or 0) > 0:
+                raise ValueError("active paper commitment has no authoritative valuation")
+            committed_capital = float(exposures["total_committed"] or 0)
             if structure == "cash_secured_put":
-                if account is None or account["net_liquidation"] is None or account["cash_balance"] is None:
+                if account["cash_balance"] is None:
                     raise ValueError("current broker cash and NAV are required for a cash-secured put")
-                nav = float(account["net_liquidation"])
-                available_cash = min(float(account["cash_balance"]), float(account["buying_power"] or account["cash_balance"]))
-                reserved = float(
-                    connection.execute(
-                        "SELECT COALESCE(sum(reserved_collateral), 0) AS total FROM app.paper_order "
-                        "WHERE structure = 'cash_secured_put' AND status IN ('staged', 'open', 'entered')"
-                    ).fetchone()["total"]
+                buying_power = (
+                    float(account["buying_power"])
+                    if account["buying_power"] is not None
+                    else float(account["cash_balance"])
                 )
-                if collateral <= 0:
+                available_cash = min(float(account["cash_balance"]), buying_power)
+                csp_exposure = connection.execute(
+                    """
+                    SELECT
+                      coalesce(sum(reserved_collateral), 0) AS total,
+                      coalesce(sum(reserved_collateral) FILTER (WHERE instrument_id = %s), 0) AS symbol
+                    FROM app.paper_order
+                    WHERE structure = 'cash_secured_put'
+                      AND status IN ('staged', 'open', 'entered')
+                    """,
+                    [signal["instrument_id"]],
+                ).fetchone()
+                reserved = float(csp_exposure["total"] or 0)
+                symbol_reserved = float(csp_exposure["symbol"] or 0)
+                if unit_risk <= 0:
                     raise ValueError("cash-secured-put collateral is unavailable")
-                if collateral > nav * 0.05:
-                    raise ValueError("one contract exceeds the 5% NAV ticker limit")
-                if reserved + collateral > nav * 0.15:
-                    raise ValueError("aggregate cash-secured-put collateral would exceed 15% NAV")
-                if reserved + collateral > available_cash:
+                if symbol_reserved + collateral > sleeve_capital * 0.05:
+                    raise ValueError("paper quantity exceeds the 5% sleeve symbol collateral limit")
+                if reserved + collateral > sleeve_capital * 0.15:
+                    raise ValueError("aggregate cash-secured-put collateral would exceed 15% of the sleeve")
+                if committed_capital + collateral > available_cash:
                     raise ValueError("insufficient unreserved cash collateral")
-            quantity = 1
+            else:
+                symbol_risk = float(exposures["symbol_risk"] or 0)
+                aggregate_risk = float(exposures["total_risk"] or 0)
+                if total_risk > sleeve_capital * 0.0025:
+                    raise ValueError("paper quantity exceeds the 0.25% sleeve per-trade limit")
+                if symbol_risk + total_risk > sleeve_capital * 0.005:
+                    raise ValueError("paper quantity exceeds the 0.50% sleeve symbol-risk limit")
+                if aggregate_risk + total_risk > sleeve_capital * 0.01:
+                    raise ValueError("paper quantity exceeds the 1.00% sleeve aggregate-risk limit")
+                if committed_capital + total_risk > available_account_capital:
+                    raise ValueError("current broker buying power vetoes the paper quantity")
             side = "sell" if structure == "cash_secured_put" else "buy"
             policy = {
-                "contract_version": 3,
+                "ticket_version": ticket_version,
                 "structure": structure,
                 "fully_cash_secured": structure == "cash_secured_put",
                 "live_order_submission": False,
             }
+            order_ticket = _ordered_ticket_snapshot(ticket, quantity=quantity, total_risk=total_risk)
             row = connection.execute(
                 """
                 INSERT INTO app.paper_order
                     (decision_id, instrument_id, side, quantity, limit_price, status,
-                     policy_result, structure, reserved_collateral, idempotency_key)
-                VALUES (%s, %s, %s, %s, %s, 'staged', %s, %s, %s, %s)
+                     policy_result, structure, reserved_collateral, idempotency_key,
+                     ticket_version, ticket_snapshot, intended_limit_price)
+                VALUES (%s, %s, %s, %s, %s, 'staged', %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 [
                     decision_id, signal["instrument_id"], side, quantity,
-                    limit_price if limit_price is not None else signal["entry_price"],
-                    Jsonb(policy), structure, collateral or None, key,
+                    limit_price, Jsonb(policy), structure, collateral or None, key,
+                    ticket_version, Jsonb(order_ticket), limit_price,
                 ],
             ).fetchone()
+            for index, leg in enumerate(ticket.get("legs") or []):
+                connection.execute(
+                    """
+                    INSERT INTO app.paper_order_leg
+                        (paper_order_id, leg_index, contract_id, option_type, side, strike,
+                         bid, ask, bid_size, ask_size, quote_time, open_interest, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    [
+                        row["id"], index, int(leg["contract_id"]), leg["option_type"], leg["side"],
+                        leg["strike"], leg["bid"], leg["ask"], leg["bid_size"], leg["ask_size"],
+                        leg["quote_time"], leg.get("open_interest"), leg.get("volume"),
+                    ],
+                )
         return {
             "status": "staged",
             "paper_order_id": str(row["id"]),
             "decision_id": str(decision_id),
             "structure": structure,
             "reserved_collateral": collateral,
+            "quantity": quantity,
+            "total_risk": total_risk,
+            "ticket_version": ticket_version,
             "live_order_submission": False,
             "idempotent_replay": False,
         }
@@ -356,6 +565,36 @@ class ActionRepository:
                 [Jsonb({"status": "promoted", "approved_by": approver}), task["id"]],
             )
         return key
+
+
+def _ordered_ticket_snapshot(
+    ticket: dict[str, Any],
+    *,
+    quantity: int,
+    total_risk: float,
+) -> dict[str, Any]:
+    """Return the immutable ticket snapshot adjusted to the submitted quantity."""
+    ticket_risk = dict(ticket.get("risk") or {})
+    recommended_risk = float(ticket_risk.get("total_risk") or 0.0)
+    symbol_before = max(
+        float(ticket_risk.get("symbol_exposure_after_entry") or 0.0) - recommended_risk,
+        0.0,
+    )
+    total_before = max(
+        float(ticket_risk.get("total_options_exposure_after_entry") or 0.0)
+        - recommended_risk,
+        0.0,
+    )
+    return {
+        **ticket,
+        "risk": {
+            **ticket_risk,
+            "ordered_quantity": quantity,
+            "total_risk": round(total_risk, 2),
+            "symbol_exposure_after_entry": round(symbol_before + total_risk, 2),
+            "total_options_exposure_after_entry": round(total_before + total_risk, 2),
+        },
+    }
 
 
 def _uuid_or_none(value: Any) -> UUID | None:

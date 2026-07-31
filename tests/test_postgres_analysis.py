@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from app import deps
-from app.routers.options import router as options_router
+from app.routers.options import _encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -321,7 +321,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert opportunity["contract_version"] == 3
     assert opportunity["quality_status"] == "complete"
     assert opportunity["spread_pct"] == pytest.approx(0.08)
-    assert opportunity["raw"]["feature_version"] == "option-professional-v2"
+    assert opportunity["raw"]["feature_version"] == "option-professional-v3-ticket"
     summary = published_options_radar_rows(runtime, "option_radar_summary")
     assert len(summary) == 1
     assert summary[0]["stable_key"] == "global"
@@ -351,8 +351,20 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     ]
 
 
-def test_options_radar_captures_cash_secured_put_with_collateral_context(analysis_context) -> None:
+def test_options_radar_captures_cash_secured_put_with_collateral_context(
+    analysis_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _now: True)
     runtime: DatabaseRuntime = analysis_context["runtime"]
+    actions = ActionRepository(runtime)
+
+    def stage(**kwargs):
+        return actions.stage_option_paper_entry(
+            **kwargs,
+            current_options_risk_sleeve_capital=500000,
+        )
+
     ingestion = IngestionRepository(runtime)
     observed_at = datetime(2026, 7, 12, 15, 0, tzinfo=UTC)
     option_run = ingestion.start_run("test-options", "option_quotes")
@@ -426,7 +438,10 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(analysi
     assert csp["effective_assignment_price"] == pytest.approx(157.0065)
     assert csp["probability_assignment"] == pytest.approx(0.22)
     assert csp["details"]["max_contracts"] == 1
-    assert csp["blockers"] == ["execution_data_not_grade_a"]
+    assert "execution_data_not_grade_a" in csp["blockers"]
+    assert "execution_data_not_grade_a" in csp["ticket"]["blockers"]
+    assert "options_risk_sleeve_required" in csp["blockers"]
+    assert csp["ticket"]["risk"]["recommended_quantity"] == 0
     summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
     assert summary["cash_secured_put_count"] == 1
     assert summary["shortlist_count"] <= 10
@@ -435,44 +450,321 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(analysi
     assert detail["structure"] == "cash_secured_put"
     assert detail["no_trade_baseline"]["expected_value"] == 0
     with pytest.raises(ValueError, match="not execution-ready"):
-        ActionRepository(runtime).stage_option_paper_entry(
+        stage(
             decision_id=csp["decision_id"],
             idempotency_key="csp-blocked",
-            expected_contract_version=3,
+            ticket_version=1,
+            quantity=1,
             limit_price=3.1,
         )
+    with pytest.raises(ValueError, match="positive"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-nan",
+            ticket_version=1,
+            quantity=1,
+            limit_price=float("nan"),
+        )
+    ticket = dict(csp["ticket"])
+    leg = dict(ticket["legs"][0])
+    leg.update({
+        "bid": 3.0,
+        "ask": 3.2,
+        "bid_size": 10,
+        "ask_size": 10,
+        "quote_time": datetime.now(UTC).isoformat(),
+        "quote_age_seconds": 0,
+        "open_interest": 2500,
+    })
+    ticket.update({
+        "state": "READY",
+        "blockers": [],
+        "legs": [leg],
+        "risk": {
+            **ticket["risk"],
+            "sleeve_capital": 500000,
+            "one_unit_collateral": csp["secured_cash"],
+            "recommended_quantity": 1,
+            "total_risk": csp["secured_cash"],
+        },
+        "entry": {
+            **ticket["entry"],
+            "limit_price": 3.1,
+            "maximum_chase_price": 3.2,
+            "minimum_credit": 3.1,
+        },
+        "forecast": {
+            **ticket["forecast"],
+            "lower_confidence_expected_value": 100,
+        },
+    })
     with runtime.transaction() as connection:
         connection.execute("UPDATE analysis.decision SET state = 'READY' WHERE id = %s", [csp["decision_id"]])
         connection.execute(
+            "UPDATE raw.broker_account_snapshot SET observed_at = now() WHERE account_key = 'paper'"
+        )
+        connection.execute(
             """
             UPDATE app.publication_item item
-            SET payload = item.payload || jsonb_build_object(
-                'execution_ready', true, 'captured_at', now(), 'last_trade_at', now(),
-                'bid_size', 10, 'ask_size', 10
-            )
+            SET payload = item.payload || %s
             FROM app.publication publication
             WHERE item.publication_id = publication.id
               AND publication.scope = 'options-radar' AND publication.status = 'published'
               AND item.model_name = 'option_radar_opportunity'
               AND item.payload->>'decision_id' = %s
             """,
-            [csp["decision_id"]],
+            [
+                Jsonb({
+                    "execution_ready": True,
+                    "captured_at": datetime.now(UTC).isoformat(),
+                    "last_trade_at": datetime.now(UTC).isoformat(),
+                    "bid_size": 10,
+                    "ask_size": 10,
+                    "ticket": ticket,
+                }),
+                csp["decision_id"],
+            ],
         )
-    staged = ActionRepository(runtime).stage_option_paper_entry(
+    with pytest.raises(ValueError, match="current options risk sleeve"):
+        actions.stage_option_paper_entry(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-stale-sleeve",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+            current_options_risk_sleeve_capital=400000,
+        )
+    with pytest.raises(ValueError, match="minimum credit"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-credit-too-low",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.0,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO app.paper_order
+                (decision_id, instrument_id, side, quantity, limit_price, status,
+                 idempotency_key)
+            VALUES (NULL, %s, 'buy', 1, 90000, 'staged', 'generic-equity-order')
+            """,
+            [analysis_context["instrument_id"]],
+        )
+    with pytest.raises(ValueError, match="unreserved cash collateral"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-shared-capacity",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "DELETE FROM app.paper_order WHERE idempotency_key = 'generic-equity-order'"
+        )
+        connection.execute(
+            """
+            INSERT INTO app.paper_order
+                (decision_id, instrument_id, side, quantity, limit_price, status,
+                 idempotency_key)
+            VALUES (NULL, %s, 'buy', 1, NULL, 'staged', 'unvalued-generic-order')
+            """,
+            [analysis_context["instrument_id"]],
+        )
+    with pytest.raises(ValueError, match="no authoritative valuation"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-unvalued-capacity",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "DELETE FROM app.paper_order WHERE idempotency_key = 'unvalued-generic-order'"
+        )
+        connection.execute(
+            """
+            INSERT INTO app.paper_order
+                (decision_id, instrument_id, side, quantity, limit_price, status,
+                 idempotency_key)
+            VALUES (NULL, %s, 'buy', 1, 0, 'staged', 'zero-value-generic-order')
+            """,
+            [analysis_context["instrument_id"]],
+        )
+    with pytest.raises(ValueError, match="no authoritative valuation"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-zero-value-capacity",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "DELETE FROM app.paper_order WHERE idempotency_key = 'zero-value-generic-order'"
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET net_liquidation = 'NaN' "
+            "WHERE account_key = 'paper'"
+        )
+    with pytest.raises(ValueError, match="finite broker NAV"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-nan-nav",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET net_liquidation = 500000 "
+            "WHERE account_key = 'paper'"
+        )
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET observed_at = now() + interval '10 minutes' "
+            "WHERE account_key = 'paper'"
+        )
+    with pytest.raises(ValueError, match="constraints are stale"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-future-account",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET observed_at = now() "
+            "WHERE account_key = 'paper'"
+        )
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET buying_power = NULL "
+            "WHERE account_key = 'paper'"
+        )
+    with pytest.raises(ValueError, match="buying power and cash"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-missing-capacity",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET buying_power = 100000 "
+            "WHERE account_key = 'paper'"
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET buying_power = 0 "
+            "WHERE account_key = 'paper'"
+        )
+    with pytest.raises(ValueError, match="unreserved cash collateral"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-no-capacity",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE raw.broker_account_snapshot SET buying_power = 100000 "
+            "WHERE account_key = 'paper'"
+        )
+    staged = stage(
         decision_id=csp["decision_id"],
         idempotency_key="csp-nvda-1",
-        expected_contract_version=3,
+        ticket_version=1,
+        quantity=1,
         limit_price=3.1,
     )
-    replay = ActionRepository(runtime).stage_option_paper_entry(
+    with pytest.raises(ValueError, match="ticket recommendation"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-nvda-second",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with pytest.raises(ValueError, match="different paper order request"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-nvda-1",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.2,
+        )
+    replay = stage(
         decision_id=csp["decision_id"],
         idempotency_key="csp-nvda-1",
-        expected_contract_version=3,
+        ticket_version=1,
+        quantity=1,
         limit_price=3.1,
     )
     assert staged["reserved_collateral"] == pytest.approx(15700.65)
     assert replay["paper_order_id"] == staged["paper_order_id"]
     assert replay["idempotent_replay"] is True
+    with pytest.raises(psycopg.errors.RaiseException, match="complete immutable leg set"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO app.paper_order
+                    (decision_id, instrument_id, side, quantity, limit_price, status,
+                     policy_result, structure, reserved_collateral, idempotency_key,
+                     ticket_version, ticket_snapshot, intended_limit_price)
+                VALUES (%s, %s, 'sell', 1, 3.1, 'staged', '{}'::jsonb,
+                        'cash_secured_put', %s, 'missing-ticket-legs', 1, %s, 3.1)
+                """,
+                [
+                    csp["decision_id"],
+                    analysis_context["instrument_id"],
+                    csp["secured_cash"],
+                    Jsonb(ticket),
+                ],
+            )
+    with pytest.raises(psycopg.errors.RaiseException, match="intent is immutable"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.paper_order SET quantity = 2 WHERE id = %s",
+                [staged["paper_order_id"]],
+            )
+    with pytest.raises(psycopg.errors.RaiseException, match="intent is immutable"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.paper_order SET policy_result = '{}'::jsonb WHERE id = %s",
+                [staged["paper_order_id"]],
+            )
+    with pytest.raises(psycopg.errors.RaiseException, match="legs are append-only"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                "DELETE FROM app.paper_order_leg WHERE paper_order_id = %s",
+                [staged["paper_order_id"]],
+            )
+    with pytest.raises(psycopg.errors.RaiseException, match="does not match immutable ticket"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO app.paper_order_leg
+                    (paper_order_id, leg_index, contract_id, option_type, side, strike,
+                     bid, ask, bid_size, ask_size, quote_time, open_interest, volume)
+                SELECT paper_order_id, 1, contract_id, option_type, side, strike,
+                       bid, ask, bid_size, ask_size, quote_time, open_interest, volume
+                FROM app.paper_order_leg
+                WHERE paper_order_id = %s AND leg_index = 0
+                """,
+                [staged["paper_order_id"]],
+            )
+    with pytest.raises(psycopg.errors.RaiseException, match="audit is append-only"):
+        with runtime.transaction() as connection:
+            connection.execute(
+                "DELETE FROM app.paper_order WHERE id = %s",
+                [staged["paper_order_id"]],
+            )
     mark_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         mark_run,
@@ -544,6 +836,7 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
     assert spread["max_profit"] == pytest.approx(1080)
     assert spread["expected_value"] > 0
     assert spread["details"]["same_snapshot_legs"] is True
+    assert all(leg["bid"] is not None and leg["ask"] is not None for leg in spread["ticket"]["legs"])
     mark_at = datetime(2026, 7, 13, 15, 0, tzinfo=UTC)
     mark_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
@@ -695,6 +988,97 @@ def test_options_api_reads_only_published_postgresql_generation(
 
     assert opportunities.status_code == 200
     assert opportunities.json()["rows"][0]["symbol"] == "NVDA"
+    assert opportunities.json()["rows"][0]["ticket"]["state"] == "RESEARCH"
+    assert opportunities.json()["rows"][0]["execution_ready"] is False
+    assert opportunities.json()["rows"][0]["paper_ready"] is False
+    assert opportunities.json()["rows"][0]["advisory_action"] == "NO TRADE"
     assert snapshots.json()["rows"][0]["contract_id"] == str(analysis_context["contract_id"])
-    assert features.json()["rows"][0]["raw"]["feature_version"] == "option-professional-v2"
+    assert features.json()["rows"][0]["raw"]["feature_version"] == "option-professional-v3-ticket"
     assert candidates.json()["rows"][0]["state"] == "WATCH"
+
+
+def test_options_learning_api_pages_in_postgresql(
+    analysis_context,
+    postgres_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        for index in range(3):
+            connection.execute(
+                """
+                INSERT INTO analysis.agent_task
+                    (task_kind, status, request, result)
+                VALUES ('option_thesis', 'completed', %s, %s)
+                """,
+                [
+                    Jsonb({"ticker": "NVDA", "index": index}),
+                    Jsonb({
+                        "ticker": "NVDA",
+                        "index": index,
+                        "created_at": "payload-must-not-own-cursor",
+                        "request_id": "payload-must-not-own-id",
+                    }),
+                ],
+            )
+        pending_id = connection.execute(
+            """
+            INSERT INTO analysis.agent_task
+                (task_kind, status, request)
+            VALUES ('option_thesis', 'queued', %s)
+            RETURNING id
+            """,
+            [Jsonb({"ticker": "MSFT"})],
+        ).fetchone()["id"]
+    monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": postgres_dsn}})
+    application = FastAPI()
+    application.include_router(options_router)
+    with TestClient(application) as client:
+        first = client.get("/api/options-radar/learning/agent_thesis?limit=2").json()
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE analysis.agent_task SET updated_at = now() + interval '1 second', "
+                "result_available_at = now() + interval '1 day' "
+                "WHERE id = %s",
+                [first["items"][0]["request_id"]],
+            )
+            connection.execute(
+                "UPDATE analysis.agent_task SET status = 'completed', result = %s, "
+                "updated_at = now() WHERE id = %s",
+                [Jsonb({"ticker": "MSFT"}), pending_id],
+            )
+            connection.execute(
+                """
+                INSERT INTO analysis.agent_task
+                    (task_kind, status, request, result)
+                VALUES ('option_thesis', 'completed', %s, %s)
+                """,
+                [Jsonb({"ticker": "AAPL"}), Jsonb({"ticker": "AAPL"})],
+            )
+        second = client.get(
+            "/api/options-radar/learning/agent_thesis",
+            params={"cursor": first["next_cursor"], "limit": 2},
+        ).json()
+        malformed = client.get(
+            "/api/options-radar/learning/agent_thesis",
+            params={"cursor": "%%%not-base64%%%"},
+        )
+        invalid_snapshot = client.get(
+            "/api/options-radar/learning/candidate_event_mark",
+            params={
+                "cursor": _encode_learning_cursor(
+                    datetime.now(UTC),
+                    ("not-a-uuid", "0"),
+                )
+            },
+        )
+    assert first["count"] == 3
+    assert len(first["items"]) == 2
+    assert first["next_cursor"]
+    assert first["items"][0]["request_id"] != "payload-must-not-own-id"
+    assert first["items"][0]["created_at"] != "payload-must-not-own-cursor"
+    assert len(second["items"]) == 1
+    assert second["count"] == first["count"]
+    assert second["next_cursor"] is None
+    assert malformed.status_code == 400
+    assert invalid_snapshot.status_code == 400

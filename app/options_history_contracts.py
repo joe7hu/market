@@ -258,6 +258,42 @@ class OptionCandidateLeg(BaseModel):
     provider_delta: float | None = None
 
 
+class OptionTradeTicketLeg(BaseModel):
+    contract_id: str
+    option_type: str
+    side: str
+    strike: float | None = None
+    bid: float | None = None
+    ask: float | None = None
+    bid_size: int | None = None
+    ask_size: int | None = None
+    quote_time: datetime | None = None
+    quote_age_seconds: float | None = None
+    open_interest: int | None = None
+    volume: int | None = None
+
+
+class OptionTradeTicket(BaseModel):
+    ticket_version: int
+    decision_id: str
+    symbol: str
+    state: str
+    structure: str
+    expiration: date
+    legs: list[OptionTradeTicketLeg]
+    entry: dict[str, Any]
+    risk: dict[str, Any]
+    thesis: dict[str, Any]
+    exits: dict[str, Any]
+    forecast: dict[str, Any]
+    lower_confidence_expectancy_per_max_risk: float | None = None
+    blockers: list[str]
+    required_next_action: str
+    data_model_revisions: dict[str, Any]
+    provenance: dict[str, Any]
+    paper_only: bool
+
+
 class OptionsDecisionCandidate(BaseModel):
     decision_id: str
     relative_value_id: int
@@ -281,6 +317,7 @@ class OptionsDecisionCandidate(BaseModel):
     blockers: list[str]
     reassessment_date: date | None = None
     comparable_exact_structure_outcomes: dict[str, Any]
+    ticket: OptionTradeTicket | None = None
     paper_only: bool
 
 

@@ -526,17 +526,10 @@ def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
     payload = data_access.panel_snapshot_payload(panel_data, "options-radar")
     tables = payload["tables"]
 
-    assert tables["missed_winner_event"]["count"] == 120
-    assert len(tables["missed_winner_event"]["rows"]) == 80
-    assert "raw" not in tables["missed_winner_event"]["rows"][0]
-    assert tables["strategy_backtest_result"]["count"] == 140
-    assert len(tables["strategy_backtest_result"]["rows"]) == 100
-    assert "metrics" not in tables["strategy_backtest_result"]["rows"][0]
-    assert "raw" not in tables["strategy_backtest_result"]["rows"][0]
-    assert tables["strategy_forward_test_result"]["count"] == 140
-    assert len(tables["strategy_forward_test_result"]["rows"]) == 100
-    assert "metrics" not in tables["strategy_forward_test_result"]["rows"][0]
-    assert tables["strategy_forward_test_result"]["rows"][0]["raw"] == {"min_forward_test_days": 5}
+    assert "missed_winner_event" not in tables
+    assert "strategy_backtest_result" not in tables
+    assert "strategy_forward_test_result" not in tables
+    assert "candidate_event" not in tables
 
     research_payload = data_access.panel_snapshot_payload(panel_data, "research")
 

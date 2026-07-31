@@ -171,23 +171,19 @@ class EventSourcesConfig:
 class OptionsDecisionSystemConfig:
     mode: str = "shadow"
     options_paper_actions_enabled: bool = False
-
-
+    options_risk_sleeve_capital: float | None = None
 @dataclass(frozen=True)
 class AnalysisConfig:
     enabled: bool = True
     correlation_lookback_days: int = 180
     max_correlation_peers: int = 8
     options_decision_system: OptionsDecisionSystemConfig = OptionsDecisionSystemConfig()
-
 @dataclass(frozen=True)
 class AgentCommandConfig:
     enabled: bool = False
     command: str = ""
     timeout_seconds: int = 120
     limit: int = 20
-
-
 DEFAULT_AGENT_CONTEXT_SOURCES: dict[str, bool] = {
     "fundamentals": True,
     "technicals": True,
@@ -444,14 +440,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         watchlist_enabled=bool(event_sources_raw.get("watchlist_enabled", True)),
     )
     analysis_raw = raw.get("analysis", {})
+    options_decision_raw = analysis_raw.get("options_decision_system", {}) or {}
     analysis = AnalysisConfig(
         enabled=bool(analysis_raw.get("enabled", True)),
         correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
         options_decision_system=OptionsDecisionSystemConfig(
-            mode=_options_decision_mode(analysis_raw.get("options_decision_system", {})),
-            options_paper_actions_enabled=bool(
-                (analysis_raw.get("options_decision_system", {}) or {}).get("options_paper_actions_enabled", False)
+            mode=_options_decision_mode(options_decision_raw),
+            options_paper_actions_enabled=bool(options_decision_raw.get("options_paper_actions_enabled", False)),
+            options_risk_sleeve_capital=(
+                float(options_decision_raw["options_risk_sleeve_capital"])
+                if options_decision_raw.get("options_risk_sleeve_capital") is not None else None
             ),
         ),
     )
@@ -638,6 +637,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "options_decision_system": {
                 "mode": config.analysis.options_decision_system.mode,
                 "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
+                "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
             },
         },
         "agents": {

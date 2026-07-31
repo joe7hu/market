@@ -199,6 +199,10 @@ class BrokerRepository:
 
     def stage_paper_order(self, recommendation_id: str) -> dict[str, Any]:
         with self.runtime.transaction() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ["paper-order:options-radar"],
+            )
             row = connection.execute(
                 """
                 SELECT item.payload

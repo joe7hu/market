@@ -125,6 +125,18 @@ class AgentRepository:
         return str(row["id"])
 
     def rows(self, model_name: str) -> list[dict[str, Any]]:
+        rows, _ = self.rows_page(model_name)
+        return rows
+
+    def rows_page(
+        self,
+        model_name: str,
+        *,
+        limit: int | None = None,
+        created_before: datetime | None = None,
+        after_created_at: datetime | None = None,
+        after_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
         specs = {
             "agent_thesis_request": ("option_thesis", "request"),
             "agent_thesis": ("option_thesis", "result"),
@@ -134,22 +146,49 @@ class AgentRepository:
         }
         task_kind, field = specs[model_name]
         with self.runtime.read() as connection:
+            availability_field = {
+                "request": "created_at",
+                "result": "result_available_at",
+                "validation": "validation_available_at",
+            }[field]
+            cutoff_clause = (
+                f" AND {availability_field} <= %s"
+                if created_before is not None
+                else ""
+            )
+            parameters: list[Any] = [task_kind]
+            if created_before is not None:
+                parameters.append(created_before)
+            count = connection.execute(
+                f"SELECT count(*) AS count FROM analysis.agent_task "
+                f"WHERE task_kind = %s AND {field} IS NOT NULL{cutoff_clause}",
+                parameters,
+            ).fetchone()["count"]
+            page_clause = cutoff_clause
+            if after_created_at is not None and after_id is not None:
+                page_clause += " AND (created_at, id) < (%s, %s)"
+                parameters.extend([after_created_at, after_id])
+            bounded = " LIMIT %s" if limit is not None else ""
+            parameters = list(parameters)
+            if limit is not None:
+                parameters.append(limit)
             rows = connection.execute(
                 f"SELECT id, status, created_at, updated_at, {field} AS payload "
                 "FROM analysis.agent_task WHERE task_kind = %s "
-                f"AND {field} IS NOT NULL ORDER BY created_at DESC",
-                [task_kind],
+                f"AND {field} IS NOT NULL{page_clause} "
+                f"ORDER BY created_at DESC, id DESC{bounded}",
+                parameters,
             ).fetchall()
-        return [
+        return ([
             {
+                **dict(row["payload"] or {}),
                 "request_id": str(row["id"]),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
-                **dict(row["payload"] or {}),
             }
             for row in rows
-        ]
+        ], int(count))
 
     def run_queued(
         self,

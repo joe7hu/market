@@ -19,7 +19,7 @@ from threading import RLock
 from typing import Any, Callable, Literal
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.data_access import (
     database_path,
@@ -31,6 +31,7 @@ from app.data_access import (
     load_panel_data,
     load_panel_scope_data,
     load_table_panel_data,
+    load_table_panel_page,
     load_ticker_panel_data,
     load_watchlist_scope_data,
     panel_snapshot_payload,
@@ -96,7 +97,13 @@ _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
     "watchlist-unwatched": {"universe_screen", "manual_watchlist", "portfolio"},
     "portfolio": {"portfolio", "portfolio_summary", "portfolio_performance"},
     "research": {"research_packets", "theses", "thesis_monitor", "news"},
-    "options-radar": {"option_radar_summary", "option_radar_symbol_summary", "option_radar_opportunity", "option_discovery_candidate", "option_gate_result", "candidate_event", "radar_alert"},
+    "options-radar": {
+        "option_strategy_versions",
+        "option_radar_summary",
+        "option_radar_opportunity",
+        "option_discovery_candidate",
+        "radar_alert",
+    },
 }
 
 
@@ -203,8 +210,9 @@ class PaperOrderInput(BaseModel):
 
 class OptionPaperEntryInput(BaseModel):
     idempotency_key: str
-    expected_contract_version: int = 3
-    limit_price: float | None = None
+    ticket_version: int = 1
+    quantity: int = Field(gt=0)
+    limit_price: float = Field(gt=0, allow_inf_nan=False)
 
 
 class StrategyPromotionInput(BaseModel):

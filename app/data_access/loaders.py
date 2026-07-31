@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Iterable
 
 from app.data_access.config import load_config, tables_for_scope
@@ -141,6 +142,25 @@ def load_watchlist_scope_data(
 
 def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
     return load_panel_data(config, table_names=(table_name,))
+
+
+def load_table_panel_page(
+    config: dict[str, Any] | None,
+    table_name: str,
+    *,
+    limit: int,
+    snapshot_at: datetime,
+    after: tuple[Any, str] | None = None,
+) -> tuple[list[dict[str, Any]], int, tuple[Any, str] | None]:
+    from investment_panel.database.panel_pagination import load_postgres_table_page
+
+    return load_postgres_table_page(
+        config or load_config(),
+        table_name,
+        limit=limit,
+        snapshot_at=snapshot_at,
+        after=after,
+    )
 
 
 def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelData:
