@@ -1,7 +1,10 @@
 """Options radar, agent thesis/postmortem, learning-loop, and strategy routes."""
 from __future__ import annotations
 
-from datetime import date
+import base64
+import binascii
+import json
+from datetime import UTC, date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -17,6 +20,7 @@ from app.options_history_contracts import (
     OptionSnapshotPage,
     OptionSurfaceEvidence,
     OptionSurfaceGroups,
+    OptionTradeTicket,
     OptionsCandidatePage,
     OptionsDecisionBrief,
     OptionsLearningProgressPage,
@@ -25,6 +29,62 @@ from app.options_history_contracts import (
 )
 
 router = APIRouter()
+
+RADAR_LEARNING_COLLECTIONS = frozenset({
+    "candidate_event_mark",
+    "candidate_event_attribution",
+    "missed_winner_event",
+    "strategy_mutation_proposal",
+    "strategy_backtest_result",
+    "strategy_forward_test_result",
+    "strategy_cohort_result",
+    "agent_thesis",
+    "agent_thesis_request",
+    "agent_thesis_validation",
+    "agent_postmortem_request",
+    "agent_postmortem",
+})
+
+
+def _decode_learning_cursor(
+    cursor: str | None,
+) -> tuple[datetime, tuple[str, str] | None]:
+    if not cursor:
+        return datetime.now(UTC), None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        payload = json.loads(raw)
+        snapshot_at = datetime.fromisoformat(payload["snapshot_at"])
+        after_payload = payload.get("after")
+        if snapshot_at.tzinfo is None:
+            raise ValueError("cursor values are out of bounds")
+        if not isinstance(after_payload, list) or len(after_payload) != 2:
+            raise ValueError("cursor key is invalid")
+        after = (str(after_payload[0]), str(after_payload[1]))
+        return snapshot_at, after
+    except (
+        binascii.Error,
+        KeyError,
+        OverflowError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail="Invalid learning cursor") from exc
+
+
+def _encode_learning_cursor(
+    snapshot_at: datetime,
+    after: tuple[Any, str],
+) -> str:
+    payload = json.dumps(
+        {
+            "snapshot_at": snapshot_at.isoformat(),
+            "after": [str(after[0]), after[1]],
+        },
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
 def _actions() -> OptionsActions:
@@ -300,6 +360,45 @@ def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail="Options-radar signal not found")
     return detail
+
+
+@router.get("/api/options-radar/learning/{collection}")
+def option_radar_learning_collection(
+    collection: str,
+    cursor: str | None = Query(None, max_length=256),
+    limit: int = Query(25, ge=1, le=100),
+) -> dict[str, Any]:
+    if collection not in RADAR_LEARNING_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Unknown options-radar learning collection")
+    snapshot_at, after = _decode_learning_cursor(cursor)
+    try:
+        page, count, next_after = deps.load_table_panel_page(
+            deps.load_config(),
+            collection,
+            limit=limit,
+            snapshot_at=snapshot_at,
+            after=after,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    next_cursor = _encode_learning_cursor(snapshot_at, next_after) if next_after else None
+    return {
+        "collection": collection,
+        "items": page,
+        "count": count,
+        "next_cursor": next_cursor,
+    }
+
+
+@router.get("/api/options/tickets/{decision_id}", response_model=OptionTradeTicket)
+def option_trade_ticket(decision_id: UUID) -> dict[str, Any]:
+    detail = _actions().signal_detail(decision_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Option decision not found")
+    ticket = detail.get("ticket")
+    if not isinstance(ticket, dict):
+        raise HTTPException(status_code=409, detail="Current publication has no trade ticket; refresh the decision surface")
+    return ticket
 
 
 @router.post("/api/options-radar/signals/{decision_id}/paper-entry")

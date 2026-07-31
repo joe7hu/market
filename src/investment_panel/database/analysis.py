@@ -364,7 +364,35 @@ class AnalysisRepository:
                 """,
                 [decision_id],
             ).fetchall()
+            current_item = connection.execute(
+                """
+                SELECT item.payload, publication.id::text AS publication_id,
+                       publication.published_at, publication.scope
+                FROM app.publication publication
+                JOIN app.publication_item item ON item.publication_id = publication.id
+                WHERE publication.status = 'published'
+                  AND (
+                    (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
+                    OR
+                    (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
+                  )
+                  AND item.payload->>'decision_id' = %s
+                ORDER BY publication.published_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                [str(decision_id)],
+            ).fetchone()
         result = _jsonable(dict(row))
+        if current_item is not None:
+            result.update(_jsonable(dict(current_item["payload"] or {})))
+            result["publication_id"] = str(current_item["publication_id"])
+            result["published_at"] = _jsonable(current_item["published_at"])
+            result["publication_scope"] = str(current_item["scope"])
+            result["current_publication"] = True
+        else:
+            result["current_publication"] = False
+            result["execution_ready"] = False
+            result["blockers"] = sorted(set([*list(result.get("blockers") or []), "not_in_current_publication"]))
         result["contract_version"] = 3
         result["evidence"] = [_jsonable(dict(item)) for item in evidence]
         result["alternatives"] = [_jsonable(dict(item)) for item in alternatives]

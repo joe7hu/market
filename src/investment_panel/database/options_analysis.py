@@ -8,14 +8,15 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
 from investment_panel.database.options_publication import publication_models, publish_degraded_if_needed
 from investment_panel.database.options_expressions import enrich_long_option_expectancy, insert_call_debit_spreads
-from investment_panel.database.options_calibration import calibration_profiles, ready_structures
+from investment_panel.database.options_calibration import calibration_profiles
+from investment_panel.core.option_trade_ticket import calibrated_cohort_ready
 from investment_panel.database.options_retention import retain_reject_sample
 from investment_panel.database.options_discovery import materialize_discovery_foundation
 from investment_panel.database.options_cash_secured_put import (
     DEFAULT_PARAMETERS as DEFAULT_CASH_SECURED_PUT_PARAMETERS,
     insert_cash_secured_put_decisions,
 )
-FEATURE_VERSION = "option-professional-v2"
+FEATURE_VERSION = "option-professional-v3-ticket"
 STRATEGY_KEY = "options-radar-core"
 STRATEGY_REVISION = 3
 DEFAULT_PARAMETERS = {
@@ -34,6 +35,7 @@ def refresh_options_radar(
     source_id: str | None = None,
     symbols: Sequence[str] | None = None,
     code_version: str = "working-tree",
+    options_risk_sleeve_capital: float | None = None,
 ) -> dict[str, Any]:
     repository = AnalysisRepository(runtime)
     strategy_id, strategy_parameters = _active_strategy(runtime)
@@ -49,7 +51,14 @@ def refresh_options_radar(
         strategy_revision_id=strategy_id,
     )
     try:
-        calibrated_ready = ready_structures(runtime, strategy_id)
+        calibration = calibration_profiles(
+            runtime,
+            strategy_id,
+            feature_version=FEATURE_VERSION,
+        )
+        calibrated_ready = {
+            str(row["structure"]) for row in calibration if calibrated_cohort_ready(row)
+        }
         feature_count = _insert_features(
             runtime,
             run_id,
@@ -76,8 +85,10 @@ def refresh_options_radar(
             feature_version=FEATURE_VERSION,
             strategy_revision=STRATEGY_REVISION,
             scanned_contracts=feature_count,
+            options_risk_sleeve_capital=options_risk_sleeve_capital,
+            calibration=calibration,
         )
-        models["option_calibration"] = calibration_profiles(runtime, strategy_id)
+        models["option_calibration"] = calibration
         publication_id = repository.publish(
             run_id,
             "options-radar",

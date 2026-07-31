@@ -7,6 +7,8 @@ from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.analysis.option_recommendation import recommendation_fields
+from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
+from investment_panel.database.options_risk_context import option_risk_contexts
 
 
 def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
@@ -47,6 +49,8 @@ def publication_models(
     feature_version: str,
     strategy_revision: int,
     scanned_contracts: int,
+    options_risk_sleeve_capital: float | None = None,
+    calibration: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     with runtime.read(JOB_PROFILE) as connection:
         rows = connection.execute(
@@ -81,6 +85,7 @@ def publication_models(
                    feature.required_10x_price, feature.required_move_pct,
                    option_decision.buy_under, decision.reasons AS top_reasons,
                    decision.blockers, decision.quality_status,
+                   active_thesis.thesis AS thesis_payload,
                    jsonb_build_object(
                        'expiration', contract.expiration,
                        'strike', contract.strike,
@@ -102,20 +107,35 @@ def publication_models(
             JOIN catalog.instrument instrument
               ON instrument.id = contract.underlying_instrument_id
             LEFT JOIN LATERAL (
+                SELECT thesis.thesis
+                FROM app.thesis thesis
+                WHERE thesis.instrument_id = instrument.id
+                  AND thesis.status = 'current'
+                ORDER BY thesis.updated_at DESC, thesis.id DESC
+                LIMIT 1
+            ) active_thesis ON true
+            LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
                     'contract_id', leg_quote.contract_id::text,
                     'observed_at', leg_quote.observed_at,
                     'captured_at', leg_quote.captured_at,
                     'last_trade_at', leg_quote.last_trade_at,
                     'market_data_status', leg_quote.market_data_status,
+                    'option_type', leg_contract.option_type,
+                    'strike', leg_contract.strike,
+                    'bid', leg_quote.bid,
+                    'ask', leg_quote.ask,
                     'bid_size', leg_quote.bid_size,
-                    'ask_size', leg_quote.ask_size
+                    'ask_size', leg_quote.ask_size,
+                    'open_interest', leg_quote.open_interest,
+                    'volume', leg_quote.volume
                 )) AS quotes
                 FROM jsonb_array_elements(option_decision.synthetic_legs) leg
                 JOIN raw.option_quote leg_quote
                   ON leg_quote.snapshot_id = option_decision.snapshot_id
                  AND leg_quote.contract_id = (leg->>'contract_id')::bigint
                  AND leg_quote.observed_at = option_decision.quote_observed_at
+                JOIN catalog.option_contract leg_contract ON leg_contract.id = leg_quote.contract_id
             ) leg_depth ON true
             WHERE decision.run_id = %s
             ORDER BY decision.score DESC NULLS LAST,
@@ -132,10 +152,6 @@ def publication_models(
             """,
             [run_id],
         ).fetchall()
-        account = connection.execute(
-            "SELECT net_liquidation, cash_balance, buying_power, observed_at "
-            "FROM raw.broker_account_snapshot ORDER BY observed_at DESC, id DESC LIMIT 1"
-        ).fetchone()
         discovery_rows = [dict(row) for row in connection.execute(
             """
             SELECT candidate.run_id::text AS discovery_run_id, instrument.symbol AS ticker,
@@ -170,6 +186,11 @@ def publication_models(
     all_rows = [dict(row) for row in rows]
     discovery_by_ticker = {str(row["ticker"]): row for row in discovery_rows}
     readiness_evaluated_at = discovery_run["started_at"] if discovery_run else datetime.now(UTC)
+    risk_contexts = option_risk_contexts(
+        runtime,
+        {str(row.get("ticker") or "") for row in all_rows},
+        evaluated_at=readiness_evaluated_at,
+    )
     for row in all_rows:
         discovery = discovery_by_ticker.get(str(row.get("ticker"))) or {}
         for key in (
@@ -179,7 +200,20 @@ def publication_models(
         ):
             row[key] = discovery.get(key)
         row["data_readiness"] = _contract_readiness(row, readiness_evaluated_at)
-    _add_contract_fields(all_rows, feature_version, strategy_revision, dict(account) if account else None)
+        if row["data_readiness"] != "A":
+            row["blockers"] = sorted({
+                *list(row.get("blockers") or []),
+                "execution_data_not_grade_a",
+            })
+    _add_contract_fields(
+        all_rows,
+        feature_version,
+        strategy_revision,
+        options_risk_sleeve_capital=options_risk_sleeve_capital,
+        evaluated_at=readiness_evaluated_at,
+        risk_contexts=risk_contexts,
+        calibration=calibration,
+    )
     for row in all_rows:
         row["execution_ready"] = bool(
             row.get("state") == "READY"
@@ -187,8 +221,6 @@ def publication_models(
             and not row.get("blockers")
             and row.get("portfolio_context_status") == "complete"
         )
-        if row.get("data_readiness") != "A" and "execution_data_not_grade_a" not in row["blockers"]:
-            row["blockers"] = [*row["blockers"], "execution_data_not_grade_a"]
         row.update(recommendation_fields(row))
     actionable = _shortlist([row for row in all_rows if row.get("state") != "REJECTED"])
     published_tickers = {str(row["ticker"]) for row in actionable}
@@ -252,9 +284,9 @@ def publication_models(
         "eligible_contracts": sum(row.get("state") != "REJECTED" for row in all_rows),
         "shortlist_count": len(actionable),
         "cash_secured_put_count": sum(row.get("structure") == "cash_secured_put" for row in actionable),
-        "ready_count": sum(row.get("state") == "READY" for row in actionable),
-        "setup_count": sum(row.get("state") == "SETUP" for row in actionable),
-        "watch_count": sum(row.get("state") == "WATCH" for row in actionable),
+        "ready_count": sum(_summary_state(row) == "READY" for row in actionable),
+        "setup_count": sum(_summary_state(row) == "SETUP" for row in actionable),
+        "watch_count": sum(_summary_state(row) == "WATCH" for row in actionable),
         "learning_coverage": 1.0 if all_rows else 0.0,
         "shadow_only": True,
     }]
@@ -274,45 +306,161 @@ def _add_contract_fields(
     rows: list[dict[str, Any]],
     feature_version: str,
     strategy_revision: int,
-    account: dict[str, Any] | None,
+    *,
+    options_risk_sleeve_capital: float | None = None,
+    evaluated_at: datetime | None = None,
+    risk_contexts: dict[str, dict[str, float | None]] | None = None,
+    calibration: list[dict[str, Any]] | None = None,
 ) -> None:
-    nav = float(account["net_liquidation"]) if account and account.get("net_liquidation") is not None else None
+    calibration_by_structure = {
+        str(profile.get("structure")): profile for profile in calibration or []
+    }
     for row in rows:
+        profile = calibration_by_structure.get(str(row.get("structure") or "")) or {}
+        calibrated = calibrated_cohort_ready(profile)
         row.update({
             "decision_id": row["candidate_event_id"],
             "rank_score": row.get("score"),
-            "calibrated_probability": None,
+            "calibrated_probability": row.get("probability_profit") if calibrated else None,
             "contract_version": 3,
             "feature_version": feature_version,
             "strategy_revision": strategy_revision,
             "analysis_cutoff": row.get("snapshot_time"),
             "quote_observed_at": row.get("snapshot_time"),
-            "probability_semantics": (row.get("details") or {}).get("probability_semantics", "provisional_uncalibrated"),
-            "probability_sample_size": (row.get("details") or {}).get("scenario_count"),
+            "probability_semantics": (
+                "calibrated_structure_cohort"
+                if calibrated
+                else (row.get("details") or {}).get(
+                    "probability_semantics", "provisional_uncalibrated"
+                )
+            ),
+            "probability_sample_size": (
+                profile.get("sample_size")
+                if calibrated
+                else (row.get("details") or {}).get("scenario_count")
+            ),
             "conservative_expected_value": (row.get("details") or {}).get("conservative_expected_value"),
             "optimistic_expected_value": (row.get("details") or {}).get("optimistic_expected_value"),
             "lower_95_expected_value": (row.get("details") or {}).get("lower_95_expected_value"),
         })
         if not row.get("structure"):
             row["structure"] = "long_call" if row.get("option_type") == "call" else "long_put"
-        risk_cap = 0.05 if row["structure"] == "cash_secured_put" else 0.0025
-        capital_at_risk = float(row.get("secured_cash") or row.get("max_loss") or 0)
-        risk_budget = nav * risk_cap if nav is not None else None
-        row["risk_budget"] = risk_budget
-        row["advisory_max_contracts"] = int(risk_budget // capital_at_risk) if risk_budget is not None and capital_at_risk > 0 else 0
-        row["portfolio_context_status"] = "complete" if nav is not None else "missing_nav"
-        if nav is None and "missing_portfolio_value" not in row["blockers"]:
-            row["blockers"] = [*row["blockers"], "missing_portfolio_value"]
+        legs = _complete_ticket_legs(row)
+        details = dict(row.get("details") or {})
+        thesis = dict(row.get("thesis_payload") or {})
+        lower_expected_value = details.get("lower_95_expected_value")
+        if lower_expected_value is None and calibrated:
+            unit_risk = _number(row.get("secured_cash") or row.get("max_loss"))
+            cohort_lower = _number(profile.get("lower_95_expectancy"))
+            if unit_risk is not None and cohort_lower is not None:
+                lower_expected_value = unit_risk * cohort_lower
+        ticket = build_option_trade_ticket(
+            decision_id=str(row["decision_id"]),
+            symbol=str(row.get("ticker") or row.get("symbol") or ""),
+            structure=str(row["structure"]),
+            expiration=row.get("expiration"),
+            legs=legs,
+            entry_price=_number(row.get("entry_price") or row.get("premium_mid")),
+            one_unit_max_loss=_number(row.get("max_loss")),
+            secured_cash=_number(row.get("secured_cash")),
+            state=str(row.get("state") or "WATCH"),
+            blockers=list(row.get("blockers") or []),
+            evaluated_at=evaluated_at,
+            market_session=str(row.get("market_session") or ""),
+            sleeve_capital=options_risk_sleeve_capital,
+            **(risk_contexts or {}).get(str(row.get("ticker") or ""), {}),
+            thesis={
+                "summary": thesis.get("core_thesis") or thesis.get("thesis") or details.get("thesis"),
+                "catalyst": details.get("catalyst"),
+                "direction": thesis.get("direction"),
+                "invalidation": thesis.get("invalidation") or details.get("invalidation"),
+                "invalidation_rules": thesis.get("invalidation_rules"),
+            },
+            forecast={
+                "expected_value": row.get("expected_value"),
+                "lower_95_expected_value": lower_expected_value,
+                "probability_profit": row.get("probability_profit"),
+                "probability_semantics": row.get("probability_semantics"),
+                "effective_sample_size": row.get("probability_sample_size"),
+                "tail_loss": row.get("tail_cvar"),
+            },
+            provenance={
+                "publication_cutoff": row.get("analysis_cutoff"),
+                "quote_source": row.get("data_source"),
+                "revisions": {
+                    "contract": row.get("contract_version"),
+                    "feature": feature_version,
+                    "strategy": strategy_revision,
+                },
+            },
+        )
+        row["ticket"] = ticket
+        row["risk_budget"] = ticket["risk"]["available_risk_budget"]
+        row["advisory_max_contracts"] = ticket["risk"]["recommended_quantity"]
+        row["portfolio_context_status"] = (
+            "complete"
+            if options_risk_sleeve_capital is not None
+            and ticket["risk"].get("broker_available_capital") is not None
+            else "missing_or_stale_options_risk_context"
+        )
+        row["lower_confidence_expectancy_per_max_risk"] = ticket[
+            "lower_confidence_expectancy_per_max_risk"
+        ]
+        row["blockers"] = ticket["blockers"]
 
 
 def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     best: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        best.setdefault((str(row["ticker"]), str(row["structure"])), row)
+        key = (str(row["ticker"]), str(row["structure"]))
+        current = best.get(key)
+        if current is None or _rank_key(row) > _rank_key(current):
+            best[key] = row
     return sorted(
         best.values(),
-        key=lambda row: (-float(row.get("score") or 0), str(row.get("ticker") or "")),
+        key=lambda row: (
+            -_rank_key(row)[0],
+            -_rank_key(row)[1],
+            str(row.get("ticker") or ""),
+        ),
     )[:10]
+
+
+def _summary_state(row: dict[str, Any]) -> str:
+    if (row.get("ticket") or {}).get("state") == "READY":
+        return "READY"
+    state = str(row.get("state") or "WATCH")
+    return state if state in {"SETUP", "WATCH"} else "WATCH"
+
+
+def _rank_key(row: dict[str, Any]) -> tuple[int, float]:
+    value = row.get("lower_confidence_expectancy_per_max_risk")
+    if value is not None:
+        return (1, float(value))
+    fallback = row.get("risk_adjusted_expectancy")
+    if fallback is None:
+        fallback = row.get("score")
+    return (0, float(fallback) if fallback is not None else -1_000_000.0)
+
+
+def _complete_ticket_legs(row: dict[str, Any]) -> list[dict[str, Any]]:
+    legs = [dict(leg) for leg in row.get("synthetic_legs") or []]
+    if not legs:
+        legs = [{
+            "contract_id": row.get("contract_id"),
+            "option_type": row.get("option_type"),
+            "side": "short" if row.get("structure") == "cash_secured_put" else "long",
+            "strike": row.get("strike"),
+            "bid": row.get("bid"),
+            "ask": row.get("ask"),
+            "bid_size": row.get("bid_size"),
+            "ask_size": row.get("ask_size"),
+            "observed_at": row.get("captured_at") or row.get("snapshot_time"),
+            "open_interest": row.get("open_interest"),
+            "volume": row.get("volume"),
+        }]
+    depth = {str(item.get("contract_id")): dict(item) for item in row.get("leg_quotes") or []}
+    return [{**leg, **depth.get(str(leg.get("contract_id")), {})} for leg in legs]
 
 
 def _contract_readiness(row: dict[str, Any], evaluated_at: datetime) -> str:
@@ -361,6 +509,14 @@ def _as_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
 
 
 def _age_minutes(evaluated_at: datetime, observed_at: datetime | None) -> float:

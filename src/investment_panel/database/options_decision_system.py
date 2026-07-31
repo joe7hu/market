@@ -409,6 +409,9 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
             "expected": _number(value.get("expected_value")),
             "lower_95": _number(scenario.get("lower_95_expected_value")),
         },
+        "forecast": {
+            "probability_profit": _number(value.get("probability_profit")),
+        },
         "uncertainty": {
             "fair_value_width": fair_high - fair_low if fair_low is not None and fair_high is not None else None,
             "data_confidence": _number(value.get("data_confidence")),
@@ -424,6 +427,7 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
         "thesis": {
             "id": thesis.get("id"),
             "revision": thesis.get("revision") or _revision(value.get("thesis_updated_at")),
+            "direction": thesis.get("direction"),
             "invalidation": thesis.get("invalidation"),
             "eligible": bool(thesis.get("schema_version") == 2 and thesis.get("invalidation")),
         },

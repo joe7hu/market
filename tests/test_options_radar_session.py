@@ -510,7 +510,7 @@ def test_options_radar_panel_renders_one_display_strategy(tmp_path, migrated_pos
     panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "options-radar")
 
     assert [row["strategy_version"] for row in panel.rows("option_radar_opportunity")] == [DEFAULT_STRATEGY_VERSION]
-    assert [row["strategy_version"] for row in panel.rows("candidate_event")] == [DEFAULT_STRATEGY_VERSION]
+    assert panel.rows("candidate_event") == []
     assert panel.rows("option_radar_summary")[0]["strategy_version"] == DEFAULT_STRATEGY_VERSION
 
 
@@ -577,9 +577,7 @@ def test_options_radar_panel_falls_back_to_display_strategy_last_good_snapshot(t
     assert [(row["ticker"], row["strategy_version"]) for row in panel.rows("option_radar_opportunity")] == [
         ("TSLA", DEFAULT_STRATEGY_VERSION)
     ]
-    assert [(row["ticker"], row["strategy_version"]) for row in panel.rows("candidate_event")] == [
-        ("TSLA", DEFAULT_STRATEGY_VERSION)
-    ]
+    assert panel.rows("candidate_event") == []
     summary = panel.rows("option_radar_summary")[0]
     assert summary["latest_candidate_time"] == "2026-06-09T15:00:00"
     assert summary["strategy_version"] == DEFAULT_STRATEGY_VERSION

@@ -9,7 +9,7 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
-FEATURE_VERSION = "option-professional-v2"
+FEATURE_VERSION = "option-professional-v3-ticket"
 DEFAULT_PARAMETERS = {
     "min_dte": 21,
     "max_dte": 60,

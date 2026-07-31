@@ -413,7 +413,7 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
                 status=DataStatus(True, "loaded radar", "test"),
                 tables={
                     "option_radar_summary": [{"latest_candidate_time": "2026-07-09T10:00:00"}],
-                    "candidate_event": [{"event_id": "event-1"}],
+                    "option_radar_opportunity": [{"decision_id": "event-1"}],
                 },
             )
         return PanelData(status=DataStatus(False, "DuckDB locked", "core-error"), tables={})
@@ -423,7 +423,7 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
     client = TestClient(app)
     first = client.get("/api/panel-snapshot?scope=options-radar")
     assert first.status_code == 200
-    assert first.json()["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
+    assert first.json()["tables"]["option_radar_opportunity"]["rows"] == [{"decision_id": "event-1"}]
 
     app_main._invalidate_context_cache()
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
@@ -432,7 +432,7 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
     assert second.status_code == 200
     payload = second.json()
     assert payload["status"]["source"] == "panel-snapshot-cache"
-    assert payload["tables"]["candidate_event"]["rows"] == [{"event_id": "event-1"}]
+    assert payload["tables"]["option_radar_opportunity"]["rows"] == [{"decision_id": "event-1"}]
 
 
 def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(tmp_path, monkeypatch) -> None:
@@ -458,7 +458,7 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
         "status": {"ready": True, "source": "old"},
-        "tables": {"candidate_event": {"rows": [{"event_id": "stale"}], "count": 1}},
+        "tables": {"option_radar_opportunity": {"rows": [{"decision_id": "stale"}], "count": 1}},
     }
 
     monkeypatch.setattr(
@@ -478,7 +478,7 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
     assert payload["tables"]["option_strategy_versions"]["rows"] == [
         {"strategy_version": "active-v1"}
     ]
-    assert payload["tables"]["candidate_event"]["rows"] == []
+    assert payload["tables"]["option_radar_opportunity"]["rows"] == []
 
 
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:

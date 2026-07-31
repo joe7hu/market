@@ -15,7 +15,11 @@ from investment_panel.database.outcomes import OutcomeRepository
 
 def run(config_path: str | None = None, symbols: list[str] | None = None, strategy_version: str = DEFAULT_STRATEGY_VERSION) -> dict[str, Any]:
     config = load_config(config_path)
-    result = refresh_options_radar(runtime_for_config(config), symbols=symbols)
+    result = refresh_options_radar(
+        runtime_for_config(config),
+        symbols=symbols,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    )
     return {"database": "postgresql", "strategy_version": strategy_version, **result}
 
 
@@ -25,7 +29,11 @@ def run_deterministic_only(
     strategy_version: str = DEFAULT_STRATEGY_VERSION,
 ) -> dict[str, Any]:
     config = load_config(config_path)
-    result = refresh_options_radar(runtime_for_config(config), symbols=symbols)
+    result = refresh_options_radar(
+        runtime_for_config(config),
+        symbols=symbols,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    )
     return {"database": "postgresql", "strategy_version": strategy_version, "agent_work": "skipped", **result}
 
 
@@ -40,7 +48,12 @@ def run_signal_only(
     ``source`` scopes it to one option provider (e.g. 'ibkr')."""
 
     config = load_config(config_path)
-    result = refresh_options_radar(runtime_for_config(config), symbols=symbols, source_id=source)
+    result = refresh_options_radar(
+        runtime_for_config(config),
+        symbols=symbols,
+        source_id=source,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    )
     return {"database": "postgresql", "strategy_version": strategy_version, "mode": "signal_only", "source": source or "all", **result}
 
 

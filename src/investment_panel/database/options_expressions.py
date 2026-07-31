@@ -210,7 +210,7 @@ def insert_call_debit_spreads(
                     ],
                     "details": {
                         **result.as_dict(),
-                        "feature_version": "option-professional-v2",
+                        "feature_version": "option-professional-v3-ticket",
                         "probability_semantics": "provisional_uncalibrated",
                         "same_snapshot_legs": True,
                     },
