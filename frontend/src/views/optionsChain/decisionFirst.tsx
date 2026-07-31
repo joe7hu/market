@@ -35,7 +35,7 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   const [error, setError] = useState<string | null>(null);
   const panelId = useId();
   const select = (next: View) => {
-    setSearch(optionsViewSearch(search, next), { replace: true });
+    setSearch(optionsViewSearch(search, next));
   };
 
   useEffect(() => {
