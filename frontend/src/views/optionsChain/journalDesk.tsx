@@ -1,4 +1,4 @@
-import { Archive, ArrowRight, BookOpenCheck, CheckCircle2, FlaskConical, Microscope } from "lucide-react";
+import { Archive, ArrowRight, BookOpenCheck, FlaskConical, Microscope } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { OptionsDecisionBrief, OptionsLearningProgress, OptionsPaperJournalRow } from "@/api";
@@ -19,35 +19,28 @@ type Props = {
 export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount, legacyShadowCount, learning }: Props) {
   const model = buildJournalDeskModel({ journal, journalCount, shadow, shadowCount, legacyShadowCount });
   return <div className="space-y-4">
-    <section className="overflow-hidden rounded-xl border border-sky-500/25 bg-[linear-gradient(135deg,hsl(var(--card)),hsl(var(--muted)/0.45))]">
-      <div className="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(17rem,0.65fr)]">
-        <div className="p-5 sm:p-6">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-300">Purpose</p>
-          <h2 className="mt-2 text-xl font-semibold tracking-tight sm:text-2xl">From forecast to proof — not a wall of WATCH labels.</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-            This log proves whether a setup that looked attractive actually survived realistic paper execution.
-            It preserves the forecast, fill, return path, drawdown, and attribution so repeated outcomes can improve future decisions.
-          </p>
-          <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            <FlowStep number="01" title="Forecast" detail="Freeze thesis, odds, edge, and max loss." />
-            <FlowStep number="02" title="Paper entry" detail="Record a conservative, explicit staged fill." />
-            <FlowStep number="03" title="Outcome" detail="Track marks, return path, and drawdown." />
-            <FlowStep number="04" title="Proof" detail="Promote only after a mature cohort validates edge." />
-          </div>
+    <section className="grid overflow-hidden rounded-xl border border-sky-500/25 bg-[linear-gradient(135deg,hsl(var(--card)),hsl(var(--muted)/0.35))] lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.55fr)]">
+      <div className="p-5 sm:p-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700 dark:text-sky-300">Learning state</p>
+        <h2 className="mt-2 text-xl font-semibold tracking-tight sm:text-2xl">{model.paperStatus}</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{currentBenefit(brief, model.currentExperiments)}</p>
+        <p className="mt-4 text-xs leading-5 text-muted-foreground">
+          Forecast → staged paper entry → marked outcome → exact-cohort proof. Research observations test mechanics; only staged paper trades count as performance.
+        </p>
+      </div>
+      <div className="border-t border-sky-500/20 bg-sky-500/[0.06] p-5 lg:border-l lg:border-t-0">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Next decision change</p>
+        <div className="mt-3 flex items-start gap-2 text-sm leading-6">
+          <ArrowRight className="mt-1 size-4 shrink-0 text-sky-600" />
+          <strong>{nextMilestone(brief, journalCount)}</strong>
         </div>
-        <div className="border-t border-sky-500/20 bg-sky-500/[0.06] p-5 lg:border-l lg:border-t-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Where you are now</p>
-          <p className="mt-2 text-lg font-semibold">{model.paperStatus}</p>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{currentBenefit(brief, model.currentExperiments)}</p>
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-sky-500/20 bg-background/70 p-3 text-xs leading-5">
-            <ArrowRight className="mt-0.5 size-4 shrink-0 text-sky-600" />
-            <span><strong>Next useful milestone:</strong> {nextMilestone(brief, journalCount)}</span>
-          </div>
-        </div>
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">
+          Promotion remains locked until one exact cohort reaches 30 mature outcomes with positive lower-95% expectancy and Brier ≤ 0.25.
+        </p>
       </div>
     </section>
 
-    <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+    {journal.length ? <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
       <Heading icon={<BookOpenCheck className="size-4" />} title="Paper track record" detail="Only trades you explicitly stage after every PAPER_READY gate count as performance evidence." />
       <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border md:grid-cols-4">
         <Summary label="Staged trades" value={journalCount} />
@@ -55,22 +48,22 @@ export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount,
         <Summary label="Open / pending" value={model.openPaperTrades} />
         <Summary label="Missing marks" value={model.missingPaperMarks} warning={model.missingPaperMarks > 0} />
       </dl>
-      {journal.length
-        ? <div className="mt-3 divide-y divide-border">{journal.map((row) => <JournalRow key={row.paper_order_id ?? row.decision_id} row={row} />)}</div>
-        : <Empty text="No paper performance exists yet. That is useful truth: automated observations below are research experiments, not returns you earned and not evidence that the strategy works." />}
-    </section>
+      <div className="mt-3 divide-y divide-border">{journal.map((row) => <JournalRow key={row.paper_order_id ?? row.decision_id} row={row} />)}</div>
+    </section> : null}
 
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(20rem,0.9fr)]">
       <section className="rounded-xl border border-sky-500/25 bg-sky-500/[0.04] p-4 sm:p-5">
-        <Heading icon={<Microscope className="size-4" />} title="Current research experiments" detail="Current v3 observations test the workflow and return path. They never count as trades or calibration evidence." />
-        <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-sky-500/20 bg-sky-500/20 sm:grid-cols-4">
-          <Summary label="Current" value={model.currentExperiments} />
-          <Summary label="Tracking" value={model.tracking} />
+        <Heading icon={<Microscope className="size-4" />} title="Research mechanics" detail="A compact health check for forecast marking—not a trade list or performance record." />
+        <dl className="mt-4 grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-sky-500/20 bg-sky-500/20">
+          <Summary label="Observed" value={model.currentExperiments} />
+          <Summary label="Marked" value={model.marked} warning={model.currentExperiments > 0 && model.marked < model.currentExperiments} />
           <Summary label="Awaiting quote" value={model.awaitingEntry} />
-          <Summary label="Marked" value={model.marked} />
         </dl>
         {model.visibleExperiments.length
-          ? <div className="mt-3 divide-y divide-sky-500/15">{model.visibleExperiments.map((row) => <ShadowRow key={row.shadow_id ?? row.decision_id} row={row} />)}</div>
+          ? <details className="mt-4 rounded-lg border border-sky-500/20 bg-background/60 p-3">
+            <summary className="cursor-pointer text-sm font-medium">Inspect 5 latest research cases</summary>
+            <div className="mt-2 divide-y divide-sky-500/15">{model.visibleExperiments.map((row) => <ShadowRow key={row.shadow_id ?? row.decision_id} row={row} />)}</div>
+          </details>
           : <Empty text="No current-model research experiment is active. The system will add one only when a candidate is worth tracking." />}
         {model.legacyArchived > 0 ? <details className="mt-4 rounded-lg border border-border bg-background/60 p-3 text-xs">
           <summary className="flex cursor-pointer list-none items-center gap-2 font-medium text-muted-foreground hover:text-foreground">
@@ -83,15 +76,10 @@ export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount,
       </section>
 
       <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-        <Heading icon={<FlaskConical className="size-4" />} title="Promotion evidence" detail="Exact structure × regime × model cohorts, using staged paper trades only." />
+        <Heading icon={<FlaskConical className="size-4" />} title="Validated cohorts" detail="Exact structure × regime × model groups built from staged paper trades only." />
         {learning.length
           ? <div className="mt-4 divide-y divide-border">{learning.map((row) => <LearningRow key={`${row.structure}-${row.market_regime}-${row.model_revision}`} row={row} />)}</div>
-          : <div className="mt-4 space-y-3">
-            <Empty text="No paper cohort exists yet. Promotion stays locked until the system has evidence it can trust." />
-            <Requirement text="30 mature outcomes in the same structure, regime, and model revision" />
-            <Requirement text="Positive lower-95% expectancy — not just a positive average" />
-            <Requirement text="Brier score at or below 0.25 for forecast calibration" />
-          </div>}
+          : <Empty text="No cohort yet. This section will compare expectancy, drawdown, and calibration after staged paper outcomes exist." />}
       </section>
     </div>
   </div>;
@@ -163,8 +151,6 @@ function LearningRow({ row }: { row: OptionsLearningProgress }) {
 }
 
 function Heading({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <div className="flex items-start gap-3"><span className="mt-0.5 text-primary">{icon}</span><span><h2 className="font-semibold">{title}</h2><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></span></div>; }
-function FlowStep({ number, title, detail }: { number: string; title: string; detail: string }) { return <div className="rounded-lg border border-border bg-background/75 p-3"><span className="text-[10px] font-semibold tracking-[0.16em] text-sky-700 dark:text-sky-300">{number}</span><strong className="mt-1 block text-sm">{title}</strong><span className="mt-1 block text-xs leading-5 text-muted-foreground">{detail}</span></div>; }
-function Requirement({ text }: { text: string }) { return <div className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><CheckCircle2 className="mt-0.5 size-4 shrink-0 text-muted-foreground/70" /><span>{text}</span></div>; }
 function Summary({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) { return <div className="bg-card p-3"><dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt><dd className={`mt-1 text-xl font-semibold tabular-nums ${warning ? "text-amber-700 dark:text-amber-300" : ""}`}>{value.toLocaleString()}</dd></div>; }
 function Value({ label, value }: { label: string; value: string }) { return <div><dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt><dd className="mt-0.5 font-medium tabular-nums">{value}</dd></div>; }
 function Audit({ label, value }: { label: string; value: string }) { return <div><strong className="block text-[10px] uppercase tracking-wide text-muted-foreground">{label}</strong><span className="mt-1 block leading-5">{value}</span></div>; }

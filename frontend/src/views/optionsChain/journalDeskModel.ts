@@ -33,7 +33,7 @@ export function buildJournalDeskModel(input: JournalDeskInput): JournalDeskModel
     awaitingEntry: input.shadow.filter((row) => row.lifecycle === "pending").length,
     marked: input.shadow.filter((row) => row.latest_mark !== null || row.current_return !== null).length,
     legacyArchived: input.legacyShadowCount,
-    visibleExperiments: input.shadow.slice(0, 12),
+    visibleExperiments: input.shadow.slice(0, 5),
   };
 }
 
