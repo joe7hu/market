@@ -5,7 +5,7 @@ import { optionsViewSearch } from "./decisionFirst";
 describe("options trade desk navigation", () => {
   it("drops the retired research-lens state when changing views", () => {
     const search = optionsViewSearch(
-      new URLSearchParams("symbol=QQQ&lane=anomaly&tab=desk"),
+      new URLSearchParams("symbol=SPY&lane=anomaly&tab=desk"),
       "record",
     );
 

@@ -39,6 +39,11 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   };
 
   useEffect(() => {
+    if (search.get("symbol") === "QQQ" && !search.has("lane")) return;
+    setSearch(optionsViewSearch(search, view), { replace: true });
+  }, [search, setSearch, view]);
+
+  useEffect(() => {
     let controller: AbortController | null = null;
     const refresh = () => {
       controller?.abort();
@@ -275,6 +280,7 @@ function number(value: number | null | undefined, digits = 0) { return value ===
 function normalizeView(value: string | null): View { return value === "evidence" ? "evidence" : value === "record" || value === "journal" || value === "learn" ? "record" : "desk"; }
 export function optionsViewSearch(search: URLSearchParams, view: View): URLSearchParams {
   const values = new URLSearchParams(search);
+  values.set("symbol", "QQQ");
   values.set("tab", view);
   values.delete("lane");
   return values;
