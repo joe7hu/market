@@ -10,6 +10,8 @@ const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsC
 const OptionSurfaceExplorer = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfaceExplorer }));
 const OptionCurvePlots = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionCurvePlots }));
 export const CHAIN_PAGE_SIZE = 10;
+export const SURFACE_MONEYNESS_BOUND = 0.06;
+export const SURFACE_MAX_DTE = 90;
 
 export function OptionsChainPage() {
   return <DecisionFirstOptionsChainPage EvidenceWorkspace={EvidenceWorkspace} />;
@@ -86,7 +88,14 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
     if (view !== "surface" || surfaceView !== "explorer" || !snapshot || !optionType) return;
     setSurfaceGrid(null);
     const controller = new AbortController();
-    void loadOptionHistorySurfaceGrid({ symbol, snapshot, option_type: optionType, min_moneyness: -0.30, max_moneyness: 0.30, max_dte: 365 }, controller.signal)
+    void loadOptionHistorySurfaceGrid({
+      symbol,
+      snapshot,
+      option_type: optionType,
+      min_moneyness: -SURFACE_MONEYNESS_BOUND,
+      max_moneyness: SURFACE_MONEYNESS_BOUND,
+      max_dte: SURFACE_MAX_DTE,
+    }, controller.signal)
       .then(setSurfaceGrid)
       .catch(asError(setError));
     return () => controller.abort();
@@ -161,9 +170,9 @@ function SurfacePanel({ snapshot, surface, surfaceGrid, optionType, selectedDte,
   if (!snapshot) return <Empty text="A complete snapshot is required before a surface can be shown." />;
   return <section className="rounded-lg border border-border bg-card p-2">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-2 pb-2 text-sm">
-      <p className="text-muted-foreground">Provider IV is market-implied; realized volatility remains a separate underwriting input.</p>
+      <p className="text-muted-foreground">Near-money provider IV (±6% through 90 DTE); realized volatility remains a separate underwriting input.</p>
       <div className="flex rounded border border-border bg-muted p-0.5">
-        <Tab active={surfaceView === "explorer"} onClick={() => onSurfaceViewChange("explorer")}>Surface explorer</Tab>
+        <Tab active={surfaceView === "explorer"} onClick={() => onSurfaceViewChange("explorer")}>90-day surface</Tab>
         <Tab active={surfaceView === "evidence"} onClick={() => onSurfaceViewChange("evidence")}>Expiry smile</Tab>
       </div>
     </div>
