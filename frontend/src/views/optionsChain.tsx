@@ -3,12 +3,13 @@ import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tan
 import { useSearchParams } from "react-router-dom";
 import { loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
+import { blockerCopy } from "./optionsChain/decisionDesk";
 import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
 
 const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfacePlot }));
 const OptionSurfaceExplorer = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfaceExplorer }));
 const OptionCurvePlots = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionCurvePlots }));
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 20;
 
 export function OptionsChainPage() {
   return <DecisionFirstOptionsChainPage EvidenceWorkspace={EvidenceWorkspace} />;
@@ -104,7 +105,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const selected = snapshots.find((row) => row.snapshot_id === snapshot);
   const maxPage = Math.max(0, Math.ceil(chain.count / PAGE_SIZE) - 1);
   const filters = <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-    <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => update({ snapshot: value || undefined, page: "0" })}><option value="">No complete capture</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatCaptureWindow(row)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
+    <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => update({ snapshot: value || undefined, page: "0" })}><option value="" disabled>{snapshots.length ? "Choose capture" : "No complete capture"}</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatCaptureWindow(row)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
     <Select label="Expiry" value={expiration} onChange={(value) => update({ expiry: value, type: groups.find((group) => group.expiration === value && group.option_type === optionType)?.option_type ?? groups.find((group) => group.expiration === value)?.option_type, page: "0" })}><option value="">Select expiry</option>{expiries.map((value) => <option key={value}>{value}</option>)}</Select>
     <Select label="Type" value={optionType ?? ""} onChange={(value) => update({ type: value, page: "0" })}><option value="">Select type</option>{types.map((value) => <option key={value} value={value}>{value === "call" ? "Calls" : "Puts"}</option>)}</Select>
     <Input label="Min log-moneyness" value={minMoneyness} onChange={(value) => update({ min: value, full_chain: undefined, page: "0" })} />
@@ -119,7 +120,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
       </div>
     </section>
     {filters}
-    <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="min-h-11 rounded border px-3 text-sm" onClick={() => update(fullChain ? { full_chain: undefined, min: "-0.10", max: "0.10", page: "0" } : { full_chain: "1", min: undefined, max: undefined, page: "0" })}>{fullChain ? "Use liquid near-ATM chain" : "Full chain"}</button>{error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}</div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="min-h-11 rounded border px-3 text-sm" onClick={() => update(fullChain ? { full_chain: undefined, min: "-0.10", max: "0.10", page: "0" } : { full_chain: "1", min: undefined, max: undefined, page: "0" })}>{fullChain ? "Return to near-ATM chain" : "Expand to full chain"}</button>{error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}</div>
     <div className="flex w-fit rounded-md border border-border bg-muted p-1"><Tab active={view === "chain"} onClick={() => update({ evidence_view: "chain" })}>Chain</Tab><Tab active={view === "surface"} onClick={() => update({ evidence_view: "surface" })}>IV Surface</Tab><Tab active={view === "curves"} onClick={() => update({ evidence_view: "curves" })}>Curves & History</Tab></div>
     {view === "chain" ? <ChainTable rows={chain.rows} page={page} maxPage={maxPage} count={chain.count} onPage={(next) => update({ page: String(next) })} /> : null}
     {view === "surface" ? <SurfacePanel snapshot={selected} surface={surface} surfaceGrid={surfaceGrid} optionType={(optionType || "call") as "call" | "put"} selectedDte={groups.find((group) => group.expiration === expiration && group.option_type === optionType)?.dte} selectedExpiration={expiration} surfaceView={surfaceView} onSurfaceViewChange={(next) => update({ surface_view: next })} webgl={webgl} /> : null}
@@ -129,13 +130,31 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
 
 function ChainTable({ rows, page, maxPage, count, onPage }: { rows: OptionHistoryChainRow[]; page: number; maxPage: number; count: number; onPage: (page: number) => void }) {
   const columns = useMemo<ColumnDef<OptionHistoryChainRow>[]>(() => [
-    { header: "Expiry", accessorKey: "expiration" }, { header: "Type", accessorKey: "option_type" }, { header: "Strike", accessorKey: "strike", cell: ({ getValue }) => money(getValue<number>()) },
-    { header: "DTE", accessorKey: "dte" }, { header: "Bid / Ask", cell: ({ row }) => `${money(row.original.bid)} / ${money(row.original.ask)}` }, { header: "IV", accessorKey: "provider_iv", cell: ({ getValue }) => percent(getValue<number | null>()) },
-    { header: "Δ / Γ", cell: ({ row }) => `${number(row.original.provider_delta, 3)} / ${number(row.original.provider_gamma, 3)}` }, { header: "Θ / Vega / Rho", cell: ({ row }) => `${number(row.original.provider_theta, 3)} / ${number(row.original.provider_vega, 3)} / ${number(row.original.provider_rho, 3)}` },
-    { header: "OI / Vol", cell: ({ row }) => `${integer(row.original.open_interest)} / ${integer(row.original.volume)}` }, { header: "Sizes", cell: ({ row }) => `${integer(row.original.bid_size)} / ${integer(row.original.ask_size)}` },
+    { header: "Strike", accessorKey: "strike", cell: ({ getValue }) => money(getValue<number>()) },
+    { header: "Bid / Ask", cell: ({ row }) => `${money(row.original.bid)} / ${money(row.original.ask)}` },
+    { header: "Spread", cell: ({ row }) => spreadPercent(row.original) },
+    { header: "IV", accessorKey: "provider_iv", cell: ({ getValue }) => percent(getValue<number | null>()) },
+    { header: "Δ / Γ", cell: ({ row }) => `${number(row.original.provider_delta, 3)} / ${number(row.original.provider_gamma, 3)}` },
+    { header: "Θ / Vega", cell: ({ row }) => `${number(row.original.provider_theta, 3)} / ${number(row.original.provider_vega, 3)}` },
+    { header: "OI / Vol", cell: ({ row }) => `${integer(row.original.open_interest)} / ${integer(row.original.volume)}` },
+    { header: "Bid / Ask size", cell: ({ row }) => `${integer(row.original.bid_size)} / ${integer(row.original.ask_size)}` },
+    { header: "Evidence", cell: ({ row }) => chainEvidenceLabel(row.original) },
   ], []);
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
-  return <section className="rounded-lg border border-border bg-card"><div className="flex items-center justify-between gap-3 border-b border-border p-3 text-sm"><span>{count.toLocaleString()} contracts</span><div className="flex items-center gap-2"><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button><span>Page {page + 1} / {maxPage + 1}</span><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page >= maxPage} onClick={() => onPage(page + 1)}>Next</button></div></div><div className="divide-y md:hidden">{rows.map((row) => <article key={row.contract_id} className="grid gap-1 p-3 text-sm"><strong>{row.option_type.toUpperCase()} {row.expiration} · {money(row.strike)} · {row.dte} DTE</strong><span>Bid/ask {money(row.bid)} / {money(row.ask)} · IV {percent(row.provider_iv)}</span><span>Δ {number(row.provider_delta, 3)} · Γ {number(row.provider_gamma, 3)} · Θ {number(row.provider_theta, 3)}</span><span>OI / volume {integer(row.open_interest)} / {integer(row.volume)} · displayed sizes {integer(row.bid_size)} / {integer(row.ask_size)}</span><span className="text-muted-foreground">{row.evidence_classification ?? row.quality_status ?? "Unscored evidence"} · {(row.evidence_blockers ?? []).join(" · ") || (row.evidence_classification === "rejected" ? "No relative-value edge" : `Status ${row.market_data_status ?? "unknown"}`)}</span></article>)}</div><div className="hidden overflow-x-auto md:block"><table className="min-w-[1100px] w-full text-left text-xs"><thead className="bg-muted text-muted-foreground">{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th className="whitespace-nowrap px-3 py-2 font-medium" key={header.id}>{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr className="border-t border-border" key={row.id}>{row.getVisibleCells().map((cell) => <td className="whitespace-nowrap px-3 py-2 tabular-nums" key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table></div>{rows.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No complete-chain contracts match these filters.</p> : null}</section>;
+  return <section className="rounded-lg border border-border bg-card"><div className="flex items-center justify-between gap-3 border-b border-border p-3 text-sm"><span>{count.toLocaleString()} contracts · {rows.length} shown</span><div className="flex items-center gap-2"><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button><span>Page {page + 1} / {maxPage + 1}</span><button className="min-h-11 rounded border px-3 disabled:opacity-50" disabled={page >= maxPage} onClick={() => onPage(page + 1)}>Next</button></div></div><div className="divide-y md:hidden">{rows.map((row) => <article key={row.contract_id} className="grid gap-1 p-3 text-sm"><strong>{row.option_type.toUpperCase()} {money(row.strike)} · {row.dte} DTE</strong><span>Bid/ask {money(row.bid)} / {money(row.ask)} · spread {spreadPercent(row)}</span><span>IV {percent(row.provider_iv)} · Δ {number(row.provider_delta, 3)} · Γ {number(row.provider_gamma, 3)}</span><span>Θ {number(row.provider_theta, 3)} · Vega {number(row.provider_vega, 3)} · OI / volume {integer(row.open_interest)} / {integer(row.volume)}</span><span className="text-muted-foreground">{chainEvidenceLabel(row)}</span></article>)}</div><div className="hidden overflow-x-auto md:block"><table className="min-w-[1080px] w-full text-left text-xs"><thead className="bg-muted text-muted-foreground">{table.getHeaderGroups().map((group) => <tr key={group.id}>{group.headers.map((header) => <th className="whitespace-nowrap px-3 py-2 font-medium" key={header.id}>{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}</th>)}</tr>)}</thead><tbody>{table.getRowModel().rows.map((row) => <tr className="border-t border-border" key={row.id}>{row.getVisibleCells().map((cell) => <td className="max-w-64 whitespace-nowrap px-3 py-2 tabular-nums" key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}</tr>)}</tbody></table></div>{rows.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No complete-chain contracts match these filters.</p> : null}</section>;
+}
+
+export function spreadPercent(row: Pick<OptionHistoryChainRow, "bid" | "ask">): string {
+  if (row.bid === null || row.ask === null || row.ask < row.bid) return "—";
+  const midpoint = (row.bid + row.ask) / 2;
+  return midpoint > 0 ? ((row.ask - row.bid) / midpoint).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "—";
+}
+
+export function chainEvidenceLabel(row: Pick<OptionHistoryChainRow, "evidence_blockers" | "evidence_classification" | "quality_status" | "market_data_status">): string {
+  const blockers = (row.evidence_blockers ?? []).slice(0, 2).map((blocker) => blockerCopy(blocker).label);
+  if (blockers.length) return blockers.join(" · ");
+  if (row.evidence_classification === "rejected") return "No relative-value edge";
+  return sentenceCase(row.evidence_classification ?? row.quality_status ?? row.market_data_status ?? "Unscored evidence");
 }
 
 function SurfacePanel({ snapshot, surface, surfaceGrid, optionType, selectedDte, selectedExpiration, surfaceView, onSurfaceViewChange, webgl }: { snapshot: OptionHistorySnapshot | undefined; surface: OptionHistorySurface | null; surfaceGrid: OptionHistorySurfaceGrid | null; optionType: "call" | "put"; selectedDte?: number; selectedExpiration: string; surfaceView: "explorer" | "evidence"; onSurfaceViewChange: (view: "explorer" | "evidence") => void; webgl: boolean | null }) {
@@ -179,4 +198,5 @@ function money(value: number | null | undefined) { return value === null || valu
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 2 }); }
 function number(value: number | null | undefined, digits = 2) { return value === null || value === undefined ? "—" : value.toFixed(digits); }
 function integer(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(); }
+function sentenceCase(value: string) { const text = value.replaceAll("_", " ").trim(); return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Unknown"; }
 function numberParam(value: string | null) { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined; }
