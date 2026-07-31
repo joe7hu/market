@@ -14,7 +14,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.panel_models import AGENT_MODELS, MODEL_ALIASES, QUERY_POLICIES
 
 
-MAX_REVIEW_SNAPSHOT_ROWS = 5_000
+MAX_REVIEW_SNAPSHOT_ROWS = 50_000
 
 
 def load_postgres_table_page(
