@@ -1,19 +1,19 @@
 import {
-  Activity, ArrowRight, BarChart3, BookOpenCheck, Check, CircleDashed, FlaskConical,
+  Activity, ArrowRight, BookOpenCheck, Check, CircleDashed, FlaskConical,
   Microscope, ShieldCheck, Target, X,
 } from "lucide-react";
 import { useEffect, useId, useState, type ComponentType, type KeyboardEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
-  loadOptionHistorySnapshots, loadOptionsCandidates, loadOptionsLearningProgress, loadOptionsPaperJournal,
+  loadOptionsCandidates, loadOptionsLearningProgress, loadOptionsPaperJournal,
   loadOptionsShadowObservations,
-  loadOptionsWorkspace, type OptionHistorySnapshot, type OptionsDecisionBrief, type OptionsDecisionCandidate,
+  loadOptionsWorkspace, type OptionsDecisionBrief, type OptionsDecisionCandidate,
   type OptionsLearningProgress, type OptionsPaperJournalRow, type OptionsWorkspacePayload,
 } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "../workspacePage";
-import { blockerCopy, decisionPresentation, sentence, summaryNumber } from "./decisionDesk";
+import { blockerCopy, decisionPresentation, sentence } from "./decisionDesk";
 import { JournalDesk } from "./journalDesk";
 
 type View = "desk" | "evidence" | "record";
@@ -23,10 +23,8 @@ type EvidenceComponent = ComponentType<{ embedded?: boolean }>;
 export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceWorkspace: EvidenceComponent }) {
   const [search, setSearch] = useSearchParams();
   const view = normalizeView(search.get("tab"));
-  const lane = search.get("lane") === "anomaly" ? "anomaly" : "thesis";
   const [brief, setBrief] = useState<OptionsDecisionBrief | null>(null);
   const [workspace, setWorkspace] = useState<OptionsWorkspacePayload | null>(null);
-  const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
   const [thesisCandidates, setThesisCandidates] = useState<OptionsDecisionCandidate[]>([]);
   const [anomalyCandidates, setAnomalyCandidates] = useState<OptionsDecisionCandidate[]>([]);
   const [journal, setJournal] = useState<OptionsPaperJournalRow[]>([]);
@@ -36,27 +34,16 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   const [learning, setLearning] = useState<OptionsLearningProgress[]>([]);
   const [error, setError] = useState<string | null>(null);
   const panelId = useId();
-  const select = (next: Partial<{ view: View; lane: "thesis" | "anomaly" }>) => {
-    const values = new URLSearchParams(search);
-    if (next.view) values.set("tab", next.view);
-    if (next.lane) values.set("lane", next.lane);
-    setSearch(values, { replace: true });
+  const select = (next: View) => {
+    setSearch(optionsViewSearch(search, next), { replace: true });
   };
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void loadOptionHistorySnapshots("QQQ", controller.signal)
-      .then((result) => setSnapshots(result.rows))
-      .catch((cause: unknown) => ignoreAbort(cause, setError));
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     let controller: AbortController | null = null;
     const refresh = () => {
       controller?.abort();
       controller = new AbortController();
-      void loadOptionsWorkspace("QQQ", lane, controller.signal)
+      void loadOptionsWorkspace("QQQ", "thesis", controller.signal)
         .then((next) => { setWorkspace(next); setBrief(next.decision_brief); setError(null); })
         .catch((cause: unknown) => ignoreAbort(cause, setError));
     };
@@ -72,7 +59,7 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [lane]);
+  }, []);
 
   useEffect(() => {
     if (view !== "desk") return;
@@ -120,12 +107,12 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
         ["Model run", analysis ? `${analysis.succeeded_groups}/${analysis.fit_attempts} fits` : "Loading", analysis ? `${analysis.eligible_groups} eligible groups · ${analysis.solver_failures} solver failures` : "Reading the latest analysis.", analysis && analysis.fit_attempts > 0 && analysis.succeeded_groups === analysis.fit_attempts ? "good" : "warn"],
         ["Reliability gate", canary ? `${canary.qualified_regular_sessions}/${canary.required_regular_sessions} sessions` : "Loading", canary && canary.qualified_regular_sessions >= canary.required_regular_sessions ? "Qualified for the current revision." : "Paper readiness remains gated; research evidence is still usable.", canary && canary.qualified_regular_sessions >= canary.required_regular_sessions ? "good" : "info"],
       ]}
-      actions={<DeskActions lane={lane} mode={brief?.mode} onLane={(next) => select({ lane: next })} />}
+      actions={<DeskActions mode={brief?.mode} />}
     >
       {error ? <p role="alert" className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
-      <ViewNav active={view} panelId={panelId} onSelect={(next) => select({ view: next })} />
+      <ViewNav active={view} panelId={panelId} onSelect={select} />
       <div id={`${panelId}-panel`} role="tabpanel" aria-labelledby={`${panelId}-${view}`}>
-        {view === "desk" ? <TradeDesk brief={brief} workspace={workspace} thesis={thesisCandidates} anomaly={anomalyCandidates} snapshots={snapshots} onEvidence={() => select({ view: "evidence" })} onRecord={() => select({ view: "record" })} /> : null}
+        {view === "desk" ? <TradeDesk brief={brief} workspace={workspace} thesis={thesisCandidates} anomaly={anomalyCandidates} onEvidence={() => select("evidence")} onRecord={() => select("record")} /> : null}
         {view === "evidence" ? <EvidenceWorkspace embedded /> : null}
         {view === "record" ? <JournalDesk
           brief={brief}
@@ -141,14 +128,8 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
   );
 }
 
-function DeskActions({ lane, mode, onLane }: { lane: "thesis" | "anomaly"; mode?: string; onLane: (lane: "thesis" | "anomaly") => void }) {
-  return <div className="flex flex-wrap items-center gap-2">
-    <div className="flex rounded-md border border-border bg-muted p-1" aria-label="Research lens">
-      <button type="button" onClick={() => onLane("thesis")} className={toggleClass(lane === "thesis")}>Thesis lens</button>
-      <button type="button" onClick={() => onLane("anomaly")} className={toggleClass(lane === "anomaly")}>Anomaly lens</button>
-    </div>
-    <StatusBadge tone={mode === "paper" ? "warn" : "info"}>{mode ?? "shadow"} only</StatusBadge>
-  </div>;
+function DeskActions({ mode }: { mode?: string }) {
+  return <StatusBadge tone={mode === "paper" ? "warn" : "info"}>{mode ?? "shadow"} only</StatusBadge>;
 }
 
 function ViewNav({ active, panelId, onSelect }: { active: View; panelId: string; onSelect: (view: View) => void }) {
@@ -176,7 +157,7 @@ function ViewNav({ active, panelId, onSelect }: { active: View; panelId: string;
   </div>;
 }
 
-function TradeDesk({ brief, workspace, thesis, anomaly, snapshots, onEvidence, onRecord }: { brief: OptionsDecisionBrief | null; workspace: OptionsWorkspacePayload | null; thesis: OptionsDecisionCandidate[]; anomaly: OptionsDecisionCandidate[]; snapshots: OptionHistorySnapshot[]; onEvidence: () => void; onRecord: () => void }) {
+function TradeDesk({ brief, workspace, thesis, anomaly, onEvidence, onRecord }: { brief: OptionsDecisionBrief | null; workspace: OptionsWorkspacePayload | null; thesis: OptionsDecisionCandidate[]; anomaly: OptionsDecisionCandidate[]; onEvidence: () => void; onRecord: () => void }) {
   if (!brief) return <Empty text="Loading the current QQQ underwriting decision…" />;
   const presentation = decisionPresentation(brief);
   const candidates = [...thesis, ...anomaly];
@@ -200,23 +181,9 @@ function TradeDesk({ brief, workspace, thesis, anomaly, snapshots, onEvidence, o
       </div>
     </section>
 
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-      <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
-        <SectionTitle icon={<BarChart3 className="size-4" />} title="Decision funnel" detail="Latest complete generation; counts are evidence volume, not trade conviction." />
-        <div className="mt-5 grid gap-2 sm:grid-cols-4">
-          <FunnelStep label="Complete captures" value={brief.readiness.capture.complete_captures} state="done" />
-          <FunnelStep label="Contracts scored" value={summaryNumber(brief, "relative_values")} state="done" />
-          <FunnelStep label="Model groups fit" value={brief.readiness.analysis.succeeded_groups} state={brief.readiness.analysis.succeeded_groups ? "done" : "open"} />
-          <FunnelStep label="Trade candidates" value={summaryNumber(brief, "decision_candidates") || candidates.length} state={candidates.length ? "active" : "open"} />
-        </div>
-        <p className="mt-4 text-xs leading-5 text-muted-foreground">The model evaluated {summaryNumber(brief, "relative_values").toLocaleString()} relative-value rows. Zero candidates is a valid “no trade” result, not missing data.</p>
-      </div>
+    <section className="grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]">
       <GateStack brief={brief} />
-    </section>
-
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)]">
       <BlockerBoard brief={brief} />
-      <NextMove brief={brief} snapshots={snapshots} onEvidence={onEvidence} />
     </section>
 
     {candidates.length ? <CandidateBoard thesis={thesis} anomaly={anomaly} state={brief.state} /> : null}
@@ -250,10 +217,10 @@ function GateStack({ brief }: { brief: OptionsDecisionBrief }) {
 }
 
 function BlockerBoard({ brief }: { brief: OptionsDecisionBrief }) {
-  const rows = brief.readiness.top_blockers.slice(0, 6);
+  const rows = brief.readiness.top_blockers.slice(0, 3);
   const max = Math.max(...rows.map((row) => row.count), 1);
   return <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-    <SectionTitle icon={<X className="size-4" />} title="Why the chain produced no trade" detail="Top evidence-quality failures. Counts overlap because one contract can fail several gates." />
+    <SectionTitle icon={<X className="size-4" />} title="Why the chain produced no trade" detail="The three largest evidence-quality failures. Counts overlap." />
     {rows.length ? <div className="mt-4 space-y-4">{rows.map((row) => {
       const copy = blockerCopy(row.blocker);
       return <div key={row.blocker}>
@@ -263,29 +230,6 @@ function BlockerBoard({ brief }: { brief: OptionsDecisionBrief }) {
       </div>;
     })}</div> : <Empty text="No active evidence blockers were reported." />}
   </section>;
-}
-
-function NextMove({ brief, snapshots, onEvidence }: { brief: OptionsDecisionBrief; snapshots: OptionHistorySnapshot[]; onEvidence: () => void }) {
-  const thesisMissing = !brief.readiness.thesis.eligible;
-  const neutralThesis = brief.readiness.thesis.present && brief.readiness.thesis.blocker === "thesis_direction_required";
-  return <aside className="rounded-xl border border-border bg-card p-4 sm:p-5">
-    <SectionTitle icon={<ArrowRight className="size-4" />} title="Expert workflow" detail="Resolve the first open decision gate; do not browse tabs hoping a trade appears." />
-    <ol className="mt-4 space-y-4">
-      <WorkflowStep
-        number="01"
-        title={neutralThesis ? "Wait for directional evidence" : thesisMissing ? "Run the automatic thesis monitor" : "Thesis is current"}
-        detail={neutralThesis
-          ? "The current automatic thesis is neutral. Do not force a directional options trade; the monitor will reassess new independent evidence."
-          : thesisMissing
-            ? "Canonical Thesis Monitor owns the QQQ direction, horizon, catalyst, and invalidation."
-            : brief.readiness.thesis.invalidation ?? "A valid thesis revision is attached."}
-        done={!thesisMissing}
-      />
-      <WorkflowStep number="02" title="Check execution-quality evidence" detail={`${brief.readiness.analysis.eligible_groups} eligible model groups from the latest complete capture. Inspect spread, OI, quote age, and skew.`} done={brief.readiness.analysis.succeeded_groups > 0} />
-      <WorkflowStep number="03" title="Wait for a qualified setup" detail="A paper action appears only after thesis, canary, calibration, and conservative re-quote gates all clear." done={brief.state === "PAPER_READY"} />
-    </ol>
-    <button type="button" onClick={onEvidence} className="mt-5 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border px-3 text-sm font-medium hover:bg-muted">Open advanced evidence <span className="text-muted-foreground">({snapshots.length} recent)</span><ArrowRight className="size-4" /></button>
-  </aside>;
 }
 
 function CandidateBoard({ thesis, anomaly, state }: { thesis: OptionsDecisionCandidate[]; anomaly: OptionsDecisionCandidate[]; state: string }) {
@@ -316,22 +260,12 @@ function Candidate({ candidate, state }: { candidate: OptionsDecisionCandidate; 
   </article>;
 }
 
-function FunnelStep({ label, value, state }: { label: string; value: number; state: "done" | "active" | "open" }) {
-  return <div className={`relative rounded-lg border p-3 ${state === "active" ? "border-emerald-500/40 bg-emerald-500/5" : "border-border bg-muted/30"}`}>
-    <span className="text-2xl font-semibold tabular-nums">{value.toLocaleString()}</span>
-    <span className="mt-1 block text-xs text-muted-foreground">{label}</span>
-  </div>;
-}
-function WorkflowStep({ number: step, title, detail, done }: { number: string; title: string; detail: string; done: boolean }) {
-  return <li className="grid grid-cols-[auto_1fr] gap-3"><span className={`grid size-8 place-items-center rounded-full text-xs font-semibold ${done ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-muted text-muted-foreground"}`}>{done ? <Check className="size-4" /> : step}</span><span><strong className="block text-sm font-medium">{title}</strong><span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{detail}</span></span></li>;
-}
 function SectionTitle({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <div className="flex items-start gap-3"><span className="mt-0.5 text-primary">{icon}</span><span><h2 className="font-semibold">{title}</h2><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></span></div>; }
 function Pill({ icon, children }: { icon: ReactNode; children: ReactNode }) { return <span className="inline-flex items-center gap-1.5 rounded-full border border-current/15 bg-background/40 px-2.5 py-1">{icon}{children}</span>; }
 function Metric({ label, value }: { label: string; value: string }) { return <div><dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt><dd className="mt-0.5 font-medium tabular-nums">{value}</dd></div>; }
 function Empty({ text }: { text: string }) { return <p className="mt-4 rounded-lg border border-dashed border-border p-5 text-sm leading-6 text-muted-foreground">{text}</p>; }
 function verdictMetric(brief: OptionsDecisionBrief) { return decisionPresentation(brief).title.replace(/^No trade — /, "No trade · ").replace(/^Wait — /, "Wait · "); }
 function verdictClass(toneValue: "good" | "warn" | "info" | "muted") { return toneValue === "good" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-50" : toneValue === "warn" ? "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-50" : toneValue === "info" ? "border-sky-500/30 bg-sky-500/10 text-sky-950 dark:text-sky-50" : "border-border bg-card text-foreground"; }
-function toggleClass(active: boolean) { return `min-h-9 rounded px-3 text-xs font-medium transition-colors ${active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`; }
 function tone(state?: string): "good" | "warn" | "info" | "muted" { return state === "PAPER_READY" ? "good" : state === "REJECT" ? "warn" : state === "WATCH" ? "info" : "muted"; }
 function regularSessionNow() { const now = new Date(); const day = now.getDay(); const minutes = now.getHours() * 60 + now.getMinutes(); return day >= 1 && day <= 5 && minutes >= 9 * 60 + 30 && minutes <= 16 * 60; }
 function formatDateTime(value: string | null) { return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "pending"; }
@@ -339,5 +273,11 @@ function money(value: number | null | undefined) { return value === null || valu
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }); }
 function number(value: number | null | undefined, digits = 0) { return value === null || value === undefined ? "—" : value.toFixed(digits); }
 function normalizeView(value: string | null): View { return value === "evidence" ? "evidence" : value === "record" || value === "journal" || value === "learn" ? "record" : "desk"; }
+export function optionsViewSearch(search: URLSearchParams, view: View): URLSearchParams {
+  const values = new URLSearchParams(search);
+  values.set("tab", view);
+  values.delete("lane");
+  return values;
+}
 function ignoreAbort(cause: unknown, setError: (value: string | null) => void) { if ((cause as { name?: string }).name !== "AbortError") setError(cause instanceof Error ? cause.message : "Unable to load options decision data"); }
 function viewKey(event: KeyboardEvent<HTMLButtonElement>, current: View, select: (view: View) => void) { if (!(["ArrowLeft", "ArrowRight", "Home", "End"] as string[]).includes(event.key)) return; event.preventDefault(); const index = VIEWS.indexOf(current); const next = event.key === "Home" ? 0 : event.key === "End" ? VIEWS.length - 1 : (index + (event.key === "ArrowRight" ? 1 : VIEWS.length - 1)) % VIEWS.length; select(VIEWS[next]); document.getElementById((event.currentTarget.parentElement?.querySelectorAll("[role=tab]")[next] as HTMLElement | undefined)?.id ?? "")?.focus(); }
