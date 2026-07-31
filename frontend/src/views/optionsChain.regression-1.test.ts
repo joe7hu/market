@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { chainEvidenceLabel, spreadPercent } from "./optionsChain";
+import { CHAIN_PAGE_SIZE, chainEvidenceLabel, spreadPercent } from "./optionsChain";
 
 describe("compact option-chain evidence", () => {
+  it("keeps the default drill-down to one scannable page", () => {
+    expect(CHAIN_PAGE_SIZE).toBe(10);
+  });
+
   it("turns raw blocker codes into decision-readable evidence", () => {
     expect(chainEvidenceLabel({
       evidence_blockers: ["illiquid_open_interest", "insufficient_eligible_points"],

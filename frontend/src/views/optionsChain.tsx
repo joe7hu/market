@@ -9,7 +9,7 @@ import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
 const OptionSurfacePlot = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfacePlot }));
 const OptionSurfaceExplorer = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionSurfaceExplorer }));
 const OptionCurvePlots = lazy(async () => ({ default: (await import("./optionsChainPlot")).OptionCurvePlots }));
-const PAGE_SIZE = 20;
+export const CHAIN_PAGE_SIZE = 10;
 
 export function OptionsChainPage() {
   return <DecisionFirstOptionsChainPage EvidenceWorkspace={EvidenceWorkspace} />;
@@ -20,7 +20,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const [search, setSearch] = useSearchParams();
   const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
   const [groups, setGroups] = useState<OptionHistorySurfaceGroup[]>([]);
-  const [chain, setChain] = useState<OptionHistoryPage<OptionHistoryChainRow>>({ rows: [], count: 0, offset: 0, limit: PAGE_SIZE });
+  const [chain, setChain] = useState<OptionHistoryPage<OptionHistoryChainRow>>({ rows: [], count: 0, offset: 0, limit: CHAIN_PAGE_SIZE });
   const [surface, setSurface] = useState<OptionHistorySurface | null>(null);
   const [surfaceGrid, setSurfaceGrid] = useState<OptionHistorySurfaceGrid | null>(null);
   const [curves, setCurves] = useState<OptionHistoryCurves | null>(null);
@@ -57,7 +57,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
     return () => controller.abort();
   }, []);
   useEffect(() => {
-    setGroups([]); setChain({ rows: [], count: 0, offset: 0, limit: PAGE_SIZE }); setSurface(null); setSurfaceGrid(null);
+    setGroups([]); setChain({ rows: [], count: 0, offset: 0, limit: CHAIN_PAGE_SIZE }); setSurface(null); setSurfaceGrid(null);
     setCurves(null); setAnomalies({ rows: [], count: 0, offset: 0, limit: 250 }); setError(null);
     if (!snapshot) return;
     const controller = new AbortController();
@@ -72,7 +72,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   useEffect(() => {
     if (!snapshot) return;
     const controller = new AbortController();
-    const params = { symbol, snapshot, expiration: expiration || undefined, option_type: optionType || undefined, min_moneyness: minMoneyness || undefined, max_moneyness: maxMoneyness || undefined, offset: page * PAGE_SIZE, limit: PAGE_SIZE };
+    const params = { symbol, snapshot, expiration: expiration || undefined, option_type: optionType || undefined, min_moneyness: minMoneyness || undefined, max_moneyness: maxMoneyness || undefined, offset: page * CHAIN_PAGE_SIZE, limit: CHAIN_PAGE_SIZE };
     void loadOptionHistoryChain(params, controller.signal).then((result) => { setChain(result); setError(null); }).catch(asError(setError));
     return () => controller.abort();
   }, [symbol, snapshot, expiration, optionType, minMoneyness, maxMoneyness, page]);
@@ -103,7 +103,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const expiries = useMemo(() => [...new Set(groups.map((group) => group.expiration))], [groups]);
   const types = useMemo(() => [...new Set(groups.filter((group) => group.expiration === expiration).map((group) => group.option_type))], [groups, expiration]);
   const selected = snapshots.find((row) => row.snapshot_id === snapshot);
-  const maxPage = Math.max(0, Math.ceil(chain.count / PAGE_SIZE) - 1);
+  const maxPage = Math.max(0, Math.ceil(chain.count / CHAIN_PAGE_SIZE) - 1);
   const filters = <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
     <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => update({ snapshot: value || undefined, page: "0" })}><option value="" disabled>{snapshots.length ? "Choose capture" : "No complete capture"}</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatCaptureWindow(row)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
     <Select label="Expiry" value={expiration} onChange={(value) => update({ expiry: value, type: groups.find((group) => group.expiration === value && group.option_type === optionType)?.option_type ?? groups.find((group) => group.expiration === value)?.option_type, page: "0" })}><option value="">Select expiry</option>{expiries.map((value) => <option key={value}>{value}</option>)}</Select>
