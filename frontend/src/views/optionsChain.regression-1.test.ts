@@ -4,6 +4,7 @@ import {
   CHAIN_PAGE_SIZE,
   SURFACE_MAX_DTE,
   SURFACE_MONEYNESS_BOUND,
+  chainSelectionReady,
   chainEvidenceLabel,
   spreadPercent,
 } from "./optionsChain";
@@ -16,6 +17,11 @@ describe("compact option-chain evidence", () => {
   it("bounds the default volatility surface to the tradable decision zone", () => {
     expect(SURFACE_MONEYNESS_BOUND).toBe(0.06);
     expect(SURFACE_MAX_DTE).toBe(90);
+  });
+
+  it("does not fetch a broad chain before expiry and type resolve", () => {
+    expect(chainSelectionReady(876, "", "")).toBe(false);
+    expect(chainSelectionReady(876, "2026-08-28", "call")).toBe(true);
   });
 
   it("turns raw blocker codes into decision-readable evidence", () => {

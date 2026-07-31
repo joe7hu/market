@@ -72,7 +72,7 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
     return () => controller.abort();
   }, [symbol, snapshot]);
   useEffect(() => {
-    if (!snapshot) return;
+    if (!chainSelectionReady(snapshot, expiration, optionType)) return;
     const controller = new AbortController();
     const params = { symbol, snapshot, expiration: expiration || undefined, option_type: optionType || undefined, min_moneyness: minMoneyness || undefined, max_moneyness: maxMoneyness || undefined, offset: page * CHAIN_PAGE_SIZE, limit: CHAIN_PAGE_SIZE };
     void loadOptionHistoryChain(params, controller.signal).then((result) => { setChain(result); setError(null); }).catch(asError(setError));
@@ -157,6 +157,10 @@ export function spreadPercent(row: Pick<OptionHistoryChainRow, "bid" | "ask">): 
   if (row.bid === null || row.ask === null || row.ask < row.bid) return "—";
   const midpoint = (row.bid + row.ask) / 2;
   return midpoint > 0 ? ((row.ask - row.bid) / midpoint).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "—";
+}
+
+export function chainSelectionReady(snapshot: number | undefined, expiration: string, optionType: string | null): boolean {
+  return snapshot !== undefined && expiration !== "" && (optionType === "call" || optionType === "put");
 }
 
 export function chainEvidenceLabel(row: Pick<OptionHistoryChainRow, "evidence_blockers" | "evidence_classification" | "quality_status" | "market_data_status">): string {
