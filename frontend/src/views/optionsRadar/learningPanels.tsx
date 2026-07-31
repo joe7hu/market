@@ -265,7 +265,7 @@ export function CohortInsightCard({ row, mature }: { row: RowRecord; mature: boo
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{titleLabel(displayField(row, ["cohort_value", "state"], "Current signals"))}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">{titleLabel(displayField(row, ["cohort_type", "strategy_version"], "Professional v2"))}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">{titleLabel(displayField(row, ["cohort_type", "strategy_version"], "Professional v3"))}</div>
         </div>
         <StatusBadge tone={mature ? "good" : "warn"}>{mature ? "Readable" : "Collecting"}</StatusBadge>
       </div>
