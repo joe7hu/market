@@ -127,7 +127,10 @@ def paper_state(
     if (data_confidence or 0) < 0.80 or (execution_confidence or 0) < 0.70:
         return {"paper_state": "WATCH", "reasons": ["confidence_gate_incomplete"], "blockers": []}
     calibration = calibration or {}
-    if int(calibration.get("sample_size") or 0) < 30:
+    if (
+        int(calibration.get("sample_size") or 0) < 30
+        or int(calibration.get("prediction_sample_size") or 0) < 30
+    ):
         return {"paper_state": "WATCH", "reasons": ["exact_structure_regime_calibration_collecting"], "blockers": []}
     if float(calibration.get("lower_95_expectancy") or 0) <= 0 or float(calibration.get("brier_score") or 1) > 0.25:
         return {"paper_state": "WATCH", "reasons": ["exact_structure_regime_calibration_not_ready"], "blockers": []}

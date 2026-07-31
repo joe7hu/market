@@ -96,8 +96,10 @@ def trading_day_lag(observed_date: date, now: datetime) -> int:
 def latest_completed_market_day(now: datetime) -> date:
     local_now = normalized_utc(now).astimezone(MARKET_TZ)
     current = local_now.date()
-    if is_us_market_day(current) and local_now.time() >= MARKET_CLOSE:
-        return current
+    if is_us_market_day(current):
+        _, close_at = market_session_bounds(current)
+        if local_now >= close_at:
+            return current
     current -= timedelta(days=1)
     while not is_us_market_day(current):
         current -= timedelta(days=1)
@@ -108,15 +110,33 @@ def latest_completed_market_day(now: datetime) -> date:
 
 def is_market_open(now: datetime) -> bool:
     local_now = normalized_utc(now).astimezone(MARKET_TZ)
-    return is_us_market_day(local_now.date()) and MARKET_OPEN <= local_now.time() < MARKET_CLOSE
+    if not is_us_market_day(local_now.date()):
+        return False
+    open_at, close_at = market_session_bounds(local_now.date())
+    return open_at <= local_now < close_at
 
 
 
 
 def market_session_bounds(day: date) -> tuple[datetime, datetime]:
+    close = time(13) if is_us_equity_early_close(day) else MARKET_CLOSE
     return (
         datetime.combine(day, MARKET_OPEN, tzinfo=MARKET_TZ),
-        datetime.combine(day, MARKET_CLOSE, tzinfo=MARKET_TZ),
+        datetime.combine(day, close, tzinfo=MARKET_TZ),
+    )
+
+
+
+
+def is_us_equity_early_close(day: date) -> bool:
+    """Regular NYSE/Nasdaq 13:00 closes, excluding observed full holidays."""
+    if not is_us_market_day(day):
+        return False
+    thanksgiving = nth_weekday(day.year, 11, 3, 4)
+    return bool(
+        day == thanksgiving + timedelta(days=1)
+        or (day.month == 7 and day.day == 3)
+        or (day.month == 12 and day.day == 24)
     )
 
 

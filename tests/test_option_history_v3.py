@@ -290,6 +290,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert observation["contract"]["expiration"] == "2026-08-21"
         assert observation["contract"]["legs"][0]["strike"] is not None
         assert observation["thesis"]["revision"] == 1
+        assert observation["thesis"]["direction"] == "long"
         assert observation["thesis"]["invalidation"] == "QQQ closes below 480"
         assert observation["forecast"]["max_loss"] is not None
         assert "expected_value" in observation["forecast"]
@@ -492,7 +493,7 @@ def test_paper_state_requires_exact_gates_and_all_structures_can_watch() -> None
     ready = paper_state(
         structure="long_call", lane="thesis", thesis=thesis, fit_status="succeeded", scenario_count=20,
         expected_value=1, lower_95_expected_value=0.1, max_loss=100, data_confidence=0.9, execution_confidence=0.8,
-        calibration={"sample_size": 30, "lower_95_expectancy": 0.01, "brier_score": 0.2, "other_regime_monitoring_count": 5},
+        calibration={"sample_size": 30, "prediction_sample_size": 30, "lower_95_expectancy": 0.01, "brier_score": 0.2, "other_regime_monitoring_count": 5},
     )
     assert ready["paper_state"] == "PAPER_READY"
 

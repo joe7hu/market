@@ -24,10 +24,13 @@ MAX_RESIDUAL_ABS_DELTA = 0.95
 MAX_RESIDUAL_SPREAD_PCT = 0.50
 class OptionHistoryRepository:
     """The single read/write owner for complete historical option snapshots."""
-    def __init__(self, runtime: DatabaseRuntime) -> None:
+    def __init__(self, runtime: DatabaseRuntime, *, options_risk_sleeve_capital: float | None = None) -> None:
         self.runtime = runtime
         self.ingestion = IngestionRepository(runtime)
-        self.v3 = OptionHistoryV3Materializer(runtime)
+        self.v3 = OptionHistoryV3Materializer(
+            runtime,
+            options_risk_sleeve_capital=options_risk_sleeve_capital,
+        )
     def claim_slot(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID) -> int | None:
         """Claim one symbol/slot without allowing overlapping collection work."""
         universe = _history_universe(symbol)

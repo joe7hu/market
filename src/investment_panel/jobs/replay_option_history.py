@@ -20,8 +20,12 @@ def run(
     config_path: str | None = "config.yaml",
     mode: str = "historical_evidence",
 ) -> dict[str, Any]:
-    runtime = runtime_for_config(load_config(config_path))
-    return OptionHistoryV3Materializer(runtime).materialize(
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
+    return OptionHistoryV3Materializer(
+        runtime,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    ).materialize(
         snapshot_id=snapshot_id,
         capture_generation_id=capture_generation_id,
         model_revision=model_revision,
@@ -43,7 +47,8 @@ def rematerialize_complete_captures(
     the release operation for a revised deterministic model and is safe to rerun.
     """
 
-    runtime = runtime_for_config(load_config(config_path))
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
     with runtime.read() as connection:
         rows = connection.execute(
             """
@@ -57,7 +62,10 @@ def rematerialize_complete_captures(
             """,
             [symbol.upper()],
         ).fetchall()
-    materializer = OptionHistoryV3Materializer(runtime)
+    materializer = OptionHistoryV3Materializer(
+        runtime,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    )
     results = [
         materializer.materialize(
             snapshot_id=int(row["snapshot_id"]),

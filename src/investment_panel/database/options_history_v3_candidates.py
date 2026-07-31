@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from math import sqrt
 from statistics import mean, pstdev
 from typing import Any
 
-from investment_panel.core.option_underwriting import thesis_invalidation
+from investment_panel.core.option_underwriting import thesis_invalidation, underwriting_direction
 
 
 def candidate_leg(quote: dict[str, Any], side: str) -> dict[str, Any]:
@@ -44,9 +44,30 @@ def spread_short_leg(group: list[dict[str, Any]], long_leg: dict[str, Any]) -> d
 
 
 def non_overlapping_returns(bars: list[dict[str, Any]], dte: int) -> tuple[float, ...]:
-    horizon = max(1, min(dte, 120))
+    # Match the forecast to the contract's actual DTE.  A LEAP with insufficient
+    # point-in-time history must collect more evidence, never masquerade as 120D.
+    # ``dte`` is calendar days while daily bars are trading sessions.
+    horizon = max(1, round(dte * 252 / 365))
     closes = [float(row["close"]) for row in bars if row.get("close") is not None and float(row["close"]) > 0]
     return tuple(closes[index + horizon] / closes[index] - 1.0 for index in range(0, len(closes) - horizon, horizon))
+
+
+def history_truth_blockers(bars: list[dict[str, Any]], as_of: datetime) -> list[str]:
+    """Reject stale or split-like unadjusted histories explicitly."""
+
+    if not bars:
+        return ["missing_canonical_price_history"]
+    latest = bars[-1].get("trading_date")
+    if isinstance(latest, datetime):
+        latest = latest.date()
+    if isinstance(latest, str):
+        latest = date.fromisoformat(latest)
+    if not isinstance(latest, date) or (as_of.date() - latest).days > 7:
+        return ["underlying_history_stale_relative_to_option_quote"]
+    closes = [float(row["close"]) for row in bars if row.get("close") is not None and float(row["close"]) > 0]
+    if any(abs(current / previous - 1.0) >= 0.45 for previous, current in zip(closes, closes[1:], strict=False)):
+        return ["unresolved_corporate_action_in_price_history"]
+    return []
 
 
 def market_regime(bars: list[dict[str, Any]]) -> str:
@@ -86,6 +107,7 @@ def candidate_thesis_payload(thesis: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "id": thesis.get("id") if thesis else None,
         "revision": thesis.get("revision") if thesis else None,
+        "direction": underwriting_direction(thesis),
         "invalidation": thesis_invalidation(thesis),
         "horizon_date": thesis.get("horizon_date") if thesis else None,
     }

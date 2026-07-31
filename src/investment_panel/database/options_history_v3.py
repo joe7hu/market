@@ -30,6 +30,7 @@ from investment_panel.database.options_history_v3_candidates import (
     candidate_thesis_payload,
     decision_state,
     execution_confidence as calculate_execution_confidence,
+    history_truth_blockers,
     market_regime,
     non_overlapping_returns,
     spread_short_leg,
@@ -37,15 +38,14 @@ from investment_panel.database.options_history_v3_candidates import (
 from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
 from investment_panel.database.options_history_v3_evidence import quote_package
 from investment_panel.database.options_history_policy import apply_publication_cap
-
-
+from investment_panel.database.options_history_ticket import published_candidates
 class OptionHistoryV3Materializer:
     """Bulk materialize an immutable capture generation into a separate analysis run."""
 
-    def __init__(self, runtime: DatabaseRuntime) -> None:
+    def __init__(self, runtime: DatabaseRuntime, *, options_risk_sleeve_capital: float | None = None) -> None:
         self.runtime = runtime
         self.analysis = AnalysisRepository(runtime)
-
+        self.options_risk_sleeve_capital = options_risk_sleeve_capital
     def materialize(
         self,
         *,
@@ -95,7 +95,6 @@ class OptionHistoryV3Materializer:
         except Exception as exc:
             self.analysis.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
             raise
-
     def _canonical_succeeded_run(self, capture_generation_id: int, model_revision: str, mode: str) -> dict[str, Any] | None:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
@@ -321,7 +320,11 @@ class OptionHistoryV3Materializer:
             calibration = self._calibration(
                 connection, int(quote["instrument_id"]), structure, market_regime(bars), model_revision, as_of
             )
-            blockers = [*value["blockers"], *scenario["blockers"]]
+            blockers = [
+                *value["blockers"],
+                *scenario["blockers"],
+                *history_truth_blockers(bars, as_of),
+            ]
             computed_state = paper_state(
                 structure=structure, lane=lane, thesis=thesis, fit_status="succeeded", blockers=blockers,
                 scenario_count=int(scenario["scenario_count"]), expected_value=scenario["expected_value"],
@@ -426,11 +429,19 @@ class OptionHistoryV3Materializer:
             return {}
         rows = connection.execute(
             """
-            SELECT DISTINCT ON (instrument_id, trading_date) instrument_id, trading_date, close
+            SELECT DISTINCT ON (instrument_id, trading_date)
+                   instrument_id, trading_date, close, source_id, observed_at, available_at
             FROM raw.confirmed_price_bar
             WHERE instrument_id = ANY(%s) AND interval = '1d' AND close > 0
               AND observed_at <= %s AND available_at <= %s
-            ORDER BY instrument_id, trading_date, available_at DESC
+            ORDER BY instrument_id, trading_date,
+                     CASE source_id
+                       WHEN 'polygon' THEN 1
+                       WHEN 'yahoo_chart' THEN 2
+                       WHEN 'yfinance' THEN 3
+                       ELSE 10
+                     END,
+                     available_at DESC, source_id
             """,
             [sorted(instrument_ids), as_of, as_of],
         ).fetchall()
@@ -466,6 +477,7 @@ class OptionHistoryV3Materializer:
         standard_error = pstdev(returns) / sqrt(len(returns)) if len(returns) > 1 else None
         return {
             "sample_size": len(returns),
+            "prediction_sample_size": len(predictions),
             "lower_95_expectancy": mean(returns) - 1.96 * standard_error if standard_error is not None else None,
             "brier_score": mean((prediction - actual) ** 2 for prediction, actual in predictions) if predictions else None,
             "other_regime_monitoring_count": sum(1 for row in rows if row["market_regime"] != market_regime),
@@ -476,38 +488,29 @@ class OptionHistoryV3Materializer:
             rows = connection.execute(
                 """
                 SELECT decision.id::text AS decision_id, decision.instrument_id, decision.as_of,
+                       decision.state, decision.reasons, decision.blockers,
                        option_decision.paper_state, option_decision.discovery_lane, option_decision.structure,
                        option_decision.entry_price, option_decision.max_loss, option_decision.expected_value,
                        option_decision.data_confidence, option_decision.execution_confidence,
                        option_decision.market_regime, option_decision.model_version,
                        option_decision.relative_value_id, option_decision.modeled_net_edge,
                        option_decision.quote_observed_at, option_decision.synthetic_legs,
-                       contract.expiration, contract.strike, contract.option_type
+                       option_decision.details, contract.expiration, contract.strike, contract.option_type,
+                       instrument.symbol, snapshot.market_session
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                JOIN raw.option_snapshot snapshot ON snapshot.id = option_decision.snapshot_id
                 WHERE decision.run_id = %s AND option_decision.paper_state IS NOT NULL
                 ORDER BY option_decision.paper_state = 'PAPER_READY' DESC,
                          option_decision.modeled_net_edge DESC NULLS LAST, decision.id
                 """,
                 [run_id],
             ).fetchall()
-        candidates = [
-            {
-                "stable_key": str(row["decision_id"]), "decision_id": str(row["decision_id"]),
-                "instrument_id": int(row["instrument_id"]), "as_of": row["as_of"],
-                "paper_state": row["paper_state"], "discovery_lane": row["discovery_lane"],
-                "structure": row["structure"], "entry_price": row["entry_price"], "max_loss": row["max_loss"],
-                "expected_value": row["expected_value"], "data_confidence": row["data_confidence"],
-                "execution_confidence": row["execution_confidence"], "market_regime": row["market_regime"],
-                "model_version": row["model_version"], "relative_value_id": row["relative_value_id"],
-                "modeled_net_edge": row["modeled_net_edge"], "quote_observed_at": row["quote_observed_at"],
-                "leg_quotes": list(row["synthetic_legs"] or []),
-                "expiration": row["expiration"], "strike": row["strike"], "option_type": row["option_type"],
-                "execution_ready": row["paper_state"] == "PAPER_READY", "paper_only": True,
-            }
-            for row in rows
-        ]
+        candidates = published_candidates(
+            self.runtime, list(rows), sleeve_capital=self.options_risk_sleeve_capital
+        )
         return self.analysis.publish(
             run_id, "options-decision-system", {"options_decision_candidate": candidates},
             validation={"paper_only": True, "candidate_count": len(candidates)}, complete_run_summary=summary,

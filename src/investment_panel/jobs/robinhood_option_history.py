@@ -49,7 +49,10 @@ def run(
         return {"status": "skipped", "reason": "outside_regular_session", "symbols": []}
     runtime = runtime_for_config(config)
     ingestion = IngestionRepository(runtime)
-    history = OptionHistoryRepository(runtime)
+    history = OptionHistoryRepository(
+        runtime,
+        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+    )
     policy = OptionHistoryPolicyRepository(runtime)
     history.defer_stale_running_captures(
         source_id="robinhood",
