@@ -1,5 +1,5 @@
 import {
-  Activity, ArrowRight, BookOpenCheck, Check, CircleDashed, FlaskConical,
+  Activity, ArrowRight, BookOpenCheck, FlaskConical,
   Microscope, ShieldCheck, Target, X,
 } from "lucide-react";
 import { useEffect, useId, useState, type ComponentType, type KeyboardEvent, type ReactNode } from "react";
@@ -186,54 +186,28 @@ function TradeDesk({ brief, workspace, thesis, anomaly, onEvidence, onRecord }: 
       </div>
     </section>
 
-    <section className="grid gap-4 xl:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.18fr)]">
-      <GateStack brief={brief} />
-      <BlockerBoard brief={brief} />
-    </section>
+    <DecisionGate brief={brief} />
 
     {candidates.length ? <CandidateBoard thesis={thesis} anomaly={anomaly} state={brief.state} /> : null}
   </div>;
 }
 
-function GateStack({ brief }: { brief: OptionsDecisionBrief }) {
-  const { readiness } = brief;
-  const neutralThesis = readiness.thesis.present && readiness.thesis.blocker === "thesis_direction_required";
-  const gates = [
-    { label: "Capture", value: readiness.capture.capture_state === "complete" ? "Complete" : "Open", detail: `${readiness.capture.complete_captures} complete generations`, done: readiness.capture.capture_state === "complete" },
-    { label: "Model fit", value: `${readiness.analysis.succeeded_groups}/${readiness.analysis.fit_attempts}`, detail: `${readiness.analysis.solver_failures} solver failures`, done: readiness.analysis.fit_attempts > 0 && readiness.analysis.succeeded_groups === readiness.analysis.fit_attempts },
-    {
-      label: "QQQ thesis",
-      value: readiness.thesis.eligible ? readiness.thesis.revision ?? "Eligible" : neutralThesis ? "Neutral" : "Pending",
-      detail: readiness.thesis.invalidation ?? "Automatic directional view and invalidation pending",
-      done: readiness.thesis.eligible,
-    },
-    { label: "Canary", value: `${readiness.canary.qualified_regular_sessions}/${readiness.canary.required_regular_sessions}`, detail: readiness.canary.qualified_regular_sessions >= readiness.canary.required_regular_sessions ? "Reliability gate complete" : "Qualified regular sessions", done: readiness.canary.qualified_regular_sessions >= readiness.canary.required_regular_sessions },
-  ];
-  return <div className="rounded-xl border border-border bg-card p-4 sm:p-5">
-    <SectionTitle icon={<ShieldCheck className="size-4" />} title="Underwriting gates" detail="Every gate must clear before PAPER_READY." />
-    <div className="mt-4 divide-y divide-border">
-      {gates.map((gate) => <div key={gate.label} className="grid grid-cols-[auto_1fr_auto] items-center gap-3 py-3 first:pt-0 last:pb-0">
-        <span className={`grid size-7 place-items-center rounded-full ${gate.done ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-amber-500/15 text-amber-700 dark:text-amber-300"}`}>{gate.done ? <Check className="size-4" /> : <CircleDashed className="size-4" />}</span>
-        <span><strong className="block text-sm font-medium">{gate.label}</strong><span className="text-xs text-muted-foreground">{gate.detail}</span></span>
-        <span className="text-sm font-semibold tabular-nums">{gate.value}</span>
-      </div>)}
-    </div>
-  </div>;
-}
-
-function BlockerBoard({ brief }: { brief: OptionsDecisionBrief }) {
-  const rows = brief.readiness.top_blockers.slice(0, 3);
-  const max = Math.max(...rows.map((row) => row.count), 1);
+function DecisionGate({ brief }: { brief: OptionsDecisionBrief }) {
+  const ticket = brief.strongest_candidate?.ticket;
+  const ticketBlocker = ticket?.blockers?.[0];
+  const failed = brief.readiness.top_blockers[0];
+  const blocker = ticketBlocker ?? failed?.blocker;
+  const copy = blocker ? blockerCopy(blocker) : null;
   return <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
-    <SectionTitle icon={<X className="size-4" />} title="Why the chain produced no trade" detail="The three largest evidence-quality failures. Counts overlap." />
-    {rows.length ? <div className="mt-4 space-y-4">{rows.map((row) => {
-      const copy = blockerCopy(row.blocker);
-      return <div key={row.blocker}>
-        <div className="flex items-baseline justify-between gap-3"><strong className="text-sm font-medium">{copy.label}</strong><span className="text-sm tabular-nums text-muted-foreground">{row.count.toLocaleString()}</span></div>
-        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-amber-500/70" style={{ width: `${Math.max(4, (row.count / max) * 100)}%` }} /></div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.detail}</p>
-      </div>;
-    })}</div> : <Empty text="No active evidence blockers were reported." />}
+    <SectionTitle
+      icon={blocker ? <X className="size-4" /> : <ShieldCheck className="size-4" />}
+      title={copy?.label ?? "Decision gates are clear"}
+      detail={copy?.detail ?? "No failed decision gate is active in the current publication."}
+    />
+    <div className="mt-4 rounded-lg border border-border bg-background p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Required next action</p>
+      <p className="mt-1 text-sm font-medium">{ticket?.required_next_action ?? brief.readiness.next_required_action}</p>
+    </div>
   </section>;
 }
 
@@ -252,16 +226,23 @@ function CandidateList({ title, rows, state, empty }: { title: string; rows: Opt
 }
 
 function Candidate({ candidate, state }: { candidate: OptionsDecisionCandidate; state: string }) {
+  const ticket = candidate.ticket;
   return <article className="py-3 first:pt-1 last:pb-1">
     <div className="flex items-start justify-between gap-3">
       <div><strong className="text-sm">{sentence(candidate.structure)}</strong><p className="text-xs text-muted-foreground">{candidate.expiration} · {candidate.option_type.toUpperCase()} {money(candidate.strike)}</p></div>
       <StatusBadge tone={tone(state)}>{candidate.paper_state}</StatusBadge>
     </div>
-    <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+    <dl className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
       <Metric label="Entry" value={money(candidate.conservative_entry.price)} />
-      <Metric label="Max loss" value={money(candidate.one_unit_max_loss)} />
-      <Metric label="Modeled edge" value={money(candidate.modeled_net_edge)} />
+      <Metric label="Quantity" value={ticket ? String(ticket.risk.recommended_quantity) : "0"} />
+      <Metric label="Total risk" value={money(ticket?.risk.total_risk)} />
+      <Metric label="Target / stop" value={ticket ? `${money(ticket.exits.profit_price)} / ${money(ticket.exits.loss_price)}` : "—"} />
     </dl>
+    {ticket ? <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+      {ticket.legs.map((leg) => <p key={`${leg.contract_id}-${leg.side}`}>{leg.side.toUpperCase()} {money(leg.strike)} {leg.option_type.toUpperCase()} · {money(leg.bid)} × {money(leg.ask)} · {leg.bid_size ?? "—"} / {leg.ask_size ?? "—"} · age {number(leg.quote_age_seconds, 0)}s</p>)}
+      <p>Time exit {ticket.exits.time_exit_dte} DTE · Invalidation: {ticket.exits.thesis_invalidation ?? "required before READY"}</p>
+      {ticket.blockers.length ? <p className="font-medium text-amber-700 dark:text-amber-300">NO TRADE — research only · {ticket.required_next_action}</p> : null}
+    </div> : null}
   </article>;
 }
 

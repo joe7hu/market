@@ -53,14 +53,30 @@ export function compareGroupedOpportunities(left: RowRecord, right: RowRecord): 
   const rightState = stateOf(right);
   return (
     stateRank(leftState) - stateRank(rightState) ||
-    compareNumber(numberField(right, ["rank_score", "score", "conviction_score"], Number.NEGATIVE_INFINITY), numberField(left, ["rank_score", "score", "conviction_score"], Number.NEGATIVE_INFINITY)) ||
+    compareNumber(
+      numberField(
+        right,
+        ["lower_confidence_expectancy_per_max_risk", "risk_adjusted_expectancy", "score", "rank_score"],
+        Number.NEGATIVE_INFINITY,
+      ),
+      numberField(
+        left,
+        ["lower_confidence_expectancy_per_max_risk", "risk_adjusted_expectancy", "score", "rank_score"],
+        Number.NEGATIVE_INFINITY,
+      ),
+    ) ||
     compareText(textField(left, ["ticker"]), textField(right, ["ticker"]))
   );
 }
 
 export function opportunityActionText(row: RowRecord): string {
+  const ticket = recordField(row, "ticket");
+  const ticketRisk = recordField(ticket, "risk");
+  if ((numberFromRecord(ticketRisk, "recommended_quantity") || 0) === 0) {
+    return "NO TRADE — research only. Resolve the ticket blockers before considering a paper entry.";
+  }
   const published = textField(row, ["advisory_action"]);
-  if (published) return `${published}. ${displayField(row, ["exit_plan"])}`;
+  if (published) return published;
   const tier = tierOf(row);
   if (isServiceRepair(row)) {
     return displayField(row, ["service_repair_summary"], "Service bug blocks trade-state computation.");

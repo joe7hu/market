@@ -120,6 +120,22 @@ export type OptionsDecisionReadiness = {
   next_required_action: string;
 };
 export type OptionsCandidateLeg = { contract_id: number; option_type: "call" | "put"; side: "long" | "short"; strike: number; bid: number | null; ask: number | null; observed_at: string | null; bid_size: number | null; ask_size: number | null; open_interest: number | null; volume: number | null; provider_iv: number | null; provider_delta: number | null };
+export type OptionTradeTicketLeg = {
+  contract_id: string; option_type: "call" | "put" | string; side: "buy" | "sell";
+  strike: number | null; bid: number | null; ask: number | null; bid_size: number | null; ask_size: number | null;
+  quote_time: string | null; quote_age_seconds: number | null; open_interest: number | null; volume: number | null;
+};
+export type OptionTradeTicket = {
+  ticket_version: number; decision_id: string; symbol: string; state: "READY" | "RESEARCH" | "AUDIT_ONLY";
+  structure: string; expiration: string; legs: OptionTradeTicketLeg[];
+  entry: { limit_price: number | null; maximum_chase_price: number | null; minimum_credit: number | null; valid_until: string; validity_seconds: number; expected_slippage: number | null };
+  risk: { sleeve_capital: number | null; broker_available_capital: number | null; one_unit_max_loss: number | null; one_unit_collateral: number | null; available_risk_budget: number; recommended_quantity: number; total_risk: number; symbol_exposure_after_entry: number; total_options_exposure_after_entry: number; fully_cash_secured: boolean; blockers: string[] };
+  thesis: { summary: string | null; catalyst: string | null; invalidation: string | null };
+  exits: { profit_price: number | null; loss_price: number | null; time_exit_dte: number; thesis_invalidation: string | null; liquidity_exit: string };
+  forecast: { interval: unknown; expected_value: number | null; lower_confidence_expected_value: number | null; probability_profit: number | null; probability_semantics: string | null; effective_sample_size: number | null; tail_loss: number | null; no_trade_expected_value: 0 };
+  lower_confidence_expectancy_per_max_risk: number | null; blockers: string[]; required_next_action: string;
+  data_model_revisions: Record<string, unknown>; provenance: Record<string, unknown>; paper_only: true;
+};
 export type OptionsDecisionCandidate = {
   decision_id: string; relative_value_id: number; paper_state: OptionsDecisionState; discovery_lane: "thesis" | "anomaly"; structure: "long_call" | "long_put" | "call_debit_spread" | "put_debit_spread"; expiration: string; strike: number; option_type: "call" | "put";
   legs: OptionsCandidateLeg[]; conservative_entry: { price: number | null; fill_basis: string }; one_unit_max_loss: number | null;
@@ -129,7 +145,8 @@ export type OptionsDecisionCandidate = {
   liquidity: { minimum_open_interest?: number | null; minimum_volume?: number | null; displayed_sizes?: Array<{ contract_id: number; bid_size: number | null; ask_size: number | null }> };
   thesis: { id: number | null; revision: string | null; invalidation: string | null; eligible: boolean };
   state_reasons: string[]; blockers: string[]; reassessment_date: string | null;
-  comparable_exact_structure_outcomes: { sample_size?: number; lower_95_expectancy?: number | null; brier_score?: number | null; other_regime_monitoring_count?: number }; paper_only: boolean;
+  comparable_exact_structure_outcomes: { sample_size?: number; lower_95_expectancy?: number | null; brier_score?: number | null; other_regime_monitoring_count?: number };
+  ticket: OptionTradeTicket | null; paper_only: boolean;
 };
 export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: OptionsDecisionState; summary: { message?: string; [key: string]: unknown }; readiness: OptionsDecisionReadiness; strongest_candidate: OptionsDecisionCandidate | null; paper_only: boolean };
 export type OptionsWorkspacePayload = {
@@ -455,6 +472,16 @@ export async function loadOptionsWorkspace(symbol = "QQQ", lane: "thesis" | "ano
 
 export async function loadOptionsCandidates(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionsDecisionCandidate>> {
   return getJson(`/api/options/candidates?${optionHistoryParams(params)}`, signal);
+}
+
+export async function loadOptionsRadarLearning(
+  collection: string,
+  cursor: string | null = null,
+  limit = 25,
+  signal?: AbortSignal,
+): Promise<{ collection: string; items: RowRecord[]; count: number; next_cursor: string | null }> {
+  const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+  return getJson(`/api/options-radar/learning/${encodeURIComponent(collection)}?limit=${limit}${cursorQuery}`, signal);
 }
 
 export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {

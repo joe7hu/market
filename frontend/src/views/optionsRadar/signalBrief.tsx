@@ -5,7 +5,7 @@ import {StatusBadge } from "@/components/market/workstation";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
 import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
-import {moneyField, formatRatio, formatScore, formatNumber, formatDate } from "../optionsRadarFormat";
+import {moneyField, formatRatio, formatNumber, formatDate } from "../optionsRadarFormat";
 import {recordField, numberFromRecord, stringFromRecord, boolFromRecord } from "../optionsRadarData";
 import {stateTone, tierTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone } from "../optionsRadarTone";
 import {FullText, TickerButton } from "../optionsRadarPrimitives";
@@ -88,7 +88,10 @@ export function SignalBriefPanel({
               </div>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricBox label="Rank Score" value={formatScore(numberField(strongest, ["rank_score", "score"], Number.NaN))} />
+                <MetricBox
+                  label="Lower-Confidence EV / Max Risk"
+                  value={formatRatio(numberField(strongest, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))}
+                />
                 <MetricBox label="Profit Probability (Provisional)" value={formatRatio(numberField(strongest, ["probability_profit"], Number.NaN))} />
                 <MetricBox label={hasLowerBound ? "Lower 95% EV" : "Net EV (Provisional)"} value={moneyField(strongest, hasLowerBound ? ["lower_95_expected_value"] : ["expected_value"])} />
                 <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Minimum Credit" : "Maximum Entry"} value={moneyField(strongest, ["suggested_limit", "entry_price", "premium_mid"])} />

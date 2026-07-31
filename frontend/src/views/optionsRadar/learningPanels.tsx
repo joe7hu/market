@@ -150,6 +150,7 @@ export function LearningProgressPanel({
   missedWinners,
   postmortemRequests,
   postmortems,
+  totals,
 }: {
   opportunities: RowRecord[];
   latestMarkByEvent: Map<string, RowRecord>;
@@ -159,6 +160,7 @@ export function LearningProgressPanel({
   missedWinners: RowRecord[];
   postmortemRequests: RowRecord[];
   postmortems: RowRecord[];
+  totals: Record<string, number>;
 }) {
   const currentMarks = opportunities.map((row) => latestMarkByEvent.get(textField(row, ["event_id"]))).filter(Boolean) as RowRecord[];
   const oneDay = countWhere(currentMarks, (row) => Number.isFinite(numberField(row, ["return_1d"], Number.NaN)));
@@ -174,10 +176,10 @@ export function LearningProgressPanel({
     ["Current outcomes", `${oneDay}/${opportunities.length}`, "current opportunities with at least 1D observed", oneDay ? "good" : "warn"],
     ["5D outcomes", `${fiveDay}/${opportunities.length}`, "current opportunities with a 5D read", fiveDay ? "good" : "muted"],
     ["Attribution", `${attributed}/${opportunities.length}`, "current opportunities with an explained move", attributed ? "good" : "muted"],
-    ["Cohorts ready", `${matureCohorts}/${cohorts.length}`, "cohorts with enough post-entry evidence to interpret", matureCohorts ? "good" : "warn"],
-    ["Missed winners", missedWinners.length.toLocaleString(), "unalerted 5x/10x contracts found", missedWinners.length ? "warn" : "muted"],
-    ["Strategy changes", readyProposals.toLocaleString(), "proposals through deterministic gates", readyProposals ? "good" : proposals.length ? "warn" : "muted"],
-    ["Postmortems", postmortems.length.toLocaleString(), "completed agent reviews of important outcomes", postmortems.length ? "good" : openPostmortems ? "warn" : "muted"],
+    ["Cohorts ready", `${matureCohorts}/${totals.strategy_cohort_result ?? cohorts.length}`, "loaded mature cohorts / total cohort history", matureCohorts ? "good" : "warn"],
+    ["Missed winners", (totals.missed_winner_event ?? missedWinners.length).toLocaleString(), "total unalerted 5x/10x contracts found", missedWinners.length ? "warn" : "muted"],
+    ["Strategy changes", `${readyProposals}/${totals.strategy_mutation_proposal ?? proposals.length}`, "loaded gated proposals / total proposal history", readyProposals ? "good" : proposals.length ? "warn" : "muted"],
+    ["Postmortems", `${postmortems.length}/${totals.agent_postmortem ?? postmortems.length}`, "loaded completed reviews / total postmortem history", postmortems.length ? "good" : openPostmortems ? "warn" : "muted"],
   ];
   return (
     <section className="rounded-md border border-border bg-card p-4">

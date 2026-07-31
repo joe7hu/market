@@ -1,7 +1,7 @@
-import {useMemo, useState } from "react";
-import {promoteStrategyMutation } from "@/api";
+import {useEffect, useMemo, useState } from "react";
+import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api";
 import {StatusBadge } from "@/components/market/workstation";
-import {PanelData } from "@/types";
+import {PanelData, RowRecord } from "@/types";
 import {displayField, numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
@@ -18,24 +18,47 @@ type OptionsRadarPageProps = {
   onOpenTicker: OpenTicker;
   onRefresh: () => Promise<void> | void;
 };
+const SIGNAL_DETAIL_COLLECTIONS = [
+  "candidate_event_mark", "candidate_event_attribution", "agent_thesis",
+  "agent_thesis_request", "agent_thesis_validation",
+];
+const LEARNING_COLLECTIONS = [
+  ...SIGNAL_DETAIL_COLLECTIONS, "missed_winner_event", "strategy_mutation_proposal",
+  "strategy_backtest_result", "strategy_forward_test_result", "strategy_cohort_result",
+  "agent_postmortem_request", "agent_postmortem",
+];
+
+async function loadLearningCollectionPage(
+  collection: string,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<[string, RowRecord[], string | null, number]> {
+  const payload = await loadOptionsRadarLearning(collection, cursor, 100, signal);
+  return [collection, payload.items, payload.next_cursor, payload.count];
+}
 
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
   const [activeTab, setActiveTab] = useState<"signals" | "learning">("signals");
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
+  const [learningRows, setLearningRows] = useState<Record<string, RowRecord[]>>({});
+  const [learningCursors, setLearningCursors] = useState<Record<string, string | null>>({});
+  const [learningCounts, setLearningCounts] = useState<Record<string, number>>({});
+  const [learningLoading, setLearningLoading] = useState(false);
+  const [learningReload, setLearningReload] = useState(0);
   const radarAlerts = rows(data.radarAlert);
-  const missedWinners = rows(data.missedWinnerEvent);
-  const proposals = rows(data.strategyMutationProposal);
-  const backtests = rows(data.strategyBacktestResult);
-  const forwardTests = rows(data.strategyForwardTestResult);
-  const thesisRequests = rows(data.agentThesisRequest);
-  const thesisValidations = rows(data.agentThesisValidation);
-  const postmortemRequests = rows(data.agentPostmortemRequest).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
-  const postmortems = rows(data.agentPostmortem).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
-  const agentTheses = rows(data.agentThesis);
-  const candidateMarks = rows(data.candidateEventMark);
-  const candidateAttributions = rows(data.candidateEventAttribution);
-  const cohortResults = rows(data.strategyCohortResult);
+  const missedWinners = learningRows.missed_winner_event ?? [];
+  const proposals = learningRows.strategy_mutation_proposal ?? [];
+  const backtests = learningRows.strategy_backtest_result ?? [];
+  const forwardTests = learningRows.strategy_forward_test_result ?? [];
+  const thesisRequests = learningRows.agent_thesis_request ?? [];
+  const thesisValidations = learningRows.agent_thesis_validation ?? [];
+  const postmortemRequests = (learningRows.agent_postmortem_request ?? []).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
+  const postmortems = (learningRows.agent_postmortem ?? []).filter((row) => textField(row, ["status"]).toLowerCase() !== "imported");
+  const agentTheses = learningRows.agent_thesis ?? [];
+  const candidateMarks = learningRows.candidate_event_mark ?? [];
+  const candidateAttributions = learningRows.candidate_event_attribution ?? [];
+  const cohortResults = learningRows.strategy_cohort_result ?? [];
   const opportunityRows = rows(data.optionRadarOpportunity);
   const discoveryRows = rows(data.optionDiscoveryCandidate);
   const strategyVersions = rows(data.optionStrategyVersions);
@@ -77,6 +100,59 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     ? `Professional v2 · revision ${numberField(radarSummary, ["strategy_revision"], 0).toLocaleString()}`
     : displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy");
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const collections = activeTab === "learning" ? LEARNING_COLLECTIONS : SIGNAL_DETAIL_COLLECTIONS;
+    if (!collections.length) return;
+    if (activeTab === "learning") setLearningLoading(true);
+    Promise.all(collections.map((collection) => loadLearningCollectionPage(collection, null, controller.signal)))
+      .then((payloads) => {
+        const loaded = Object.fromEntries(payloads.map(([collection, items]) => [collection, items]));
+        const cursors = Object.fromEntries(payloads.map(([collection, , cursor]) => [collection, cursor]));
+        const counts = Object.fromEntries(payloads.map(([collection, , , count]) => [collection, count]));
+        setLearningRows((current) => ({ ...current, ...loaded }));
+        setLearningCursors((current) => ({ ...current, ...cursors }));
+        setLearningCounts((current) => ({ ...current, ...counts }));
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) setPromotionError("Learning data could not be loaded.");
+      })
+      .finally(() => setLearningLoading(false));
+    return () => controller.abort();
+  }, [activeTab, data, latestCandidateTime, learningReload]);
+
+  async function handleLoadMoreLearning() {
+    const pending = Object.entries(learningCursors).filter(([, cursor]) => cursor !== null);
+    if (!pending.length || learningLoading) return;
+    setLearningLoading(true);
+    try {
+      const payloads = await Promise.all(
+        pending.map(([collection, cursor]) => loadLearningCollectionPage(collection, cursor, undefined)),
+      );
+      setLearningRows((current) => {
+        const next = { ...current };
+        for (const [collection, items] of payloads) next[collection] = [...(next[collection] ?? []), ...items];
+        return next;
+      });
+      setLearningCursors((current) => ({
+        ...current,
+        ...Object.fromEntries(payloads.map(([collection, , cursor]) => [collection, cursor])),
+      }));
+      setLearningCounts((current) => ({
+        ...current,
+        ...Object.fromEntries(payloads.map(([collection, , , count]) => [collection, count])),
+      }));
+    } catch {
+      setLearningRows({});
+      setLearningCursors({});
+      setLearningCounts({});
+      setLearningReload((value) => value + 1);
+      setPromotionError("The review snapshot expired or changed; learning history was reloaded.");
+    } finally {
+      setLearningLoading(false);
+    }
+  }
+
   async function handlePromoteProposal(proposalId: string) {
     if (!proposalId || promotingProposal) return;
     setPromotingProposal(proposalId);
@@ -84,6 +160,10 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     try {
       await promoteStrategyMutation(proposalId, "joe");
       await onRefresh();
+      setLearningRows({});
+      setLearningCursors({});
+      setLearningCounts({});
+      setLearningReload((value) => value + 1);
     } catch (error) {
       setPromotionError(error instanceof Error ? error.message : "Promotion failed");
     } finally {
@@ -138,6 +218,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         />
       ) : (
         <div className="space-y-4">
+        {learningLoading ? <p className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">Loading bounded learning cohorts…</p> : null}
         <LearningProgressPanel
           opportunities={enrichedOpportunityCandidates}
           latestMarkByEvent={latestCandidateMarkByEvent}
@@ -147,6 +228,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           missedWinners={missedWinners}
           postmortemRequests={postmortemRequests}
           postmortems={postmortems}
+          totals={learningCounts}
         />
         <CohortResultsTable rows={cohortResults} />
         {missedWinners.length ? <MissedWinnersTable rows={missedWinners} onOpenTicker={onOpenTicker} /> : null}
@@ -158,6 +240,16 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
             promotionError={promotionError}
             onPromote={handlePromoteProposal}
           />
+        {Object.values(learningCursors).some((cursor) => cursor !== null) ? (
+          <button
+            type="button"
+            className="rounded-md border border-border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            disabled={learningLoading}
+            onClick={handleLoadMoreLearning}
+          >
+            {learningLoading ? "Loading…" : "Load more review history"}
+          </button>
+        ) : null}
       </div>
       )}
     </WorkspacePage>
