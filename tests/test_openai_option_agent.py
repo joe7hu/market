@@ -77,6 +77,16 @@ def test_openai_thesis_agent_uses_responses_structured_outputs(monkeypatch) -> N
     assert result["evidence_refs"][0] == {"type": "agent_request", "id": "req-1"}
 
 
+def test_codex_binary_falls_back_to_known_installation(tmp_path, monkeypatch) -> None:
+    candidate = tmp_path / "codex"
+    candidate.write_text("")
+    monkeypatch.delenv("MARKET_CODEX_BIN", raising=False)
+    monkeypatch.setattr(openai_option_agent.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(openai_option_agent, "_CODEX_CANDIDATES", (str(candidate),))
+
+    assert openai_option_agent._resolve_codex_bin() == str(candidate)
+
+
 def test_codex_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> None:
     captured: dict = {}
 
