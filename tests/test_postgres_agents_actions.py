@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from investment_panel.database.actions import ActionRepository
-from investment_panel.database.agents import AgentRepository
+from investment_panel.database.agents import AgentRepository, _command_args
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -253,6 +253,19 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
         assert duplicate["status"] == "completed"
     finally:
         runtime.close()
+
+
+def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    command = bin_dir / "market-codex-option-agent"
+    python.write_text("")
+    command.write_text("")
+    monkeypatch.setattr("investment_panel.database.agents.shutil.which", lambda _name: None)
+    monkeypatch.setattr("investment_panel.database.agents.sys.executable", str(python))
+    resolved = _command_args("market-codex-option-agent")
+    assert resolved[0] == str(command)
 
 
 def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_dsn: str) -> None:

@@ -50,7 +50,9 @@ def run(
                 "option_postmortem": option_agent.postmortem_limit,
             },
         )
+        runner_status = str(result.get("status") or "failed")
         return {
+            "ok": runner_status in {"ok", "skipped"}, "status": runner_status,
             "database": "postgresql", "strategy_version": strategy_version,
             "mode": "consolidated", "queued": queued,
             "queued_postmortems": queued_postmortems, "option_agent_runner": result,
@@ -72,7 +74,13 @@ def run(
         task_kinds=("option_postmortem",),
         model="option-postmortem",
     )
-    return {"database": "postgresql", "strategy_version": strategy_version, "mode": "separate", "option_thesis": thesis, "option_postmortem": postmortem}
+    statuses = {str(thesis.get("status") or "failed"), str(postmortem.get("status") or "failed")}
+    status = "failed" if statuses == {"failed"} else "partial" if statuses & {"failed", "partial"} else "ok"
+    return {
+        "ok": status == "ok", "status": status, "database": "postgresql",
+        "strategy_version": strategy_version, "mode": "separate",
+        "option_thesis": thesis, "option_postmortem": postmortem,
+    }
 
 
 def main() -> None:

@@ -6,8 +6,11 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import json
 import os
+from pathlib import Path
 import shlex
+import shutil
 import subprocess
+import sys
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -340,7 +343,7 @@ class AgentRepository:
                 child_env = os.environ.copy()
                 child_env.update(_agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
                 process = subprocess.run(
-                    shlex.split(command), input=json.dumps(payload), text=True,
+                    _command_args(command), input=json.dumps(payload), text=True,
                     capture_output=True, timeout=timeout_seconds, check=False, env=child_env,
                 )
                 if process.returncode != 0:
@@ -418,7 +421,7 @@ class AgentRepository:
                 break
             try:
                 process = subprocess.run(
-                    shlex.split(command), input=json.dumps(_jsonable(dict(task["request"]))),
+                    _command_args(command), input=json.dumps(_jsonable(dict(task["request"]))),
                     text=True, capture_output=True, timeout=timeout_seconds, check=False, env=child_env,
                 )
                 if process.returncode != 0:
@@ -662,6 +665,18 @@ def _agent_env(*, provider: str, model: str, reasoning_effort: str) -> dict[str,
     if reasoning_effort:
         values["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
     return values
+
+
+def _command_args(command: str) -> list[str]:
+    args = shlex.split(command)
+    if not args:
+        raise ValueError("agent command is empty")
+    executable = args[0]
+    if "/" not in executable and shutil.which(executable) is None:
+        local_executable = Path(sys.executable).resolve().parent / executable
+        if local_executable.is_file():
+            args[0] = str(local_executable)
+    return args
 
 
 def _jsonable(value: Any) -> Any:

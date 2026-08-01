@@ -193,7 +193,7 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
         def run_queued(self, command, **kwargs):
             if command:
                 calls.append(kwargs.get("run_trigger"))
-            return {"completed": 0}
+            return {"status": "ok", "completed": 0}
 
     monkeypatch.setattr(run_option_agents, "runtime_for_config", lambda config: object())
     monkeypatch.setattr(run_option_agents, "AgentRepository", _Repository)
@@ -203,8 +203,9 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
     assert calls == []
 
     # force=True => runs consolidated despite enabled=False, tagged manual.
-    run_option_agents.run(force=True)
+    result = run_option_agents.run(force=True)
     assert calls == ["manual"]
+    assert result["status"] == "ok"
 
 
 def test_partial_context_sources_patch_merges_existing(tmp_path) -> None:
