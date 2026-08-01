@@ -673,7 +673,9 @@ def _command_args(command: str) -> list[str]:
         raise ValueError("agent command is empty")
     executable = args[0]
     if "/" not in executable and shutil.which(executable) is None:
-        local_executable = Path(sys.executable).resolve().parent / executable
+        # Keep the virtualenv path itself; resolving its Python symlink jumps to
+        # uv's shared interpreter directory where console scripts do not live.
+        local_executable = Path(sys.executable).parent / executable
         if local_executable.is_file():
             args[0] = str(local_executable)
     return args
