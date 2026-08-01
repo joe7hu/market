@@ -7,6 +7,16 @@ from typing import Any
 from investment_panel.database.thesis_evidence import thesis_source_evidence
 
 
+_DUPLICATE_MODELS = {
+    "agent_recommendations", "candidates", "daily_brief", "decision_queue",
+    "opportunities_ranked", "option_radar_opportunity", "symbol_decision_snapshots",
+}
+_VERBOSE_KEYS = {
+    "raw", "payload", "chart", "chart_1y", "volume_1m_bars", "atr_pct_1m_points",
+    "contracts", "chain", "alternatives", "candidate_rows", "source_text",
+}
+
+
 def ticker_context(connection: Any, symbol: str) -> dict[str, Any]:
     state = connection.execute(
         """
@@ -42,11 +52,11 @@ def ticker_context(connection: Any, symbol: str) -> dict[str, Any]:
         JOIN app.publication_item item ON item.publication_id = publication.id
         WHERE publication.status = 'published'
           AND coalesce(item.payload->>'symbol', item.payload->>'ticker', item.payload->>'underlying') = %s
-          AND item.model_name NOT IN ('candidate_event', 'option_features', 'option_snapshot')
+          AND item.model_name <> ALL(%s)
         ORDER BY item.model_name, publication.published_at DESC NULLS LAST, item.rank
         LIMIT 24
         """,
-        [symbol],
+        [symbol, sorted(_DUPLICATE_MODELS | {"candidate_event", "option_features", "option_snapshot"})],
     ).fetchall()
     catalysts = connection.execute(
         """
@@ -60,8 +70,27 @@ def ticker_context(connection: Any, symbol: str) -> dict[str, Any]:
     ).fetchall()
     return {
         "portfolio": dict(state) if state else {},
-        "option_opportunity": dict(option["payload"] or {}) if option else {},
-        "published_models": {str(row["model_name"]): dict(row["payload"] or {}) for row in published},
+        "option_opportunity": _bounded_value(dict(option["payload"] or {})) if option else {},
+        "published_models": {str(row["model_name"]): _bounded_value(dict(row["payload"] or {})) for row in published},
         "catalysts": [dict(row) for row in catalysts],
-        "source_evidence": thesis_source_evidence(connection, [symbol]).get(symbol, [])[:12],
+        "source_evidence": [
+            _bounded_value(item) for item in thesis_source_evidence(connection, [symbol]).get(symbol, [])[:12]
+        ],
     }
+
+
+def _bounded_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return None
+    if isinstance(value, dict):
+        return {
+            str(key): bounded
+            for key, item in value.items()
+            if str(key) not in _VERBOSE_KEYS
+            if (bounded := _bounded_value(item, depth=depth + 1)) not in (None, "", [], {})
+        }
+    if isinstance(value, list):
+        return [_bounded_value(item, depth=depth + 1) for item in value[:12]]
+    if isinstance(value, str):
+        return value[:1000]
+    return value

@@ -10,6 +10,7 @@ import pytest
 from investment_panel.jobs import openai_option_agent
 from investment_panel.jobs import openai_option_agent_auth
 from investment_panel.jobs import codex_thesis_monitor
+from investment_panel.jobs import codex_runtime
 
 
 class FakeResponse:
@@ -81,10 +82,10 @@ def test_codex_binary_falls_back_to_known_installation(tmp_path, monkeypatch) ->
     candidate = tmp_path / "codex"
     candidate.write_text("")
     monkeypatch.delenv("MARKET_CODEX_BIN", raising=False)
-    monkeypatch.setattr(openai_option_agent.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(openai_option_agent, "_CODEX_CANDIDATES", (str(candidate),))
+    monkeypatch.setattr(codex_runtime.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(codex_runtime, "CODEX_CANDIDATES", (str(candidate),))
 
-    assert openai_option_agent._resolve_codex_bin() == str(candidate)
+    assert codex_runtime.resolve_codex_bin() == str(candidate)
 
 
 def test_codex_thesis_monitor_uses_strict_structured_outputs(monkeypatch) -> None:

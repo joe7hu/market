@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,12 +13,11 @@ from typing import Any
 import httpx
 
 from investment_panel.jobs.openai_option_agent_auth import codex_oauth_access_token
+from investment_panel.jobs.codex_runtime import resolve_codex_bin
 
 
 DEFAULT_MODEL = "gpt-5.2"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
-_CODEX_CANDIDATES = ("/opt/homebrew/bin/codex", "/usr/local/bin/codex")
-
 
 class OpenAIOptionAgentError(RuntimeError):
     """Raised when the OpenAI option agent command cannot return JSON."""
@@ -383,7 +381,7 @@ def _call_codex_structured(
 ) -> dict[str, Any]:
     # Batch callers pre-shape payloads and must not be re-compacted.
     body_payload = _compact_request_payload(request_payload) if compact else request_payload
-    codex_bin = _resolve_codex_bin()
+    codex_bin = resolve_codex_bin()
     effective_timeout = timeout if timeout is not None else float(os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"))
     with tempfile.NamedTemporaryFile("w", suffix=f"-{schema_name}.schema.json", delete=False) as schema_file:
         json.dump(schema, schema_file)
@@ -503,19 +501,6 @@ def _codex_command(
         cmd.extend(["-m", selected_model])
     cmd.append(_codex_agent_prompt(system_prompt))
     return cmd
-
-
-def _resolve_codex_bin() -> str:
-    configured = os.environ.get("MARKET_CODEX_BIN", "").strip()
-    if configured:
-        return configured
-    discovered = shutil.which("codex")
-    if discovered:
-        return discovered
-    for candidate in _CODEX_CANDIDATES:
-        if Path(candidate).is_file():
-            return candidate
-    return "codex"
 
 
 def _codex_agent_prompt(system_prompt: str) -> str:
