@@ -48,7 +48,7 @@ export function AgentPage() {
   const [busy, setBusy] = useState<string>("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [pending, setPending] = useState<{ runsBefore: number; label: string } | null>(null);
+  const [pending, setPending] = useState<{ latestOptionRunId?: string; label: string } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -79,10 +79,10 @@ export function AgentPage() {
 
   useEffect(() => {
     if (!pending || !data) return;
-    if (data.runs.length > pending.runsBefore) {
-      const latest = data.runs[0];
-      const cost = Number(latest?.est_cost_usd ?? 0).toFixed(4);
-      setMessage(`✓ ${pending.label}: run ${latest?.status ?? "done"} — ${latest?.thesis_accepted ?? 0}/${latest?.thesis_attempted ?? 0} thesis saved, $${cost}.`);
+    const latest = data.runs.find((run) => run.workflow === "option_agent");
+    if (latest?.id && latest.id !== pending.latestOptionRunId) {
+      const tokens = (latest?.input_tokens ?? 0) + (latest?.output_tokens ?? 0);
+      setMessage(`✓ ${pending.label}: run ${latest?.status ?? "done"} — ${latest?.thesis_accepted ?? 0}/${latest?.thesis_attempted ?? 0} thesis saved, ~${tokens.toLocaleString()} tokens.`);
       setPending(null);
     }
   }, [data, pending]);
@@ -116,10 +116,10 @@ export function AgentPage() {
     setError("");
     setMessage("");
     try {
-      const runsBefore = data?.runs.length ?? 0;
+      const latestOptionRunId = data?.runs.find((run) => run.workflow === "option_agent")?.id;
       await startRefreshJob(FORCE_JOB);
       setMessage("Queue run started — processing all open requests…");
-      setPending({ runsBefore, label: "Queue run" });
+      setPending({ latestOptionRunId, label: "Queue run" });
       await refresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to start agent run");
@@ -135,10 +135,10 @@ export function AgentPage() {
     setError("");
     setMessage("");
     try {
-      const runsBefore = data?.runs.length ?? 0;
+      const latestOptionRunId = data?.runs.find((run) => run.workflow === "option_agent")?.id;
       await analyzeTicker(symbol, prompt.trim() || undefined);
       setMessage(`Analyzing ${symbol}… this runs in the background and will appear in Run history below.`);
-      setPending({ runsBefore, label: `${symbol} analysis` });
+      setPending({ latestOptionRunId, label: `${symbol} analysis` });
       setTicker("");
       setPrompt("");
       await refresh();
@@ -156,8 +156,8 @@ export function AgentPage() {
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
     ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
-    ["Cost today", cost ? `$${cost.today.est_cost_usd.toFixed(4)}` : "—", `${(cost?.today.input_tokens ?? 0).toLocaleString()} in / ${(cost?.today.output_tokens ?? 0).toLocaleString()} out tok`, cost?.today.est_cost_usd ? "info" : "muted"],
-    ["Cost 7d", cost ? `$${cost.last_7d.est_cost_usd.toFixed(4)}` : "—", `${cost?.last_7d.runs ?? 0} runs`, "info"],
+    ["Agent tokens today", cost ? (cost.today.input_tokens + cost.today.output_tokens).toLocaleString() : "—", `${cost?.today.runs ?? 0} option + thesis-monitor runs`, "info"],
+    ["Agent tokens 7d", cost ? (cost.last_7d.input_tokens + cost.last_7d.output_tokens).toLocaleString() : "—", `${cost?.last_7d.runs ?? 0} runs · OAuth cost not metered`, "info"],
   ];
 
   return (
@@ -289,6 +289,7 @@ export function AgentPage() {
               <tr>
                 <th className="px-3 py-3">Started</th>
                 <th className="px-3 py-3">Trigger</th>
+                <th className="px-3 py-3">Workflow</th>
                 <th className="px-3 py-3">Ticker</th>
                 <th className="px-3 py-3">Model</th>
                 <th className="px-3 py-3">Tokens (in/out)</th>
@@ -301,7 +302,7 @@ export function AgentPage() {
             <tbody>
               {(data?.runs ?? []).map((run, index) => <RunRow key={run.id ?? index} run={run} />)}
               {!data?.runs?.length ? (
-                <tr><td colSpan={9} className="px-4 py-6 text-sm text-muted-foreground">No agent runs recorded yet.</td></tr>
+                <tr><td colSpan={10} className="px-4 py-6 text-sm text-muted-foreground">No agent runs recorded yet.</td></tr>
               ) : null}
             </tbody>
           </table>
@@ -317,6 +318,7 @@ function RunRow({ run }: { run: AgentRun }) {
     <tr className="border-b border-border align-top hover:bg-accent/40">
       <td className="whitespace-nowrap px-3 py-3 text-muted-foreground">{formatTime(run.started_at)}</td>
       <td className="px-3 py-3">{titleLabel(run.trigger || "scheduled")}</td>
+      <td className="px-3 py-3">{titleLabel(run.workflow || "option_agent")}</td>
       <td className="px-3 py-3 font-medium">{run.ticker || "—"}</td>
       <td className="px-3 py-3 text-muted-foreground">{run.model || run.provider || "—"}</td>
       <td className="px-3 py-3 tabular-nums">{(run.input_tokens ?? 0).toLocaleString()}{estimated} / {(run.output_tokens ?? 0).toLocaleString()}</td>

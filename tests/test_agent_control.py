@@ -147,7 +147,7 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
 
     from investment_panel.jobs import run_option_agents
 
-    calls: list[bool] = []
+    calls: list[str | None] = []
 
     class _Cfg:
         class database:
@@ -184,9 +184,15 @@ def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> 
         def __init__(self, runtime) -> None:
             self.runtime = runtime
 
+        def queue_current_candidates(self, **_kwargs):
+            return 0
+
+        def queue_current_postmortems(self, **_kwargs):
+            return 0
+
         def run_queued(self, command, **kwargs):
             if command:
-                calls.append(kwargs.get("trigger"))
+                calls.append(kwargs.get("run_trigger"))
             return {"completed": 0}
 
     monkeypatch.setattr(run_option_agents, "runtime_for_config", lambda config: object())

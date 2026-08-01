@@ -43,9 +43,9 @@ def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
                 "thesis_limit": _int_value(option_agent.get("thesis_limit"), 8),
                 "postmortem_limit": _int_value(option_agent.get("postmortem_limit"), 4),
                 "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
-                "queue_policy": "current_top_ranked_candidates_only",
-                "cadence": "daily_premarket",
-                "max_runs_per_day": 1,
+                "queue_policy": "current_ranked_candidates_plus_ondemand",
+                "cadence": "configured_scheduler_or_ondemand",
+                "max_runs_per_day": _int_value(option_agent.get("max_runs_per_day"), 1),
                 "mode": "consolidated_single_pass",
             },
             "option_thesis": _agent_runtime_metadata(option_thesis, default_limit=20) | {

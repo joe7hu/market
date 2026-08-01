@@ -9,9 +9,9 @@ from typing import Any
 
 from investment_panel.core.config import config_to_dict, load_config
 from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.thesis import save_thesis, thesis_monitor_rows
-from investment_panel.database.thesis_automation import ThesisAutomationRepository
-from investment_panel.jobs.codex_thesis_monitor import OpenAIOptionAgentError, generate_codex_thesis_monitor
+from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
+from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
+from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor
 
 
 class ThesisAutomationValidationError(ValueError):
@@ -33,6 +33,7 @@ def run(
         return {"status": "skipped", "reason": "thesis monitor automation disabled", "completed": 0, "failed": 0}
     rows = _selected_rows(config_dict, symbols)
     repository = ThesisAutomationRepository(runtime_for_config(config))
+    recovered = repository.recover_stale_runs()
     completed = failed = skipped = 0
     errors: list[str] = []
     results: list[dict[str, Any]] = []
@@ -75,6 +76,7 @@ def run(
         "dry_run": dry_run,
         "results": sorted(results, key=lambda item: str(item.get("symbol"))),
         "errors": errors,
+        "recovered_stale_runs": recovered,
     }
 
 
@@ -95,26 +97,28 @@ def _run_one(
 ) -> dict[str, Any]:
     symbol = str(row.get("symbol") or "").upper()
     evidence = list(row.get("source_evidence") or [])[:evidence_limit]
+    fingerprint = evidence_fingerprint(evidence) if evidence else None
     eligible, reason = repository.eligible(
         symbol,
         trigger=trigger,
         debounce_minutes=debounce_minutes,
         max_material_runs_per_day=max_material_runs_per_symbol_per_day,
         force=force,
+        fingerprint=fingerprint,
     )
     if not eligible:
         return {"symbol": symbol, "status": "skipped", "reason": reason}
     if dry_run:
         try:
-            request = _request_payload(row, evidence, prompt_version=prompt_version)
+            request, evidence_refs = _request_payload(row, evidence, prompt_version=prompt_version)
             output = generate_codex_thesis_monitor(
                 request,
                 model=None if model == "configured_default" else model,
                 reasoning_effort=reasoning_effort,
             )
-            validate_model_output(output, row=row, evidence=evidence)
+            validate_model_output(output, row=row, evidence=evidence, evidence_refs=evidence_refs)
             return {"symbol": symbol, "status": "skipped", "reason": "dry_run_valid"}
-        except (OpenAIOptionAgentError, ThesisAutomationValidationError, TimeoutError, ValueError) as exc:
+        except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             return {"symbol": symbol, "status": "failed", "error": error}
     run_id = repository.start_run(
@@ -127,13 +131,28 @@ def _run_one(
         status="running",
     )
     try:
-        request = _request_payload(row, evidence, prompt_version=prompt_version)
+        request, evidence_refs = _request_payload(row, evidence, prompt_version=prompt_version)
         output = generate_codex_thesis_monitor(
             request,
             model=None if model == "configured_default" else model,
             reasoning_effort=reasoning_effort,
         )
-        validated = validate_model_output(output, row=row, evidence=evidence)
+        validated = validate_model_output(output, row=row, evidence=evidence, evidence_refs=evidence_refs)
+        normalized = normalize_thesis_v3(
+            {**validated["thesis"], "author_kind": "ai"},
+            previous=dict(row.get("raw_thesis") or {}), symbol=symbol,
+        )
+        if row.get("revision_id") and normalized == dict(row.get("raw_thesis") or {}):
+            repository.mark_current_assessed(symbol)
+            assessments = repository.store_assessments(
+                symbol, revision_id=int(row["revision_id"]), run_id=run_id,
+                assessments=validated["evidence_assessments"],
+            )
+            repository.finish_run(run_id, status="succeeded", usage=_usage(output))
+            return {
+                "symbol": symbol, "status": "succeeded", "run_id": run_id,
+                "revision": row.get("revision"), "assessments": assessments, "unchanged": True,
+            }
         saved = save_thesis(
             config,
             symbol,
@@ -159,21 +178,27 @@ def _run_one(
             "revision": saved["revision"],
             "assessments": assessments,
         }
-    except (OpenAIOptionAgentError, ThesisAutomationValidationError, TimeoutError, ValueError) as exc:
+    except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         repository.finish_run(run_id, status="failed", error=error)
         repository.create_health_alert(symbol, title="Thesis automation failed", detail=error[:1000])
         return {"symbol": symbol, "status": "failed", "run_id": run_id, "error": error}
 
 
-def validate_model_output(output: dict[str, Any], *, row: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def validate_model_output(
+    output: dict[str, Any], *, row: dict[str, Any], evidence: list[dict[str, Any]],
+    evidence_refs: dict[str, str] | None = None,
+) -> dict[str, Any]:
     symbol = str(row.get("symbol") or "").upper()
     if str(output.get("symbol") or "").upper() != symbol:
         raise ThesisAutomationValidationError("model symbol does not match request")
     thesis = output.get("thesis")
     if not isinstance(thesis, dict) or not str(thesis.get("core_thesis") or "").strip():
         raise ThesisAutomationValidationError("model output missing thesis.core_thesis")
-    allowed_refs = {str(item.get("reference")) for item in evidence if item.get("reference")}
+    reference_map = evidence_refs or {
+        str(item.get("reference")): str(item.get("reference")) for item in evidence if item.get("reference")
+    }
+    allowed_refs = set(reference_map)
     assessments = output.get("evidence_assessments")
     if not isinstance(assessments, list):
         raise ThesisAutomationValidationError("evidence_assessments must be an array")
@@ -192,6 +217,8 @@ def validate_model_output(output: dict[str, Any], *, row: dict[str, Any], eviden
         confidence = float(item.get("confidence") or 0)
         if confidence < 0 or confidence > 1:
             raise ThesisAutomationValidationError("assessment confidence out of bounds")
+        item["evidence_reference"] = reference_map[ref]
+    _restore_thesis_references(thesis, reference_map)
     _validate_scenarios(thesis)
     _validate_invalidations(thesis)
     if not allowed_refs:
@@ -249,8 +276,18 @@ def _selected_rows(config: dict[str, Any], symbols: list[str] | None) -> list[di
     return [row for row in rows if str(row.get("symbol") or "").upper() in wanted]
 
 
-def _request_payload(row: dict[str, Any], evidence: list[dict[str, Any]], *, prompt_version: str) -> dict[str, Any]:
-    return {
+def _request_payload(
+    row: dict[str, Any], evidence: list[dict[str, Any]], *, prompt_version: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    reference_map: dict[str, str] = {}
+    compact_evidence: list[dict[str, Any]] = []
+    for index, item in enumerate(evidence, start=1):
+        short_ref = f"e{index}"
+        original_ref = str(item.get("reference") or "")
+        if original_ref:
+            reference_map[short_ref] = original_ref
+        compact_evidence.append({**item, "reference": short_ref})
+    return ({
         "prompt_version": prompt_version,
         "symbol": row.get("symbol"),
         "current_thesis": row.get("raw_thesis") or {},
@@ -268,14 +305,25 @@ def _request_payload(row: dict[str, Any], evidence: list[dict[str, Any]], *, pro
             "next_catalyst": row.get("next_catalyst"),
             "options_underwriting": bool(row.get("options_underwriting")),
         },
-        "evidence": evidence,
+        "evidence": compact_evidence,
         "guardrails": {
             "authority": "research_ranking_only",
             "never_stage_orders": True,
             "never_clear_deterministic_gates": True,
-            "use_only_evidence_references": [item.get("reference") for item in evidence if item.get("reference")],
+            "use_only_evidence_references": list(reference_map),
         },
-    }
+    }, reference_map)
+
+
+def _restore_thesis_references(thesis: dict[str, Any], reference_map: dict[str, str]) -> None:
+    for field in ("pillars", "catalysts"):
+        for item in thesis.get(field) or []:
+            refs = item.get("evidence_refs") if isinstance(item, dict) else None
+            if isinstance(refs, list):
+                item["evidence_refs"] = [reference_map[ref] for ref in refs if ref in reference_map]
+    links = thesis.get("evidence_links")
+    if isinstance(links, list):
+        thesis["evidence_links"] = [reference_map[ref] for ref in links if ref in reference_map]
 
 
 def _usage(output: dict[str, Any]) -> dict[str, Any]:

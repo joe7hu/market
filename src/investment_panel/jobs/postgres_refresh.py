@@ -48,33 +48,50 @@ def scheduled_preopen(config_path: str | None = None, *, now: datetime | None = 
         already_published = connection.execute(
             """
             SELECT EXISTS (
-                SELECT 1 FROM app.publication
-                WHERE scope = 'today' AND status = 'published'
-                  AND published_at::date = %s
+                SELECT 1 FROM app.publication publication
+                JOIN app.publication_item item ON item.publication_id = publication.id
+                WHERE publication.scope = 'today' AND publication.status = 'published'
+                  AND publication.published_at::date = %s
+                  AND item.model_name = 'preopen_daily_brief'
+                  AND item.payload->>'status' = 'agent_generated'
             ) AS published
             """,
             [reference.date()],
         ).fetchone()["published"]
     if already_published:
         return {"status": "skipped", "ok": True, "database": "postgresql", "reason": "already_published"}
-    result = refresh_today_publication(runtime, now=reference.astimezone(UTC))
+    result = refresh_today_publication(
+        runtime, now=reference.astimezone(UTC), use_agent_narrative=True,
+        agent_model=config.agents.thesis_monitor.model,
+        reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
+    )
     return {"ok": result.get("status") == "ok", "database": "postgresql", **result}
 
 
 def premarket(config_path: str | None = None) -> dict[str, Any]:
     """Publish the daily decision snapshot from already-ingested raw facts."""
 
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
     before_agents = refresh_options_radar.run(config_path)
     agents = run_option_agents.run(config_path)
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
-    outcomes = OutcomeRepository(runtime_for_config(load_config(config_path))).refresh()
-    today = refresh_today_publication(runtime_for_config(load_config(config_path)))
-    market = refresh_market_publication(runtime_for_config(load_config(config_path)))
+    outcomes = OutcomeRepository(runtime).refresh()
+    today = refresh_today_publication(
+        runtime, use_agent_narrative=True,
+        agent_model=config.agents.thesis_monitor.model,
+        reasoning_effort=config.agents.thesis_monitor.reasoning_effort,
+    )
+    market = refresh_market_publication(runtime)
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
+    thesis_status = str(thesis_monitor.get("status") or "failed").lower()
+    publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (today, market))
+    status = "ok" if option_ready and publication_ready and thesis_status in {"ok", "skipped"} else "partial"
     return {
-        "status": "ok" if option_ready else "partial",
-        "database": load_config(config_path).database.url,
+        "ok": status == "ok",
+        "status": status,
+        "database": config.database.url,
         "cadence": "daily_premarket",
         "before_agents": before_agents,
         "agents": agents,

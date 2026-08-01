@@ -118,17 +118,28 @@ def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres
     assert history["revisions"][0]["thesis_json"]["core_thesis"] == "Initial monitored setup."
 
 
-def test_thesis_automation_debounces_material_event_runs(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
+def test_thesis_automation_skips_material_event_without_new_evidence(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
     _watch(migrated_postgres_dsn, "DBNC")
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("DBNC"))
 
-    first = run_thesis_monitor.run(str(cfg), symbols=["DBNC"], trigger="material_event", force=False)
-    second = run_thesis_monitor.run(str(cfg), symbols=["DBNC"], trigger="material_event", force=False)
+    result = run_thesis_monitor.run(str(cfg), symbols=["DBNC"], trigger="material_event", force=False)
 
-    assert first["completed"] == 1
-    assert second["skipped"] == 1
-    assert second["results"][0]["reason"] == "debounced"
+    assert result["completed"] == 0
+    assert result["skipped"] == 1
+    assert result["results"][0]["reason"] == "no_material_evidence"
+
+
+def test_thesis_request_uses_short_stable_evidence_ids() -> None:
+    request, references = run_thesis_monitor._request_payload(
+        {"symbol": "NVDA"},
+        [{"reference": "https://example.com/a/very/long/url?query=1", "title": "Evidence"}],
+        prompt_version="test",
+    )
+
+    assert request["evidence"][0]["reference"] == "e1"
+    assert request["guardrails"]["use_only_evidence_references"] == ["e1"]
+    assert references == {"e1": "https://example.com/a/very/long/url?query=1"}
 
 
 def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:

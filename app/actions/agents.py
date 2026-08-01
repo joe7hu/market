@@ -25,6 +25,7 @@ class AgentActions:
             "pricing": agents.get("pricing", {}),
             "queue": overview["queue"],
             "runs": overview["runs"],
+            "workflows": overview["workflows"],
             "cost": overview["cost"],
             "scheduler": {"agent_refresh_seconds": _scheduler_agent_seconds(self.config)},
         }

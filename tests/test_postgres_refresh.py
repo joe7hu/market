@@ -62,13 +62,18 @@ def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
-    config = SimpleNamespace(database=SimpleNamespace(url=migrated_postgres_dsn))
+    config = SimpleNamespace(
+        database=SimpleNamespace(url=migrated_postgres_dsn),
+        agents=SimpleNamespace(
+            thesis_monitor=SimpleNamespace(model="gpt-5.6-luna", reasoning_effort="high")
+        ),
+    )
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: runtime)
     monkeypatch.setattr(
         postgres_refresh,
         "refresh_today_publication",
-        lambda _runtime, now=None: {"status": "ok", "publication_id": "today", "now": now},
+        lambda _runtime, now=None, **kwargs: {"status": "ok", "publication_id": "today", "now": now, **kwargs},
     )
     try:
         outside = postgres_refresh.scheduled_preopen(
@@ -80,5 +85,7 @@ def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
         assert outside["reason"] == "outside_premarket_window"
         assert inside["status"] == "ok"
         assert inside["ok"] is True
+        assert inside["use_agent_narrative"] is True
+        assert inside["agent_model"] == "gpt-5.6-luna"
     finally:
         runtime.close()

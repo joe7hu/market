@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -27,8 +27,9 @@ class ThesisAutomationRepository:
         debounce_minutes: int,
         max_material_runs_per_day: int,
         force: bool,
+        fingerprint: str | None = None,
     ) -> tuple[bool, str]:
-        if force or trigger == "preopen":
+        if force:
             return True, "eligible"
         normalized = canonical_symbol(symbol)
         with self.runtime.read(JOB_PROFILE) as connection:
@@ -41,6 +42,18 @@ class ThesisAutomationRepository:
             ).fetchone()
             if row is None:
                 return True, "new_symbol"
+            if trigger == "preopen":
+                today = connection.execute(
+                    """
+                    SELECT 1 FROM app.thesis_automation_run
+                    WHERE instrument_id = %s AND trigger = 'preopen'
+                      AND started_at::date = (now() AT TIME ZONE 'America/New_York')::date
+                      AND status IN ('running', 'succeeded')
+                    LIMIT 1
+                    """,
+                    [row["id"]],
+                ).fetchone()
+                return (False, "already_reviewed_preopen") if today else (True, "eligible")
             recent = connection.execute(
                 """
                 SELECT count(*) AS count
@@ -66,7 +79,36 @@ class ThesisAutomationRepository:
             ).fetchone()
             if int(today["count"] or 0) >= max_material_runs_per_day:
                 return False, "daily_cap"
+            if trigger == "material_event":
+                if not fingerprint:
+                    return False, "no_material_evidence"
+                latest = connection.execute(
+                    """
+                    SELECT evidence_fingerprint
+                    FROM app.thesis_automation_run
+                    WHERE instrument_id = %s AND status IN ('succeeded', 'failed', 'timeout')
+                    ORDER BY started_at DESC LIMIT 1
+                    """,
+                    [row["id"]],
+                ).fetchone()
+                if latest and str(latest["evidence_fingerprint"] or "") == fingerprint:
+                    return False, "evidence_unchanged"
         return True, "eligible"
+
+    def recover_stale_runs(self, *, stale_after: timedelta = timedelta(minutes=10)) -> int:
+        cutoff = datetime.now(UTC) - stale_after
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                UPDATE app.thesis_automation_run
+                SET status = 'timeout', finished_at = now(),
+                    error = coalesce(error, 'worker lease expired')
+                WHERE status = 'running' AND started_at < %s
+                RETURNING id
+                """,
+                [cutoff],
+            ).fetchall()
+        return len(rows)
 
     def start_run(
         self,
@@ -174,6 +216,19 @@ class ThesisAutomationRepository:
                     ],
                 )
         return len(assessments)
+
+    def mark_current_assessed(self, symbol: str) -> None:
+        normalized = canonical_symbol(symbol)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            connection.execute(
+                """
+                UPDATE app.thesis thesis SET last_assessed_at = now(), updated_at = now()
+                FROM catalog.instrument instrument
+                WHERE thesis.instrument_id = instrument.id AND instrument.symbol = %s
+                  AND thesis.status = 'current'
+                """,
+                [normalized],
+            )
 
     def create_health_alert(self, symbol: str, *, title: str, detail: str) -> None:
         normalized = canonical_symbol(symbol)

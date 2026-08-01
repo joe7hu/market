@@ -114,18 +114,15 @@ def options_ticker_signal_rows(connection: Any, *, symbols: set[str] | None = No
     if symbols is not None and not symbols:
         return []
     symbol_filter = sorted(symbols or set())
-    cte_symbol_clause = " AND scoped_instrument.symbol = ANY(%s)" if symbol_filter else ""
     outer_symbol_clause = " AND instrument.symbol = ANY(%s)" if symbol_filter else ""
-    parameters = [symbol_filter, symbol_filter] if symbol_filter else []
+    parameters = [symbol_filter] if symbol_filter else []
     query = f"""
-            WITH latest AS (
-                SELECT contract.underlying_instrument_id,
-                       max(quote.observed_at) AS observed_at
-                FROM raw.option_quote quote
-                JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-                JOIN catalog.instrument scoped_instrument ON scoped_instrument.id = contract.underlying_instrument_id
-                WHERE contract.expiration >= current_date{cte_symbol_clause}
-                GROUP BY contract.underlying_instrument_id
+            WITH latest_snapshot AS (
+                SELECT id
+                FROM raw.option_snapshot
+                WHERE collection_profile = 'radar' AND contract_count > 0
+                ORDER BY observed_at DESC, id DESC
+                LIMIT 1
             )
             SELECT instrument.symbol, snapshot.source_id AS source,
                    contract.expiration::text AS expiry,
@@ -136,10 +133,9 @@ def options_ticker_signal_rows(connection: Any, *, symbols: set[str] | None = No
                    quote.underlying_price AS spot, quote.observed_at
             FROM raw.option_quote quote
             JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN latest_snapshot latest ON latest.id = quote.snapshot_id
             JOIN catalog.option_contract contract ON contract.id = quote.contract_id
             JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-            JOIN latest ON latest.underlying_instrument_id = contract.underlying_instrument_id
-                       AND latest.observed_at = quote.observed_at
             WHERE contract.expiration >= current_date{outer_symbol_clause}
             ORDER BY instrument.symbol, snapshot.source_id, contract.expiration, contract.strike,
                      contract.option_type

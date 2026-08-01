@@ -19,7 +19,10 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--strategy-version", default=DEFAULT_STRATEGY_VERSION)
     args = parser.parse_args()
-    print(json.dumps(run(args.config, strategy_version=args.strategy_version), indent=2, default=str))
+    result = run(args.config, strategy_version=args.strategy_version)
+    print(json.dumps(result, indent=2, default=str))
+    if result.get("status") not in {"ok", "skipped"}:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -533,6 +533,7 @@ export type AgentRun = {
   started_at?: string;
   finished_at?: string;
   trigger?: string;
+  workflow?: string;
   ticker?: string | null;
   provider?: string;
   model?: string;
@@ -577,6 +578,7 @@ export type AgentOverview = {
   pricing: Record<string, { input_per_1m?: number; output_per_1m?: number }>;
   queue: { thesis_open: number; postmortem_open: number; total_open: number; oldest_open_at?: string | null };
   runs: AgentRun[];
+  workflows: Record<string, { runs: number; succeeded: number; failed: number; running: number }>;
   cost: { today: AgentCostWindow; last_7d: AgentCostWindow };
   scheduler: { agent_refresh_seconds: number };
 };

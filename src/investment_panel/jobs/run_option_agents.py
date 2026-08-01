@@ -22,17 +22,39 @@ def run(
     config = load_config(config_path)
     repository = AgentRepository(runtime_for_config(config))
     option_agent = config.agents.option_agent
-    trigger = "ondemand" if ondemand else "manual" if force else None
+    trigger = "ondemand" if ondemand else None
+    run_trigger = "ondemand" if ondemand else "manual" if force else "scheduled"
     if option_agent.command and (option_agent.enabled or force or ondemand):
+        queued = 0
+        queued_postmortems = 0
+        if not ondemand:
+            queued = repository.queue_current_candidates(
+                limit=max(0, int(option_agent.thesis_limit)),
+                trigger="manual" if force else "scheduled",
+            )
+            queued_postmortems = repository.queue_current_postmortems(
+                limit=max(0, int(option_agent.postmortem_limit)),
+            )
         result = repository.run_queued(
             option_agent.command,
-            limit=max(option_agent.thesis_limit, option_agent.postmortem_limit),
+            limit=option_agent.thesis_limit + option_agent.postmortem_limit,
             timeout_seconds=option_agent.timeout_seconds,
             trigger=trigger,
+            run_trigger=run_trigger,
             provider=option_agent.provider,
             model=option_agent.model,
+            reasoning_effort=option_agent.reasoning_effort,
+            consolidated=True,
+            kind_limits={
+                "option_thesis": option_agent.thesis_limit,
+                "option_postmortem": option_agent.postmortem_limit,
+            },
         )
-        return {"database": "postgresql", "strategy_version": strategy_version, "mode": "consolidated", "option_agent_runner": result}
+        return {
+            "database": "postgresql", "strategy_version": strategy_version,
+            "mode": "consolidated", "queued": queued,
+            "queued_postmortems": queued_postmortems, "option_agent_runner": result,
+        }
 
     thesis = repository.run_queued(
         config.agents.option_thesis.command if config.agents.option_thesis.enabled else "",

@@ -91,6 +91,24 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
     }
 
 
+def run_source_with_material_thesis(
+    config_path: str | None,
+    source_runner: JobRunner,
+) -> dict[str, Any]:
+    """Refresh a source, then evaluate only symbols whose evidence changed."""
+    source = source_runner(config_path)
+    source_status = str(source.get("status") or "ok").lower()
+    if source_status not in {"ok", "partial"}:
+        return source
+    monitor = run_thesis_monitor.run(config_path, trigger="material_event")
+    monitor_status = str(monitor.get("status") or "failed").lower()
+    composite_status = "partial" if monitor_status in {"partial", "failed"} else source_status
+    return {
+        **source, "status": composite_status, "ok": composite_status == "ok",
+        "source_status": source_status, "material_thesis_monitor": monitor,
+    }
+
+
 ALLOWLIST: dict[str, JobRunner] = {
     "full_market_refresh": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
     "daily_screen": lambda config_path: postgres_refresh.full(config_path, continue_on_error=True),
@@ -136,11 +154,11 @@ ALLOWLIST: dict[str, JobRunner] = {
     "update_free_sources": lambda config_path: update_market_data.run(config_path),
     "update_free_sources_radar": lambda config_path: update_market_data.run(config_path),
     "update_market_environment": lambda config_path: update_market_environment.run(config_path),
-    "update_research_sources": lambda config_path: update_content_sources.run_research(config_path),
-    "update_social_sources": lambda config_path: update_content_sources.run_social(config_path),
-    "update_event_calendar": lambda config_path: update_market_events.run(config_path),
-    "update_disclosures": lambda config_path: update_disclosure_sources.run(config_path),
-    "update_arco_data": lambda config_path: update_arco_sources.run(config_path),
+    "update_research_sources": lambda config_path: run_source_with_material_thesis(config_path, update_content_sources.run_research),
+    "update_social_sources": lambda config_path: run_source_with_material_thesis(config_path, update_content_sources.run_social),
+    "update_event_calendar": lambda config_path: run_source_with_material_thesis(config_path, update_market_events.run),
+    "update_disclosures": lambda config_path: run_source_with_material_thesis(config_path, update_disclosure_sources.run),
+    "update_arco_data": lambda config_path: run_source_with_material_thesis(config_path, update_arco_sources.run),
     "postgres_retention": lambda config_path: RetentionRepository(
         runtime_for_url(database_url(load_config(config_path)))
     ).prune(),
@@ -276,6 +294,8 @@ def _job_repository(database: Any, config_path: str | None = "config.yaml") -> J
 
 def summary_failure_message(summary: Any) -> str | None:
     if not isinstance(summary, dict):
+        return None
+    if summary.get("status") in {"partial", "skipped"}:
         return None
     if summary.get("ok") is not False and summary.get("status") != "failed":
         return None

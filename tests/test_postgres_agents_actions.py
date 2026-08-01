@@ -17,6 +17,7 @@ from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
+from investment_panel.jobs.openai_option_agent import _compact_agent_batch
 
 
 def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
@@ -197,6 +198,59 @@ def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
         assert result["completed"] == 2
         assert observed_statuses[0] == ["running", "queued"]
         assert observed_statuses[1] == ["completed", "running"]
+    finally:
+        runtime.close()
+
+
+def test_agent_repository_runs_one_configured_batch_and_propagates_model(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        first = repository.queue_thesis("NVDA", trigger="scheduled")
+        repository.queue_thesis("MSFT", trigger="scheduled")
+        calls: list[dict[str, object]] = []
+
+        def fake_run(*_args, input: str, env: dict[str, str], **_kwargs):
+            payload = json.loads(input)
+            calls.append({"payload": payload, "env": env})
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "thesis": [
+                        {"core_thesis": f"{item['request']['ticker']} thesis"}
+                        for item in payload["thesis"]
+                    ],
+                    "postmortem": [],
+                    "_meta": {"usage": {"input_tokens": 120, "output_tokens": 40}},
+                }),
+                stderr="",
+            )
+
+        monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
+        result = repository.run_queued(
+            "market-codex-option-agent", consolidated=True, limit=8,
+            provider="codex", model="gpt-5.6-luna", reasoning_effort="high",
+            kind_limits={"option_thesis": 8, "option_postmortem": 4},
+        )
+
+        assert result["completed"] == 2
+        assert len(calls) == 1
+        assert len(calls[0]["payload"]["thesis"]) == 2
+        assert _compact_agent_batch(calls[0]["payload"])["thesis"][0]["request"]["ticker"] in {"NVDA", "MSFT"}
+        assert calls[0]["env"]["MARKET_CODEX_MODEL"] == "gpt-5.6-luna"
+        assert calls[0]["env"]["MARKET_CODEX_REASONING_EFFORT"] == "high"
+        overview = repository.overview()
+        option_run = next(run for run in overview["runs"] if run["workflow"] == "option_agent")
+        assert option_run["input_tokens"] == 120
+        assert option_run["output_tokens"] == 40
+        assert option_run["thesis_accepted"] == 2
+        duplicate = repository.queue_thesis("NVDA", trigger="scheduled")
+        assert duplicate["request_id"] == first["request_id"]
+        assert duplicate["status"] == "completed"
     finally:
         runtime.close()
 

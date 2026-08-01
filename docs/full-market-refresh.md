@@ -46,8 +46,9 @@ http://192.168.50.197:8000/api/status
 8. `run_option_agents`: optionally run configured local external agent commands
    for open options-radar thesis and postmortem handoffs. This step is
    the daily premarket interpretation boundary; hourly refreshes must not call
-   it. When enabled, Market passes one request JSON over stdin, accepts only
-   structured JSON over stdout, then persists and validates it through the
+   it. When enabled, Market claims bounded thesis and postmortem queues, passes
+   one consolidated batch JSON over stdin, accepts only structured JSON over
+   stdout, then dispatches, persists, and validates each item through the
    deterministic backend.
 9. `/today` and market read models publish atomically, then reference-safe
    retention runs and `pg_dump --format=custom` writes a checksum-verified backup.
@@ -79,24 +80,22 @@ allowlisted `run_option_agents` refresh job. Configure commands under:
 
 ```yaml
 agents:
-  option_thesis:
+  option_agent:
     enabled: true
-    command: "market-codex-option-thesis-agent"
+    command: "market-codex-option-agent"
     timeout_seconds: 180
-    limit: 20
-  option_postmortem:
-    enabled: true
-    command: "market-codex-option-postmortem-agent"
-    timeout_seconds: 180
-    limit: 20
+    thesis_limit: 8
+    postmortem_limit: 4
+    provider: codex
+    model: gpt-5.6-luna
+    reasoning_effort: high
 ```
 
-Each command receives one request object on stdin with `request`, `prompt`,
-`context`, `output_schema`, and guardrails. It must return one JSON object on
-stdout matching the schema. `MARKET_OPTION_THESIS_AGENT_COMMAND` and
-`MARKET_OPTION_POSTMORTEM_AGENT_COMMAND` can override the configured commands
-for local runs. Use `market-codex-option-thesis-agent` or
-`market-codex-option-postmortem-agent` to run through the signed-in Codex
+The unified command receives one object with `thesis` and `postmortem` arrays
+plus shared guardrails. It returns matching arrays in the same order. Each
+request includes its published per-ticker context and stable request id.
+`MARKET_OPTION_AGENT_COMMAND` can override the configured command for local
+runs. Use `market-codex-option-agent` to run through the signed-in Codex
 ChatGPT OAuth session without an API key. Thesis Monitor and the pre-open
 narrative use the same restricted Codex path. These commands run Codex with
 shell, app, browser, plugin, computer-use, multi-agent, image generation, and

@@ -9,7 +9,11 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
-def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None = None) -> dict[str, Any]:
+def refresh_today_publication(
+    runtime: DatabaseRuntime, *, now: datetime | None = None,
+    use_agent_narrative: bool = False, agent_model: str = "gpt-5.6-luna",
+    reasoning_effort: str = "high",
+) -> dict[str, Any]:
     as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
         raise ValueError("today publication timestamp must be timezone-aware")
@@ -99,15 +103,49 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
             dict(row["payload"])
             for row in connection.execute(
                 """
-                SELECT item.payload FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
-                WHERE publication.scope = 'options-radar'
-                  AND publication.status = 'published'
-                  AND item.model_name = 'option_radar_opportunity'
+                WITH latest AS (
+                    SELECT id FROM app.publication
+                    WHERE scope = 'options-radar' AND status = 'published'
+                    ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
+                )
+                SELECT item.payload FROM app.publication_item item
+                JOIN latest ON latest.id = item.publication_id
+                WHERE item.model_name = 'option_radar_opportunity'
                 ORDER BY item.rank LIMIT 10
                 """
             ).fetchall()
         ]
+        qqq_history = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT date, close FROM (
+                    SELECT DISTINCT ON (bar.trading_date)
+                           bar.trading_date AS date, bar.close, bar.observed_at
+                    FROM raw.price_bar bar
+                    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
+                    WHERE instrument.symbol = 'QQQ' AND bar.interval = '1d'
+                      AND bar.trading_date < %s
+                    ORDER BY bar.trading_date DESC, bar.observed_at DESC
+                ) daily
+                ORDER BY date DESC
+                LIMIT 280
+                """,
+                [as_of.date()],
+            ).fetchall()
+        ]
+        prior_preopen_row = connection.execute(
+            """
+            SELECT item.payload
+            FROM app.publication publication
+            JOIN app.publication_item item ON item.publication_id = publication.id
+            WHERE publication.scope = 'today' AND publication.status = 'published'
+              AND item.model_name = 'preopen_daily_brief'
+              AND item.payload->>'brief_date' = %s
+            ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
+            """,
+            [as_of.date().isoformat()],
+        ).fetchone()
         source_changes = [
             dict(row)
             for row in connection.execute(
@@ -188,14 +226,38 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         }
         for row in decision_queue
     ]
+    narrative, narrative_error = _agent_preopen_narrative(
+        as_of=as_of, qqq_history=list(reversed(qqq_history)), catalysts=catalysts,
+        source_changes=source_changes, option_rows=option_rows,
+        enabled=use_agent_narrative, model=agent_model, reasoning_effort=reasoning_effort,
+    )
+    prior_preopen = dict(prior_preopen_row["payload"] or {}) if prior_preopen_row else {}
+    preserved_agent_narrative = not narrative and prior_preopen.get("status") == "agent_generated"
+    if preserved_agent_narrative:
+        narrative = {key: prior_preopen.get(key) for key in (
+            "headline", "summary", "macro_regime", "opening_scenario", "qqq_path", "risks", "watch_items"
+        )}
+        narrative["narrative"] = prior_preopen.get("summary")
+        narrative_error = str(prior_preopen.get("error") or "")
+    narrative_status = "agent_generated" if narrative else "deterministic_fallback"
+    narrative_model = str(prior_preopen.get("model_name") or agent_model) if preserved_agent_narrative else agent_model
+    narrative_effort = str(prior_preopen.get("reasoning_effort") or reasoning_effort) if preserved_agent_narrative else reasoning_effort
     preopen = [{
         "stable_key": as_of.date().isoformat(),
         "brief_date": as_of.date().isoformat(),
         "generated_at": as_of,
         "session": "premarket",
-        "status": "ready",
-        "headline": f"{len(option_items) + len(review_rows)} decisions need attention",
-        "summary": f"{len(holdings)} holdings, {len(option_items)} option setups, {len(review_rows)} thesis reviews, {len(source_items)} source changes, and {len(catalyst_rows)} near-term catalysts.",
+        "status": narrative_status,
+        "model_name": narrative_model if narrative else "deterministic",
+        "reasoning_effort": narrative_effort if narrative else "",
+        "headline": (narrative or {}).get("headline") or f"{len(option_items) + len(review_rows)} decisions need attention",
+        "summary": (narrative or {}).get("narrative") or f"{len(holdings)} holdings, {len(option_items)} option setups, {len(review_rows)} thesis reviews, {len(source_items)} source changes, and {len(catalyst_rows)} near-term catalysts.",
+        "macro_regime": (narrative or {}).get("macro_regime"),
+        "opening_scenario": (narrative or {}).get("opening_scenario"),
+        "qqq_path": (narrative or {}).get("qqq_path"),
+        "risks": (narrative or {}).get("risks") or [],
+        "watch_items": (narrative or {}).get("watch_items") or [],
+        "error": narrative_error,
     }]
     analysis = AnalysisRepository(runtime)
     run_id = analysis.start_run(
@@ -237,7 +299,32 @@ def refresh_today_publication(runtime: DatabaseRuntime, *, now: datetime | None 
         "source_changes": len(source_items),
         "option_decisions": len(option_items),
         "option_actions": len(option_action_queue),
+        "preopen_narrative": narrative_status,
     }
+
+
+def _agent_preopen_narrative(
+    *, as_of: datetime, qqq_history: list[dict[str, Any]], catalysts: list[dict[str, Any]],
+    source_changes: list[dict[str, Any]], option_rows: list[dict[str, Any]], enabled: bool,
+    model: str, reasoning_effort: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if not enabled:
+        return None, ""
+    try:
+        from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, qqq_preopen_forecast
+        from investment_panel.jobs.codex_preopen_brief import generate
+        context = {
+            "brief_date": as_of.date().isoformat(),
+            "qqq_forecast": qqq_preopen_forecast(qqq_history),
+            "backtest": backtest_qqq_preopen_model(qqq_history),
+            "key_events": catalysts[:8],
+            "market_environment": option_rows[:8],
+            "fresh_source_items": source_changes[:12],
+            "source_runs": [],
+        }
+        return generate(context, model=model, reasoning_effort=reasoning_effort), ""
+    except Exception as exc:  # deterministic publication remains available
+        return None, f"{type(exc).__name__}: {exc}"[:1000]
 
 
 def _source_change_item(row: dict[str, Any]) -> dict[str, Any]:
