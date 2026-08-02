@@ -95,6 +95,11 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
         "database": "postgresql",
         "items": sum(int(row.get("items") or 0) for row in results),
         "instrument_links": sum(int(row.get("instrument_links") or 0) for row in results),
+        "affected_symbols": sorted({
+            str(symbol)
+            for row in results
+            for symbol in row.get("affected_symbols") or []
+        }),
         "runs": results,
     }
 

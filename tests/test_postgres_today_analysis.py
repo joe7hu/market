@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.legacy_bootstrap import import_source_signals
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
+from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.today_analysis import _option_item, refresh_today_publication
+from investment_panel.jobs import codex_preopen_brief
 from app.data_access.portfolio_ledger import record_portfolio_transaction
 
 
@@ -118,6 +121,63 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
 def test_today_option_item_preserves_published_rationale() -> None:
     row = _option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
     assert row["summary"] == "liquidity_supported; convexity_supported"
+
+
+def test_preopen_agent_context_keeps_decision_fields_and_drops_verbose_payloads() -> None:
+    context = compact_preopen_context(
+        brief_date="2026-08-03", qqq_forecast={"status": "ok"}, backtest={"samples": 10},
+        catalysts=[], source_changes=[],
+        option_rows=[{
+            "ticker": "NVDA", "structure": "call_spread", "score": 88,
+            "top_reasons": ["liquid"], "raw": {"chain": ["x" * 10000]},
+            "contracts": ["y" * 10000],
+        }],
+    )
+
+    assert context["market_environment"] == [{
+        "ticker": "NVDA", "score": 88, "structure": "call_spread", "top_reasons": ["liquid"],
+    }]
+    assert context["coverage"]["max_characters"] == 20_000
+    assert len(json.dumps(context, default=str)) <= 20_500
+
+
+def test_preopen_agent_invocation_is_metered_and_reused_for_same_day(
+    migrated_postgres_dsn: str, monkeypatch,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    calls = 0
+
+    def fake_generate(_context, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "headline": "Measured pre-open",
+            "macro_regime": "neutral",
+            "narrative": "Use the deterministic levels.",
+            "opening_scenario": "balanced",
+            "qqq_path": "deterministic",
+            "risks": [], "watch_items": [], "evidence_refs": [],
+            "_meta": {"usage": {"input_tokens": 123, "output_tokens": 45}},
+        }
+
+    monkeypatch.setattr(codex_preopen_brief, "generate", fake_generate)
+    as_of = datetime(2026, 8, 3, 12, tzinfo=UTC)
+    try:
+        first = refresh_today_publication(runtime, now=as_of, use_agent_narrative=True)
+        second = refresh_today_publication(runtime, now=as_of, use_agent_narrative=True)
+        with runtime.read() as connection:
+            runs = connection.execute(
+                "SELECT status, input_tokens, output_tokens, summary FROM analysis.agent_run "
+                "WHERE summary->>'workflow' = 'preopen_narrative'"
+            ).fetchall()
+        assert first["preopen_narrative"] == "agent_generated"
+        assert second["preopen_narrative"] == "agent_generated"
+        assert calls == 1
+        assert len(runs) == 1
+        assert (runs[0]["status"], runs[0]["input_tokens"], runs[0]["output_tokens"]) == ("succeeded", 123, 45)
+    finally:
+        runtime.close()
 
 
 def test_today_uses_available_same_day_daily_close_before_synthetic_session_marker(

@@ -21,6 +21,7 @@ from investment_panel.core.job_policy import (
     scheduler_status,
 )
 from investment_panel.core.job_execution import RefreshProcessSpec, execute_async, terminate_process
+from investment_panel.core.config import load_config
 from investment_panel.core.refresh_jobs import finish_refresh_job_failed, mark_stale_running_jobs, start_refresh_job
 from investment_panel.core.decision import MARKET_TZ
 
@@ -93,7 +94,7 @@ def _env_int(name: str, default: int, *, allow_zero: bool = False) -> int:
 
 
 async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
-    intervals = job_intervals()
+    intervals = job_intervals(load_config(config_path))
     warmup = _env_int("MARKET_SCHEDULER_WARMUP_SECONDS", 20, allow_zero=True)
     logger.info("market scheduler starting (warmup=%ss, intervals=%s)", warmup, intervals)
 

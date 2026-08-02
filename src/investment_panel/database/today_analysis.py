@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.agent_telemetry import AgentTelemetryRepository
+from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -226,12 +228,14 @@ def refresh_today_publication(
         }
         for row in decision_queue
     ]
-    narrative, narrative_error = _agent_preopen_narrative(
+    prior_preopen = dict(prior_preopen_row["payload"] or {}) if prior_preopen_row else {}
+    narrative, narrative_error, narrative_run_id = _agent_preopen_narrative(
+        runtime=runtime,
         as_of=as_of, qqq_history=list(reversed(qqq_history)), catalysts=catalysts,
         source_changes=source_changes, option_rows=option_rows,
-        enabled=use_agent_narrative, model=agent_model, reasoning_effort=reasoning_effort,
+        enabled=use_agent_narrative and prior_preopen.get("status") != "agent_generated",
+        model=agent_model, reasoning_effort=reasoning_effort,
     )
-    prior_preopen = dict(prior_preopen_row["payload"] or {}) if prior_preopen_row else {}
     preserved_agent_narrative = not narrative and prior_preopen.get("status") == "agent_generated"
     if preserved_agent_narrative:
         narrative = {key: prior_preopen.get(key) for key in (
@@ -239,6 +243,7 @@ def refresh_today_publication(
         )}
         narrative["narrative"] = prior_preopen.get("summary")
         narrative_error = str(prior_preopen.get("error") or "")
+        narrative_run_id = prior_preopen.get("agent_run_id")
     narrative_status = "agent_generated" if narrative else "deterministic_fallback"
     narrative_model = str(prior_preopen.get("model_name") or agent_model) if preserved_agent_narrative else agent_model
     narrative_effort = str(prior_preopen.get("reasoning_effort") or reasoning_effort) if preserved_agent_narrative else reasoning_effort
@@ -250,6 +255,7 @@ def refresh_today_publication(
         "status": narrative_status,
         "model_name": narrative_model if narrative else "deterministic",
         "reasoning_effort": narrative_effort if narrative else "",
+        "agent_run_id": narrative_run_id,
         "headline": (narrative or {}).get("headline") or f"{len(option_items) + len(review_rows)} decisions need attention",
         "summary": (narrative or {}).get("narrative") or f"{len(holdings)} holdings, {len(option_items)} option setups, {len(review_rows)} thesis reviews, {len(source_items)} source changes, and {len(catalyst_rows)} near-term catalysts.",
         "macro_regime": (narrative or {}).get("macro_regime"),
@@ -304,27 +310,39 @@ def refresh_today_publication(
 
 
 def _agent_preopen_narrative(
-    *, as_of: datetime, qqq_history: list[dict[str, Any]], catalysts: list[dict[str, Any]],
+    *, runtime: DatabaseRuntime, as_of: datetime, qqq_history: list[dict[str, Any]], catalysts: list[dict[str, Any]],
     source_changes: list[dict[str, Any]], option_rows: list[dict[str, Any]], enabled: bool,
     model: str, reasoning_effort: str,
-) -> tuple[dict[str, Any] | None, str]:
+) -> tuple[dict[str, Any] | None, str, str | None]:
     if not enabled:
-        return None, ""
+        return None, "", None
+    telemetry = AgentTelemetryRepository(runtime)
+    run_id: str | None = None
     try:
         from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, qqq_preopen_forecast
         from investment_panel.jobs.codex_preopen_brief import generate
-        context = {
-            "brief_date": as_of.date().isoformat(),
-            "qqq_forecast": qqq_preopen_forecast(qqq_history),
-            "backtest": backtest_qqq_preopen_model(qqq_history),
-            "key_events": catalysts[:8],
-            "market_environment": option_rows[:8],
-            "fresh_source_items": source_changes[:12],
-            "source_runs": [],
-        }
-        return generate(context, model=model, reasoning_effort=reasoning_effort), ""
+        context = compact_preopen_context(
+            brief_date=as_of.date().isoformat(),
+            qqq_forecast=qqq_preopen_forecast(qqq_history),
+            backtest=backtest_qqq_preopen_model(qqq_history),
+            catalysts=catalysts, option_rows=option_rows, source_changes=source_changes,
+        )
+        run_id = telemetry.start(
+            workflow="preopen_narrative", provider="codex", model=model,
+            trigger="scheduled_preopen", summary={"input_characters": len(str(context))},
+        )
+        result = generate(context, model=model, reasoning_effort=reasoning_effort)
+        meta = result.pop("_meta", {}) if isinstance(result.get("_meta"), dict) else {}
+        usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+        telemetry.finish(run_id, status="succeeded", usage=usage)
+        return result, "", run_id
     except Exception as exc:  # deterministic publication remains available
-        return None, f"{type(exc).__name__}: {exc}"[:1000]
+        error = f"{type(exc).__name__}: {exc}"[:1000]
+        if run_id:
+            meta = getattr(exc, "meta", {})
+            usage = meta.get("usage") if isinstance(meta, dict) and isinstance(meta.get("usage"), dict) else {}
+            telemetry.finish(run_id, status="failed", usage=usage, error=error)
+        return None, error, run_id
 
 
 def _source_change_item(row: dict[str, Any]) -> dict[str, Any]:

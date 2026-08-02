@@ -53,7 +53,19 @@ class ThesisAutomationRepository:
                     """,
                     [row["id"]],
                 ).fetchone()
-                return (False, "already_reviewed_preopen") if today else (True, "eligible")
+                if today:
+                    return False, "already_reviewed_preopen"
+                latest = connection.execute(
+                    """
+                    SELECT evidence_fingerprint FROM app.thesis_automation_run
+                    WHERE instrument_id = %s AND status = 'succeeded'
+                    ORDER BY started_at DESC LIMIT 1
+                    """,
+                    [row["id"]],
+                ).fetchone()
+                if latest and latest["evidence_fingerprint"] == fingerprint:
+                    return False, "decision_inputs_unchanged_preopen"
+                return True, "eligible"
             recent = connection.execute(
                 """
                 SELECT count(*) AS count
@@ -119,10 +131,11 @@ class ThesisAutomationRepository:
         reasoning_effort: str,
         prompt_version: str,
         evidence_snapshot: list[dict[str, Any]],
+        fingerprint: str | None = None,
         status: str = "running",
     ) -> str:
         normalized = canonical_symbol(symbol)
-        fingerprint = evidence_fingerprint(evidence_snapshot)
+        fingerprint = fingerprint or evidence_fingerprint(evidence_snapshot)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [normalized]).fetchone()
             run = connection.execute(
@@ -244,8 +257,26 @@ class ThesisAutomationRepository:
 
 
 def evidence_fingerprint(evidence_snapshot: list[dict[str, Any]]) -> str:
-    stable = json.dumps(evidence_snapshot, sort_keys=True, default=str)
+    stable = json.dumps(_stable_evidence(evidence_snapshot), sort_keys=True, default=str)
     return hashlib.sha256(stable.encode()).hexdigest()
+
+
+_VOLATILE_EVIDENCE_KEYS = {
+    "available_at", "ingest_run_id", "ingested_at", "last_seen_at",
+    "observed_at", "payload_id", "run_id", "updated_at",
+}
+
+
+def _stable_evidence(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_evidence(item)
+            for key, item in value.items()
+            if str(key) not in _VOLATILE_EVIDENCE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_evidence(item) for item in value]
+    return value
 
 
 def _jsonable(value: Any) -> Any:

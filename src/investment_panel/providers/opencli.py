@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from investment_panel.core.executable import executable_environment, resolve_executable
+
 
 class OpenCliError(RuntimeError):
     """Raised when an OpenCLI command cannot return structured JSON."""
@@ -41,7 +43,8 @@ class OpenCliRunner:
     rate_limit_backoff_seconds: float = 1.5
 
     def read_json(self, args: list[str]) -> Any:
-        command = [self.command, *args, "-f", "json"]
+        executable = resolve_executable(self.command, env_var="MARKET_OPENCLI_BIN")
+        command = [executable, *args, "-f", "json"]
         attempt = 0
         while True:
             try:
@@ -51,9 +54,10 @@ class OpenCliRunner:
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
+                    env=executable_environment(executable),
                 )
             except FileNotFoundError as exc:
-                raise OpenCliError(f"OpenCLI command not found: {self.command}") from exc
+                raise OpenCliError(f"OpenCLI command not found: {executable}") from exc
             except subprocess.TimeoutExpired as exc:
                 raise OpenCliError(f"OpenCLI timed out after {self.timeout_seconds}s: {' '.join(command)}") from exc
             if completed.returncode != 0:

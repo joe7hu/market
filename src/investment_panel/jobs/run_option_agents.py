@@ -31,6 +31,7 @@ def run(
             queued = repository.queue_current_candidates(
                 limit=max(0, int(option_agent.thesis_limit)),
                 trigger="manual" if force else "scheduled",
+                context_sources=getattr(option_agent, "context_sources", None),
             )
             queued_postmortems = repository.queue_current_postmortems(
                 limit=max(0, int(option_agent.postmortem_limit)),
@@ -44,6 +45,10 @@ def run(
             provider=option_agent.provider,
             model=option_agent.model,
             reasoning_effort=option_agent.reasoning_effort,
+            max_runs_per_day=(
+                int(getattr(option_agent, "max_runs_per_day", 1))
+                if run_trigger == "scheduled" else 0
+            ),
             consolidated=True,
             kind_limits={
                 "option_thesis": option_agent.thesis_limit,

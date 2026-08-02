@@ -8,8 +8,9 @@ import pytest
 
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import reconcile_instrument
-from investment_panel.database.thesis_automation import ThesisAutomationRepository
+from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
 from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
+from investment_panel.database.thesis import save_thesis
 from investment_panel.jobs import run_thesis_monitor
 from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
 
@@ -94,14 +95,17 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
     assert history["revisions"] == []
     with psycopg.connect(migrated_postgres_dsn) as connection:
         alert = connection.execute("SELECT alert_type FROM app.alert WHERE alert_type = 'thesis_automation_health'").fetchone()
+        usage = connection.execute(
+            "SELECT input_tokens, output_tokens FROM app.thesis_automation_run "
+            "WHERE input_symbol = 'HALL' ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
     assert alert is not None
+    assert usage == (10, 20)
 
 
 def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
     _watch(migrated_postgres_dsn, "PRES")
     config = {"database": {"url": migrated_postgres_dsn}}
-    from investment_panel.database.thesis import save_thesis
-
     save_thesis(config, "PRES", {"thesis": "Initial monitored setup.", "invalidation": "Below $300."})
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(
@@ -130,6 +134,41 @@ def test_thesis_automation_skips_material_event_without_new_evidence(migrated_po
     assert result["results"][0]["reason"] == "no_material_evidence"
 
 
+def test_preopen_skips_codex_when_decision_inputs_are_unchanged(
+    migrated_postgres_dsn: str, tmp_path: Path, monkeypatch,
+) -> None:
+    _watch(migrated_postgres_dsn, "THIN")
+    config = {"database": {"url": migrated_postgres_dsn}}
+    save_thesis(config, "THIN", _model_output("THIN")["thesis"])
+    row = next(item for item in thesis_monitor_rows(config) if item["symbol"] == "THIN")
+    evidence = list(row.get("source_evidence") or [])[:12]
+    fingerprint = run_thesis_monitor.preopen_fingerprint(row, evidence)
+    repository = ThesisAutomationRepository(runtime_for_config(config))
+    run_id = repository.start_run(
+        "THIN", trigger="preopen", model="gpt-test", reasoning_effort="high",
+        prompt_version="test", evidence_snapshot=evidence, fingerprint=fingerprint,
+    )
+    repository.finish_run(run_id, status="succeeded", usage={"input_tokens": 1, "output_tokens": 1})
+    with psycopg.connect(migrated_postgres_dsn) as connection:
+        connection.execute(
+            "UPDATE app.thesis_automation_run SET started_at = now() - interval '1 day', "
+            "evidence_fingerprint = %s WHERE id = %s",
+            [fingerprint, run_id],
+        )
+        connection.commit()
+    monkeypatch.setattr(
+        run_thesis_monitor,
+        "generate_codex_thesis_monitor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Codex should not run")),
+    )
+
+    result = run_thesis_monitor.run(str(_config(tmp_path, migrated_postgres_dsn)), symbols=["THIN"], trigger="preopen")
+
+    assert result["completed"] == 0
+    assert result["skipped"] == 1
+    assert result["results"][0]["reason"] == "decision_inputs_unchanged_preopen"
+
+
 def test_thesis_request_uses_short_stable_evidence_ids() -> None:
     request, references = run_thesis_monitor._request_payload(
         {"symbol": "NVDA"},
@@ -140,6 +179,15 @@ def test_thesis_request_uses_short_stable_evidence_ids() -> None:
     assert request["evidence"][0]["reference"] == "e1"
     assert request["guardrails"]["use_only_evidence_references"] == ["e1"]
     assert references == {"e1": "https://example.com/a/very/long/url?query=1"}
+
+
+def test_evidence_fingerprint_ignores_ingestion_timestamps_but_not_content() -> None:
+    first = [{"reference": "r1", "title": "Evidence", "observed_at": "2026-08-01T10:00:00Z"}]
+    reobserved = [{"reference": "r1", "title": "Evidence", "observed_at": "2026-08-01T11:00:00Z"}]
+    changed = [{"reference": "r1", "title": "Changed evidence", "observed_at": "2026-08-01T11:00:00Z"}]
+
+    assert evidence_fingerprint(first) == evidence_fingerprint(reobserved)
+    assert evidence_fingerprint(first) != evidence_fingerprint(changed)
 
 
 def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:

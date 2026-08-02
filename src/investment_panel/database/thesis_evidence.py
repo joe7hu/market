@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 
-def thesis_source_evidence(connection: Any, symbols: list[str]) -> dict[str, list[dict[str, Any]]]:
+def thesis_source_evidence(
+    connection: Any,
+    symbols: list[str],
+    *,
+    max_per_symbol: int = 12,
+) -> dict[str, list[dict[str, Any]]]:
     if not symbols:
         return {}
     rows = connection.execute(
@@ -46,9 +51,9 @@ def thesis_source_evidence(connection: Any, symbols: list[str]) -> dict[str, lis
         )
         SELECT symbol, source_id, source_name, source_family, source_type,
                title, summary, sentiment, observed_at, reference
-        FROM balanced WHERE symbol_rank <= 12 ORDER BY symbol, observed_at DESC
+        FROM balanced WHERE symbol_rank <= %s ORDER BY symbol, observed_at DESC
         """,
-        [symbols],
+        [symbols, max(1, int(max_per_symbol))],
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for raw_row in rows:

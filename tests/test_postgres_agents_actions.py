@@ -13,6 +13,7 @@ import pytest
 
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.agents import AgentRepository, _command_args
+from investment_panel.database.agent_process import market_day_start_utc
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -28,6 +29,12 @@ def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
             [decision_id, Jsonb({"source": "test"})],
         ).fetchone()
     return str(row["id"])
+
+
+def test_agent_today_window_uses_new_york_calendar_day() -> None:
+    assert market_day_start_utc(datetime(2026, 8, 2, 0, 5, tzinfo=UTC)) == datetime(
+        2026, 8, 1, 4, 0, tzinfo=UTC,
+    )
 
 
 def test_strategy_governance_automatically_promotes_only_complete_evidence(postgres_dsn: str) -> None:
@@ -123,6 +130,63 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         overview = repository.overview()
         assert overview["queue"]["total_open"] == 0
         assert overview["runs"][0]["status"] == "succeeded"
+    finally:
+        runtime.close()
+
+
+def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        with runtime.transaction() as connection:
+            instrument_id = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, asset_class) VALUES ('EDEC', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            run_ids = [
+                connection.execute(
+                    "INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, status) "
+                    "VALUES ('test', now(), 'test', %s, now(), 'succeeded') RETURNING id",
+                    [character * 64],
+                ).fetchone()["id"]
+                for character in ("a", "b")
+            ]
+            decision_ids = [
+                connection.execute(
+                    "INSERT INTO analysis.decision "
+                    "(run_id, decision_key, kind, instrument_id, as_of, state, input_hash) "
+                    "VALUES (%s, %s, 'option', %s, now() + make_interval(secs => %s), 'WATCH', %s) RETURNING id",
+                    [run_id, f"decision-{index}", instrument_id, index, character * 64],
+                ).fetchone()["id"]
+                for index, (run_id, character) in enumerate(zip(run_ids, ("c", "d")))
+            ]
+
+        queued = AgentRepository(runtime).queue_thesis(
+            "EDEC", trigger="scheduled", context={"decision_id": str(decision_ids[0])},
+        )
+        with runtime.read() as connection:
+            stored = connection.execute(
+                "SELECT decision_id, request->'decision'->>'id' AS request_decision_id "
+                "FROM analysis.agent_task WHERE id = %s",
+                [queued["request_id"]],
+            ).fetchone()
+        assert stored["decision_id"] == decision_ids[0]
+        assert stored["request_decision_id"] == str(decision_ids[0])
+
+        without_decision = AgentRepository(runtime).queue_thesis(
+            "EDEC",
+            trigger="manual",
+            context={"decision_id": str(decision_ids[0])},
+            context_sources={"decision": False},
+        )
+        with runtime.read() as connection:
+            stored_without_decision = connection.execute(
+                "SELECT decision_id, request->'decision' AS request_decision "
+                "FROM analysis.agent_task WHERE id = %s",
+                [without_decision["request_id"]],
+            ).fetchone()
+        assert stored_without_decision["decision_id"] == decision_ids[0]
+        assert stored_without_decision["request_decision"] == {}
     finally:
         runtime.close()
 
@@ -255,6 +319,53 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
         runtime.close()
 
 
+def test_consolidated_agent_does_not_record_a_run_without_tasks(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        result = AgentRepository(runtime).run_queued("unused", consolidated=True)
+        with runtime.read() as connection:
+            count = connection.execute("SELECT count(*) AS count FROM analysis.agent_run").fetchone()["count"]
+        assert result["status"] == "skipped"
+        assert result["reason"] == "no_open_tasks"
+        assert count == 0
+    finally:
+        runtime.close()
+
+
+def test_consolidated_agent_enforces_scheduled_daily_run_cap(
+    postgres_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    repository = AgentRepository(runtime)
+    try:
+        repository.queue_thesis("NVDA", trigger="scheduled")
+        monkeypatch.setattr(
+            "investment_panel.database.agents.subprocess.run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"thesis": [{"core_thesis": "NVDA thesis"}], "postmortem": []}),
+                stderr="",
+            ),
+        )
+        first = repository.run_queued(
+            "agent", consolidated=True, run_trigger="scheduled", max_runs_per_day=1,
+            task_kinds=("option_thesis",), kind_limits={"option_thesis": 1},
+        )
+        repository.queue_thesis("MSFT", trigger="scheduled")
+        capped = repository.run_queued(
+            "agent", consolidated=True, run_trigger="scheduled", max_runs_per_day=1,
+            task_kinds=("option_thesis",), kind_limits={"option_thesis": 1},
+        )
+        assert first["status"] == "ok"
+        assert capped == {"status": "skipped", "reason": "daily_run_cap", "completed": 0, "failed": 0}
+    finally:
+        runtime.close()
+
+
 def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     bin_dir = tmp_path / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
@@ -262,8 +373,8 @@ def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: py
     command = bin_dir / "market-codex-option-agent"
     python.write_text("")
     command.write_text("")
-    monkeypatch.setattr("investment_panel.database.agents.shutil.which", lambda _name: None)
-    monkeypatch.setattr("investment_panel.database.agents.sys.executable", str(python))
+    monkeypatch.setattr("investment_panel.database.agent_process.shutil.which", lambda _name: None)
+    monkeypatch.setattr("investment_panel.database.agent_process.sys.executable", str(python))
     resolved = _command_args("market-codex-option-agent")
     assert resolved[0] == str(command)
 

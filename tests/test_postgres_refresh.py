@@ -89,3 +89,34 @@ def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
         assert inside["agent_model"] == "gpt-5.6-luna"
     finally:
         runtime.close()
+
+
+def test_premarket_skips_us_market_holidays_before_running_agents(monkeypatch) -> None:
+    monkeypatch.setattr(
+        postgres_refresh.run_option_agents,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("agents should not run")),
+    )
+
+    result = postgres_refresh.premarket(
+        now=datetime(2026, 7, 3, 12, 15, tzinfo=UTC),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "market_closed"
+
+
+def test_scheduled_preopen_skips_us_market_holidays_before_loading_runtime(monkeypatch) -> None:
+    monkeypatch.setattr(
+        postgres_refresh,
+        "load_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("runtime should not load")),
+    )
+
+    result = postgres_refresh.scheduled_preopen(
+        now=datetime(2026, 7, 3, 12, 15, tzinfo=UTC),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "market_closed"
+    assert result["reason"] == "market_closed"

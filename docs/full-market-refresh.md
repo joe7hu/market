@@ -89,6 +89,7 @@ agents:
     provider: codex
     model: gpt-5.6-luna
     reasoning_effort: high
+    max_runs_per_day: 1
 ```
 
 The unified command receives one object with `thesis` and `postmortem` arrays
@@ -114,8 +115,12 @@ those defaults for a local run.
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
 candidate state, validation, backtests, forward tests, and human-approval gates.
-Agents should run once per day before the market review window; the hourly
-options loop is deterministic-only to avoid duplicate prompts and token churn.
+Scheduled option agents are capped at `max_runs_per_day`, skip without creating
+a fake run when no work is queued, and retain estimated Codex usage even when a
+child command fails. Thesis monitor pre-open work also skips when its stable
+decision-input fingerprint is unchanged. Agents should run once per day before
+the market review window; the hourly options loop is deterministic-only to avoid
+duplicate prompts and token churn.
 
 ## Freshness Contracts
 
@@ -191,7 +196,8 @@ window, for example:
 
 ```bash
 cd /Users/joehu/proj/market
-uv run python -m investment_panel.jobs.premarket_options_intelligence --config config.yaml
+MARKET_DATABASE_URL=postgresql:///market uv run python -m investment_panel.core.refresh_jobs \
+  premarket_options_intelligence --config config.yaml
 ```
 
 The checked-in weekday premarket launchd definition is:
@@ -209,9 +215,12 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.premark
 launchctl print gui/$(id -u)/com.joehu.market.premarket-options-intelligence
 ```
 
-This job runs `options_radar -> run_option_agents -> deterministic options_radar`
-once, so agent hypotheses affect the grouped opportunity read model without
-starting a second agent queue.
+This job runs through the canonical refresh-job boundary, so its lifecycle is
+visible in `ops.job_run` and `/api/refresh-jobs`. It composes `options_radar ->
+run_option_agents -> thesis_monitor -> deterministic options_radar -> /today`
+once. US market holidays are rejected before an agent can run. The pre-open
+narrative receives a compact decision context capped at 20,000 characters and
+records its own invocation and estimated token usage.
 
 The premarket workflow intentionally composes already-ingested facts. Run a
 separate source-plus-publication refresh after the options market opens so

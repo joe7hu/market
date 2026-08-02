@@ -56,6 +56,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
             "run_id": str(run_id),
             "items": counts["items"],
             "instrument_links": counts["instrument_links"],
+            "affected_symbols": counts["affected_symbols"],
             "payload_manifests": len(payload_ids),
             "source_status": context.get("source_status"),
         }

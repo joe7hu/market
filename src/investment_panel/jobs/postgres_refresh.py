@@ -37,10 +37,13 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
 def scheduled_preopen(config_path: str | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     """Publish once in the New York premarket window; otherwise skip cheaply."""
 
+    from investment_panel.core.decision import is_us_market_day
     from zoneinfo import ZoneInfo
 
     reference = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/New_York"))
-    if reference.weekday() >= 5 or not (4 <= reference.hour < 10):
+    if not is_us_market_day(reference.date()):
+        return {"status": "skipped", "ok": True, "database": "postgresql", "reason": "market_closed"}
+    if not (4 <= reference.hour < 10):
         return {"status": "skipped", "ok": True, "database": "postgresql", "reason": "outside_premarket_window"}
     config = load_config(config_path)
     runtime = runtime_for_config(config)
@@ -68,8 +71,18 @@ def scheduled_preopen(config_path: str | None = None, *, now: datetime | None = 
     return {"ok": result.get("status") == "ok", "database": "postgresql", **result}
 
 
-def premarket(config_path: str | None = None) -> dict[str, Any]:
+def premarket(config_path: str | None = None, *, now: datetime | None = None) -> dict[str, Any]:
     """Publish the daily decision snapshot from already-ingested raw facts."""
+
+    from investment_panel.core.decision import is_us_market_day
+    from zoneinfo import ZoneInfo
+
+    reference = now or datetime.now(UTC)
+    if not is_us_market_day(reference.astimezone(ZoneInfo("America/New_York")).date()):
+        return {
+            "ok": True, "status": "skipped", "database": "postgresql",
+            "cadence": "daily_premarket", "reason": "market_closed",
+        }
 
     config = load_config(config_path)
     runtime = runtime_for_config(config)

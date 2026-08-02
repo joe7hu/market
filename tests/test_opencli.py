@@ -68,3 +68,25 @@ def test_read_json_does_not_retry_non_rate_limit_errors(monkeypatch) -> None:
 
     assert not isinstance(excinfo.value, OpenCliRateLimitError)
     assert len(calls) == 1  # no retries for ordinary failures
+
+
+def test_opencli_resolves_known_installation_when_launchd_path_is_minimal(tmp_path, monkeypatch) -> None:
+    candidate = tmp_path / "opencli"
+    candidate.write_text("")
+    observed: list[list[str]] = []
+    monkeypatch.delenv("MARKET_OPENCLI_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr("investment_panel.core.executable.shutil.which", lambda _name: None)
+    monkeypatch.setattr("investment_panel.core.executable.DEFAULT_BIN_DIRS", (str(tmp_path),))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: (
+            observed.append([*command, kwargs["env"]["PATH"]])
+            or _completed(0, stdout="[]")
+        ),
+    )
+
+    assert OpenCliRunner().read_json(["twitter", "list-tweets"]) == []
+    assert observed[0][0] == str(candidate)
+    assert observed[0][-1].split(":", 1)[0] == str(tmp_path)

@@ -17,7 +17,17 @@ _VERBOSE_KEYS = {
 }
 
 
-def ticker_context(connection: Any, symbol: str) -> dict[str, Any]:
+def ticker_context(
+    connection: Any,
+    symbol: str,
+    *,
+    context_sources: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    enabled = context_sources or {}
+
+    def include(key: str) -> bool:
+        return bool(enabled.get(key, True))
+
     state = connection.execute(
         """
         SELECT position.quantity, position.average_cost, position.notes AS portfolio_notes,
@@ -68,15 +78,40 @@ def ticker_context(connection: Any, symbol: str) -> dict[str, Any]:
         """,
         [symbol],
     ).fetchall()
+    evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24).get(symbol, [])
     return {
-        "portfolio": dict(state) if state else {},
+        "portfolio": dict(state) if state and include("portfolio") else {},
         "option_opportunity": _bounded_value(dict(option["payload"] or {})) if option else {},
-        "published_models": {str(row["model_name"]): _bounded_value(dict(row["payload"] or {})) for row in published},
-        "catalysts": [dict(row) for row in catalysts],
+        "published_models": {
+            str(row["model_name"]): _bounded_value(dict(row["payload"] or {}))
+            for row in published
+            if _model_enabled(str(row["model_name"]), include)
+        },
+        "catalysts": [dict(row) for row in catalysts] if include("catalysts") else [],
         "source_evidence": [
-            _bounded_value(item) for item in thesis_source_evidence(connection, [symbol]).get(symbol, [])[:12]
-        ],
+            _bounded_value(item)
+            for item in evidence
+            if _evidence_enabled(item, include)
+        ][:12],
     }
+
+
+def _model_enabled(model_name: str, include: Any) -> bool:
+    normalized = model_name.lower()
+    if any(term in normalized for term in ("technical", "sepa", "relative_strength")):
+        return include("technicals")
+    if any(term in normalized for term in ("fundamental", "valuation", "earnings", "dcf")):
+        return include("fundamentals")
+    if any(term in normalized for term in ("ownership", "disclosure", "13f", "trader")):
+        return include("ownership")
+    return True
+
+
+def _evidence_enabled(item: dict[str, Any], include: Any) -> bool:
+    family = str(item.get("source_family") or "").lower()
+    if family in {"social", "private_graph", "thesis"}:
+        return include("social_signals")
+    return include("news")
 
 
 def _bounded_value(value: Any, *, depth: int = 0) -> Any:

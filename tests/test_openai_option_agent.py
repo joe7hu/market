@@ -82,7 +82,7 @@ def test_codex_binary_falls_back_to_known_installation(tmp_path, monkeypatch) ->
     candidate = tmp_path / "codex"
     candidate.write_text("")
     monkeypatch.delenv("MARKET_CODEX_BIN", raising=False)
-    monkeypatch.setattr(codex_runtime.shutil, "which", lambda _name: None)
+    monkeypatch.setattr("investment_panel.core.executable.shutil.which", lambda _name: None)
     monkeypatch.setattr(codex_runtime, "CODEX_CANDIDATES", (str(candidate),))
 
     assert codex_runtime.resolve_codex_bin() == str(candidate)

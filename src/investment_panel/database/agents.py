@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 import json
 import os
-from pathlib import Path
-import shlex
-import shutil
 import subprocess
-import sys
 from typing import Any, Sequence
 from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.agent_context import ticker_context
+from investment_panel.database.agent_process import (
+    agent_env,
+    agent_error_meta,
+    command_args as _command_args,
+    jsonable as _jsonable,
+    market_day_start_utc,
+    validate_result as _validate_result,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -31,12 +34,14 @@ class AgentRepository:
         prompt: str = "",
         trigger: str = "ondemand",
         context: dict[str, Any] | None = None,
+        context_sources: dict[str, bool] | None = None,
     ) -> dict[str, Any]:
         symbol = str(ticker).strip().upper()
         if not symbol:
             raise ValueError("ticker is required")
         with self.runtime.transaction() as connection:
             instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()
+            published_decision_id = str((context or {}).get("decision_id") or "").strip() or None
             decision = connection.execute(
                 """
                 SELECT decision.id, decision.state, decision.score, decision.reasons,
@@ -44,10 +49,13 @@ class AgentRepository:
                 FROM analysis.decision decision
                 JOIN catalog.instrument candidate ON candidate.id = decision.instrument_id
                 WHERE candidate.symbol = %s
+                  AND (CAST(%s AS uuid) IS NULL OR decision.id = CAST(%s AS uuid))
                 ORDER BY decision.as_of DESC, decision.score DESC NULLS LAST LIMIT 1
                 """,
-                [symbol],
+                [symbol, published_decision_id, published_decision_id],
             ).fetchone()
+            if published_decision_id and decision is None:
+                raise ValueError(f"published decision not found for {symbol}: {published_decision_id}")
             existing = connection.execute(
                 """
                 SELECT id, request, status FROM analysis.agent_task
@@ -63,7 +71,7 @@ class AgentRepository:
             ).fetchone()
             if existing:
                 return {"request_id": str(existing["id"]), "status": existing["status"], **dict(existing["request"])}
-            resolved_context = ticker_context(connection, symbol)
+            resolved_context = ticker_context(connection, symbol, context_sources=context_sources)
             if context:
                 resolved_context["option_opportunity"] = context
             request = {
@@ -71,7 +79,11 @@ class AgentRepository:
                 "trigger": trigger,
                 "custom_prompt": prompt,
                 "instrument_id": instrument["id"] if instrument else None,
-                "decision": dict(decision) if decision else {},
+                "decision": (
+                    dict(decision)
+                    if decision and (context_sources or {}).get("decision", True)
+                    else {}
+                ),
                 "context": _jsonable(resolved_context),
                 "authority": "hypothesis_only",
             }
@@ -85,7 +97,13 @@ class AgentRepository:
             ).fetchone()
         return {"request_id": str(row["id"]), "status": "queued", **request}
 
-    def queue_current_candidates(self, *, limit: int = 8, trigger: str = "scheduled") -> int:
+    def queue_current_candidates(
+        self,
+        *,
+        limit: int = 8,
+        trigger: str = "scheduled",
+        context_sources: dict[str, bool] | None = None,
+    ) -> int:
         """Queue the current ranked option candidates with their published context."""
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = connection.execute(
@@ -109,7 +127,9 @@ class AgentRepository:
             symbol = str(context.get("ticker") or context.get("symbol") or "").upper()
             if not symbol:
                 continue
-            result = self.queue_thesis(symbol, trigger=trigger, context=context)
+            result = self.queue_thesis(
+                symbol, trigger=trigger, context=context, context_sources=context_sources,
+            )
             if result.get("status") == "queued":
                 queued += 1
         return queued
@@ -283,6 +303,7 @@ class AgentRepository:
         provider: str = "external",
         model: str = "configured-command",
         reasoning_effort: str = "",
+        max_runs_per_day: int = 0,
         consolidated: bool = False,
         kind_limits: dict[str, int] | None = None,
         task_kinds: Sequence[str] = ("option_thesis", "option_postmortem"),
@@ -296,17 +317,23 @@ class AgentRepository:
                 run_trigger=run_trigger, provider=provider, model=model, reasoning_effort=reasoning_effort,
                 task_kinds=task_kinds,
             )
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            run = connection.execute(
-                """
-                INSERT INTO analysis.agent_run (provider, model, trigger, started_at, status)
-                VALUES (%s, %s, %s, now(), 'running') RETURNING id
-                """,
-                [provider, model, run_trigger or trigger or "scheduled"],
-            ).fetchone()
         completed = failed = 0
         errors: list[str] = []
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            effective_trigger = run_trigger or trigger or "scheduled"
+            if effective_trigger == "scheduled" and max_runs_per_day > 0:
+                connection.execute("SELECT pg_advisory_xact_lock(hashtext('market-option-agent-scheduled'))")
+                daily_runs = connection.execute(
+                    "SELECT count(*) AS count FROM analysis.agent_run "
+                    "WHERE trigger = 'scheduled' "
+                    "AND (started_at AT TIME ZONE 'America/New_York')::date = "
+                    "(now() AT TIME ZONE 'America/New_York')::date",
+                ).fetchone()
+                if int(daily_runs["count"] or 0) >= max_runs_per_day:
+                    return {
+                        "status": "skipped", "reason": "daily_run_cap",
+                        "completed": 0, "failed": 0,
+                    }
             if kind_limits:
                 tasks = []
                 for kind in task_kinds:
@@ -329,6 +356,18 @@ class AgentRepository:
                     "ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED",
                     [list(task_kinds), trigger, trigger, limit],
                 ).fetchall()
+            if not tasks:
+                return {
+                    "status": "skipped", "reason": "no_open_tasks",
+                    "completed": 0, "failed": 0,
+                }
+            run = connection.execute(
+                """
+                INSERT INTO analysis.agent_run (provider, model, trigger, started_at, status, summary)
+                VALUES (%s, %s, %s, now(), 'running', %s) RETURNING id
+                """,
+                [provider, model, effective_trigger, Jsonb({"workflow": "option_agent", "invoked": True})],
+            ).fetchone()
             if tasks:
                 connection.execute(
                     "UPDATE analysis.agent_task SET agent_run_id = %s, status = 'running', updated_at = now() "
@@ -341,12 +380,13 @@ class AgentRepository:
             payload = _batch_payload(tasks)
             try:
                 child_env = os.environ.copy()
-                child_env.update(_agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
+                child_env.update(agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
                 process = subprocess.run(
                     _command_args(command), input=json.dumps(payload), text=True,
                     capture_output=True, timeout=timeout_seconds, check=False, env=child_env,
                 )
                 if process.returncode != 0:
+                    meta = agent_error_meta(process.stderr or process.stdout or "")
                     raise RuntimeError((process.stderr or process.stdout or f"exit {process.returncode}")[-2000:])
                 output = json.loads(process.stdout)
                 meta = output.get("_meta") if isinstance(output.get("_meta"), dict) else {}
@@ -382,7 +422,8 @@ class AgentRepository:
                 "output_tokens = %s, summary = %s WHERE id = %s",
                 ["succeeded" if failed == 0 else "partial" if completed else "failed",
                  int(usage.get("input_tokens") or 0) or None, int(usage.get("output_tokens") or 0) or None,
-                 Jsonb({"completed": completed, "failed": failed, "errors": errors, "batch_size": len(tasks),
+                 Jsonb({"workflow": "option_agent", "invoked": True,
+                        "completed": completed, "failed": failed, "errors": errors, "batch_size": len(tasks),
                         "thesis_attempted": thesis_attempted, "thesis_accepted": thesis_accepted,
                         "postmortem_attempted": postmortem_attempted, "postmortem_accepted": postmortem_accepted}), run["id"]],
             )
@@ -402,7 +443,7 @@ class AgentRepository:
         completed = failed = 0
         errors: list[str] = []
         child_env = os.environ.copy()
-        child_env.update(_agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
+        child_env.update(agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
         for _ in range(limit):
             with self.runtime.transaction(JOB_PROFILE) as connection:
                 task = connection.execute(
@@ -522,6 +563,7 @@ class AgentRepository:
 
     def overview(self) -> dict[str, Any]:
         now = datetime.now(UTC)
+        today_start = market_day_start_utc(now)
         with self.runtime.read() as connection:
             queue_rows = connection.execute(
                 "SELECT task_kind, count(*) AS count, min(created_at) AS oldest "
@@ -529,7 +571,8 @@ class AgentRepository:
             ).fetchall()
             runs = connection.execute(
                 """
-                SELECT id, 'option_agent' AS workflow, provider, model, trigger,
+                SELECT id, coalesce(summary->>'workflow', 'option_agent') AS workflow,
+                       provider, model, trigger,
                        NULL::text AS ticker, started_at, finished_at, input_tokens,
                        output_tokens, cost_usd, status, summary
                 FROM analysis.agent_run
@@ -544,6 +587,21 @@ class AgentRepository:
                        ) AS summary
                 FROM app.thesis_automation_run
                 ORDER BY started_at DESC LIMIT 50
+                """
+            ).fetchall()
+            workflow_rows = connection.execute(
+                """
+                WITH workflow_runs AS (
+                    SELECT coalesce(summary->>'workflow', 'option_agent') AS workflow, status
+                    FROM analysis.agent_run
+                    UNION ALL
+                    SELECT 'thesis_monitor' AS workflow, status FROM app.thesis_automation_run
+                )
+                SELECT workflow, count(*) AS runs,
+                       count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                       count(*) FILTER (WHERE status IN ('failed', 'timeout', 'partial')) AS failed,
+                       count(*) FILTER (WHERE status = 'running') AS running
+                FROM workflow_runs GROUP BY workflow ORDER BY workflow
                 """
             ).fetchall()
             costs = connection.execute(
@@ -565,10 +623,10 @@ class AgentRepository:
                 FROM all_runs
                 """,
                 [
-                    now.replace(hour=0, minute=0, second=0, microsecond=0),
-                    now.replace(hour=0, minute=0, second=0, microsecond=0),
-                    now.replace(hour=0, minute=0, second=0, microsecond=0),
-                    now.replace(hour=0, minute=0, second=0, microsecond=0),
+                    today_start,
+                    today_start,
+                    today_start,
+                    today_start,
                     now - timedelta(days=7),
                     now - timedelta(days=7),
                     now - timedelta(days=7),
@@ -589,21 +647,16 @@ class AgentRepository:
                 "thesis_accepted": int(summary.get("thesis_accepted") or (summary.get("completed") if item["workflow"] == "thesis_monitor" else 0) or 0),
                 "postmortem_attempted": int(summary.get("postmortem_attempted") or 0),
                 "postmortem_accepted": int(summary.get("postmortem_accepted") or 0),
-                "error": summary.get("error"),
+                "error": summary.get("error") or next(iter(summary.get("errors") or []), None),
             })
             normalized_runs.append(item)
-        workflow_counts: dict[str, dict[str, int]] = {}
-        for item in normalized_runs:
-            workflow = str(item["workflow"])
-            counts = workflow_counts.setdefault(workflow, {"runs": 0, "succeeded": 0, "failed": 0, "running": 0})
-            counts["runs"] += 1
-            status = str(item.get("status") or "")
-            if status == "succeeded":
-                counts["succeeded"] += 1
-            elif status == "running":
-                counts["running"] += 1
-            elif status in {"failed", "timeout", "partial"}:
-                counts["failed"] += 1
+        workflow_counts = {
+            str(row["workflow"]): {
+                "runs": int(row["runs"]), "succeeded": int(row["succeeded"]),
+                "failed": int(row["failed"]), "running": int(row["running"]),
+            }
+            for row in workflow_rows
+        }
         return {
             "queue": {
                 "thesis_open": queue.get("option_thesis", 0),
@@ -614,20 +667,10 @@ class AgentRepository:
             "runs": normalized_runs,
             "workflows": workflow_counts,
             "cost": {
-                "today": {"runs": costs["today_runs"], "input_tokens": costs["today_input"], "output_tokens": costs["today_output"], "est_cost_usd": float(costs["today_cost"])},
-                "last_7d": {"runs": costs["week_runs"], "input_tokens": costs["week_input"], "output_tokens": costs["week_output"], "est_cost_usd": float(costs["week_cost"])},
+                "today": {"runs": int(costs["today_runs"]), "input_tokens": int(costs["today_input"]), "output_tokens": int(costs["today_output"]), "est_cost_usd": float(costs["today_cost"])},
+                "last_7d": {"runs": int(costs["week_runs"]), "input_tokens": int(costs["week_input"]), "output_tokens": int(costs["week_output"]), "est_cost_usd": float(costs["week_cost"])},
             },
         }
-
-
-def _validate_result(task_kind: str, payload: dict[str, Any]) -> None:
-    if task_kind == "option_thesis":
-        thesis = str(payload.get("core_thesis") or payload.get("thesis") or "").strip()
-        if not thesis:
-            raise ValueError("agent thesis requires core_thesis")
-    elif task_kind == "option_postmortem":
-        if not str(payload.get("failure_type") or payload.get("outcome_type") or "").strip():
-            raise ValueError("agent postmortem requires failure_type or outcome_type")
 
 
 def _batch_payload(tasks: Sequence[Any]) -> dict[str, Any]:
@@ -653,43 +696,3 @@ def _batch_payload(tasks: Sequence[Any]) -> dict[str, Any]:
             "forbidden": ["trade_execution", "silent_strategy_promotion", "invented_evidence"],
         },
     }
-
-
-def _agent_env(*, provider: str, model: str, reasoning_effort: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if provider:
-        values["MARKET_OPTION_AGENT_PROVIDER"] = provider
-    if model:
-        values["MARKET_CODEX_MODEL"] = model
-        values["MARKET_OPENAI_MODEL"] = model
-    if reasoning_effort:
-        values["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
-    return values
-
-
-def _command_args(command: str) -> list[str]:
-    args = shlex.split(command)
-    if not args:
-        raise ValueError("agent command is empty")
-    executable = args[0]
-    if "/" not in executable and shutil.which(executable) is None:
-        # Keep the virtualenv path itself; resolving its Python symlink jumps to
-        # uv's shared interpreter directory where console scripts do not live.
-        local_executable = Path(sys.executable).parent / executable
-        if local_executable.is_file():
-            args[0] = str(local_executable)
-    return args
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, Decimal):
-        return float(value)
-    return value

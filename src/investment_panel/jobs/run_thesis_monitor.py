@@ -12,6 +12,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
 from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
 from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor
+from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
 
 
 class ThesisAutomationValidationError(ValueError):
@@ -97,7 +98,11 @@ def _run_one(
 ) -> dict[str, Any]:
     symbol = str(row.get("symbol") or "").upper()
     evidence = list(row.get("source_evidence") or [])[:evidence_limit]
-    fingerprint = evidence_fingerprint(evidence) if evidence else None
+    fingerprint = (
+        preopen_fingerprint(row, evidence)
+        if trigger == "preopen"
+        else evidence_fingerprint(evidence) if evidence else None
+    )
     eligible, reason = repository.eligible(
         symbol,
         trigger=trigger,
@@ -107,6 +112,8 @@ def _run_one(
         fingerprint=fingerprint,
     )
     if not eligible:
+        if reason == "decision_inputs_unchanged_preopen" and row.get("revision_id"):
+            repository.mark_current_assessed(symbol)
         return {"symbol": symbol, "status": "skipped", "reason": reason}
     if dry_run:
         try:
@@ -128,8 +135,10 @@ def _run_one(
         reasoning_effort=reasoning_effort,
         prompt_version=prompt_version,
         evidence_snapshot=evidence,
+        fingerprint=fingerprint,
         status="running",
     )
+    output: dict[str, Any] = {}
     try:
         request, evidence_refs = _request_payload(row, evidence, prompt_version=prompt_version)
         output = generate_codex_thesis_monitor(
@@ -180,7 +189,11 @@ def _run_one(
         }
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        repository.finish_run(run_id, status="failed", error=error)
+        usage = _usage(output)
+        if not usage and isinstance(exc, OpenAIOptionAgentError):
+            meta = exc.meta if isinstance(exc.meta, dict) else {}
+            usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
+        repository.finish_run(run_id, status="failed", error=error, usage=usage)
         repository.create_health_alert(symbol, title="Thesis automation failed", detail=error[:1000])
         return {"symbol": symbol, "status": "failed", "run_id": run_id, "error": error}
 
@@ -313,6 +326,21 @@ def _request_payload(
             "use_only_evidence_references": list(reference_map),
         },
     }, reference_map)
+
+
+def preopen_fingerprint(row: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
+    """Hash only thesis inputs that can change a research decision."""
+
+    catalyst = row.get("next_catalyst")
+    payload = [{
+        "current_thesis": row.get("raw_thesis") or {},
+        "owned": bool(row.get("owned")),
+        "watched": bool(row.get("watched")),
+        "options_underwriting": bool(row.get("options_underwriting")),
+        "next_catalyst": catalyst,
+        "evidence": evidence,
+    }]
+    return evidence_fingerprint(payload)
 
 
 def _restore_thesis_references(thesis: dict[str, Any], reference_map: dict[str, str]) -> None:

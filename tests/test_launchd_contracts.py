@@ -26,3 +26,14 @@ def test_market_open_options_radar_runs_full_hard_refresh_at_0940_weekdays() -> 
     command = payload["ProgramArguments"][2]
     assert "investment_panel.core.refresh_jobs options_radar_hard_refresh" in command
     assert "MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS=80" in command
+
+
+def test_premarket_launchd_routes_through_postgresql_job_authority() -> None:
+    plist_path = PROJECT_ROOT / "ops" / "launchd" / "com.joehu.market.premarket-options-intelligence.plist"
+    with plist_path.open("rb") as handle:
+        payload = plistlib.load(handle)
+
+    command = payload["ProgramArguments"][2]
+    assert "investment_panel.core.refresh_jobs premarket_options_intelligence" in command
+    assert "MARKET_DATABASE_URL=postgresql:///market" in command
+    assert "MARKET_DUCKDB_PATH" not in command

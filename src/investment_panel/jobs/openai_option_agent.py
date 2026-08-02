@@ -22,6 +22,10 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 class OpenAIOptionAgentError(RuntimeError):
     """Raised when the OpenAI option agent command cannot return JSON."""
 
+    def __init__(self, message: str, *, meta: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.meta = meta or {}
+
 
 THESIS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -381,6 +385,16 @@ def _call_codex_structured(
 ) -> dict[str, Any]:
     # Batch callers pre-shape payloads and must not be re-compacted.
     body_payload = _compact_request_payload(request_payload) if compact else request_payload
+    body_text = json.dumps(body_payload, default=str)
+    prompt_chars = len(system_prompt) + len(body_text)
+    estimated_meta: dict[str, Any] = {
+        "provider": "codex",
+        "model": model or os.environ.get("MARKET_CODEX_MODEL", "") or "codex",
+        "estimated": True,
+        "usage": {"input_tokens": prompt_chars // 4, "output_tokens": 0},
+    }
+    if meta_sink is not None:
+        meta_sink.update(estimated_meta)
     codex_bin = resolve_codex_bin()
     effective_timeout = timeout if timeout is not None else float(os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"))
     with tempfile.NamedTemporaryFile("w", suffix=f"-{schema_name}.schema.json", delete=False) as schema_file:
@@ -398,7 +412,7 @@ def _call_codex_structured(
                 model=model,
                 reasoning_effort=reasoning_effort,
             ),
-            input=json.dumps(body_payload, default=str),
+            input=body_text,
             text=True,
             capture_output=True,
             timeout=effective_timeout,
@@ -407,7 +421,11 @@ def _call_codex_structured(
         )
         output_text = _read_codex_output(output_path, completed.stdout)
     except subprocess.TimeoutExpired as exc:
-        raise OpenAIOptionAgentError(f"Codex agent timed out after {effective_timeout:g}s") from exc
+        partial = str(exc.stdout or "")
+        estimated_meta["usage"]["output_tokens"] = len(partial) // 4
+        raise OpenAIOptionAgentError(
+            f"Codex agent timed out after {effective_timeout:g}s", meta=estimated_meta,
+        ) from exc
     finally:
         for path in (schema_path, output_path):
             try:
@@ -415,29 +433,25 @@ def _call_codex_structured(
             except OSError:
                 pass
     if completed.returncode != 0:
-        raise OpenAIOptionAgentError(f"Codex option agent failed {completed.returncode}: {completed.stderr.strip()[:500]}")
+        estimated_meta["usage"]["output_tokens"] = len(output_text) // 4
+        raise OpenAIOptionAgentError(
+            f"Codex option agent failed {completed.returncode}: {completed.stderr.strip()[:500]}",
+            meta=estimated_meta,
+        )
     if not output_text:
-        raise OpenAIOptionAgentError("Codex option agent returned empty output")
+        raise OpenAIOptionAgentError("Codex option agent returned empty output", meta=estimated_meta)
     try:
         parsed = json.loads(output_text)
     except json.JSONDecodeError as exc:
-        raise OpenAIOptionAgentError(f"Codex option agent returned invalid JSON: {output_text[:500]}") from exc
+        raise OpenAIOptionAgentError(
+            f"Codex option agent returned invalid JSON: {output_text[:500]}", meta=estimated_meta,
+        ) from exc
     if not isinstance(parsed, dict):
-        raise OpenAIOptionAgentError("Codex option agent output must be a JSON object")
+        raise OpenAIOptionAgentError("Codex option agent output must be a JSON object", meta=estimated_meta)
     if meta_sink is not None:
         # Codex does not report token usage; estimate ~4 chars/token for cost visibility.
-        prompt_chars = len(system_prompt) + len(json.dumps(body_payload, default=str))
-        meta_sink.update(
-            {
-                "provider": "codex",
-                "model": model or os.environ.get("MARKET_CODEX_MODEL", "") or "codex",
-                "estimated": True,
-                "usage": {
-                    "input_tokens": prompt_chars // 4,
-                    "output_tokens": len(output_text) // 4,
-                },
-            }
-        )
+        estimated_meta["usage"]["output_tokens"] = len(output_text) // 4
+        meta_sink.update(estimated_meta)
     return parsed
 
 
@@ -642,58 +656,43 @@ def _write_stdout_json(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, separators=(",", ":"), default=str) + "\n")
 
 
-def main_thesis() -> int:
+def _write_agent_error(exc: OpenAIOptionAgentError) -> None:
+    sys.stderr.write(f"OpenAI option agent error: {exc}\n")
+    if exc.meta:
+        sys.stderr.write("MARKET_AGENT_META=" + json.dumps(exc.meta, separators=(",", ":"), default=str) + "\n")
+
+
+def _run_cli(generator: Any) -> int:
     try:
-        _write_stdout_json(generate_openai_option_thesis(_read_stdin_json()))
+        _write_stdout_json(generator(_read_stdin_json()))
     except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
+        _write_agent_error(exc)
         return 1
     return 0
+
+
+def main_thesis() -> int:
+    return _run_cli(generate_openai_option_thesis)
 
 
 def main_codex_thesis() -> int:
-    try:
-        _write_stdout_json(generate_codex_option_thesis(_read_stdin_json()))
-    except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
-        return 1
-    return 0
+    return _run_cli(generate_codex_option_thesis)
 
 
 def main_postmortem() -> int:
-    try:
-        _write_stdout_json(generate_openai_option_postmortem(_read_stdin_json()))
-    except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
-        return 1
-    return 0
+    return _run_cli(generate_openai_option_postmortem)
 
 
 def main_codex_postmortem() -> int:
-    try:
-        _write_stdout_json(generate_codex_option_postmortem(_read_stdin_json()))
-    except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
-        return 1
-    return 0
+    return _run_cli(generate_codex_option_postmortem)
 
 
 def main_agent() -> int:
-    try:
-        _write_stdout_json(generate_openai_option_agent(_read_stdin_json()))
-    except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
-        return 1
-    return 0
+    return _run_cli(generate_openai_option_agent)
 
 
 def main_codex_agent() -> int:
-    try:
-        _write_stdout_json(generate_codex_option_agent(_read_stdin_json()))
-    except OpenAIOptionAgentError as exc:
-        sys.stderr.write(f"OpenAI option agent error: {exc}\n")
-        return 1
-    return 0
+    return _run_cli(generate_codex_option_agent)
 
 
 if __name__ == "__main__":

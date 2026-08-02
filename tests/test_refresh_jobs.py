@@ -10,6 +10,38 @@ import psycopg
 import pytest
 
 
+def test_material_thesis_monitor_receives_only_changed_symbols(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        refresh_jobs.run_thesis_monitor,
+        "run",
+        lambda _path, **kwargs: observed.update(kwargs) or {"status": "ok", "completed": 1, "failed": 0},
+    )
+
+    result = refresh_jobs.run_source_with_material_thesis(
+        "config.yaml",
+        lambda _path: {"status": "ok", "affected_symbols": ["nvda"]},
+    )
+
+    assert result["status"] == "ok"
+    assert observed == {"symbols": ["NVDA"], "trigger": "material_event"}
+
+
+def test_material_thesis_monitor_skips_when_source_reports_no_changes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        refresh_jobs.run_thesis_monitor,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("monitor should not run")),
+    )
+
+    result = refresh_jobs.run_source_with_material_thesis(
+        "config.yaml",
+        lambda _path: {"status": "ok", "affected_symbols": []},
+    )
+
+    assert result["material_thesis_monitor"]["reason"] == "no_changed_symbols"
+
+
 @pytest.fixture(autouse=True)
 def _postgresql_job_authority(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MARKET_DATABASE_URL", migrated_postgres_dsn)

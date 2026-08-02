@@ -223,6 +223,14 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "radar_option_source": option_source,
+        "external_jobs": {
+            "premarket_options_intelligence": {
+                "owner": "launchd",
+                "schedule": "weekdays 08:15 America/New_York",
+                "market_calendar_gated": True,
+                "includes": ["option_agent", "thesis_monitor", "preopen_narrative"],
+            }
+        },
     }
 
 

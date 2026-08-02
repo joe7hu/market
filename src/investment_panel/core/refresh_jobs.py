@@ -100,7 +100,18 @@ def run_source_with_material_thesis(
     source_status = str(source.get("status") or "ok").lower()
     if source_status not in {"ok", "partial"}:
         return source
-    monitor = run_thesis_monitor.run(config_path, trigger="material_event")
+    affected_symbols = sorted({str(symbol).upper() for symbol in source.get("affected_symbols") or [] if symbol})
+    if "affected_symbols" in source and not affected_symbols:
+        monitor = {
+            "status": "ok", "completed": 0, "failed": 0, "skipped": 0,
+            "results": [], "errors": [], "reason": "no_changed_symbols",
+        }
+    else:
+        monitor = run_thesis_monitor.run(
+            config_path,
+            symbols=affected_symbols or None,
+            trigger="material_event",
+        )
     monitor_status = str(monitor.get("status") or "failed").lower()
     composite_status = "partial" if monitor_status in {"partial", "failed"} else source_status
     return {

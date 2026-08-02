@@ -19,9 +19,10 @@ class SourceFactRepository:
 
     def store_content_items(
         self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]], *, payload_id: int | None = None
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         stored = 0
         linked = 0
+        affected_symbols: set[str] = set()
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for source in rows:
                 source_key = str(source.get("source_key") or source.get("id") or "").strip()
@@ -33,6 +34,11 @@ class SourceFactRepository:
                 summary = str(source.get("summary") or source.get("description") or "").strip() or None
                 digest_value = "\n".join(filter(None, (title, summary, str(source.get("url") or ""))))
                 content_hash = hashlib.sha256(digest_value.encode()).hexdigest() if digest_value else None
+                existing = connection.execute(
+                    "SELECT id, content_hash FROM raw.content_item WHERE source_id = %s AND source_key = %s",
+                    [source_id, source_key],
+                ).fetchone()
+                content_changed = existing is None or existing["content_hash"] != content_hash
                 item = connection.execute(
                     """
                     INSERT INTO raw.content_item (
@@ -58,6 +64,16 @@ class SourceFactRepository:
                     ],
                 ).fetchone()
                 stored += 1
+                if content_changed and existing is not None:
+                    affected_symbols.update(
+                        str(row["symbol"])
+                        for row in connection.execute(
+                            "SELECT instrument.symbol FROM raw.content_item_instrument link "
+                            "JOIN catalog.instrument instrument ON instrument.id = link.instrument_id "
+                            "WHERE link.content_item_id = %s",
+                            [item["id"]],
+                        ).fetchall()
+                    )
                 for raw_symbol in source.get("symbols") or source.get("tickers") or []:
                     try:
                         symbol = canonical_symbol(raw_symbol)
@@ -74,7 +90,13 @@ class SourceFactRepository:
                         [item["id"], instrument_id, _number(source.get("relevance"))],
                     )
                     linked += int(result.rowcount)
-        return {"items": stored, "instrument_links": linked}
+                    if content_changed or result.rowcount:
+                        affected_symbols.add(symbol)
+        return {
+            "items": stored,
+            "instrument_links": linked,
+            "affected_symbols": sorted(affected_symbols),
+        }
 
     def store_market_events(
         self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]], *, payload_id: int | None = None

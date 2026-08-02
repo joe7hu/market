@@ -45,6 +45,10 @@ def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
         assert result["status"] == "ok"
         assert result["items"] == 1
         assert result["instrument_links"] == 1
+        assert result["affected_symbols"] == ["NVDA"]
+
+        unchanged = update_content_sources.run("config.yaml", kinds={"news"})
+        assert unchanged["affected_symbols"] == []
         with runtime.read() as connection:
             row = connection.execute(
                 """

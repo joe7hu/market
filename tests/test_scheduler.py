@@ -184,6 +184,8 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["learning_refresh_seconds"] == "21600"
     assert status["market_environment_refresh_seconds"] == "3600"
     assert status["preopen_brief_refresh_seconds"] == "0"
+    assert status["external_jobs"]["premarket_options_intelligence"]["owner"] == "launchd"
+    assert status["external_jobs"]["premarket_options_intelligence"]["market_calendar_gated"] is True
     assert status["jobs"]["run_option_agents"] == 123
 
 
@@ -360,7 +362,8 @@ def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) 
         if job == "slow_job":
             await asyncio.sleep(0.1)
 
-    monkeypatch.setattr(scheduler, "job_intervals", lambda: {"slow_job": 60, "update_market_environment": 60})
+    monkeypatch.setattr(scheduler, "load_config", lambda _path: object())
+    monkeypatch.setattr(scheduler, "job_intervals", lambda _config: {"slow_job": 60, "update_market_environment": 60})
     monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
     monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "STAGGER_SECONDS", 0)
