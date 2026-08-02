@@ -1,5 +1,4 @@
 """PostgreSQL option-agent task queue and execution contract."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -11,7 +10,8 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.agent_context import ticker_context
+from investment_panel.database.agent_context import option_opportunity_context, ticker_context
+from investment_panel.database.agent_candidate_queue import current_candidate_payloads
 from investment_panel.database.agent_process import (
     agent_env,
     agent_error_meta,
@@ -20,8 +20,11 @@ from investment_panel.database.agent_process import (
     market_day_start_utc,
     validate_result as _validate_result,
 )
+from investment_panel.database.option_thesis_materialization import (
+    accept_agent_task_result,
+    option_thesis_materialization_summary,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
-
 
 class AgentRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
@@ -73,7 +76,7 @@ class AgentRepository:
                 return {"request_id": str(existing["id"]), "status": existing["status"], **dict(existing["request"])}
             resolved_context = ticker_context(connection, symbol, context_sources=context_sources)
             if context:
-                resolved_context["option_opportunity"] = context
+                resolved_context["option_opportunity"] = option_opportunity_context(context)
             request = {
                 "ticker": symbol,
                 "trigger": trigger,
@@ -105,25 +108,8 @@ class AgentRepository:
         context_sources: dict[str, bool] | None = None,
     ) -> int:
         """Queue the current ranked option candidates with their published context."""
-        with self.runtime.read(JOB_PROFILE) as connection:
-            rows = connection.execute(
-                """
-                WITH latest AS (
-                    SELECT id FROM app.publication
-                    WHERE scope = 'options-radar' AND status = 'published'
-                    ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
-                )
-                SELECT item.payload
-                FROM app.publication_item item
-                JOIN latest ON latest.id = item.publication_id
-                WHERE item.model_name = 'option_radar_opportunity'
-                ORDER BY item.rank NULLS LAST LIMIT %s
-                """,
-                [limit],
-            ).fetchall()
         queued = 0
-        for row in rows:
-            context = dict(row["payload"] or {})
+        for context in current_candidate_payloads(self.runtime, limit=limit):
             symbol = str(context.get("ticker") or context.get("symbol") or "").upper()
             if not symbol:
                 continue
@@ -171,6 +157,7 @@ class AgentRepository:
                       SELECT 1 FROM analysis.agent_task task
                       WHERE task.task_kind = 'option_postmortem'
                         AND task.request->>'decision_id' = outcome.decision_id::text
+                        AND task.status IN ('queued', 'running', 'completed')
                   )
                 ORDER BY outcome.updated_at DESC LIMIT %s
                 """,
@@ -212,16 +199,7 @@ class AgentRepository:
         if not request_id:
             raise ValueError("request_id is required")
         _validate_result(task_kind, payload)
-        row = connection.execute(
-            """
-            UPDATE analysis.agent_task
-            SET status = 'completed', result = %s,
-                validation = %s, updated_at = now()
-            WHERE id = %s AND task_kind = %s
-            RETURNING id
-            """,
-            [Jsonb(_jsonable(payload)), Jsonb({"status": "accepted", "authority": "advisory_only"}), request_id, task_kind],
-        ).fetchone()
+        row = accept_agent_task_result(connection, task_id=request_id, task_kind=task_kind, result=payload)
         if row is None:
             raise ValueError(f"agent request not found: {request_id}")
         return str(row["id"])
@@ -380,7 +358,10 @@ class AgentRepository:
             payload = _batch_payload(tasks)
             try:
                 child_env = os.environ.copy()
-                child_env.update(agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
+                child_env.update(agent_env(
+                    provider=provider, model=model, reasoning_effort=reasoning_effort,
+                    timeout_seconds=timeout_seconds,
+                ))
                 process = subprocess.run(
                     _command_args(command), input=json.dumps(payload), text=True,
                     capture_output=True, timeout=timeout_seconds, check=False, env=child_env,
@@ -443,7 +424,10 @@ class AgentRepository:
         completed = failed = 0
         errors: list[str] = []
         child_env = os.environ.copy()
-        child_env.update(agent_env(provider=provider, model=model, reasoning_effort=reasoning_effort))
+        child_env.update(agent_env(
+            provider=provider, model=model, reasoning_effort=reasoning_effort,
+            timeout_seconds=timeout_seconds,
+        ))
         for _ in range(limit):
             with self.runtime.transaction(JOB_PROFILE) as connection:
                 task = connection.execute(
@@ -470,9 +454,8 @@ class AgentRepository:
                 result = json.loads(process.stdout)
                 _validate_result(str(task["task_kind"]), result)
                 with self.runtime.transaction() as connection:
-                    connection.execute(
-                        "UPDATE analysis.agent_task SET status = 'completed', result = %s, validation = %s, updated_at = now() WHERE id = %s",
-                        [Jsonb(_jsonable(result)), Jsonb({"status": "accepted", "authority": "advisory_only"}), task["id"]],
+                    accept_agent_task_result(
+                        connection, task_id=str(task["id"]), task_kind=str(task["task_kind"]), result=result,
                     )
                     if str(task["task_kind"]) == "option_postmortem":
                         from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -515,9 +498,8 @@ class AgentRepository:
                     raise ValueError("agent result must be an object")
                 _validate_result(kind, result)
                 with self.runtime.transaction() as connection:
-                    connection.execute(
-                        "UPDATE analysis.agent_task SET status = 'completed', result = %s, validation = %s, updated_at = now() WHERE id = %s",
-                        [Jsonb(_jsonable(result)), Jsonb({"status": "accepted", "authority": "advisory_only"}), task["id"]],
+                    accept_agent_task_result(
+                        connection, task_id=str(task["id"]), task_kind=kind, result=result,
                     )
                     if kind == "option_postmortem":
                         from investment_panel.database.strategy_learning import StrategyLearningRepository
@@ -633,6 +615,7 @@ class AgentRepository:
                     now - timedelta(days=7),
                 ],
             ).fetchone()
+            materialization = option_thesis_materialization_summary(connection)
         queue = {str(row["task_kind"]): int(row["count"]) for row in queue_rows}
         oldest = min((row["oldest"] for row in queue_rows if row["oldest"]), default=None)
         normalized_runs = []
@@ -666,6 +649,9 @@ class AgentRepository:
             },
             "runs": normalized_runs,
             "workflows": workflow_counts,
+            "materialization": {
+                **materialization,
+            },
             "cost": {
                 "today": {"runs": int(costs["today_runs"]), "input_tokens": int(costs["today_input"]), "output_tokens": int(costs["today_output"]), "est_cost_usd": float(costs["today_cost"])},
                 "last_7d": {"runs": int(costs["week_runs"]), "input_tokens": int(costs["week_input"]), "output_tokens": int(costs["week_output"]), "est_cost_usd": float(costs["week_cost"])},

@@ -93,6 +93,37 @@ def test_failed_ingestion_run_persists_failure(repository: IngestionRepository, 
     assert row == ("failed", "RuntimeError: provider unavailable")
 
 
+def test_latest_option_snapshot_by_symbol_uses_bounded_run_manifests(
+    repository: IngestionRepository,
+) -> None:
+    first_at = datetime(2026, 7, 30, 20, 0, tzinfo=UTC)
+    second_at = datetime(2026, 7, 31, 20, 0, tzinfo=UTC)
+    first = repository.start_run("robinhood", "option_quotes", started_at=first_at)
+    repository.store_option_snapshot(
+        first,
+        source_id="robinhood",
+        observed_at=first_at,
+        market_session="regular",
+        universe="manifest-test-1",
+        rows=[],
+    )
+    repository.finish_run(first, "succeeded", summary={"symbols_requested": ["NVDA", "MSFT"]})
+    second = repository.start_run("robinhood", "option_quotes", started_at=second_at)
+    repository.store_option_snapshot(
+        second,
+        source_id="robinhood",
+        observed_at=second_at,
+        market_session="regular",
+        universe="manifest-test-2",
+        rows=[],
+    )
+    repository.finish_run(second, "succeeded", summary={"symbols_requested": ["NVDA"]})
+
+    latest = repository.latest_option_snapshot_by_symbol("robinhood", ["NVDA", "MSFT", "AAPL"])
+
+    assert latest == {"NVDA": second_at, "MSFT": first_at}
+
+
 def test_daily_price_bars_are_idempotent_and_materialize_latest_quote(repository: IngestionRepository) -> None:
     repository.register_source("daily-prices", name="Daily", family="market_data", kind="daily_bars")
     rows = [

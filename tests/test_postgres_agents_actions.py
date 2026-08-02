@@ -12,13 +12,38 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from investment_panel.database.actions import ActionRepository
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agents import AgentRepository, _command_args
 from investment_panel.database.agent_process import market_day_start_utc
+from investment_panel.database.agent_context import option_opportunity_context
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 from investment_panel.jobs.openai_option_agent import _compact_agent_batch
+
+
+def _option_thesis_result(ticker: str, *, request_id: str | None = None) -> dict[str, object]:
+    result: dict[str, object] = {
+        "ticker": ticker,
+        "direction": "long",
+        "bull_target_price": 240.0,
+        "bull_target_date": "2027-01-15",
+        "base_target_price": 210.0,
+        "bear_target_price": 150.0,
+        "scenario_probabilities": {"base": 0.55, "bull": 0.25, "bear": 0.20},
+        "preferred_structures": ["long_call", "call_debit_spread"],
+        "core_thesis": f"{ticker} thesis",
+        "required_proofs": ["Revenue growth remains durable."],
+        "catalysts": [{"type": "earnings", "expected_window": "next quarter", "what_to_watch": "guidance"}],
+        "invalidation": ["Revenue growth breaks below the underwriting range."],
+        "bear_case": "Demand weakens materially.",
+        "confidence": 0.7,
+        "evidence_refs": [],
+    }
+    if request_id:
+        result["request_id"] = request_id
+    return result
 
 
 def _postmortem_task(runtime: DatabaseRuntime, decision_id=None) -> str:
@@ -111,25 +136,48 @@ def test_agent_queue_external_execution_and_manual_submission(postgres_dsn: str)
         duplicate = repository.queue_thesis("NVDA", prompt="duplicate", trigger="ondemand")
         assert duplicate["request_id"] == queued["request_id"]
 
-        command = (
-            f"{shlex.quote(sys.executable)} -c "
-            "'import json,sys; request=json.load(sys.stdin); "
-            "print(json.dumps({\"core_thesis\": request[\"ticker\"] + \" thesis\", \"confidence\": 0.8}))'"
+        template = _option_thesis_result("NVDA")
+        command_code = (
+            "import json,sys; request=json.load(sys.stdin); "
+            f"result={template!r}; result['ticker']=request['ticker']; "
+            "result['core_thesis']=request['ticker'] + ' thesis'; print(json.dumps(result))"
         )
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(command_code)}"
         result = repository.run_queued(command, trigger="ondemand", task_kinds=("option_thesis",))
         assert result["completed"] == 1
         thesis = repository.rows("agent_thesis")[0]
         assert thesis["core_thesis"] == "NVDA thesis"
+        with runtime.read() as connection:
+            materialized = connection.execute(
+                """
+                SELECT thesis.id, thesis.thesis, expression.structure, task.validation
+                FROM app.thesis thesis
+                JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
+                JOIN app.thesis_expression expression ON expression.thesis_revision_id = thesis.id
+                JOIN analysis.agent_task task ON task.id = (thesis.thesis->'provenance'->>'option_agent_task_id')::uuid
+                WHERE instrument.symbol = 'NVDA' AND thesis.status = 'current'
+                  AND expression.expression_kind = 'option' AND expression.status = 'active'
+                """
+            ).fetchone()
+        assert materialized is not None
+        assert materialized["thesis"]["scenarios"]["base"]["target"] == 210.0
+        assert materialized["structure"]["preferred_structures"] == ["long_call", "call_debit_spread"]
+        assert materialized["validation"]["materialization"]["status"] == "materialized"
 
         second = repository.queue_thesis("MSFT", trigger="manual")
         submitted_id = repository.submit(
             "option_thesis",
-            {"request_id": second["request_id"], "core_thesis": "MSFT cloud thesis", "confidence": 0.7},
+            {
+                **_option_thesis_result("MSFT", request_id=second["request_id"]),
+                "core_thesis": "MSFT cloud thesis",
+            },
         )
         assert submitted_id == second["request_id"]
         overview = repository.overview()
         assert overview["queue"]["total_open"] == 0
         assert overview["runs"][0]["status"] == "succeeded"
+        assert overview["materialization"]["materialized"] == 2
+        assert overview["materialization"]["historical_unmaterialized"] == 0
     finally:
         runtime.close()
 
@@ -187,6 +235,43 @@ def test_agent_queue_uses_the_exact_published_decision(postgres_dsn: str) -> Non
             ).fetchone()
         assert stored_without_decision["decision_id"] == decision_ids[0]
         assert stored_without_decision["request_decision"] == {}
+    finally:
+        runtime.close()
+
+
+def test_current_candidate_queue_counts_unique_symbols_not_structure_rows(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    try:
+        analysis = AnalysisRepository(runtime)
+        run_id = analysis.start_run(
+            "queue-test", input_cutoff=datetime.now(UTC), code_version="test", inputs={},
+        )
+        analysis.publish(
+            run_id,
+            "options-radar",
+            {"option_radar_opportunity": [
+                {"ticker": "NVDA", "structure": "long_call", "ticket": {"legs": [{"large": "payload" * 1000}]}},
+                {"ticker": "NVDA", "structure": "call_debit_spread"},
+                {"ticker": "MSFT", "structure": "long_call"},
+                {"ticker": "AAPL", "structure": "long_call"},
+            ]},
+        )
+
+        queued = AgentRepository(runtime).queue_current_candidates(limit=3, trigger="manual")
+
+        with runtime.read() as connection:
+            symbols = connection.execute(
+                "SELECT request->>'ticker' AS ticker FROM analysis.agent_task ORDER BY request->>'ticker'"
+            ).fetchall()
+            ticket_copied = connection.execute(
+                "SELECT request->'context'->'option_opportunity' ? 'ticket' AS copied "
+                "FROM analysis.agent_task WHERE request->>'ticker' = 'NVDA'"
+            ).fetchone()["copied"]
+        assert queued == 3
+        assert [row["ticker"] for row in symbols] == ["AAPL", "MSFT", "NVDA"]
+        assert ticket_copied is False
     finally:
         runtime.close()
 
@@ -250,7 +335,7 @@ def test_agent_repository_claims_sequential_tasks_only_when_execution_starts(
             request = json.loads(input)
             return SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"core_thesis": f"{request['ticker']} thesis"}),
+                stdout=json.dumps(_option_thesis_result(request["ticker"])),
                 stderr="",
             )
 
@@ -285,7 +370,7 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
                 returncode=0,
                 stdout=json.dumps({
                     "thesis": [
-                        {"core_thesis": f"{item['request']['ticker']} thesis"}
+                        _option_thesis_result(item["request"]["ticker"])
                         for item in payload["thesis"]
                     ],
                     "postmortem": [],
@@ -307,6 +392,7 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
         assert _compact_agent_batch(calls[0]["payload"])["thesis"][0]["request"]["ticker"] in {"NVDA", "MSFT"}
         assert calls[0]["env"]["MARKET_CODEX_MODEL"] == "gpt-5.6-luna"
         assert calls[0]["env"]["MARKET_CODEX_REASONING_EFFORT"] == "high"
+        assert calls[0]["env"]["MARKET_CODEX_TIMEOUT_SECONDS"] == "165"
         overview = repository.overview()
         option_run = next(run for run in overview["runs"] if run["workflow"] == "option_agent")
         assert option_run["input_tokens"] == 120
@@ -347,7 +433,7 @@ def test_consolidated_agent_enforces_scheduled_daily_run_cap(
             "investment_panel.database.agents.subprocess.run",
             lambda *_args, **_kwargs: SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps({"thesis": [{"core_thesis": "NVDA thesis"}], "postmortem": []}),
+                stdout=json.dumps({"thesis": [_option_thesis_result("NVDA")], "postmortem": []}),
                 stderr="",
             ),
         )
@@ -377,6 +463,26 @@ def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: py
     monkeypatch.setattr("investment_panel.database.agent_process.sys.executable", str(python))
     resolved = _command_args("market-codex-option-agent")
     assert resolved[0] == str(command)
+
+
+def test_option_agent_context_keeps_decision_fields_without_copying_the_full_ticket() -> None:
+    compact = option_opportunity_context({
+        "ticker": "NVDA",
+        "decision_id": "decision-1",
+        "structure": "long_call",
+        "expected_value": 42,
+        "blockers": ["calibrated_probability_required"],
+        "ticket": {"legs": [{"large": "payload" * 1000}]},
+        "raw": {"provider": "payload" * 1000},
+    })
+
+    assert compact == {
+        "ticker": "NVDA",
+        "decision_id": "decision-1",
+        "structure": "long_call",
+        "expected_value": 42,
+        "blockers": ["calibrated_probability_required"],
+    }
 
 
 def test_actions_persist_journal_acknowledgement_and_guarded_promotion(postgres_dsn: str) -> None:

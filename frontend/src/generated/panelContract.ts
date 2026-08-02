@@ -2,7 +2,6 @@
 export const PANEL_TABLE_KEYS = [
   "agentPostmortem",
   "agentPostmortemRequest",
-  "agentRecommendations",
   "agentThesis",
   "agentThesisRequest",
   "agentThesisValidation",

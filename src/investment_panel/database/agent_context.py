@@ -8,7 +8,7 @@ from investment_panel.database.thesis_evidence import thesis_source_evidence
 
 
 _DUPLICATE_MODELS = {
-    "agent_recommendations", "candidates", "daily_brief", "decision_queue",
+    "candidates", "daily_brief", "decision_queue",
     "opportunities_ranked", "option_radar_opportunity", "symbol_decision_snapshots",
 }
 _VERBOSE_KEYS = {
@@ -80,8 +80,8 @@ def ticker_context(
     ).fetchall()
     evidence = thesis_source_evidence(connection, [symbol], max_per_symbol=24).get(symbol, [])
     return {
-        "portfolio": dict(state) if state and include("portfolio") else {},
-        "option_opportunity": _bounded_value(dict(option["payload"] or {})) if option else {},
+        "portfolio": _bounded_value(dict(state)) if state and include("portfolio") else {},
+        "option_opportunity": option_opportunity_context(dict(option["payload"] or {})) if option else {},
         "published_models": {
             str(row["model_name"]): _bounded_value(dict(row["payload"] or {}))
             for row in published
@@ -92,8 +92,22 @@ def ticker_context(
             _bounded_value(item)
             for item in evidence
             if _evidence_enabled(item, include)
-        ][:12],
+        ][:8],
     }
+
+
+def option_opportunity_context(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "ticker", "symbol", "decision_id", "state", "recommendation_state",
+        "structure", "expiration", "strike", "option_type", "underlying_price",
+        "dte", "iv", "delta", "spread_pct", "volume", "open_interest",
+        "entry_price", "buy_under", "max_loss", "secured_cash", "max_profit",
+        "break_even", "probability_profit", "expected_value", "risk_adjusted_expectancy",
+        "tail_cvar", "data_confidence", "execution_confidence", "top_reasons",
+        "blockers", "quality_status", "primary_edge", "catalyst_start", "catalyst_end",
+        "thesis_payload", "details",
+    }
+    return _bounded_value({key: payload[key] for key in keys if key in payload})
 
 
 def _model_enabled(model_name: str, include: Any) -> bool:
@@ -127,5 +141,5 @@ def _bounded_value(value: Any, *, depth: int = 0) -> Any:
     if isinstance(value, list):
         return [_bounded_value(item, depth=depth + 1) for item in value[:12]]
     if isinstance(value, str):
-        return value[:1000]
+        return value[:600]
     return value

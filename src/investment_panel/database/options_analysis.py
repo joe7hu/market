@@ -141,26 +141,52 @@ def _latest_snapshot_time(
 ) -> datetime | None:
     normalized = [str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()]
     with runtime.read() as connection:
+        if not normalized:
+            row = connection.execute(
+                """
+                SELECT max(snapshot.observed_at) AS observed_at
+                FROM raw.option_snapshot snapshot
+                WHERE snapshot.market_session = 'regular'
+                  AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
+                """,
+                [source_id, source_id],
+            ).fetchone()
+            return row["observed_at"] if row else None
+
+        # Most current collectors persist their requested symbol manifest.  Use
+        # that bounded snapshot/run path first and only scan quote membership as
+        # a compatibility fallback for older captures without a manifest.
         row = connection.execute(
             """
-            SELECT max(snapshot.observed_at) FILTER (WHERE snapshot.market_session = 'regular') AS observed_at
+            SELECT max(snapshot.observed_at) AS observed_at
             FROM raw.option_snapshot snapshot
             JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
-            WHERE (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
-              AND (
-                  cardinality(%s::text[]) = 0
-                  OR COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb) ?| %s::text[]
-                  OR EXISTS (
-                      SELECT 1 FROM raw.option_quote quote
-                      JOIN catalog.option_contract contract ON contract.id = quote.contract_id
-                      JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
-                      WHERE quote.snapshot_id = snapshot.id AND instrument.symbol = ANY(%s::text[])
-                  )
+            WHERE snapshot.market_session = 'regular'
+              AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
+              AND COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb) ?| %s::text[]
+            """,
+            [source_id, source_id, normalized],
+        ).fetchone()
+        if row and row["observed_at"] is not None:
+            return row["observed_at"]
+        row = connection.execute(
+            """
+            SELECT max(snapshot.observed_at) AS observed_at
+            FROM raw.option_snapshot snapshot
+            WHERE snapshot.market_session = 'regular'
+              AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
+              AND EXISTS (
+                  SELECT 1
+                  FROM raw.option_quote quote
+                  JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+                  JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+                  WHERE quote.snapshot_id = snapshot.id
+                    AND instrument.symbol = ANY(%s::text[])
               )
             """,
-            [source_id, source_id, normalized, normalized, normalized],
+            [source_id, source_id, normalized],
         ).fetchone()
-    return row["observed_at"] if row else None
+        return row["observed_at"] if row else None
 
 
 def _insert_features(

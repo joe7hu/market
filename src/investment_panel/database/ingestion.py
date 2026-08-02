@@ -20,6 +20,7 @@ from investment_panel.database.ingestion_coerce import (
     number as _number,
 )
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
+from investment_panel.database.option_snapshot_freshness import latest_option_snapshot_by_symbol
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
 @dataclass
 class IngestionRun:
@@ -187,23 +188,7 @@ class IngestionRepository:
         return output
 
     def latest_option_snapshot_by_symbol(self, source_id: str, symbols: Sequence[str]) -> dict[str, datetime]:
-        normalized = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
-        if not normalized:
-            return {}
-        with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                SELECT i.symbol, max(q.observed_at) AS observed_at
-                FROM raw.option_quote q
-                JOIN raw.option_snapshot s ON s.id = q.snapshot_id
-                JOIN catalog.option_contract c ON c.id = q.contract_id
-                JOIN catalog.instrument i ON i.id = c.underlying_instrument_id
-                WHERE s.source_id = %s AND i.symbol = ANY(%s)
-                GROUP BY i.symbol
-                """,
-                [source_id, normalized],
-            ).fetchall()
-        return {str(row["symbol"]): row["observed_at"] for row in rows}
+        return latest_option_snapshot_by_symbol(self.runtime, source_id, symbols)
 
     def store_quotes(self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]]) -> int:
         stored = 0

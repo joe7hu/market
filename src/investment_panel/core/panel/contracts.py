@@ -363,7 +363,6 @@ ENDPOINT_TABLES: dict[str, str] = {
     "broker/status": "broker_status",
     "broker/accounts": "broker_accounts",
     "broker/positions": "broker_positions",
-    "agent/recommendations": "agent_recommendations",
     "paper-orders": "paper_orders",
     "daily-brief": "daily_brief",
     "feed": "feed_signals",

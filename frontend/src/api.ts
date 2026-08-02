@@ -579,6 +579,15 @@ export type AgentOverview = {
   queue: { thesis_open: number; postmortem_open: number; total_open: number; oldest_open_at?: string | null };
   runs: AgentRun[];
   workflows: Record<string, { runs: number; succeeded: number; failed: number; running: number }>;
+  materialization: {
+    completed: number;
+    materialized: number;
+    blocked_manual_lock: number;
+    historical_unmaterialized: number;
+    historical_superseded: number;
+    authority: "research_only";
+    recommendation_owner: "canonical_option_trade_ticket";
+  };
   cost: { today: AgentCostWindow; last_7d: AgentCostWindow };
   scheduler: { agent_refresh_seconds: number };
 };
@@ -691,13 +700,4 @@ export async function markThesisReviewed(symbol: string, outcome = "unchanged", 
 
 export async function getThesisHistory(symbol: string): Promise<RowRecord> {
   return getJson<RowRecord>(`/api/theses/${encodeURIComponent(symbol)}/history`);
-}
-
-export async function runAgentReview(): Promise<TablePayload> {
-  const payload = await sendJson<TablePayload>("/api/agent/review", "POST");
-  return payload;
-}
-
-export async function stagePaperOrder(recommendationId: string): Promise<RowRecord> {
-  return sendJson<RowRecord>("/api/paper-orders", "POST", { recommendation_id: recommendationId });
 }

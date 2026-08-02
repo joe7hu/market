@@ -387,7 +387,16 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
         "blockers": [],
         "market_session": "regular",
         "details": {},
-        "thesis_payload": {"direction": "long", "invalidation": "Exit below 145."},
+        "thesis_payload": {
+            "direction": "long",
+            "invalidation": "Exit below 145.",
+            "provenance": {"option_agent_task_id": "task-1", "option_agent_run_id": "run-1"},
+        },
+        "thesis_revision_id": "revision-id-1",
+        "thesis_revision": 2,
+        "thesis_author_kind": "ai",
+        "thesis_expression_id": "expression-id-1",
+        "thesis_expression": {"direction": "long", "preferred_structures": ["cash_secured_put"]},
     }]
     _add_contract_fields(
         rows,
@@ -407,6 +416,8 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
     )
     assert rows[0]["ticket"]["forecast"]["lower_confidence_expected_value"] == 150
     assert "positive_lower_confidence_expectancy_required" not in rows[0]["ticket"]["blockers"]
+    assert "thesis_expression_required" not in rows[0]["ticket"]["blockers"]
+    assert rows[0]["ticket"]["provenance"]["thesis"]["option_agent_task_id"] == "task-1"
 
 
 def test_historical_ticket_exit_horizon_uses_evaluation_date() -> None:

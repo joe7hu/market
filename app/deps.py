@@ -204,10 +204,6 @@ class ThesisAutomationInput(BaseModel):
     force: bool = False
 
 
-class PaperOrderInput(BaseModel):
-    recommendation_id: str
-
-
 class OptionPaperEntryInput(BaseModel):
     idempotency_key: str
     ticket_version: int = 1

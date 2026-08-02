@@ -1,4 +1,4 @@
-"""Broker status, agent recommendations, and paper-order routes."""
+"""Broker status and paper-order journal routes."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,13 +6,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app import deps
-from app.actions.brokers import BrokerActions
 
 router = APIRouter()
-
-
-def _actions() -> BrokerActions:
-    return BrokerActions(deps.load_core_config("config.yaml"))
 
 
 @router.get("/api/broker/status")
@@ -32,15 +27,19 @@ def broker_positions() -> dict[str, Any]:
 
 @router.get("/api/agent/recommendations")
 def agent_recommendations() -> dict[str, Any]:
-    return deps._table_payload("agent_recommendations")
+    raise HTTPException(
+        status_code=410,
+        detail="Retired: this route was not agent-authored. Use /api/panel-snapshot?scope=options-radar or /api/options/tickets/{decision_id}.",
+    )
 
 
 @router.post("/api/agent/review")
 def run_agent_review(request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    result = _actions().review()
-    deps._invalidate_context_cache()
-    return result
+    raise HTTPException(
+        status_code=410,
+        detail="Retired: canonical option recommendations are published by the options-radar pipeline.",
+    )
 
 
 @router.get("/api/paper-orders")
@@ -49,11 +48,9 @@ def paper_orders() -> dict[str, Any]:
 
 
 @router.post("/api/paper-orders")
-def stage_paper_order_endpoint(payload: deps.PaperOrderInput, request: Request) -> dict[str, Any]:
+def stage_paper_order_endpoint(request: Request) -> dict[str, Any]:
     deps._require_local_request(request)
-    try:
-        result = _actions().stage_paper_order(payload.recommendation_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    deps._invalidate_context_cache()
-    return result
+    raise HTTPException(
+        status_code=410,
+        detail="Retired: stage only an immutable READY option ticket through /api/options-radar/signals/{decision_id}/paper-entry.",
+    )

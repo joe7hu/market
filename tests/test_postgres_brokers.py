@@ -104,16 +104,9 @@ def test_broker_snapshot_recommendation_and_paper_order_are_postgresql_native(po
         ingestion.finish_run(ingest_run, "succeeded")
         refresh_options_radar(runtime, source_id="option-test", code_version="broker-test")
 
-        recommendations = repository.build_recommendations(code_version="broker-test")
-        assert len(recommendations) == 1
-        assert recommendations[0]["symbol"] == "NVDA"
-        order = repository.stage_paper_order(recommendations[0]["recommendation_id"])
-        assert order["status"] == "blocked"
-        assert "insufficient_empirical_history" in recommendations[0]["blockers"]
-
         tables, _metadata = load_postgres_tables(
             {"database": {"url": postgres_dsn}},
-            ("broker_status", "broker_accounts", "broker_positions", "agent_recommendations", "paper_orders"),
+            ("broker_status", "broker_accounts", "broker_positions", "paper_orders"),
         )
     finally:
         runtime.close()
@@ -121,8 +114,7 @@ def test_broker_snapshot_recommendation_and_paper_order_are_postgresql_native(po
     assert tables["broker_status"][0]["account_mode"] == "paper"
     assert tables["broker_accounts"][0]["account_id"] == "DU123"
     assert tables["broker_positions"][0]["symbol"] == "NVDA"
-    assert tables["agent_recommendations"][0]["symbol"] == "NVDA"
-    assert tables["paper_orders"][0]["status"] == "blocked"
+    assert tables["paper_orders"] == []
     with closing(psycopg.connect(postgres_dsn)) as connection:
         assert connection.execute("SELECT count(*) FROM raw.broker_position_snapshot").fetchone()[0] == 1
-        assert connection.execute("SELECT count(*) FROM app.paper_order").fetchone()[0] == 1
+        assert connection.execute("SELECT count(*) FROM app.paper_order").fetchone()[0] == 0

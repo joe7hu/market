@@ -151,11 +151,13 @@ export function AgentPage() {
 
   const cost = data?.cost;
   const queue = data?.queue;
+  const materialization = data?.materialization;
   const metrics: MetricSpec[] = [
     ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : researchError ? "Unavailable" : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : researchError || "loading context", research ? "info" : researchError ? "warn" : "muted"],
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
     ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
+    ["Thesis expressions", `${materialization?.materialized ?? 0}/${materialization?.completed ?? 0}`, "research-only · tickets own readiness", materialization?.historical_unmaterialized ? "warn" : "good"],
     ["Agent tokens today", cost ? (cost.today.input_tokens + cost.today.output_tokens).toLocaleString() : "—", `${cost?.today.runs ?? 0} option + thesis-monitor runs`, "info"],
     ["Agent tokens 7d", cost ? (cost.last_7d.input_tokens + cost.last_7d.output_tokens).toLocaleString() : "—", `${cost?.last_7d.runs ?? 0} runs · OAuth cost not metered`, "info"],
   ];
@@ -185,7 +187,8 @@ export function AgentPage() {
         <div className="space-y-3 p-4">
           <p className="text-sm text-muted-foreground">
             Analyze <strong>one ticker</strong> now — even one without an option candidate. The agent receives the full per-ticker context
-            (an optional custom prompt is appended), the thesis is saved to the DB, and the run appears in Run history below. (The header
+            (an optional custom prompt is appended), and an accepted result is saved as a versioned research thesis plus option-expression
+            envelope. Deterministic tickets still own contracts, sizing, readiness, and paper staging. The run appears in Run history below. (The header
             <em> Run queue</em> button instead processes <strong>all</strong> currently open requests.)
           </p>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start">

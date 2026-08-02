@@ -27,11 +27,11 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - provider boundary
             snapshot = BrokerSnapshot(ProviderStatus(getattr(provider, "name", "unknown"), "session_failure", str(exc)))
         provider_results.append(repository.sync_snapshot(snapshot))
-    recommendations = repository.build_recommendations()
     return {
         "status": "ok" if any(row["status"] == "ok" for row in provider_results) else "degraded",
         "providers": provider_results,
-        "recommendations": len(recommendations),
+        "recommendations": 0,
+        "recommendation_owner": "options-radar",
         "authority": ADVISORY_AUTHORITY,
         "database": "postgresql",
     }

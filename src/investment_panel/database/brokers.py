@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
-
 from psycopg.types.json import Jsonb
 
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
-from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -150,94 +147,6 @@ class BrokerRepository:
             "market_snapshots": len(snapshot.market_snapshots),
             "run_id": str(run_id),
         }
-
-    def build_recommendations(self, *, code_version: str = "working-tree") -> list[dict[str, Any]]:
-        with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT ON (decision.instrument_id)
-                       decision.id, decision.decision_key, decision.as_of, decision.state,
-                       decision.score, decision.reasons, decision.blockers,
-                       instrument.symbol, option_decision.buy_under, option_decision.tier
-                FROM analysis.decision decision
-                JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                LEFT JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
-                ORDER BY decision.instrument_id, decision.as_of DESC, decision.score DESC NULLS LAST
-                """
-            ).fetchall()
-        recommendations = [
-            {
-                "recommendation_id": str(row["id"]),
-                "id": str(row["id"]),
-                "symbol": row["symbol"],
-                "as_of": row["as_of"],
-                "action": "review_entry" if row["state"] in {"FIRE", "SETUP"} else "monitor",
-                "status": "actionable" if not row["blockers"] else "blocked",
-                "actionability_score": row["score"],
-                "thesis": "; ".join(row["reasons"] or []),
-                "blockers": list(row["blockers"] or []),
-                "paper_order_preview": {"side": "BUY", "order_type": "limit", "limit_price": row["buy_under"], "quantity": 1},
-                "authority": "advisory_only",
-                "tier": row["tier"],
-            }
-            for row in rows
-        ]
-        analysis = AnalysisRepository(self.runtime)
-        run_id = analysis.start_run(
-            "broker-recommendations",
-            input_cutoff=datetime.now(UTC),
-            code_version=code_version,
-            inputs={"decision_ids": [row["recommendation_id"] for row in recommendations]},
-        )
-        publication_id = analysis.publish(
-            run_id,
-            "broker",
-            {"agent_recommendations": recommendations},
-            complete_run_summary={"recommendations": len(recommendations)},
-        )
-        return [{**row, "publication_id": str(publication_id)} for row in recommendations]
-
-    def stage_paper_order(self, recommendation_id: str) -> dict[str, Any]:
-        with self.runtime.transaction() as connection:
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                ["paper-order:options-radar"],
-            )
-            row = connection.execute(
-                """
-                SELECT item.payload
-                FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
-                WHERE publication.scope = 'broker' AND publication.status = 'published'
-                  AND item.model_name = 'agent_recommendations'
-                  AND (item.payload->>'recommendation_id' = %s OR item.payload->>'id' = %s)
-                LIMIT 1
-                """,
-                [recommendation_id, recommendation_id],
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"recommendation not found: {recommendation_id}")
-            recommendation = dict(row["payload"])
-            symbol = str(recommendation["symbol"])
-            instrument = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = %s", [symbol]).fetchone()
-            blockers = list(recommendation.get("blockers") or [])
-            preview = dict(recommendation.get("paper_order_preview") or {})
-            status = "blocked" if blockers else "staged"
-            order = connection.execute(
-                """
-                INSERT INTO app.paper_order
-                    (decision_id, instrument_id, side, quantity, limit_price, status, policy_result)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                [
-                    UUID(recommendation_id), instrument["id"], preview.get("side") or "BUY",
-                    preview.get("quantity") or 1, preview.get("limit_price"), status,
-                    Jsonb({"blockers": blockers, "authority": "paper_only", "preview": preview}),
-                ],
-            ).fetchone()
-        return {"id": str(order["id"]), "status": status, "symbol": symbol, "blockers": blockers, "preview": preview}
-
 
 def broker_status_rows(runtime: DatabaseRuntime) -> list[dict[str, Any]]:
     with runtime.read() as connection:

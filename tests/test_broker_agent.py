@@ -471,10 +471,11 @@ def test_broker_api_routes_smoke(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.setattr(api_deps, "load_core_config", lambda path="config.yaml": config)
     api_deps._invalidate_context_cache()
     client = TestClient(api_main.app)
-    for path in ["/api/broker/status", "/api/broker/accounts", "/api/broker/positions", "/api/agent/recommendations", "/api/paper-orders"]:
+    for path in ["/api/broker/status", "/api/broker/accounts", "/api/broker/positions", "/api/paper-orders"]:
         response = client.get(path)
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
+    assert client.get("/api/agent/recommendations").status_code == 410
 
 
 def seed_decision_inputs(con: Any, *, with_thin_symbol: bool = False) -> None:

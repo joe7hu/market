@@ -27,6 +27,7 @@ class AgentActions:
             "runs": overview["runs"],
             "workflows": overview["workflows"],
             "cost": overview["cost"],
+            "materialization": overview["materialization"],
             "scheduler": {"agent_refresh_seconds": _scheduler_agent_seconds(self.config)},
         }
 

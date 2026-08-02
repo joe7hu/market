@@ -86,6 +86,12 @@ def publication_models(
                    option_decision.buy_under, decision.reasons AS top_reasons,
                    decision.blockers, decision.quality_status,
                    active_thesis.thesis AS thesis_payload,
+                   active_thesis.revision_id::text AS thesis_revision_id,
+                   active_thesis.revision AS thesis_revision,
+                   active_thesis.author_kind AS thesis_author_kind,
+                   expression.id::text AS thesis_expression_id,
+                   expression.structure AS thesis_expression,
+                   expression.entry_logic AS thesis_expression_entry_logic,
                    jsonb_build_object(
                        'expiration', contract.expiration,
                        'strike', contract.strike,
@@ -107,13 +113,22 @@ def publication_models(
             JOIN catalog.instrument instrument
               ON instrument.id = contract.underlying_instrument_id
             LEFT JOIN LATERAL (
-                SELECT thesis.thesis
+                SELECT thesis.id AS revision_id, thesis.revision, thesis.author_kind, thesis.thesis
                 FROM app.thesis thesis
                 WHERE thesis.instrument_id = instrument.id
                   AND thesis.status = 'current'
                 ORDER BY thesis.updated_at DESC, thesis.id DESC
                 LIMIT 1
             ) active_thesis ON true
+            LEFT JOIN LATERAL (
+                SELECT expression.id, expression.structure, expression.entry_logic
+                FROM app.thesis_expression expression
+                WHERE expression.thesis_revision_id = active_thesis.revision_id
+                  AND expression.expression_kind = 'option'
+                  AND expression.status = 'active'
+                ORDER BY expression.updated_at DESC, expression.id DESC
+                LIMIT 1
+            ) expression ON true
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
                     'contract_id', leg_quote.contract_id::text,
@@ -348,6 +363,17 @@ def _add_contract_fields(
         legs = _complete_ticket_legs(row)
         details = dict(row.get("details") or {})
         thesis = dict(row.get("thesis_payload") or {})
+        expression = dict(row.get("thesis_expression") or {})
+        preferred_structures = {
+            str(item) for item in expression.get("preferred_structures") or [] if str(item)
+        }
+        expression_blockers: list[str] = []
+        if not row.get("thesis_expression_id"):
+            expression_blockers.append("thesis_expression_required")
+        elif not preferred_structures:
+            expression_blockers.append("thesis_expression_structures_required")
+        elif str(row["structure"]) not in preferred_structures:
+            expression_blockers.append("thesis_expression_structure_mismatch")
         lower_expected_value = details.get("lower_95_expected_value")
         if lower_expected_value is None and calibrated:
             unit_risk = _number(row.get("secured_cash") or row.get("max_loss"))
@@ -364,7 +390,7 @@ def _add_contract_fields(
             one_unit_max_loss=_number(row.get("max_loss")),
             secured_cash=_number(row.get("secured_cash")),
             state=str(row.get("state") or "WATCH"),
-            blockers=list(row.get("blockers") or []),
+            blockers=[*list(row.get("blockers") or []), *expression_blockers],
             evaluated_at=evaluated_at,
             market_session=str(row.get("market_session") or ""),
             sleeve_capital=options_risk_sleeve_capital,
@@ -372,7 +398,7 @@ def _add_contract_fields(
             thesis={
                 "summary": thesis.get("core_thesis") or thesis.get("thesis") or details.get("thesis"),
                 "catalyst": details.get("catalyst"),
-                "direction": thesis.get("direction"),
+                "direction": expression.get("direction") or thesis.get("direction"),
                 "invalidation": thesis.get("invalidation") or details.get("invalidation"),
                 "invalidation_rules": thesis.get("invalidation_rules"),
             },
@@ -387,10 +413,20 @@ def _add_contract_fields(
             provenance={
                 "publication_cutoff": row.get("analysis_cutoff"),
                 "quote_source": row.get("data_source"),
+                "thesis": {
+                    "revision_id": row.get("thesis_revision_id"),
+                    "revision": row.get("thesis_revision"),
+                    "author_kind": row.get("thesis_author_kind"),
+                    "expression_id": row.get("thesis_expression_id"),
+                    "option_agent_task_id": (thesis.get("provenance") or {}).get("option_agent_task_id"),
+                    "option_agent_run_id": (thesis.get("provenance") or {}).get("option_agent_run_id"),
+                },
                 "revisions": {
                     "contract": row.get("contract_version"),
                     "feature": feature_version,
                     "strategy": strategy_revision,
+                    "thesis": row.get("thesis_revision"),
+                    "expression": row.get("thesis_expression_id"),
                 },
             },
         )

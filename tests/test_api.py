@@ -148,7 +148,6 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
         "/api/broker/status",
         "/api/broker/accounts",
         "/api/broker/positions",
-        "/api/agent/recommendations",
         "/api/paper-orders",
         "/api/daily-brief",
         "/api/feed",
@@ -177,6 +176,17 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
             response = client.get(path)
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("application/json")
+        agent_overview = client.get("/api/agent").json()
+        assert agent_overview["materialization"]["historical_unmaterialized"] == 0
+        retired = client.get("/api/agent/recommendations")
+        assert retired.status_code == 410
+        assert "not agent-authored" in retired.json()["detail"]
+        retired_stage = client.post(
+            "/api/paper-orders",
+            json={"recommendation_id": "00000000-0000-0000-0000-000000000000"},
+        )
+        assert retired_stage.status_code == 410
+        assert "immutable READY option ticket" in retired_stage.json()["detail"]
     finally:
         close_cached_runtimes()
 
@@ -685,19 +695,23 @@ def test_agent_thesis_post_fulfills_request_and_validates(migrated_postgres_dsn:
     response = client.post(
         "/api/agent-thesis",
         json={
-            "request_id": queued["request_id"],
-            "ticker": "TSLA",
-            "strategy_version": DEFAULT_STRATEGY_VERSION,
+                "request_id": queued["request_id"],
+                "ticker": "TSLA",
+                "direction": "long",
+                "strategy_version": DEFAULT_STRATEGY_VERSION,
             "created_at": "2026-06-03T12:00:00Z",
             "bull_target_price": 180,
             "bull_target_date": "2028-01-21",
             "base_target_price": 95,
+            "bear_target_price": 65,
+            "scenario_probabilities": {"base": 0.55, "bull": 0.25, "bear": 0.20},
+            "preferred_structures": ["long_call", "call_debit_spread"],
             "core_thesis": "Energy storage and autonomy narrative returns while margins stabilize.",
             "required_proofs": ["gross margin stabilizes", "deliveries recover"],
-            "catalysts": [{"type": "earnings", "what_to_watch": "margins and delivery guide"}],
+            "catalysts": [{"type": "earnings", "expected_window": "next quarter", "what_to_watch": "margins and delivery guide"}],
             "invalidation": ["stock breaks below $80 without recovery"],
             "bear_case": "Demand weakness and pricing pressure can keep the stock below trend.",
-            "confidence": 72,
+            "confidence": 0.72,
             "evidence_refs": [{"type": "source_signal", "id": "source-tsla-api-proof"}],
         },
     )
@@ -709,6 +723,19 @@ def test_agent_thesis_post_fulfills_request_and_validates(migrated_postgres_dsn:
     thesis = repository.rows("agent_thesis")[0]
     assert thesis["status"] == "completed"
     assert thesis["core_thesis"].startswith("Energy storage")
+    with repository.runtime.read() as connection:
+        expression = connection.execute(
+            """
+            SELECT expression.structure, task.validation
+            FROM app.thesis_expression expression
+            JOIN app.thesis thesis ON thesis.id = expression.thesis_revision_id
+            JOIN analysis.agent_task task ON task.id = %s
+            WHERE thesis.status = 'current' AND expression.status = 'active'
+            """,
+            [queued["request_id"]],
+        ).fetchone()
+    assert expression["structure"]["preferred_structures"] == ["long_call", "call_debit_spread"]
+    assert expression["validation"]["materialization"]["status"] == "materialized"
 
 
 def test_agent_thesis_post_rejects_unstructured_payload(migrated_postgres_dsn: str, monkeypatch) -> None:
