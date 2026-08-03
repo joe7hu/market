@@ -147,6 +147,7 @@ def test_recovery_read_models_separate_radar_evidence_from_health_diagnostics(
         assert "capture" not in radar["option_recovery_event"][0]
         assert health["capture"]["active_events"] == 1
         assert health["capture"]["active_robinhood_leases"] <= 2
+        assert health["agent_telemetry"]["batches"] == 0
     finally:
         runtime.close()
 
@@ -187,6 +188,7 @@ def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
         assert detail.json()["event"]["event_id"] == event_id
         assert health.status_code == 200
         assert "capture" in health.json() and "scheduler" in health.json()
+        assert "agent_telemetry" in health.json()
     finally:
         runtime.close()
 

@@ -184,7 +184,11 @@ class RecoveryReadRepository:
                   (SELECT count(*) FROM app.paper_order WHERE event_id IS NOT NULL) AS recovery_paper_orders
                 """
             ).fetchone()
-        return {"capture": capture, "storage": {key: int(storage[key] or 0) for key in storage.keys()}}
+        return {
+            "capture": capture,
+            "storage": {key: int(storage[key] or 0) for key in storage.keys()},
+            "agent_telemetry": RecoveryEventAgentRepository(self.runtime).telemetry(),
+        }
 
     def panel_models(self, names: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
         requested = set(names)
