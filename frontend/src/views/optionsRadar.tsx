@@ -11,6 +11,7 @@ import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {DiscoveryQueue} from "./optionsRadar/discoveryQueue";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
+import {RecoveryProgramPanel } from "./optionsRadar/recoveryProgram";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
 
 type OptionsRadarPageProps = {
@@ -62,6 +63,11 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const opportunityRows = rows(data.optionRadarOpportunity);
   const discoveryRows = rows(data.optionDiscoveryCandidate);
   const strategyVersions = rows(data.optionStrategyVersions);
+  const recoveryFunnel = rows(data.optionRecoveryFunnel)[0];
+  const recoveryEvents = rows(data.optionRecoveryEvent);
+  const recoveryOpportunities = rows(data.optionRecoveryOpportunity);
+  const recoveryFamilyPerformance = rows(data.optionRecoveryFamilyPerformance);
+  const recoveryAgentProvenance = rows(data.optionRecoveryAgentProvenance);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 3;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
@@ -198,6 +204,14 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         latestSnapshot={latestSnapshot}
         snapshotLabel={snapshotLabel}
         latestCandidateTime={latestCandidateTime}
+        onOpenTicker={onOpenTicker}
+      />
+      <RecoveryProgramPanel
+        funnel={recoveryFunnel}
+        events={recoveryEvents}
+        opportunities={recoveryOpportunities}
+        familyPerformance={recoveryFamilyPerformance}
+        agentProvenance={recoveryAgentProvenance}
         onOpenTicker={onOpenTicker}
       />
       <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />

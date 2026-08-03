@@ -21,6 +21,7 @@ from app.options_history_contracts import (
     OptionSurfaceEvidence,
     OptionSurfaceGroups,
     OptionTradeTicket,
+    RecoveryOptionTradeTicketV4,
     OptionsCandidatePage,
     OptionsDecisionBrief,
     OptionsLearningProgressPage,
@@ -219,6 +220,29 @@ def historical_option_health(symbol: str | None = Query(None, min_length=1, max_
     return _actions().history_health(symbol=symbol)
 
 
+@router.get("/api/health/options-recovery")
+def recovery_option_health() -> dict[str, Any]:
+    """Recovery capacity, lease, storage, and scheduler diagnostics for Health only."""
+    return _actions().recovery_health()
+
+
+@router.get("/api/options/events")
+def recovery_events(
+    status: Literal["active", "deferred_capacity", "closed"] | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=250),
+) -> dict[str, Any]:
+    return _actions().recovery_events(status=status, offset=offset, limit=limit)
+
+
+@router.get("/api/options/events/{event_id}")
+def recovery_event(event_id: UUID) -> dict[str, Any]:
+    detail = _actions().recovery_event(str(event_id))
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Options recovery event not found")
+    return detail
+
+
 @router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief)
 def options_decision_brief(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
@@ -390,10 +414,13 @@ def option_radar_learning_collection(
     }
 
 
-@router.get("/api/options/tickets/{decision_id}", response_model=OptionTradeTicket)
+@router.get("/api/options/tickets/{decision_id}", response_model=OptionTradeTicket | RecoveryOptionTradeTicketV4)
 def option_trade_ticket(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
     if detail is None:
+        recovery_ticket = _actions().recovery_ticket(decision_id)
+        if recovery_ticket is not None:
+            return recovery_ticket
         raise HTTPException(status_code=404, detail="Option decision not found")
     ticket = detail.get("ticket")
     if not isinstance(ticket, dict):

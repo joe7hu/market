@@ -133,7 +133,9 @@ def _ticket_leg(symbol: str, expiration: date | str, leg: dict[str, Any]) -> dic
         raise ValueError("recovery ticket leg requires option type and strike")
     quote_time = _aware(leg.get("quote_time") or leg.get("available_at") or leg.get("observed_at"))
     return {
-        "contract_id": int(leg["contract_id"]),
+        # Match the shared public ticket-leg contract.  Persistence converts
+        # this back to bigint only at the paper-order boundary.
+        "contract_id": str(int(leg["contract_id"])),
         "occ_symbol": str(leg.get("occ_symbol") or occ_symbol(symbol, expiration, option_type, strike)),
         "option_type": option_type,
         "side": str(leg.get("side") or "buy"),

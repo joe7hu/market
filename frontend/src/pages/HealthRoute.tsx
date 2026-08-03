@@ -16,6 +16,7 @@ import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
 import { formatDateTime } from "@/views/health/format";
 import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api";
+import {numberFromRecord, recordField } from "@/views/optionsRadarData";
 
 export function HealthRoute() {
   const { data, loadScope } = useMarketData();
@@ -36,6 +37,14 @@ export function HealthRoute() {
     () => new Set(sourceRows.flatMap((row) => row.refresh_jobs.length ? row.refresh_jobs : [row.refresh_job]).filter(Boolean)),
     [sourceRows],
   );
+  const recoveryHealth = data.optionRecoveryHealth.rows?.[0];
+  const recoveryCapture = recordField(recoveryHealth, "capture");
+  const recoveryStorage = recordField(recoveryHealth, "storage");
+  const recoveryCoverage = numberFromRecord(recoveryCapture, "slot_coverage");
+  const recoveryCompleteness = numberFromRecord(recoveryCapture, "contract_completeness");
+  const recoveryContinuity = numberFromRecord(recoveryCapture, "same_contract_continuity");
+  const recoveryLeaseCount = numberFromRecord(recoveryCapture, "active_robinhood_leases");
+  const recoveryP95 = numberFromRecord(recoveryCapture, "capture_p95_minutes");
 
   const metrics: MetricSpec[] = [
     ["Enabled", summary.enabled.toLocaleString(), `${summary.total.toLocaleString()} registered sources`, summary.enabled ? "info" : "muted"],
@@ -46,6 +55,9 @@ export function HealthRoute() {
     ["Last Success", formatDateTime(summary.lastSuccessAt), "freshest successful source check", summary.lastSuccessAt ? "info" : "muted"],
     ["Option history", optionHistory ? `${optionHistory.complete_captures.toLocaleString()} complete captures · ${optionHistory.observed_regular_session_dates.toLocaleString()} observed dates` : "Unavailable", optionHistory ? `${formatBytes(optionHistory.storage_bytes)} retained for ${optionHistory.retention_days} days` : "Waiting for database status", optionHistory ? "info" : "muted"],
     ["History coverage", optionHistory?.average_completeness !== null && optionHistory?.average_completeness !== undefined ? optionHistory.average_completeness.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "Collecting", optionHistory?.latest_complete_slot ? `${optionHistory.qualified_regular_sessions}/${optionHistory.required_regular_sessions} qualified post-fix sessions · latest ${formatDateTime(optionHistory.latest_complete_slot)}` : "No complete full-chain slot yet", optionHistory?.complete_captures ? "good" : "warn"],
+    ["Recovery tape", recoveryCapture ? `${numberFromRecord(recoveryCapture, "active_events").toLocaleString()} active · ${numberFromRecord(recoveryCapture, "covered_slots").toLocaleString()}/${numberFromRecord(recoveryCapture, "scheduled_slots").toLocaleString()} slots` : "Unavailable", recoveryCapture ? "forward 15-minute event strips" : "Waiting for recovery health", recoveryCapture ? "info" : "muted"],
+    ["Recovery quality", recoveryCapture ? `${formatPercent(recoveryCoverage)} coverage · ${formatPercent(recoveryCompleteness)} complete · ${formatPercent(recoveryContinuity)} continuity` : "Collecting", recoveryCapture ? `${Number.isFinite(recoveryP95) ? `${recoveryP95.toFixed(1)}m p95` : "No capture latency yet"} · ${recoveryLeaseCount.toLocaleString()}/2 Robinhood leases` : "No event-strip data yet", recoveryCapture && recoveryCoverage >= 0.95 && recoveryCompleteness >= 0.98 && recoveryContinuity >= 0.90 && recoveryLeaseCount <= 2 ? "good" : "warn"],
+    ["Recovery storage", recoveryStorage ? `${numberFromRecord(recoveryStorage, "observations").toLocaleString()} counterfactual observations` : "Unavailable", recoveryStorage ? `${numberFromRecord(recoveryStorage, "events").toLocaleString()} events · ${numberFromRecord(recoveryStorage, "captures").toLocaleString()} captures · ${numberFromRecord(recoveryStorage, "recovery_paper_orders").toLocaleString()} paper orders` : "Waiting for database status", recoveryStorage ? "info" : "muted"],
   ];
 
   // Note: a background scheduler job is almost always "running", so the Reload
@@ -105,3 +117,7 @@ export function HealthRoute() {
 }
 
 function formatBytes(value: number): string { return value >= 1024 * 1024 ? `${(value / (1024 * 1024)).toFixed(1)} MB` : `${(value / 1024).toFixed(1)} KB`; }
+
+function formatPercent(value: number): string {
+  return Number.isFinite(value) ? value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }) : "-";
+}

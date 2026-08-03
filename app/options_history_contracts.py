@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -292,6 +292,29 @@ class OptionTradeTicket(BaseModel):
     data_model_revisions: dict[str, Any]
     provenance: dict[str, Any]
     paper_only: bool
+
+
+class RecoveryOptionTradeTicketV4(BaseModel):
+    """Forward recovery ticket; intentionally distinct from the v3 radar ticket."""
+
+    ticket_version: Literal[4]
+    objective_version: str
+    decision_id: str
+    event_id: str
+    symbol: str
+    family: str
+    state: str
+    structure: str
+    expiration: date
+    legs: list[OptionTradeTicketLeg]
+    entry: dict[str, Any]
+    risk: dict[str, Any]
+    invalidation: str
+    exit_ladder: dict[str, Any]
+    forecast: dict[str, Any]
+    blockers: list[str]
+    paper_only: bool
+    live_order_submission: bool
 
 
 class OptionsDecisionCandidate(BaseModel):

@@ -14,6 +14,7 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.option_events import OptionEventRepository
 from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
+from investment_panel.database.options_recovery_read import RecoveryReadRepository
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.runtime import DatabaseRuntime
@@ -116,6 +117,76 @@ def test_detector_handles_an_empty_effective_universe(migrated_postgres_dsn: str
         result = OptionEventRepository(runtime).detect_events(now=datetime(2026, 8, 3, 15, tzinfo=UTC))
         assert result["status"] == "ok"
         assert result["detected"] == 0
+    finally:
+        runtime.close()
+
+
+def test_recovery_read_models_separate_radar_evidence_from_health_diagnostics(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        observed = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
+        event_id = OptionEventRepository(runtime).detect_events(
+            [EventObservation("NVDA", observed, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
+            now=observed,
+        )["active_events"][0]["event_id"]
+
+        read = RecoveryReadRepository(runtime)
+        event = read.events(limit=1)[0]
+        detail = read.event_detail(event_id)
+        radar = read.panel_models({"option_recovery_funnel", "option_recovery_event", "option_recovery_family_performance"})
+        health = read.panel_models({"option_recovery_health"})["option_recovery_health"][0]
+
+        assert event["event_id"] == event_id
+        assert detail is not None and detail["event"]["event_id"] == event_id
+        assert set(radar) == {"option_recovery_funnel", "option_recovery_event", "option_recovery_family_performance"}
+        assert "capture" not in radar["option_recovery_event"][0]
+        assert health["capture"]["active_events"] == 1
+        assert health["capture"]["active_robinhood_leases"] <= 2
+    finally:
+        runtime.close()
+
+
+def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app import deps
+    from app.routers.options import router as options_router
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        observed = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
+        event_id = OptionEventRepository(runtime).detect_events(
+            [EventObservation("NVDA", observed, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
+            now=observed,
+        )["active_events"][0]["event_id"]
+        monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
+        application = FastAPI()
+        application.include_router(options_router)
+
+        with TestClient(application) as client:
+            events = client.get("/api/options/events")
+            detail = client.get(f"/api/options/events/{event_id}")
+            health = client.get("/api/health/options-recovery")
+
+        assert events.status_code == 200
+        assert events.json()["events"][0]["event_id"] == event_id
+        assert "capture" not in events.json()["events"][0]
+        assert detail.status_code == 200
+        assert detail.json()["event"]["event_id"] == event_id
+        assert health.status_code == 200
+        assert "capture" in health.json() and "scheduler" in health.json()
     finally:
         runtime.close()
 
@@ -254,7 +325,7 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
         assert result["selected"][0]["family"] == "shock_reversal_call_v1"
         with runtime.read() as connection:
             signal = connection.execute(
-                "SELECT status, ticket->>'ticket_version' AS version FROM analysis.option_event_signal"
+                "SELECT decision_id, status, ticket->>'ticket_version' AS version FROM analysis.option_event_signal"
             ).fetchone()
             orders = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()
             denominator = connection.execute(
@@ -262,6 +333,13 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
             ).fetchall()
         assert signal["status"] == "shadow"
         assert signal["version"] == "4"
+        ticket = RecoveryReadRepository(runtime).ticket(str(signal["decision_id"]))
+        assert ticket is not None
+        assert ticket["ticket_version"] == 4
+        assert ticket["objective_version"] == "short_horizon_convex_v1"
+        from app.options_history_contracts import RecoveryOptionTradeTicketV4
+
+        assert RecoveryOptionTradeTicketV4.model_validate(ticket).ticket_version == 4
         assert orders["count"] == 0
         assert len(denominator) == 2
         by_family = {row["strategy_key"]: row for row in denominator}

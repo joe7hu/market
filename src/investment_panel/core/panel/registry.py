@@ -91,6 +91,14 @@ READ_MODELS: dict[str, ReadLoader] = {
     "option_radar_opportunity": lambda ctx: option_radar_opportunity(ctx.con, ctx.radar_context),
     "option_discovery_candidate": lambda ctx: [],
     "option_gate_result": lambda ctx: [],
+    # Forward recovery is PostgreSQL-only.  Legacy panel reads intentionally
+    # return an empty model rather than reviving a DuckDB fallback.
+    "option_recovery_funnel": lambda ctx: [],
+    "option_recovery_event": lambda ctx: [],
+    "option_recovery_opportunity": lambda ctx: [],
+    "option_recovery_family_performance": lambda ctx: [],
+    "option_recovery_agent_provenance": lambda ctx: [],
+    "option_recovery_health": lambda ctx: [],
     "option_snapshot": lambda ctx: option_snapshot(ctx.con),
     "option_features": lambda ctx: option_features(ctx.con),
     "stock_features": lambda ctx: stock_features(ctx.con),

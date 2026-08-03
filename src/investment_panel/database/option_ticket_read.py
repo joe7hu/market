@@ -6,8 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.core.decision import is_market_open
-from investment_panel.core.option_trade_ticket import TICKET_VERSION, build_option_trade_ticket
-from investment_panel.analysis.option_recommendation import recommendation_fields
+from investment_panel.core.option_trade_ticket import TICKET_VERSION, build_option_trade_ticket, ticket_recommendation_fields
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.runtime import DatabaseRuntime
@@ -127,7 +126,7 @@ def _revalidated_row(
         if row.get("paper_state") == "PAPER_READY":
             row["paper_state"] = "WATCH"
         row["ticket"] = None
-        row.update(recommendation_fields(row))
+        row.update(ticket_recommendation_fields(row))
         return row
     risk = dict(prior.get("risk") or {})
     entry = dict(prior.get("entry") or {})
@@ -176,5 +175,5 @@ def _revalidated_row(
         row["state"] = "WATCH"
     if not row["execution_ready"] and row.get("paper_state") == "PAPER_READY":
         row["paper_state"] = "WATCH"
-    row.update(recommendation_fields(row))
+    row.update(ticket_recommendation_fields(row))
     return row

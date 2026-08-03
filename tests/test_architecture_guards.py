@@ -220,3 +220,54 @@ def test_http_routers_do_not_construct_database_repositories() -> None:
         "HTTP routers must use app.actions Modules instead of constructing database repositories:\n  "
         + "\n  ".join(sorted(violations))
     )
+
+
+# --- Forward recovery isolation guard --------------------------------------
+
+# The legacy options implementation is retained only until forward canaries
+# complete.  New recovery collection, selection, learning, and advisory work
+# must remain PostgreSQL-native even while those older modules still exist.
+RECOVERY_POSTGRES_PATHS = (
+    *(REPO_ROOT / "src" / "investment_panel" / "core").glob("options_recovery*.py"),
+    REPO_ROOT / "src" / "investment_panel" / "core" / "options_event_tape.py",
+    REPO_ROOT / "src" / "investment_panel" / "database" / "option_events.py",
+    *(REPO_ROOT / "src" / "investment_panel" / "database").glob("options_recovery*.py"),
+    REPO_ROOT / "src" / "investment_panel" / "jobs" / "detect_option_events.py",
+    REPO_ROOT / "src" / "investment_panel" / "jobs" / "robinhood_option_history.py",
+    REPO_ROOT / "src" / "investment_panel" / "jobs" / "run_option_recovery_agents.py",
+)
+LEGACY_RECOVERY_MARKERS = (
+    "import duckdb",
+    "from investment_panel.core.db",
+    "investment_panel.core.options_radar",
+    "investment_panel.database.legacy_import",
+)
+RECOVERY_PANEL_MODELS = (
+    "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
+    "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
+)
+
+
+def test_forward_options_recovery_has_no_legacy_duckdb_dependency() -> None:
+    violations = []
+    for path in RECOVERY_POSTGRES_PATHS:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for marker in LEGACY_RECOVERY_MARKERS:
+            if marker in text:
+                violations.append(f"{path.relative_to(REPO_ROOT)} contains {marker!r}")
+    assert not violations, (
+        "Forward recovery must use the PostgreSQL event/ticket/outcome owners; "
+        "do not reintroduce legacy DuckDB options or learning imports:\n  "
+        + "\n  ".join(sorted(violations))
+    )
+
+
+def test_legacy_panel_registry_cannot_reintroduce_recovery_fallbacks() -> None:
+    registry = (REPO_ROOT / "src" / "investment_panel" / "core" / "panel" / "registry.py").read_text(
+        encoding="utf-8"
+    )
+    missing = [name for name in RECOVERY_PANEL_MODELS if f'"{name}": lambda ctx: []' not in registry]
+    assert not missing, (
+        "Recovery models are PostgreSQL-only.  Their legacy panel registry entries must stay empty "
+        f"until the legacy panel path is removed, not grow a DuckDB fallback: {missing}"
+    )

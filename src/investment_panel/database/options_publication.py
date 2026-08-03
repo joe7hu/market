@@ -6,8 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
-from investment_panel.analysis.option_recommendation import recommendation_fields
-from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
+from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready, ticket_recommendation_fields
 from investment_panel.database.options_risk_context import option_risk_contexts
 
 
@@ -236,7 +235,7 @@ def publication_models(
             and not row.get("blockers")
             and row.get("portfolio_context_status") == "complete"
         )
-        row.update(recommendation_fields(row))
+        row.update(ticket_recommendation_fields(row))
     actionable = _shortlist([row for row in all_rows if row.get("state") != "REJECTED"])
     published_tickers = {str(row["ticker"]) for row in actionable}
     for row in discovery_rows:

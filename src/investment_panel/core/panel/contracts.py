@@ -221,11 +221,17 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "option_radar_opportunity",
         "option_discovery_candidate",
         "radar_alert",
+        "option_recovery_funnel",
+        "option_recovery_event",
+        "option_recovery_opportunity",
+        "option_recovery_family_performance",
+        "option_recovery_agent_provenance",
     ),
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),
     "health": (
         "source_catalog",
+        "option_recovery_health",
     ),
     "settings": (),
 }

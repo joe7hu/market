@@ -1,8 +1,8 @@
-from investment_panel.analysis.option_recommendation import recommendation_fields
+from investment_panel.core.option_trade_ticket import ticket_recommendation_fields
 
 
 def test_long_setup_is_research_only_with_executable_guidance() -> None:
-    fields = recommendation_fields({
+    fields = ticket_recommendation_fields({
         "structure": "long_call", "state": "SETUP", "blockers": [],
         "underlying_price": 100, "break_even": 108, "entry_price": 3,
         "buy_under": 2.8, "max_profit": None,
@@ -16,7 +16,7 @@ def test_long_setup_is_research_only_with_executable_guidance() -> None:
 
 
 def test_cash_secured_put_ready_uses_credit_and_assignment_invalidation() -> None:
-    fields = recommendation_fields({
+    fields = ticket_recommendation_fields({
         "structure": "cash_secured_put", "state": "READY", "blockers": [],
         "underlying_price": 100, "break_even": 92, "entry_price": 2,
         "max_profit": 200,

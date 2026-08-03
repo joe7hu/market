@@ -14,6 +14,7 @@ from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
+from investment_panel.database.options_recovery_read import RecoveryReadRepository
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
@@ -76,6 +77,7 @@ class OptionsActions:
             options_risk_sleeve_capital=_options_risk_sleeve_capital(config),
         )
         self.policy = OptionHistoryPolicyRepository(self.runtime)
+        self.recovery = RecoveryReadRepository(self.runtime)
         mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
 
@@ -123,6 +125,21 @@ class OptionsActions:
         result = self.history.health(symbol=symbol)
         result["mode"] = _decision_mode(self.config)
         return result
+
+    def recovery_events(self, **filters: Any) -> dict[str, Any]:
+        rows = self.recovery.events(**filters)
+        return {"events": rows, "count": len(rows)}
+
+    def recovery_event(self, event_id: str) -> dict[str, Any] | None:
+        return self.recovery.event_detail(event_id)
+
+    def recovery_health(self) -> dict[str, Any]:
+        from investment_panel.core.job_policy import scheduler_status
+
+        return {**self.recovery.health(), "scheduler": scheduler_status(self.config)}
+
+    def recovery_ticket(self, decision_id: UUID) -> dict[str, Any] | None:
+        return self.recovery.ticket(str(decision_id))
 
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.decision_brief(**filters)

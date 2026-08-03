@@ -18,6 +18,7 @@ from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows
+from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
 
 
 RESEARCH_PACKETS_BASE_QUERY = """
@@ -551,6 +552,7 @@ SPECIAL_MODELS = {
     "refresh_jobs", "broker_status",
     "portfolio_summary", "portfolio_performance", "portfolio_transactions",
     "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
+    *RECOVERY_MODELS,
 }
 
 
@@ -597,6 +599,9 @@ def load_postgres_tables(
         tables["refresh_jobs"] = JobRepository(runtime).rows()
     if "broker_status" in requested:
         tables["broker_status"] = broker_status_rows(runtime)
+    requested_recovery = RECOVERY_MODELS.intersection(requested)
+    if requested_recovery:
+        tables.update(recovery_panel_models(runtime, requested_recovery))
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}
