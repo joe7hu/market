@@ -111,7 +111,13 @@ def test_strategy_governance_automatically_promotes_only_complete_evidence(postg
                     [candidate_id, evaluation_type, span, Jsonb({"baseline": baseline, "proposed": proposed, "observation_span_days": span})],
                 )
 
-        assert StrategyGovernanceRepository(runtime).automatic_promote_eligible() == 1
+        governance = StrategyGovernanceRepository(runtime)
+        assert governance.automatic_promote_eligible(enabled=False) == 0
+        with runtime.read() as connection:
+            assert connection.execute(
+                "SELECT status FROM analysis.strategy_revision WHERE id = %s", [candidate_id]
+            ).fetchone()["status"] == "candidate"
+        assert governance.automatic_promote_eligible() == 1
         with runtime.read() as connection:
             statuses = connection.execute(
                 "SELECT id, status FROM analysis.strategy_revision WHERE id IN (%s, %s) ORDER BY id",

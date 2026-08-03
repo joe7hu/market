@@ -13,7 +13,13 @@ class OutcomeRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
-    def refresh(self, *, now: datetime | None = None, lookback_days: int = 365) -> dict[str, Any]:
+    def refresh(
+        self,
+        *,
+        now: datetime | None = None,
+        lookback_days: int = 365,
+        strategy_auto_promotion_enabled: bool = False,
+    ) -> dict[str, Any]:
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             raise ValueError("outcome timestamp must be timezone-aware")
@@ -189,7 +195,12 @@ class OutcomeRepository:
         from investment_panel.database.strategy_governance import StrategyGovernanceRepository
 
         governance = StrategyGovernanceRepository(self.runtime)
-        automatic_promotions = governance.automatic_promote_eligible()
+        # Promotion is deliberately paused while forward-only executable
+        # evidence accumulates.  A job may opt in explicitly only after the
+        # recovery governance gates have independently passed.
+        automatic_promotions = governance.automatic_promote_eligible(
+            enabled=strategy_auto_promotion_enabled,
+        )
         automatic_rollbacks = governance.rollback_regressing_active()
         return {
             "status": "ok", "outcomes_updated": updated, "outcomes_matured": matured,

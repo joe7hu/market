@@ -290,7 +290,9 @@ _OUTCOME_QUERY = """
      AND quote.contract_id = option_decision.contract_id
      AND quote.observed_at = option_decision.quote_observed_at
     JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-    WHERE outcome.peak_return IS NOT NULL
+    WHERE outcome.promotion_eligible IS TRUE
+      AND outcome.outcome_classification = 'captured'
+      AND outcome.peak_return IS NOT NULL
       AND outcome.maturity_state IN ('mature', 'expired')
       AND decision.strategy_revision_id = %s
 """

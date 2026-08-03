@@ -142,10 +142,18 @@ analysis:
   # paper-only; it does not submit broker orders.
   options_decision_system:
     mode: paper
+    # Recovery is forward-only.  Paper action creation remains kill-switched
+    # until five qualified event sessions have accumulated.
     options_paper_actions_enabled: false
-    # Required sizing authority. Leave unset until Joe chooses the capital
-    # dedicated to options; missing authority always produces quantity zero.
-    options_risk_sleeve_capital:
+    options_risk_sleeve_capital: 25000
+    max_risk_per_trade_pct: 0.02
+    max_open_risk_pct: 0.10
+    max_symbol_risk_pct: 0.04
+    daily_loss_halt_pct: 0.04
+    strategy_auto_promotion_enabled: false
+    event_agent_debounce_minutes: 30
+    event_agent_max_batches_per_symbol_per_day: 2
+    event_agent_max_tasks_per_batch: 12
 
 # Live opencli research ingestion (X/social, news, blogs). Cadence env knobs in
 # app/scheduler.py: MARKET_SOCIAL_REFRESH_SECONDS (default 1800),

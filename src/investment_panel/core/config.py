@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
+from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
@@ -167,11 +168,6 @@ class EventSourcesConfig:
     sec_enabled: bool = True
     watchlist_enabled: bool = True
 
-@dataclass(frozen=True)
-class OptionsDecisionSystemConfig:
-    mode: str = "shadow"
-    options_paper_actions_enabled: bool = False
-    options_risk_sleeve_capital: float | None = None
 @dataclass(frozen=True)
 class AnalysisConfig:
     enabled: bool = True
@@ -445,13 +441,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         enabled=bool(analysis_raw.get("enabled", True)),
         correlation_lookback_days=int(analysis_raw.get("correlation_lookback_days", 180)),
         max_correlation_peers=int(analysis_raw.get("max_correlation_peers", 8)),
-        options_decision_system=OptionsDecisionSystemConfig(
-            mode=_options_decision_mode(options_decision_raw),
-            options_paper_actions_enabled=bool(options_decision_raw.get("options_paper_actions_enabled", False)),
-            options_risk_sleeve_capital=(
-                float(options_decision_raw["options_risk_sleeve_capital"])
-                if options_decision_raw.get("options_risk_sleeve_capital") is not None else None
-            ),
+        options_decision_system=options_decision_system_config(
+            options_decision_raw, _options_decision_mode,
         ),
     )
     agents_raw = raw.get("agents", {})
@@ -638,6 +629,14 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "mode": config.analysis.options_decision_system.mode,
                 "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
                 "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
+                "max_risk_per_trade_pct": config.analysis.options_decision_system.max_risk_per_trade_pct,
+                "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,
+                "max_symbol_risk_pct": config.analysis.options_decision_system.max_symbol_risk_pct,
+                "daily_loss_halt_pct": config.analysis.options_decision_system.daily_loss_halt_pct,
+                "strategy_auto_promotion_enabled": config.analysis.options_decision_system.strategy_auto_promotion_enabled,
+                "event_agent_debounce_minutes": config.analysis.options_decision_system.event_agent_debounce_minutes,
+                "event_agent_max_batches_per_symbol_per_day": config.analysis.options_decision_system.event_agent_max_batches_per_symbol_per_day,
+                "event_agent_max_tasks_per_batch": config.analysis.options_decision_system.event_agent_max_tasks_per_batch,
             },
         },
         "agents": {

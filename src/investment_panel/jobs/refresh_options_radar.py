@@ -66,7 +66,12 @@ def run_learning_marks(
     """Incremental marks/calibration refresh for short-horizon learning feedback."""
 
     config = load_config(config_path)
-    result = OutcomeRepository(runtime_for_config(config)).refresh(lookback_days=max(60, recent_days * 36))
+    result = OutcomeRepository(runtime_for_config(config)).refresh(
+        lookback_days=max(60, recent_days * 36),
+        strategy_auto_promotion_enabled=(
+            config.analysis.options_decision_system.strategy_auto_promotion_enabled
+        ),
+    )
     return {
         "database": "postgresql",
         "strategy_version": strategy_version,

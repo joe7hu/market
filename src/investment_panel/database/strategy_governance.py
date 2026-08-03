@@ -13,7 +13,9 @@ class StrategyGovernanceRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
-    def automatic_promote_eligible(self) -> int:
+    def automatic_promote_eligible(self, *, enabled: bool = True) -> int:
+        if not enabled:
+            return 0
         promoted = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
             proposals = connection.execute(
@@ -105,6 +107,8 @@ class StrategyGovernanceRepository:
                 JOIN analysis.decision decision ON decision.id = outcome.decision_id
                 WHERE decision.strategy_revision_id = %s
                   AND outcome.current_return IS NOT NULL
+                  AND outcome.promotion_eligible IS TRUE
+                  AND outcome.outcome_classification = 'captured'
                   AND outcome.maturity_state IN ('mature', 'expired')
                 ORDER BY outcome.updated_at DESC LIMIT 20
                 """,
