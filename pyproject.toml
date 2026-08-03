@@ -55,6 +55,7 @@ market-refresh-options-radar = "investment_panel.jobs.refresh_options_radar:main
 market-hourly-options-radar = "investment_panel.jobs.hourly_options_radar:main"
 market-premarket-options-intelligence = "investment_panel.jobs.premarket_options_intelligence:main"
 market-run-option-agents = "investment_panel.jobs.run_option_agents:main"
+market-run-option-recovery-agents = "investment_panel.jobs.run_option_recovery_agents:main"
 market-openai-option-thesis-agent = "investment_panel.jobs.openai_option_agent:main_thesis"
 market-codex-option-thesis-agent = "investment_panel.jobs.openai_option_agent:main_codex_thesis"
 market-openai-option-postmortem-agent = "investment_panel.jobs.openai_option_agent:main_postmortem"

@@ -173,6 +173,27 @@ def run(
                         recovery["promotion"] = learning.auto_promote_eligible(
                             enabled=config.analysis.options_decision_system.strategy_auto_promotion_enabled,
                         )
+                        # Advisory work is only queued here.  Its own worker
+                        # records failure telemetry; it can never unwind a
+                        # successful provider capture or deterministic ticket.
+                        try:
+                            from investment_panel.database.options_recovery_agents import RecoveryEventAgentRepository
+
+                            settings = config.analysis.options_decision_system
+                            recovery["agent_queue"] = RecoveryEventAgentRepository(runtime).queue_if_material(
+                                event_id,
+                                capture_id=event_capture["event_capture_id"],
+                                model=config.agents.option_agent.model,
+                                reasoning_effort=config.agents.option_agent.reasoning_effort,
+                                debounce_minutes=settings.event_agent_debounce_minutes,
+                                max_batches_per_symbol_per_day=settings.event_agent_max_batches_per_symbol_per_day,
+                                max_tasks=settings.event_agent_max_tasks_per_batch,
+                            )
+                        except Exception as agent_exc:  # no agent path can block the tape
+                            recovery["agent_queue"] = {
+                                "status": "failed",
+                                "error": f"{type(agent_exc).__name__}: {agent_exc}",
+                            }
                     except Exception as exc:  # pragma: no cover - provider path safety net
                         recovery = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
                 status = "succeeded" if stored["capture_state"] == "complete" else "partial"

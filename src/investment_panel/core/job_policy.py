@@ -61,6 +61,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         ),
         _job("refresh_options_radar_learning_marks"),
         _job("run_option_agents"),
+        _job("run_option_recovery_agents", timeout_seconds=600),
         _job("run_option_agents_force"),
         _job("run_option_agents_ondemand"),
         _job("run_thesis_monitor", timeout_seconds=1800),
@@ -194,6 +195,11 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
 
+    recovery_agent_seconds = _env_int_optional("MARKET_RECOVERY_EVENT_AGENT_REFRESH_SECONDS")
+    recovery_agent_seconds = 300 if recovery_agent_seconds is None else recovery_agent_seconds
+    if auto_run_enabled and recovery_agent_seconds > 0:
+        intervals["run_option_recovery_agents"] = recovery_agent_seconds
+
     for job, env_name, default in (
         ("update_social_sources", "MARKET_SOCIAL_REFRESH_SECONDS", 1800),
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
@@ -216,6 +222,7 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "heavy_refresh_enabled": "1" if heavy_refresh_enabled() else "0",
         "jobs": intervals,
         "agent_refresh_seconds": str(intervals.get("run_option_agents", 0)),
+        "recovery_event_agent_refresh_seconds": str(intervals.get("run_option_recovery_agents", 0)),
         "radar_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "refresh_options_radar_signal")),
         "source_refresh_seconds": str(_first_interval(intervals, "options_radar_hard_refresh", "update_free_sources_radar", "update_ibkr_options", "update_robinhood_options")),
         "options_hard_refresh_seconds": str(intervals.get("options_radar_hard_refresh", 0)),
