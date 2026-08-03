@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from investment_panel.core.options_recovery_registry import strategies
+
 
 THESIS_SURVIVAL = "thesis_survival"
 RED_TEAM = "red_team"
@@ -27,6 +29,10 @@ FORBIDDEN_AGENT_AUTHORITIES = (
 )
 
 
+_MUTATION_STRATEGY_KEYS = tuple(strategy.key for strategy in strategies())
+_MUTATION_PARAMETER_KEYS = tuple(sorted({key for strategy in strategies() for key in strategy.parameters}))
+
+
 def recovery_agent_schema() -> dict[str, Any]:
     """JSON schema for one bounded, consolidated event batch."""
 
@@ -40,14 +46,36 @@ def recovery_agent_schema() -> dict[str, Any]:
             "claim": {"type": "string"},
         },
     }
+    # Codex/OpenAI strict schemas require every object to have fixed,
+    # required properties and ``additionalProperties: false``.  Encode a
+    # mutation as a compact list of registry-key/value edits rather than a
+    # free-form object, then compile it back through the typed registry before
+    # persistence.  This preserves the unknown-key rejection boundary.
     mutation = {
-        "type": ["object", "null"],
-        "additionalProperties": False,
-        "required": ["strategy_key", "changes"],
-        "properties": {
-            "strategy_key": {"type": "string"},
-            "changes": {"type": "object", "additionalProperties": {"type": "number"}},
-        },
+        "anyOf": [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["strategy_key", "changes"],
+                "properties": {
+                    "strategy_key": {"type": "string", "enum": list(_MUTATION_STRATEGY_KEYS)},
+                    "changes": {
+                        "type": "array",
+                        "maxItems": len(_MUTATION_PARAMETER_KEYS),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["key", "value"],
+                            "properties": {
+                                "key": {"type": "string", "enum": list(_MUTATION_PARAMETER_KEYS)},
+                                "value": {"type": "number"},
+                            },
+                        },
+                    },
+                },
+            },
+            {"type": "null"},
+        ],
     }
     output = {
         "type": "object",
@@ -159,9 +187,25 @@ def _evidence(value: Any) -> list[dict[str, Any]]:
 def _mutation(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
-    if set(value) != {"strategy_key", "changes"} or not isinstance(value.get("changes"), dict):
+    if not isinstance(value, dict) or set(value) != {"strategy_key", "changes"}:
         raise ValueError("recovery agent mutation must contain strategy_key and changes only")
-    return {"strategy_key": str(value.get("strategy_key") or ""), "changes": dict(value["changes"])}
+    raw_changes = value.get("changes")
+    # Retain the former object form for already-recorded/offline callers; all
+    # new Codex output uses the strict key/value array declared above.
+    if isinstance(raw_changes, dict):
+        changes = dict(raw_changes)
+    elif isinstance(raw_changes, list):
+        changes = {}
+        for item in raw_changes:
+            if not isinstance(item, dict) or set(item) != {"key", "value"}:
+                raise ValueError("recovery agent mutation changes must be key/value edits")
+            key = str(item.get("key") or "")
+            if not key or key in changes:
+                raise ValueError("recovery agent mutation changes must use unique keys")
+            changes[key] = item.get("value")
+    else:
+        raise ValueError("recovery agent mutation changes must be an object or key/value edits")
+    return {"strategy_key": str(value.get("strategy_key") or ""), "changes": changes}
 
 
 def _text(value: Any) -> str:

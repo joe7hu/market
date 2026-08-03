@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from investment_panel.core.options_recovery_agents import (
     MUTATION_DRAFTER,
     normalize_recovery_agent_output,
+    recovery_agent_schema,
 )
 from investment_panel.core.options_event_tape import EventObservation
 from investment_panel.database.instruments import reconcile_instrument
@@ -36,6 +37,20 @@ def test_agent_contract_rejects_authority_bearing_output_fields() -> None:
     row["ticket_quantity"] = 99
     with pytest.raises(ValueError, match="unsupported output fields"):
         normalize_recovery_agent_output({"outputs": [row]}, expected_tasks=[{"id": "task-1", "role": MUTATION_DRAFTER}])
+
+
+def test_agent_schema_expresses_nullable_mutation_as_distinct_strict_branches() -> None:
+    mutation = recovery_agent_schema()["properties"]["outputs"]["items"]["properties"]["mutation"]
+
+    assert "type" not in mutation
+    object_branch, null_branch = mutation["anyOf"]
+    assert object_branch["required"] == ["strategy_key", "changes"]
+    assert object_branch["additionalProperties"] is False
+    change = object_branch["properties"]["changes"]
+    assert change["type"] == "array"
+    assert change["items"]["required"] == ["key", "value"]
+    assert change["items"]["additionalProperties"] is False
+    assert null_branch == {"type": "null"}
 
 
 def test_unknown_agent_mutation_is_rejected_before_proposal_persistence() -> None:
