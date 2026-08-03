@@ -13,6 +13,7 @@ from investment_panel.core.options_event_tape import (
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.option_events import OptionEventRepository
+from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.runtime import DatabaseRuntime
@@ -185,5 +186,78 @@ def test_event_profile_writes_an_isolated_capture_and_contract_cohort(migrated_p
         assert snapshot["collection_profile"] == EVENT_PROFILE
         assert snapshot["universe"] == f"event-strip:{event_id}"
         assert contracts["count"] == 1
+    finally:
+        runtime.close()
+
+
+def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        observed = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        finished = observed + timedelta(minutes=90)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
+        events = OptionEventRepository(runtime)
+        event_id = events.detect_events(
+            [EventObservation("NVDA", observed, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
+            now=observed,
+        )["active_events"][0]["event_id"]
+        with runtime.transaction() as connection:
+            for index, price in enumerate((100.0, 100.4, 101.1, 101.9, 102.2, 103.0)):
+                at = observed + timedelta(minutes=index * 15)
+                connection.execute(
+                    """
+                    INSERT INTO analysis.option_event_spot (event_id, observed_at, available_at, price)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (event_id, observed_at) DO UPDATE SET price = EXCLUDED.price
+                    """,
+                    [event_id, at, at, price],
+                )
+        row = next(item for item in _strip_rows(as_of=observed.date()) if item["option_type"] == "call" and item["delta"] == 0.45)
+        captured, selection = events.filter_event_strip(
+            event_id,
+            {
+                "rows": [row],
+                "expected_contract_count": 1,
+                "received_contract_count": 1,
+                "capture_started_at": observed,
+                "capture_finished_at": finished,
+            },
+            as_of=observed,
+        )
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+        with ingestion.run("robinhood", "option_event_strip") as run:
+            history = OptionHistoryRepository(runtime)
+            universe = f"event-strip:{event_id}"
+            assert history.claim_slot(
+                source_id="robinhood", symbol="NVDA", slot_at=observed, run_id=run.id,
+                collection_profile=EVENT_PROFILE, universe=universe,
+            )
+            stored = history.store_capture(
+                run_id=run.id, source_id="robinhood", symbol="NVDA", slot_at=observed,
+                captured=captured, collection_profile=EVENT_PROFILE, universe=universe, materialize=False,
+            )
+            run.finish("succeeded", summary=stored)
+        recorded = events.record_capture(event_id, stored=stored, selection=selection)
+        result = RecoveryExecutionRepository(runtime).evaluate_capture(
+            event_id,
+            capture_id=recorded["event_capture_id"],
+            now=finished + timedelta(seconds=1),
+        )
+        assert result["status"] == "ok"
+        assert len(result["selected"]) <= 2
+        assert result["selected"][0]["family"] == "shock_reversal_call_v1"
+        with runtime.read() as connection:
+            signal = connection.execute(
+                "SELECT status, ticket->>'ticket_version' AS version FROM analysis.option_event_signal"
+            ).fetchone()
+            orders = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()
+        assert signal["status"] == "shadow"
+        assert signal["version"] == "4"
+        assert orders["count"] == 0
     finally:
         runtime.close()

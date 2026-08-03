@@ -15,6 +15,7 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, HISTORY_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.option_events import OptionEventRepository
+from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
 
 
 def history_slot(now: datetime | None = None) -> datetime | None:
@@ -146,12 +147,30 @@ def run(
                     if event_id and selection is not None
                     else None
                 )
+                recovery = None
+                if event_id and event_capture is not None:
+                    # Selection is deterministic and isolated from provider capture:
+                    # a temporary scoring failure never discards the event strip.
+                    try:
+                        recovery = RecoveryExecutionRepository(runtime).evaluate_capture(
+                            event_id,
+                            capture_id=event_capture["event_capture_id"],
+                        )
+                    except Exception as exc:  # pragma: no cover - provider path safety net
+                        recovery = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
                 status = "succeeded" if stored["capture_state"] == "complete" else "partial"
                 run.finish(
                     status, item_count=stored["received_contract_count"], instrument_count=1,
                     failure_detail="; ".join(stored["errors"][:10]) or None, summary=stored,
                 )
-                captures.append({"symbol": symbol, "profile": profile, "event_capture": event_capture, "status": status, **stored})
+                captures.append({
+                    "symbol": symbol,
+                    "profile": profile,
+                    "event_capture": event_capture,
+                    "recovery": recovery,
+                    "status": status,
+                    **stored,
+                })
             except Exception as exc:
                 history.fail_capture(
                     source_id="robinhood",
