@@ -254,8 +254,17 @@ class OptionEventRepository:
     def capture_health(self, *, now: datetime | None = None) -> dict[str, Any]:
         reference = now or datetime.now(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
+            # A capacity-deferred event is intentionally not a scheduled
+            # collection obligation.  It remains visible as a deferred
+            # opportunity, but including it here would make the collection
+            # coverage gate fail for slots that were never admitted.
             events = [dict(row) for row in connection.execute(
-                "SELECT id, started_at, enrolled_at, closed_at, status FROM analysis.option_event ORDER BY started_at DESC"
+                """
+                SELECT id, started_at, enrolled_at, closed_at, status
+                FROM analysis.option_event
+                WHERE status IN ('active', 'closed')
+                ORDER BY started_at DESC
+                """
             ).fetchall()]
             captures = [dict(row) for row in connection.execute(
                 "SELECT event_id, scheduled_at, started_at, finished_at, status, completeness, continuity_pct "

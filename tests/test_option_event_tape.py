@@ -7,6 +7,7 @@ from investment_panel.core.options_event_tape import (
     DELTA_LADDER,
     EventObservation,
     FrozenContract,
+    scheduled_event_slots,
     select_event_strip,
     trigger_reason,
 )
@@ -106,6 +107,45 @@ def test_event_detection_enforces_two_symbol_capacity_without_duplicate_deferred
                 "SELECT status, count(*) AS count FROM analysis.option_event GROUP BY status ORDER BY status"
             ).fetchall()
         assert {row["status"]: row["count"] for row in rows} == {"active": 2, "deferred_capacity": 1}
+    finally:
+        runtime.close()
+
+
+def test_capture_health_excludes_capacity_deferred_events_from_scheduled_slot_denominator(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        start = datetime(2026, 8, 3, 14, 30, tzinfo=UTC)
+        reference = datetime(2026, 8, 3, 15, 0, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_ids = [
+                reconcile_instrument(connection, symbol, asset_class="equity", category="test")
+                for symbol in ("NVDA", "AMD", "TSLA")
+            ]
+            for instrument_id, status, event_start, enrolled_at in (
+                (instrument_ids[0], "active", start, start),
+                (instrument_ids[1], "active", start, start),
+                # This event was observed but was never admitted to either
+                # Robinhood lease, so it must not count as an uncollected slot.
+                (instrument_ids[2], "deferred_capacity", start - timedelta(days=5), None),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO analysis.option_event
+                        (instrument_id, detected_at, started_at, enrolled_at,
+                         reference_price, event_low, severity_score, status)
+                    VALUES (%s, %s, %s, %s, 100, 90, 1, %s)
+                    """,
+                    [instrument_id, start, event_start, enrolled_at, status],
+                )
+
+        health = OptionEventRepository(runtime).capture_health(now=reference)
+        expected = 2 * len(scheduled_event_slots(start, reference))
+
+        assert health["scheduled_slots"] == expected
+        assert health["active_events"] == 2
     finally:
         runtime.close()
 
