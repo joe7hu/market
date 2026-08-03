@@ -31,6 +31,10 @@ class RetentionRepository:
         cutoffs = {
             "option": reference - timedelta(days=option_days),
             "history": reference - timedelta(days=730),
+            "event_strip": reference - timedelta(days=365),
+            "history_payload": reference - timedelta(days=90),
+            "event_payload": reference - timedelta(days=30),
+            "event_derived": reference - timedelta(days=730),
             "analysis": reference - timedelta(days=analysis_days),
             "publication": reference - timedelta(days=publication_days),
             "job": reference - timedelta(days=job_days),
@@ -70,7 +74,9 @@ class RetentionRepository:
                 USING raw.option_snapshot snapshot
                 WHERE snapshot.id = quote.snapshot_id
                   AND quote.observed_at < CASE
-                        WHEN snapshot.collection_profile = 'history_full' THEN %s ELSE %s END
+                        WHEN snapshot.collection_profile = 'history_full' THEN %s
+                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
+                        ELSE %s END
                   AND NOT EXISTS (
                       SELECT 1 FROM analysis.option_feature feature
                       WHERE feature.snapshot_id = quote.snapshot_id
@@ -84,17 +90,45 @@ class RetentionRepository:
                         AND decision.quote_observed_at = quote.observed_at
                   )
                 """,
-                [cutoffs["history"], cutoffs["option"]],
+                [cutoffs["history"], cutoffs["event_strip"], cutoffs["option"]],
             ).rowcount
+            provider_payloads = connection.execute(
+                """
+                UPDATE raw.option_quote quote
+                SET provider_payload = '{}'::jsonb
+                FROM raw.option_snapshot snapshot
+                WHERE snapshot.id = quote.snapshot_id
+                  AND quote.provider_payload <> '{}'::jsonb
+                  AND quote.observed_at < CASE
+                        WHEN snapshot.collection_profile = 'history_full' THEN %s
+                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
+                        ELSE %s END
+                """,
+                [cutoffs["history_payload"], cutoffs["event_payload"], cutoffs["option"]],
+            ).rowcount
+            if provider_payloads:
+                counts["option_provider_payloads"] = provider_payloads
             counts["option_snapshots"] = connection.execute(
                 """
                 DELETE FROM raw.option_snapshot snapshot
                 WHERE snapshot.observed_at < CASE
-                        WHEN snapshot.collection_profile = 'history_full' THEN %s ELSE %s END
+                        WHEN snapshot.collection_profile = 'history_full' THEN %s
+                        WHEN snapshot.collection_profile = 'event_strip' THEN %s
+                        ELSE %s END
                   AND NOT EXISTS (SELECT 1 FROM raw.option_quote quote WHERE quote.snapshot_id = snapshot.id)
                 """,
-                [cutoffs["history"], cutoffs["option"]],
+                [cutoffs["history"], cutoffs["event_strip"], cutoffs["option"]],
             ).rowcount
+            closed_events = connection.execute(
+                """
+                DELETE FROM analysis.option_event event
+                WHERE event.status = 'closed'
+                  AND event.closed_at < %s
+                """,
+                [cutoffs["event_derived"]],
+            ).rowcount
+            if closed_events:
+                counts["closed_option_events"] = closed_events
             counts["job_runs"] = connection.execute(
                 "DELETE FROM ops.job_run WHERE status <> 'running' AND started_at < %s",
                 [cutoffs["job"]],

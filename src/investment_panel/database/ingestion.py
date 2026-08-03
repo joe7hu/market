@@ -467,7 +467,7 @@ class IngestionRepository:
             raise ValueError("observed_at must be timezone-aware")
         if market_session not in {"premarket", "regular", "afterhours", "closed", "unknown"}:
             raise ValueError("market_session is invalid")
-        if collection_profile not in {"radar", "history_full"}:
+        if collection_profile not in {"radar", "history_full", "event_strip"}:
             raise ValueError("collection_profile is invalid")
         if capture_state not in {"running", "complete", "partial", "failed"}:
             raise ValueError("capture_state is invalid")

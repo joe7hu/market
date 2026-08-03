@@ -13,9 +13,11 @@ from investment_panel.database.options_history_terminal import fail_capture as _
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
 from investment_panel.database.options_history_health import history_health
 from investment_panel.database.options_history_surface import surface_groups as _surface_groups
+from investment_panel.database.options_history_capture import store_capture as _store_capture
 from investment_panel.database.options_surface_grid import surface_grid_payload
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 HISTORY_PROFILE = "history_full"
+EVENT_PROFILE = "event_strip"
 FEATURE_VERSION = "history-v2"
 MIN_HISTORY_SAMPLES = 20
 MIN_RESIDUAL_POINTS = 10
@@ -31,9 +33,18 @@ class OptionHistoryRepository:
             runtime,
             options_risk_sleeve_capital=options_risk_sleeve_capital,
         )
-    def claim_slot(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID) -> int | None:
+    def claim_slot(
+        self,
+        *,
+        source_id: str,
+        symbol: str,
+        slot_at: datetime,
+        run_id: UUID,
+        collection_profile: str = HISTORY_PROFILE,
+        universe: str | None = None,
+    ) -> int | None:
         """Claim one symbol/slot without allowing overlapping collection work."""
-        universe = _history_universe(symbol)
+        snapshot_universe = universe or _universe_for_profile(collection_profile, symbol)
         with self.runtime.transaction(JOB_PROFILE) as connection:
             claimed = connection.execute(
                 """
@@ -44,11 +55,14 @@ class OptionHistoryRepository:
                 ON CONFLICT (source_id, observed_at, universe) DO UPDATE
                 SET ingest_run_id = EXCLUDED.ingest_run_id, capture_started_at = now(),
                     capture_finished_at = NULL, capture_state = 'running'
-                WHERE raw.option_snapshot.collection_profile = 'history_full'
+                WHERE raw.option_snapshot.collection_profile = %s
                   AND raw.option_snapshot.capture_state IN ('partial', 'failed')
                 RETURNING id
                 """,
-                [source_id, run_id, slot_at, slot_at.date(), universe, HISTORY_PROFILE, symbol, slot_at],
+                [
+                    source_id, run_id, slot_at, slot_at.date(), snapshot_universe,
+                    collection_profile, symbol, slot_at, collection_profile,
+                ],
             ).fetchone()
             if claimed is None:
                 return None
@@ -76,111 +90,97 @@ class OptionHistoryRepository:
         slot_at: datetime,
         captured: dict[str, Any],
         minimum_completeness: float = 0.98,
+        collection_profile: str = HISTORY_PROFILE,
+        universe: str | None = None,
+        materialize: bool = True,
     ) -> dict[str, Any]:
-        rows = list(captured.get("rows") or [])
-        expected = int(captured.get("expected_contract_count") or 0)
-        received = int(captured.get("received_contract_count") or len(rows))
-        completeness = (received / expected) if expected else 0.0
-        errors = [str(error) for error in captured.get("errors") or []]
-        complete = expected > 0 and completeness >= minimum_completeness and not errors and not captured.get("timed_out")
-        state = "complete" if complete else "partial"
-        quote_diagnostics = _jsonable(dict(captured.get("quote_diagnostics") or {}))
-        generation = self._generation_for_run(source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id)
-        if generation is None:
-            raise ValueError("capture generation was not claimed")
-        started_at = _as_utc(captured.get("capture_started_at")) or slot_at
-        finished_at = _as_utc(captured.get("capture_finished_at")) or datetime.now(UTC)
-        for row in rows:
-            option_type = str(row.get("option_type") or row.get("type") or "").lower()
-            expiration = str(row.get("expiration") or row.get("expiry") or "")[:10]
-            row.setdefault("capture_group_key", f"{expiration}:{option_type}")
-            row.setdefault("group_started_at", started_at)
-            row.setdefault("group_finished_at", finished_at)
-            row.setdefault("available_at", finished_at)
-            row.setdefault("provider_observed_at", row.get("provider_updated_at") or finished_at)
-            row.setdefault("underlying_observed_at", finished_at)
-            row.setdefault("underlying_available_at", finished_at)
-        snapshot = self.ingestion.store_option_snapshot(
-            run_id,
+        return _store_capture(
+            self,
+            run_id=run_id,
             source_id=source_id,
-            observed_at=slot_at,
-            market_session="regular",
-            universe=_history_universe(symbol),
-            rows=rows,
-            completeness=completeness,
-            collection_profile=HISTORY_PROFILE,
-            history_symbol=symbol,
+            symbol=symbol,
             slot_at=slot_at,
-            capture_started_at=started_at,
-            capture_finished_at=finished_at,
-            expected_contract_count=expected,
-            received_contract_count=received,
-            capture_state=state,
-            capture_generation_id=generation,
-            quote_observed_at=finished_at + timedelta(microseconds=generation),
+            captured=captured,
+            minimum_completeness=minimum_completeness,
+            collection_profile=collection_profile,
+            universe=universe,
+            materialize=materialize,
         )
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            connection.execute(
-                """
-                UPDATE raw.option_capture_generation
-                SET capture_state = %s, expected_contract_count = %s, received_contract_count = %s,
-                    completeness = %s, capture_started_at = %s, capture_finished_at = %s,
-                    terminal_error = %s, diagnostics = diagnostics || %s
-                WHERE id = %s AND capture_state = 'running'
-                """,
-                [state, expected, received, completeness, started_at, finished_at, "; ".join(errors) or None,
-                 Jsonb({"quote_diagnostics": quote_diagnostics}), generation],
-            )
-            connection.execute(
-                """
-                UPDATE raw.option_snapshot
-                SET capture_state = %s, capture_finished_at = %s, completeness = %s,
-                    expected_contract_count = %s, received_contract_count = %s, contract_count = %s,
-                    latest_complete_generation_id = CASE WHEN %s = 'complete' THEN %s ELSE latest_complete_generation_id END
-                WHERE id = %s
-                """,
-                [state, finished_at, completeness, expected, received, len(rows), state, generation, snapshot["snapshot_id"]],
-            )
-        result = {
-            **snapshot,
-            "symbol": symbol,
-            "slot_at": slot_at.isoformat(),
-            "expected_contract_count": expected,
-            "received_contract_count": received,
-            "completeness": completeness,
-            "capture_state": state,
-            "capture_generation_id": generation,
-            "errors": errors,
-            "quote_diagnostics": quote_diagnostics,
-        }
-        if complete:
-            result.update(self.materialize_snapshot(int(snapshot["snapshot_id"]), mode="live_lifecycle"))
-        return result
-    def fail_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, error: Exception | str) -> None:
+    def fail_capture(
+        self,
+        *,
+        source_id: str,
+        symbol: str,
+        slot_at: datetime,
+        run_id: UUID,
+        error: Exception | str,
+        collection_profile: str = HISTORY_PROFILE,
+        universe: str | None = None,
+    ) -> None:
         """Terminate a claimed generation so no slot remains permanently running."""
-        _fail_capture(self.runtime, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id, error=error)
+        _fail_capture(
+            self.runtime,
+            source_id=source_id,
+            symbol=symbol,
+            slot_at=slot_at,
+            run_id=run_id,
+            error=error,
+            collection_profile=collection_profile,
+            universe=universe or _universe_for_profile(collection_profile, symbol),
+        )
 
     def defer_stale_running_captures(
         self,
         *,
         source_id: str,
         stale_after: timedelta,
+        collection_profile: str = HISTORY_PROFILE,
+        workload: str = "option_history",
         reason: str = "collector_orphaned_after_shutdown",
         now: datetime | None = None,
     ) -> int:
         return defer_stale_running_captures(
             self.runtime,
             source_id=source_id,
-            collection_profile=HISTORY_PROFILE,
+            collection_profile=collection_profile,
+            workload=workload,
             stale_after=stale_after,
             reason=reason,
             now=now,
         )
 
-    def defer_capture(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID, reason: str) -> None:
+    def defer_capture(
+        self,
+        *,
+        source_id: str,
+        symbol: str,
+        slot_at: datetime,
+        run_id: UUID,
+        reason: str,
+        collection_profile: str = HISTORY_PROFILE,
+        universe: str | None = None,
+    ) -> None:
         """Record a capacity deferral as terminal evidence without making the slot retryable."""
-        _defer_capture(self.runtime, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id, reason=reason)
-    def _generation_for_run(self, *, source_id: str, symbol: str, slot_at: datetime, run_id: UUID) -> int | None:
+        _defer_capture(
+            self.runtime,
+            source_id=source_id,
+            symbol=symbol,
+            slot_at=slot_at,
+            run_id=run_id,
+            reason=reason,
+            collection_profile=collection_profile,
+            universe=universe or _universe_for_profile(collection_profile, symbol),
+        )
+    def _generation_for_run(
+        self,
+        *,
+        source_id: str,
+        symbol: str,
+        slot_at: datetime,
+        run_id: UUID,
+        collection_profile: str = HISTORY_PROFILE,
+        universe: str | None = None,
+    ) -> int | None:
         with self.runtime.read(JOB_PROFILE) as connection:
             row = connection.execute(
                 """
@@ -188,9 +188,13 @@ class OptionHistoryRepository:
                 FROM raw.option_capture_generation generation
                 JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
                 WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
+                  AND snapshot.collection_profile = %s AND snapshot.universe = %s
                   AND generation.ingest_run_id = %s
                 """,
-                [source_id, symbol.upper(), slot_at, run_id],
+                [
+                    source_id, symbol.upper(), slot_at, collection_profile,
+                    universe or _universe_for_profile(collection_profile, symbol), run_id,
+                ],
             ).fetchone()
         return int(row["id"]) if row else None
     def materialize_snapshot(self, snapshot_id: int, *, mode: str = "historical_evidence") -> dict[str, Any]:
@@ -662,23 +666,9 @@ def _residual_eligible(row: dict[str, Any]) -> bool:
 def _difference(value: float | None, previous: float | None) -> float | None:
     return (value - previous) if value is not None and previous is not None else None
 
-def _as_utc(value: Any) -> datetime | None:
-    if not isinstance(value, datetime):
-        return None
-    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
-
-
-def _jsonable(value: Any) -> Any:
-    """Normalize collector diagnostics before they cross the JSONB boundary."""
-
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return value
-
-
 def _history_universe(symbol: str) -> str:
     return f"history_full:{symbol.upper()}"
+
+
+def _universe_for_profile(collection_profile: str, symbol: str) -> str:
+    return _history_universe(symbol) if collection_profile == HISTORY_PROFILE else f"{collection_profile}:{symbol.upper()}"

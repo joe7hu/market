@@ -13,7 +13,8 @@ from investment_panel.core.robinhood_options import RobinhoodClient, collect_rob
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_history import OptionHistoryRepository
-from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository
+from investment_panel.database.options_history_policy import EVENT_PROFILE, HISTORY_PROFILE, OptionHistoryPolicyRepository
+from investment_panel.database.option_events import OptionEventRepository
 
 
 def history_slot(now: datetime | None = None) -> datetime | None:
@@ -54,8 +55,15 @@ def run(
         options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
     )
     policy = OptionHistoryPolicyRepository(runtime)
+    events = OptionEventRepository(runtime)
     history.defer_stale_running_captures(
         source_id="robinhood",
+        stale_after=timedelta(seconds=int(provider.max_collection_seconds) + 120),
+    )
+    history.defer_stale_running_captures(
+        source_id="robinhood",
+        collection_profile=EVENT_PROFILE,
+        workload="option_event",
         stale_after=timedelta(seconds=int(provider.max_collection_seconds) + 120),
     )
     use_policy = True
@@ -76,41 +84,93 @@ def run(
     for schedule in scheduled:
         symbol = str(schedule["symbol"]).upper()
         capture_slot_at = schedule.get("slot_at") or slot_at
-        with ingestion.run("robinhood", "option_history_full") as run:
-            if history.claim_slot(source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id) is None:
+        profile = str(schedule.get("profile") or HISTORY_PROFILE)
+        event_id = str(schedule.get("event_id") or "") if profile == EVENT_PROFILE else None
+        universe = f"event-strip:{event_id}" if event_id else None
+        capability = "option_event_strip" if event_id else "option_history_full"
+        workload = "option_event" if event_id else "option_history"
+        with ingestion.run("robinhood", capability) as run:
+            if history.claim_slot(
+                source_id="robinhood",
+                symbol=symbol,
+                slot_at=capture_slot_at,
+                run_id=run.id,
+                collection_profile=profile,
+                universe=universe,
+            ) is None:
                 run.finish("skipped", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat(), "reason": "slot_already_claimed"})
-                captures.append({"symbol": symbol, "status": "skipped", "reason": "slot_already_claimed"})
+                captures.append({"symbol": symbol, "profile": profile, "status": "skipped", "reason": "slot_already_claimed"})
                 continue
             lease_id = None
             if use_policy:
                 lease = policy.acquire_provider_lease(
                     provider="robinhood",
-                    workload="option_history",
+                    workload=workload,
                     symbol=symbol,
                     ttl_seconds=int(provider.max_collection_seconds) + 120,
                 )
                 if lease is None:
                     history.defer_capture(
                         source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id,
-                        reason="provider_capacity_deferred",
+                        reason="provider_capacity_deferred", collection_profile=profile, universe=universe,
                     )
+                    if event_id:
+                        events.record_terminal_capture(
+                            event_id,
+                            scheduled_at=capture_slot_at,
+                            status="deferred",
+                            reason="provider_capacity_deferred",
+                        )
                     run.finish("skipped", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat(), "reason": "provider_capacity_deferred"})
-                    captures.append({"symbol": symbol, "status": "skipped", "reason": "provider_capacity_deferred"})
+                    captures.append({"symbol": symbol, "profile": profile, "status": "skipped", "reason": "provider_capacity_deferred"})
                     continue
                 lease_id = lease.id
             try:
                 captured = collect_robinhood_full_option_chain(provider, symbol, client=client)
-                stored = history.store_capture(run_id=run.id, source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, captured=captured, minimum_completeness=provider.history_min_completeness)
+                selection = None
+                if event_id:
+                    captured, selection = events.filter_event_strip(event_id, captured, as_of=capture_slot_at)
+                stored = history.store_capture(
+                    run_id=run.id,
+                    source_id="robinhood",
+                    symbol=symbol,
+                    slot_at=capture_slot_at,
+                    captured=captured,
+                    minimum_completeness=provider.history_min_completeness,
+                    collection_profile=profile,
+                    universe=universe,
+                    materialize=not event_id,
+                )
+                event_capture = (
+                    events.record_capture(event_id, stored=stored, selection=selection)
+                    if event_id and selection is not None
+                    else None
+                )
                 status = "succeeded" if stored["capture_state"] == "complete" else "partial"
                 run.finish(
                     status, item_count=stored["received_contract_count"], instrument_count=1,
                     failure_detail="; ".join(stored["errors"][:10]) or None, summary=stored,
                 )
-                captures.append({"symbol": symbol, "status": status, **stored})
+                captures.append({"symbol": symbol, "profile": profile, "event_capture": event_capture, "status": status, **stored})
             except Exception as exc:
-                history.fail_capture(source_id="robinhood", symbol=symbol, slot_at=capture_slot_at, run_id=run.id, error=exc)
+                history.fail_capture(
+                    source_id="robinhood",
+                    symbol=symbol,
+                    slot_at=capture_slot_at,
+                    run_id=run.id,
+                    error=exc,
+                    collection_profile=profile,
+                    universe=universe,
+                )
+                if event_id:
+                    events.record_terminal_capture(
+                        event_id,
+                        scheduled_at=capture_slot_at,
+                        status="failed",
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
                 run.finish("failed", failure_detail=f"{type(exc).__name__}: {exc}", summary={"symbol": symbol, "slot_at": capture_slot_at.isoformat()})
-                captures.append({"symbol": symbol, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+                captures.append({"symbol": symbol, "profile": profile, "status": "failed", "error": f"{type(exc).__name__}: {exc}"})
             finally:
                 if lease_id is not None:
                     policy.release_provider_lease(lease_id)

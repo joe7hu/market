@@ -13,6 +13,7 @@ def defer_stale_running_captures(
     *,
     source_id: str,
     collection_profile: str,
+    workload: str = "option_history",
     stale_after: timedelta,
     reason: str = "collector_orphaned_after_shutdown",
     now: datetime | None = None,
@@ -37,13 +38,13 @@ def defer_stale_running_captures(
                   SELECT 1
                   FROM ops.provider_lease lease
                   WHERE lease.provider = snapshot.source_id
-                    AND lease.workload = 'option_history'
+                    AND lease.workload = %s
                     AND lease.symbol = snapshot.history_symbol
                     AND lease.expires_at > %s
               )
             FOR UPDATE OF generation, snapshot
             """,
-            [source_id, collection_profile, cutoff, as_of],
+            [source_id, collection_profile, cutoff, workload, as_of],
         ).fetchall()
         if not rows:
             return 0

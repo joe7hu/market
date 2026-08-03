@@ -693,7 +693,7 @@ def _policy_for_instrument(connection: Any, instrument_id: int) -> dict[str, Any
         """
         SELECT publication_cap, effective_state, policy_revision, lock_version
         FROM app.option_history_policy
-        WHERE instrument_id = %s
+        WHERE instrument_id = %s AND profile = 'history_full'
         """,
         [instrument_id],
     ).fetchone()

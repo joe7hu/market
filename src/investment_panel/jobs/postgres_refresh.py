@@ -20,9 +20,7 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     runtime = runtime_for_config(config)
     options = refresh_options_radar.run_deterministic_only(config_path)
-    outcomes = OutcomeRepository(runtime).refresh(
-        strategy_auto_promotion_enabled=config.analysis.options_decision_system.strategy_auto_promotion_enabled,
-    )
+    outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(runtime)
     market = refresh_market_publication(runtime)
     status = "ok" if all(str(row.get("status")) == "ok" for row in (today, market)) else "partial"
@@ -92,9 +90,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     agents = run_option_agents.run(config_path)
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
-    outcomes = OutcomeRepository(runtime).refresh(
-        strategy_auto_promotion_enabled=config.analysis.options_decision_system.strategy_auto_promotion_enabled,
-    )
+    outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
         runtime, use_agent_narrative=True,
         agent_model=config.agents.thesis_monitor.model,
@@ -118,6 +114,19 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         "today": today,
         "market": market,
     }
+
+
+def _refresh_option_outcomes(runtime: Any, config: Any) -> dict[str, Any]:
+    """Keep automatic promotion explicitly disabled unless configuration opts in."""
+
+    if isinstance(config, dict):
+        enabled = bool((((config.get("analysis") or {}).get("options_decision_system") or {}).get("strategy_auto_promotion_enabled")))
+    else:
+        analysis = getattr(config, "analysis", None)
+        decision_system = getattr(analysis, "options_decision_system", None)
+        enabled = bool(getattr(decision_system, "strategy_auto_promotion_enabled", False))
+    repository = OutcomeRepository(runtime)
+    return repository.refresh(strategy_auto_promotion_enabled=True) if enabled else repository.refresh()
 
 
 def full(config_path: str | None = None, *, continue_on_error: bool = True) -> dict[str, Any]:
@@ -154,11 +163,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         (
             "option_outcomes",
             False,
-            lambda: OutcomeRepository(runtime_for_config(config)).refresh(
-                strategy_auto_promotion_enabled=(
-                    config.analysis.options_decision_system.strategy_auto_promotion_enabled
-                ),
-            ),
+            lambda: _refresh_option_outcomes(runtime_for_config(config), config),
         ),
         ("option_agents", True, lambda: run_option_agents.run(config_path)),
         ("thesis_monitor", False, lambda: run_thesis_monitor.run(config_path, trigger="preopen")),

@@ -16,11 +16,19 @@ def fail_capture(
     slot_at: datetime,
     run_id: UUID,
     error: Exception | str,
+    collection_profile: str = "history_full",
+    universe: str | None = None,
 ) -> None:
     detail = str(error)
     with runtime.transaction(JOB_PROFILE) as connection:
         generation = _running_generation(
-            connection, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id
+            connection,
+            source_id=source_id,
+            symbol=symbol,
+            slot_at=slot_at,
+            run_id=run_id,
+            collection_profile=collection_profile,
+            universe=universe,
         )
         if generation is None:
             return
@@ -42,10 +50,18 @@ def defer_capture(
     slot_at: datetime,
     run_id: UUID,
     reason: str,
+    collection_profile: str = "history_full",
+    universe: str | None = None,
 ) -> None:
     with runtime.transaction(JOB_PROFILE) as connection:
         generation = _running_generation(
-            connection, source_id=source_id, symbol=symbol, slot_at=slot_at, run_id=run_id
+            connection,
+            source_id=source_id,
+            symbol=symbol,
+            slot_at=slot_at,
+            run_id=run_id,
+            collection_profile=collection_profile,
+            universe=universe,
         )
         if generation is None:
             return
@@ -66,6 +82,8 @@ def _running_generation(
     symbol: str,
     slot_at: datetime,
     run_id: UUID,
+    collection_profile: str,
+    universe: str | None,
 ) -> Any | None:
     return connection.execute(
         """
@@ -73,8 +91,17 @@ def _running_generation(
         FROM raw.option_capture_generation generation
         JOIN raw.option_snapshot snapshot ON snapshot.id = generation.snapshot_id
         WHERE snapshot.source_id = %s AND snapshot.history_symbol = %s AND snapshot.slot_at = %s
+          AND snapshot.collection_profile = %s
+          AND snapshot.universe = %s
           AND generation.ingest_run_id = %s AND generation.capture_state = 'running'
         FOR UPDATE
         """,
-        [source_id, symbol.upper(), slot_at, run_id],
+        [
+            source_id,
+            symbol.upper(),
+            slot_at,
+            collection_profile,
+            universe or f"{collection_profile}:{symbol.upper()}",
+            run_id,
+        ],
     ).fetchone()

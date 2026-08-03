@@ -14,7 +14,9 @@ router = APIRouter()
 
 
 def _actions() -> AgentActions:
-    return AgentActions(deps.load_core_config(), deps.start_refresh_job)
+    # Route actions must share the app's request-config seam so test and
+    # alternate-runtime callers never fall through to the host's live database.
+    return AgentActions(deps.load_config(), deps.start_refresh_job)
 
 
 @router.get("/api/agent")

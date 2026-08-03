@@ -133,7 +133,7 @@ def _scheduled_regular_slots(connection: Any, *, symbol: str) -> int:
         SELECT policy.cadence_minutes
         FROM app.option_history_policy policy
         JOIN catalog.instrument instrument ON instrument.id = policy.instrument_id
-        WHERE instrument.symbol = %s
+        WHERE instrument.symbol = %s AND policy.profile = 'history_full'
         """,
         [symbol.upper()],
     ).fetchone()

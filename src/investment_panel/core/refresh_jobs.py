@@ -39,6 +39,7 @@ from investment_panel.jobs import (
     update_market_events,
     update_robinhood_options,
     robinhood_option_history,
+    detect_option_events,
 )
 from investment_panel.database.retention import RetentionRepository
 
@@ -134,6 +135,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     # source='robinhood'. This is market-data only; no account or order tools.
     "update_robinhood_options": lambda config_path: update_robinhood_options.run(config_path),
     "robinhood_option_history": lambda config_path: robinhood_option_history.run(config_path),
+    "detect_option_events": lambda config_path: detect_option_events.run(config_path),
     "refresh_options_radar": lambda config_path: refresh_options_radar.run(config_path),
     # Agent-free rematerialization for the in-process continuous scheduler. Codex
     # thesis/postmortem workers stay on the daily premarket cadence; this path

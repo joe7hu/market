@@ -18,9 +18,11 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 POLICY_REVISION = "options-chain-reliability-20260722"
 MAX_PROVIDER_LEASES = 2
 LEASE_SECONDS = 14 * 60
+HISTORY_PROFILE = "history_full"
+EVENT_PROFILE = "event_strip"
 CORE_HISTORY_SYMBOLS = frozenset({"QQQ"})
 RADAR_WORKLOADS = frozenset({"options_radar"})
-HISTORY_WORKLOADS = frozenset({"option_history"})
+HISTORY_WORKLOADS = frozenset({"option_history", "option_event"})
 
 
 class PolicyConflict(ValueError):
@@ -69,6 +71,7 @@ class OptionHistoryPolicyRepository:
                     SELECT snapshot.id AS snapshot_id, snapshot.slot_at
                     FROM raw.option_snapshot snapshot
                     WHERE snapshot.history_symbol = instrument.symbol
+                      AND snapshot.collection_profile = %s
                       AND snapshot.latest_complete_generation_id IS NOT NULL
                     ORDER BY snapshot.slot_at DESC NULLS LAST, snapshot.id DESC LIMIT 1
                 ) latest ON true
@@ -76,14 +79,17 @@ class OptionHistoryPolicyRepository:
                     SELECT count(*) AS complete_captures
                     FROM raw.option_snapshot snapshot
                     WHERE snapshot.history_symbol = instrument.symbol
+                      AND snapshot.collection_profile = %s
                       AND snapshot.latest_complete_generation_id IS NOT NULL
                 ) health ON true
+                WHERE policy.profile = %s
                 ORDER BY CASE policy.collection_tier WHEN 'core' THEN 0 ELSE 1 END, instrument.symbol
                 """
+                , [HISTORY_PROFILE, HISTORY_PROFILE, HISTORY_PROFILE]
             ).fetchall()
         return {"rows": [_policy_payload(dict(row)) for row in rows], "count": len(rows), "policy_revision": POLICY_REVISION}
 
-    def policy_for_symbol(self, symbol: str) -> dict[str, Any] | None:
+    def policy_for_symbol(self, symbol: str, *, profile: str = HISTORY_PROFILE) -> dict[str, Any] | None:
         self.ensure_seeded()
         normalized = canonical_symbol(symbol)
         with self.runtime.read() as connection:
@@ -92,9 +98,9 @@ class OptionHistoryPolicyRepository:
                 SELECT instrument.id AS instrument_id, instrument.symbol, policy.*
                 FROM app.option_history_policy policy
                 JOIN catalog.instrument instrument ON instrument.id = policy.instrument_id
-                WHERE instrument.symbol = %s
+                WHERE instrument.symbol = %s AND policy.profile = %s
                 """,
-                [normalized],
+                [normalized, profile],
             ).fetchone()
         return _policy_payload(dict(row)) if row else None
 
@@ -108,25 +114,25 @@ class OptionHistoryPolicyRepository:
             row = connection.execute(
                 """
                 INSERT INTO app.option_history_policy
-                    (instrument_id, requested_state, effective_state, collection_tier, cadence_minutes,
+                    (instrument_id, profile, requested_state, effective_state, collection_tier, cadence_minutes,
                      publication_cap, provider, normalized_retention_days, derived_retention_days,
                      provider_payload_retention_days, policy_revision, reason)
-                VALUES (%s, 'off', 'pending_gate', 'standard', 60, 'WATCH', 'robinhood',
+                VALUES (%s, %s, 'off', 'pending_gate', 'standard', 60, 'WATCH', 'robinhood',
                         730, 730, 90, %s, 'watchlist enrollment pending admission')
-                ON CONFLICT (instrument_id) DO NOTHING
+                ON CONFLICT (instrument_id, profile) DO NOTHING
                 RETURNING lock_version
                 """,
-                [instrument_id, POLICY_REVISION],
+                [instrument_id, HISTORY_PROFILE, POLICY_REVISION],
             ).fetchone()
             current = connection.execute(
                 """
                 SELECT instrument.symbol, policy.*
                 FROM app.option_history_policy policy
                 JOIN catalog.instrument instrument ON instrument.id = policy.instrument_id
-                WHERE policy.instrument_id = %s
+                WHERE policy.instrument_id = %s AND policy.profile = %s
                 FOR UPDATE
                 """,
-                [instrument_id],
+                [instrument_id, HISTORY_PROFILE],
             ).fetchone()
             if current is None:
                 raise ValueError("option-history policy could not be created")
@@ -146,12 +152,12 @@ class OptionHistoryPolicyRepository:
                                   WHEN effective_state = 'pending_gate' THEN 'watchlist enrollment pending admission'
                                   ELSE reason END,
                     lock_version = lock_version + 1
-                WHERE instrument_id = %s
+                WHERE instrument_id = %s AND profile = %s
                 RETURNING *
                 """,
-                [requested_state, effective_state, requested_state, effective_state, requested_state, instrument_id],
+                [requested_state, effective_state, requested_state, effective_state, requested_state, instrument_id, HISTORY_PROFILE],
             ).fetchone()
-        return self.policy_for_symbol(normalized) or dict(updated)
+        return self.policy_for_symbol(normalized, profile=HISTORY_PROFILE) or dict(updated)
 
     def due_symbols(self, now: datetime | None = None) -> list[dict[str, Any]]:
         self.ensure_seeded()
@@ -165,10 +171,12 @@ class OptionHistoryPolicyRepository:
                 WHERE policy.requested_state = 'on'
                   AND policy.effective_state IN ('active', 'shadow')
                   AND policy.provider = 'robinhood'
+                  AND (policy.profile = %s OR (policy.profile = %s AND (policy.expires_at IS NULL OR policy.expires_at > %s)))
                 ORDER BY CASE instrument.symbol WHEN 'QQQ' THEN 0 ELSE 1 END,
                          CASE policy.collection_tier WHEN 'core' THEN 0 ELSE 1 END,
                          instrument.symbol
                 """
+                , [HISTORY_PROFILE, EVENT_PROFILE, reference]
             ).fetchall()
         due: list[dict[str, Any]] = []
         for row in rows:
@@ -176,6 +184,48 @@ class OptionHistoryPolicyRepository:
             if slot is not None:
                 due.append({**_policy_payload(dict(row)), "slot_at": slot})
         return due
+
+    def enroll_event_profile(
+        self,
+        *,
+        event_id: Any,
+        symbol: str,
+        expires_at: datetime,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Add a 15-minute event strip without mutating full-history policy."""
+
+        normalized = canonical_symbol(symbol)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            instrument_id = reconcile_instrument(
+                connection, normalized, asset_class="equity", category="option-history",
+            )
+            row = connection.execute(
+                """
+                INSERT INTO app.option_history_policy
+                    (instrument_id, profile, requested_state, effective_state, collection_tier,
+                     cadence_minutes, publication_cap, provider, normalized_retention_days,
+                     derived_retention_days, provider_payload_retention_days, policy_revision,
+                     activation_reason, event_id, expires_at, reason, activated_at)
+                VALUES (%s, %s, 'on', 'active', 'event', 15, 'WATCH', 'robinhood',
+                        365, 730, 30, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (instrument_id, profile) DO UPDATE
+                SET requested_state = 'on', effective_state = 'active', cadence_minutes = 15,
+                    publication_cap = 'WATCH', normalized_retention_days = 365,
+                    derived_retention_days = 730, provider_payload_retention_days = 30,
+                    policy_revision = EXCLUDED.policy_revision,
+                    activation_reason = EXCLUDED.activation_reason, event_id = EXCLUDED.event_id,
+                    expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason,
+                    activated_at = COALESCE(app.option_history_policy.activated_at, now()),
+                    updated_at = now(), lock_version = app.option_history_policy.lock_version + 1
+                RETURNING *
+                """,
+                [
+                    instrument_id, EVENT_PROFILE, POLICY_REVISION, "selloff_event_admitted", event_id,
+                    expires_at, reason,
+                ],
+            ).fetchone()
+        return _policy_payload({"symbol": normalized, **dict(row)})
 
     def acquire_provider_lease(
         self,
@@ -310,14 +360,14 @@ def _seed_policy(
     connection.execute(
         """
         INSERT INTO app.option_history_policy
-            (instrument_id, requested_state, effective_state, collection_tier, cadence_minutes,
+            (instrument_id, profile, requested_state, effective_state, collection_tier, cadence_minutes,
              publication_cap, provider, normalized_retention_days, derived_retention_days,
              provider_payload_retention_days, policy_revision, reason, activated_at)
-        VALUES (%s, 'on', %s, %s, %s, %s, 'robinhood', 730, 730, 90, %s, %s,
+        VALUES (%s, %s, 'on', %s, %s, %s, %s, 'robinhood', 730, 730, 90, %s, %s,
                 CASE WHEN %s IN ('active', 'shadow') THEN now() ELSE NULL END)
-        ON CONFLICT (instrument_id) DO NOTHING
+        ON CONFLICT (instrument_id, profile) DO NOTHING
         """,
-        [instrument_id, effective_state, collection_tier, cadence_minutes, publication_cap, POLICY_REVISION, reason, effective_state],
+        [instrument_id, HISTORY_PROFILE, effective_state, collection_tier, cadence_minutes, publication_cap, POLICY_REVISION, reason, effective_state],
     )
 
 
@@ -332,6 +382,7 @@ def _policy_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "instrument_id": int(row["instrument_id"]) if row.get("instrument_id") is not None else None,
         "symbol": str(row.get("symbol") or "").upper(),
+        "profile": row.get("profile") or HISTORY_PROFILE,
         "requested_state": row.get("requested_state"),
         "effective_state": row.get("effective_state"),
         "collection_tier": row.get("collection_tier"),
@@ -344,6 +395,9 @@ def _policy_payload(row: dict[str, Any]) -> dict[str, Any]:
         "policy_revision": row.get("policy_revision"),
         "lock_version": int(row["lock_version"]) if row.get("lock_version") is not None else None,
         "reason": row.get("reason"),
+        "activation_reason": row.get("activation_reason"),
+        "event_id": str(row["event_id"]) if row.get("event_id") is not None else None,
+        "expires_at": row.get("expires_at"),
         "activated_at": row.get("activated_at"),
         "paused_at": row.get("paused_at"),
         "requested_at": row.get("requested_at"),

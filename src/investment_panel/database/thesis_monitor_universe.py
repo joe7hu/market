@@ -28,6 +28,7 @@ def monitored_thesis_rows(connection: Any) -> list[dict[str, Any]]:
         LEFT JOIN app.watchlist_item watch ON watch.instrument_id = instrument.id
         LEFT JOIN app.option_history_policy option_policy
           ON option_policy.instrument_id = instrument.id
+         AND option_policy.profile = 'history_full'
          AND option_policy.collection_tier = 'core'
          AND option_policy.requested_state = 'on'
          AND option_policy.effective_state = 'active'
