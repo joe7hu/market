@@ -284,12 +284,19 @@ class OptionEventRepository:
         latencies: list[float] = []
         for event in events:
             end = event.get("closed_at") or reference
+            event_captures = by_event.get(str(event["id"]), [])
+            captured_slots = {row["scheduled_at"] for row in event_captures}
             start = event.get("enrolled_at") or event["started_at"]
+            # A detector can admit an event while the already-scheduled
+            # capture job is running.  The resulting initial strip belongs to
+            # that job's slot even when enrollment commits a few minutes
+            # later, so retain it in the coverage denominator.
+            if captured_slots:
+                start = min(start, min(captured_slots))
             slots = scheduled_event_slots(start, end)
             expected_slots += len(slots)
-            captured_slots = {row["scheduled_at"] for row in by_event.get(str(event["id"]), [])}
             covered_slots += sum(slot in captured_slots for slot in slots)
-            for row in by_event.get(str(event["id"]), []):
+            for row in event_captures:
                 if row.get("completeness") is not None:
                     completeness.append(float(row["completeness"]))
                 if row.get("continuity_pct") is not None:

@@ -150,6 +150,43 @@ def test_capture_health_excludes_capacity_deferred_events_from_scheduled_slot_de
         runtime.close()
 
 
+def test_capture_health_counts_initial_slot_that_precedes_enrollment_commit(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        initial_slot = datetime(2026, 8, 3, 14, 30, tzinfo=UTC)
+        enrolled_at = initial_slot + timedelta(minutes=15)
+        reference = initial_slot + timedelta(minutes=30)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
+            event = connection.execute(
+                """
+                INSERT INTO analysis.option_event
+                    (instrument_id, detected_at, started_at, enrolled_at,
+                     reference_price, event_low, severity_score, status)
+                VALUES (%s, %s, %s, %s, 100, 90, 1, 'active')
+                RETURNING id
+                """,
+                [instrument_id, initial_slot, initial_slot, enrolled_at],
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO analysis.option_event_capture (event_id, scheduled_at, status)
+                VALUES (%s, %s, 'complete')
+                """,
+                [event["id"], initial_slot],
+            )
+
+        health = OptionEventRepository(runtime).capture_health(now=reference)
+
+        assert health["scheduled_slots"] == len(scheduled_event_slots(initial_slot, reference))
+        assert health["covered_slots"] == 1
+    finally:
+        runtime.close()
+
+
 def test_detector_handles_an_empty_effective_universe(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
