@@ -417,15 +417,20 @@ def option_radar_learning_collection(
 @router.get("/api/options/tickets/{decision_id}", response_model=OptionTradeTicket | RecoveryOptionTradeTicketV4)
 def option_trade_ticket(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
+    if detail is not None:
+        ticket = detail.get("ticket")
+        if isinstance(ticket, dict):
+            return ticket
+    # A recovery signal has an analysis.decision row for provenance, so the
+    # legacy detail reader can find it without owning its v4 ticket.  Always
+    # prefer the canonical recovery ticket before treating the decision as an
+    # incomplete legacy publication.
+    recovery_ticket = _actions().recovery_ticket(decision_id)
+    if recovery_ticket is not None:
+        return recovery_ticket
     if detail is None:
-        recovery_ticket = _actions().recovery_ticket(decision_id)
-        if recovery_ticket is not None:
-            return recovery_ticket
         raise HTTPException(status_code=404, detail="Option decision not found")
-    ticket = detail.get("ticket")
-    if not isinstance(ticket, dict):
-        raise HTTPException(status_code=409, detail="Current publication has no trade ticket; refresh the decision surface")
-    return ticket
+    raise HTTPException(status_code=409, detail="Current publication has no trade ticket; refresh the decision surface")
 
 
 @router.post("/api/options-radar/signals/{decision_id}/paper-entry")

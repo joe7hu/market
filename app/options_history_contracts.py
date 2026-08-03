@@ -273,6 +273,12 @@ class OptionTradeTicketLeg(BaseModel):
     volume: int | None = None
 
 
+class RecoveryOptionTradeTicketLeg(OptionTradeTicketLeg):
+    """v4 recovery legs retain the exact OCC identity alongside the catalog ID."""
+
+    occ_symbol: str
+
+
 class OptionTradeTicket(BaseModel):
     ticket_version: int
     decision_id: str
@@ -306,7 +312,7 @@ class RecoveryOptionTradeTicketV4(BaseModel):
     state: str
     structure: str
     expiration: date
-    legs: list[OptionTradeTicketLeg]
+    legs: list[RecoveryOptionTradeTicketLeg]
     entry: dict[str, Any]
     risk: dict[str, Any]
     invalidation: str

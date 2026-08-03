@@ -265,6 +265,7 @@ def test_event_profile_writes_an_isolated_capture_and_contract_cohort(migrated_p
 
 def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
     migrated_postgres_dsn: str,
+    monkeypatch,
 ) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -342,6 +343,20 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
         from app.options_history_contracts import RecoveryOptionTradeTicketV4
 
         assert RecoveryOptionTradeTicketV4.model_validate(ticket).ticket_version == 4
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app import deps
+        from app.routers.options import router as options_router
+
+        monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
+        application = FastAPI()
+        application.include_router(options_router)
+        with TestClient(application) as client:
+            api_ticket = client.get(f"/api/options/tickets/{signal['decision_id']}")
+        assert api_ticket.status_code == 200
+        assert api_ticket.json()["ticket_version"] == 4
+        assert api_ticket.json()["legs"][0]["occ_symbol"] == ticket["legs"][0]["occ_symbol"]
         assert orders["count"] == 0
         assert len(denominator) == 2
         by_family = {row["strategy_key"]: row for row in denominator}
