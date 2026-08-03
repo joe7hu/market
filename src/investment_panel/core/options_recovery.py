@@ -272,6 +272,12 @@ def evaluate_lifecycle(
             result.time_to_4x_sessions = capture.session_number
         high_water_price = mark if high_water_price is None else max(high_water_price, mark)
 
+        # Target fills close the paper position, but the same-contract tape
+        # still needs to measure later 3x/4x opportunity timing and peak.  A
+        # hard stop, by contrast, terminates the executable lifecycle.
+        if remaining <= 0:
+            continue
+
         hard_exit = (
             capture.invalidated
             or gross_multiple <= HARD_LOSS_MULTIPLE
@@ -304,8 +310,6 @@ def evaluate_lifecycle(
         if reached_3x and remaining and high_water_price and mark <= high_water_price * (1.0 - TRAILING_STOP_FRACTION):
             _append_exit(result, capture, remaining, mark, "trailing_stop_after_3x")
             remaining = 0
-        if remaining == 0:
-            break
 
     if result.entry_fill_at is None:
         # Fewer than two scheduled captures means evidence is incomplete, not a loss.

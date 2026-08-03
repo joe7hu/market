@@ -238,7 +238,9 @@ def rank_candidate(
     """Rank by lower-confidence executable expectancy per maximum-loss dollar."""
 
     gate = contract_gate(quote, family=family, as_of=as_of)
-    lower = max(float(lower_confidence_expectancy or 0.0), 0.0)
+    # Preserve a negative lower bound: a family with weak cost-adjusted
+    # evidence must rank below a neutral one rather than being silently tied.
+    lower = float(lower_confidence_expectancy or 0.0)
     risk = max(float(maximum_loss), 0.01)
     spread = gate.spread_pct if gate.spread_pct is not None else 1.0
     liquidity = min((quote.open_interest or 0) / 1_000.0, 1.0)

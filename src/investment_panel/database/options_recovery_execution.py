@@ -8,7 +8,13 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.options_event_tape import trading_sessions_between
-from investment_panel.core.options_recovery import ExecutableLeg, QuoteCapture, evaluate_lifecycle
+from investment_panel.core.options_recovery import (
+    FEE_PER_CONTRACT_LEG,
+    ExecutableLeg,
+    QuoteCapture,
+    evaluate_lifecycle,
+    executable_exit_price,
+)
 from investment_panel.core.options_recovery_paper import (
     RecoveryRiskContext,
     qualified_for_paper,
@@ -67,6 +73,16 @@ class RecoveryExecutionRepository:
             return {"status": "skipped", "reason": "event_capture_not_available", "event_id": event_id}
         event, capture, contracts = loaded
         signals = [signal_for(event, strategy.key) for strategy in strategies()]
+        from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
+
+        learning = RecoveryLearningRepository(self.runtime)
+        learning.record_capture(
+            event=event,
+            capture=capture,
+            contracts=contracts,
+            revisions=revisions,
+            family_signals=signals,
+        )
         active = [signal for signal in signals if signal.active]
         if not active:
             return {
@@ -100,6 +116,12 @@ class RecoveryExecutionRepository:
                     family_rows.append((ranked, source))
             candidates[family_signal.family] = sorted(family_rows, key=lambda item: item[0].selection_score, reverse=True)
         selected = _select_published(candidates)
+        learning.mark_selection(
+            event_id=event_id,
+            capture=capture,
+            revisions=revisions,
+            selected=selected,
+        )
         if not selected:
             return {
                 "status": "ok", "event_id": event_id, "capture_id": str(capture["id"]),
@@ -146,7 +168,11 @@ class RecoveryExecutionRepository:
                     },
                     strategy_revision_id=strategy_id,
                 )
-                risk = self._risk_context(event_id=event_id, instrument_id=int(source["instrument_id"]))
+                risk = self._risk_context(
+                    event_id=event_id,
+                    instrument_id=int(source["instrument_id"]),
+                    family=candidate.family,
+                )
                 risk_decision = size_recovery_position(candidate.maximum_loss, risk)
                 ticket = _one_unit_ticket(
                     event=event,
@@ -175,6 +201,14 @@ class RecoveryExecutionRepository:
                     gate_result={"eligible": True, "blockers": list(candidate.gate.blockers)},
                     ticket=ticket,
                     status="shadow",
+                )
+                learning.link_signal(
+                    signal_id=signal,
+                    event_id=event_id,
+                    capture=capture,
+                    contract_id=candidate.quote.contract_id,
+                    family=candidate.family,
+                    strategy_revision_id=strategy_id,
                 )
                 persisted.append({
                     "signal_id": signal, "decision_id": str(decision_id), "family": candidate.family,
@@ -206,13 +240,18 @@ class RecoveryExecutionRepository:
                 """
                 SELECT signal.id, signal.ticket, signal.decision_id, signal.strategy_key, signal.contract_id,
                        event.id AS event_id, event.started_at, event.instrument_id, instrument.symbol
-                FROM analysis.option_event_signal signal
+                FROM (
+                  SELECT DISTINCT ON (strategy_key) *
+                  FROM analysis.option_event_signal
+                  WHERE event_id = %s AND status = 'shadow'
+                    AND available_at >= %s - interval '20 minutes'
+                  ORDER BY strategy_key, available_at DESC, id DESC
+                ) signal
                 JOIN analysis.option_event event ON event.id = signal.event_id
                 JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
-                WHERE signal.event_id = %s AND signal.status = 'shadow'
                 ORDER BY signal.available_at, signal.id
                 """,
-                [event_id],
+                [event_id, reference],
             ).fetchall()
         orders = []
         for row in rows:
@@ -251,7 +290,7 @@ class RecoveryExecutionRepository:
                 name=strategy.name,
                 parameters=dict(strategy.parameters),
                 status="candidate",
-                authority_group="options-recovery",
+                authority_group=f"options-recovery:{strategy.key}",
             )
         return ids
 
@@ -272,7 +311,7 @@ class RecoveryExecutionRepository:
                 return None
             capture = connection.execute(
                 """
-                SELECT id, snapshot_id, scheduled_at, finished_at
+                SELECT id, snapshot_id, capture_generation_id, scheduled_at, finished_at
                 FROM analysis.option_event_capture
                 WHERE event_id = %s
                   AND status IN ('complete', 'partial')
@@ -323,14 +362,17 @@ class RecoveryExecutionRepository:
         return event, dict(capture), [dict(row) for row in rows]
 
     def _lower_confidence_expectancy(self, family: str) -> float:
-        # Landings 2 creates shadow evidence.  Landing 3 replaces this zero
-        # prior with the independently calculated executable cohort metric.
-        del family
-        return 0.0
+        # Before there are closed paper fills this is the neutral zero prior.
+        # Once evidence exists, live ranking and replay use the same
+        # independently computed cost-adjusted lower bound.
+        from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
 
-    def _risk_context(self, *, event_id: str, instrument_id: int) -> RecoveryRiskContext:
+        metric = RecoveryLearningRepository(self.runtime).metrics(family)
+        return float(metric.get("lower_95_expectancy") or 0.0)
+
+    def _risk_context(self, *, event_id: str, instrument_id: int, family: str) -> RecoveryRiskContext:
         with self.runtime.read(JOB_PROFILE) as connection:
-            row = connection.execute(
+            risk_row = connection.execute(
                 """
                 SELECT
                   coalesce(sum((ticket_snapshot->'risk'->>'total_risk')::numeric)
@@ -339,11 +381,11 @@ class RecoveryExecutionRepository:
                     FILTER (WHERE status IN ('staged', 'entered', 'partial_exited')
                             AND instrument_id = %s), 0) AS symbol_risk,
                   count(*) FILTER (WHERE status IN ('staged', 'entered', 'partial_exited')) AS positions,
-                  bool_or(event_id = %s AND strategy_family IS NOT NULL
+                  bool_or(event_id = %s AND strategy_family = %s
                           AND status IN ('staged', 'entered', 'partial_exited')) AS existing
                 FROM app.paper_order
                 """,
-                [instrument_id, event_id],
+                [instrument_id, event_id, family],
             ).fetchone()
             pnl = connection.execute(
                 """
@@ -353,12 +395,62 @@ class RecoveryExecutionRepository:
                   AND details ? 'net_pnl'
                 """
             ).fetchone()
+            active_orders = [dict(item) for item in connection.execute(
+                """
+                SELECT id, quantity, actual_fill_price, ticket_snapshot
+                FROM app.paper_order
+                WHERE status IN ('entered', 'partial_exited')
+                  AND actual_fill_price IS NOT NULL
+                """
+            ).fetchall()]
+            exit_rows = connection.execute(
+                """
+                SELECT details->>'paper_order_id' AS paper_order_id,
+                       coalesce(sum(quantity), 0) AS quantity
+                FROM app.trade_journal
+                WHERE action LIKE 'paper_exit:%' AND details ? 'paper_order_id'
+                GROUP BY details->>'paper_order_id'
+                """
+            ).fetchall()
+            quoted_legs = connection.execute(
+                """
+                SELECT leg.paper_order_id, leg.contract_id, leg.side, quote.bid, quote.ask,
+                       quote.bid_size, quote.ask_size
+                FROM app.paper_order_leg leg
+                JOIN app.paper_order paper ON paper.id = leg.paper_order_id
+                LEFT JOIN LATERAL (
+                  SELECT bid, ask, bid_size, ask_size
+                  FROM raw.option_quote
+                  WHERE contract_id = leg.contract_id
+                  ORDER BY available_at DESC LIMIT 1
+                ) quote ON true
+                WHERE paper.status IN ('entered', 'partial_exited')
+                """
+            ).fetchall()
+        exited = {str(row["paper_order_id"]): int(row["quantity"] or 0) for row in exit_rows}
+        packages: dict[str, list[ExecutableLeg]] = {}
+        for quoted_leg in quoted_legs:
+            packages.setdefault(str(quoted_leg["paper_order_id"]), []).append(ExecutableLeg(
+                str(quoted_leg["contract_id"]), str(quoted_leg["side"]), quoted_leg["bid"], quoted_leg["ask"], quoted_leg["bid_size"], quoted_leg["ask_size"],
+            ))
+        unrealized = 0.0
+        for paper in active_orders:
+            remaining = max(0, int(paper["quantity"]) - exited.get(str(paper["id"]), 0))
+            legs = packages.get(str(paper["id"]), [])
+            if not remaining or not legs:
+                continue
+            try:
+                mark = executable_exit_price(legs)
+            except ValueError:
+                continue
+            unrealized += (mark - float(paper["actual_fill_price"])) * 100.0 * remaining
+            unrealized -= FEE_PER_CONTRACT_LEG * len(legs) * remaining * 2
         return RecoveryRiskContext(
-            open_risk=float(row["open_risk"] or 0),
-            symbol_open_risk=float(row["symbol_risk"] or 0),
-            open_positions=int(row["positions"] or 0),
-            daily_realized_unrealized_pnl=float(pnl["value"] or 0),
-            existing_event_family_position=bool(row["existing"]),
+            open_risk=float(risk_row["open_risk"] or 0),
+            symbol_open_risk=float(risk_row["symbol_risk"] or 0),
+            open_positions=int(risk_row["positions"] or 0),
+            daily_realized_unrealized_pnl=float(pnl["value"] or 0) + unrealized,
+            existing_event_family_position=bool(risk_row["existing"]),
         )
 
     def _upsert_signal(self, **values: Any) -> str:
@@ -388,7 +480,11 @@ class RecoveryExecutionRepository:
     def _stage_order(self, signal: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         ticket = dict(signal["ticket"] or {})
         unit = float((ticket.get("risk") or {}).get("one_unit_max_loss") or 0.0)
-        risk = self._risk_context(event_id=str(signal["event_id"]), instrument_id=int(signal["instrument_id"]))
+        risk = self._risk_context(
+            event_id=str(signal["event_id"]),
+            instrument_id=int(signal["instrument_id"]),
+            family=str(signal["strategy_key"]),
+        )
         decision = size_recovery_position(unit, risk)
         if decision.quantity <= 0:
             self._set_signal_status(str(signal["id"]), "risk_blocked", {"risk_blockers": list(decision.blockers)})
@@ -408,7 +504,7 @@ class RecoveryExecutionRepository:
                 INSERT INTO app.paper_order
                     (decision_id, instrument_id, side, quantity, limit_price, status, policy_result,
                      structure, idempotency_key, ticket_version, ticket_snapshot, intended_limit_price,
-                     event_id, event_signal_id, strategy_family, objective_version)
+                     event_id, event_signal_id, strategy_family, objective_version, created_at)
                 VALUES (%s, %s, 'buy', %s, %s, 'staged', %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s)
                 RETURNING id
@@ -418,7 +514,7 @@ class RecoveryExecutionRepository:
                     ticket.get("entry", {}).get("limit_price"),
                     Jsonb({"owner": "options_recovery", "live_order_submission": False}),
                     ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
-                    signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"),
+                    signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"), now,
                 ],
             ).fetchone()
             for index, leg in enumerate(ticket.get("legs") or []):
@@ -450,15 +546,26 @@ class RecoveryExecutionRepository:
             published_at=order["created_at"], quantity=int(order["quantity"]), captures=captures,
             entry_limit=(ticket.get("entry") or {}).get("limit_price"),
         )
+        leg_count = max(1, len(ticket.get("legs") or ()))
         with self.runtime.transaction(JOB_PROFILE) as connection:
             if result.entry_fill_at and order.get("filled_at") is None:
                 connection.execute("UPDATE app.paper_order SET status = 'entered', actual_fill_price = %s, filled_at = %s WHERE id = %s", [result.entry_fill_price, result.entry_fill_at, order["id"]])
                 _journal(connection, order, action="paper_entry", quantity=int(order["quantity"]), price=result.entry_fill_price,
                          key=f"recovery:{order['id']}:entry", details={"paper_order_id": str(order["id"])})
             for fill in result.exit_fills:
+                net_pnl = None
+                if result.entry_fill_price is not None:
+                    net_pnl = (
+                        (fill.executable_price - result.entry_fill_price) * 100.0 * fill.quantity
+                        - FEE_PER_CONTRACT_LEG * leg_count * 2 * fill.quantity
+                    )
                 _journal(connection, order, action=f"paper_exit:{fill.reason}", quantity=fill.quantity,
                          price=fill.executable_price, key=f"recovery:{order['id']}:exit:{fill.observed_at.isoformat()}:{fill.reason}",
-                         details={"paper_order_id": str(order["id"]), "session_number": fill.session_number})
+                         details={
+                             "paper_order_id": str(order["id"]),
+                             "session_number": fill.session_number,
+                             "net_pnl": round(net_pnl, 2) if net_pnl is not None else None,
+                         })
             status = _order_status(result, int(order["quantity"]))
             if status != order["status"]:
                 connection.execute("UPDATE app.paper_order SET status = %s, entry_capture_count = %s WHERE id = %s", [status, result.entry_capture_count, order["id"]])

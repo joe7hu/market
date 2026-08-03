@@ -152,9 +152,26 @@ def run(
                     # Selection is deterministic and isolated from provider capture:
                     # a temporary scoring failure never discards the event strip.
                     try:
-                        recovery = RecoveryExecutionRepository(runtime).evaluate_capture(
+                        execution = RecoveryExecutionRepository(runtime)
+                        recovery = execution.evaluate_capture(
                             event_id,
                             capture_id=event_capture["event_capture_id"],
+                        )
+                        recovery["paper_staging"] = execution.stage_qualified_orders(
+                            event_id,
+                            enabled=config.analysis.options_decision_system.recovery_paper_actions_enabled,
+                        )
+                        recovery["paper_management"] = execution.manage_event_orders(event_id)
+                        from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
+
+                        learning = RecoveryLearningRepository(runtime)
+                        # Persist paper lifecycle first so the outcome owner
+                        # sees a real filled/exited ticket, never a stale
+                        # shadow status from the preceding capture.
+                        recovery["paper_lifecycle"] = learning.sync_paper_lifecycle(event_id)
+                        recovery["learning"] = learning.refresh_outcomes()
+                        recovery["promotion"] = learning.auto_promote_eligible(
+                            enabled=config.analysis.options_decision_system.strategy_auto_promotion_enabled,
                         )
                     except Exception as exc:  # pragma: no cover - provider path safety net
                         recovery = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}

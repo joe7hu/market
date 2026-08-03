@@ -198,12 +198,13 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
     try:
         observed = datetime(2026, 8, 3, 15, tzinfo=UTC)
         finished = observed + timedelta(minutes=90)
+        event_started = observed - timedelta(days=7)
         with runtime.transaction() as connection:
             instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
         events = OptionEventRepository(runtime)
         event_id = events.detect_events(
-            [EventObservation("NVDA", observed, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
-            now=observed,
+            [EventObservation("NVDA", event_started, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
+            now=event_started,
         )["active_events"][0]["event_id"]
         with runtime.transaction() as connection:
             for index, price in enumerate((100.0, 100.4, 101.1, 101.9, 102.2, 103.0)):
@@ -256,8 +257,90 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
                 "SELECT status, ticket->>'ticket_version' AS version FROM analysis.option_event_signal"
             ).fetchone()
             orders = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()
+            denominator = connection.execute(
+                "SELECT strategy_key, selection_stage, miss_reason FROM analysis.option_opportunity_observation ORDER BY strategy_key"
+            ).fetchall()
         assert signal["status"] == "shadow"
         assert signal["version"] == "4"
         assert orders["count"] == 0
+        assert len(denominator) == 2
+        by_family = {row["strategy_key"]: row for row in denominator}
+        assert by_family["shock_reversal_call_v1"]["selection_stage"] == "published"
+        assert by_family["shock_continuation_put_v1"]["miss_reason"] == "not_featured"
+        staged = RecoveryExecutionRepository(runtime).stage_qualified_orders(
+            event_id,
+            now=finished + timedelta(seconds=1),
+            enabled=True,
+        )
+        assert staged["orders"][0]["status"] == "staged"
+        with runtime.read() as connection:
+            order = connection.execute(
+                "SELECT status, ticket_version, strategy_family FROM app.paper_order"
+            ).fetchone()
+        assert order == {"status": "staged", "ticket_version": 4, "strategy_family": "shock_reversal_call_v1"}
+
+        def store_future(slot: datetime, *, bid: float, ask: float) -> None:
+            future, future_selection = events.filter_event_strip(
+                event_id,
+                {
+                    "rows": [{**row, "bid": bid, "ask": ask}],
+                    "expected_contract_count": 1,
+                    "received_contract_count": 1,
+                    "capture_started_at": slot,
+                    "capture_finished_at": slot + timedelta(seconds=2),
+                },
+                as_of=slot,
+            )
+            with ingestion.run("robinhood", "option_event_strip") as run:
+                history = OptionHistoryRepository(runtime)
+                assert history.claim_slot(
+                    source_id="robinhood", symbol="NVDA", slot_at=slot, run_id=run.id,
+                    collection_profile=EVENT_PROFILE, universe=f"event-strip:{event_id}",
+                )
+                future_stored = history.store_capture(
+                    run_id=run.id, source_id="robinhood", symbol="NVDA", slot_at=slot,
+                    captured=future, collection_profile=EVENT_PROFILE, universe=f"event-strip:{event_id}",
+                    materialize=False,
+                )
+                run.finish("succeeded", summary=future_stored)
+            events.record_capture(event_id, stored=future_stored, selection=future_selection)
+
+        store_future(observed + timedelta(minutes=105), bid=2.0, ask=2.2)
+        entered = RecoveryExecutionRepository(runtime).manage_event_orders(
+            event_id,
+            now=observed + timedelta(minutes=106),
+        )
+        assert entered["orders"][0]["status"] == "entered"
+        store_future(observed + timedelta(minutes=120), bid=6.8, ask=7.0)
+        exited = RecoveryExecutionRepository(runtime).manage_event_orders(
+            event_id,
+            now=observed + timedelta(minutes=121),
+        )
+        assert exited["orders"][0]["status"] == "exited"
+        with runtime.read() as connection:
+            order_times = connection.execute(
+                "SELECT created_at, filled_at FROM app.paper_order"
+            ).fetchone()
+            actions = connection.execute(
+                "SELECT action FROM app.trade_journal ORDER BY created_at"
+            ).fetchall()
+        assert order_times["filled_at"] > order_times["created_at"]
+        assert {row["action"] for row in actions} >= {"paper_order_staged", "paper_entry", "paper_exit:target_2x"}
+        from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
+
+        learning = RecoveryLearningRepository(runtime)
+        learning.sync_paper_lifecycle(event_id)
+        refreshed = learning.refresh_outcomes(now=observed + timedelta(minutes=121))
+        assert refreshed["captured"] >= 1
+        with runtime.read() as connection:
+            outcome = connection.execute(
+                """
+                SELECT outcome_classification, return_3_session, executable_peak_return
+                FROM analysis.option_opportunity_observation
+                WHERE strategy_key = 'shock_reversal_call_v1'
+                """
+            ).fetchone()
+        assert outcome["outcome_classification"] == "captured"
+        assert outcome["return_3_session"] is not None
     finally:
         runtime.close()

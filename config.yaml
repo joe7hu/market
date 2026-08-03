@@ -145,6 +145,7 @@ analysis:
     # Recovery is forward-only.  Paper action creation remains kill-switched
     # until five qualified event sessions have accumulated.
     options_paper_actions_enabled: false
+    recovery_paper_actions_enabled: true
     options_risk_sleeve_capital: 25000
     max_risk_per_trade_pct: 0.02
     max_open_risk_pct: 0.10

@@ -628,6 +628,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "options_decision_system": {
                 "mode": config.analysis.options_decision_system.mode,
                 "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
+                "recovery_paper_actions_enabled": config.analysis.options_decision_system.recovery_paper_actions_enabled,
                 "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
                 "max_risk_per_trade_pct": config.analysis.options_decision_system.max_risk_per_trade_pct,
                 "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,

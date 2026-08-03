@@ -10,6 +10,7 @@ from typing import Any, Callable
 class OptionsDecisionSystemConfig:
     mode: str = "shadow"
     options_paper_actions_enabled: bool = False
+    recovery_paper_actions_enabled: bool = True
     options_risk_sleeve_capital: float | None = None
     max_risk_per_trade_pct: float = 0.02
     max_open_risk_pct: float = 0.10
@@ -31,6 +32,7 @@ def options_decision_system_config(
     return OptionsDecisionSystemConfig(
         mode=mode_parser(raw),
         options_paper_actions_enabled=bool(raw.get("options_paper_actions_enabled", False)),
+        recovery_paper_actions_enabled=bool(raw.get("recovery_paper_actions_enabled", True)),
         options_risk_sleeve_capital=float(sleeve) if sleeve is not None else None,
         max_risk_per_trade_pct=float(raw.get("max_risk_per_trade_pct", 0.02)),
         max_open_risk_pct=float(raw.get("max_open_risk_pct", 0.10)),
