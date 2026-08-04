@@ -11,9 +11,17 @@ RECOVERY_MODELS = frozenset({
 })
 
 
-def recovery_panel_models(runtime: Any, names: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+def recovery_panel_models(
+    runtime: Any,
+    names: Iterable[str],
+    *,
+    recovery_paper_actions_enabled: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
     """Load bounded PostgreSQL recovery projections without broadening the catalog owner."""
 
     from investment_panel.database.options_recovery_read import RecoveryReadRepository
 
-    return RecoveryReadRepository(runtime).panel_models(names)
+    return RecoveryReadRepository(
+        runtime,
+        recovery_paper_actions_enabled=recovery_paper_actions_enabled,
+    ).panel_models(names)

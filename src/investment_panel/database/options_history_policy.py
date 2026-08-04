@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 import os
 import socket
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import MARKET_CLOSE, MARKET_OPEN, MARKET_TZ, is_us_market_day
+from investment_panel.core.decision import MARKET_TZ, is_us_market_day, market_session_bounds
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
@@ -22,7 +22,7 @@ HISTORY_PROFILE = "history_full"
 EVENT_PROFILE = "event_strip"
 CORE_HISTORY_SYMBOLS = frozenset({"QQQ"})
 RADAR_WORKLOADS = frozenset({"options_radar"})
-HISTORY_WORKLOADS = frozenset({"option_history", "option_event"})
+HISTORY_WORKLOADS = frozenset({"option_history", "option_event", "option_event_detector"})
 
 
 class PolicyConflict(ValueError):
@@ -292,26 +292,23 @@ def eligible_policy_slot(now: datetime, *, cadence_minutes: int) -> datetime | N
     reference = now.astimezone(MARKET_TZ)
     if not is_us_market_day(reference.date()):
         return None
+    open_at, close_at = market_session_bounds(reference.date())
+    if reference < open_at or reference >= close_at + timedelta(minutes=15):
+        return None
     if cadence_minutes == 15:
-        if reference.time() < MARKET_OPEN or reference.time() >= time(16, 15):
-            return None
         minute = (reference.minute // 15) * 15
         local_slot = reference.replace(minute=minute, second=0, microsecond=0)
-        if local_slot.time() > MARKET_CLOSE:
-            local_slot = local_slot.replace(hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute)
+        if local_slot > close_at:
+            local_slot = close_at
         return local_slot.astimezone(UTC)
     if cadence_minutes != 60:
         raise ValueError("unsupported option-history cadence")
-    if reference.time() < MARKET_OPEN or reference.time() >= time(16, 15):
-        return None
-    if reference.time() >= MARKET_CLOSE:
-        return reference.replace(
-            hour=MARKET_CLOSE.hour, minute=MARKET_CLOSE.minute, second=0, microsecond=0
-        ).astimezone(UTC)
+    if reference >= close_at:
+        return close_at.astimezone(UTC)
     if reference.minute < 30 or reference.minute >= 45:
         return None
     local_slot = reference.replace(minute=30, second=0, microsecond=0)
-    if local_slot.time() < MARKET_OPEN:
+    if local_slot < open_at:
         return None
     return local_slot.astimezone(UTC)
 

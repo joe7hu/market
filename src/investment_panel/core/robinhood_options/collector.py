@@ -20,6 +20,7 @@ from investment_panel.core.coercion import to_finite_float as as_float
 from investment_panel.core.coercion import to_int_or_none as as_int
 from investment_panel.core.ibkr_options import select_leap_call_strikes, select_leap_put_strikes
 from investment_panel.core.option_scan import RADAR_MAX_DTE, RADAR_MIN_DTE
+from investment_panel.core.robinhood_options.equity_quote_batches import fetch_equity_quotes as _fetch_equity_quotes
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 
 
@@ -55,11 +56,13 @@ class RobinhoodMcpClient:
         auth_token: str | None = None,
         timeout_seconds: int = 30,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        deadline: float | None = None,
     ) -> None:
         self.url = url
         self.auth_token = auth_token
         self.timeout = timeout_seconds
         self.max_response_bytes = max(1024, int(max_response_bytes))
+        self.deadline = deadline
         self._session_id: str | None = None
         self._next_id = 1
         self._initialized = False
@@ -144,13 +147,19 @@ class RobinhoodMcpClient:
         return dict(data.get("result") or data)
 
     def _post(self, payload: dict[str, Any], headers: dict[str, str]) -> httpx.Response:
-        deadline = time.monotonic() + max(1, self.timeout)
+        request_seconds = max(1.0, float(self.timeout))
+        if self.deadline is not None:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Robinhood MCP collection deadline expired")
+            request_seconds = min(request_seconds, remaining)
+        deadline = time.monotonic() + request_seconds
         timeout = httpx.Timeout(
-            timeout=max(1.0, float(self.timeout)),
-            connect=min(10.0, max(1.0, float(self.timeout))),
-            read=min(10.0, max(1.0, float(self.timeout))),
-            write=min(10.0, max(1.0, float(self.timeout))),
-            pool=min(5.0, max(1.0, float(self.timeout))),
+            timeout=max(0.1, request_seconds),
+            connect=min(10.0, max(0.1, request_seconds)),
+            read=min(10.0, max(0.1, request_seconds)),
+            write=min(10.0, max(0.1, request_seconds)),
+            pool=min(5.0, max(0.1, request_seconds)),
         )
         chunks: list[bytes] = []
         total = 0
@@ -422,32 +431,98 @@ def _latest_option_quote_time(rows_by_symbol: dict[str, list[dict[str, Any]]]) -
     return max(observed, default=None)
 
 
-def _fetch_equity_quotes(client: RobinhoodClient, symbols: list[str], *, deadline: float | None = None) -> list[dict[str, Any]]:
+def collect_robinhood_equity_quotes(
+    config: Any,
+    symbols: list[str],
+    *,
+    client: RobinhoodClient | None = None,
+    deadline: float | None = None,
+    regular_session_only: bool = False,
+) -> dict[str, Any]:
+    """Collect the lightweight 20-symbol equity batches used by recovery.
+
+    Unlike the option-chain collector this intentionally performs no chain or
+    instrument call.  Rows without a provider timestamp are returned as
+    explicitly unconfirmed rather than being stamped with local wall-clock
+    time, so a provider outage cannot become a fresh-looking price fact.
+    """
+
+    requested = list(dict.fromkeys(str(symbol).upper() for symbol in symbols if str(symbol).strip()))
+    if client is None:
+        token = load_robinhood_access_token(config)
+        client = RobinhoodMcpClient(
+            str(getattr(config, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
+            auth_token=token,
+            timeout_seconds=int(getattr(config, "timeout_seconds", 30)),
+            max_response_bytes=int(getattr(config, "max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES)),
+            deadline=deadline,
+        )
+    try:
+        fetched = _fetch_equity_quotes(
+            client, requested, deadline=deadline, regular_session_only=regular_session_only,
+        )
+    except Exception as exc:
+        return {"rows": [], "requested_symbols": requested, "received_symbols": [], "errors": [f"provider_error:{type(exc).__name__}:{exc}"]}
     rows: list[dict[str, Any]] = []
-    for batch in _batches([s.upper() for s in symbols if s], 20):
-        if _deadline_expired(deadline):
-            return rows
-        payload = client.get_equity_quotes(batch)
-        for result in _payload_list(payload, "results"):
-            quote = dict(result.get("quote") or {})
-            symbol = str(quote.get("symbol") or "").upper()
-            if not symbol:
-                continue
-            current = _latest_equity_price(quote)
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "time": quote.get("venue_last_non_reg_trade_time") or quote.get("venue_last_trade_time"),
-                    "close": current,
-                    "option_spot": as_float(quote.get("last_trade_price")) or current,
-                    "change": _quote_change_pct(quote, current),
-                    "change_abs": _quote_change_abs(quote, current),
-                    "currency": "USD",
-                    "source": "robinhood",
-                    "raw": quote,
-                }
-            )
-    return rows
+    errors: list[str] = []
+    provider_symbols: list[str] = []
+    received: list[str] = []
+    for source in fetched:
+        symbol = str(source.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        provider_symbols.append(symbol)
+        raw = dict(source.get("raw") or {})
+        observed_at = _provider_quote_time(source.get("time"), raw)
+        price = as_float(source.get("close"))
+        if observed_at is None:
+            errors.append(f"{symbol}:provider_timestamp_missing")
+            continue
+        if price is None or price <= 0:
+            errors.append(f"{symbol}:non_positive_quote")
+            continue
+        received.append(symbol)
+        rows.append({
+            "symbol": symbol,
+            "observed_at": observed_at,
+            "price": price,
+            "change_abs": as_float(source.get("change_abs")),
+            "change_pct": as_float(source.get("change")),
+            "currency": str(source.get("currency") or "USD"),
+            "asset_class": "equity",
+            "provider_payload": raw,
+        })
+    missing = sorted(set(requested) - set(provider_symbols))
+    errors.extend(f"{symbol}:missing_provider_quote" for symbol in missing)
+    if _deadline_expired(deadline):
+        errors.append("collector_deadline_exceeded")
+    return {
+        "rows": rows,
+        "requested_symbols": requested,
+        # These are valid, timestamped, positive-price provider facts—not
+        # merely symbols which appeared in a malformed payload.
+        "received_symbols": sorted(set(received)),
+        "errors": errors,
+    }
+
+
+def _provider_quote_time(primary: Any, raw: dict[str, Any]) -> datetime | None:
+    candidates = (
+        primary,
+        raw.get("updated_at"), raw.get("last_trade_price_timestamp"),
+        raw.get("venue_last_trade_time"), raw.get("venue_last_non_reg_trade_time"),
+    )
+    for value in candidates:
+        if not value:
+            continue
+        if isinstance(value, datetime):
+            return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
 
 
 def _fetch_instruments(
@@ -570,33 +645,8 @@ def _cursor_from_next(next_url: Any) -> str | None:
     return values[0] if values else None
 
 
-def _latest_equity_price(quote: dict[str, Any]) -> float | None:
-    regular = as_float(quote.get("last_trade_price"))
-    extended = as_float(quote.get("last_non_reg_trade_price"))
-    if extended is None:
-        return regular
-    if regular is None:
-        return extended
-    regular_ts = str(quote.get("venue_last_trade_time") or "")
-    extended_ts = str(quote.get("venue_last_non_reg_trade_time") or "")
-    return extended if extended_ts > regular_ts else regular
-
-
-def _quote_change_abs(quote: dict[str, Any], current: float | None) -> float | None:
-    previous = as_float(quote.get("adjusted_previous_close") or quote.get("previous_close"))
-    return current - previous if current is not None and previous is not None else None
-
-
-def _quote_change_pct(quote: dict[str, Any], current: float | None) -> float | None:
-    previous = as_float(quote.get("adjusted_previous_close") or quote.get("previous_close"))
-    if current is None or previous is None or previous == 0:
-        return None
-    return (current - previous) / previous * 100
-
-
 def _observed_date(observed_at: str) -> date:
     return datetime.fromisoformat(observed_at.replace("Z", "+00:00")).date()
-
 
 def _batches(values: list[str], size: int) -> list[list[str]]:
     return [values[index : index + size] for index in range(0, len(values), size)]

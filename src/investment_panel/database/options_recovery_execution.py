@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.options_event_tape import trading_sessions_between
+from investment_panel.core.decision import MARKET_TZ
 from investment_panel.core.options_recovery import (
     FEE_PER_CONTRACT_LEG,
     ExecutableLeg,
-    QuoteCapture,
-    evaluate_lifecycle,
     executable_exit_price,
 )
 from investment_panel.core.options_recovery_paper import (
     RecoveryRiskContext,
-    qualified_for_paper,
+    RecoveryRiskPolicy,
+    missing_recovery_risk_policy,
     size_recovery_position,
 )
 from investment_panel.core.options_recovery_registry import (
@@ -25,37 +25,47 @@ from investment_panel.core.options_recovery_registry import (
     RankedRecoveryCandidate,
     RecoveryContractQuote,
     RecoveryEventState,
+    contract_gate,
     rank_candidate,
     signal_for,
     strategies,
 )
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.options_recovery_cohorts import (
+    CURRENT_CODE_VERSION,
+    CURRENT_OBJECTIVE_VERSION,
+    RecoveryCohortRepository,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.options_recovery_execution_support import (
     contract_quote as _contract_quote,
     decision_key as _decision_key,
     invalidated as _invalidated,
     journal as _journal,
-    leg_expiry_days,
     midpoint as _mid,
     number as _number,
     one_unit_ticket as _one_unit_ticket,
-    order_status as _order_status,
     select_published as _select_published,
     selection_inputs as _selection_inputs,
     utc as _utc,
 )
+from investment_panel.database.options_recovery_execution_lifecycle import RecoveryOrderLifecycle
+from investment_panel.database.options_recovery_execution_staging import RecoveryOrderStaging
 
 
-CODE_VERSION = "options-recovery-v4"
+CODE_VERSION = CURRENT_CODE_VERSION
 
 
-class RecoveryExecutionRepository:
+class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
     """Select, ticket, paper-stage, and manage recovery positions deterministically."""
 
-    def __init__(self, runtime: DatabaseRuntime) -> None:
+    def __init__(self, runtime: DatabaseRuntime, *, risk_policy: RecoveryRiskPolicy | None = None) -> None:
         self.runtime = runtime
         self.analysis = AnalysisRepository(runtime)
+        self.cohorts = RecoveryCohortRepository(runtime)
+        # No constructor fallback may authorize a recovery sleeve.  Production
+        # jobs inject the typed configuration; ad-hoc callers remain blocked.
+        self.risk_policy = risk_policy or missing_recovery_risk_policy()
 
     def evaluate_capture(
         self,
@@ -67,6 +77,9 @@ class RecoveryExecutionRepository:
         """Score one completed event-strip capture and create at most two tickets."""
 
         reference = _utc(now) or datetime.now(UTC)
+        cohort_id = self.cohorts.current_id()
+        if cohort_id is None or not self.cohorts.event_is_current_valid(event_id):
+            return {"status": "skipped", "reason": "event_not_in_current_valid_cohort", "event_id": event_id}
         revisions = self._ensure_strategies()
         loaded = self._load_capture(event_id, capture_id=capture_id, now=reference)
         if loaded is None:
@@ -102,6 +115,7 @@ class RecoveryExecutionRepository:
                     quote=quote,
                     decision_id="pending",
                     created_at=reference,
+                    risk_policy=self.risk_policy,
                 )
                 maximum_loss = float((one_unit.get("risk") or {}).get("one_unit_max_loss") or 0.0)
                 ranked = rank_candidate(
@@ -133,7 +147,7 @@ class RecoveryExecutionRepository:
             input_cutoff=reference,
             code_version=CODE_VERSION,
             inputs={"event_id": event_id, "capture_id": str(capture["id"]), "selected": _selection_inputs(selected)},
-            feature_versions={"option": "short_horizon_convex_v1"},
+            feature_versions={"option": CURRENT_OBJECTIVE_VERSION},
         )
         persisted: list[dict[str, Any]] = []
         try:
@@ -164,7 +178,8 @@ class RecoveryExecutionRepository:
                         "fill_assumption": candidate.maximum_loss / 100.0,
                         "entry_price": candidate.maximum_loss / 100.0,
                         "max_loss": candidate.maximum_loss,
-                        "details": {"objective_version": "short_horizon_convex_v1", "event_id": event_id},
+                        "details": {"objective_version": CURRENT_OBJECTIVE_VERSION, "event_id": event_id,
+                                    "cohort_code_version": CODE_VERSION},
                     },
                     strategy_revision_id=strategy_id,
                 )
@@ -172,8 +187,9 @@ class RecoveryExecutionRepository:
                     event_id=event_id,
                     instrument_id=int(source["instrument_id"]),
                     family=candidate.family,
+                    now=reference,
                 )
-                risk_decision = size_recovery_position(candidate.maximum_loss, risk)
+                risk_decision = size_recovery_position(candidate.maximum_loss, risk, self.risk_policy)
                 ticket = _one_unit_ticket(
                     event=event,
                     family=candidate.family,
@@ -183,6 +199,7 @@ class RecoveryExecutionRepository:
                     created_at=reference,
                     blockers=[*candidate.gate.blockers, *risk_decision.blockers],
                     lower_confidence_expectancy=candidate.lower_confidence_expectancy,
+                    risk_policy=self.risk_policy,
                 )
                 signal = self._upsert_signal(
                     event_id=event_id,
@@ -201,6 +218,7 @@ class RecoveryExecutionRepository:
                     gate_result={"eligible": True, "blockers": list(candidate.gate.blockers)},
                     ticket=ticket,
                     status="shadow",
+                    cohort_id=cohort_id,
                 )
                 learning.link_signal(
                     signal_id=signal,
@@ -223,50 +241,13 @@ class RecoveryExecutionRepository:
             "signals": {signal.family: list(signal.reasons) for signal in signals}, "selected": persisted,
         }
 
-    def stage_qualified_orders(
-        self,
-        event_id: str,
-        *,
-        now: datetime | None = None,
-        enabled: bool = False,
-    ) -> dict[str, Any]:
-        """Create local paper orders only after five qualified event sessions."""
-
-        reference = _utc(now) or datetime.now(UTC)
-        if not enabled:
-            return {"status": "disabled", "reason": "recovery_paper_actions_disabled", "orders": []}
-        with self.runtime.read(JOB_PROFILE) as connection:
-            rows = connection.execute(
-                """
-                SELECT signal.id, signal.ticket, signal.decision_id, signal.strategy_key, signal.contract_id,
-                       event.id AS event_id, event.started_at, event.instrument_id, instrument.symbol
-                FROM (
-                  SELECT DISTINCT ON (strategy_key) *
-                  FROM analysis.option_event_signal
-                  WHERE event_id = %s AND status = 'shadow'
-                    AND available_at >= %s - interval '20 minutes'
-                  ORDER BY strategy_key, available_at DESC, id DESC
-                ) signal
-                JOIN analysis.option_event event ON event.id = signal.event_id
-                JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
-                ORDER BY signal.available_at, signal.id
-                """,
-                [event_id, reference],
-            ).fetchall()
-        orders = []
-        for row in rows:
-            if not qualified_for_paper(row["started_at"], reference):
-                continue
-            orders.append(self._stage_order(dict(row), now=reference))
-        return {"status": "ok", "event_id": event_id, "orders": orders}
-
     def manage_event_orders(self, event_id: str, *, now: datetime | None = None) -> dict[str, Any]:
         """Advance local paper orders using only post-ticket, same-contract captures."""
 
         reference = _utc(now) or datetime.now(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
             orders = [dict(row) for row in connection.execute(
-                """
+                f"""
                 SELECT paper.*, event.started_at, event.reference_price, event.event_low,
                        signal.strategy_key, signal.id AS signal_id
                 FROM app.paper_order paper
@@ -274,6 +255,8 @@ class RecoveryExecutionRepository:
                 JOIN analysis.option_event_signal signal ON signal.id = paper.event_signal_id
                 WHERE paper.event_id = %s
                   AND paper.status IN ('staged', 'entered', 'partial_exited')
+                  AND paper.cohort_id = event.cohort_id
+                  AND {self.cohorts.current_event_clause()}
                 ORDER BY paper.created_at, paper.id
                 """,
                 [event_id],
@@ -299,11 +282,14 @@ class RecoveryExecutionRepository:
     ) -> tuple[RecoveryEventState, dict[str, Any], list[dict[str, Any]]] | None:
         with self.runtime.read(JOB_PROFILE) as connection:
             event_row = connection.execute(
-                """
-                SELECT event.id, event.started_at, event.reference_price, event.event_low, instrument.symbol
+                f"""
+                SELECT event.id, event.started_at, event.reference_price, event.event_low,
+                       event.cohort_id, event.reference_available_at, event.quote_age_minutes,
+                       instrument.symbol
                 FROM analysis.option_event event
                 JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
                 WHERE event.id = %s AND event.status = 'active'
+                  AND {self.cohorts.current_event_clause()}
                 """,
                 [event_id],
             ).fetchone()
@@ -346,10 +332,11 @@ class RecoveryExecutionRepository:
                 JOIN catalog.option_contract contract ON contract.id = event_contract.contract_id
                 JOIN raw.option_quote quote
                   ON quote.snapshot_id = %s AND quote.contract_id = event_contract.contract_id
+                 AND quote.capture_generation_id = %s
                 WHERE event_contract.event_id = %s AND event_contract.retired_at IS NULL
                   AND quote.available_at <= %s
                 """,
-                [capture["snapshot_id"], event_id, capture["finished_at"]],
+                [capture["snapshot_id"], capture["capture_generation_id"], event_id, capture["finished_at"]],
             ).fetchall()
         event = RecoveryEventState(
             event_id=str(event_row["id"]),
@@ -370,7 +357,21 @@ class RecoveryExecutionRepository:
         metric = RecoveryLearningRepository(self.runtime).metrics(family)
         return float(metric.get("lower_95_expectancy") or 0.0)
 
-    def _risk_context(self, *, event_id: str, instrument_id: int, family: str) -> RecoveryRiskContext:
+    def _risk_context(
+        self,
+        *,
+        event_id: str,
+        instrument_id: int,
+        family: str,
+        now: datetime | None = None,
+    ) -> RecoveryRiskContext:
+        cohort_id = self.cohorts.current_id()
+        if cohort_id is None:
+            return RecoveryRiskContext()
+        reference = _utc(now) or datetime.now(UTC)
+        day_start = reference.astimezone(MARKET_TZ).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        ).astimezone(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
             risk_row = connection.execute(
                 """
@@ -384,16 +385,20 @@ class RecoveryExecutionRepository:
                   bool_or(event_id = %s AND strategy_family = %s
                           AND status IN ('staged', 'entered', 'partial_exited')) AS existing
                 FROM app.paper_order
+                WHERE cohort_id = %s::uuid AND created_at <= %s
                 """,
-                [instrument_id, event_id, family],
+                [instrument_id, event_id, family, cohort_id, reference],
             ).fetchone()
             pnl = connection.execute(
                 """
                 SELECT coalesce(sum((details->>'net_pnl')::numeric), 0) AS value
                 FROM app.trade_journal
-                WHERE created_at >= date_trunc('day', now())
+                WHERE created_at >= %s AND created_at <= %s
                   AND details ? 'net_pnl'
+                  AND details->>'objective_version' = %s
+                  AND details->>'cohort_id' = %s
                 """
+                , [day_start, reference, CURRENT_OBJECTIVE_VERSION, cohort_id]
             ).fetchone()
             active_orders = [dict(item) for item in connection.execute(
                 """
@@ -401,16 +406,23 @@ class RecoveryExecutionRepository:
                 FROM app.paper_order
                 WHERE status IN ('entered', 'partial_exited')
                   AND actual_fill_price IS NOT NULL
+                  AND cohort_id = %s::uuid
+                  AND created_at <= %s
                 """
+                , [cohort_id, reference]
             ).fetchall()]
             exit_rows = connection.execute(
                 """
                 SELECT details->>'paper_order_id' AS paper_order_id,
                        coalesce(sum(quantity), 0) AS quantity
                 FROM app.trade_journal
-                WHERE action LIKE 'paper_exit:%' AND details ? 'paper_order_id'
+                WHERE action LIKE 'paper_exit:%%' AND details ? 'paper_order_id'
+                  AND created_at <= %s
+                  AND details->>'objective_version' = %s
+                  AND details->>'cohort_id' = %s
                 GROUP BY details->>'paper_order_id'
                 """
+                , [reference, CURRENT_OBJECTIVE_VERSION, cohort_id]
             ).fetchall()
             quoted_legs = connection.execute(
                 """
@@ -422,10 +434,14 @@ class RecoveryExecutionRepository:
                   SELECT bid, ask, bid_size, ask_size
                   FROM raw.option_quote
                   WHERE contract_id = leg.contract_id
+                    AND available_at <= %s
                   ORDER BY available_at DESC LIMIT 1
                 ) quote ON true
                 WHERE paper.status IN ('entered', 'partial_exited')
+                  AND paper.cohort_id = %s::uuid
+                  AND paper.created_at <= %s
                 """
+                , [reference, cohort_id, reference]
             ).fetchall()
         exited = {str(row["paper_order_id"]): int(row["quantity"] or 0) for row in exit_rows}
         packages: dict[str, list[ExecutableLeg]] = {}
@@ -460,38 +476,126 @@ class RecoveryExecutionRepository:
                 INSERT INTO analysis.option_event_signal
                     (event_id, event_contract_id, capture_id, decision_id, snapshot_id, contract_id,
                      strategy_key, strategy_revision_id, signal_at, available_at, selection_score,
-                     lower_confidence_expectancy, maximum_loss, gate_result, ticket, status)
+                     lower_confidence_expectancy, maximum_loss, gate_result, ticket, status, cohort_id,
+                     objective_version)
                 VALUES (%(event_id)s, %(event_contract_id)s, %(capture_id)s, %(decision_id)s, %(snapshot_id)s,
                         %(contract_id)s, %(family)s, %(strategy_revision_id)s, %(signal_at)s, %(available_at)s,
                         %(selection_score)s, %(lower_confidence_expectancy)s, %(maximum_loss)s,
-                        %(gate_result)s, %(ticket)s, %(status)s)
+                        %(gate_result)s, %(ticket)s, %(status)s, %(cohort_id)s, %(objective_version)s)
                 ON CONFLICT (event_id, event_contract_id, capture_id, strategy_key, strategy_revision_id)
                 DO UPDATE SET decision_id = EXCLUDED.decision_id, signal_at = EXCLUDED.signal_at,
                               available_at = EXCLUDED.available_at, selection_score = EXCLUDED.selection_score,
                               lower_confidence_expectancy = EXCLUDED.lower_confidence_expectancy,
                               maximum_loss = EXCLUDED.maximum_loss, gate_result = EXCLUDED.gate_result,
-                              ticket = EXCLUDED.ticket, status = EXCLUDED.status, updated_at = now()
+                              ticket = EXCLUDED.ticket, status = EXCLUDED.status,
+                              cohort_id = EXCLUDED.cohort_id, objective_version = EXCLUDED.objective_version,
+                              updated_at = now()
                 RETURNING id
                 """,
-                {**values, "gate_result": Jsonb(values["gate_result"]), "ticket": Jsonb(values["ticket"])},
+                {
+                    **values,
+                    "objective_version": CURRENT_OBJECTIVE_VERSION,
+                    "gate_result": Jsonb(values["gate_result"]),
+                    "ticket": Jsonb(values["ticket"]),
+                },
             ).fetchone()
         return str(row["id"])
 
-    def _stage_order(self, signal: dict[str, Any], *, now: datetime) -> dict[str, Any]:
-        ticket = dict(signal["ticket"] or {})
+    def _stage_order(self, signal: dict[str, Any], *, now: datetime, program: Any) -> dict[str, Any]:
+        quote = _contract_quote(signal)
+        if quote is None:
+            return {
+                "signal_id": str(signal["id"]), "status": "blocked",
+                "blockers": ["executable_current_contract_quote_required"],
+            }
+        gate = contract_gate(quote, family=str(signal["strategy_key"]), as_of=now)
+        if not gate.eligible:
+            return {
+                "signal_id": str(signal["id"]), "status": "blocked",
+                "blockers": list(gate.blockers),
+            }
+        event = RecoveryEventState(
+            event_id=str(signal["event_id"]), symbol=str(signal["symbol"]),
+            reference_price=float(signal["reference_price"]), event_low=float(signal["event_low"]),
+            started_at=signal["started_at"], spots=(),
+        )
+        # Rebuild the order snapshot from the current-session executable quote;
+        # a shadow ticket is audit evidence, not permission to stage at an old
+        # premium or use stale unit-risk sizing.
+        ticket = _one_unit_ticket(
+            event=event, family=str(signal["strategy_key"]), quote=quote,
+            decision_id=str(signal["decision_id"]), created_at=now,
+            lower_confidence_expectancy=signal.get("lower_confidence_expectancy"),
+            risk_policy=self.risk_policy,
+        )
         unit = float((ticket.get("risk") or {}).get("one_unit_max_loss") or 0.0)
         risk = self._risk_context(
             event_id=str(signal["event_id"]),
             instrument_id=int(signal["instrument_id"]),
             family=str(signal["strategy_key"]),
+            now=now,
         )
-        decision = size_recovery_position(unit, risk)
+        decision = size_recovery_position(unit, risk, self.risk_policy)
         if decision.quantity <= 0:
             self._set_signal_status(str(signal["id"]), "risk_blocked", {"risk_blockers": list(decision.blockers)})
             return {"signal_id": str(signal["id"]), "status": "risk_blocked", "blockers": list(decision.blockers)}
-        ticket = {**ticket, "risk": {**dict(ticket.get("risk") or {}), "total_risk": decision.total_risk}, "quantity": decision.quantity}
+        ticket = {
+            **ticket,
+            "risk": {
+                **dict(ticket.get("risk") or {}), **self.risk_policy.snapshot(),
+                "total_risk": decision.total_risk,
+            },
+            "quantity": decision.quantity,
+        }
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ["recovery-paper-order"])
+            session_start = now.astimezone(MARKET_TZ).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            ).astimezone(UTC)
+            current = connection.execute(
+                f"""
+                SELECT 1
+                FROM analysis.option_event_signal signal
+                JOIN analysis.option_event event ON event.id = signal.event_id
+                JOIN analysis.option_event_capture capture ON capture.id = signal.capture_id
+                WHERE signal.id = %s AND signal.status = 'shadow'
+                  AND signal.cohort_id = event.cohort_id
+                  AND signal.available_at >= %s - interval '20 minutes'
+                  AND signal.available_at <= %s
+                  AND capture.status IN ('complete', 'partial')
+                  AND capture.finished_at IS NOT NULL AND capture.finished_at <= %s
+                  AND event.status = 'active'
+                  AND {self.cohorts.current_event_clause()}
+                  AND signal.capture_id = (
+                    SELECT latest.id
+                    FROM analysis.option_event_capture latest
+                    WHERE latest.event_id = event.id
+                      AND latest.status IN ('complete', 'partial')
+                      AND latest.finished_at IS NOT NULL AND latest.finished_at <= %s
+                    ORDER BY latest.scheduled_at DESC, latest.id DESC
+                    LIMIT 1
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM raw.option_quote quote
+                    JOIN raw.option_capture_generation generation
+                      ON generation.id = quote.capture_generation_id
+                    WHERE quote.contract_id = signal.contract_id
+                      AND quote.available_at >= %s AND quote.available_at <= %s
+                      AND generation.capture_state IN ('complete', 'partial')
+                      AND generation.capture_finished_at <= %s
+                      AND quote.bid > 0 AND quote.ask >= quote.bid
+                      AND coalesce(quote.bid_size, 0) > 0 AND coalesce(quote.ask_size, 0) > 0
+                  )
+                FOR UPDATE OF signal, event
+                """,
+                [signal["id"], now, now, now, now, session_start, now, now],
+            ).fetchone()
+            if current is None:
+                return {
+                    "signal_id": str(signal["id"]), "status": "stale",
+                    "blockers": ["signal_superseded_or_event_no_longer_stageable"],
+                }
             prior = connection.execute(
                 "SELECT id, status FROM app.paper_order WHERE event_id = %s AND strategy_family = %s",
                 [signal["event_id"], signal["strategy_key"]],
@@ -504,17 +608,22 @@ class RecoveryExecutionRepository:
                 INSERT INTO app.paper_order
                     (decision_id, instrument_id, side, quantity, limit_price, status, policy_result,
                      structure, idempotency_key, ticket_version, ticket_snapshot, intended_limit_price,
-                     event_id, event_signal_id, strategy_family, objective_version, created_at)
+                     event_id, event_signal_id, strategy_family, objective_version, cohort_id, created_at)
                 VALUES (%s, %s, 'buy', %s, %s, 'staged', %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 [
                     signal["decision_id"], signal["instrument_id"], decision.quantity,
                     ticket.get("entry", {}).get("limit_price"),
-                    Jsonb({"owner": "options_recovery", "live_order_submission": False}),
+                    Jsonb({
+                        "owner": "options_recovery", "live_order_submission": False,
+                        "program_eligibility": _json_document(program.as_dict()),
+                        "risk_policy": self.risk_policy.snapshot(),
+                    }),
                     ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
-                    signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"), now,
+                    signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"),
+                    signal["cohort_id"], now,
                 ],
             ).fetchone()
             for index, leg in enumerate(ticket.get("legs") or []):
@@ -539,105 +648,8 @@ class RecoveryExecutionRepository:
             connection.execute("UPDATE analysis.option_event_signal SET status = 'ticketed', ticket = %s, updated_at = now() WHERE id = %s", [Jsonb(ticket), signal["id"]])
         return {"signal_id": str(signal["id"]), "status": "staged", "paper_order_id": str(row["id"]), "quantity": decision.quantity}
 
-    def _manage_order(self, order: dict[str, Any], now: datetime) -> dict[str, Any]:
-        captures = self._order_captures(order, now)
-        ticket = dict(order.get("ticket_snapshot") or {})
-        result = evaluate_lifecycle(
-            published_at=order["created_at"], quantity=int(order["quantity"]), captures=captures,
-            entry_limit=(ticket.get("entry") or {}).get("limit_price"),
-        )
-        leg_count = max(1, len(ticket.get("legs") or ()))
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            if result.entry_fill_at and order.get("filled_at") is None:
-                connection.execute("UPDATE app.paper_order SET status = 'entered', actual_fill_price = %s, filled_at = %s WHERE id = %s", [result.entry_fill_price, result.entry_fill_at, order["id"]])
-                _journal(connection, order, action="paper_entry", quantity=int(order["quantity"]), price=result.entry_fill_price,
-                         key=f"recovery:{order['id']}:entry", details={"paper_order_id": str(order["id"])})
-            for fill in result.exit_fills:
-                net_pnl = None
-                if result.entry_fill_price is not None:
-                    net_pnl = (
-                        (fill.executable_price - result.entry_fill_price) * 100.0 * fill.quantity
-                        - FEE_PER_CONTRACT_LEG * leg_count * 2 * fill.quantity
-                    )
-                _journal(connection, order, action=f"paper_exit:{fill.reason}", quantity=fill.quantity,
-                         price=fill.executable_price, key=f"recovery:{order['id']}:exit:{fill.observed_at.isoformat()}:{fill.reason}",
-                         details={
-                             "paper_order_id": str(order["id"]),
-                             "session_number": fill.session_number,
-                             "net_pnl": round(net_pnl, 2) if net_pnl is not None else None,
-                         })
-            status = _order_status(result, int(order["quantity"]))
-            if status != order["status"]:
-                connection.execute("UPDATE app.paper_order SET status = %s, entry_capture_count = %s WHERE id = %s", [status, result.entry_capture_count, order["id"]])
-                connection.execute("UPDATE analysis.option_event_signal SET status = %s, updated_at = now() WHERE id = %s", [status, order["signal_id"]])
-        return {"paper_order_id": str(order["id"]), "status": status, "classification": result.classification,
-                "entry_capture_count": result.entry_capture_count, "exit_count": len(result.exit_fills)}
 
-    def _order_captures(self, order: dict[str, Any], now: datetime) -> list[QuoteCapture]:
-        with self.runtime.read(JOB_PROFILE) as connection:
-            captures = connection.execute(
-                """
-                SELECT capture.id, capture.scheduled_at, capture.finished_at, event.reference_price, event.event_low,
-                       spot.price AS spot_price
-                FROM analysis.option_event_capture capture
-                JOIN analysis.option_event event ON event.id = capture.event_id
-                LEFT JOIN LATERAL (
-                  SELECT price FROM analysis.option_event_spot
-                  WHERE event_id = event.id AND available_at <= capture.finished_at
-                  ORDER BY available_at DESC LIMIT 1
-                ) spot ON true
-                WHERE capture.event_id = %s AND capture.status IN ('complete', 'partial')
-                  AND capture.finished_at > %s AND capture.finished_at <= %s
-                ORDER BY capture.scheduled_at
-                """,
-                [order["event_id"], order["created_at"], now],
-            ).fetchall()
-            legs = connection.execute(
-                """
-                SELECT leg.contract_id, leg.option_type, leg.side, leg.strike, contract.expiration
-                FROM app.paper_order_leg leg
-                JOIN catalog.option_contract contract ON contract.id = leg.contract_id
-                WHERE leg.paper_order_id = %s ORDER BY leg.leg_index
-                """,
-                [order["id"]],
-            ).fetchall()
-            quotes = connection.execute(
-                """
-                SELECT capture.id AS capture_id, quote.contract_id, quote.bid, quote.ask, quote.bid_size, quote.ask_size,
-                       quote.available_at
-                FROM analysis.option_event_capture capture
-                JOIN raw.option_quote quote ON quote.snapshot_id = capture.snapshot_id
-                WHERE capture.event_id = %s AND capture.status IN ('complete', 'partial')
-                  AND capture.finished_at > %s AND capture.finished_at <= %s
-                """,
-                [order["event_id"], order["created_at"], now],
-            ).fetchall()
-        by_capture: dict[str, dict[int, dict[str, Any]]] = {}
-        for quote in quotes:
-            by_capture.setdefault(str(quote["capture_id"]), {})[int(quote["contract_id"])] = dict(quote)
-        result: list[QuoteCapture] = []
-        for capture in captures:
-            package = by_capture.get(str(capture["id"]), {})
-            rows = [package.get(int(leg["contract_id"])) for leg in legs]
-            continuity = all(row is not None for row in rows)
-            executable = tuple(
-                ExecutableLeg(str(leg["contract_id"]), str(leg["side"]), row.get("bid"), row.get("ask"), row.get("bid_size"), row.get("ask_size"))
-                for leg, row in zip(legs, rows) if row is not None
-            )
-            price = capture.get("spot_price")
-            invalidated = _invalidated(str(order["strategy_key"]), price, capture["event_low"], capture["reference_price"])
-            result.append(QuoteCapture(
-                observed_at=capture["finished_at"], legs=executable,
-                session_number=trading_sessions_between(order["started_at"], capture["finished_at"]),
-                dte=min((leg_expiry_days(leg, capture["finished_at"]) for leg in legs), default=None),
-                invalidated=invalidated, continuity_ok=continuity,
-                reason="same_contract_continuity_missing" if not continuity else None,
-            ))
-        return result
+def _json_document(value: Any) -> Any:
+    """Make database-sourced IDs and timestamps safe for a JSONB snapshot."""
 
-    def _set_signal_status(self, signal_id: str, status: str, diagnostics: dict[str, Any]) -> None:
-        with self.runtime.transaction(JOB_PROFILE) as connection:
-            connection.execute(
-                "UPDATE analysis.option_event_signal SET status = %s, gate_result = gate_result || %s, updated_at = now() WHERE id = %s",
-                [status, Jsonb(diagnostics), signal_id],
-            )
+    return json.loads(json.dumps(value, default=str))

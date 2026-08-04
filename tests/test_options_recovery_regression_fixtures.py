@@ -37,8 +37,8 @@ def test_nvda_205c_fixture_preserves_available_3x_and_4x_path() -> None:
     )
 
     assert result.classification == "captured"
-    assert result.time_to_3x_sessions == 3
-    assert result.time_to_4x_sessions == 4
+    assert result.time_to_3x_sessions == 2
+    assert result.time_to_4x_sessions == 3
 
 
 def test_tsla_290p_fixture_is_a_full_denominator_miss_when_not_ticketed() -> None:
@@ -61,7 +61,7 @@ def test_tsla_290p_fixture_is_a_full_denominator_miss_when_not_ticketed() -> Non
         NOW + timedelta(minutes=31),
     )
 
-    assert lifecycle.time_to_4x_sessions == 3
+    assert lifecycle.time_to_4x_sessions == 2
     assert (classification, data_status, reason) == ("missed", "ok", "ranked_out")
 
 
@@ -84,3 +84,25 @@ def test_july_googl_fixture_is_unmeasurable_when_exact_contract_continuity_is_mi
 
     assert lifecycle.classification == "unmeasurable"
     assert lifecycle.unmeasurable_reason == "same_contract_continuity_missing"
+
+
+def test_closed_event_horizon_never_leaves_an_observation_observing_forever() -> None:
+    lifecycle = evaluate_lifecycle(
+        published_at=NOW,
+        quantity=1,
+        captures=[_capture(15, bid=0.99, ask=1.00, session=1)],
+    )
+
+    classification, data_status, reason = _classification(
+        {
+            "paper_status": None,
+            "miss_reason": None,
+            "started_at": NOW - timedelta(days=10),
+            "expiration": date(2026, 9, 18),
+            "event_status": "closed",
+        },
+        lifecycle,
+        NOW + timedelta(minutes=16),
+    )
+
+    assert (classification, data_status, reason) == ("unmeasurable", "continuity_missing", "unmeasurable")

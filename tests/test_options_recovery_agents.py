@@ -7,6 +7,7 @@ from investment_panel.core.options_recovery_agents import (
     MUTATION_DRAFTER,
     normalize_recovery_agent_output,
     recovery_agent_schema,
+    validate_evidence,
 )
 from investment_panel.core.options_event_tape import EventObservation
 from investment_panel.database.instruments import reconcile_instrument
@@ -64,6 +65,43 @@ def test_unknown_agent_mutation_is_rejected_before_proposal_persistence() -> Non
     assert validation["mutation_status"] == "rejected_unsupported_mutation"
 
 
+def test_agent_evidence_ids_are_the_only_validated_evidence() -> None:
+    accepted, proposals, valid = validate_evidence(
+        [
+            {"evidence_id": "source_signal:42", "source": "Persisted", "url": "https://persisted.test", "claim": "Bound fact"},
+            {"evidence_id": "https://arbitrary.test", "source": "Arbitrary", "url": "https://arbitrary.test", "claim": "Unverified proposal"},
+        ],
+        evidence_bundle=[
+            {"evidence_id": "source_signal:42", "source": "Persisted", "url": "https://persisted.test", "claim": "Bound fact"},
+        ],
+    )
+
+    assert [row["evidence_id"] for row in accepted] == ["source_signal:42"]
+    assert [row["url"] for row in proposals] == ["https://arbitrary.test"]
+    assert valid is False
+
+
+def test_agent_evidence_id_cannot_rewrite_a_bundled_record() -> None:
+    accepted, proposals, valid = validate_evidence(
+        [{
+            "evidence_id": "source_signal:42",
+            "source": "Forged source",
+            "url": "https://arbitrary.test",
+            "claim": "Forged claim",
+        }],
+        evidence_bundle=[{
+            "evidence_id": "source_signal:42",
+            "source": "Persisted",
+            "url": "https://persisted.test",
+            "claim": "Bound fact",
+        }],
+    )
+
+    assert accepted == []
+    assert proposals[0]["url"] == "https://arbitrary.test"
+    assert valid is False
+
+
 def test_material_trigger_requires_a_real_event_fingerprint_change() -> None:
     current = {
         "underlying_price": 102.1,
@@ -82,6 +120,60 @@ def test_material_trigger_requires_a_real_event_fingerprint_change() -> None:
     assert trigger == "underlying_move_2pct"
     assert set(reasons) == {"underlying_move_2pct", "new_material_evidence"}
     assert _agent_trigger(current, current, preopen=False) == (None, [])
+
+
+class _AgentContextResult:
+    def __init__(self, row: dict[str, object] | None = None, rows: list[dict[str, object]] | None = None) -> None:
+        self.row = row
+        self.rows = rows or []
+
+    def fetchone(self) -> dict[str, object] | None:
+        return self.row
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return self.rows
+
+
+class _AgentContextConnection:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def execute(self, statement: str, params: object = None) -> _AgentContextResult:
+        self.calls.append((statement, params))
+        if "FROM analysis.option_event event" in statement:
+            return _AgentContextResult({
+                "id": "event-1", "instrument_id": 1, "started_at": datetime(2026, 8, 3, tzinfo=UTC),
+                "reference_price": 100.0, "event_low": 90.0, "cohort_id": "cohort-1",
+                "material_evidence_count": 0, "provenance": {}, "symbol": "NVDA",
+            })
+        if "count(*) AS count FROM analysis.option_event_capture" in statement:
+            return _AgentContextResult({"count": 2})
+        if "FROM analysis.option_event_capture" in statement:
+            return _AgentContextResult({
+                "id": "capture-1", "snapshot_id": "snapshot-1", "capture_generation_id": "generation-1",
+                "finished_at": datetime(2026, 8, 3, 15, tzinfo=UTC),
+            })
+        if "FROM analysis.option_event_spot" in statement:
+            return _AgentContextResult({"price": 95.0, "available_at": datetime(2026, 8, 3, 15, tzinfo=UTC)})
+        if "avg(quote.provider_iv)" in statement:
+            return _AgentContextResult({"avg_iv": 0.42})
+        if "FROM analysis.option_event_signal" in statement:
+            return _AgentContextResult(rows=[])
+        if "FROM analysis.source_signal" in statement:
+            return _AgentContextResult(rows=[])
+        raise AssertionError(f"unexpected query: {statement}")
+
+
+def test_agent_context_uses_the_capture_generation_for_iv_evidence() -> None:
+    repository = RecoveryEventAgentRepository(runtime=object())
+    connection = _AgentContextConnection()
+
+    context = repository._event_context(connection, "event-1", None)
+
+    assert context is not None
+    assert context["avg_iv"] == pytest.approx(0.42)
+    iv_params = next(params for statement, params in connection.calls if "avg(quote.provider_iv)" in statement)
+    assert iv_params == ["event-1", "snapshot-1", "generation-1"]
 
 
 def test_agent_failure_stays_isolated_from_event_capture(migrated_postgres_dsn: str) -> None:
@@ -118,7 +210,16 @@ def test_agent_failure_stays_isolated_from_event_capture(migrated_postgres_dsn: 
         claim = repository.claim_next()
         assert claim is not None
         failed = repository.fail(claim, "synthetic Codex timeout")
-        assert failed["status"] == "failed"
+        assert failed["status"] == "retrying"
+        retry_one = repository.claim_next()
+        assert retry_one is not None
+        assert retry_one["batch"]["id"] == claim["batch"]["id"]
+        assert repository.fail(retry_one, "synthetic Codex timeout")["status"] == "retrying"
+        retry_two = repository.claim_next()
+        assert retry_two is not None
+        terminal = repository.fail(retry_two, "synthetic Codex timeout")
+        assert terminal["status"] == "failed"
+        assert terminal["attempt"] == 3
         with runtime.read() as connection:
             captures = connection.execute(
                 "SELECT count(*) AS count FROM analysis.option_event_capture WHERE event_id = %s", [event_id]

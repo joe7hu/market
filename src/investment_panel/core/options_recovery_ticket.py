@@ -12,6 +12,7 @@ from investment_panel.core.options_recovery import (
     ExecutableLeg,
     executable_entry_price,
 )
+from investment_panel.core.options_recovery_paper import RecoveryRiskPolicy
 
 
 RECOVERY_TICKET_VERSION = 4
@@ -48,12 +49,21 @@ def build_recovery_ticket_v4(
     created_at: datetime | None = None,
     lower_confidence_expectancy: float | None = None,
     blockers: Iterable[str] = (),
+    risk_policy: RecoveryRiskPolicy | None = None,
 ) -> dict[str, Any]:
     """Build an immutable recovery ticket with executable entry and exit terms."""
 
     now = _aware(created_at) or datetime.now(UTC)
     normalized = [_ticket_leg(symbol, expiration, leg) for leg in legs]
     static_blockers = [str(item) for item in blockers if str(item)]
+    if risk_policy is None:
+        # There is deliberately no recovery-dollar fallback.  A ticket can be
+        # rendered for audit, but it remains a zero-authority WATCH artifact
+        # until a typed policy is supplied by the owning runtime.
+        from investment_panel.core.options_recovery_paper import missing_recovery_risk_policy
+
+        risk_policy = missing_recovery_risk_policy()
+    static_blockers.extend(risk_policy.blockers)
     entry: float | None
     try:
         entry = executable_entry_price(_executable_legs(normalized))
@@ -94,10 +104,7 @@ def build_recovery_ticket_v4(
         "risk": {
             "one_unit_max_loss": one_unit_max_loss,
             "total_risk": total_risk,
-            "per_trade_limit": 500.0,
-            "aggregate_open_risk_limit": 2500.0,
-            "per_symbol_open_risk_limit": 1000.0,
-            "sleeve_capital": 25000.0,
+            **risk_policy.snapshot(),
             "fee_per_contract_leg_per_side": FEE_PER_CONTRACT_LEG,
         },
         "invalidation": invalidation,

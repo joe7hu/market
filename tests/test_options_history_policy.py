@@ -68,6 +68,15 @@ def test_policy_due_slots_keep_core_15_and_standard_hourly() -> None:
     assert eligible_policy_slot(datetime(2026, 7, 19, 14, 45, tzinfo=UTC), cadence_minutes=15) is None
 
 
+def test_policy_due_slots_respect_early_market_close() -> None:
+    assert eligible_policy_slot(
+        datetime(2026, 11, 27, 18, 5, tzinfo=UTC), cadence_minutes=15,
+    ) == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+    assert eligible_policy_slot(
+        datetime(2026, 11, 27, 18, 16, tzinfo=UTC), cadence_minutes=15,
+    ) is None
+
+
 def test_provider_leases_enforce_two_concurrent_pulls(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

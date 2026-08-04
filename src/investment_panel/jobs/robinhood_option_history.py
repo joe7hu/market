@@ -152,7 +152,12 @@ def run(
                     # Selection is deterministic and isolated from provider capture:
                     # a temporary scoring failure never discards the event strip.
                     try:
-                        execution = RecoveryExecutionRepository(runtime)
+                        from investment_panel.core.options_recovery_paper import recovery_risk_policy
+
+                        execution = RecoveryExecutionRepository(
+                            runtime,
+                            risk_policy=recovery_risk_policy(config.analysis.options_decision_system),
+                        )
                         recovery = execution.evaluate_capture(
                             event_id,
                             capture_id=event_capture["event_capture_id"],
@@ -172,6 +177,9 @@ def run(
                         recovery["learning"] = learning.refresh_outcomes()
                         recovery["promotion"] = learning.auto_promote_eligible(
                             enabled=config.analysis.options_decision_system.strategy_auto_promotion_enabled,
+                            recovery_paper_actions_enabled=(
+                                config.analysis.options_decision_system.recovery_paper_actions_enabled
+                            ),
                         )
                         # Advisory work is only queued here.  Its own worker
                         # records failure telemetry; it can never unwind a

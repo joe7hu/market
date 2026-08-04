@@ -41,6 +41,19 @@ def _paper_actions_enabled(config: Any) -> bool:
     return bool(raw)
 
 
+def _recovery_paper_actions_enabled(config: Any) -> bool:
+    """Read the separate recovery canary kill switch."""
+
+    if isinstance(config, dict):
+        raw = (config.get("analysis") or {}).get("options_decision_system", {})
+        return bool(raw.get("recovery_paper_actions_enabled", False))
+    raw = getattr(
+        getattr(getattr(config, "analysis", None), "options_decision_system", None),
+        "recovery_paper_actions_enabled", False,
+    )
+    return bool(raw)
+
+
 def _options_risk_sleeve_capital(config: Any) -> float | None:
     if isinstance(config, dict):
         raw = (config.get("analysis") or {}).get("options_decision_system", {})
@@ -77,7 +90,10 @@ class OptionsActions:
             options_risk_sleeve_capital=_options_risk_sleeve_capital(config),
         )
         self.policy = OptionHistoryPolicyRepository(self.runtime)
-        self.recovery = RecoveryReadRepository(self.runtime)
+        self.recovery = RecoveryReadRepository(
+            self.runtime,
+            recovery_paper_actions_enabled=_recovery_paper_actions_enabled(config),
+        )
         mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
 
@@ -130,8 +146,8 @@ class OptionsActions:
         rows = self.recovery.events(**filters)
         return {"events": rows, "count": len(rows)}
 
-    def recovery_event(self, event_id: str) -> dict[str, Any] | None:
-        return self.recovery.event_detail(event_id)
+    def recovery_event(self, event_id: str, **filters: Any) -> dict[str, Any] | None:
+        return self.recovery.event_detail(event_id, **filters)
 
     def recovery_health(self) -> dict[str, Any]:
         from investment_panel.core.job_policy import scheduler_status

@@ -131,20 +131,30 @@ class IngestionRepository:
                     JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
                     WHERE catalyst.starts_at >= now() AND catalyst.starts_at < now() + interval '90 days'
                     GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
+                ), recent_option_decision AS (
+                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
+                           max(decision.as_of) AS latest_decision_at
+                    FROM analysis.decision decision
+                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+                    WHERE decision.kind = 'option' AND decision.as_of >= now() - interval '14 days'
+                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
                 )
                 SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state,
                        coalesce(source_signal.source_roots, 0) AS source_roots,
-                       upcoming_catalyst.starts_at
+                       upcoming_catalyst.starts_at, recent_option_decision.latest_decision_at
                 FROM canonical_instruments i
                 LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
                 LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
                 LEFT JOIN source_signal ON source_signal.symbol = i.symbol
                 LEFT JOIN upcoming_catalyst ON upcoming_catalyst.symbol = i.symbol
+                LEFT JOIN recent_option_decision ON recent_option_decision.symbol = i.symbol
                 WHERE p.instrument_id IS NOT NULL OR w.instrument_id IS NOT NULL
                    OR (i.asset_class IN ('equity', 'etf') AND
-                       (source_signal.symbol IS NOT NULL OR upcoming_catalyst.symbol IS NOT NULL))
+                       (source_signal.symbol IS NOT NULL OR upcoming_catalyst.symbol IS NOT NULL
+                        OR recent_option_decision.symbol IS NOT NULL))
                 ORDER BY (p.instrument_id IS NOT NULL) DESC,
                          (w.watch_state IS NOT NULL AND w.watch_state <> 'excluded') DESC,
+                         (recent_option_decision.symbol IS NOT NULL) DESC,
                          (upcoming_catalyst.starts_at IS NOT NULL) DESC,
                          coalesce(source_signal.source_roots, 0) DESC,
                          source_signal.latest_signal_at DESC NULLS LAST, i.symbol

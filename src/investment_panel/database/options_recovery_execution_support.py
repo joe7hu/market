@@ -13,6 +13,7 @@ from investment_panel.core.options_recovery_registry import (
     RecoveryEventState,
 )
 from investment_panel.core.options_recovery_ticket import build_recovery_ticket_v4, occ_symbol
+from investment_panel.core.options_recovery_paper import RecoveryRiskPolicy
 
 
 def contract_quote(source: dict[str, Any]) -> RecoveryContractQuote | None:
@@ -57,6 +58,7 @@ def one_unit_ticket(
     quantity: int = 1,
     blockers: Iterable[str] = (),
     lower_confidence_expectancy: float | None = None,
+    risk_policy: RecoveryRiskPolicy | None = None,
 ) -> dict[str, Any]:
     invalidation = (
         "spot returns to or below the event low"
@@ -74,6 +76,7 @@ def one_unit_ticket(
         created_at=created_at,
         lower_confidence_expectancy=lower_confidence_expectancy,
         blockers=blockers,
+        risk_policy=risk_policy,
         legs=[{
             "contract_id": quote.contract_id,
             "occ_symbol": quote.occ_symbol,
@@ -147,8 +150,9 @@ def journal(
             Jsonb({
                 "idempotency_key": key,
                 "event_id": str(source.get("event_id") or ""),
+                "cohort_id": str(source.get("cohort_id") or ""),
                 "family": str(source.get("strategy_key") or source.get("strategy_family") or ""),
-                "objective_version": "short_horizon_convex_v1",
+                "objective_version": "short_horizon_convex_v2",
                 **details,
             }), key,
         ],

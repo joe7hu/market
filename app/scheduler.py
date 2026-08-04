@@ -28,7 +28,10 @@ from investment_panel.core.decision import MARKET_TZ
 logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
-SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history"})
+# Both recovery inputs are point-in-time tapes.  Keep their dispatches on their
+# logical slots instead of letting ordinary completion-time recurrence drift a
+# five-minute detector into the next observation bucket.
+SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history", "detect_option_events"})
 SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
 
 

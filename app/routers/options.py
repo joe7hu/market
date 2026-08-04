@@ -228,16 +228,29 @@ def recovery_option_health() -> dict[str, Any]:
 
 @router.get("/api/options/events")
 def recovery_events(
-    status: Literal["active", "deferred_capacity", "closed"] | None = None,
+    status: Literal["active", "deferred_capacity", "closed", "invalidated"] | None = None,
+    cohort: str | None = Query(None, min_length=1, max_length=96),
+    include_invalidated: bool = Query(False),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=250),
 ) -> dict[str, Any]:
-    return _actions().recovery_events(status=status, offset=offset, limit=limit)
+    return _actions().recovery_events(
+        status=status, cohort=cohort, include_invalidated=include_invalidated,
+        offset=offset, limit=limit,
+    )
 
 
 @router.get("/api/options/events/{event_id}")
-def recovery_event(event_id: UUID) -> dict[str, Any]:
-    detail = _actions().recovery_event(str(event_id))
+def recovery_event(
+    event_id: UUID,
+    cohort: str | None = Query(None, min_length=1, max_length=96),
+    include_invalidated: bool = Query(False),
+) -> dict[str, Any]:
+    detail = _actions().recovery_event(
+        str(event_id),
+        cohort=cohort,
+        include_invalidated=include_invalidated,
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="Options recovery event not found")
     return detail

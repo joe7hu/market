@@ -601,7 +601,8 @@ def load_postgres_tables(
         tables["broker_status"] = broker_status_rows(runtime)
     requested_recovery = RECOVERY_MODELS.intersection(requested)
     if requested_recovery:
-        tables.update(recovery_panel_models(runtime, requested_recovery))
+        recovery_settings = ((config.get("analysis") or {}).get("options_decision_system") or {})
+        tables.update(recovery_panel_models(runtime, requested_recovery, recovery_paper_actions_enabled=bool(recovery_settings.get("recovery_paper_actions_enabled", False))))
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}

@@ -27,6 +27,10 @@ from investment_panel.database.options_recovery_execution_support import (
     invalidated,
     number,
 )
+from investment_panel.database.options_recovery_cohorts import (
+    CURRENT_OBJECTIVE_VERSION,
+    RecoveryCohortRepository,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -35,6 +39,7 @@ class RecoveryLearningRepository:
 
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
+        self.cohorts = RecoveryCohortRepository(runtime)
 
     def record_capture(
         self,
@@ -50,6 +55,9 @@ class RecoveryLearningRepository:
         active = {item.family: item.active for item in family_signals}
         stored = 0
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            cohort = self.cohorts.current(connection)
+            if cohort is None or not self.cohorts.event_is_current_valid(event.event_id, connection=connection):
+                return 0
             for source in contracts:
                 quote = contract_quote(source)
                 if quote is None or not _liquid(quote):
@@ -68,8 +76,8 @@ class RecoveryLearningRepository:
                             (event_id, capture_id, capture_generation_id, capture_generation_key,
                              event_contract_id, contract_id, strategy_key, strategy_revision_id,
                              observed_at, available_at, expiration, quote, liquid, selection_stage,
-                             miss_reason, data_status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, 'ok')
+                             miss_reason, data_status, cohort_id, objective_version)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, 'ok', %s, %s)
                         ON CONFLICT (event_id, capture_generation_key, contract_id, strategy_key, strategy_revision_id)
                         DO UPDATE SET quote = EXCLUDED.quote, liquid = EXCLUDED.liquid,
                                       selection_stage = EXCLUDED.selection_stage,
@@ -80,6 +88,7 @@ class RecoveryLearningRepository:
                             str(capture.get("capture_generation_id") or capture["id"]), source.get("event_contract_id"),
                             quote.contract_id, strategy.key, revisions[strategy.key], quote.observed_at,
                             quote.available_at, quote.expiration, Jsonb(_quote_payload(quote, gate)), stage, reason,
+                            cohort["id"], CURRENT_OBJECTIVE_VERSION,
                         ],
                     )
                     stored += 1
@@ -97,6 +106,9 @@ class RecoveryLearningRepository:
 
         selected_rows = list(selected)
         generation_key = str(capture.get("capture_generation_id") or capture["id"])
+        cohort_id = self.cohorts.current_id()
+        if cohort_id is None:
+            return
         with self.runtime.transaction(JOB_PROFILE) as connection:
             for strategy in strategies():
                 connection.execute(
@@ -105,8 +117,9 @@ class RecoveryLearningRepository:
                     SET selection_stage = 'ranked_out', miss_reason = 'ranked_out', updated_at = now()
                     WHERE event_id = %s AND capture_generation_key = %s AND strategy_key = %s
                       AND strategy_revision_id = %s AND selection_stage = 'eligible'
+                      AND cohort_id = %s::uuid
                     """,
-                    [event_id, generation_key, strategy.key, revisions[strategy.key]],
+                    [event_id, generation_key, strategy.key, revisions[strategy.key], cohort_id],
                 )
             for candidate, _source in selected_rows:
                 connection.execute(
@@ -116,11 +129,12 @@ class RecoveryLearningRepository:
                         selection_score = %s, lower_confidence_expectancy = %s, updated_at = now()
                     WHERE event_id = %s AND capture_generation_key = %s AND contract_id = %s
                       AND strategy_key = %s AND strategy_revision_id = %s
+                      AND cohort_id = %s::uuid
                     """,
                     [
                         candidate.selection_score, candidate.lower_confidence_expectancy,
                         event_id, generation_key, candidate.quote.contract_id,
-                        candidate.family, revisions[candidate.family],
+                        candidate.family, revisions[candidate.family], cohort_id,
                     ],
                 )
 
@@ -134,6 +148,9 @@ class RecoveryLearningRepository:
         family: str,
         strategy_revision_id: int,
     ) -> None:
+        cohort_id = self.cohorts.current_id()
+        if cohort_id is None:
+            return
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute(
                 """
@@ -141,10 +158,11 @@ class RecoveryLearningRepository:
                 SET signal_id = %s, selection_stage = 'published', miss_reason = NULL, updated_at = now()
                 WHERE event_id = %s AND capture_generation_key = %s AND contract_id = %s
                   AND strategy_key = %s AND strategy_revision_id = %s
+                  AND cohort_id = %s::uuid
                 """,
                 [
                     signal_id, event_id, str(capture.get("capture_generation_id") or capture["id"]),
-                    contract_id, family, strategy_revision_id,
+                    contract_id, family, strategy_revision_id, cohort_id,
                 ],
             )
 
@@ -152,6 +170,9 @@ class RecoveryLearningRepository:
         """Project immutable paper-order state into the observation denominator."""
 
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            cohort = self.cohorts.current(connection)
+            if cohort is None or not self.cohorts.event_is_current_valid(event_id, connection=connection):
+                return 0
             result = connection.execute(
                 """
                 UPDATE analysis.option_opportunity_observation observation
@@ -172,8 +193,10 @@ class RecoveryLearningRepository:
                 FROM app.paper_order paper
                 WHERE paper.event_signal_id = observation.signal_id
                   AND paper.event_id = %s
+                  AND paper.cohort_id = observation.cohort_id
+                  AND observation.cohort_id = %s::uuid
                 """,
-                [event_id],
+                [event_id, cohort["id"]],
             )
         return result.rowcount
 
@@ -182,9 +205,13 @@ class RecoveryLearningRepository:
 
         reference = _utc(now) or datetime.now(UTC)
         with self.runtime.read(JOB_PROFILE) as connection:
+            cohort = self.cohorts.current(connection)
+            if cohort is None:
+                return {"updated": 0, "captured": 0, "missed": 0, "unfilled": 0, "unmeasurable": 0}
             observations = [dict(row) for row in connection.execute(
-                """
-                SELECT observation.*, event.started_at, event.reference_price, event.event_low,
+                f"""
+                SELECT observation.*, event.started_at, event.status AS event_status, event.closed_at,
+                       event.reference_price, event.event_low,
                        signal.status AS signal_status, paper.status AS paper_status
                 FROM analysis.option_opportunity_observation observation
                 JOIN analysis.option_event event ON event.id = observation.event_id
@@ -192,10 +219,12 @@ class RecoveryLearningRepository:
                 LEFT JOIN app.paper_order paper ON paper.id = observation.paper_order_id
                 WHERE observation.outcome_classification = 'observing'
                   AND observation.available_at <= %s
+                  AND observation.cohort_id = %s::uuid
+                  AND {self.cohorts.current_event_clause()}
                 ORDER BY observation.available_at
                 LIMIT %s
                 """,
-                [reference, limit],
+                [reference, cohort["id"], limit],
             ).fetchall()]
         totals = {"updated": 0, "captured": 0, "missed": 0, "unfilled": 0, "unmeasurable": 0}
         for observation in observations:
@@ -216,17 +245,22 @@ class RecoveryLearningRepository:
         """Compute native recovery metrics from the complete observation denominator."""
 
         with self.runtime.read(JOB_PROFILE) as connection:
+            cohort = self.cohorts.current(connection)
+            if cohort is None:
+                return _empty_metrics(family)
             rows = [dict(row) for row in connection.execute(
-                """
+                f"""
                 SELECT observation.*, instrument.symbol, signal.signal_at
                 FROM analysis.option_opportunity_observation observation
                 JOIN analysis.option_event event ON event.id = observation.event_id
                 JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
                 LEFT JOIN analysis.option_event_signal signal ON signal.id = observation.signal_id
                 WHERE observation.strategy_key = %s
+                  AND observation.cohort_id = %s::uuid
+                  AND {self.cohorts.current_event_clause()}
                 ORDER BY observation.available_at
                 """,
-                [family],
+                [family, cohort["id"]],
             ).fetchall()]
             baseline = dict(connection.execute(
                 """
@@ -299,12 +333,35 @@ class RecoveryLearningRepository:
             },
         }
 
-    def promotion_status(self, family: str) -> dict[str, Any]:
+    def promotion_status(
+        self,
+        family: str,
+        *,
+        recovery_paper_actions_enabled: bool = False,
+    ) -> dict[str, Any]:
         metrics = self.metrics(family)
-        return {"family": family, "eligible": recovery_promotion_passes(metrics), "metrics": metrics}
+        health = self.cohorts.program_eligibility(
+            recovery_paper_actions_enabled=recovery_paper_actions_enabled,
+        )
+        return {
+            "family": family,
+            "eligible": health.eligible and recovery_promotion_passes(metrics),
+            "metrics": metrics,
+            "program_health": health.as_dict(),
+        }
 
-    def auto_promote_eligible(self, *, enabled: bool) -> int:
+    def auto_promote_eligible(
+        self,
+        *,
+        enabled: bool,
+        recovery_paper_actions_enabled: bool = False,
+    ) -> int:
         if not enabled:
+            return 0
+        program = self.cohorts.program_eligibility(
+            recovery_paper_actions_enabled=recovery_paper_actions_enabled,
+        )
+        if not program.eligible:
             return 0
         eligible = {
             strategy.key: metrics
@@ -342,7 +399,7 @@ class RecoveryLearningRepository:
     def _future_captures(self, observation: dict[str, Any], now: datetime) -> list[QuoteCapture]:
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT capture.finished_at, event.reference_price, event.event_low,
                        spot.price AS spot_price, quote.bid, quote.ask, quote.bid_size, quote.ask_size,
                        quote.available_at
@@ -350,6 +407,8 @@ class RecoveryLearningRepository:
                 JOIN analysis.option_event event ON event.id = capture.event_id
                 LEFT JOIN raw.option_quote quote
                   ON quote.snapshot_id = capture.snapshot_id AND quote.contract_id = %s
+                 AND quote.capture_generation_id = capture.capture_generation_id
+                 AND quote.available_at <= capture.finished_at
                 LEFT JOIN LATERAL (
                   SELECT price FROM analysis.option_event_spot
                   WHERE event_id = event.id AND available_at <= capture.finished_at
@@ -357,6 +416,7 @@ class RecoveryLearningRepository:
                 ) spot ON true
                 WHERE capture.event_id = %s AND capture.status IN ('complete', 'partial')
                   AND capture.finished_at > %s AND capture.finished_at <= %s
+                  AND {self.cohorts.current_event_clause()}
                 ORDER BY capture.finished_at
                 """,
                 [observation["contract_id"], observation["event_id"], observation["available_at"], now],
@@ -419,6 +479,25 @@ def _liquid(quote: Any) -> bool:
     )
 
 
+def _empty_metrics(family: str) -> dict[str, Any]:
+    """Stable empty current-cohort metrics; legacy evidence is never a prior."""
+
+    return {
+        "family": family, "observations": 0, "measurable": 0, "independent_events": 0,
+        "shadow_signals": 0, "paper_fills": 0, "fill_rate": 0.0, "precision_at_k": 0.0,
+        "event_3x_recall": 0.0, "event_4x_recall": 0.0,
+        "return_1_session": None, "return_3_session": None, "return_5_session": None,
+        "return_10_session": None, "time_to_2x_sessions": None, "time_to_3x_sessions": None,
+        "time_to_4x_sessions": None, "executable_peak_return": None, "realized_return": None,
+        "mae": None, "giveback": None, "exit_efficiency": None, "signal_delay_minutes": None,
+        "net_expectancy": 0.0, "lower_95_expectancy": 0.0, "calibration_gap": 1.0,
+        "max_ticker_gain_concentration": 1.0, "opportunity_cost": 0.0,
+        "unresolved_defects": False,
+        "outcomes": {name: 0 for name in ("captured", "missed", "unfilled", "unmeasurable")},
+        "baseline_v3": {"outcomes": 0, "net_expectancy": None, "return_1d": None, "return_5d": None},
+    }
+
+
 def _quote_payload(quote: Any, gate: Any) -> dict[str, Any]:
     return {
         "occ_symbol": quote.occ_symbol, "bid": quote.bid, "ask": quote.ask,
@@ -436,7 +515,12 @@ def _classification(observation: dict[str, Any], lifecycle: Any, now: datetime) 
         if observation.get("paper_status") in {"exited", "invalidated"}:
             return "captured", "ok", "captured"
         return "missed", "ok", observation.get("miss_reason") or "not_published"
-    terminal = trading_sessions_between(observation["started_at"], now) >= 10 or (observation["expiration"] - now.date()).days <= 5
+    # Event age is metadata only. A late fill receives its own ten-session
+    # holding window, which the lifecycle evaluates from the actual fill.
+    terminal = (
+        (observation["expiration"] - now.date()).days <= 5
+        or observation.get("event_status") == "closed"
+    )
     if not terminal:
         return "observing", "ok", None
     # A terminal clock without enough post-observation captures is a data

@@ -68,6 +68,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const recoveryOpportunities = rows(data.optionRecoveryOpportunity);
   const recoveryFamilyPerformance = rows(data.optionRecoveryFamilyPerformance);
   const recoveryAgentProvenance = rows(data.optionRecoveryAgentProvenance);
+  const recoveryHealth = rows(data.optionRecoveryHealth)[0];
   const radarSummary = rows(data.optionRadarSummary)[0];
   const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 3;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
@@ -212,6 +213,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         opportunities={recoveryOpportunities}
         familyPerformance={recoveryFamilyPerformance}
         agentProvenance={recoveryAgentProvenance}
+        health={recoveryHealth}
         onOpenTicker={onOpenTicker}
       />
       <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />

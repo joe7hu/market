@@ -634,6 +634,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,
                 "max_symbol_risk_pct": config.analysis.options_decision_system.max_symbol_risk_pct,
                 "daily_loss_halt_pct": config.analysis.options_decision_system.daily_loss_halt_pct,
+                "max_recovery_open_positions": config.analysis.options_decision_system.max_recovery_open_positions,
                 "strategy_auto_promotion_enabled": config.analysis.options_decision_system.strategy_auto_promotion_enabled,
                 "event_agent_debounce_minutes": config.analysis.options_decision_system.event_agent_debounce_minutes,
                 "event_agent_max_batches_per_symbol_per_day": config.analysis.options_decision_system.event_agent_max_batches_per_symbol_per_day,

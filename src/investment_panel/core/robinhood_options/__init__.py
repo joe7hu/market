@@ -17,6 +17,7 @@ from investment_panel.core.robinhood_options.auth import (
 from investment_panel.core.robinhood_options.collector import (
     RobinhoodClient,
     RobinhoodMcpClient,
+    collect_robinhood_equity_quotes,
     collect_robinhood_option_chains,
     option_quote_row,
     select_robinhood_expiries,
@@ -28,6 +29,7 @@ __all__ = [
     "RobinhoodClient",
     "RobinhoodMcpClient",
     "authorize_robinhood_mcp",
+    "collect_robinhood_equity_quotes",
     "collect_robinhood_option_chains",
     "collect_robinhood_full_option_chain",
     "load_robinhood_access_token",

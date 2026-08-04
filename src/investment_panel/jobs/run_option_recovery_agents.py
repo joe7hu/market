@@ -75,7 +75,7 @@ def run(
         except Exception as exc:  # advisory failure is intentionally terminal only for this batch
             results.append(repository.fail(claim, exc, meta=meta))
     statuses = {str(result.get("status") or "failed") for result in results}
-    status = "failed" if results and statuses == {"failed"} else "partial" if "failed" in statuses else "ok"
+    status = "failed" if results and statuses == {"failed"} else "partial" if {"failed", "retrying"} & statuses else "ok"
     return {
         "status": status, "database": "postgresql", "preopen": preopen,
         "batches": results, "telemetry": repository.telemetry(),

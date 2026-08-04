@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from investment_panel.core.decision import MARKET_TZ
+from investment_panel.core.options_event_tape import event_strip_expiration_after_fill
 from investment_panel.core.options_recovery import (
     FEE_PER_CONTRACT_LEG,
     ExecutableLeg,
@@ -71,9 +73,9 @@ def test_lifecycle_uses_only_post_publication_quotes_and_cost_adjusted_staging()
     assert result.entry_fill_at == NOW + timedelta(minutes=1)
     assert [fill.quantity for fill in result.exit_fills] == [1, 2, 1]
     assert [fill.reason for fill in result.exit_fills] == ["target_2x", "target_3x", "target_4x"]
-    assert result.time_to_2x_sessions == 1
-    assert result.time_to_3x_sessions == 2
-    assert result.time_to_4x_sessions == 3
+    assert result.time_to_2x_sessions == 0
+    assert result.time_to_3x_sessions == 1
+    assert result.time_to_4x_sessions == 2
     realized = lifecycle_return(
         entry_price=result.entry_fill_price or 0,
         exits=result.exit_fills,
@@ -128,3 +130,36 @@ def test_half_premium_loss_is_a_deterministic_executable_hard_exit() -> None:
     assert result.classification == "captured"
     assert result.exit_fills[0].reason == "hard_loss"
     assert result.exit_fills[0].quantity == 2
+
+
+def test_late_event_fill_uses_fill_relative_targets_and_ten_session_exit() -> None:
+    late_target = evaluate_lifecycle(
+        published_at=NOW,
+        quantity=4,
+        captures=[
+            _capture(1, bid=0.99, ask=1.00, session=9),
+            _capture(16, bid=2.05, ask=2.10, session=10),
+        ],
+    )
+    assert late_target.entry_session_number == 9
+    assert late_target.time_to_2x_sessions == 1
+
+    late_exit = evaluate_lifecycle(
+        published_at=NOW,
+        quantity=1,
+        captures=[
+            _capture(1, bid=0.99, ask=1.00, session=9, dte=20),
+            _capture(16, bid=0.80, ask=0.82, session=18, dte=20),
+            _capture(31, bid=0.80, ask=0.82, session=19, dte=20),
+        ],
+    )
+    assert late_exit.exit_fills[0].reason == "time_or_dte_exit"
+    assert late_exit.exit_fills[0].session_number == 10
+
+
+def test_late_fill_extends_event_tape_through_ten_subsequent_market_sessions() -> None:
+    fill_at = datetime(2026, 8, 14, 15, tzinfo=MARKET_TZ)
+
+    expires_at = event_strip_expiration_after_fill(fill_at)
+
+    assert expires_at == datetime(2026, 8, 28, 16, 15, tzinfo=MARKET_TZ)

@@ -36,7 +36,7 @@ def counterfactual_metrics(
         return CounterfactualMetrics(None, None, None, None, None, None)
     ordered = [capture for capture in captures if capture.observed_at >= result.entry_fill_at and capture.continuity_ok]
     horizons = {
-        horizon: _mark_return(result.entry_fill_price, ordered, horizon)
+        horizon: _mark_return(result, ordered, horizon)
         for horizon in (1, 3, 5, 10)
     }
     realized = lifecycle_return(
@@ -79,8 +79,13 @@ def recovery_promotion_passes(metrics: dict[str, float | int | bool | None]) -> 
     )
 
 
-def _mark_return(entry_price: float, captures: list[QuoteCapture], horizon: int) -> float | None:
-    eligible = [capture for capture in captures if capture.session_number >= horizon and capture.legs]
+def _mark_return(result: LifecycleResult, captures: list[QuoteCapture], horizon: int) -> float | None:
+    if result.entry_session_number is None:
+        return None
+    eligible = [
+        capture for capture in captures
+        if capture.session_number - result.entry_session_number >= horizon and capture.legs
+    ]
     if not eligible:
         return None
     capture = eligible[0]
@@ -89,8 +94,8 @@ def _mark_return(entry_price: float, captures: list[QuoteCapture], horizon: int)
     except ValueError:
         return None
     return lifecycle_return(
-        entry_price=entry_price,
-        exits=[ExitFill(capture.observed_at, 1, exit_price, f"mark_{horizon}", capture.session_number)],
+        entry_price=result.entry_fill_price or 0.0,
+        exits=[ExitFill(capture.observed_at, 1, exit_price, f"mark_{horizon}", horizon)],
         quantity=1,
         leg_count=len(capture.legs),
     )

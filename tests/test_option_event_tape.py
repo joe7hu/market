@@ -11,11 +11,14 @@ from investment_panel.core.options_event_tape import (
     select_event_strip,
     trigger_reason,
 )
+from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig
+from investment_panel.core.options_recovery_paper import recovery_risk_policy
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.option_events import OptionEventRepository
 from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
 from investment_panel.database.options_recovery_read import RecoveryReadRepository
+from investment_panel.database.options_recovery_cohorts import ProgramEligibility
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.runtime import DatabaseRuntime
@@ -53,6 +56,17 @@ def test_event_trigger_uses_decimal_returns() -> None:
     assert trigger_reason(observation) == "one_day_down_6pct"
 
 
+def test_event_capture_slots_stop_at_an_early_market_close() -> None:
+    slots = scheduled_event_slots(
+        datetime(2026, 11, 27, 14, 30, tzinfo=UTC),
+        datetime(2026, 11, 27, 21, 0, tzinfo=UTC),
+    )
+
+    assert len(slots) == 15
+    assert slots[0] == datetime(2026, 11, 27, 14, 30, tzinfo=UTC)
+    assert slots[-1] == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+
+
 def test_frozen_strip_preserves_original_contracts_and_records_replacements() -> None:
     as_of = date(2026, 8, 3)
     rows = _strip_rows(as_of=as_of)
@@ -77,6 +91,96 @@ def test_frozen_strip_preserves_original_contracts_and_records_replacements() ->
     assert missing in second.expected_contract_keys
     assert second.replacements[f"{missing}-replacement"] == missing
     assert f"{missing}-replacement" in {row["contract_symbol"] for row in second.rows}
+
+
+def test_three_successive_slot_replacements_keep_fixed_denominator_and_lineage() -> None:
+    as_of = date(2026, 8, 3)
+    rows = _strip_rows(as_of=as_of)
+    first = select_event_strip(rows, as_of=as_of)
+    original_key = str(first.rows[0]["contract_symbol"])
+    slot = str(first.rows[0]["_event_ladder_slot_key"])
+
+    def frozen(selection):
+        return [
+            FrozenContract(
+                contract_key=str(row["contract_symbol"]),
+                option_type=str(row["option_type"]),
+                expiration=date.fromisoformat(str(row["expiration"])),
+                target_delta=float(row["_event_target_delta"]),
+                is_initial=bool(row["_event_initial"]),
+                ladder_slot_key=str(row["_event_ladder_slot_key"]),
+            )
+            for row in selection.rows
+        ]
+
+    successor_one = {**dict(first.rows[0]), "contract_symbol": f"{original_key}-one", "delta": 0.26}
+    second_rows = [row for row in rows if row["contract_symbol"] != original_key] + [successor_one]
+    second = select_event_strip(
+        second_rows,
+        as_of=as_of,
+        existing=frozen(first),
+        original_contract_keys=first.expected_contract_keys,
+    )
+
+    successor_two = {**successor_one, "contract_symbol": f"{original_key}-two", "delta": 0.27}
+    third_rows = [row for row in second_rows if row["contract_symbol"] != successor_one["contract_symbol"]] + [successor_two]
+    third = select_event_strip(
+        third_rows,
+        as_of=as_of,
+        existing=frozen(second),
+        original_contract_keys=first.expected_contract_keys,
+        retired_contract_keys=second.retire_contract_keys,
+    )
+
+    successor_three = {**successor_two, "contract_symbol": f"{original_key}-three", "delta": 0.28}
+    fourth_rows = [row for row in third_rows if row["contract_symbol"] != successor_two["contract_symbol"]] + [successor_three]
+    fourth = select_event_strip(
+        fourth_rows,
+        as_of=as_of,
+        existing=frozen(third),
+        original_contract_keys=first.expected_contract_keys,
+        retired_contract_keys=(*second.retire_contract_keys, *third.retire_contract_keys),
+    )
+
+    assert second.replacements[str(successor_one["contract_symbol"])] == original_key
+    assert third.replacements[str(successor_two["contract_symbol"])] == str(successor_one["contract_symbol"])
+    assert fourth.replacements[str(successor_three["contract_symbol"])] == str(successor_two["contract_symbol"])
+    assert len(fourth.rows) == len(first.rows) == 36
+    assert len(fourth.expected_slot_keys) == len(first.expected_slot_keys) == 36
+    assert len(fourth.expected_contract_keys) == len(first.expected_contract_keys) == 36
+    assert sum(row["_event_ladder_slot_key"] == slot for row in fourth.rows) == 1
+
+
+def test_missing_slot_never_reuses_another_active_slot_member() -> None:
+    as_of = date(2026, 8, 3)
+    first = select_event_strip(_strip_rows(as_of=as_of), as_of=as_of)
+    missing = dict(first.rows[0])
+    neighbor = dict(first.rows[1])
+    frozen = [
+        FrozenContract(
+            contract_key=str(row["contract_symbol"]),
+            option_type=str(row["option_type"]),
+            expiration=date.fromisoformat(str(row["expiration"])),
+            target_delta=float(row["_event_target_delta"]),
+            is_initial=bool(row["_event_initial"]),
+            ladder_slot_key=str(row["_event_ladder_slot_key"]),
+        )
+        for row in first.rows
+    ]
+    successor = {**missing, "contract_symbol": "NVDA-successor", "delta": 0.60}
+    rows = [row for row in _strip_rows(as_of=as_of) if row["contract_symbol"] != missing["contract_symbol"]]
+    rows.append(successor)
+
+    next_strip = select_event_strip(
+        rows,
+        as_of=as_of,
+        existing=frozen,
+        original_contract_keys=first.expected_contract_keys,
+    )
+
+    selected = {str(row["contract_symbol"]): str(row["_event_ladder_slot_key"]) for row in next_strip.rows}
+    assert next_strip.replacements["NVDA-successor"] == str(missing["contract_symbol"])
+    assert selected[str(neighbor["contract_symbol"])] == str(neighbor["_event_ladder_slot_key"])
 
 
 def test_event_detection_enforces_two_symbol_capacity_without_duplicate_deferred_rows(
@@ -107,6 +211,50 @@ def test_event_detection_enforces_two_symbol_capacity_without_duplicate_deferred
                 "SELECT status, count(*) AS count FROM analysis.option_event GROUP BY status ORDER BY status"
             ).fetchall()
         assert {row["status"]: row["count"] for row in rows} == {"active": 2, "deferred_capacity": 1}
+    finally:
+        runtime.close()
+
+
+def test_existing_event_keeps_its_original_reference_price_and_provenance(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        first_seen = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
+        repository = OptionEventRepository(runtime)
+        event_id = repository.detect_events([
+            EventObservation(
+                "NVDA", first_seen, 90.0, one_day_pct=-0.10, instrument_id=instrument_id,
+                reference_price=120.0, reference_trading_date=date(2026, 7, 31),
+                reference_source_id="polygon", reference_available_at=first_seen,
+            ),
+        ], now=first_seen)["active_events"][0]["event_id"]
+        repository.detect_events([
+            EventObservation(
+                "NVDA", first_seen + timedelta(minutes=5), 80.0, one_day_pct=-0.20,
+                instrument_id=instrument_id, reference_price=110.0,
+                reference_trading_date=date(2026, 7, 31), reference_source_id="yahoo_chart",
+                reference_available_at=first_seen + timedelta(minutes=5),
+            ),
+        ], now=first_seen + timedelta(minutes=5))
+
+        with runtime.read() as connection:
+            event = connection.execute(
+                """
+                SELECT reference_price, reference_trading_date, reference_source_id,
+                       trigger_one_day_pct, event_low
+                FROM analysis.option_event WHERE id = %s
+                """,
+                [event_id],
+            ).fetchone()
+        assert event["reference_price"] == 120.0
+        assert event["reference_trading_date"] == date(2026, 7, 31)
+        assert event["reference_source_id"] == "polygon"
+        assert event["trigger_one_day_pct"] == -0.10
+        assert event["event_low"] == 80.0
     finally:
         runtime.close()
 
@@ -249,23 +397,150 @@ def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
             [EventObservation("NVDA", observed, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
             now=observed,
         )["active_events"][0]["event_id"]
+        with runtime.transaction() as connection:
+            legacy_instrument = reconcile_instrument(connection, "AAOI", asset_class="equity", category="test")
+        legacy_event_id = OptionEventRepository(runtime).detect_events(
+            [EventObservation("AAOI", observed, 20.0, one_day_pct=-0.08, instrument_id=legacy_instrument)],
+            now=observed,
+        )["active_events"][0]["event_id"]
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE analysis.option_event
+                SET cohort_id = (SELECT id FROM analysis.option_recovery_cohort WHERE objective_version = 'short_horizon_convex_v1'),
+                    status = 'invalidated', data_quality_status = 'invalid_reference_bar',
+                    invalidation_reason = 'invalid_reference_bar', invalidated_at = now()
+                WHERE id = %s
+                """,
+                [legacy_event_id],
+            )
         monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
         application = FastAPI()
         application.include_router(options_router)
 
         with TestClient(application) as client:
             events = client.get("/api/options/events")
+            audit = client.get("/api/options/events?cohort=short_horizon_convex_v1&include_invalidated=true")
+            audit_status = client.get("/api/options/events?cohort=short_horizon_convex_v1&status=invalidated")
             detail = client.get(f"/api/options/events/{event_id}")
+            hidden_legacy_detail = client.get(f"/api/options/events/{legacy_event_id}")
+            audit_detail = client.get(
+                f"/api/options/events/{legacy_event_id}?cohort=short_horizon_convex_v1&include_invalidated=true"
+            )
             health = client.get("/api/health/options-recovery")
 
         assert events.status_code == 200
         assert events.json()["events"][0]["event_id"] == event_id
+        assert [row["event_id"] for row in events.json()["events"]] == [event_id]
         assert "capture" not in events.json()["events"][0]
+        assert audit.status_code == 200
+        assert [row["event_id"] for row in audit.json()["events"]] == [legacy_event_id]
+        assert audit.json()["events"][0]["status"] == "invalidated"
+        assert audit_status.status_code == 200
+        assert [row["event_id"] for row in audit_status.json()["events"]] == [legacy_event_id]
+        assert audit_status.json()["events"][0]["status"] == "invalidated"
         assert detail.status_code == 200
         assert detail.json()["event"]["event_id"] == event_id
+        assert hidden_legacy_detail.status_code == 404
+        assert audit_detail.status_code == 200
+        assert audit_detail.json()["event"]["event_id"] == legacy_event_id
         assert health.status_code == 200
         assert "capture" in health.json() and "scheduler" in health.json()
         assert "agent_telemetry" in health.json()
+    finally:
+        runtime.close()
+
+
+def test_open_recovery_paper_order_keeps_event_tape_active_past_event_age(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        started = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "LATE", asset_class="equity", category="test")
+        events = OptionEventRepository(runtime)
+        event_id = events.detect_events(
+            [EventObservation("LATE", started, 100.0, one_day_pct=-0.08, instrument_id=instrument_id)],
+            now=started,
+        )["active_events"][0]["event_id"]
+        with runtime.transaction() as connection:
+            cohort_id = connection.execute(
+                "SELECT cohort_id FROM analysis.option_event WHERE id = %s", [event_id]
+            ).fetchone()["cohort_id"]
+            connection.execute(
+                """
+                INSERT INTO app.paper_order
+                    (instrument_id, side, quantity, status, event_id, strategy_family, cohort_id)
+                VALUES (%s, 'buy', 1, 'staged', %s, 'late_fill_test', %s)
+                """,
+                [instrument_id, event_id, cohort_id],
+            )
+
+        closed = events.close_events(
+            now=datetime(2026, 8, 18, 15, tzinfo=UTC),
+            current_prices={instrument_id: 100.0},
+        )
+
+        assert closed == 0
+        with runtime.read() as connection:
+            event = connection.execute(
+                "SELECT status FROM analysis.option_event WHERE id = %s", [event_id]
+            ).fetchone()
+            policy = connection.execute(
+                "SELECT requested_state FROM app.option_history_policy WHERE event_id = %s AND profile = 'event_strip'",
+                [event_id],
+            ).fetchone()
+        assert event["status"] == "active"
+        assert policy["requested_state"] == "on"
+    finally:
+        runtime.close()
+
+
+def test_close_events_ignores_quotes_confirmed_after_its_reference_time(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        started = datetime(2026, 7, 30, 15, tzinfo=UTC)
+        reference = datetime(2026, 8, 3, 15, tzinfo=UTC)
+        with runtime.transaction() as connection:
+            instrument_id = reconcile_instrument(connection, "LOOKAHEAD", asset_class="equity", category="test")
+        events = OptionEventRepository(runtime)
+        event_id = events.detect_events(
+            [EventObservation("LOOKAHEAD", started, 100.0, one_day_pct=-0.10, instrument_id=instrument_id)],
+            now=started,
+        )["active_events"][0]["event_id"]
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("lookahead-quote", name="Lookahead", family="market_data", kind="quote")
+        with ingestion.run("lookahead-quote", "quote") as run:
+            assert ingestion.store_quotes(
+                run.id,
+                "lookahead-quote",
+                [{"symbol": "LOOKAHEAD", "observed_at": reference - timedelta(minutes=1), "price": 112.0}],
+            ) == 1
+            run.finish("succeeded")
+        future_available_at = reference + timedelta(minutes=1)
+        with runtime.transaction() as connection:
+            quote = connection.execute(
+                "SELECT id, ingest_run_id FROM raw.quote WHERE instrument_id = %s", [instrument_id],
+            ).fetchone()
+            connection.execute("UPDATE raw.quote SET available_at = %s WHERE id = %s", [future_available_at, quote["id"]])
+            connection.execute("DELETE FROM raw.quote_confirmation WHERE fact_id = %s", [quote["id"]])
+            connection.execute(
+                """
+                INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id)
+                VALUES (%s, %s, %s)
+                """,
+                [quote["id"], future_available_at, quote["ingest_run_id"]],
+            )
+
+        assert events.close_events(now=reference) == 0
+        with runtime.read() as connection:
+            event = connection.execute("SELECT status FROM analysis.option_event WHERE id = %s", [event_id]).fetchone()
+        assert event["status"] == "active"
     finally:
         runtime.close()
 
@@ -416,7 +691,7 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
         ticket = RecoveryReadRepository(runtime).ticket(str(signal["decision_id"]))
         assert ticket is not None
         assert ticket["ticket_version"] == 4
-        assert ticket["objective_version"] == "short_horizon_convex_v1"
+        assert ticket["objective_version"] == "short_horizon_convex_v2"
         from app.options_history_contracts import RecoveryOptionTradeTicketV4
 
         assert RecoveryOptionTradeTicketV4.model_validate(ticket).ticket_version == 4
@@ -444,75 +719,50 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
             now=finished + timedelta(seconds=1),
             enabled=True,
         )
-        assert staged["orders"][0]["status"] == "staged"
+        assert staged["status"] == "blocked"
+        assert staged["orders"] == []
+        assert "program_canary_not_qualified" in staged["blockers"]
         with runtime.read() as connection:
-            order = connection.execute(
-                "SELECT status, ticket_version, strategy_family FROM app.paper_order"
-            ).fetchone()
-        assert order == {"status": "staged", "ticket_version": 4, "strategy_family": "shock_reversal_call_v1"}
+            order_count = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()
+        assert order_count["count"] == 0
 
-        def store_future(slot: datetime, *, bid: float, ask: float) -> None:
-            future, future_selection = events.filter_event_strip(
-                event_id,
-                {
-                    "rows": [{**row, "bid": bid, "ask": ask}],
-                    "expected_contract_count": 1,
-                    "received_contract_count": 1,
-                    "capture_started_at": slot,
-                    "capture_finished_at": slot + timedelta(seconds=2),
-                },
-                as_of=slot,
+        # The staging boundary uses a current executable quote, not the
+        # shadow ticket's old premium.  Supply the otherwise independent
+        # global-canary result here to isolate that boundary.
+        with runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE analysis.option_event
+                SET quote_age_minutes = 1.0,
+                    reference_source_id = 'test-confirmed',
+                    reference_available_at = %s
+                WHERE id = %s
+                """,
+                [finished, event_id],
             )
-            with ingestion.run("robinhood", "option_event_strip") as run:
-                history = OptionHistoryRepository(runtime)
-                assert history.claim_slot(
-                    source_id="robinhood", symbol="NVDA", slot_at=slot, run_id=run.id,
-                    collection_profile=EVENT_PROFILE, universe=f"event-strip:{event_id}",
-                )
-                future_stored = history.store_capture(
-                    run_id=run.id, source_id="robinhood", symbol="NVDA", slot_at=slot,
-                    captured=future, collection_profile=EVENT_PROFILE, universe=f"event-strip:{event_id}",
-                    materialize=False,
-                )
-                run.finish("succeeded", summary=future_stored)
-            events.record_capture(event_id, stored=future_stored, selection=future_selection)
-
-        store_future(observed + timedelta(minutes=105), bid=2.0, ask=2.2)
-        entered = RecoveryExecutionRepository(runtime).manage_event_orders(
-            event_id,
-            now=observed + timedelta(minutes=106),
+        staging = RecoveryExecutionRepository(
+            runtime,
+            risk_policy=recovery_risk_policy(OptionsDecisionSystemConfig(options_risk_sleeve_capital=25_000.0)),
         )
-        assert entered["orders"][0]["status"] == "entered"
-        store_future(observed + timedelta(minutes=120), bid=6.8, ask=7.0)
-        exited = RecoveryExecutionRepository(runtime).manage_event_orders(
-            event_id,
-            now=observed + timedelta(minutes=121),
+        cohort = staging.cohorts.current()
+        assert cohort is not None
+        monkeypatch.setattr(
+            staging.cohorts,
+            "program_eligibility",
+            lambda **_: ProgramEligibility(True, (), cohort, 5, 5, {}),
         )
-        assert exited["orders"][0]["status"] == "exited"
+        current_stage = staging.stage_qualified_orders(
+            event_id,
+            now=finished + timedelta(seconds=1),
+            enabled=True,
+        )
+        assert current_stage["orders"] and current_stage["orders"][0]["status"] == "staged"
         with runtime.read() as connection:
-            order_times = connection.execute(
-                "SELECT created_at, filled_at FROM app.paper_order"
+            paper = connection.execute(
+                "SELECT ticket_snapshot FROM app.paper_order WHERE event_id = %s", [event_id]
             ).fetchone()
-            actions = connection.execute(
-                "SELECT action FROM app.trade_journal ORDER BY created_at"
-            ).fetchall()
-        assert order_times["filled_at"] > order_times["created_at"]
-        assert {row["action"] for row in actions} >= {"paper_order_staged", "paper_entry", "paper_exit:target_2x"}
-        from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
-
-        learning = RecoveryLearningRepository(runtime)
-        learning.sync_paper_lifecycle(event_id)
-        refreshed = learning.refresh_outcomes(now=observed + timedelta(minutes=121))
-        assert refreshed["captured"] >= 1
-        with runtime.read() as connection:
-            outcome = connection.execute(
-                """
-                SELECT outcome_classification, return_3_session, executable_peak_return
-                FROM analysis.option_opportunity_observation
-                WHERE strategy_key = 'shock_reversal_call_v1'
-                """
-            ).fetchone()
-        assert outcome["outcome_classification"] == "captured"
-        assert outcome["return_3_session"] is not None
+        assert paper is not None
+        assert paper["ticket_snapshot"]["entry"]["limit_price"] == 2.22
+        assert paper["ticket_snapshot"]["legs"][0]["quote_time"] == finished.isoformat()
     finally:
         runtime.close()

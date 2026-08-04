@@ -37,6 +37,7 @@ from investment_panel.database.options_history_v3_candidates import (
 )
 from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
 from investment_panel.database.options_history_v3_evidence import quote_package
+from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.options_history_policy import apply_publication_cap
 from investment_panel.database.options_history_ticket import published_candidates
 class OptionHistoryV3Materializer:
@@ -425,30 +426,7 @@ class OptionHistoryV3Materializer:
             )
 
     def _confirmed_bars(self, connection: Any, instrument_ids: set[int], as_of: datetime) -> dict[int, list[dict[str, Any]]]:
-        if not instrument_ids:
-            return {}
-        rows = connection.execute(
-            """
-            SELECT DISTINCT ON (instrument_id, trading_date)
-                   instrument_id, trading_date, close, source_id, observed_at, available_at
-            FROM raw.confirmed_price_bar
-            WHERE instrument_id = ANY(%s) AND interval = '1d' AND close > 0
-              AND observed_at <= %s AND available_at <= %s
-            ORDER BY instrument_id, trading_date,
-                     CASE source_id
-                       WHEN 'polygon' THEN 1
-                       WHEN 'yahoo_chart' THEN 2
-                       WHEN 'yfinance' THEN 3
-                       ELSE 10
-                     END,
-                     available_at DESC, source_id
-            """,
-            [sorted(instrument_ids), as_of, as_of],
-        ).fetchall()
-        bars: dict[int, list[dict[str, Any]]] = {}
-        for row in rows:
-            bars.setdefault(int(row["instrument_id"]), []).append(dict(row))
-        return bars
+        return confirmed_daily_bars(connection, instrument_ids, as_of=as_of)
 
     def _calibration(
         self, connection: Any, instrument_id: int, structure: str, market_regime: str,

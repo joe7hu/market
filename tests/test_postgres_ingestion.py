@@ -500,3 +500,28 @@ def test_option_universe_adds_upcoming_catalyst_discovery_candidate(repository: 
     assert prioritized[0] == "NVDA"
     assert "RXRX" in prioritized
     assert "BTC-USD" not in prioritized
+
+
+def test_option_universe_includes_recent_radar_only_decisions(repository: IngestionRepository) -> None:
+    with repository.runtime.transaction() as connection:
+        instrument = connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) "
+            "VALUES ('RADAR', 'Radar only', 'equity') RETURNING id"
+        ).fetchone()
+        run = connection.execute(
+            """
+            INSERT INTO analysis.run (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+            VALUES ('test', now(), 'test', %s, now(), now(), 'succeeded') RETURNING id
+            """,
+            ["a" * 64],
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO analysis.decision
+                (run_id, decision_key, kind, instrument_id, as_of, state, input_hash)
+            VALUES (%s, 'radar-only', 'option', %s, now(), 'WATCH', %s)
+            """,
+            [run["id"], instrument["id"], "b" * 64],
+        )
+
+    assert "RADAR" in repository.option_universe([])

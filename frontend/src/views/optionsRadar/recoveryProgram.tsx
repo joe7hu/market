@@ -15,6 +15,7 @@ type RecoveryProgramPanelProps = {
   opportunities: RowRecord[];
   familyPerformance: RowRecord[];
   agentProvenance: RowRecord[];
+  health: RowRecord | undefined;
   onOpenTicker: OpenTicker;
 };
 
@@ -47,6 +48,7 @@ export function RecoveryProgramPanel({
   opportunities,
   familyPerformance,
   agentProvenance,
+  health,
   onOpenTicker,
 }: RecoveryProgramPanelProps) {
   const activeEvents = events.filter((row) => ["active", "deferred_capacity"].includes(textField(row, ["status"])));
@@ -56,6 +58,14 @@ export function RecoveryProgramPanel({
     if (outcomeCounts.has(outcome)) outcomeCounts.set(outcome, (outcomeCounts.get(outcome) ?? 0) + 1);
   }
   const observed = stageCount(funnel, "observed");
+  const program = jsonRecord(health?.program);
+  const currentCohort = jsonRecord(program?.current_cohort);
+  const paperStaging = jsonRecord(program?.paper_staging);
+  const programState = textField(program as RowRecord | undefined, ["program_state"], "collecting");
+  const qualifiedDates = numberField(program as RowRecord | undefined, ["qualified_dates"], 0);
+  const requiredDates = numberField(program as RowRecord | undefined, ["required_qualified_dates"], 5);
+  const cohortLabel = textField(currentCohort as RowRecord | undefined, ["objective_version"], "Current cohort");
+  const paperEligibility = textField(paperStaging as RowRecord | undefined, ["eligible"], "No");
 
   return (
     <section className="space-y-4 rounded-md border border-border bg-card p-4">
@@ -66,7 +76,11 @@ export function RecoveryProgramPanel({
             Executable-side, forward-only evidence for sell-off continuation and rebound contracts. Historical midpoint or peak examples do not enter this cohort.
           </p>
         </div>
-        <StatusBadge tone="info">Paper-only · promotion disabled</StatusBadge>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge tone={programState === "paper_enabled" ? "good" : programState === "collecting" ? "warn" : "info"}>{titleLabel(programState)}</StatusBadge>
+          <StatusBadge tone="info">{qualifiedDates}/{requiredDates} qualified dates</StatusBadge>
+          <StatusBadge tone={paperEligibility === "Yes" ? "good" : "warn"}>Paper eligibility: {paperEligibility}</StatusBadge>
+        </div>
       </div>
 
       <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
@@ -74,16 +88,20 @@ export function RecoveryProgramPanel({
           <MetricBox key={stage} label={titleLabel(stage)} value={stageCount(funnel, stage).toLocaleString()} />
         ))}
       </div>
+      <p className="text-xs text-muted-foreground">
+        Cohort: {cohortLabel}. Paper staging remains local and is separately kill-switched; no broker order authority exists.
+      </p>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
         <DataTableFrame title={<SectionTitle title="Active sell-off / rebound events" count={activeEvents.length} />}>
           {activeEvents.length ? (
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="w-full min-w-[980px] text-sm">
               <thead className="border-b border-border bg-muted/60 text-left text-xs text-muted-foreground">
                 <tr>
                   <Head>Symbol</Head>
                   <Head>Status</Head>
-                  <Head>Family / evidence</Head>
+                  <Head>Trigger / reference</Head>
+                  <Head>Priority / capacity</Head>
                   <Head className="text-right">Captures</Head>
                   <Head className="text-right">Signals</Head>
                   <Head className="text-right">Paper</Head>
@@ -98,8 +116,14 @@ export function RecoveryProgramPanel({
                       <Cell>{symbol ? <TickerButton ticker={symbol} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
                       <Cell><StatusBadge tone={eventTone(status)}>{titleLabel(status)}</StatusBadge></Cell>
                       <Cell>
-                        <div>{titleLabel(textField(row, ["event_type"]))}</div>
-                        <div className="text-xs text-muted-foreground">{numberField(row, ["material_evidence_count"], 0).toLocaleString()} material evidence</div>
+                        <div>{titleLabel(textField(row, ["trigger_reason", "event_type"]))}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {displayField(row, ["reference_source_id"], "unconfirmed")} · {displayField(row, ["reference_trading_date"], "no reference date")} · {formatQuoteAge(numberField(row, ["quote_age_minutes"], Number.NaN))}
+                        </div>
+                      </Cell>
+                      <Cell>
+                        <div className="tabular-nums">{numberField(row, ["severity_score"], 0).toFixed(1)}/100</div>
+                        <div className="text-xs text-muted-foreground">{displayField(row, ["capacity_defer_reason"], "admitted")}</div>
                       </Cell>
                       <Cell className="text-right tabular-nums">{numberField(row, ["complete_captures"], 0).toLocaleString()}</Cell>
                       <Cell className="text-right tabular-nums">{numberField(row, ["active_signals"], 0).toLocaleString()}</Cell>
@@ -191,4 +215,8 @@ export function RecoveryProgramPanel({
       </DataTableFrame>
     </section>
   );
+}
+
+function formatQuoteAge(value: number): string {
+  return Number.isFinite(value) ? `${value.toFixed(1)}m quote age` : "no fresh quote";
 }

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Iterable, Literal
 
 
-OBJECTIVE_VERSION = "short_horizon_convex_v1"
+OBJECTIVE_VERSION = "short_horizon_convex_v2"
 FEE_PER_CONTRACT_LEG = 0.65
 MIN_SLIPPAGE = 0.01
 SPREAD_SLIPPAGE_FRACTION = 0.10
@@ -81,6 +81,9 @@ class LifecycleResult:
     classification: OutcomeClassification = "observing"
     entry_fill_at: datetime | None = None
     entry_fill_price: float | None = None
+    # ``QuoteCapture.session_number`` is event-age metadata.  Lifecycle gates
+    # and target timing use this immutable fill-relative anchor instead.
+    entry_session_number: int | None = None
     entry_fee: float = 0.0
     exit_fills: list[ExitFill] = field(default_factory=list)
     exit_fee: float = 0.0
@@ -125,7 +128,7 @@ def executable_entry_price(legs: Iterable[ExecutableLeg]) -> float:
         for leg in quoted
     )
     if price <= 0:
-        raise ValueError("short_horizon_convex_v1 requires a positive debit")
+        raise ValueError("short_horizon_convex_v2 requires a positive debit")
     return round(price, 6)
 
 
@@ -243,6 +246,7 @@ def evaluate_lifecycle(
             if candidate_entry is not None and (entry_limit is None or candidate_entry <= entry_limit):
                 result.entry_fill_at = capture.observed_at
                 result.entry_fill_price = candidate_entry
+                result.entry_session_number = capture.session_number
                 result.entry_fee = FEE_PER_CONTRACT_LEG * len(capture.legs) * quantity
                 entry_price = candidate_entry
                 legs_count = len(capture.legs)
@@ -253,6 +257,8 @@ def evaluate_lifecycle(
             continue
 
         assert entry_price is not None
+        assert result.entry_session_number is not None
+        elapsed_sessions = max(0, capture.session_number - result.entry_session_number)
         try:
             mark = executable_exit_price(capture.legs)
         except ValueError:
@@ -265,11 +271,11 @@ def evaluate_lifecycle(
         result.executable_peak_return = result.mfe
         gross_multiple = mark / entry_price if entry_price > 0 else 0.0
         if gross_multiple >= 2.0 and result.time_to_2x_sessions is None:
-            result.time_to_2x_sessions = capture.session_number
+            result.time_to_2x_sessions = elapsed_sessions
         if gross_multiple >= 3.0 and result.time_to_3x_sessions is None:
-            result.time_to_3x_sessions = capture.session_number
+            result.time_to_3x_sessions = elapsed_sessions
         if gross_multiple >= 4.0 and result.time_to_4x_sessions is None:
-            result.time_to_4x_sessions = capture.session_number
+            result.time_to_4x_sessions = elapsed_sessions
         high_water_price = mark if high_water_price is None else max(high_water_price, mark)
 
         # Target fills close the paper position, but the same-contract tape
@@ -281,34 +287,34 @@ def evaluate_lifecycle(
         hard_exit = (
             capture.invalidated
             or gross_multiple <= HARD_LOSS_MULTIPLE
-            or capture.session_number >= MAX_TRADING_SESSIONS
+            or elapsed_sessions >= MAX_TRADING_SESSIONS
             or (capture.dte is not None and capture.dte <= MIN_EXIT_DTE)
         )
         if hard_exit:
             _append_exit(result, capture, remaining, mark, "invalidation" if capture.invalidated else (
                 "hard_loss" if gross_multiple <= HARD_LOSS_MULTIPLE else "time_or_dte_exit"
-            ))
+            ), elapsed_sessions)
             remaining = 0
             break
 
         if gross_multiple >= 2.0 and target_quantities[0] and remaining:
             exit_quantity = min(target_quantities[0], remaining)
-            _append_exit(result, capture, exit_quantity, mark, "target_2x")
+            _append_exit(result, capture, exit_quantity, mark, "target_2x", elapsed_sessions)
             remaining -= exit_quantity
             target_quantities = (0, target_quantities[1], target_quantities[2])
         if gross_multiple >= 3.0 and target_quantities[1] and remaining:
             exit_quantity = min(target_quantities[1], remaining)
-            _append_exit(result, capture, exit_quantity, mark, "target_3x")
+            _append_exit(result, capture, exit_quantity, mark, "target_3x", elapsed_sessions)
             remaining -= exit_quantity
             target_quantities = (target_quantities[0], 0, target_quantities[2])
             reached_3x = True
         if gross_multiple >= 4.0 and target_quantities[2] and remaining:
             exit_quantity = min(target_quantities[2], remaining)
-            _append_exit(result, capture, exit_quantity, mark, "target_4x")
+            _append_exit(result, capture, exit_quantity, mark, "target_4x", elapsed_sessions)
             remaining -= exit_quantity
             target_quantities = (target_quantities[0], target_quantities[1], 0)
         if reached_3x and remaining and high_water_price and mark <= high_water_price * (1.0 - TRAILING_STOP_FRACTION):
-            _append_exit(result, capture, remaining, mark, "trailing_stop_after_3x")
+            _append_exit(result, capture, remaining, mark, "trailing_stop_after_3x", elapsed_sessions)
             remaining = 0
 
     if result.entry_fill_at is None:
@@ -344,9 +350,10 @@ def _append_exit(
     quantity: int,
     price: float,
     reason: str,
+    session_number: int,
 ) -> None:
     if quantity > 0:
-        result.exit_fills.append(ExitFill(capture.observed_at, quantity, price, reason, capture.session_number))
+        result.exit_fills.append(ExitFill(capture.observed_at, quantity, price, reason, session_number))
 
 
 def _mark_return(entry: float, mark: float, leg_count: int, multiplier: int) -> float:

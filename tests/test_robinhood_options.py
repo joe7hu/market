@@ -14,6 +14,7 @@ from investment_panel.core.robinhood_options import (
     RobinhoodMcpClient,
     _authorization_server_metadata,
     authorize_robinhood_mcp,
+    collect_robinhood_equity_quotes,
     collect_robinhood_option_chains,
     load_robinhood_access_token,
     option_quote_row,
@@ -151,6 +152,19 @@ class _FailingRobinhoodClient:
         return {}
 
 
+class _PartiallyInvalidEquityQuoteClient:
+    def get_equity_quotes(self, _symbols: list[str]) -> dict[str, Any]:
+        return {
+            "data": {
+                "results": [
+                    {"quote": {"symbol": "NVDA", "last_trade_price": "100", "venue_last_trade_time": "2026-08-03T19:59:00Z"}},
+                    {"quote": {"symbol": "AMD", "last_trade_price": "100"}},
+                    {"quote": {"symbol": "TSLA", "last_trade_price": "0", "venue_last_trade_time": "2026-08-03T19:59:00Z"}},
+                ],
+            },
+        }
+
+
 def test_option_quote_row_maps_robinhood_fields() -> None:
     instrument = {
         "id": "deba9035-f70b-4257-917c-7bbc9ef06097",
@@ -280,6 +294,44 @@ def test_collect_robinhood_option_chains_with_fake_client() -> None:
     assert all(row["underlying_price"] == 205.14 for row in rows)
     assert result["observed_at"] == "2026-06-12T19:59:59+00:00"
     assert result["collected_at"] != result["observed_at"]
+
+
+def test_equity_quote_collector_excludes_invalid_provider_rows_from_received_coverage() -> None:
+    result = collect_robinhood_equity_quotes(
+        _ProviderConfig(), ["NVDA", "AMD", "TSLA"], client=_PartiallyInvalidEquityQuoteClient(),
+    )
+
+    assert result["received_symbols"] == ["NVDA"]
+    assert [row["symbol"] for row in result["rows"]] == ["NVDA"]
+    assert {"AMD:provider_timestamp_missing", "TSLA:non_positive_quote"}.issubset(result["errors"])
+
+
+def test_equity_quote_collector_can_require_regular_session_facts() -> None:
+    result = collect_robinhood_equity_quotes(
+        _ProviderConfig(), ["NVDA"], client=_FakeRobinhoodClient(), regular_session_only=True,
+    )
+
+    assert result["received_symbols"] == ["NVDA"]
+    assert result["rows"][0]["price"] == 205.14
+    assert result["rows"][0]["observed_at"] == datetime(2026, 6, 12, 19, 59, 59, tzinfo=UTC)
+
+
+def test_equity_quote_collector_reports_an_expired_batch_deadline(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class ExpiredDeadlineClient:
+        def get_equity_quotes(self, symbols: list[str]) -> dict[str, Any]:
+            calls.append(symbols)
+            return {"data": {"results": []}}
+
+    monkeypatch.setattr("investment_panel.core.robinhood_options.collector.time.monotonic", lambda: 10.0)
+    result = collect_robinhood_equity_quotes(
+        _ProviderConfig(), ["NVDA"], client=ExpiredDeadlineClient(), deadline=9.0,
+    )
+
+    assert calls == []
+    assert result["received_symbols"] == []
+    assert "collector_deadline_exceeded" in result["errors"]
 
 
 def test_robinhood_mcp_client_rejects_oversized_response(monkeypatch) -> None:
