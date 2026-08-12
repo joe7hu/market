@@ -375,6 +375,30 @@ def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch)
     assert calls[1]["query_row_limits"]
 
 
+def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(config: dict[str, object], table_names: tuple[str, ...], **kwargs):
+        calls.append({"table_names": table_names, **kwargs})
+        if table_names == ("portfolio",):
+            return {
+                "portfolio": [{"symbol": "TSLA"}, {"ticker": "MSFT"}],
+            }, {"database": "postgresql", "available_model_count": 1, "unavailable_models": []}
+        return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
+
+    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+
+    panel = data_access.load_panel_scope_data({"database": {"url": "postgresql:///test"}}, "portfolio")
+
+    assert panel.status.ready is True
+    assert panel.metadata["portfolio_bounded"] is True
+    assert panel.metadata["portfolio_symbol_count"] == 2
+    assert calls[0]["table_names"] == ("portfolio",)
+    assert "portfolio" not in calls[1]["table_names"]
+    assert calls[1]["query_symbol_filter"] == {"TSLA", "MSFT"}
+    assert calls[1]["query_row_limits"] == {"quotes": 24}
+
+
 def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> None:
     received: dict[str, object] = {}
 

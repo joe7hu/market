@@ -95,7 +95,47 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
 
 
 def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelData:
-    return load_panel_data(config, table_names=tables_for_scope(scope))
+    active_config = config or load_config()
+    if scope == "portfolio":
+        return load_portfolio_scope_data(active_config)
+    return load_panel_data(active_config, table_names=tables_for_scope(scope))
+
+
+def load_portfolio_scope_data(config: dict[str, Any] | None = None) -> PanelData:
+    """Load portfolio detail only for currently held instruments.
+
+    The generic ``quotes`` model has an intentionally broad no-filter mode.
+    The portfolio route must never use it: its source of truth is the current
+    position set, so passing that concrete set protects the PIT selector from
+    materializing the whole instrument catalog.
+    """
+
+    active_config = config or load_config()
+    seed = load_panel_data(active_config, table_names=("portfolio",))
+    if not seed.status.ready:
+        return seed
+    symbols = {
+        str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+        for row in seed.rows("portfolio")
+        if str(row.get("symbol") or row.get("ticker") or "").strip()
+    }
+    detail_names = tuple(name for name in tables_for_scope("portfolio") if name != "portfolio")
+    detail = load_panel_data(
+        active_config,
+        table_names=detail_names,
+        query_symbol_filter=symbols,
+        query_row_limits={"quotes": max(24, len(symbols) * 2)},
+    )
+    ready = seed.status.ready and detail.status.ready
+    return PanelData(
+        status=DataStatus(
+            ready,
+            "PostgreSQL loaded bounded portfolio details." if ready else detail.status.message,
+            detail.status.source,
+        ),
+        tables={**seed.tables, **detail.tables},
+        metadata={**seed.metadata, **detail.metadata, "portfolio_symbol_count": len(symbols), "portfolio_bounded": True},
+    )
 
 
 def load_watchlist_scope_data(
