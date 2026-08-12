@@ -320,7 +320,7 @@ class AgentRepository:
                         continue
                     tasks.extend(connection.execute(
                         "SELECT id, task_kind, request FROM analysis.agent_task "
-                        "WHERE status = 'queued' AND task_kind = %s "
+                        "WHERE status = 'queued' AND experiment_id IS NULL AND task_kind = %s "
                         "AND (CAST(%s AS text) IS NULL OR request->>'trigger' = %s) "
                         "ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED",
                         [kind, trigger, trigger, cap],
@@ -329,7 +329,7 @@ class AgentRepository:
             else:
                 tasks = connection.execute(
                     "SELECT id, task_kind, request FROM analysis.agent_task "
-                    "WHERE status = 'queued' AND task_kind = ANY(%s) "
+                    "WHERE status = 'queued' AND experiment_id IS NULL AND task_kind = ANY(%s) "
                     "AND (CAST(%s AS text) IS NULL OR request->>'trigger' = %s) "
                     "ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED",
                     [list(task_kinds), trigger, trigger, limit],
@@ -432,7 +432,7 @@ class AgentRepository:
             with self.runtime.transaction(JOB_PROFILE) as connection:
                 task = connection.execute(
                     "SELECT id, task_kind, request FROM analysis.agent_task "
-                    "WHERE status = 'queued' AND task_kind = ANY(%s) "
+                    "WHERE status = 'queued' AND experiment_id IS NULL AND task_kind = ANY(%s) "
                     "AND (CAST(%s AS text) IS NULL OR request->>'trigger' = %s) "
                     "ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
                     [list(task_kinds), trigger, trigger],
@@ -523,7 +523,7 @@ class AgentRepository:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             stale = connection.execute(
                 "SELECT id, agent_run_id FROM analysis.agent_task "
-                "WHERE status = 'running' AND updated_at < %s FOR UPDATE SKIP LOCKED",
+                "WHERE status = 'running' AND experiment_id IS NULL AND updated_at < %s FOR UPDATE SKIP LOCKED",
                 [cutoff],
             ).fetchall()
             if not stale:

@@ -474,6 +474,15 @@ def test_option_universe_honors_persisted_exclusion_over_config(repository: Inge
     assert "NVDA" in universe
 
 
+def test_option_universe_applies_a_hard_limit_after_priority_order(repository: IngestionRepository) -> None:
+    universe = repository.option_universe(
+        [{"symbol": "NVDA"}, {"symbol": "TSLA"}, {"symbol": "AAPL"}],
+        limit=2,
+    )
+
+    assert universe == ["NVDA", "TSLA"]
+
+
 def test_option_universe_adds_upcoming_catalyst_discovery_candidate(repository: IngestionRepository) -> None:
     with repository.runtime.transaction() as connection:
         instrument = connection.execute(

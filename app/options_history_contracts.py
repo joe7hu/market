@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OptionSnapshotSummary(BaseModel):
@@ -282,6 +282,12 @@ class RecoveryOptionTradeTicketLeg(OptionTradeTicketLeg):
 class OptionTradeTicket(BaseModel):
     ticket_version: int
     decision_id: str
+    lane: str | None = None
+    episode_key: str | None = None
+    execution_ready_at: datetime | None = None
+    expires_at: datetime | None = None
+    risk_policy_version: str | None = None
+    publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
     state: str
     structure: str
@@ -307,6 +313,12 @@ class RecoveryOptionTradeTicketV4(BaseModel):
     objective_version: str
     decision_id: str
     event_id: str
+    lane: str | None = None
+    episode_key: str | None = None
+    execution_ready_at: datetime | None = None
+    expires_at: datetime | None = None
+    risk_policy_version: str | None = None
+    publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
     family: str
     state: str

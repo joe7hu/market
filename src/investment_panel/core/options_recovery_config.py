@@ -10,7 +10,12 @@ from typing import Any, Callable
 class OptionsDecisionSystemConfig:
     mode: str = "shadow"
     options_paper_actions_enabled: bool = False
+    radar_paper_actions_enabled: bool = False
+    qqq_paper_actions_enabled: bool = False
     recovery_paper_actions_enabled: bool = False
+    decision_inbox_enabled: bool = True
+    telegram_notifications_enabled: bool = False
+    telegram_notifications_dry_run: bool = True
     options_risk_sleeve_capital: float | None = None
     max_risk_per_trade_pct: float = 0.02
     max_open_risk_pct: float = 0.10
@@ -33,7 +38,12 @@ def options_decision_system_config(
     return OptionsDecisionSystemConfig(
         mode=mode_parser(raw),
         options_paper_actions_enabled=bool(raw.get("options_paper_actions_enabled", False)),
+        radar_paper_actions_enabled=bool(raw.get("radar_paper_actions_enabled", False)),
+        qqq_paper_actions_enabled=bool(raw.get("qqq_paper_actions_enabled", False)),
         recovery_paper_actions_enabled=bool(raw.get("recovery_paper_actions_enabled", False)),
+        decision_inbox_enabled=bool(raw.get("decision_inbox_enabled", True)),
+        telegram_notifications_enabled=bool(raw.get("telegram_notifications_enabled", False)),
+        telegram_notifications_dry_run=bool(raw.get("telegram_notifications_dry_run", True)),
         options_risk_sleeve_capital=_float_or_none(sleeve),
         max_risk_per_trade_pct=_float_or_nan(raw.get("max_risk_per_trade_pct", 0.02)),
         max_open_risk_pct=_float_or_nan(raw.get("max_open_risk_pct", 0.10)),

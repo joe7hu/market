@@ -31,39 +31,12 @@ def refresh_today_publication(
                 FROM app.portfolio_position position
                 JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
                 LEFT JOIN LATERAL (
-                    SELECT quote.price, quote.observed_at
-                    FROM (
-                        SELECT id, instrument_id, source_id, price, observed_at, available_at
-                        FROM raw.quote
-                        UNION ALL
-                        SELECT id, instrument_id, source_id, price, observed_at, available_at
-                        FROM raw.quote_history
-                    ) quote
-                    JOIN ingest.source price_source ON price_source.id = quote.source_id
-                    WHERE quote.instrument_id = instrument.id
-                      AND quote.available_at <= %s
-                      AND EXISTS (
-                          SELECT 1
-                          FROM raw.quote_confirmation confirmation
-                          JOIN ingest.run price_run ON price_run.id = confirmation.ingest_run_id
-                          WHERE confirmation.fact_id = quote.id
-                            AND confirmation.fact_available_at = quote.available_at
-                            AND price_run.status IN ('succeeded', 'partial')
-                            AND price_run.finished_at <= %s
-                      )
-                      AND (
-                          quote.observed_at <= %s
-                          OR (
-                              price_source.kind IN ('daily_bars', 'daily_quote')
-                              AND (quote.observed_at AT TIME ZONE 'UTC')::date
-                                  <= (%s AT TIME ZONE instrument.market_timezone)::date
-                          )
-                      )
-                    ORDER BY quote.observed_at DESC, quote.available_at DESC LIMIT 1
+                    SELECT candidate.price, candidate.observed_at
+                    FROM raw.current_price_at(%s, ARRAY[instrument.id]) candidate
                 ) quote ON true
                 ORDER BY instrument.symbol
                 """,
-                [as_of, as_of, as_of, as_of],
+                [as_of],
             ).fetchall()
         ]
         reviews = [
@@ -103,15 +76,20 @@ def refresh_today_publication(
             ).fetchall()
         ]
         option_rows = [
-            dict(row["payload"])
+            {
+                **dict(row["payload"] or {}),
+                "publication_id": str(row["publication_id"]),
+                "publication_published_at": row["published_at"].isoformat() if row["published_at"] else None,
+            }
             for row in connection.execute(
                 """
                 WITH latest AS (
-                    SELECT id FROM app.publication
+                    SELECT id, published_at FROM app.publication
                     WHERE scope = 'options-radar' AND status = 'published'
                     ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
                 )
-                SELECT item.payload FROM app.publication_item item
+                SELECT item.payload, latest.id::text AS publication_id, latest.published_at
+                FROM app.publication_item item
                 JOIN latest ON latest.id = item.publication_id
                 WHERE item.model_name = 'option_radar_opportunity'
                 ORDER BY item.rank LIMIT 10
@@ -198,14 +176,10 @@ def refresh_today_publication(
     portfolio_rows = [_portfolio_pulse(row, holdings) for row in holdings]
     review_rows = [_review_item(row) for row in reviews]
     option_items = [_option_item(row) for row in option_rows]
-    option_action_queue = sorted(
-        option_items,
-        key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),
-    )[:3]
     source_items = [_source_change_item(row) for row in source_changes]
     catalyst_rows = [_catalyst_item(row, as_of) for row in catalysts]
     daily_brief = sorted(
-        option_items + review_rows + source_items + catalyst_rows + portfolio_rows,
+        review_rows + source_items + catalyst_rows + portfolio_rows,
         key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),
     )
     decision_queue = [
@@ -265,6 +239,8 @@ def refresh_today_publication(
         "risks": (narrative or {}).get("risks") or [],
         "watch_items": (narrative or {}).get("watch_items") or [],
         "error": narrative_error,
+        "option_publication_id": option_rows[0].get("publication_id") if option_rows else None,
+        "option_publication_published_at": option_rows[0].get("publication_published_at") if option_rows else None,
     }]
     analysis = AnalysisRepository(runtime)
     run_id = analysis.start_run(
@@ -287,11 +263,8 @@ def refresh_today_publication(
             "preopen_daily_brief": preopen,
             "daily_brief": daily_brief,
             "decision_queue": decision_queue,
-            "option_action_queue": option_action_queue,
             "decision_readiness": decision_readiness,
             "symbol_decision_snapshots": decision_queue,
-            "opportunities_ranked": option_items,
-            "candidates": option_items,
         },
         validation={"raw_and_analysis_separated": True, "row_count": len(daily_brief)},
         complete_run_summary={"daily_brief": len(daily_brief), "holdings": len(holdings)},
@@ -305,7 +278,7 @@ def refresh_today_publication(
         "catalysts": len(catalyst_rows),
         "source_changes": len(source_items),
         "option_decisions": len(option_items),
-        "option_actions": len(option_action_queue),
+        "option_actions": min(3, len(option_items)),
         "preopen_narrative": narrative_status,
     }
 

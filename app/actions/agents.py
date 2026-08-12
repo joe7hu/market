@@ -6,6 +6,7 @@ import os
 from typing import Any, Callable
 
 from investment_panel.database.agents import AgentRepository
+from investment_panel.database.agent_experiments import AgentExperimentRepository
 from investment_panel.database.authority import database_url, runtime_for_config
 
 
@@ -42,6 +43,17 @@ class AgentActions:
         request = self.repository.queue_thesis(normalized, prompt=prompt, trigger="ondemand")
         job = self.start_job("run_option_agents_ondemand", database_url(self.config))
         return {"ticker": normalized, "request_id": request["request_id"], "job": job}
+
+    def current_experiment(self) -> dict[str, Any]:
+        """Return the public experiment conclusion without operational batch rows."""
+
+        summary = AgentExperimentRepository(runtime_for_config(self.config)).current()
+        return summary or {
+            "status": "not_started",
+            "advisory_only": True,
+            "routing_changed": False,
+            "message": "No paired DeepSeek/Luna experiment has been queued.",
+        }
 
 
 def _scheduler_agent_seconds(config: Any) -> int:

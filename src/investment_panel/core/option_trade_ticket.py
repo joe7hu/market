@@ -11,6 +11,8 @@ from datetime import UTC, date, datetime, timedelta
 from math import floor, isfinite
 from typing import Any
 
+from investment_panel.database.opportunity_episodes import option_episode_key
+
 
 TICKET_VERSION = 1
 MAX_QUOTE_AGE_SECONDS = 120
@@ -59,6 +61,10 @@ def build_option_trade_ticket(
     thesis: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
+    lane: str | None = None,
+    episode_key: str | None = None,
+    risk_policy_version: str | None = None,
+    publication_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete ticket; missing authority always produces quantity 0."""
 
@@ -138,9 +144,30 @@ def build_option_trade_ticket(
         if len(quote_times) == len(normalized_legs) and quote_times
         else now
     )
+    ticket_lane = str(lane or ("qqq" if symbol.upper() == "QQQ" else "radar")).lower()
+    resolved_episode_key = episode_key or option_episode_key(
+        lane=ticket_lane,
+        symbol=symbol,
+        strategy=structure,
+        contract_ladder_slot=str(normalized_legs[0].get("contract_id") if normalized_legs else decision_id),
+        entry_at=now,
+    )
+    lineage = dict(publication_lineage or {})
+    if not lineage and provenance:
+        lineage = {
+            key: value
+            for key, value in dict(provenance).items()
+            if key in {"publication_id", "publication_scope", "analysis_run_id", "analysis_cutoff"}
+        }
     return {
         "ticket_version": TICKET_VERSION,
         "decision_id": str(decision_id),
+        "lane": ticket_lane,
+        "episode_key": resolved_episode_key,
+        "execution_ready_at": now.isoformat() if ticket_state == "READY" else None,
+        "expires_at": valid_until.isoformat(),
+        "risk_policy_version": str(risk_policy_version or risk.get("policy_version") or "option-ticket-v1"),
+        "publication_lineage": lineage,
         "symbol": symbol.upper(),
         "state": ticket_state,
         "structure": structure,

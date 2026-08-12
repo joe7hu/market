@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from typing import Any
+
+from investment_panel.core.config_views import option_agent_config_dict, options_decision_system_dict
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
@@ -211,6 +213,10 @@ class OptionAgentConfig:
     # In-app scheduler cadence override (0 = use MARKET_AGENT_REFRESH_SECONDS / default).
     auto_run_seconds: int = 0
     max_runs_per_day: int = 1
+    # Paired DeepSeek/Luna study.  It is disabled by default because it creates
+    # paid advisory calls and must not alter production routing or trade state.
+    experiment_enabled: bool = False
+    experiment_auto_run_seconds: int = 86_400
     # Per-ticker context sources fed to each run; toggle off to trim the prompt.
     context_sources: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_AGENT_CONTEXT_SOURCES))
 
@@ -480,6 +486,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             reasoning_effort=str(option_agent_raw.get("reasoning_effort", "high")),
             auto_run_seconds=int(option_agent_raw.get("auto_run_seconds", 0)),
             max_runs_per_day=int(option_agent_raw.get("max_runs_per_day", 1)),
+            experiment_enabled=bool(option_agent_raw.get("experiment_enabled", False)),
+            experiment_auto_run_seconds=int(option_agent_raw.get("experiment_auto_run_seconds", 86_400)),
             context_sources={**DEFAULT_AGENT_CONTEXT_SOURCES, **{k: bool(v) for k, v in dict(option_agent_raw.get("context_sources", {})).items()}},
         ),
         thesis_monitor=thesis_monitor_agent_config(thesis_monitor_raw),
@@ -625,21 +633,9 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "enabled": config.analysis.enabled,
             "correlation_lookback_days": config.analysis.correlation_lookback_days,
             "max_correlation_peers": config.analysis.max_correlation_peers,
-            "options_decision_system": {
-                "mode": config.analysis.options_decision_system.mode,
-                "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
-                "recovery_paper_actions_enabled": config.analysis.options_decision_system.recovery_paper_actions_enabled,
-                "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
-                "max_risk_per_trade_pct": config.analysis.options_decision_system.max_risk_per_trade_pct,
-                "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,
-                "max_symbol_risk_pct": config.analysis.options_decision_system.max_symbol_risk_pct,
-                "daily_loss_halt_pct": config.analysis.options_decision_system.daily_loss_halt_pct,
-                "max_recovery_open_positions": config.analysis.options_decision_system.max_recovery_open_positions,
-                "strategy_auto_promotion_enabled": config.analysis.options_decision_system.strategy_auto_promotion_enabled,
-                "event_agent_debounce_minutes": config.analysis.options_decision_system.event_agent_debounce_minutes,
-                "event_agent_max_batches_per_symbol_per_day": config.analysis.options_decision_system.event_agent_max_batches_per_symbol_per_day,
-                "event_agent_max_tasks_per_batch": config.analysis.options_decision_system.event_agent_max_tasks_per_batch,
-            },
+            "options_decision_system": options_decision_system_dict(
+                config.analysis.options_decision_system
+            ),
         },
         "agents": {
             "option_thesis": {
@@ -654,19 +650,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
                 "timeout_seconds": config.agents.option_postmortem.timeout_seconds,
                 "limit": config.agents.option_postmortem.limit,
             },
-            "option_agent": {
-                "enabled": config.agents.option_agent.enabled,
-                "command": config.agents.option_agent.command,
-                "timeout_seconds": config.agents.option_agent.timeout_seconds,
-                "thesis_limit": config.agents.option_agent.thesis_limit,
-                "postmortem_limit": config.agents.option_agent.postmortem_limit,
-                "provider": config.agents.option_agent.provider,
-                "model": config.agents.option_agent.model,
-                "reasoning_effort": config.agents.option_agent.reasoning_effort,
-                "auto_run_seconds": config.agents.option_agent.auto_run_seconds,
-                "max_runs_per_day": config.agents.option_agent.max_runs_per_day,
-                "context_sources": dict(config.agents.option_agent.context_sources),
-            },
+            "option_agent": option_agent_config_dict(config.agents.option_agent),
             "thesis_monitor": thesis_monitor_agent_dict(config.agents.thesis_monitor),
             "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},
         },

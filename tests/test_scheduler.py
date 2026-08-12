@@ -46,6 +46,12 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
     assert intervals["update_market_data"] == 3600
 
 
+def test_generic_paper_manager_runs_with_entry_switches_off_for_safe_exits(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_OPTIONS_PAPER_EXECUTION_SECONDS", raising=False)
+    intervals = scheduler.job_intervals()
+    assert intervals["process_options_paper_orders"] == 15
+
+
 def test_robinhood_split_source_and_signal_can_be_enabled_explicitly(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_SOURCE_REFRESH_SECONDS", "120")

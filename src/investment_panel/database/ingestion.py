@@ -95,7 +95,7 @@ class IngestionRepository:
             news_enabled=news_enabled, blogs_enabled=blogs_enabled, x_enabled=x_enabled,
         )
 
-    def option_universe(self, configured: Sequence[dict[str, Any]] = ()) -> list[str]:
+    def option_universe(self, configured: Sequence[dict[str, Any]] = (), *, limit: int | None = None) -> list[str]:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
@@ -195,7 +195,9 @@ class IngestionRepository:
             if symbol not in seen:
                 seen.add(symbol)
                 output.append(symbol)
-        return output
+        if limit is None:
+            return output
+        return output[:max(0, int(limit))]
 
     def latest_option_snapshot_by_symbol(self, source_id: str, symbols: Sequence[str]) -> dict[str, datetime]:
         return latest_option_snapshot_by_symbol(self.runtime, source_id, symbols)

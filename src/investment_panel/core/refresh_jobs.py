@@ -28,6 +28,7 @@ from investment_panel.jobs import (
     postgres_refresh,
     refresh_options_radar,
     run_option_agents,
+    run_agent_experiment,
     run_option_recovery_agents,
     run_thesis_monitor,
     snapshot_database,
@@ -42,6 +43,9 @@ from investment_panel.jobs import (
     update_robinhood_options,
     robinhood_option_history,
     detect_option_events,
+    options_paper_execution,
+    decision_inbox,
+    refresh_symbol_decision_outcomes,
 )
 from investment_panel.database.retention import RetentionRepository
 
@@ -189,7 +193,11 @@ ALLOWLIST: dict[str, JobRunner] = {
     "options_radar_hard_refresh": run_options_radar_hard_refresh,
     "refresh_options_radar_learning_marks": lambda config_path: refresh_options_radar.run_learning_marks(config_path),
     "run_option_agents": lambda config_path: run_option_agents.run(config_path),
+    "run_agent_experiment": lambda config_path: run_agent_experiment.run(config_path),
     "run_option_recovery_agents": lambda config_path: run_option_recovery_agents.run(config_path),
+    "process_options_paper_orders": lambda config_path: options_paper_execution.run(config_path),
+    "sync_decision_inbox": lambda config_path: decision_inbox.run(config_path),
+    "refresh_symbol_decision_outcomes": lambda config_path: refresh_symbol_decision_outcomes.run(config_path),
     # Manual run: forces the consolidated agent over the full open queue whenever a
     # command is configured, independent of the auto-run (enabled) toggle.
     "run_option_agents_force": lambda config_path: run_option_agents.run(config_path, force=True),

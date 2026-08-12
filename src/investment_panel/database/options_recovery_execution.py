@@ -51,6 +51,7 @@ from investment_panel.database.options_recovery_execution_support import (
 )
 from investment_panel.database.options_recovery_execution_lifecycle import RecoveryOrderLifecycle
 from investment_panel.database.options_recovery_execution_staging import RecoveryOrderStaging
+from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock, shared_sleeve_blockers
 
 
 CODE_VERSION = CURRENT_CODE_VERSION
@@ -322,6 +323,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
             rows = connection.execute(
                 """
                 SELECT event_contract.id AS event_contract_id, event_contract.contract_id,
+                       event_contract.ladder_slot_key,
                        event.instrument_id, instrument.symbol, contract.expiration, contract.strike, contract.option_type,
                        contract.provider_symbols, quote.bid, quote.ask, quote.bid_size, quote.ask_size,
                        quote.open_interest, quote.provider_delta, quote.observed_at, quote.available_at,
@@ -385,9 +387,9 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                   bool_or(event_id = %s AND strategy_family = %s
                           AND status IN ('staged', 'entered', 'partial_exited')) AS existing
                 FROM app.paper_order
-                WHERE cohort_id = %s::uuid AND created_at <= %s
+                WHERE created_at <= %s
                 """,
-                [instrument_id, event_id, family, cohort_id, reference],
+                [instrument_id, event_id, family, reference],
             ).fetchone()
             pnl = connection.execute(
                 """
@@ -395,10 +397,9 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                 FROM app.trade_journal
                 WHERE created_at >= %s AND created_at <= %s
                   AND details ? 'net_pnl'
-                  AND details->>'objective_version' = %s
-                  AND details->>'cohort_id' = %s
+                  AND (details->>'net_pnl') ~ '^-?[0-9]+(\\.[0-9]+)?$'
                 """
-                , [day_start, reference, CURRENT_OBJECTIVE_VERSION, cohort_id]
+                , [day_start, reference]
             ).fetchone()
             active_orders = [dict(item) for item in connection.execute(
                 """
@@ -548,6 +549,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
             "quantity": decision.quantity,
         }
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            acquire_shared_sleeve_lock(connection)
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", ["recovery-paper-order"])
             session_start = now.astimezone(MARKET_TZ).replace(
                 hour=0, minute=0, second=0, microsecond=0,
@@ -602,15 +604,29 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
             ).fetchone()
             if prior:
                 return {"signal_id": str(signal["id"]), "status": str(prior["status"]), "paper_order_id": str(prior["id"])}
+            shared_blockers = shared_sleeve_blockers(
+                connection,
+                now=now,
+                lane="recovery",
+                sleeve_capital=self.risk_policy.sleeve_capital,
+                daily_loss_halt_pct=self.risk_policy.daily_loss_halt_pct,
+                max_open_positions=self.risk_policy.max_open_positions,
+            )
+            if shared_blockers:
+                connection.execute(
+                    "UPDATE analysis.option_event_signal SET status = 'risk_blocked', gate_result = gate_result || %s, updated_at = now() WHERE id = %s",
+                    [Jsonb({"risk_blockers": shared_blockers}), signal["id"]],
+                )
+                return {"signal_id": str(signal["id"]), "status": "risk_blocked", "blockers": shared_blockers}
             key = f"recovery:{signal['id']}:v4"
             row = connection.execute(
                 """
                 INSERT INTO app.paper_order
                     (decision_id, instrument_id, side, quantity, limit_price, status, policy_result,
-                     structure, idempotency_key, ticket_version, ticket_snapshot, intended_limit_price,
+                     policy_snapshot, lane, structure, idempotency_key, ticket_version, ticket_snapshot, intended_limit_price,
                      event_id, event_signal_id, strategy_family, objective_version, cohort_id, created_at)
-                VALUES (%s, %s, 'buy', %s, %s, 'staged', %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, 'buy', %s, %s, 'staged', %s, %s, 'recovery', %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 [
@@ -621,7 +637,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                         "program_eligibility": _json_document(program.as_dict()),
                         "risk_policy": self.risk_policy.snapshot(),
                     }),
-                    ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
+                    Jsonb(self.risk_policy.snapshot()), ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
                     signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"),
                     signal["cohort_id"], now,
                 ],

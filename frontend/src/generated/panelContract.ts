@@ -43,7 +43,6 @@ export const PANEL_TABLE_KEYS = [
   "news",
   "opportunitiesRanked",
   "opportunitySources",
-  "optionActionQueue",
   "optionAttribution",
   "optionCalibration",
   "optionDiscoveryCandidate",

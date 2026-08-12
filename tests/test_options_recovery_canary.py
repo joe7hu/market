@@ -12,6 +12,8 @@ from investment_panel.database.options_recovery_cohorts import (
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs.detect_option_events import (
     _detector_collection_deadline,
+    _detector_symbol_limit,
+    _detector_universe,
     _post_ingestion_reference,
     detector_slot,
 )
@@ -46,6 +48,38 @@ def test_detector_collection_deadline_reserves_the_post_collection_tail(monkeypa
     monkeypatch.setattr("investment_panel.jobs.detect_option_events.job_timeout_seconds", lambda _: 90)
 
     assert _detector_collection_deadline() == 175.0
+
+
+def test_detector_universe_is_bounded_and_keeps_current_events_first(monkeypatch) -> None:
+    class Ingestion:
+        def __init__(self) -> None:
+            self.configured: list[dict[str, str]] | None = None
+            self.limit: int | None = None
+
+        def option_universe(self, configured, *, limit):
+            self.configured = list(configured)
+            self.limit = limit
+            return ["MSFT", "NVDA", "AAPL"][:limit]
+
+    class Events:
+        def current_event_symbols(self, *, limit):
+            assert limit == 3
+            return ["TSLA", "SNDK"]
+
+    ingestion = Ingestion()
+    symbols, active = _detector_universe(
+        ingestion,  # type: ignore[arg-type]
+        Events(),  # type: ignore[arg-type]
+        configured=[{"symbol": "NVDA"}],
+        limit=3,
+    )
+
+    assert active == ["TSLA", "SNDK"]
+    assert symbols == ["TSLA", "SNDK", "MSFT"]
+    assert ingestion.configured == [{"symbol": "TSLA"}, {"symbol": "SNDK"}, {"symbol": "NVDA"}]
+    assert ingestion.limit == 3
+    monkeypatch.setenv("MARKET_ROBINHOOD_MAX_SYMBOLS", "2")
+    assert _detector_symbol_limit(80) == 2
 
 
 def test_detector_denominator_stops_at_an_early_market_close() -> None:

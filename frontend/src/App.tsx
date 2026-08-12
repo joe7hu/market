@@ -1,9 +1,11 @@
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/market/workstation";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { MarketDataProvider } from "./marketData";
 import { AgentRoute } from "./pages/AgentRoute";
 import { CalendarRoute } from "./pages/CalendarRoute";
+import { DecisionInboxRoute } from "./pages/DecisionInboxRoute";
 import { FeedRoute } from "./pages/FeedRoute";
 import { HealthRoute } from "./pages/HealthRoute";
 import { MarketRoute } from "./pages/MarketRoute";
@@ -39,12 +41,13 @@ export function App() {
           <Route path="research-queue" element={<Navigate to="/watchlist" replace />} />
           <Route path="options-radar" element={<OptionsRadarRoute />} />
           <Route path="options-chain" element={<Suspense fallback={<p className="text-sm text-muted-foreground">Loading option-chain workstation…</p>}><OptionsChainRoute /></Suspense>} />
+          <Route path="inbox" element={<RouteErrorBoundary route="/inbox" failedApis={["/api/decision-inbox"]}><DecisionInboxRoute /></RouteErrorBoundary>} />
           <Route path="thesis-monitor" element={<ThesisMonitorRoute />} />
           <Route path="theses" element={<ThesisMonitorRoute />} />
           <Route path="filings" element={<Navigate to="/superinvestors" replace />} />
           <Route path="calendar" element={<CalendarRoute />} />
           <Route path="agent" element={<AgentRoute />} />
-          <Route path="health" element={<HealthRoute />} />
+          <Route path="health" element={<RouteErrorBoundary route="/health" failedApis={["/api/panel-snapshot?scope=health", "/api/options/history/health"]}><HealthRoute /></RouteErrorBoundary>} />
           <Route path="settings" element={<SettingsRoute />} />
           <Route path="tickers/:symbol" element={<TickerRoute />} />
           <Route path="*" element={<NotFoundRoute />} />

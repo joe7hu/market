@@ -19,6 +19,8 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows
 from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
+from investment_panel.database.panel_publications import published_tables
+from investment_panel.database.current_quotes import current_quote_rows
 
 
 RESEARCH_PACKETS_BASE_QUERY = """
@@ -31,6 +33,10 @@ RESEARCH_PACKETS_BASE_QUERY = """
     JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
     ORDER BY item.observed_at DESC
 """
+
+# Keep the seam stable for test callers while implementation ownership stays in
+# the focused publication module.
+_published_tables = published_tables
 
 
 DIRECT_QUERIES: dict[str, str] = {
@@ -196,13 +202,7 @@ DIRECT_QUERIES: dict[str, str] = {
         WHERE evaluation.evaluation_type IN ('forward_test', 'forward_shadow_test', 'shadow')
         ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
     """,
-    "quotes": """
-        SELECT DISTINCT ON (instrument.id) instrument.symbol, quote.observed_at,
-               quote.price, quote.change_pct, quote.change_abs, quote.currency,
-               quote.source_id AS source
-        FROM raw.quote quote JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
-        ORDER BY instrument.id, quote.observed_at DESC
-    """,
+    "quotes": "SELECT NULL::text AS symbol WHERE false",
     "options_chain": """
         WITH latest_symbol_snapshot AS (
             SELECT DISTINCT ON (instrument.id)
@@ -336,7 +336,10 @@ DIRECT_QUERIES: dict[str, str] = {
     "paper_orders": """
         SELECT orders.id::text, decision.decision_key AS recommendation_id,
                instrument.symbol, orders.created_at, orders.side, orders.quantity,
-               orders.limit_price, orders.status, orders.policy_result
+               orders.limit_price, orders.status, orders.lane, orders.policy_result,
+               orders.policy_snapshot, orders.actual_fill_price, orders.filled_at,
+               orders.exit_price, orders.exit_at, orders.fees, orders.ticket_version,
+               orders.ticket_snapshot
         FROM app.paper_order orders
         LEFT JOIN analysis.decision decision ON decision.id = orders.decision_id
         JOIN catalog.instrument instrument ON instrument.id = orders.instrument_id
@@ -552,6 +555,7 @@ SPECIAL_MODELS = {
     "refresh_jobs", "broker_status",
     "portfolio_summary", "portfolio_performance", "portfolio_transactions",
     "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
+    "paper_orders",
     *RECOVERY_MODELS,
 }
 
@@ -620,6 +624,12 @@ def load_postgres_tables(
                     if policy.custom_loader == "options_ticker_signals":
                         rows = options_ticker_signal_rows(connection, symbols=query_symbol_filter if symbol_scoped else None)
                         query_cache[cache_key] = rows[:limit] if limit else rows
+                    elif policy.custom_loader == "current_quotes":
+                        query_cache[cache_key] = current_quote_rows(
+                            connection,
+                            symbols=query_symbol_filter if symbol_scoped else None,
+                            limit=limit,
+                        )
                     else:
                         selected_query = RESEARCH_PACKETS_BASE_QUERY if symbol_scoped and (alias or name) == "research_packets" else policy.query
                         bounded_query = f"SELECT * FROM ({selected_query}) AS daily_research_rows"
@@ -666,32 +676,3 @@ def load_postgres_tables(
         "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata
-
-
-
-
-def _published_tables(runtime: Any, requested: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:
-    if not requested:
-        return {}
-    with runtime.read() as connection:
-        rows = connection.execute(
-            """
-            WITH latest AS (
-                SELECT DISTINCT ON (item.model_name) item.model_name, publication.id
-                FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
-                WHERE publication.status = 'published' AND item.model_name = ANY(%s)
-                ORDER BY item.model_name, publication.published_at DESC
-            )
-            SELECT item.model_name, item.payload
-            FROM latest
-            JOIN app.publication_item item
-              ON item.publication_id = latest.id AND item.model_name = latest.model_name
-            ORDER BY item.model_name, item.rank
-            """,
-            [list(requested)],
-        ).fetchall()
-    output: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        output.setdefault(str(row["model_name"]), []).append(dict(row["payload"]))
-    return output

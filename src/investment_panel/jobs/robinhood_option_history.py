@@ -164,9 +164,22 @@ def run(
                         )
                         recovery["paper_staging"] = execution.stage_qualified_orders(
                             event_id,
-                            enabled=config.analysis.options_decision_system.recovery_paper_actions_enabled,
+                            enabled=(
+                                config.analysis.options_decision_system.options_paper_actions_enabled
+                                and config.analysis.options_decision_system.recovery_paper_actions_enabled
+                            ),
                         )
                         recovery["paper_management"] = execution.manage_event_orders(event_id)
+                        if config.analysis.options_decision_system.decision_inbox_enabled:
+                            from investment_panel.database.decision_inbox import DecisionInboxRepository
+
+                            inbox = DecisionInboxRepository(runtime)
+                            for managed in recovery["paper_management"].get("orders") or []:
+                                status = str(managed.get("status") or "").lower()
+                                if status in {"entered", "exited", "invalidated"} and managed.get("paper_order_id"):
+                                    inbox.record_paper_lifecycle(
+                                        str(managed["paper_order_id"]), status=status,
+                                    )
                         from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
 
                         learning = RecoveryLearningRepository(runtime)

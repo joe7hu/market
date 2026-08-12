@@ -20,8 +20,6 @@ from app.options_history_contracts import (
     OptionSnapshotPage,
     OptionSurfaceEvidence,
     OptionSurfaceGroups,
-    OptionTradeTicket,
-    RecoveryOptionTradeTicketV4,
     OptionsCandidatePage,
     OptionsDecisionBrief,
     OptionsLearningProgressPage,
@@ -391,6 +389,28 @@ def option_radar_opportunities() -> dict[str, Any]:
     return deps.user_state_table_payload(deps.options_radar_rows(deps.load_config(), "option_radar_opportunity"))
 
 
+@router.get("/api/opportunity-scorecard")
+def opportunity_scorecard(
+    lane: Literal["radar", "qqq", "recovery"] = Query("radar"),
+    window: int = Query(120, ge=1, le=3650),
+) -> dict[str, Any]:
+    return _actions().opportunity_scorecard(
+        lane=lane,
+        window_days=window,
+    )
+
+
+@router.get("/api/decision-inbox")
+def decision_inbox(
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=256),
+) -> dict[str, Any]:
+    try:
+        return _actions().decision_inbox(limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/api/options-radar/signals/{decision_id}")
 def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
@@ -427,23 +447,55 @@ def option_radar_learning_collection(
     }
 
 
-@router.get("/api/options/tickets/{decision_id}", response_model=OptionTradeTicket | RecoveryOptionTradeTicketV4)
+@router.get("/api/options/tickets/{decision_id}")
 def option_trade_ticket(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
     if detail is not None:
         ticket = detail.get("ticket")
         if isinstance(ticket, dict):
-            return ticket
+            return _ticket_detail_contract(ticket, detail)
     # A recovery signal has an analysis.decision row for provenance, so the
     # legacy detail reader can find it without owning its v4 ticket.  Always
     # prefer the canonical recovery ticket before treating the decision as an
     # incomplete legacy publication.
     recovery_ticket = _actions().recovery_ticket(decision_id)
     if recovery_ticket is not None:
-        return recovery_ticket
+        return _ticket_detail_contract(recovery_ticket, detail or {})
     if detail is None:
         raise HTTPException(status_code=404, detail="Option decision not found")
     raise HTTPException(status_code=409, detail="Current publication has no trade ticket; refresh the decision surface")
+
+
+def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> dict[str, Any]:
+    """Keep legacy ticket fields while adding the immutable deep-dive contract.
+
+    Older clients read ``ticket_version`` and ``legs`` at the top level.  New
+    clients use the named sections so a signal remains inspectable even when a
+    ticker dossier has no independent data.
+    """
+
+    outcome_fields = (
+        "maturity_state", "observed_through", "current_return", "return_1d",
+        "return_5d", "return_20d", "return_60d", "peak_return", "max_drawdown",
+        "paper_status", "credit_captured", "collateral_return", "assigned_basis",
+        "strike_touched",
+    )
+    publication = {
+        "id": signal.get("publication_id") or (ticket.get("publication_lineage") or {}).get("publication_id"),
+        "scope": signal.get("publication_scope") or (ticket.get("publication_lineage") or {}).get("publication_scope"),
+        "published_at": signal.get("published_at") or (ticket.get("publication_lineage") or {}).get("published_at"),
+        "current": bool(signal.get("current_publication", False)),
+    }
+    return {
+        # Top-level ticket fields preserve the former endpoint contract.
+        **ticket,
+        "ticket": ticket,
+        "signal": signal,
+        "publication": publication,
+        "evidence": list(signal.get("evidence") or []),
+        "outcome": {name: signal.get(name) for name in outcome_fields if signal.get(name) is not None},
+        "agent_provenance": (ticket.get("provenance") or {}).get("thesis") or {},
+    }
 
 
 @router.post("/api/options-radar/signals/{decision_id}/paper-entry")

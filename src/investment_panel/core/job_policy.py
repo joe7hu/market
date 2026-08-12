@@ -61,7 +61,11 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         ),
         _job("refresh_options_radar_learning_marks"),
         _job("run_option_agents"),
+        _job("run_agent_experiment", timeout_seconds=1_200),
         _job("run_option_recovery_agents", timeout_seconds=600),
+        _job("process_options_paper_orders", timeout_seconds=60),
+        _job("sync_decision_inbox", timeout_seconds=30),
+        _job("refresh_symbol_decision_outcomes", timeout_seconds=300),
         _job("run_option_agents_force"),
         _job("run_option_agents_ondemand"),
         _job("run_thesis_monitor", timeout_seconds=1800),
@@ -194,11 +198,34 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
         pass
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
+    experiment_enabled = False
+    experiment_seconds = 0
+    try:
+        experiment_enabled = bool(_config_value(option_agent, "experiment_enabled", False))
+        experiment_seconds = int(_config_value(option_agent, "experiment_auto_run_seconds", 86_400) or 0)
+    except Exception:
+        pass
+    if experiment_enabled and experiment_seconds > 0:
+        intervals["run_agent_experiment"] = experiment_seconds
 
     recovery_agent_seconds = _env_int_optional("MARKET_RECOVERY_EVENT_AGENT_REFRESH_SECONDS")
     recovery_agent_seconds = 300 if recovery_agent_seconds is None else recovery_agent_seconds
     if auto_run_enabled and recovery_agent_seconds > 0:
         intervals["run_option_recovery_agents"] = recovery_agent_seconds
+
+    decision_settings = _options_decision_config(config)
+    inbox_seconds = _env_int("MARKET_DECISION_INBOX_REFRESH_SECONDS", 15, allow_zero=True)
+    if bool(_config_value(decision_settings, "decision_inbox_enabled", True)) and inbox_seconds > 0:
+        intervals["sync_decision_inbox"] = inbox_seconds
+    paper_seconds = _env_int("MARKET_OPTIONS_PAPER_EXECUTION_SECONDS", 15, allow_zero=True)
+    # Keep the deterministic manager alive even when all entry gates are off.
+    # It stages nothing in that state, but it can still close existing paper
+    # positions safely after a kill switch is used.
+    if paper_seconds > 0:
+        intervals["process_options_paper_orders"] = paper_seconds
+    stock_outcome_seconds = _env_int("MARKET_SYMBOL_OUTCOME_REFRESH_SECONDS", 3600, allow_zero=True)
+    if stock_outcome_seconds > 0:
+        intervals["refresh_symbol_decision_outcomes"] = stock_outcome_seconds
 
     for job, env_name, default in (
         ("update_social_sources", "MARKET_SOCIAL_REFRESH_SECONDS", 1800),
@@ -234,6 +261,9 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "market_data_refresh_seconds": str(intervals.get("update_market_data", 0)),
         "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
+        "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
+        "options_paper_execution_seconds": str(intervals.get("process_options_paper_orders", 0)),
+        "symbol_outcome_refresh_seconds": str(intervals.get("refresh_symbol_decision_outcomes", 0)),
         "radar_option_source": option_source,
         "external_jobs": {
             "premarket_options_intelligence": {
@@ -342,6 +372,15 @@ def _option_agent_config(config: Any | None) -> Any:
         config = load_config()
     agents = _config_value(config, "agents", {})
     return _config_value(agents, "option_agent", {})
+
+
+def _options_decision_config(config: Any | None) -> Any:
+    if config is None:
+        from investment_panel.core.config import load_config
+
+        config = load_config()
+    analysis = _config_value(config, "analysis", {})
+    return _config_value(analysis, "options_decision_system", {})
 
 
 def _config_value(source: Any, key: str, default: Any = None) -> Any:

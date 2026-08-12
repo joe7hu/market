@@ -24,6 +24,13 @@ def agent_overview() -> dict[str, Any]:
     return _actions().overview()
 
 
+@router.get("/api/agent/experiments/current")
+def current_agent_experiment() -> dict[str, Any]:
+    """Expose only the experiment conclusion and gates, never batch rows."""
+
+    return _actions().current_experiment()
+
+
 @router.get("/api/agent/research-prompt")
 def agent_research_prompt() -> dict[str, Any]:
     _, research_data = deps._context(

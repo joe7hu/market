@@ -43,6 +43,30 @@ class OptionEventRepository(OptionEventFeed):
         self.policy = OptionHistoryPolicyRepository(runtime)
         self.cohorts = RecoveryCohortRepository(runtime)
 
+    def current_event_symbols(self, *, limit: int = EVENT_MAX_ACTIVE_SYMBOLS) -> list[str]:
+        """Return current recovery symbols for the bounded detector scan."""
+
+        safe_limit = max(0, int(limit))
+        if safe_limit == 0:
+            return []
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol
+                FROM analysis.option_event event
+                JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
+                WHERE {self.cohorts.current_event_clause(alias='event')}
+                  AND event.status IN ('active', 'deferred_capacity')
+                ORDER BY (event.status = 'active') DESC,
+                         event.event_rank ASC NULLS LAST,
+                         event.detected_at ASC,
+                         instrument.symbol
+                LIMIT %s
+                """,
+                [safe_limit],
+            ).fetchall()
+        return [str(row["symbol"]) for row in rows if str(row["symbol"] or "").strip()]
+
     def detect_events(
         self,
         observations: Iterable[EventObservation] | None = None,

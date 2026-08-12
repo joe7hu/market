@@ -17,6 +17,32 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
 
+def _insert_publication(
+    connection: psycopg.Connection,
+    *,
+    scope: str,
+    status: str,
+    at: datetime,
+    sequence: int,
+) -> None:
+    run_id = connection.execute(
+        """
+        INSERT INTO analysis.run
+            (run_type, input_cutoff, code_version, input_hash, started_at, finished_at, status)
+        VALUES ('retention-fixture', %s, %s, %s, %s, %s, 'succeeded')
+        RETURNING id
+        """,
+        [at, f"fixture-{sequence}", f"{sequence:064x}", at, at],
+    ).fetchone()["id"]
+    connection.execute(
+        """
+        INSERT INTO app.publication (scope, analysis_run_id, status, created_at, published_at)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        [scope, run_id, status, at, at if status == "published" else None],
+    )
+
+
 def test_retention_prunes_unreferenced_history_and_keeps_published_generation(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     runtime = DatabaseRuntime(postgres_dsn)
@@ -88,6 +114,90 @@ def test_retention_prunes_unreferenced_history_and_keeps_published_generation(po
     assert quote_count == 1
     assert kept_run == 1
     assert old_partition is None
+
+
+def test_publication_retention_is_bounded_dry_run_and_repeatable(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            _insert_publication(connection, scope="market", status="published", at=reference, sequence=0)
+            for sequence in range(1, 51):
+                _insert_publication(
+                    connection,
+                    scope="market",
+                    status="superseded",
+                    at=reference - timedelta(days=sequence),
+                    sequence=sequence,
+                )
+            _insert_publication(connection, scope="today", status="published", at=reference, sequence=101)
+            for sequence in range(102, 107):
+                _insert_publication(
+                    connection,
+                    scope="today",
+                    status="superseded",
+                    at=reference - timedelta(days=80 + sequence),
+                    sequence=sequence,
+                )
+
+        retention = RetentionRepository(runtime)
+        dry_run = retention.prune(now=reference, dry_run=True)
+        assert dry_run == {"publications": 7, "publication_dry_run": 7}
+
+        first = retention.prune(now=reference, publication_batch_size=3)
+        second = retention.prune(now=reference, publication_batch_size=3)
+        third = retention.prune(now=reference, publication_batch_size=3)
+        fourth = retention.prune(now=reference, publication_batch_size=3)
+    finally:
+        runtime.close()
+
+    assert first["publications"] == 3
+    assert second["publications"] == 3
+    assert third["publications"] == 1
+    assert fourth["publications"] == 0
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        market_superseded = connection.execute(
+            "SELECT count(*) FROM app.publication WHERE scope = 'market' AND status = 'superseded'"
+        ).fetchone()[0]
+        today_superseded = connection.execute(
+            "SELECT count(*) FROM app.publication WHERE scope = 'today' AND status = 'superseded'"
+        ).fetchone()[0]
+        published_by_scope = connection.execute(
+            "SELECT scope, count(*) FROM app.publication WHERE status = 'published' GROUP BY scope ORDER BY scope"
+        ).fetchall()
+    assert market_superseded == 48
+    assert today_superseded == 0
+    assert published_by_scope == [("market", 1), ("today", 1)]
+
+
+def test_publication_only_retention_is_restart_safe(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    try:
+        with runtime.transaction() as connection:
+            _insert_publication(connection, scope="market", status="published", at=reference, sequence=1000)
+            for sequence in range(1001, 1052):
+                _insert_publication(
+                    connection,
+                    scope="market",
+                    status="superseded",
+                    at=reference - timedelta(days=sequence),
+                    sequence=sequence,
+                )
+        retention = RetentionRepository(runtime)
+        assert retention.prune_publications(now=reference, dry_run=True) == {
+            "publications": 3,
+            "publication_dry_run": 3,
+        }
+        assert retention.prune_publications(now=reference, batch_size=2) == {"publications": 2}
+        assert retention.prune_publications(now=reference, batch_size=2) == {"publications": 1}
+        assert retention.prune_publications(now=reference, batch_size=2) == {"publications": 0}
+    finally:
+        runtime.close()
 
 
 def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(

@@ -30,7 +30,11 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
             allow_symbol_less=name in {"catalysts", "earnings"},
             exclude_future_rows=name in {"catalysts", "earnings", "research_packets"},
             chronological=name in {"catalysts", "earnings"},
-            custom_loader="options_ticker_signals" if name == "options_ticker_signals" else None,
+            custom_loader=(
+                "options_ticker_signals" if name == "options_ticker_signals"
+                else "current_quotes" if name == "quotes"
+                else None
+            ),
         )
         for name, query in queries.items()
     }

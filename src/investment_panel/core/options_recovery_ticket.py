@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from math import isfinite
 from typing import Any, Iterable
 
+from investment_panel.database.opportunity_episodes import option_episode_key
 from investment_panel.core.options_recovery import (
     FEE_PER_CONTRACT_LEG,
     OBJECTIVE_VERSION,
@@ -50,6 +51,8 @@ def build_recovery_ticket_v4(
     lower_confidence_expectancy: float | None = None,
     blockers: Iterable[str] = (),
     risk_policy: RecoveryRiskPolicy | None = None,
+    episode_key: str | None = None,
+    publication_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an immutable recovery ticket with executable entry and exit terms."""
 
@@ -81,11 +84,25 @@ def build_recovery_ticket_v4(
     total_risk = _round_money(one_unit_max_loss * max(quantity, 0))
     state = "READY" if not static_blockers and entry is not None and quantity > 0 else "WATCH"
     expiry_text = expiration.isoformat() if isinstance(expiration, date) else str(expiration)[:10]
+    resolved_episode_key = episode_key or option_episode_key(
+        lane="recovery",
+        event_id=event_id,
+        symbol=symbol,
+        strategy=family,
+        contract_ladder_slot=str(normalized[0].get("contract_id") if normalized else decision_id),
+        entry_at=now,
+    )
     return {
         "ticket_version": RECOVERY_TICKET_VERSION,
         "objective_version": OBJECTIVE_VERSION,
         "decision_id": str(decision_id),
         "event_id": str(event_id),
+        "lane": "recovery",
+        "episode_key": resolved_episode_key,
+        "execution_ready_at": now.isoformat() if state == "READY" else None,
+        "expires_at": None,
+        "risk_policy_version": str(risk_policy.snapshot().get("policy_version") or OBJECTIVE_VERSION),
+        "publication_lineage": dict(publication_lineage or {}),
         "symbol": symbol.upper(),
         "family": family,
         "state": state,

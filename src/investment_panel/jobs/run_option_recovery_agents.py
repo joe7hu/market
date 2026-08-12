@@ -10,8 +10,7 @@ from investment_panel.core.config import load_config
 from investment_panel.core.options_recovery_agents import recovery_agent_schema, recovery_agent_system_prompt
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_recovery_agents import RecoveryEventAgentRepository
-from investment_panel.jobs.deepseek_option_agent import _call_deepseek_structured
-from investment_panel.jobs.openai_option_agent import _call_codex_structured
+from investment_panel.jobs.provider_request import StructuredProviderRequest, invoke_structured
 
 
 def run(
@@ -61,17 +60,22 @@ def run(
             ],
         }
         try:
-            response = _call_provider(
-                str(config.agents.option_agent.provider),
-                payload,
-                schema_name="options_recovery_event_batch",
-                schema=recovery_agent_schema(),
-                system_prompt=recovery_agent_system_prompt(),
-                compact=False,
+            provider = str(config.agents.option_agent.provider).strip().lower()
+            if provider not in {"codex", "deepseek"}:
+                raise ValueError(f"unsupported option agent provider: {provider}")
+            response = invoke_structured(
+                StructuredProviderRequest(
+                    provider=provider,  # type: ignore[arg-type]
+                    payload=payload,
+                    schema_name="options_recovery_event_batch",
+                    schema=recovery_agent_schema(),
+                    system_prompt=recovery_agent_system_prompt(),
+                    compact=False,
+                    model=str(claim["batch"]["model"]),
+                    reasoning_effort=str(claim["batch"]["reasoning_effort"]),
+                    timeout_seconds=float(config.agents.option_agent.timeout_seconds),
+                ),
                 meta_sink=meta,
-                model=str(claim["batch"]["model"]),
-                reasoning_effort=str(claim["batch"]["reasoning_effort"]),
-                timeout=float(config.agents.option_agent.timeout_seconds),
             )
             results.append(repository.complete(claim, response, meta=meta))
         except Exception as exc:  # advisory failure is intentionally terminal only for this batch
@@ -82,12 +86,6 @@ def run(
         "status": status, "database": "postgresql", "preopen": preopen,
         "batches": results, "telemetry": repository.telemetry(),
     }
-
-
-def _call_provider(provider: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
-    if provider.strip().lower() == "deepseek":
-        return _call_deepseek_structured(*args, **kwargs)
-    return _call_codex_structured(*args, **kwargs)
 
 
 def main() -> None:

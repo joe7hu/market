@@ -2,6 +2,7 @@
 
 import {useMemo } from "react";
 import {StatusBadge } from "@/components/market/workstation";
+import { Button } from "@/components/ui/button";
 import {RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
 import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
@@ -27,6 +28,7 @@ export function SignalBriefPanel({
   snapshotLabel,
   latestCandidateTime,
   onOpenTicker,
+  onOpenDecision,
 }: {
   rows: RowRecord[];
   activeAlertCount: number;
@@ -40,6 +42,7 @@ export function SignalBriefPanel({
   snapshotLabel: string;
   latestCandidateTime: string;
   onOpenTicker: OpenTicker;
+  onOpenDecision: (decisionId: string) => void;
 }) {
   const offHours = Boolean(snapshotLabel) && snapshotLabel !== "regular";
   const snapshotText = latestSnapshot
@@ -47,6 +50,7 @@ export function SignalBriefPanel({
     : "No option data";
   const ranked = useMemo(() => [...rows].sort(compareGroupedOpportunities), [rows]);
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
+  const strongestDecisionId = textField(strongest, ["decision_id", "candidate_event_id"]);
   const hasLowerBound = Boolean(strongest) && Number.isFinite(numberField(strongest, ["lower_95_expected_value"], Number.NaN));
   const repairRows = rows.filter(isServiceRepair);
   const exceptionalRows = rows.filter((row) => stateOf(row) === "READY" && row["execution_ready"] === true);
@@ -82,9 +86,10 @@ export function SignalBriefPanel({
           {strongest ? (
             <div className="mt-4">
               <div className="flex flex-wrap items-center gap-2">
-                <TickerButton ticker={textField(strongest, ["ticker"])} onOpenTicker={onOpenTicker} />
+                {strongestDecisionId ? <Button type="button" variant="ghost" size="sm" className="-ml-2 h-7 font-semibold tracking-normal" onClick={() => onOpenDecision(strongestDecisionId)}>{textField(strongest, ["ticker"])}</Button> : <TickerButton ticker={textField(strongest, ["ticker"])} onOpenTicker={onOpenTicker} />}
                 <StatusBadge tone={tierTone(tierOf(strongest))}>{titleLabel(textField(strongest, ["structure"], tierOf(strongest)).replaceAll("_", " "))}</StatusBadge>
                 <StatusBadge tone={stateTone(stateOf(strongest))}>{titleLabel(stateOf(strongest) || "watch")}</StatusBadge>
+                {strongestDecisionId ? <Button type="button" variant="outline" size="sm" onClick={() => onOpenDecision(strongestDecisionId)}>View ticket</Button> : null}
               </div>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">

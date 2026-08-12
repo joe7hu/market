@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 import json
+import os
 import time
 from typing import Any
 
@@ -62,12 +63,27 @@ def run(
 
     ingestion = IngestionRepository(runtime)
     policy = OptionHistoryPolicyRepository(runtime)
-    symbols = ingestion.option_universe()
+    detector_limit = _detector_symbol_limit(provider.max_symbols)
+    symbols, active_event_symbols = _detector_universe(
+        ingestion,
+        repository,
+        configured=list(getattr(config, "watchlist", ()) or ()),
+        limit=detector_limit,
+    )
+    universe_details = {
+        "universe_limit": detector_limit,
+        "universe_symbols": len(symbols),
+        "current_event_symbols": active_event_symbols,
+    }
     if not symbols:
         cohorts.record_detector_run(
             scheduled_at=slot, started_at=started, finished_at=datetime.now(UTC), expected_symbols=0,
             received_symbols=0, fresh_symbols=0, quote_age_p95_minutes=None, provider_run_id=None,
-            status="succeeded", details={"triggering_quote_count": 0, "fresh_triggering_quote_count": 0},
+            status="succeeded", details={
+                "triggering_quote_count": 0,
+                "fresh_triggering_quote_count": 0,
+                **universe_details,
+            },
         )
         cohorts.refresh_program_session(trading_date=slot.astimezone(MARKET_TZ).date(), now=reference)
         return {
@@ -82,7 +98,7 @@ def run(
         cohorts.record_detector_run(
             scheduled_at=slot, started_at=started, finished_at=datetime.now(UTC), expected_symbols=len(symbols),
             received_symbols=0, fresh_symbols=0, quote_age_p95_minutes=None, provider_run_id=None,
-            status="failed", failure_reasons=["provider_capacity_deferred"],
+            status="failed", failure_reasons=["provider_capacity_deferred"], details=universe_details,
         )
         cohorts.refresh_program_session(trading_date=slot.astimezone(MARKET_TZ).date(), now=reference)
         return _failed(repository, reference, "provider_capacity_deferred")
@@ -116,19 +132,24 @@ def run(
                 provider_run.finish(
                     "failed", item_count=0, instrument_count=0,
                     failure_detail="; ".join(str(item) for item in (provider_errors or [failed_reason])[:10]),
-                    summary={"requested_symbols": len(symbols), "stored_quotes": stored, "errors": provider_errors[:20]},
+                    summary={
+                        "requested_symbols": len(symbols),
+                        "stored_quotes": stored,
+                        "errors": provider_errors[:20],
+                        **universe_details,
+                    },
                 )
                 cohorts.record_detector_run(
                     scheduled_at=slot, started_at=started, finished_at=datetime.now(UTC),
                     expected_symbols=len(symbols), received_symbols=0, fresh_symbols=0,
                     quote_age_p95_minutes=None, provider_run_id=str(provider_run.id), status="failed",
-                    failure_reasons=[failed_reason, *provider_errors[:10]],
+                    failure_reasons=[failed_reason, *provider_errors[:10]], details=universe_details,
                 )
                 cohorts.refresh_program_session(trading_date=slot.astimezone(MARKET_TZ).date(), now=reference)
                 return _failed(repository, reference, failed_reason)
             provider_run.finish(
                 "succeeded", item_count=stored, instrument_count=len(set(payload.get("received_symbols") or [])),
-                summary={"requested_symbols": len(symbols), "errors": provider_errors[:20]},
+                summary={"requested_symbols": len(symbols), "errors": provider_errors[:20], **universe_details},
             )
             # Changed facts receive their availability timestamp during the
             # completed ingestion transaction.  The detector must use a
@@ -173,6 +194,7 @@ def run(
                     "fresh_triggering_quote_count": fresh_trigger_count,
                     "stale_triggering_symbols": list(report.get("stale_triggering_symbols") or [])[:100],
                     "critical_reference_symbols": list(report.get("critical_reference_symbols") or [])[:100],
+                    **universe_details,
                 },
             )
             program = cohorts.refresh_program_session(
@@ -188,7 +210,7 @@ def run(
         cohorts.record_detector_run(
             scheduled_at=slot, started_at=started, finished_at=datetime.now(UTC), expected_symbols=len(symbols),
             received_symbols=0, fresh_symbols=0, quote_age_p95_minutes=None, provider_run_id=provider_run_id,
-            status="failed", failure_reasons=[f"{type(exc).__name__}:{exc}"],
+            status="failed", failure_reasons=[f"{type(exc).__name__}:{exc}"], details=universe_details,
         )
         cohorts.refresh_program_session(trading_date=slot.astimezone(MARKET_TZ).date(), now=reference)
         return _failed(repository, reference, f"detector_ingestion_failed:{type(exc).__name__}")
@@ -229,6 +251,34 @@ def _detector_collection_deadline() -> float | None:
     if timeout_seconds is None:
         return None
     return time.monotonic() + max(1, int(timeout_seconds) - 15)
+
+
+def _detector_symbol_limit(configured_limit: int) -> int:
+    """Use the normal provider cap, with the documented operator override."""
+
+    raw = os.environ.get("MARKET_ROBINHOOD_MAX_SYMBOLS")
+    try:
+        override = int((raw or "").strip())
+    except (TypeError, ValueError):
+        override = 0
+    return max(1, override if override > 0 else int(configured_limit))
+
+
+def _detector_universe(
+    ingestion: IngestionRepository,
+    repository: OptionEventRepository,
+    *,
+    configured: list[dict[str, Any]],
+    limit: int,
+) -> tuple[list[str], list[str]]:
+    """Build one bounded detector denominator with current events retained."""
+
+    active_event_symbols = repository.current_event_symbols(limit=limit)
+    prioritized = [{"symbol": symbol} for symbol in active_event_symbols]
+    prioritized.extend(configured)
+    discovered = ingestion.option_universe(prioritized, limit=limit)
+    symbols = list(dict.fromkeys([*active_event_symbols, *discovered]))[:limit]
+    return symbols, active_event_symbols
 
 
 def _p95(values: list[float]) -> float | None:

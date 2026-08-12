@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import re
+from typing import Any
+
+import psycopg
 from psycopg import sql
 
+from investment_panel.core.decision import is_us_market_day
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
 OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})$")
+ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
+MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
+ROLLING_PUBLICATION_TRADING_DAYS = 30
 
 
 class RetentionRepository:
@@ -24,10 +31,15 @@ class RetentionRepository:
         analysis_days: int = 365,
         publication_days: int = 90,
         job_days: int = 30,
+        publication_batch_size: int = 1_000,
+        dry_run: bool = False,
+        vacuum_analyze: bool = False,
     ) -> dict[str, int]:
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             raise ValueError("retention reference time must be timezone-aware")
+        if publication_batch_size < 1:
+            raise ValueError("publication batch size must be positive")
         cutoffs = {
             "option": reference - timedelta(days=option_days),
             "history": reference - timedelta(days=730),
@@ -40,11 +52,23 @@ class RetentionRepository:
             "job": reference - timedelta(days=job_days),
         }
         counts: dict[str, int] = {}
+        rolling_publication_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            counts["publications"] = connection.execute(
-                "DELETE FROM app.publication WHERE status = 'superseded' AND created_at < %s",
-                [cutoffs["publication"]],
-            ).rowcount
+            publication_candidates = _publication_candidates(
+                connection,
+                standard_cutoff=cutoffs["publication"],
+                rolling_cutoff=rolling_publication_cutoff,
+                limit=None if dry_run else publication_batch_size,
+            )
+            counts["publications"] = len(publication_candidates)
+            if not dry_run and publication_candidates:
+                connection.execute(
+                    "DELETE FROM app.publication WHERE id = ANY(%s)",
+                    [publication_candidates],
+                )
+            if dry_run:
+                counts["publication_dry_run"] = len(publication_candidates)
+                return counts
             counts["analysis_runs"] = connection.execute(
                 """
                 DELETE FROM analysis.run run
@@ -134,7 +158,61 @@ class RetentionRepository:
                 [cutoffs["job"]],
             ).rowcount
         counts["option_partitions"] = self.drop_empty_option_partitions(before=cutoffs["option"])
+        if vacuum_analyze and counts["publications"]:
+            counts["publication_vacuum_tables"] = self.vacuum_analyze_publications()
         return counts
+
+    def prune_publications(
+        self,
+        *,
+        now: datetime | None = None,
+        batch_size: int = 1_000,
+        dry_run: bool = False,
+        vacuum_analyze: bool = False,
+    ) -> dict[str, int]:
+        """Prune only superseded publications in a small, restart-safe batch.
+
+        This operational entrypoint separates the large historical publication
+        repair from unrelated source-retention rules.  It is safe to repeat;
+        each call selects at most ``batch_size`` current candidates.
+        """
+
+        reference = now or datetime.now(UTC)
+        if reference.tzinfo is None:
+            raise ValueError("retention reference time must be timezone-aware")
+        if batch_size < 1:
+            raise ValueError("publication batch size must be positive")
+        rolling_cutoff = _trading_day_cutoff(reference, ROLLING_PUBLICATION_TRADING_DAYS)
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            candidates = _publication_candidates(
+                connection,
+                standard_cutoff=reference - timedelta(days=90),
+                rolling_cutoff=rolling_cutoff,
+                limit=None if dry_run else batch_size,
+            )
+            count = len(candidates)
+            if not dry_run and candidates:
+                connection.execute(
+                    "DELETE FROM app.publication WHERE id = ANY(%s)", [candidates]
+                )
+        result = {"publications": count}
+        if dry_run:
+            result["publication_dry_run"] = count
+        elif vacuum_analyze and count:
+            result["publication_vacuum_tables"] = self.vacuum_analyze_publications()
+        return result
+
+    def vacuum_analyze_publications(self) -> int:
+        """Reclaim planner statistics after a batched publication delete.
+
+        This intentionally uses normal VACUUM ANALYZE, never VACUUM FULL.  The
+        latter would take an exclusive lock and is not valid for this runtime.
+        """
+
+        with psycopg.connect(self.runtime.dsn, autocommit=True) as connection:
+            connection.execute("VACUUM (ANALYZE) app.publication")
+            connection.execute("VACUUM (ANALYZE) app.publication_item")
+        return 2
 
     def drop_empty_option_partitions(self, *, before: datetime) -> int:
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -169,3 +247,60 @@ class RetentionRepository:
                     connection.execute(sql.SQL("DROP TABLE raw.{}").format(sql.Identifier(name)))
                     dropped += 1
         return dropped
+
+
+def _publication_candidates(
+    connection: Any,
+    *,
+    standard_cutoff: datetime,
+    rolling_cutoff: datetime,
+    limit: int | None,
+) -> list[Any]:
+    """Return superseded generations eligible for one bounded retention pass."""
+
+    suffix = "" if limit is None else "LIMIT %s"
+    parameters: list[Any] = [
+        MARKET_PUBLICATION_SUPERSEDED_LIMIT,
+        list(ROLLING_PUBLICATION_SCOPES),
+        rolling_cutoff,
+        ["market", *ROLLING_PUBLICATION_SCOPES],
+        standard_cutoff,
+    ]
+    if limit is not None:
+        parameters.append(limit)
+    rows = connection.execute(
+        f"""
+        WITH ranked AS (
+            SELECT id,
+                   scope,
+                   coalesce(published_at, created_at) AS generation_at,
+                   row_number() OVER (
+                       PARTITION BY scope
+                       ORDER BY published_at DESC NULLS LAST, created_at DESC, id DESC
+                   ) AS superseded_rank
+            FROM app.publication
+            WHERE status = 'superseded'
+        )
+        SELECT id
+        FROM ranked
+        WHERE (scope = 'market' AND superseded_rank > %s)
+           OR (scope = ANY(%s) AND generation_at < %s)
+           OR (scope <> ALL(%s) AND generation_at < %s)
+        ORDER BY generation_at, id
+        {suffix}
+        """,
+        parameters,
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
+def _trading_day_cutoff(reference: datetime, trading_days: int) -> datetime:
+    if trading_days < 0:
+        raise ValueError("trading day retention must not be negative")
+    remaining = trading_days
+    current = reference.date()
+    while remaining:
+        current -= timedelta(days=1)
+        if is_us_market_day(current):
+            remaining -= 1
+    return datetime.combine(current, datetime.min.time(), tzinfo=reference.tzinfo)

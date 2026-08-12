@@ -37,7 +37,9 @@ export function HealthRoute() {
     () => new Set(sourceRows.flatMap((row) => row.refresh_jobs.length ? row.refresh_jobs : [row.refresh_job]).filter(Boolean)),
     [sourceRows],
   );
-  const recoveryHealth = data.optionRecoveryHealth.rows?.[0];
+  // The scope can render once before its snapshot arrives.  The previous
+  // direct dereference caused the Health route to crash during that state.
+  const recoveryHealth = data.optionRecoveryHealth?.rows?.[0];
   const recoveryCapture = recordField(recoveryHealth, "capture");
   const recoveryStorage = recordField(recoveryHealth, "storage");
   const recoveryProgram = recordField(recoveryHealth, "program");

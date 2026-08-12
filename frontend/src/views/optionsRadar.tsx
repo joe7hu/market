@@ -1,4 +1,5 @@
 import {useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api";
 import {StatusBadge } from "@/components/market/workstation";
 import {PanelData, RowRecord } from "@/types";
@@ -11,8 +12,8 @@ import {CandidateEventsTable } from "./optionsRadar/candidateTable";
 import {DiscoveryQueue} from "./optionsRadar/discoveryQueue";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
-import {RecoveryProgramPanel } from "./optionsRadar/recoveryProgram";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
+import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
 
 type OptionsRadarPageProps = {
   data: PanelData;
@@ -39,6 +40,7 @@ async function loadLearningCollectionPage(
 }
 
 export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadarPageProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<"signals" | "learning">("signals");
   const [promotingProposal, setPromotingProposal] = useState<string | null>(null);
   const [promotionError, setPromotionError] = useState<string | null>(null);
@@ -47,6 +49,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const [learningCounts, setLearningCounts] = useState<Record<string, number>>({});
   const [learningLoading, setLearningLoading] = useState(false);
   const [learningReload, setLearningReload] = useState(0);
+  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null);
+  const queryDecisionId = searchParams.get("decision");
   const radarAlerts = rows(data.radarAlert);
   const missedWinners = learningRows.missed_winner_event ?? [];
   const proposals = learningRows.strategy_mutation_proposal ?? [];
@@ -63,18 +67,34 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const opportunityRows = rows(data.optionRadarOpportunity);
   const discoveryRows = rows(data.optionDiscoveryCandidate);
   const strategyVersions = rows(data.optionStrategyVersions);
-  const recoveryFunnel = rows(data.optionRecoveryFunnel)[0];
-  const recoveryEvents = rows(data.optionRecoveryEvent);
-  const recoveryOpportunities = rows(data.optionRecoveryOpportunity);
-  const recoveryFamilyPerformance = rows(data.optionRecoveryFamilyPerformance);
-  const recoveryAgentProvenance = rows(data.optionRecoveryAgentProvenance);
-  const recoveryHealth = rows(data.optionRecoveryHealth)[0];
   const radarSummary = rows(data.optionRadarSummary)[0];
   const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 3;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
   const marketSession = textField(radarSummary, ["market_session"]);
   const frozenToRth = textField(radarSummary, ["frozen_to_last_rth"]) === "Yes";
   const optionThesisAgent = optionThesisAgentState(data);
+
+  useEffect(() => {
+    setSelectedDecisionId((current) => current === queryDecisionId ? current : queryDecisionId);
+  }, [queryDecisionId]);
+
+  function openDecision(decisionId: string) {
+    setSelectedDecisionId(decisionId);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set("decision", decisionId);
+      return next;
+    });
+  }
+
+  function closeDecision() {
+    setSelectedDecisionId(null);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("decision");
+      return next;
+    });
+  }
 
   const currentOpportunityRows = useMemo(
     () => professionalContract ? opportunityRows : rowsForDisplayTime(opportunityRows, latestCandidateTime),
@@ -109,7 +129,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
 
   useEffect(() => {
     const controller = new AbortController();
-    const collections = activeTab === "learning" ? LEARNING_COLLECTIONS : SIGNAL_DETAIL_COLLECTIONS;
+    // The initial Radar read is decision-only.  Agent records and learning
+    // evidence load after the user opens Learning, not in the trade path.
+    const collections = activeTab === "learning" ? LEARNING_COLLECTIONS : [];
     if (!collections.length) return;
     if (activeTab === "learning") setLearningLoading(true);
     Promise.all(collections.map((collection) => loadLearningCollectionPage(collection, null, controller.signal)))
@@ -206,15 +228,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         snapshotLabel={snapshotLabel}
         latestCandidateTime={latestCandidateTime}
         onOpenTicker={onOpenTicker}
-      />
-      <RecoveryProgramPanel
-        funnel={recoveryFunnel}
-        events={recoveryEvents}
-        opportunities={recoveryOpportunities}
-        familyPerformance={recoveryFamilyPerformance}
-        agentProvenance={recoveryAgentProvenance}
-        health={recoveryHealth}
-        onOpenTicker={onOpenTicker}
+        onOpenDecision={openDecision}
       />
       <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />
       <div className="flex w-fit rounded-md border border-border bg-muted p-1">
@@ -231,6 +245,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
           latestAgentThesisByTicker={latestAgentThesisByTicker}
           agentRuntime={optionThesisAgent}
           onOpenTicker={onOpenTicker}
+          onOpenDecision={openDecision}
         />
       ) : (
         <div className="space-y-4">
@@ -268,6 +283,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         ) : null}
       </div>
       )}
+      <OptionTicketDetailSheet decisionId={selectedDecisionId} onClose={closeDecision} onOpenTicker={onOpenTicker} />
     </WorkspacePage>
   );
 }

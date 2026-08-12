@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from app.data_access.config import load_config, tables_for_scope
 from app.data_access.postgres_panel import load_postgres_tables
 from app.data_access.types import DataStatus, PanelData
-from app.panel_contracts import TICKER_TABLES, panel_contract_payload as contract_panel_payload
+from app.panel_contracts import TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
 
 
 def load_panel_data(
@@ -169,9 +169,9 @@ def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelD
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
     panel = load_panel_data(
         config,
-        table_names=TICKER_TABLES,
+        table_names=TICKER_INITIAL_TABLES,
         query_symbol_filter={normalized},
-        query_row_limits={name: 80 for name in TICKER_TABLES},
+        query_row_limits={name: 24 for name in TICKER_INITIAL_TABLES},
     )
     panel.tables = {
         name: [row for row in rows if _row_symbol(row) in {"", normalized}]

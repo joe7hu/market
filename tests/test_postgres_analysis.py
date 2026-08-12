@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -298,6 +298,102 @@ def test_concurrent_publications_serialize_to_one_visible_snapshot(analysis_cont
     assert sorted(statuses) == [("published", 1), ("superseded", 1)]
 
 
+def test_same_input_and_code_version_reuses_current_publication(analysis_context, postgres_dsn: str) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    first_run = _start_run(repository, "dedupe")
+    repository.finish_run(first_run, "succeeded")
+    first_id = repository.publish(
+        first_run,
+        "today",
+        {"daily_brief": [{"stable_key": "brief", "headline": "Stable input"}]},
+    )
+    repeated_run = _start_run(repository, "dedupe")
+    repository.finish_run(repeated_run, "succeeded")
+
+    repeated_id = repository.publish(
+        repeated_run,
+        "today",
+        {"daily_brief": [{"stable_key": "brief", "headline": "Stable input"}]},
+    )
+
+    assert repeated_id == first_id
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        publications = connection.execute(
+            "SELECT status, count(*) FROM app.publication WHERE scope = 'today' GROUP BY status"
+        ).fetchall()
+        run_summary = connection.execute(
+            "SELECT summary FROM analysis.run WHERE id = %s", [repeated_run]
+        ).fetchone()[0]
+    assert publications == [("published", 1)]
+    assert run_summary["reused_publication_id"] == str(first_id)
+
+
+def test_same_input_reactivates_prior_generation_after_intervening_publication(
+    analysis_context, postgres_dsn: str,
+) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    first_run = _start_run(repository, "cycle")
+    repository.finish_run(first_run, "succeeded")
+    first_id = repository.publish(
+        first_run,
+        "market",
+        {"market_environment_model": [{"stable_key": "model", "generation": "first"}]},
+    )
+    middle_run = _start_run(repository, "intervening")
+    repository.finish_run(middle_run, "succeeded")
+    repository.publish(
+        middle_run,
+        "market",
+        {"market_environment_model": [{"stable_key": "model", "generation": "middle"}]},
+    )
+    repeated_run = _start_run(repository, "cycle")
+    repository.finish_run(repeated_run, "succeeded")
+
+    repeated_id = repository.publish(
+        repeated_run,
+        "market",
+        {"market_environment_model": [{"stable_key": "model", "generation": "first"}]},
+    )
+
+    assert repeated_id == first_id
+    assert repository.publication_rows("market", "market_environment_model") == [
+        {"stable_key": "model", "generation": "first"}
+    ]
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        statuses = connection.execute(
+            "SELECT status, count(*) FROM app.publication WHERE scope = 'market' GROUP BY status"
+        ).fetchall()
+        run_summary = connection.execute(
+            "SELECT summary FROM analysis.run WHERE id = %s", [repeated_run]
+        ).fetchone()[0]
+    assert sorted(statuses) == [("published", 1), ("superseded", 1)]
+    assert run_summary["reused_publication_id"] == str(first_id)
+
+
+def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:
+    repository: AnalysisRepository = analysis_context["analysis"]
+    runs = [_start_run(repository, "same-input") for _ in range(2)]
+    for run_id in runs:
+        repository.finish_run(run_id, "succeeded")
+
+    def publish(run_id):
+        return repository.publish(
+            run_id,
+            "options-radar",
+            {"option_radar_summary": [{"stable_key": "summary", "headline": "Same input"}]},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publication_ids = list(executor.map(publish, runs))
+
+    assert publication_ids[0] == publication_ids[1]
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        statuses = connection.execute(
+            "SELECT status, count(*) FROM app.publication WHERE scope = 'options-radar' GROUP BY status"
+        ).fetchall()
+    assert statuses == [("published", 1)]
+
+
 def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_models(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     with runtime.transaction() as connection:
@@ -476,9 +572,12 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         "quote_age_seconds": 0,
         "open_interest": 2500,
     })
+    fresh_ticket_at = datetime.now(UTC)
     ticket.update({
         "state": "READY",
         "blockers": [],
+        "execution_ready_at": (fresh_ticket_at - timedelta(seconds=1)).isoformat(),
+        "expires_at": (fresh_ticket_at + timedelta(minutes=2)).isoformat(),
         "legs": [leg],
         "risk": {
             **ticket["risk"],

@@ -11,6 +11,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.database.opportunity_episodes import option_episode_key
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -140,24 +141,50 @@ class AnalysisRepository:
         blockers: Sequence[str] = (),
         details: Mapping[str, Any] | None = None,
         strategy_revision_id: int | None = None,
+        lane: str | None = None,
     ) -> UUID:
         option = dict(details or {})
         with self.runtime.transaction(JOB_PROFILE) as connection:
+            instrument = connection.execute(
+                "SELECT symbol FROM catalog.instrument WHERE id = %s", [instrument_id]
+            ).fetchone()
+            if instrument is None:
+                raise ValueError(f"unknown option instrument: {instrument_id}")
+            symbol = str(instrument["symbol"])
+            decision_lane = str(lane or ("qqq" if symbol.upper() == "QQQ" else "radar")).lower()
+            episode_key = option_episode_key(
+                lane=decision_lane,
+                symbol=symbol,
+                strategy=str(option.get("strategy_key") or option.get("structure") or "option"),
+                contract_ladder_slot=str(option.get("contract_ladder_slot") or contract_id),
+                entry_at=quote_observed_at,
+            )
+            quality_status = str(option.get("quality_status") or "ok")
+            sample_eligible = quality_status not in {"invalid", "lookahead_blocked", "continuity_missing"}
+            quarantine_reason = None if sample_eligible else quality_status
             decision = connection.execute(
                 """
                 INSERT INTO analysis.decision
                     (run_id, decision_key, kind, instrument_id, as_of, state, rank, score,
-                     quality_status, strategy_revision_id, reasons, blockers, input_hash)
-                VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     quality_status, strategy_revision_id, reasons, blockers, input_hash,
+                     lane, episode_key, sample_eligible, quarantine_reason, calibration_cohort)
+                VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id, decision_key) DO UPDATE
                 SET state = EXCLUDED.state, rank = EXCLUDED.rank, score = EXCLUDED.score,
                     quality_status = EXCLUDED.quality_status, reasons = EXCLUDED.reasons,
-                    blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash
+                    blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash,
+                    lane = EXCLUDED.lane, episode_key = EXCLUDED.episode_key,
+                    sample_eligible = EXCLUDED.sample_eligible,
+                    quarantine_reason = EXCLUDED.quarantine_reason,
+                    calibration_cohort = EXCLUDED.calibration_cohort
                 RETURNING id
                 """,
                 [
                     run_id, decision_key, instrument_id, quote_observed_at, state, rank, score,
                     option.get("quality_status"), strategy_revision_id, list(reasons), list(blockers), _hash(inputs),
+                    decision_lane, episode_key, sample_eligible, quarantine_reason,
+                    str(option.get("calibration_cohort") or option.get("objective_version") or ""),
                 ],
             ).fetchone()
             decision_id = UUID(str(decision["id"]))
@@ -229,7 +256,8 @@ class AnalysisRepository:
                     [f"strategy:{strategy_root_key}"],
                 )
             run = connection.execute(
-                "SELECT status, strategy_revision_id FROM analysis.run WHERE id = %s FOR UPDATE",
+                "SELECT status, strategy_revision_id, input_hash, code_version "
+                "FROM analysis.run WHERE id = %s FOR UPDATE",
                 [run_id],
             ).fetchone()
             if run is None or run["status"] == "failed":
@@ -244,6 +272,54 @@ class AnalysisRepository:
                     raise ValueError(
                         "strategy authority changed during analysis; publication must be recomputed"
                     )
+            existing = connection.execute(
+                """
+                SELECT publication.id, publication.status
+                FROM app.publication publication
+                JOIN analysis.run prior_run ON prior_run.id = publication.analysis_run_id
+                WHERE publication.scope = %s
+                  AND publication.status IN ('published', 'superseded')
+                  AND prior_run.input_hash = %s
+                  AND prior_run.code_version = %s
+                ORDER BY CASE publication.status WHEN 'published' THEN 0 ELSE 1 END,
+                         publication.published_at DESC NULLS LAST,
+                         publication.created_at DESC, publication.id DESC
+                LIMIT 1
+                FOR UPDATE OF publication
+                """,
+                [scope, run["input_hash"], run["code_version"]],
+            ).fetchone()
+            if existing is not None:
+                existing_id = UUID(str(existing["id"]))
+                # A repeated exact input after an intervening publication must
+                # re-activate the prior immutable generation, not write its
+                # rows again.  This closes the historical market-publication
+                # explosion where the de-duplication query saw only the latest
+                # published row and ignored an equivalent superseded one.
+                if str(existing["status"]) != "published":
+                    connection.execute(
+                        "UPDATE app.publication SET status = 'superseded' "
+                        "WHERE scope = %s AND status = 'published' AND id <> %s",
+                        [scope, existing_id],
+                    )
+                    connection.execute(
+                        "UPDATE app.publication SET status = 'published', published_at = now() "
+                        "WHERE id = %s",
+                        [existing_id],
+                    )
+                summary = dict(complete_run_summary or {})
+                summary["reused_publication_id"] = str(existing_id)
+                connection.execute(
+                    """
+                    UPDATE analysis.run
+                    SET status = CASE WHEN status = 'running' THEN 'succeeded' ELSE status END,
+                        finished_at = coalesce(finished_at, now()),
+                        summary = summary || %s
+                    WHERE id = %s
+                    """,
+                    [Jsonb(summary), run_id],
+                )
+                return existing_id
             publication = connection.execute(
                 """
                 INSERT INTO app.publication (scope, analysis_run_id, status, validation)

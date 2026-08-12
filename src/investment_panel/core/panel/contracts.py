@@ -12,11 +12,13 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "daily_brief",
         "portfolio_risk_cards",
         "review_actions",
-        "quotes",
         "portfolio",
         "thesis_monitor",
         "decision_queue",
-        "option_action_queue",
+        # Today reads the canonical published Radar rows directly.  It must
+        # never show a separately copied option action queue from an older
+        # daily-brief publication.
+        "option_radar_opportunity",
         "feed_signals",
     ),
     "watchlist": (
@@ -221,6 +223,11 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "option_radar_opportunity",
         "option_discovery_candidate",
         "radar_alert",
+    ),
+    # Recovery, provider, batch, and capture details are operational health
+    # data.  Keep them off the primary trade-decision payload.
+    "health": (
+        "source_catalog",
         "option_recovery_funnel",
         "option_recovery_event",
         "option_recovery_opportunity",
@@ -228,12 +235,9 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "option_recovery_agent_provenance",
         "option_recovery_health",
     ),
+    "decision-inbox": (),
     "filings": ("ownership_consensus", "disclosures"),
     "calendar": ("catalysts", "earnings"),
-    "health": (
-        "source_catalog",
-        "option_recovery_health",
-    ),
     "settings": (),
 }
 
@@ -293,6 +297,24 @@ TICKER_TABLES = (
     "portfolio_risk_cards",
     "review_actions",
     "ticker_memos",
+)
+
+# The dossier route must not load every evidence model before it can render a
+# decision.  These tables support the decision header, canonical price,
+# portfolio relevance, thesis state, and the current option signal.  Deeper
+# evidence is fetched only when its panel is opened.
+TICKER_INITIAL_TABLES = (
+    "symbol_decision_snapshot",
+    "decision_queue",
+    "opportunities_ranked",
+    "candidates",
+    "quotes",
+    "portfolio",
+    "portfolio_risk_cards",
+    "review_actions",
+    "theses",
+    "thesis_monitor",
+    "options_ticker_signals",
 )
 
 ENDPOINT_TABLES: dict[str, str] = {

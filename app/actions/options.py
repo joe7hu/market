@@ -21,6 +21,8 @@ from investment_panel.core.option_trade_ticket import build_option_trade_ticket,
 from investment_panel.core.decision import is_market_open
 from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.option_ticket_read import revalidate_published_tickets
+from investment_panel.database.decision_inbox import DecisionInboxRepository
+from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
 
 
 def _decision_mode(config: Any) -> str:
@@ -54,6 +56,22 @@ def _recovery_paper_actions_enabled(config: Any) -> bool:
     return bool(raw)
 
 
+def _lane_paper_actions_enabled(config: Any, lane: str) -> bool:
+    """Require both the global kill switch and an explicit lane switch."""
+
+    normalized = lane.strip().lower()
+    if not _paper_actions_enabled(config):
+        return False
+    if normalized not in {"radar", "qqq", "recovery"}:
+        return False
+    key = f"{normalized}_paper_actions_enabled"
+    if isinstance(config, dict):
+        raw = (config.get("analysis") or {}).get("options_decision_system", {})
+        return bool(raw.get(key, False))
+    raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), key, False)
+    return bool(raw)
+
+
 def _options_risk_sleeve_capital(config: Any) -> float | None:
     if isinstance(config, dict):
         raw = (config.get("analysis") or {}).get("options_decision_system", {})
@@ -62,6 +80,30 @@ def _options_risk_sleeve_capital(config: Any) -> float | None:
         raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_risk_sleeve_capital", None)
         value = raw
     return float(value) if value is not None and float(value) > 0 else None
+
+
+def _options_daily_loss_halt_pct(config: Any) -> float | None:
+    if isinstance(config, dict):
+        value = ((config.get("analysis") or {}).get("options_decision_system", {}) or {}).get("daily_loss_halt_pct")
+    else:
+        value = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "daily_loss_halt_pct", None)
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if 0 <= result <= 1 else None
+
+
+def _options_max_open_positions(config: Any) -> int | None:
+    if isinstance(config, dict):
+        value = ((config.get("analysis") or {}).get("options_decision_system", {}) or {}).get("max_recovery_open_positions")
+    else:
+        value = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "max_recovery_open_positions", None)
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
 
 
 def _robinhood_config(config: Any) -> Any:
@@ -176,11 +218,11 @@ class OptionsActions:
 
     def workspace(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.workspace(**filters)
-        payload["paper_action_capability"]["enabled"] = _decision_mode(self.config) == "paper" and _paper_actions_enabled(self.config)
+        payload["paper_action_capability"]["enabled"] = _decision_mode(self.config) == "paper" and _lane_paper_actions_enabled(self.config, "qqq")
         payload["paper_action_capability"]["reason"] = (
             "enabled"
             if payload["paper_action_capability"]["enabled"]
-            else "options_paper_actions_enabled_false"
+            else "qqq_paper_actions_enabled_false"
         )
         return payload
 
@@ -225,12 +267,27 @@ class OptionsActions:
             sleeve_capital=_options_risk_sleeve_capital(self.config),
         )[0]
 
+    def opportunity_scorecard(self, *, lane: str, window_days: int) -> dict[str, Any]:
+        return OpportunityScorecardRepository(self.runtime).scorecard(
+            lane=lane,
+            window_days=window_days,
+        )
+
+    def decision_inbox(self, *, limit: int, cursor: str | None) -> dict[str, Any]:
+        return DecisionInboxRepository(self.runtime).rows(limit=limit, cursor=cursor)
+
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
         mode = _decision_mode(self.config)
         if mode != "paper":
             raise ValueError("options decision system is in shadow mode; paper entry is disabled")
         if not _paper_actions_enabled(self.config):
             raise ValueError("options paper actions kill switch is disabled")
+        detail = self.signal_detail(decision_id)
+        if detail is None or not isinstance(detail.get("ticket"), dict):
+            raise ValueError("current option ticket is required before paper staging")
+        lane = str(detail["ticket"].get("lane") or "radar")
+        if not _lane_paper_actions_enabled(self.config, lane):
+            raise ValueError(f"{lane}_paper_actions_enabled is disabled")
         return self.actions.stage_option_paper_entry(
             decision_id=decision_id,
             idempotency_key=payload.get("idempotency_key"),
@@ -238,6 +295,8 @@ class OptionsActions:
             quantity=payload.get("quantity"),
             limit_price=payload.get("limit_price"),
             current_options_risk_sleeve_capital=_options_risk_sleeve_capital(self.config),
+            daily_loss_halt_pct=_options_daily_loss_halt_pct(self.config),
+            max_open_positions=_options_max_open_positions(self.config),
         )
 
     def _with_ticket(self, candidate: dict[str, Any], *, symbol: str, evaluated_at: Any) -> dict[str, Any]:

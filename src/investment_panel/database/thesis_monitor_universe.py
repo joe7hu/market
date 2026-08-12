@@ -33,9 +33,8 @@ def monitored_thesis_rows(connection: Any) -> list[dict[str, Any]]:
          AND option_policy.requested_state = 'on'
          AND option_policy.effective_state = 'active'
         LEFT JOIN LATERAL (
-            SELECT price, observed_at FROM raw.confirmed_quote quote
-            WHERE quote.instrument_id = instrument.id AND quote.available_at <= now()
-            ORDER BY observed_at DESC LIMIT 1
+            SELECT price, observed_at
+            FROM raw.current_price_at(now(), ARRAY[instrument.id])
         ) quote ON true
         LEFT JOIN LATERAL (
             SELECT starts_at, title FROM app.catalyst

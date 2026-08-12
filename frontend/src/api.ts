@@ -484,6 +484,21 @@ export async function loadOptionsRadarLearning(
   return getJson(`/api/options-radar/learning/${encodeURIComponent(collection)}?limit=${limit}${cursorQuery}`, signal);
 }
 
+export async function loadOptionTicketDetail(decisionId: string, signal?: AbortSignal): Promise<RowRecord> {
+  return getJson<RowRecord>(`/api/options/tickets/${encodeURIComponent(decisionId)}`, signal);
+}
+
+export type DecisionInboxPayload = {
+  items: RowRecord[];
+  count: number;
+  next_cursor: string | null;
+};
+
+export async function loadDecisionInbox(cursor: string | null = null, signal?: AbortSignal): Promise<DecisionInboxPayload> {
+  const query = cursor ? `?limit=50&cursor=${encodeURIComponent(cursor)}` : "?limit=50";
+  return getJson<DecisionInboxPayload>(`/api/decision-inbox${query}`, signal);
+}
+
 export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
   return getJson(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
 }

@@ -18,6 +18,7 @@ from investment_panel.database.strategy_parameters import (
 )
 from investment_panel.core.option_trade_ticket import TICKET_VERSION, execution_policy
 from investment_panel.core.decision import is_market_open
+from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock, shared_sleeve_blockers
 
 
 def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
@@ -125,6 +126,8 @@ class ActionRepository:
         quantity: int,
         limit_price: float,
         current_options_risk_sleeve_capital: float | None,
+        daily_loss_halt_pct: float | None = None,
+        max_open_positions: int | None = None,
     ) -> dict[str, Any]:
         if ticket_version != TICKET_VERSION:
             raise ValueError("stale option trade ticket version")
@@ -136,6 +139,8 @@ class ActionRepository:
         if not key:
             raise ValueError("idempotency key is required")
         with self.runtime.transaction() as connection:
+            now = datetime.now(UTC)
+            acquire_shared_sleeve_lock(connection)
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                 ["paper-order:options-radar"],
@@ -176,15 +181,18 @@ class ActionRepository:
                 SELECT decision.instrument_id, decision.state, option_decision.paper_state, option_decision.structure,
                        option_decision.entry_price, option_decision.secured_cash,
                        option_decision.max_loss, option_decision.details,
-                       publication.scope AS publication_scope, publication.payload AS publication_payload,
+                       publication.id::text AS publication_id, publication.scope AS publication_scope,
+                       publication.published_at AS publication_published_at,
+                       publication.payload AS publication_payload,
                        coalesce((publication.payload->>'execution_ready')::boolean, false) AS currently_published
                 FROM analysis.decision decision
                 JOIN analysis.option_decision option_decision ON option_decision.decision_id = decision.id
                 LEFT JOIN LATERAL (
-                    SELECT publication.scope, item.payload
+                    SELECT publication.id, publication.scope, publication.published_at, item.payload
                     FROM app.publication publication
                     JOIN app.publication_item item ON item.publication_id = publication.id
                     WHERE publication.status = 'published'
+                      AND publication.published_at <= %s
                       AND item.payload->>'decision_id' = decision.id::text
                       AND (
                         (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
@@ -195,7 +203,7 @@ class ActionRepository:
                 ) publication ON true
                 WHERE decision.id = %s FOR UPDATE OF decision
                 """,
-                [decision_id],
+                [now, decision_id],
             ).fetchone()
             if signal is None:
                 raise ValueError("options-radar signal not found")
@@ -217,7 +225,6 @@ class ActionRepository:
             from investment_panel.database.options_publication import _contract_readiness
 
             publication_payload = dict(signal["publication_payload"] or {})
-            now = datetime.now(UTC)
             ticket = dict(publication_payload.get("ticket") or {})
             if not ticket:
                 raise ValueError("current publication has no option trade ticket")
@@ -227,6 +234,27 @@ class ActionRepository:
                 raise ValueError("option trade ticket decision mismatch")
             if str(ticket.get("state") or "") != "READY" or ticket.get("blockers"):
                 raise ValueError("option trade ticket is not READY")
+            execution_ready_at = _ticket_timestamp(ticket.get("execution_ready_at"))
+            expires_at = _ticket_timestamp(
+                ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until")
+            )
+            if execution_ready_at is None or execution_ready_at > now:
+                raise ValueError("option trade ticket is not yet execution-ready")
+            if expires_at is None or expires_at <= now:
+                raise ValueError("option trade ticket has expired")
+            ticket = {
+                **ticket,
+                "publication_lineage": {
+                    **dict(ticket.get("publication_lineage") or {}),
+                    "publication_id": str(signal["publication_id"]),
+                    "publication_scope": str(signal["publication_scope"]),
+                    "published_at": (
+                        signal["publication_published_at"].isoformat()
+                        if signal["publication_published_at"] is not None
+                        else None
+                    ),
+                },
+            }
             ticket_risk = dict(ticket.get("risk") or {})
             configured_sleeve = (
                 float(current_options_risk_sleeve_capital)
@@ -261,6 +289,19 @@ class ActionRepository:
                 raise ValueError("active paper quantity would exceed the ticket recommendation")
             ticket_entry = dict(ticket.get("entry") or {})
             ticket_structure = str(ticket.get("structure") or signal["structure"] or "")
+            ticket_lane = str(ticket.get("lane") or ("qqq" if str(ticket.get("symbol") or "").upper() == "QQQ" else "radar")).lower()
+            if ticket_lane not in {"radar", "qqq"}:
+                raise ValueError("only radar and qqq tickets may use this paper-entry path")
+            shared_blockers = shared_sleeve_blockers(
+                connection,
+                now=now,
+                lane=ticket_lane,
+                sleeve_capital=configured_sleeve,
+                daily_loss_halt_pct=daily_loss_halt_pct,
+                max_open_positions=max_open_positions,
+            )
+            if shared_blockers:
+                raise ValueError("; ".join(shared_blockers))
             if ticket_structure == "cash_secured_put":
                 minimum_credit = float(ticket_entry.get("minimum_credit") or ticket_entry.get("limit_price") or 0)
                 if minimum_credit <= 0 or limit_price < minimum_credit:
@@ -418,6 +459,7 @@ class ActionRepository:
             side = "sell" if structure == "cash_secured_put" else "buy"
             policy = {
                 "ticket_version": ticket_version,
+                "lane": ticket_lane,
                 "structure": structure,
                 "fully_cash_secured": structure == "cash_secured_put",
                 "live_order_submission": False,
@@ -427,14 +469,14 @@ class ActionRepository:
                 """
                 INSERT INTO app.paper_order
                     (decision_id, instrument_id, side, quantity, limit_price, status,
-                     policy_result, structure, reserved_collateral, idempotency_key,
+                     policy_result, policy_snapshot, lane, structure, reserved_collateral, idempotency_key,
                      ticket_version, ticket_snapshot, intended_limit_price)
-                VALUES (%s, %s, %s, %s, %s, 'staged', %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, 'staged', %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 [
                     decision_id, signal["instrument_id"], side, quantity,
-                    limit_price, Jsonb(policy), structure, collateral or None, key,
+                    limit_price, Jsonb(policy), Jsonb(policy), ticket_lane, structure, collateral or None, key,
                     ticket_version, Jsonb(order_ticket), limit_price,
                 ],
             ).fetchone()
@@ -456,6 +498,7 @@ class ActionRepository:
             "status": "staged",
             "paper_order_id": str(row["id"]),
             "decision_id": str(decision_id),
+            "lane": ticket_lane,
             "structure": structure,
             "reserved_collateral": collateral,
             "quantity": quantity,
@@ -602,6 +645,16 @@ def _uuid_or_none(value: Any) -> UUID | None:
         return UUID(str(value)) if value else None
     except (TypeError, ValueError):
         return None
+
+
+def _ticket_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _candidate_contains_changes(candidate: dict[str, Any], changes: dict[str, Any]) -> bool:

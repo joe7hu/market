@@ -1,6 +1,7 @@
 """Settings and refresh-job orchestration routes."""
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -45,7 +46,7 @@ def launch_refresh_job_background(job_name: str, request: Request, background_ta
 
 @router.get("/api/settings")
 def settings() -> dict[str, Any]:
-    config, panel_data = deps._context()
+    config, panel_data = _settings_context()
     return deps.settings_payload(config, panel_data)
 
 
@@ -57,7 +58,7 @@ def update_agent_settings(payload: deps.AgentSettingsInput, request: Request) ->
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
-    config, panel_data = deps._context()
+    config, panel_data = _settings_context()
     return deps.settings_payload(config, panel_data)
 
 
@@ -69,5 +70,24 @@ def update_research_sources(payload: deps.ResearchSourcesInput, request: Request
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     deps._invalidate_context_cache()
-    config, panel_data = deps._context()
+    config, panel_data = _settings_context()
     return deps.settings_payload(config, panel_data)
+
+
+def _settings_context() -> tuple[dict[str, Any], Any]:
+    """Load only the latest source-run rows required by Settings.
+
+    Settings previously loaded the complete panel contract, including ticker
+    dossiers and option history.  Its source inventory only reads source runs.
+    """
+
+    if "table_names" not in inspect.signature(deps.load_panel_data).parameters:
+        return deps._context(cache_key="settings", loader=lambda config: deps.load_panel_data(config))
+    return deps._context(
+        cache_key="settings",
+        loader=lambda config: deps.load_panel_data(
+            config,
+            table_names=("source_runs",),
+            query_row_limits={"source_runs": 200},
+        ),
+    )

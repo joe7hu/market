@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app import deps
 
@@ -11,7 +11,26 @@ router = APIRouter()
 
 
 @router.get("/api/quotes")
-def quotes() -> dict[str, Any]:
+def quotes(symbols: str | None = Query(default=None, description="Comma-separated symbols, maximum 100.")) -> dict[str, Any]:
+    requested = {
+        symbol.strip().upper()
+        for symbol in (symbols or "").split(",")
+        if symbol.strip()
+    }
+    if len(requested) > 100:
+        return {"status": "invalid", "error": "symbols supports at most 100 symbols", "rows": []}
+    if requested:
+        cache_key = "table:quotes:" + ",".join(sorted(requested))
+        _, panel_data = deps._context(
+            cache_key=cache_key,
+            loader=lambda config: deps.load_panel_data(
+                config,
+                table_names=("quotes",),
+                query_symbol_filter=requested,
+                query_row_limits={"quotes": len(requested)},
+            ),
+        )
+        return deps.table_payload(panel_data, "quotes")
     return deps._table_payload("quotes")
 
 

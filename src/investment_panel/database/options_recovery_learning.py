@@ -31,6 +31,7 @@ from investment_panel.database.options_recovery_cohorts import (
     CURRENT_OBJECTIVE_VERSION,
     RecoveryCohortRepository,
 )
+from investment_panel.database.opportunity_episodes import option_episode_key
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -70,25 +71,44 @@ class RecoveryLearningRepository:
                         stage, reason = "observed", "gate_reject"
                     else:
                         stage, reason = "eligible", None
+                    episode_key = option_episode_key(
+                        lane="recovery",
+                        event_id=event.event_id,
+                        symbol=event.symbol,
+                        contract_ladder_slot=str(
+                            source.get("ladder_slot_key")
+                            or source.get("event_contract_id")
+                            or quote.contract_id
+                        ),
+                        strategy=strategy.key,
+                        entry_at=quote.available_at,
+                    )
                     connection.execute(
                         """
                         INSERT INTO analysis.option_opportunity_observation
                             (event_id, capture_id, capture_generation_id, capture_generation_key,
                              event_contract_id, contract_id, strategy_key, strategy_revision_id,
                              observed_at, available_at, expiration, quote, liquid, selection_stage,
-                             miss_reason, data_status, cohort_id, objective_version)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, 'ok', %s, %s)
+                             miss_reason, data_status, cohort_id, objective_version, lane, episode_key,
+                             sample_eligible, quarantine_reason, calibration_cohort)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s, %s, 'ok', %s, %s,
+                                'recovery', %s, true, NULL, %s)
                         ON CONFLICT (event_id, capture_generation_key, contract_id, strategy_key, strategy_revision_id)
                         DO UPDATE SET quote = EXCLUDED.quote, liquid = EXCLUDED.liquid,
                                       selection_stage = EXCLUDED.selection_stage,
-                                      miss_reason = EXCLUDED.miss_reason, updated_at = now()
+                                      miss_reason = EXCLUDED.miss_reason,
+                                      episode_key = EXCLUDED.episode_key,
+                                      sample_eligible = EXCLUDED.sample_eligible,
+                                      quarantine_reason = EXCLUDED.quarantine_reason,
+                                      calibration_cohort = EXCLUDED.calibration_cohort,
+                                      updated_at = now()
                         """,
                         [
                             event.event_id, capture["id"], capture.get("capture_generation_id"),
                             str(capture.get("capture_generation_id") or capture["id"]), source.get("event_contract_id"),
                             quote.contract_id, strategy.key, revisions[strategy.key], quote.observed_at,
                             quote.available_at, quote.expiration, Jsonb(_quote_payload(quote, gate)), stage, reason,
-                            cohort["id"], CURRENT_OBJECTIVE_VERSION,
+                            cohort["id"], CURRENT_OBJECTIVE_VERSION, episode_key, str(cohort["id"]),
                         ],
                     )
                     stored += 1

@@ -12,7 +12,7 @@ import {formatMoney, listField, numberField, textField, titleLabel, toneFromText
 import {moneyField, formatRatio, formatScore, formatShortDate, formatNumber } from "../optionsRadarFormat";
 import {recordField, listFromRecord, stringFromRecord, numberFromRecord } from "../optionsRadarData";
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";
-import {Cell, FullText, Head, MetricPill, SectionTitle, TickerButton } from "../optionsRadarPrimitives";
+import {Cell, FullText, Head, MetricPill, SectionTitle } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
 import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, contractLabel, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
 import {OptionThesisAgentRuntime, CandidateSort, CandidateStateFilter, CandidateFocus, ThesisFilter, QualityFilter, FamilyFilter, CANDIDATE_PAGE_SIZE } from "./types";
@@ -28,6 +28,7 @@ export function CandidateEventsTable({
   latestAgentThesisByTicker,
   agentRuntime,
   onOpenTicker,
+  onOpenDecision,
 }: {
   rows: RowRecord[];
   thesisRequestByEvent: Map<string, RowRecord>;
@@ -37,6 +38,7 @@ export function CandidateEventsTable({
   latestAgentThesisByTicker: Map<string, RowRecord>;
   agentRuntime: OptionThesisAgentRuntime;
   onOpenTicker: OpenTicker;
+  onOpenDecision: (decisionId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<CandidateStateFilter>("all");
@@ -191,6 +193,7 @@ export function CandidateEventsTable({
               expanded={thesisExpanded}
               onToggleThesis={() => setExpandedThesisEvent(thesisExpanded ? null : eventId)}
               onOpenTicker={onOpenTicker}
+              onOpenDecision={onOpenDecision}
             />
           );
         })}
@@ -234,6 +237,7 @@ export function CandidateEventsTable({
             const thesis = latestAgentThesisByTicker.get(ticker);
             const thesisExpanded = expandedThesisEvent === eventId;
             const rowKey = textField(row, ["event_id"], `${ticker}-${textField(row, ["contract_id"])}`);
+            const decisionId = textField(row, ["decision_id", "candidate_event_id", "event_id"]);
             return (
               <Fragment key={rowKey}>
                 <tr
@@ -243,7 +247,7 @@ export function CandidateEventsTable({
                     qualityStatus === "caution" && "bg-amber-500/5",
                   )}
                 >
-                  <Cell>{ticker ? <TickerButton ticker={ticker} onOpenTicker={onOpenTicker} /> : "-"}</Cell>
+                  <Cell>{ticker ? <SignalTickerButton ticker={ticker} decisionId={decisionId} onOpenTicker={onOpenTicker} onOpenDecision={onOpenDecision} /> : "-"}</Cell>
                   <Cell>
                     <div className="space-y-1.5">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -331,6 +335,7 @@ export function CandidateMobileCard({
   expanded,
   onToggleThesis,
   onOpenTicker,
+  onOpenDecision,
 }: {
   row: RowRecord;
   request: RowRecord | undefined;
@@ -342,6 +347,7 @@ export function CandidateMobileCard({
   expanded: boolean;
   onToggleThesis: () => void;
   onOpenTicker: OpenTicker;
+  onOpenDecision: (decisionId: string) => void;
 }) {
   const state = stateOf(row);
   const qualityStatus = textField(row, ["quality_status"], "ok").toLowerCase();
@@ -350,7 +356,7 @@ export function CandidateMobileCard({
     <article className={cn("rounded-md border border-border bg-card p-3", qualityStatus === "bad" && "border-destructive/40 bg-destructive/5", qualityStatus === "caution" && "border-amber-500/30 bg-amber-50/30 dark:bg-amber-950/10")}>
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
-          <TickerButton ticker={textField(row, ["ticker"])} onOpenTicker={onOpenTicker} />
+          <SignalTickerButton ticker={textField(row, ["ticker"])} decisionId={textField(row, ["decision_id", "candidate_event_id", "event_id"])} onOpenTicker={onOpenTicker} onOpenDecision={onOpenDecision} />
           <ContractIdentity row={row} />
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
@@ -384,6 +390,10 @@ export function CandidateMobileCard({
       </div>
     </article>
   );
+}
+
+function SignalTickerButton({ ticker, decisionId, onOpenTicker, onOpenDecision }: { ticker: string; decisionId: string; onOpenTicker: OpenTicker; onOpenDecision: (decisionId: string) => void }) {
+  return <Button type="button" variant="ghost" size="sm" className="-ml-2 h-7 font-semibold tracking-normal" onClick={() => decisionId ? onOpenDecision(decisionId) : onOpenTicker(ticker)}>{ticker}</Button>;
 }
 
 export function ThesisCompactSummary({

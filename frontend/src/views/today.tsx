@@ -1,5 +1,5 @@
 import { CalendarClock, Minus, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { adaptOptionDecision } from "@/adapters/optionsDecision";
@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 import type { AppModel } from "@/model";
 import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/types";
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
-import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, toneFromText, type Tone } from "./rowFormat";
+import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
+import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
 
 type TodayPageProps = {
   data: PanelData;
@@ -28,7 +29,11 @@ const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCa
 
 export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
-  const optionActions = data.optionActionQueue?.rows ?? [];
+  // This table is read directly from the current options-radar publication.
+  // Do not use the retired, copied option_action_queue from a today refresh.
+  const optionActions = data.optionRadarOpportunity?.rows ?? [];
+  const riskExceptions = (data.portfolioRiskCards?.rows ?? vm.portfolioPulse).slice(0, 3);
+  const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null);
   const hasBrief = vm.briefCount > 0;
 
   return (
@@ -63,27 +68,32 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
       </div>
 
       <PreopenBrief row={vm.preopenBrief} />
-      <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} />
+      <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
 
       {hasBrief ? (
         <>
-          <HeroDecision row={vm.hero} onOpenTicker={onOpenTicker} />
-
           <div className="grid gap-6">
-            <BriefSection section={SECTION_BY_KEY.decide_now} rows={vm.decideNow} onOpenTicker={onOpenTicker} columns />
-            <BriefSection section={SECTION_BY_KEY.whats_changed} rows={vm.whatsChanged} onOpenTicker={onOpenTicker} columns />
-            <CatalystSection section={SECTION_BY_KEY.catalysts} rows={vm.catalysts} onOpenTicker={onOpenTicker} />
-            <BriefSection section={SECTION_BY_KEY.portfolio_pulse} rows={vm.portfolioPulse} onOpenTicker={onOpenTicker} columns />
+            <BriefSection section={{ ...SECTION_BY_KEY.portfolio_pulse, title: "Portfolio risk exceptions", subtitle: "The three highest-priority concentration, loss, or thesis-risk exceptions." }} rows={riskExceptions} onOpenTicker={onOpenTicker} columns />
+            <CatalystSection section={{ ...SECTION_BY_KEY.catalysts, title: "Catalyst and macro veto", subtitle: "Near-term events and the current deterministic pre-open veto context." }} rows={vm.catalysts.slice(0, 3)} onOpenTicker={onOpenTicker} />
+            <details className="rounded-md border border-border bg-card p-4">
+              <summary className="cursor-pointer text-sm font-semibold">More daily context</summary>
+              <div className="mt-5 grid gap-6">
+                <HeroDecision row={vm.hero} onOpenTicker={onOpenTicker} />
+                <BriefSection section={SECTION_BY_KEY.decide_now} rows={vm.decideNow} onOpenTicker={onOpenTicker} columns />
+                <BriefSection section={SECTION_BY_KEY.whats_changed} rows={vm.whatsChanged} onOpenTicker={onOpenTicker} columns />
+              </div>
+            </details>
           </div>
         </>
       ) : (
         <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
       )}
+      <OptionTicketDetailSheet decisionId={selectedDecisionId} onClose={() => setSelectedDecisionId(null)} onOpenTicker={onOpenTicker} />
     </section>
   );
 }
 
-function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void; onOpenDecision: (decisionId: string) => void }) {
   if (!rows.length) return null;
   const decisions = rows.map(adaptOptionDecision);
   return (
@@ -96,13 +106,17 @@ function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker
         <StatusBadge tone="info">{decisions.length} current</StatusBadge>
       </div>
       <div className="grid gap-3 lg:grid-cols-3">
-        {decisions.slice(0, 3).map((decision) => {
+        {decisions.slice(0, 3).map((decision, index) => {
+          const source = rows[index];
+          const decisionId = textField(source, ["decision_id", "opportunity_id"]);
+          const state = textField(source, ["state"], decision.action).toUpperCase();
+          const ready = state === "READY" && source?.execution_ready === true;
           return (
             <Card key={decision.key}>
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-start justify-between gap-2">
-                  <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(decision.symbol)}>{decision.symbol}</button>
-                  <StatusBadge tone="warn">{decision.structure}</StatusBadge>
+                  <button type="button" className="font-semibold hover:underline" onClick={() => decisionId ? onOpenDecision(decisionId) : onOpenTicker(decision.symbol)}>{decision.symbol}</button>
+                  <StatusBadge tone={ready ? "good" : "warn"}>{ready ? "READY" : titleLabel(state || "SETUP")}</StatusBadge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <OptionMetric label={decision.cashSecured ? "Credit" : "Entry"} value={formatMoney(decision.entryPrice)} />
@@ -111,6 +125,8 @@ function OptionActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker
                   <OptionMetric label={decision.cashSecured ? "Assignment" : "State"} value={decision.cashSecured ? `${(decision.probabilityAssignment * 100).toFixed(1)}%` : decision.action} />
                 </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">{decision.summary}</p>
+                <p className="text-xs font-medium text-muted-foreground">{ready ? "Paper entry is eligible only while this ticket remains current." : "Research / resolve blocker. This is not a trade instruction."}</p>
+                {decisionId ? <Button type="button" variant="outline" size="sm" onClick={() => onOpenDecision(decisionId)}>View immutable ticket</Button> : null}
               </CardContent>
             </Card>
           );

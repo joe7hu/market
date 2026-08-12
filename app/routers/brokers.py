@@ -3,11 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app import deps
+from app.actions.paper_orders import PaperOrderActions
 
 router = APIRouter()
+
+
+def _paper_actions(config: dict[str, Any]) -> PaperOrderActions:
+    return PaperOrderActions(config)
 
 
 @router.get("/api/broker/status")
@@ -43,8 +48,20 @@ def run_agent_review(request: Request) -> dict[str, Any]:
 
 
 @router.get("/api/paper-orders")
-def paper_orders() -> dict[str, Any]:
-    return deps._table_payload("paper_orders")
+def paper_orders(
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=256),
+) -> dict[str, Any]:
+    config = deps.load_config()
+    # Legacy read-only test callers do not configure the PostgreSQL authority.
+    # Keep their retired cache fixture path harmless; production always takes
+    # the PostgreSQL-backed, bounded cursor path below.
+    if not str((config.get("database") or {}).get("url") or "").strip():
+        return deps._table_payload("paper_orders")
+    try:
+        return _paper_actions(config).rows(limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/paper-orders")
