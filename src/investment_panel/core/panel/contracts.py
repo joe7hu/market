@@ -11,15 +11,13 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
-        "review_actions",
         "portfolio",
-        "thesis_monitor",
-        "decision_queue",
         # Today reads the canonical published Radar rows directly.  It must
         # never show a separately copied option action queue from an older
-        # daily-brief publication.
+        # daily-brief publication. Thesis work, feed rows, and broad decision
+        # queues remain lazy routes; they do not belong in the first-screen
+        # decision payload.
         "option_radar_opportunity",
-        "feed_signals",
     ),
     "watchlist": (
         "universe_screen",

@@ -13,6 +13,7 @@ import inspect
 import time
 from datetime import datetime
 from copy import deepcopy
+from hashlib import sha256
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from threading import RLock
@@ -79,6 +80,7 @@ from investment_panel.core.refresh_jobs import (
 )
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
 from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, build_daily_research_prompt
+from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.jobs import run_thesis_monitor
@@ -103,6 +105,27 @@ _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
         "option_radar_opportunity",
     },
 }
+
+
+def _panel_snapshot_contract_revision() -> str:
+    """Return a stable fingerprint for persisted scope-payload compatibility."""
+
+    contract = {
+        "scopes": {scope: list(tables) for scope, tables in sorted(PANEL_SCOPE_TABLES.items())},
+        "limits": {
+            scope: dict(sorted(limits.items()))
+            for scope, limits in sorted(SCOPED_TABLE_ROW_LIMITS.items())
+        },
+        "compact_fields": {
+            scope: {table: sorted(fields) for table, fields in sorted(tables.items())}
+            for scope, tables in sorted(SCOPED_TABLE_COMPACT_FIELDS.items())
+        },
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+PANEL_SNAPSHOT_CONTRACT_REVISION = _panel_snapshot_contract_revision()
 
 
 class PortfolioPositionInput(BaseModel):
@@ -422,11 +445,15 @@ def _load_last_good_scope_snapshot(
 def _snapshot_schema_is_compatible(payload: dict[str, Any]) -> bool:
     metadata = ((payload.get("status") or {}).get("metadata") or {})
     schema_revision = str(metadata.get("schema_revision") or "") if isinstance(metadata, dict) else ""
+    contract_revision = str(metadata.get("panel_contract_revision") or "") if isinstance(metadata, dict) else ""
     # A persisted payload from an older read-model contract can be worse than a
     # hard failure: it can look healthy while showing a superseded publication
-    # or stale price semantics.  Schema-less test/legacy cache entries remain
-    # readable, but a known mismatched revision is never eligible as fallback.
-    return not schema_revision or schema_revision == HEAD_REVISION
+    # or stale price semantics. Schema-less test/legacy cache entries remain
+    # readable, but a known schema must also match the current scope contract.
+    return not schema_revision or (
+        schema_revision == HEAD_REVISION
+        and contract_revision == PANEL_SNAPSHOT_CONTRACT_REVISION
+    )
 
 
 def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str:
@@ -444,6 +471,7 @@ def _mark_snapshot_state(
     status = dict(payload.get("status") or {})
     metadata = dict(status.get("metadata") or {})
     metadata["snapshot_state"] = state
+    metadata["panel_contract_revision"] = PANEL_SNAPSHOT_CONTRACT_REVISION
     if last_good_at:
         metadata["last_good_at"] = last_good_at
     if error:

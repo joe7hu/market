@@ -18,6 +18,12 @@ RowsForTable = Callable[[str], list[dict[str, Any]]]
 
 
 SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
+    "today": {
+        # The Today route is a decision inbox, not a copy of the full Radar
+        # publication.  Its primary screen can act on at most three current
+        # opportunities; complete immutable tickets remain available by ID.
+        "option_radar_opportunity": 3,
+    },
     "options-radar": {
         "missed_winner_event": 80,
         "strategy_backtest_result": 100,

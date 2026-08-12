@@ -517,6 +517,34 @@ def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) 
     assert response.json()["detail"] == "PostgreSQL timed out"
 
 
+def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "stale-contract-api.duckdb"
+    _use_temp_api_db(monkeypatch, db_path)
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    monkeypatch.setattr(app_deps, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
+    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
+        "status": {
+            "ready": True,
+            "source": "old",
+            "metadata": {
+                "schema_revision": app_deps.HEAD_REVISION,
+                "panel_contract_revision": "obsolete-contract",
+            },
+        },
+        "tables": {"portfolio": {"rows": [{"symbol": "TSLA"}], "count": 1}},
+    }
+    monkeypatch.setattr(
+        app_deps,
+        "load_panel_scope_data",
+        lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
+    )
+
+    response = TestClient(app).get("/api/panel-snapshot?scope=today")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "PostgreSQL timed out"
+
+
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "scoped-api.duckdb"
     _use_temp_api_db(monkeypatch, db_path)
