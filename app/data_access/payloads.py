@@ -89,9 +89,10 @@ def _thesis_monitor_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(config.get("enabled", False))
     provider = str(config.get("provider") or "codex")
     model = str(config.get("model") or "")
+    configured_providers = {"codex", "deepseek", "openai"}
     return {
         "enabled": enabled,
-        "configured": provider == "codex",
+        "configured": provider in configured_providers,
         "active": enabled,
         "status": "active" if enabled else "paused",
         "provider": provider,

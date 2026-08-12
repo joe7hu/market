@@ -19,6 +19,7 @@ from investment_panel.database.options_cash_secured_put import (
 FEATURE_VERSION = "option-professional-v3-ticket"
 STRATEGY_KEY = "options-radar-core"
 STRATEGY_REVISION = 3
+RADAR_QUOTE_SESSIONS = ("regular", "afterhours")
 DEFAULT_PARAMETERS = {
     "feature_version": FEATURE_VERSION,
     "contract_version": 3,
@@ -146,10 +147,10 @@ def _latest_snapshot_time(
                 """
                 SELECT max(snapshot.observed_at) AS observed_at
                 FROM raw.option_snapshot snapshot
-                WHERE snapshot.market_session = 'regular'
+                WHERE snapshot.market_session = ANY(%s)
                   AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
                 """,
-                [source_id, source_id],
+                [list(RADAR_QUOTE_SESSIONS), source_id, source_id],
             ).fetchone()
             return row["observed_at"] if row else None
 
@@ -161,11 +162,11 @@ def _latest_snapshot_time(
             SELECT max(snapshot.observed_at) AS observed_at
             FROM raw.option_snapshot snapshot
             JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
-            WHERE snapshot.market_session = 'regular'
+            WHERE snapshot.market_session = ANY(%s)
               AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb) ?| %s::text[]
             """,
-            [source_id, source_id, normalized],
+            [list(RADAR_QUOTE_SESSIONS), source_id, source_id, normalized],
         ).fetchone()
         if row and row["observed_at"] is not None:
             return row["observed_at"]
@@ -173,7 +174,7 @@ def _latest_snapshot_time(
             """
             SELECT max(snapshot.observed_at) AS observed_at
             FROM raw.option_snapshot snapshot
-            WHERE snapshot.market_session = 'regular'
+            WHERE snapshot.market_session = ANY(%s)
               AND (CAST(%s AS text) IS NULL OR snapshot.source_id = %s)
               AND EXISTS (
                   SELECT 1
@@ -184,7 +185,7 @@ def _latest_snapshot_time(
                     AND instrument.symbol = ANY(%s::text[])
               )
             """,
-            [source_id, source_id, normalized],
+            [list(RADAR_QUOTE_SESSIONS), source_id, source_id, normalized],
         ).fetchone()
         return row["observed_at"] if row else None
 

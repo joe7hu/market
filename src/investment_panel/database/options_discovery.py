@@ -102,7 +102,7 @@ def materialize_discovery_foundation(
             error for summary in provider_summaries for error in summary.get("errors") or []
         ),
         "contributing_ingest_runs": [str(row["id"]) for row in contributing_runs],
-        "inclusion_rule": "latest_regular_option_snapshot_at_or_before_cutoff",
+        "inclusion_rule": "latest_quoted_option_snapshot_at_or_before_cutoff",
         "exclusions": ["no_option_chain_at_cutoff"],
         "cutoff": cutoff.isoformat(),
         "counts_reproducible": True,

@@ -101,6 +101,31 @@ def test_preopen_llm_uses_configured_luna_model_and_high_reasoning(monkeypatch) 
     assert captured["compact"] is False
 
 
+def test_preopen_llm_passes_reasoning_policy_to_deepseek_without_provider_field(monkeypatch) -> None:
+    captured = {}
+
+    def fake_call(payload, **kwargs):
+        captured.update({"payload": payload, **kwargs})
+        return {
+            "headline": "DeepSeek brief", "macro_regime": "mixed", "narrative": "n",
+            "opening_scenario": "s", "qqq_path": "q", "risks": [], "watch_items": [], "evidence_refs": [],
+        }
+
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_PROVIDER", "deepseek")
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", "high")
+    monkeypatch.setattr("investment_panel.core.preopen_brief._call_deepseek_structured", fake_call)
+
+    generate_preopen_llm_brief({
+        "brief_date": "2026-06-20", "qqq_forecast": {"status": "ok"}, "backtest": {"status": "ok"},
+        "key_events": [], "market_environment": [], "fresh_source_items": [], "source_runs": [],
+    })
+
+    assert captured["model"] == "deepseek-v4-flash"
+    assert captured["reasoning_effort"] == "high"
+    assert captured["schema_name"] == "preopen_daily_brief"
+
+
 def test_preopen_context_excludes_same_day_price_bar(tmp_path) -> None:
     target = date(2026, 6, 19)
     db_path = tmp_path / "preopen-point-in-time.duckdb"

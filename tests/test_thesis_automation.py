@@ -169,6 +169,34 @@ def test_preopen_skips_codex_when_decision_inputs_are_unchanged(
     assert result["results"][0]["reason"] == "decision_inputs_unchanged_preopen"
 
 
+def test_thesis_automation_routes_to_deepseek_provider(
+    migrated_postgres_dsn: str, tmp_path: Path, monkeypatch,
+) -> None:
+    _watch(migrated_postgres_dsn, "THIN")
+    cfg = _config(tmp_path, migrated_postgres_dsn)
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8").replace("provider: codex", "provider: deepseek").replace(
+            "model: gpt-test", "model: deepseek-v4-flash"
+        ),
+        encoding="utf-8",
+    )
+    deepseek_calls: list[tuple[Any, ...]] = []
+
+    def fake_deepseek(request, **_kwargs):
+        deepseek_calls.append((request,))
+        return _model_output("THIN")
+
+    monkeypatch.setattr(run_thesis_monitor, "generate_deepseek_thesis_monitor", fake_deepseek)
+
+    result = run_thesis_monitor.run(str(cfg), symbols=["THIN"], force=True)
+    rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
+
+    assert result["completed"] == 1
+    assert len(deepseek_calls) == 1
+    thin = next(row for row in rows if row["symbol"] == "THIN")
+    assert thin["author_kind"] == "ai"
+
+
 def test_thesis_request_uses_short_stable_evidence_ids() -> None:
     request, references = run_thesis_monitor._request_payload(
         {"symbol": "NVDA"},

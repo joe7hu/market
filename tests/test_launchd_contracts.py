@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_market_open_options_radar_runs_full_hard_refresh_at_0940_weekdays() -> None:
+def test_market_open_options_radar_runs_full_hard_refresh_at_0942_weekdays() -> None:
     plist_path = (
         PROJECT_ROOT
         / "ops"
@@ -20,7 +20,7 @@ def test_market_open_options_radar_runs_full_hard_refresh_at_0940_weekdays() -> 
 
     intervals = payload["StartCalendarInterval"]
     assert intervals == [
-        {"Weekday": weekday, "Hour": 9, "Minute": 40}
+        {"Weekday": weekday, "Hour": 9, "Minute": 42}
         for weekday in range(1, 6)
     ]
     command = payload["ProgramArguments"][2]

@@ -22,15 +22,27 @@ def agent_env(
     timeout_seconds: int | None = None,
 ) -> dict[str, str]:
     values: dict[str, str] = {}
-    if provider:
-        values["MARKET_OPTION_AGENT_PROVIDER"] = provider
+    selected_provider = provider.strip().lower()
+    if selected_provider:
+        values["MARKET_OPTION_AGENT_PROVIDER"] = selected_provider
     if model:
-        values["MARKET_CODEX_MODEL"] = model
-        values["MARKET_OPENAI_MODEL"] = model
+        if selected_provider == "deepseek":
+            values["MARKET_DEEPSEEK_MODEL"] = model
+        elif selected_provider == "openai":
+            values["MARKET_OPENAI_MODEL"] = model
+        else:
+            values["MARKET_CODEX_MODEL"] = model
     if reasoning_effort:
-        values["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
+        if selected_provider == "deepseek":
+            values["MARKET_DEEPSEEK_REASONING_EFFORT"] = reasoning_effort
+        else:
+            values["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
     if timeout_seconds is not None:
-        values["MARKET_CODEX_TIMEOUT_SECONDS"] = str(max(30, int(timeout_seconds) - 15))
+        child_timeout = str(max(30, int(timeout_seconds) - 15))
+        if selected_provider == "deepseek":
+            values["MARKET_DEEPSEEK_TIMEOUT_SECONDS"] = child_timeout
+        else:
+            values["MARKET_CODEX_TIMEOUT_SECONDS"] = child_timeout
     return values
 
 

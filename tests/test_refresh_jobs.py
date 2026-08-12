@@ -4,6 +4,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 import os
 import time
+from types import SimpleNamespace
 
 from investment_panel.core import refresh_jobs
 import psycopg
@@ -196,6 +197,69 @@ def test_options_radar_hard_refresh_updates_source_then_rebuilds_radar(tmp_path,
     assert result["summary"]["options_radar"]["option_radar_opportunities"] == 5
     assert result["summary"]["options_radar"]["symbols"] == ["NVDA", "TSLA"]
     assert calls == [("source", "config.yaml"), ("radar:robinhood:NVDA,TSLA", "config.yaml")]
+
+
+def test_options_radar_hard_refresh_retries_provider_capacity_before_pulling_source(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    attempts: list[int] = []
+    waits: list[float] = []
+    released: list[int] = []
+
+    class DeferredThenAvailablePolicy:
+        def acquire_provider_lease(self, **_kwargs):
+            attempts.append(1)
+            return None if len(attempts) < 3 else SimpleNamespace(id=42)
+
+        def release_provider_lease(self, lease_id: int) -> None:
+            released.append(lease_id)
+
+    monkeypatch.setattr(refresh_jobs, "OptionHistoryPolicyRepository", lambda _runtime: DeferredThenAvailablePolicy())
+    monkeypatch.setattr(refresh_jobs, "RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS", (3.0, 7.0))
+    monkeypatch.setattr(refresh_jobs.time, "sleep", waits.append)
+    monkeypatch.setattr(
+        refresh_jobs.update_robinhood_options,
+        "run",
+        lambda _config_path: {"status": "ok", "symbols": ["NVDA"]},
+    )
+    monkeypatch.setattr(
+        refresh_jobs.refresh_options_radar,
+        "run_signal_only",
+        lambda *_args, **_kwargs: {"status": "ok", "option_radar_opportunities": 1},
+    )
+
+    result = refresh_jobs.run_refresh_job("options_radar_hard_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "succeeded"
+    assert result["summary"]["provider_lease_attempts"] == 3
+    assert attempts == [1, 1, 1]
+    assert waits == [3.0, 7.0]
+    assert released == [42]
+
+
+def test_options_radar_hard_refresh_fails_after_capacity_retry_budget(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "jobs.duckdb"
+    waits: list[float] = []
+
+    class AlwaysDeferredPolicy:
+        def acquire_provider_lease(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(refresh_jobs, "OptionHistoryPolicyRepository", lambda _runtime: AlwaysDeferredPolicy())
+    monkeypatch.setattr(refresh_jobs, "RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS", (2.0, 5.0))
+    monkeypatch.setattr(refresh_jobs.time, "sleep", waits.append)
+    monkeypatch.setattr(
+        refresh_jobs.update_robinhood_options,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("source pull should not run")),
+    )
+
+    result = refresh_jobs.run_refresh_job("options_radar_hard_refresh", db_path, "config.yaml")
+
+    assert result["status"] == "failed"
+    assert result["summary"]["reason"] == "provider_capacity_deferred"
+    assert result["summary"]["provider_lease_attempts"] == 3
+    assert waits == [2.0, 5.0]
+    assert "after 3 provider-capacity attempts" in result["error"]
 
 
 def test_options_radar_hard_refresh_skips_radar_when_no_incremental_symbols(tmp_path, monkeypatch) -> None:

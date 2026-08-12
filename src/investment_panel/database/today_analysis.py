@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -327,8 +328,9 @@ def _agent_preopen_narrative(
             backtest=backtest_qqq_preopen_model(qqq_history),
             catalysts=catalysts, option_rows=option_rows, source_changes=source_changes,
         )
+        provider = os.environ.get("MARKET_PREOPEN_BRIEF_PROVIDER", "codex").strip().lower()
         run_id = telemetry.start(
-            workflow="preopen_narrative", provider="codex", model=model,
+            workflow="preopen_narrative", provider=provider, model=model,
             trigger="scheduled_preopen", summary={"input_characters": len(str(context))},
         )
         result = generate(context, model=model, reasoning_effort=reasoning_effort)

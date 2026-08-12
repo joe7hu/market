@@ -17,6 +17,7 @@ from investment_panel.core.db import json_dumps, query_rows
 from investment_panel.analysis.preopen_forecast import (
     FORECAST_MODEL_VERSION, backtest_qqq_preopen_model, qqq_preopen_forecast,
 )
+from investment_panel.jobs.deepseek_option_agent import DEFAULT_DEEPSEEK_MODEL, _call_deepseek_structured
 from investment_panel.jobs.openai_option_agent import _call_codex_structured
 
 
@@ -147,6 +148,19 @@ def build_preopen_context(con: Any, target_date: date | None = None) -> dict[str
 def generate_preopen_llm_brief(
     context: dict[str, Any], *, model: str | None = None, reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
+    if _llm_provider() == "deepseek":
+        return _call_deepseek_structured(
+            _compact_context(context),
+            schema_name="preopen_daily_brief",
+            schema=BRIEF_SCHEMA,
+            system_prompt=_system_prompt(),
+            compact=False,
+            model=model or _llm_model_name(),
+            reasoning_effort=reasoning_effort or os.environ.get(
+                "MARKET_PREOPEN_BRIEF_REASONING_EFFORT", DEFAULT_REASONING_EFFORT,
+            ),
+            timeout=float(os.environ.get("MARKET_PREOPEN_BRIEF_TIMEOUT_SECONDS", "90")),
+        )
     return _call_codex_structured(
         _compact_context(context),
         schema_name="preopen_daily_brief",
@@ -161,7 +175,7 @@ def generate_preopen_llm_brief(
 
 def _brief_payload(context: dict[str, Any], llm: dict[str, Any] | None, *, status: str, error: str) -> dict[str, Any]:
     forecast = context["qqq_forecast"]
-    model = os.environ.get("MARKET_PREOPEN_BRIEF_MODEL", DEFAULT_PREOPEN_MODEL)
+    model = _llm_model_name()
     effort = os.environ.get("MARKET_PREOPEN_BRIEF_REASONING_EFFORT", DEFAULT_REASONING_EFFORT)
     fallback = _fallback_llm_content(context)
     content = llm or fallback
@@ -354,6 +368,20 @@ def _session_label(now: datetime) -> str:
 
 def _llm_enabled() -> bool:
     return os.environ.get("MARKET_PREOPEN_BRIEF_LLM", "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _llm_provider() -> str:
+    return os.environ.get("MARKET_PREOPEN_BRIEF_PROVIDER", "codex").strip().lower()
+
+
+def _llm_model_name() -> str:
+    if _llm_provider() == "deepseek":
+        return (
+            os.environ.get("MARKET_PREOPEN_BRIEF_MODEL")
+            or os.environ.get("MARKET_DEEPSEEK_MODEL")
+            or DEFAULT_DEEPSEEK_MODEL
+        )
+    return os.environ.get("MARKET_PREOPEN_BRIEF_MODEL", DEFAULT_PREOPEN_MODEL)
 
 
 def _json(value: Any, fallback: Any) -> Any:

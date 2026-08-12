@@ -258,6 +258,16 @@ def test_opportunity_primary_selection_keeps_data_readiness_as_guardrail() -> No
     assert _rank_opportunity_details([broken_but_flashy, usable])[0]["contract_id"] == "usable"
 
 
+def test_radar_shortlist_prefers_current_data_but_keeps_last_good_fallback() -> None:
+    from investment_panel.database.options_publication import _prefer_current_data
+
+    stale = {"ticker": "WDC", "data_readiness": "D"}
+    current = {"ticker": "NVDA", "data_readiness": "C"}
+
+    assert _prefer_current_data([stale, current]) == [current]
+    assert _prefer_current_data([stale]) == [stale]
+
+
 def test_options_radar_skips_degraded_snapshot_instead_of_collapsing(tmp_path) -> None:
     """A pre-market/off-hours pull with zero premiums on ~all contracts must not
     overwrite a healthy multi-ticker radar with the 1-2 names that happened to be
@@ -1160,6 +1170,47 @@ def test_options_radar_tables_load_through_panel_contract(migrated_postgres_dsn:
     assert "option_radar_symbol_summary" not in tables
     assert "shadow_trade" not in tables
     assert "radar_state_transition" not in tables
+
+
+def test_postgres_radar_prefers_newer_quoted_afterhours_snapshot(migrated_postgres_dsn: str) -> None:
+    from investment_panel.database.ingestion import IngestionRepository
+    from investment_panel.database.options_analysis import (
+        _latest_snapshot_time,
+        published_options_radar_rows,
+        refresh_options_radar,
+    )
+    from investment_panel.database.runtime import DatabaseRuntime
+
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ingestion = IngestionRepository(runtime)
+        ingestion.register_source("test", name="Test", family="test", kind="option_chain")
+        run_id = ingestion.start_run("test", "option_quotes")
+        regular_at = datetime(2026, 6, 2, 19, tzinfo=UTC)
+        afterhours_at = datetime(2026, 6, 2, 21, tzinfo=UTC)
+        rows = [
+            {
+                "symbol": "TSLA", "expiration": "2027-09-18", "strike": 120,
+                "option_type": "call", "bid": 2.9, "ask": 3.0, "mid": 2.95,
+                "iv": .25, "delta": .30, "volume": 25, "open_interest": 250,
+            }
+        ]
+        ingestion.store_option_snapshot(
+            run_id, source_id="test", observed_at=regular_at, market_session="regular", universe="test", rows=rows,
+        )
+        ingestion.store_option_snapshot(
+            run_id, source_id="test", observed_at=afterhours_at, market_session="afterhours", universe="test", rows=rows,
+        )
+        ingestion.finish_run(run_id, "succeeded")
+
+        assert _latest_snapshot_time(runtime, source_id="test", symbols=["TSLA"]) == afterhours_at
+        refresh_options_radar(runtime, source_id="test", code_version="afterhours-test")
+        summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
+        assert datetime.fromisoformat(summary["publication_cutoff"]) == afterhours_at
+        assert summary["market_session"] == "afterhours"
+    finally:
+        runtime.close()
 
 
 def test_options_radar_attributes_shadow_trade_return(tmp_path) -> None:

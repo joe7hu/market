@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 from threading import Event, Thread
+import time
 import traceback
 from typing import Any, Callable, Iterator
 from investment_panel.core.config import load_config
@@ -49,8 +50,37 @@ JobRunner = Callable[[str | None], dict[str, Any]]
 
 JOB_TIMEOUT_SECONDS: dict[str, int] = default_job_timeouts()
 JOB_HEARTBEAT_SECONDS = 30.0
+RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS = (15.0, 30.0, 60.0)
+
+
 def _job_timeout_seconds(job_name: str) -> int | None:
     return job_timeout_seconds(job_name, JOB_TIMEOUT_SECONDS)
+
+
+def _acquire_radar_provider_lease(policy: OptionHistoryPolicyRepository) -> tuple[Any | None, int]:
+    """Acquire capacity for the daily source-plus-publication refresh.
+
+    Robinhood capacity can be occupied briefly by an RTH recovery detector or a
+    just-finished history capture.  A hard refresh is only useful if it reaches
+    the publication step, so wait through bounded, observable contention rather
+    than recording a terminal successful skip with yesterday's radar still live.
+    """
+
+    for attempt in range(len(RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS) + 1):
+        lease = policy.acquire_provider_lease(
+            provider="robinhood",
+            workload="options_radar",
+            symbol="RADAR",
+            ttl_seconds=(
+                _job_timeout_seconds("options_radar_hard_refresh")
+                or JOB_TIMEOUT_SECONDS["options_radar_hard_refresh"]
+            ),
+        )
+        if lease is not None:
+            return lease, attempt + 1
+        if attempt < len(RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS):
+            time.sleep(RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS[attempt])
+    return None, len(RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS) + 1
 
 
 def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> dict[str, Any]:
@@ -58,14 +88,19 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
 
     config = load_config(config_path)
     policy = OptionHistoryPolicyRepository(runtime_for_url(database_url(config)))
-    lease = policy.acquire_provider_lease(
-        provider="robinhood",
-        workload="options_radar",
-        symbol="RADAR",
-        ttl_seconds=_job_timeout_seconds("options_radar_hard_refresh") or JOB_TIMEOUT_SECONDS["options_radar_hard_refresh"],
-    )
+    lease, lease_attempts = _acquire_radar_provider_lease(policy)
     if lease is None:
-        return {"ok": False, "status": "skipped", "reason": "provider_capacity_deferred"}
+        return {
+            "ok": False,
+            "status": "failed",
+            "failedStep": "acquire_provider_lease",
+            "reason": "provider_capacity_deferred",
+            "provider_lease_attempts": lease_attempts,
+            "error": (
+                "Robinhood option radar refresh deferred after "
+                f"{lease_attempts} provider-capacity attempts"
+            ),
+        }
     try:
         source = update_robinhood_options.run(config_path)
     finally:
@@ -88,6 +123,7 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
     return {
         "ok": True,
         "status": "succeeded",
+        "provider_lease_attempts": lease_attempts,
         "source": source,
         "options_radar": radar,
     }

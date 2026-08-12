@@ -82,12 +82,12 @@ allowlisted `run_option_agents` refresh job. Configure commands under:
 agents:
   option_agent:
     enabled: true
-    command: "market-codex-option-agent"
+    command: "market-deepseek-option-agent"
     timeout_seconds: 180
     thesis_limit: 8
     postmortem_limit: 4
-    provider: codex
-    model: gpt-5.6-luna
+    provider: deepseek
+    model: deepseek-v4-flash
     reasoning_effort: high
     max_runs_per_day: 1
 ```
@@ -96,21 +96,30 @@ The unified command receives one object with `thesis` and `postmortem` arrays
 plus shared guardrails. It returns matching arrays in the same order. Each
 request includes its published per-ticker context and stable request id.
 `MARKET_OPTION_AGENT_COMMAND` can override the configured command for local
-runs. Use `market-codex-option-agent` to run through the signed-in Codex
-ChatGPT OAuth session without an API key. Thesis Monitor and the pre-open
-narrative use the same restricted Codex path. These commands run Codex with
-shell, app, browser, plugin, computer-use, multi-agent, image generation, and
-web-search tools disabled, ignore user config/rules, and pass only an allowlisted
-environment to the child process. The Codex adapter timeout defaults to `90`
-seconds so it
+runs. Use `market-deepseek-option-agent` to run through the DeepSeek API with
+the `deepseek-v4-flash` model (`DEEPSEEK_API_KEY` required). Thesis Monitor and
+the pre-open narrative use the same DeepSeek adapter when their config/provider
+is set to `deepseek`; they fall back to the restricted Codex CLI path when the
+provider is `codex`. The Codex path runs with shell, app, browser, plugin,
+computer-use, multi-agent, image generation, and web-search tools disabled,
+ignores user config/rules, and passes only an allowlisted environment to the
+child process. The DeepSeek adapter timeout defaults to `90` seconds so it
 exits before the option-agent runner's default `120` second command timeout;
-keep `MARKET_CODEX_TIMEOUT_SECONDS` lower than the configured runner timeout
-when overriding either value. Market's configured app paths are OAuth-only and
-must use the `market-codex-*` commands. The developer-only `market-openai-*`
-entry points are direct Platform API clients and are not used by the app.
-Market defaults its configured OAuth workflows to `gpt-5.6-luna` with high
-reasoning. `MARKET_CODEX_MODEL` and `MARKET_CODEX_REASONING_EFFORT` can override
-those defaults for a local run.
+keep `MARKET_DEEPSEEK_TIMEOUT_SECONDS` (and `MARKET_CODEX_TIMEOUT_SECONDS` for
+the Codex fallback) lower than the configured runner timeout when overriding
+either value. The developer-only `market-openai-*` entry points are direct
+Platform API clients and are not used by the app.
+Market defaults its configured workflows to `deepseek-v4-flash` through the
+DeepSeek API, with the Codex OAuth path (`market-codex-*`,
+`gpt-5.6-luna` high) still available by switching the config `provider` back to
+`codex`. `MARKET_DEEPSEEK_MODEL`, `MARKET_CODEX_MODEL`, and
+`MARKET_CODEX_REASONING_EFFORT` can override those defaults for a local run.
+The pre-open brief is env-configured: `MARKET_PREOPEN_BRIEF_PROVIDER=deepseek`
+selects the DeepSeek adapter (the launchd webapp and premarket jobs set it),
+and `MARKET_PREOPEN_BRIEF_PROVIDER=codex` or an unset value keeps the Codex
+fallback. DeepSeek does not enforce the output schema server-side, so the
+adapter embeds the schema in the system prompt and retries once when a
+reasoning call returns empty content.
 
 These endpoints are handoff boundaries, not trading commands. Agent payloads are
 hypotheses and proposals only; deterministic code still owns option math,
@@ -225,7 +234,8 @@ records its own invocation and estimated token usage.
 The premarket workflow intentionally composes already-ingested facts. Run a
 separate source-plus-publication refresh after the options market opens so
 `/options-radar` does not merely republish an older Robinhood snapshot. The
-checked-in weekday market-open definition runs at 9:40 AM Eastern:
+checked-in weekday market-open definition runs at 9:42 AM Eastern, after the
+five-minute recovery detector's 9:40 slot:
 
 ```text
 ops/launchd/com.joehu.market.market-open-options-radar.plist
@@ -243,7 +253,9 @@ launchctl print gui/$(id -u)/com.joehu.market.market-open-options-radar
 This job runs `options_radar_hard_refresh`, which pulls Robinhood option chains
 before rebuilding the visible publication. It raises the incremental batch to
 the configured 80-symbol radar universe for the once-daily market-open pass;
-the collector's existing time and response bounds still apply.
+the collector's existing time and response bounds still apply. Brief provider
+capacity contention is retried inside the job; an exhausted retry budget is
+recorded as a failed refresh rather than a successful-looking skip.
 
 Keep the separate disclosure automation if it already exists; this full refresh
 is the missing broad-market workflow that ensures the decision desk has current

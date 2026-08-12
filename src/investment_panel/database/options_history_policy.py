@@ -243,6 +243,7 @@ class OptionHistoryPolicyRepository:
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"provider-lease:{provider}"])
             connection.execute("DELETE FROM ops.provider_lease WHERE provider = %s AND expires_at <= %s", [provider, acquired_at])
+            _release_dead_local_provider_leases(connection, provider)
             active = int(connection.execute(
                 "SELECT count(*) AS count FROM ops.provider_lease WHERE provider = %s AND expires_at > %s",
                 [provider, acquired_at],
@@ -328,6 +329,47 @@ def _active_radar_lease(connection: Any, provider: str, now: datetime) -> bool:
         [provider, now, sorted(RADAR_WORKLOADS)],
     ).fetchone()
     return row is not None
+
+
+def _release_dead_local_provider_leases(connection: Any, provider: str) -> None:
+    """Reclaim leases left behind when a local refresh subprocess is terminated.
+
+    Leases are normally released in a collector's ``finally`` block.  A SIGTERM
+    during an API reload bypasses that block, though, and should not reserve a
+    Robinhood slot for the full TTL.  Only inspect owners from this host; remote
+    owners remain TTL-governed because their liveness cannot be verified here.
+    """
+
+    rows = connection.execute(
+        "SELECT id, owner FROM ops.provider_lease WHERE provider = %s",
+        [provider],
+    ).fetchall()
+    dead_ids = [
+        int(row["id"])
+        for row in rows
+        if _lease_owner_is_dead_local_process(str(row.get("owner") or ""))
+    ]
+    if dead_ids:
+        connection.execute("DELETE FROM ops.provider_lease WHERE id = ANY(%s)", [dead_ids])
+
+
+def _lease_owner_is_dead_local_process(owner: str) -> bool:
+    hostname, separator, raw_pid = owner.rpartition(":")
+    if not separator or hostname != socket.gethostname():
+        return False
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
 
 
 def apply_publication_cap(state: dict[str, Any], policy: dict[str, Any] | None) -> dict[str, Any]:

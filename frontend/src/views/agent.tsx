@@ -241,7 +241,7 @@ export function AgentPage() {
           <Field label="Command"><Input value={form.command} onChange={(e) => setDraft({ ...form, command: e.target.value })} placeholder="market-codex-option-agent" /></Field>
 
           <div className="grid gap-3 sm:grid-cols-3">
-            <SelectField label="Provider" value={form.provider} options={["codex", "openai"]} onChange={(v) => setDraft({ ...form, provider: v })} />
+            <SelectField label="Provider" value={form.provider} options={["codex", "deepseek", "openai"]} onChange={(v) => setDraft({ ...form, provider: v })} />
             <Field label="Model"><Input value={form.model} onChange={(e) => setDraft({ ...form, model: e.target.value })} placeholder="(provider default)" /></Field>
             <SelectField label="Reasoning effort" value={form.reasoning_effort} options={["", "minimal", "low", "medium", "high"]} onChange={(v) => setDraft({ ...form, reasoning_effort: v })} />
           </div>

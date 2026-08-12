@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import socket
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,6 +122,45 @@ def test_provider_lease_heartbeat_extends_active_work(migrated_postgres_dsn: str
         with runtime.read() as connection:
             row = connection.execute("SELECT expires_at FROM ops.provider_lease WHERE id = %s", [lease.id]).fetchone()
         assert row["expires_at"] > lease.expires_at
+    finally:
+        runtime.close()
+
+
+def test_provider_leases_reclaim_dead_local_process_owners(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        repository = OptionHistoryPolicyRepository(runtime)
+        abandoned = repository.acquire_provider_lease(
+            provider="robinhood",
+            workload="unit-history-abandoned",
+            symbol="NVDA",
+            owner=f"{socket.gethostname()}:999999999",
+            ttl_seconds=3600,
+        )
+        assert abandoned is not None
+
+        live = repository.acquire_provider_lease(
+            provider="robinhood",
+            workload="unit-history-live",
+            symbol="TSLA",
+            ttl_seconds=3600,
+        )
+        candidate = repository.acquire_provider_lease(
+            provider="robinhood",
+            workload="unit-history-candidate",
+            symbol="AMD",
+            ttl_seconds=3600,
+        )
+
+        assert live is not None
+        assert candidate is not None
+        with runtime.read() as connection:
+            stale = connection.execute(
+                "SELECT id FROM ops.provider_lease WHERE id = %s",
+                [abandoned.id],
+            ).fetchone()
+        assert stale is None
     finally:
         runtime.close()
 

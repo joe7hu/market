@@ -11,7 +11,7 @@ from investment_panel.database.options_risk_context import option_risk_contexts
 
 
 def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
-    """Replace an incompatible legacy fallback when no regular-session publication exists."""
+    """Replace an incompatible legacy fallback when no usable quoted publication exists."""
     current = repository.publication_rows("options-radar", "option_radar_summary")
     if len(current) == 1 and current[0].get("contract_version") == 3:
         return {"status": "skipped", "reason": "no_regular_session_snapshot", "option_features": 0, "decisions": 0}
@@ -236,7 +236,9 @@ def publication_models(
             and row.get("portfolio_context_status") == "complete"
         )
         row.update(ticket_recommendation_fields(row))
-    actionable = _shortlist([row for row in all_rows if row.get("state") != "REJECTED"])
+    actionable = _shortlist(_prefer_current_data([
+        row for row in all_rows if row.get("state") != "REJECTED"
+    ]))
     published_tickers = {str(row["ticker"]) for row in actionable}
     for row in discovery_rows:
         ticker = str(row["ticker"])
@@ -277,10 +279,12 @@ def publication_models(
         "required_5x_price", "required_10x_price", "required_move_pct",
         "liquidity_score", "convexity_score", "raw",
     ))
-    latest = max(
-        (row.get("snapshot_time") for row in all_rows if row.get("snapshot_time") is not None),
+    latest_row = max(
+        (row for row in all_rows if row.get("snapshot_time") is not None),
+        key=lambda row: row["snapshot_time"],
         default=None,
     )
+    latest = latest_row.get("snapshot_time") if latest_row else None
     global_summary = [{
         "stable_key": "global",
         "contract_version": 3,
@@ -288,8 +292,8 @@ def publication_models(
         "strategy_revision": strategy_revision,
         "publication_cutoff": (discovery_run["manifest"] or {}).get("cutoff") if discovery_run else latest,
         "latest_complete_quote_time": latest,
-        "source": all_rows[0].get("data_source") if all_rows else (discovery_run["provider"] if discovery_run else None),
-        "market_session": all_rows[0].get("market_session") if all_rows else (discovery_run["market_session"] if discovery_run else None),
+        "source": latest_row.get("data_source") if latest_row else (discovery_run["provider"] if discovery_run else None),
+        "market_session": latest_row.get("market_session") if latest_row else (discovery_run["market_session"] if discovery_run else None),
         "scanned_contracts": scanned_contracts,
         "symbols_considered": int(discovery_run["symbols_considered"]) if discovery_run else 0,
         "symbols_with_chains": int(discovery_run["symbols_with_chains"]) if discovery_run else 0,
@@ -459,6 +463,23 @@ def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             str(row.get("ticker") or ""),
         ),
     )[:10]
+
+
+def _prefer_current_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Do not mix long-stale fallback rows into a current radar shortlist.
+
+    The last-good fallback still protects the page when no current option chain
+    is available. Once the provider has supplied any A/B/C-quality quote,
+    D-quality rows add no current decision value and make a fresh panel look
+    stale.
+    """
+
+    current = [
+        row
+        for row in rows
+        if str(row.get("data_readiness") or "D") in {"A", "B", "C"}
+    ]
+    return current or rows
 
 
 def _summary_state(row: dict[str, Any]) -> str:

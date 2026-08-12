@@ -277,6 +277,9 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
             "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),
             "codex_reasoning_effort": os.environ.get("MARKET_CODEX_REASONING_EFFORT", ""),
             "codex_timeout_seconds": os.environ.get("MARKET_CODEX_TIMEOUT_SECONDS", "90"),
+            "deepseek_model": os.environ.get("MARKET_DEEPSEEK_MODEL", ""),
+            "deepseek_base_url": os.environ.get("MARKET_DEEPSEEK_BASE_URL", ""),
+            "deepseek_timeout_seconds": os.environ.get("MARKET_DEEPSEEK_TIMEOUT_SECONDS", ""),
             "auth_mode": "chatgpt_oauth",
         },
     }

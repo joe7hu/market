@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.jobs.deepseek_option_agent import _call_deepseek_structured
 from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError, _call_codex_structured
 
 
@@ -155,6 +156,28 @@ def generate_codex_thesis_monitor(
     return {**result, "_meta": meta}
 
 
+def generate_deepseek_thesis_monitor(
+    request_payload: dict[str, Any],
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> dict[str, Any]:
+    """DeepSeek API variant of the thesis-monitor structured adapter."""
+
+    meta: dict[str, Any] = {}
+    result = _call_deepseek_structured(
+        request_payload,
+        schema_name="thesis_monitor_v3",
+        schema=THESIS_MONITOR_SCHEMA,
+        system_prompt=_system_prompt(),
+        compact=False,
+        meta_sink=meta,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
+    return {**result, "_meta": meta}
+
+
 def _system_prompt() -> str:
     return (
         "You maintain a professional portfolio thesis monitor. Return only the "
@@ -167,4 +190,9 @@ def _system_prompt() -> str:
     )
 
 
-__all__ = ["OpenAIOptionAgentError", "THESIS_MONITOR_SCHEMA", "generate_codex_thesis_monitor"]
+__all__ = [
+    "OpenAIOptionAgentError",
+    "THESIS_MONITOR_SCHEMA",
+    "generate_codex_thesis_monitor",
+    "generate_deepseek_thesis_monitor",
+]

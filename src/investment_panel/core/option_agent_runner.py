@@ -240,11 +240,13 @@ def _agent_env(*, provider: str, model: str, reasoning_effort: str) -> dict[str,
     if provider:
         env["MARKET_OPTION_AGENT_PROVIDER"] = provider
     if model:
-        # The worker reads provider-specific model vars; set both so either path picks it up.
-        env["MARKET_CODEX_MODEL"] = model
-        env["MARKET_OPENAI_MODEL"] = model
+        if provider.strip().lower() == "deepseek":
+            env["MARKET_DEEPSEEK_MODEL"] = model
+        else:
+            env["MARKET_CODEX_MODEL"] = model
     if reasoning_effort:
-        env["MARKET_CODEX_REASONING_EFFORT"] = reasoning_effort
+        key = "MARKET_DEEPSEEK_REASONING_EFFORT" if provider.strip().lower() == "deepseek" else "MARKET_CODEX_REASONING_EFFORT"
+        env[key] = reasoning_effort
     return env
 
 

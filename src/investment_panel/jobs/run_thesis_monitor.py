@@ -11,7 +11,7 @@ from investment_panel.core.config import config_to_dict, load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
 from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
-from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor
+from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor, generate_deepseek_thesis_monitor
 from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
 
 
@@ -51,6 +51,7 @@ def run(
                 dry_run=dry_run,
                 model=settings.model or "configured_default",
                 reasoning_effort=settings.reasoning_effort or "medium",
+                provider=settings.provider or "codex",
                 prompt_version=settings.prompt_version,
                 evidence_limit=max(1, int(settings.evidence_items_per_symbol or 12)),
                 debounce_minutes=max(1, int(settings.debounce_minutes or 30)),
@@ -91,6 +92,7 @@ def _run_one(
     dry_run: bool,
     model: str,
     reasoning_effort: str,
+    provider: str,
     prompt_version: str,
     evidence_limit: int,
     debounce_minutes: int,
@@ -118,7 +120,7 @@ def _run_one(
     if dry_run:
         try:
             request, evidence_refs = _request_payload(row, evidence, prompt_version=prompt_version)
-            output = generate_codex_thesis_monitor(
+            output = _thesis_generator(provider)(
                 request,
                 model=None if model == "configured_default" else model,
                 reasoning_effort=reasoning_effort,
@@ -141,7 +143,7 @@ def _run_one(
     output: dict[str, Any] = {}
     try:
         request, evidence_refs = _request_payload(row, evidence, prompt_version=prompt_version)
-        output = generate_codex_thesis_monitor(
+        output = _thesis_generator(provider)(
             request,
             model=None if model == "configured_default" else model,
             reasoning_effort=reasoning_effort,
@@ -196,6 +198,18 @@ def _run_one(
         repository.finish_run(run_id, status="failed", error=error, usage=usage)
         repository.create_health_alert(symbol, title="Thesis automation failed", detail=error[:1000])
         return {"symbol": symbol, "status": "failed", "run_id": run_id, "error": error}
+
+
+def _thesis_generator(provider: str) -> Any:
+    """Select the model adapter for the configured provider.
+
+    Reads module attributes at call time so tests can monkeypatch either the
+    Codex or DeepSeek generator and still exercise the dispatch branch.
+    """
+
+    if str(provider).strip().lower() == "deepseek":
+        return generate_deepseek_thesis_monitor
+    return generate_codex_thesis_monitor
 
 
 def validate_model_output(
