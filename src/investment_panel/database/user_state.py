@@ -35,11 +35,12 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
         with runtime.read() as owned_connection:
             return portfolio_rows(config, connection=owned_connection)
     rows = connection.execute(
-            """
-            SELECT i.symbol, i.name, i.asset_class, i.sector, i.industry, i.category,
-                   p.quantity, p.average_cost, p.purchase_date, p.notes, p.updated_at,
-                   q.price, q.change_pct, q.change_abs, q.observed_at AS quote_observed_at,
-                   q.source_id AS quote_source, q.valuation_status
+        """
+        WITH positions AS MATERIALIZED (
+            SELECT i.id AS instrument_id, i.symbol, i.name, i.asset_class, i.sector,
+                   i.industry, i.category, p.quantity, p.average_cost,
+                   p.purchase_date, p.notes, p.updated_at,
+                   latest_split.executed_at AS latest_split_at
             FROM app.portfolio_position p
             JOIN catalog.instrument i ON i.id = p.instrument_id
             LEFT JOIN LATERAL (
@@ -53,19 +54,27 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
                       WHERE reversal.reverses_transaction_id = transaction.id
                   )
             ) latest_split ON true
-            LEFT JOIN LATERAL (
-                SELECT candidate.price, candidate.change_pct, candidate.change_abs,
-                       candidate.observed_at, candidate.source_id, candidate.valuation_status
-                FROM raw.current_price_at(now(), ARRAY[p.instrument_id]) candidate
-                WHERE (
-                      p.purchase_date IS NULL
-                      OR (candidate.observed_at AT TIME ZONE 'America/New_York')::date >= p.purchase_date - 7
-                  )
-                  AND (latest_split.executed_at IS NULL OR candidate.observed_at >= latest_split.executed_at)
-            ) q ON true
-            ORDER BY i.symbol
-            """
-        ).fetchall()
+        ), current_prices AS MATERIALIZED (
+            SELECT *
+            FROM raw.current_price_at(
+                now(),
+                ARRAY(SELECT instrument_id FROM positions)::bigint[]
+            )
+        )
+        SELECT p.symbol, p.name, p.asset_class, p.sector, p.industry, p.category,
+               p.quantity, p.average_cost, p.purchase_date, p.notes, p.updated_at,
+               q.price, q.change_pct, q.change_abs, q.observed_at AS quote_observed_at,
+               q.source_id AS quote_source, q.valuation_status
+        FROM positions p
+        LEFT JOIN current_prices q ON q.instrument_id = p.instrument_id
+          AND (
+              p.purchase_date IS NULL
+              OR (q.observed_at AT TIME ZONE 'America/New_York')::date >= p.purchase_date - 7
+          )
+          AND (p.latest_split_at IS NULL OR q.observed_at >= p.latest_split_at)
+        ORDER BY p.symbol
+        """
+    ).fetchall()
     output: list[dict[str, Any]] = []
     for source in rows:
         row = dict(source)

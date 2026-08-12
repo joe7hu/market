@@ -3,13 +3,12 @@ import { useSearchParams } from "react-router-dom";
 import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api";
 import {StatusBadge } from "@/components/market/workstation";
 import {PanelData, RowRecord } from "@/types";
-import {displayField, numberField, textField } from "./rowFormat";
+import {numberField, textField } from "./rowFormat";
 import {formatDate, sessionBadge } from "./optionsRadarFormat";
 import {latestBy, latestValidationBy } from "./optionsRadarData";
 import {tabButtonClass, rows, rowsForDisplayTime, uniqueText, countWhere, optionThesisAgentState, stateOf } from "./optionsRadar/helpers";
 import {SignalBriefPanel } from "./optionsRadar/signalBrief";
 import {CandidateEventsTable } from "./optionsRadar/candidateTable";
-import {DiscoveryQueue} from "./optionsRadar/discoveryQueue";
 import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./optionsRadar/learningPanels";
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
@@ -51,7 +50,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const [learningReload, setLearningReload] = useState(0);
   const [selectedDecisionId, setSelectedDecisionId] = useState<string | null>(null);
   const queryDecisionId = searchParams.get("decision");
-  const radarAlerts = rows(data.radarAlert);
   const missedWinners = learningRows.missed_winner_event ?? [];
   const proposals = learningRows.strategy_mutation_proposal ?? [];
   const backtests = learningRows.strategy_backtest_result ?? [];
@@ -65,8 +63,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const candidateAttributions = learningRows.candidate_event_attribution ?? [];
   const cohortResults = learningRows.strategy_cohort_result ?? [];
   const opportunityRows = rows(data.optionRadarOpportunity);
-  const discoveryRows = rows(data.optionDiscoveryCandidate);
-  const strategyVersions = rows(data.optionStrategyVersions);
   const radarSummary = rows(data.optionRadarSummary)[0];
   const professionalContract = numberField(radarSummary, ["contract_version"], 0) >= 3;
   const latestCandidateTime = textField(radarSummary, ["publication_cutoff", "latest_candidate_time"]);
@@ -122,10 +118,9 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
   const latestSnapshot = textField(radarSummary, ["latest_complete_quote_time", "latest_snapshot_time"]);
   const snapshotLabel = textField(radarSummary, ["latest_snapshot_label"]);
   const displayStrategyVersion = textField(radarSummary, ["strategy_version"]);
-  const latestStrategy = strategyVersions.find((row) => textField(row, ["strategy_version"]) === displayStrategyVersion) ?? strategyVersions[0];
   const strategyLabel = professionalContract
     ? `Professional v3 · revision ${numberField(radarSummary, ["strategy_revision"], 0).toLocaleString()}`
-    : displayField(latestStrategy, ["strategy_version", "strategy_name"], "No strategy");
+    : displayStrategyVersion || "No strategy";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -217,7 +212,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     >
       <SignalBriefPanel
         rows={currentOpportunityRows}
-        activeAlertCount={radarAlerts.length}
+        activeAlertCount={0}
         fireCount={fireCount}
         setupCount={setupCount}
         symbolsConsidered={symbolsConsidered}
@@ -230,7 +225,6 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         onOpenTicker={onOpenTicker}
         onOpenDecision={openDecision}
       />
-      <DiscoveryQueue rows={discoveryRows} onOpenTicker={onOpenTicker} />
       <div className="flex w-fit rounded-md border border-border bg-muted p-1">
         <button type="button" className={tabButtonClass(activeTab === "signals")} onClick={() => setActiveTab("signals")}>Signals</button>
         <button type="button" className={tabButtonClass(activeTab === "learning")} onClick={() => setActiveTab("learning")}>Learning</button>

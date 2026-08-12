@@ -45,7 +45,6 @@ export const PANEL_TABLE_KEYS = [
   "opportunitySources",
   "optionAttribution",
   "optionCalibration",
-  "optionDiscoveryCandidate",
   "optionFeatures",
   "optionRadarOpportunity",
   "optionRadarSummary",

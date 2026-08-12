@@ -25,16 +25,24 @@ def refresh_today_publication(
             dict(row)
             for row in connection.execute(
                 """
-                SELECT instrument.id AS instrument_id, instrument.symbol, position.quantity,
+                WITH positions AS MATERIALIZED (
+                    SELECT instrument.id AS instrument_id, instrument.symbol,
+                           position.quantity, position.average_cost, position.notes
+                    FROM app.portfolio_position position
+                    JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
+                ), current_prices AS MATERIALIZED (
+                    SELECT *
+                    FROM raw.current_price_at(
+                        %s,
+                        ARRAY(SELECT instrument_id FROM positions)::bigint[]
+                    )
+                )
+                SELECT position.instrument_id, position.symbol, position.quantity,
                        position.average_cost, position.notes, quote.price,
                        quote.observed_at AS quote_observed_at
-                FROM app.portfolio_position position
-                JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-                LEFT JOIN LATERAL (
-                    SELECT candidate.price, candidate.observed_at
-                    FROM raw.current_price_at(%s, ARRAY[instrument.id]) candidate
-                ) quote ON true
-                ORDER BY instrument.symbol
+                FROM positions position
+                LEFT JOIN current_prices quote ON quote.instrument_id = position.instrument_id
+                ORDER BY position.symbol
                 """,
                 [as_of],
             ).fetchall()

@@ -218,11 +218,8 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "theses",
     ),
     "options-radar": (
-        "option_strategy_versions",
         "option_radar_summary",
         "option_radar_opportunity",
-        "option_discovery_candidate",
-        "radar_alert",
     ),
     # Recovery, provider, batch, and capture details are operational health
     # data.  Keep them off the primary trade-decision payload.
@@ -310,10 +307,7 @@ TICKER_INITIAL_TABLES = (
     "candidates",
     "quotes",
     "portfolio",
-    "portfolio_risk_cards",
-    "review_actions",
     "theses",
-    "thesis_monitor",
     "options_ticker_signals",
 )
 

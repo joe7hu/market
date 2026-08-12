@@ -79,6 +79,7 @@ from investment_panel.core.refresh_jobs import (
 )
 from investment_panel.core.config import config_to_dict, load_config as load_core_config
 from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, build_daily_research_prompt
+from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.jobs import run_thesis_monitor
 
@@ -98,11 +99,8 @@ _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
     "portfolio": {"portfolio", "portfolio_summary", "portfolio_performance"},
     "research": {"research_packets", "theses", "thesis_monitor", "news"},
     "options-radar": {
-        "option_strategy_versions",
         "option_radar_summary",
         "option_radar_opportunity",
-        "option_discovery_candidate",
-        "radar_alert",
     },
 }
 
@@ -407,7 +405,7 @@ def _load_last_good_scope_snapshot(
     key = _scope_snapshot_cache_key(scope, offset, limit)
     cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(key)
     if cached is not None:
-        return deepcopy(cached)
+        return deepcopy(cached) if _snapshot_schema_is_compatible(cached) else None
     path = _scope_snapshot_cache_path(config, key)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -415,8 +413,20 @@ def _load_last_good_scope_snapshot(
         return None
     if not isinstance(payload, dict):
         return None
+    if not _snapshot_schema_is_compatible(payload):
+        return None
     _LAST_GOOD_SCOPE_SNAPSHOTS[key] = payload
     return deepcopy(payload)
+
+
+def _snapshot_schema_is_compatible(payload: dict[str, Any]) -> bool:
+    metadata = ((payload.get("status") or {}).get("metadata") or {})
+    schema_revision = str(metadata.get("schema_revision") or "") if isinstance(metadata, dict) else ""
+    # A persisted payload from an older read-model contract can be worse than a
+    # hard failure: it can look healthy while showing a superseded publication
+    # or stale price semantics.  Schema-less test/legacy cache entries remain
+    # readable, but a known mismatched revision is never eligible as fallback.
+    return not schema_revision or schema_revision == HEAD_REVISION
 
 
 def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str:

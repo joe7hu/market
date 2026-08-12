@@ -1164,7 +1164,7 @@ def test_options_radar_tables_load_through_panel_contract(migrated_postgres_dsn:
     assert "option_snapshot" not in tables
     assert "option_features" not in tables
     assert "stock_features" not in tables
-    assert "radar_alert" in tables
+    assert "radar_alert" not in tables
     assert "candidate_event" not in tables
     assert "candidate_event_attribution" not in tables
     assert "option_radar_symbol_summary" not in tables

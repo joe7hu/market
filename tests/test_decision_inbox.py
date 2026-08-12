@@ -127,3 +127,50 @@ def test_decision_inbox_does_not_read_a_future_publication(
         assert after["ready"] == 1
     finally:
         runtime.close()
+
+
+def test_decision_inbox_arms_without_replaying_existing_ticket(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    analysis = AnalysisRepository(runtime)
+    inbox = DecisionInboxRepository(runtime)
+    decision_id = str(uuid4())
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        run_id = analysis.start_run(
+            "inbox-bootstrap-test", input_cutoff=reference, code_version="test",
+            inputs={"reference": reference.isoformat()},
+        )
+        analysis.finish_run(run_id, "succeeded")
+        publication_id = analysis.publish(
+            run_id,
+            "options-radar",
+            {
+                "option_radar_opportunity": [{
+                    "decision_id": decision_id,
+                    "symbol": "TSLA",
+                    "ticket": {
+                        "decision_id": decision_id,
+                        "ticket_version": 4,
+                        "lane": "radar",
+                        "state": "READY",
+                        "blockers": [],
+                        "expires_at": (reference + timedelta(hours=1)).isoformat(),
+                    },
+                }],
+            },
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
+                [reference - timedelta(minutes=1), publication_id],
+            )
+
+        result = inbox.sync_current_tickets(now=reference)
+
+        assert result == {"ready": 0, "revoked": 0, "expired": 0}
+        assert inbox.rows()["items"] == []
+    finally:
+        runtime.close()

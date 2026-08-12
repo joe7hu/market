@@ -125,9 +125,18 @@ class DecisionInboxRepository:
         return {"items": page, "count": len(page), "next_cursor": next_cursor}
 
     def sync_current_tickets(self, *, now: datetime | None = None) -> dict[str, int]:
-        """Create idempotent READY/revoked/expired events from current publications."""
+        """Create lifecycle events after the Inbox has observed its first state.
+
+        The first scheduler pass is an activation marker, not a replay of every
+        old ticket in a retained publication.  That prevents a new Inbox from
+        treating historical SETUPs and already-expired tickets as fresh alerts.
+        """
 
         reference = _utc(now)
+        activation_at, is_bootstrap = self._ticket_sync_activation(reference)
+        created = {"ready": 0, "revoked": 0, "expired": 0}
+        if is_bootstrap:
+            return created
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
@@ -136,13 +145,14 @@ class DecisionInboxRepository:
                 JOIN app.publication_item item ON item.publication_id = publication.id
                 WHERE publication.status = 'published'
                   AND publication.published_at <= %s
+                  AND publication.published_at >= %s
                   AND (
                     (publication.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
                     OR
                     (publication.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
                   )
                 """,
-                [reference],
+                [reference, activation_at],
             ).fetchall()
             recovery_rows = connection.execute(
                 """
@@ -155,13 +165,13 @@ class DecisionInboxRepository:
                   AND signal.status IN ('shadow', 'ticketed', 'entered', 'partial_exited')
                   AND signal.ticket->>'state' = 'READY'
                   AND signal.available_at <= %s
+                  AND signal.available_at >= %s
                 ORDER BY signal.available_at DESC, signal.id DESC
                 LIMIT 100
                 """,
-                [reference],
+                [reference, activation_at],
             ).fetchall()
         current: dict[tuple[str, int], dict[str, Any]] = {}
-        created = {"ready": 0, "revoked": 0, "expired": 0}
         for row in rows:
             payload = dict(row["payload"] or {})
             ticket = dict(payload.get("ticket") or {})
@@ -171,48 +181,67 @@ class DecisionInboxRepository:
                 continue
             expires_at = _parse_time(ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until"))
             ready = str(ticket.get("state") or "").upper() == "READY" and not list(ticket.get("blockers") or [])
-            event_payload = _ticket_event_payload(payload, ticket)
-            if expires_at is not None and expires_at <= reference:
-                current[(decision_id, version)] = {"payload": payload, "ticket": {**ticket, "state": "EXPIRED"}}
-                event = self.emit(event_type="expired", payload=event_payload, opportunity_id=decision_id, ticket_version=version, lane=str(ticket.get("lane") or "radar"), severity="warning")
+            if ready and expires_at is not None and expires_at <= reference:
+                expired_ticket = {**ticket, "state": "EXPIRED"}
+                current[(decision_id, version)] = {"payload": payload, "ticket": expired_ticket, "ready": False}
+                event = self.emit(
+                    event_type="expired", payload=_ticket_event_payload(payload, expired_ticket),
+                    opportunity_id=decision_id, ticket_version=version,
+                    lane=str(ticket.get("lane") or "radar"), severity="warning",
+                )
                 created["expired"] += int(event["created"])
                 if event["created"]:
-                    with self.runtime.transaction() as connection:
-                        connection.execute(
-                            """
-                            UPDATE app.decision_inbox_item
-                            SET status = 'resolved', resolved_at = now()
-                            WHERE event_type = 'ready' AND opportunity_id = %s::uuid
-                              AND ticket_version = %s AND status = 'active'
-                            """,
-                            [decision_id, version],
-                        )
+                    self._resolve_ready_item(decision_id, version)
             elif ready:
-                current[(decision_id, version)] = {"payload": payload, "ticket": ticket}
-                event = self.emit(event_type="ready", payload=event_payload, opportunity_id=decision_id, ticket_version=version, lane=str(ticket.get("lane") or "radar"), severity="info")
+                current[(decision_id, version)] = {"payload": payload, "ticket": ticket, "ready": True}
+                event = self.emit(
+                    event_type="ready", payload=_ticket_event_payload(payload, ticket),
+                    opportunity_id=decision_id, ticket_version=version,
+                    lane=str(ticket.get("lane") or "radar"), severity="info",
+                )
                 created["ready"] += int(event["created"])
             else:
-                current[(decision_id, version)] = {"payload": payload, "ticket": ticket}
+                current[(decision_id, version)] = {"payload": payload, "ticket": ticket, "ready": False}
         for row in recovery_rows:
             ticket = dict(row["ticket"] or {})
             decision_id = str(ticket.get("decision_id") or row["decision_id"] or "")
             version = _int(ticket.get("ticket_version"))
             if not decision_id or version is None:
                 continue
+            recovery_ticket = {**ticket, "lane": "recovery"}
+            ready = not list(recovery_ticket.get("blockers") or [])
+            expires_at = _parse_time(
+                recovery_ticket.get("expires_at")
+                or (recovery_ticket.get("entry") or {}).get("valid_until")
+            )
             payload = {
                 "decision_id": decision_id,
                 "ticker": str(row["symbol"]),
-                "structure": ticket.get("structure"),
+                "structure": recovery_ticket.get("structure"),
                 "top_reasons": [str(row["strategy_key"])],
-                "ticket": ticket,
+                "ticket": recovery_ticket,
             }
-            current[(decision_id, version)] = {"payload": payload, "ticket": ticket}
-            event = self.emit(
-                event_type="ready", payload=_ticket_event_payload(payload, ticket),
-                opportunity_id=decision_id, ticket_version=version,
-                lane="recovery", severity="info",
-            )
-            created["ready"] += int(event["created"])
+            if ready and expires_at is not None and expires_at <= reference:
+                expired_ticket = {**recovery_ticket, "state": "EXPIRED"}
+                current[(decision_id, version)] = {"payload": payload, "ticket": expired_ticket, "ready": False}
+                event = self.emit(
+                    event_type="expired", payload=_ticket_event_payload(payload, expired_ticket),
+                    opportunity_id=decision_id, ticket_version=version,
+                    lane="recovery", severity="warning",
+                )
+                created["expired"] += int(event["created"])
+                if event["created"]:
+                    self._resolve_ready_item(decision_id, version)
+            elif ready:
+                current[(decision_id, version)] = {"payload": payload, "ticket": recovery_ticket, "ready": True}
+                event = self.emit(
+                    event_type="ready", payload=_ticket_event_payload(payload, recovery_ticket),
+                    opportunity_id=decision_id, ticket_version=version,
+                    lane="recovery", severity="info",
+                )
+                created["ready"] += int(event["created"])
+            else:
+                current[(decision_id, version)] = {"payload": payload, "ticket": recovery_ticket, "ready": False}
         with self.runtime.read() as connection:
             active_ready = connection.execute(
                 """
@@ -225,7 +254,7 @@ class DecisionInboxRepository:
         for prior in active_ready:
             key = (str(prior["opportunity_id"]), int(prior["ticket_version"]))
             current_ticket = current.get(key)
-            if current_ticket and str(current_ticket["ticket"].get("state") or "").upper() == "READY":
+            if current_ticket and bool(current_ticket.get("ready")):
                 continue
             prior_payload = dict(prior["payload"] or {})
             event = self.emit(
@@ -236,17 +265,41 @@ class DecisionInboxRepository:
             )
             created["revoked"] += int(event["created"])
             if event["created"]:
-                with self.runtime.transaction() as connection:
-                    connection.execute(
-                        """
-                        UPDATE app.decision_inbox_item
-                        SET status = 'resolved', resolved_at = now()
-                        WHERE event_type = 'ready' AND opportunity_id = %s::uuid
-                          AND ticket_version = %s AND status = 'active'
-                        """,
-                        [key[0], key[1]],
-                    )
+                self._resolve_ready_item(key[0], key[1])
         return created
+
+    def _ticket_sync_activation(self, reference: datetime) -> tuple[datetime, bool]:
+        """Return the durable lifecycle watermark and whether it was just armed."""
+
+        with self.runtime.transaction() as connection:
+            inserted = connection.execute(
+                """
+                INSERT INTO app.decision_inbox_sync_state (state_key, activated_at)
+                VALUES ('ticket_lifecycle', %s)
+                ON CONFLICT (state_key) DO NOTHING
+                RETURNING activated_at
+                """,
+                [reference],
+            ).fetchone()
+            if inserted is not None:
+                return inserted["activated_at"], True
+            existing = connection.execute(
+                "SELECT activated_at FROM app.decision_inbox_sync_state WHERE state_key = 'ticket_lifecycle'"
+            ).fetchone()
+            assert existing is not None
+            return existing["activated_at"], False
+
+    def _resolve_ready_item(self, decision_id: str, ticket_version: int) -> None:
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE app.decision_inbox_item
+                SET status = 'resolved', resolved_at = now()
+                WHERE event_type = 'ready' AND opportunity_id = %s::uuid
+                  AND ticket_version = %s AND status = 'active'
+                """,
+                [decision_id, ticket_version],
+            )
 
     def record_paper_lifecycle(self, paper_order_id: str, *, status: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         normalized = status.lower()
