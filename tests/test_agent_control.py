@@ -120,7 +120,7 @@ def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -
         {
             "option_agent": {
                 "provider": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-luna",
                 "reasoning_effort": "high",
                 "auto_run_seconds": 3600,
                 "max_runs_per_day": 4,
@@ -131,7 +131,7 @@ def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -
     import yaml
 
     clean = yaml.safe_load(cfg.read_text())["agents"]["option_agent"]
-    assert clean["provider"] == "codex" and clean["model"] == "gpt-5.5"
+    assert clean["provider"] == "codex" and clean["model"] == "gpt-5.6-luna"
     assert clean["reasoning_effort"] == "high"
     assert clean["context_sources"] == {"news": False}  # unknown key filtered out
 
@@ -139,6 +139,30 @@ def test_option_agent_settings_update_accepts_and_filters_new_fields(tmp_path) -
 def test_option_agent_settings_update_rejects_bad_provider(tmp_path) -> None:
     with pytest.raises(ValueError):
         update_agent_settings_config(tmp_path / "config.yaml", {"option_agent": {"provider": "anthropic"}})
+
+
+def test_option_agent_settings_accepts_deepseek_and_rejects_command_override(tmp_path) -> None:
+    cfg = tmp_path / "config.yaml"
+    update_agent_settings_config(
+        cfg,
+        {
+            "option_agent": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "reasoning_effort": "high",
+            }
+        },
+    )
+    import yaml
+
+    settings = yaml.safe_load(cfg.read_text())["agents"]["option_agent"]
+    assert settings["provider"] == "deepseek"
+    assert settings["model"] == "deepseek-v4-flash"
+    with pytest.raises(ValueError, match="registry-owned"):
+        update_agent_settings_config(
+            cfg,
+            {"option_agent": {"command": "market-codex-option-agent"}},
+        )
 
 
 def test_force_run_is_independent_of_auto_run_enabled(tmp_path, monkeypatch) -> None:

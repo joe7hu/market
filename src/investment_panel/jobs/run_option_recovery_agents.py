@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from investment_panel.core.config import load_config
+from investment_panel.core.agent_providers import resolve_provider_selection
 from investment_panel.core.options_recovery_agents import recovery_agent_schema, recovery_agent_system_prompt
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_recovery_agents import RecoveryEventAgentRepository
@@ -26,12 +27,18 @@ def run(
     """
 
     config = load_config(config_path)
+    selection = resolve_provider_selection(
+        config.agents.option_agent.provider,
+        config.agents.option_agent.model,
+        config.agents.option_agent.reasoning_effort,
+    )
     settings = config.analysis.options_decision_system
     repository = RecoveryEventAgentRepository(runtime_for_config(config))
     preopen = repository.queue_preopen_reviews(
         now=now,
-        model=config.agents.option_agent.model,
-        reasoning_effort=config.agents.option_agent.reasoning_effort,
+        provider=selection.provider,
+        model=selection.model,
+        reasoning_effort=selection.reasoning_effort,
         debounce_minutes=settings.event_agent_debounce_minutes,
         max_batches_per_symbol_per_day=settings.event_agent_max_batches_per_symbol_per_day,
         max_tasks=settings.event_agent_max_tasks_per_batch,
@@ -60,19 +67,21 @@ def run(
             ],
         }
         try:
-            provider = str(config.agents.option_agent.provider).strip().lower()
-            if provider not in {"codex", "deepseek"}:
-                raise ValueError(f"unsupported option agent provider: {provider}")
+            batch_selection = resolve_provider_selection(
+                str(claim["batch"].get("provider") or ""),
+                str(claim["batch"].get("model") or ""),
+                str(claim["batch"].get("reasoning_effort") or ""),
+            )
             response = invoke_structured(
                 StructuredProviderRequest(
-                    provider=provider,  # type: ignore[arg-type]
+                    provider=batch_selection.provider,  # type: ignore[arg-type]
                     payload=payload,
                     schema_name="options_recovery_event_batch",
                     schema=recovery_agent_schema(),
                     system_prompt=recovery_agent_system_prompt(),
                     compact=False,
-                    model=str(claim["batch"]["model"]),
-                    reasoning_effort=str(claim["batch"]["reasoning_effort"]),
+                    model=batch_selection.model,
+                    reasoning_effort=batch_selection.reasoning_effort,
                     timeout_seconds=float(config.agents.option_agent.timeout_seconds),
                 ),
                 meta_sink=meta,

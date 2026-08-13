@@ -53,6 +53,7 @@ class AgentExperimentRepository:
                             "roles": sorted(EXPERIMENT_ROLES),
                             "routing_changes_allowed": False,
                             "execution_authority": "advisory_only",
+                            "provider_rate_source": "typed_provider_registry",
                         }),
                     ],
                 ).fetchone()
@@ -130,6 +131,7 @@ class AgentExperimentRepository:
                 "evidence_fingerprint": fingerprint,
                 "authority": "advisory_only",
                 "trade_control_mutation_allowed": False,
+                "reasoning_effort": "high",
             }
             champion = connection.execute(
                 """
@@ -256,6 +258,7 @@ class AgentExperimentRepository:
         output_tokens: int | None,
         cost_usd: float | None,
         result: Mapping[str, Any] | None = None,
+        provider_telemetry: Mapping[str, Any] | None = None,
     ) -> None:
         if status not in {"completed", "failed"}:
             raise ValueError("experiment task status is invalid")
@@ -266,6 +269,7 @@ class AgentExperimentRepository:
                 SET status = %s, result = %s, validation = %s,
                     validation_status = %s, validation_detail = %s,
                     latency_ms = %s, input_tokens = %s, output_tokens = %s, cost_usd = %s,
+                    provider = COALESCE(%s, provider), model = COALESCE(%s, model),
                     updated_at = now()
                 WHERE id = %s AND experiment_id IS NOT NULL
                 RETURNING agent_run_id
@@ -274,7 +278,9 @@ class AgentExperimentRepository:
                     status, Jsonb(dict(result)) if result is not None else None,
                     Jsonb({"status": validation_status, **dict(validation_detail)}),
                     validation_status, Jsonb(dict(validation_detail)), latency_ms,
-                    input_tokens, output_tokens, cost_usd, task_id,
+                    input_tokens, output_tokens, cost_usd,
+                    (provider_telemetry or {}).get("provider"),
+                    (provider_telemetry or {}).get("model"), task_id,
                 ],
             ).fetchone()
             if row is None:
@@ -287,6 +293,7 @@ class AgentExperimentRepository:
                         output_tokens = %s, cost_usd = %s, validation_status = %s,
                         validation_detail = %s,
                         latency_ms = %s,
+                        provider = COALESCE(%s, provider), model = COALESCE(%s, model),
                         summary = summary || %s
                     WHERE id = %s
                     """,
@@ -294,7 +301,12 @@ class AgentExperimentRepository:
                         "succeeded" if status == "completed" else "failed",
                         input_tokens, output_tokens, cost_usd, validation_status,
                         Jsonb(dict(validation_detail)), latency_ms,
-                        Jsonb({"completed": status == "completed", "advisory_only": True}),
+                        (provider_telemetry or {}).get("provider"),
+                        (provider_telemetry or {}).get("model"),
+                        Jsonb({
+                            "completed": status == "completed", "advisory_only": True,
+                            "provider_telemetry": dict(provider_telemetry or {}),
+                        }),
                         row["agent_run_id"],
                     ],
                 )
@@ -316,7 +328,7 @@ class AgentExperimentRepository:
                 """
                 SELECT id::text AS id, paired_task_id::text AS paired_task_id,
                        arm, status, validation_status, validation_detail, latency_ms,
-                       cost_usd, created_at
+                       cost_usd, provider, model, input_tokens, output_tokens, created_at
                 FROM analysis.agent_task
                 WHERE experiment_id = %s
                 ORDER BY created_at
@@ -329,6 +341,12 @@ class AgentExperimentRepository:
         summary = self.current()
         if summary is None:
             raise ValueError("agent experiment has not started")
+        if not bool(summary.get("deepseek_default_eligible")):
+            failed_gates = [name for name, passed in dict(summary.get("gates") or {}).items() if not passed]
+            raise ValueError(
+                "agent experiment cannot be sealed or used for provider routing until every gate passes: "
+                + ", ".join(failed_gates)
+            )
         with self.runtime.transaction(JOB_PROFILE) as connection:
             row = connection.execute(
                 "SELECT status, immutable_report FROM analysis.agent_experiment WHERE id = %s FOR UPDATE",
@@ -381,7 +399,9 @@ def _experiment_summary(experiment: dict[str, Any], tasks: list[dict[str, Any]])
     luna = arm_summary["champion"]
     gates = {
         "twenty_trading_days": daily_pairs >= 20,
-        "deepseek_schema_validation_95pct": deepseek["schema_validation_rate"] is not None and deepseek["schema_validation_rate"] >= 0.95,
+        "all_scheduled_tasks_resolved": deepseek["all_scheduled_tasks_resolved"] and luna["all_scheduled_tasks_resolved"],
+        "deepseek_failure_under_5pct": deepseek["failure_rate"] is not None and deepseek["failure_rate"] < 0.05,
+        "deepseek_schema_validation_100pct": deepseek["schema_validation_rate"] == 1.0,
         "deepseek_evidence_validation_95pct": deepseek["evidence_validation_rate"] is not None and deepseek["evidence_validation_rate"] >= 0.95,
         "useful_advice_within_5pp_of_luna": (
             deepseek["useful_advice_rate"] is not None
@@ -394,6 +414,9 @@ def _experiment_summary(experiment: dict[str, Any], tasks: list[dict[str, Any]])
             and luna["mean_cost_usd"] is not None
             and deepseek["mean_cost_usd"] < luna["mean_cost_usd"]
         ),
+        "provider_rate_costs_recorded": deepseek["provider_rate_costs_recorded"] and luna["provider_rate_costs_recorded"],
+        "observed_token_usage_recorded": deepseek["observed_token_usage_recorded"] and luna["observed_token_usage_recorded"],
+        "confidence_intervals_available": deepseek["confidence_intervals_available"] and luna["confidence_intervals_available"],
     }
     return {
         "experiment_id": str(experiment["id"]),
@@ -426,30 +449,51 @@ def _experiment_summary(experiment: dict[str, Any], tasks: list[dict[str, Any]])
 def _arm_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     completed = [row for row in rows if row.get("status") == "completed"]
     terminal = [row for row in rows if row.get("status") in {"completed", "failed"}]
-    validation_rows = [row for row in completed if row.get("validation_status")]
-    schema_valid = [row for row in validation_rows if row.get("validation_status") == "passed"]
+    scheduled = len(rows)
+    schema_valid = [row for row in rows if row.get("validation_status") == "passed"]
     evidence_valid = [
-        row for row in validation_rows
+        row for row in rows
         if bool((row.get("validation_detail") or {}).get("evidence_valid"))
     ]
     useful = [
-        row for row in validation_rows
+        row for row in rows
         if bool((row.get("validation_detail") or {}).get("useful_advice"))
     ]
     latencies = sorted(int(row["latency_ms"]) for row in completed if row.get("latency_ms") is not None)
     costs = [float(row["cost_usd"]) for row in completed if row.get("cost_usd") is not None]
+    provider_rate_rows = [
+        row for row in rows
+        if ((row.get("validation_detail") or {}).get("provider_telemetry") or {}).get("pricing", {}).get("pricing_status") == "provider_rate"
+        and row.get("cost_usd") is not None
+    ]
+    observed_usage_rows = [
+        row for row in provider_rate_rows
+        if bool((((row.get("validation_detail") or {}).get("provider_telemetry") or {}).get("pricing") or {}).get("token_usage_observed"))
+    ]
+    failure_count = sum(row.get("status") == "failed" for row in rows)
     return {
-        "tasks": len(rows),
+        "tasks": scheduled,
         "completed": len(completed),
+        "failed": failure_count,
+        "unresolved": scheduled - len(terminal),
+        "all_scheduled_tasks_resolved": scheduled > 0 and len(terminal) == scheduled,
         "failure_rate": (
-            sum(row.get("status") == "failed" for row in terminal) / len(terminal)
-            if terminal else None
+            failure_count / scheduled if scheduled else None
         ),
-        "schema_validation_rate": len(schema_valid) / len(validation_rows) if validation_rows else None,
-        "evidence_validation_rate": len(evidence_valid) / len(validation_rows) if validation_rows else None,
-        "useful_advice_rate": len(useful) / len(validation_rows) if validation_rows else None,
+        "schema_validation_rate": len(schema_valid) / scheduled if scheduled else None,
+        "evidence_validation_rate": len(evidence_valid) / scheduled if scheduled else None,
+        "useful_advice_rate": len(useful) / scheduled if scheduled else None,
         "p95_latency_ms": _percentile(latencies, 0.95),
         "mean_cost_usd": mean(costs) if costs else None,
+        "provider_rate_costs_recorded": scheduled > 0 and len(provider_rate_rows) == scheduled,
+        "observed_token_usage_recorded": scheduled > 0 and len(observed_usage_rows) == scheduled,
+        "confidence_intervals": {
+            "failure_rate": _wilson_interval(failure_count, scheduled),
+            "schema_validation_rate": _wilson_interval(len(schema_valid), scheduled),
+            "evidence_validation_rate": _wilson_interval(len(evidence_valid), scheduled),
+            "useful_advice_rate": _wilson_interval(len(useful), scheduled),
+        },
+        "confidence_intervals_available": scheduled > 0,
     }
 
 
@@ -458,3 +502,15 @@ def _percentile(values: list[int], percentile: float) -> int | None:
         return None
     index = max(0, min(len(values) - 1, int((len(values) - 1) * percentile)))
     return values[index]
+
+
+def _wilson_interval(successes: int, total: int, *, z: float = 1.96) -> dict[str, float] | None:
+    """Two-sided 95% Wilson interval; no rate has meaning without its denominator."""
+
+    if total <= 0:
+        return None
+    proportion = max(0.0, min(1.0, successes / total))
+    denominator = 1 + z * z / total
+    center = (proportion + z * z / (2 * total)) / denominator
+    margin = z * ((proportion * (1 - proportion) / total + z * z / (4 * total * total)) ** 0.5) / denominator
+    return {"lower": round(max(0.0, center - margin), 6), "upper": round(min(1.0, center + margin), 6), "confidence": 0.95}

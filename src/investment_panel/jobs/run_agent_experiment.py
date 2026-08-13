@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from investment_panel.core.config import load_config
 from investment_panel.core.decision import is_us_market_day
-from investment_panel.core.agent_cost import estimate_agent_cost
+from investment_panel.core.agent_providers import provider_telemetry, resolve_provider_selection
 from investment_panel.database.agent_candidate_queue import current_candidate_payloads
 from investment_panel.database.agent_experiments import (
     AgentExperimentRepository,
@@ -170,17 +170,16 @@ def _execute_task(
     request = dict(task.get("request") or {})
     packet = dict(request.get("evidence_packet") or {})
     provider = str(task.get("provider") or "").strip().lower()
-    if provider not in {"codex", "deepseek"}:
-        raise ValueError("experiment provider is invalid")
+    selection = resolve_provider_selection(provider, str(task.get("model") or ""), "high")
     meta: dict[str, Any] = {}
     started = perf_counter()
     try:
         output = invoke_structured(
             StructuredProviderRequest(
-                provider=provider,  # type: ignore[arg-type]
-                model=str(task["model"]),
+                provider=selection.provider,  # type: ignore[arg-type]
+                model=selection.model,
                 timeout_seconds=float(max(30, timeout_seconds)),
-                reasoning_effort="high",
+                reasoning_effort=selection.reasoning_effort,
                 schema_name=f"paired_{task_kind}",
                 schema=schema,
                 system_prompt=(
@@ -208,6 +207,8 @@ def _execute_task(
                 schema_errors.append(str(exc))
         evidence_valid, evidence_reason = _evidence_valid(output, packet)
         useful = not schema_errors and evidence_valid and _useful_advice(task_kind, output)
+        telemetry = provider_telemetry(meta, selection=selection)
+        telemetry["latency_ms"] = latency_ms
         detail = {
             "schema_valid": not schema_errors,
             "schema_errors": schema_errors[:5],
@@ -216,6 +217,8 @@ def _execute_task(
             "useful_advice": useful,
             "baseline_version": task.get("baseline_version"),
             "advisory_only": True,
+            "evidence_ids": [str(row.get("id")) for row in list(packet.get("evidence_refs") or []) if isinstance(row, Mapping)],
+            "provider_telemetry": telemetry,
         }
         usage = dict(meta.get("usage") or {})
         repository.record_result(
@@ -226,13 +229,16 @@ def _execute_task(
             latency_ms=latency_ms,
             input_tokens=_integer(usage.get("input_tokens")),
             output_tokens=_integer(usage.get("output_tokens")),
-            cost_usd=estimate_agent_cost(meta, dict(pricing)),
+            cost_usd=telemetry["cost_usd"],
             result=output,
+            provider_telemetry=telemetry,
         )
         return not schema_errors
     except Exception as exc:
         latency_ms = int((perf_counter() - started) * 1000)
         usage = dict(meta.get("usage") or {})
+        telemetry = provider_telemetry(meta, selection=selection)
+        telemetry["latency_ms"] = latency_ms
         repository.record_result(
             task_id=UUID(str(task["id"])),
             status="failed",
@@ -243,11 +249,14 @@ def _execute_task(
                 "useful_advice": False,
                 "error": f"{type(exc).__name__}: {exc}",
                 "advisory_only": True,
+                "evidence_ids": [str(row.get("id")) for row in list(packet.get("evidence_refs") or []) if isinstance(row, Mapping)],
+                "provider_telemetry": telemetry,
             },
             latency_ms=latency_ms,
             input_tokens=_integer(usage.get("input_tokens")),
             output_tokens=_integer(usage.get("output_tokens")),
-            cost_usd=estimate_agent_cost(meta, dict(pricing)),
+            cost_usd=telemetry["cost_usd"],
+            provider_telemetry=telemetry,
         )
         return False
 

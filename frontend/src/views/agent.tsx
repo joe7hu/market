@@ -26,7 +26,6 @@ const CONTEXT_KEYS = ["fundamentals", "technicals", "ownership", "news", "social
 
 type ControlForm = {
   enabled: boolean;
-  command: string;
   provider: string;
   model: string;
   reasoning_effort: string;
@@ -90,7 +89,7 @@ export function AgentPage() {
   const live = useMemo(() => formFromConfig(data?.config ?? {}), [data?.config]);
   const form = draft ?? live;
   const running = busy === FORCE_JOB;
-  const hasCommand = Boolean(form.command.trim());
+  const hasCommand = Boolean(form.provider && form.model);
   const autoRun = form.enabled;
 
   const saveControls = async (overrides: Partial<ControlForm> = {}) => {
@@ -155,7 +154,7 @@ export function AgentPage() {
   const metrics: MetricSpec[] = [
     ["Research coverage", research ? `${research.coverage.portfolio_positions + research.coverage.watchlist_symbols} names` : researchError ? "Unavailable" : "—", research ? `${research.coverage.portfolio_positions} held · ${research.coverage.watchlist_symbols} watched` : researchError || "loading context", research ? "info" : researchError ? "warn" : "muted"],
     ["Auto-run", autoRun ? "On" : "Off", autoRun ? "scheduled pass enabled" : "scheduled pass paused", autoRun ? "good" : "muted"],
-    ["On-demand", hasCommand ? "Ready" : "No command", hasCommand ? "run / analyze available" : "set a command below", hasCommand ? "good" : "warn"],
+    ["On-demand", hasCommand ? "Ready" : "No provider", hasCommand ? "run / analyze available" : "select a provider and model below", hasCommand ? "good" : "warn"],
     ["Open queue", (queue?.total_open ?? 0).toLocaleString(), `${queue?.thesis_open ?? 0} thesis · ${queue?.postmortem_open ?? 0} pm`, queue?.total_open ? "warn" : "good"],
     ["Thesis expressions", `${materialization?.materialized ?? 0}/${materialization?.completed ?? 0}`, "research-only · tickets own readiness", materialization?.historical_unmaterialized ? "warn" : "good"],
     ["Agent tokens today", cost ? (cost.today.input_tokens + cost.today.output_tokens).toLocaleString() : "—", `${cost?.today.runs ?? 0} option + thesis-monitor runs`, "info"],
@@ -169,7 +168,7 @@ export function AgentPage() {
       subtitle="Daily cross-asset research handoff plus full control over the option thesis and postmortem agent."
       metrics={metrics}
       actions={
-        <Button type="button" variant="outline" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? `Run all ${queue?.total_open ?? 0} open queued requests now` : "Set the agent command first"}>
+        <Button type="button" variant="outline" disabled={running || !hasCommand} onClick={() => void runNow()} title={hasCommand ? `Run all ${queue?.total_open ?? 0} open queued requests now` : "Select a valid provider and model first"}>
           {running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
           {running ? "Running" : `Run queue (${queue?.total_open ?? 0})`}
         </Button>
@@ -213,7 +212,7 @@ export function AgentPage() {
               </Button>
             </div>
           </div>
-          {!hasCommand ? <p className="text-xs text-amber-600 dark:text-amber-400">Set the agent command below to run on-demand analyses (auto-run is a separate toggle).</p> : null}
+          {!hasCommand ? <p className="text-xs text-amber-600 dark:text-amber-400">Select a valid provider and model below to run on-demand analyses (auto-run is a separate toggle).</p> : null}
         </div>
       </DataTableFrame>
 
@@ -238,10 +237,10 @@ export function AgentPage() {
             <input type="checkbox" checked={form.enabled} disabled={busy === "save"} onChange={(e) => void saveControls({ enabled: e.target.checked })} className="size-5 accent-primary" />
           </label>
 
-          <Field label="Command"><Input value={form.command} onChange={(e) => setDraft({ ...form, command: e.target.value })} placeholder="market-codex-option-agent" /></Field>
+          <Notice tone="muted">Provider registry owns the command, supported models, capabilities, and rate card. This research-only control cannot change order, risk, READY, promotion, or paper routing.</Notice>
 
           <div className="grid gap-3 sm:grid-cols-3">
-            <SelectField label="Provider" value={form.provider} options={["codex", "deepseek", "openai"]} onChange={(v) => setDraft({ ...form, provider: v })} />
+            <SelectField label="Provider" value={form.provider} options={["codex", "deepseek"]} onChange={(v) => setDraft({ ...form, provider: v })} />
             <Field label="Model"><Input value={form.model} onChange={(e) => setDraft({ ...form, model: e.target.value })} placeholder="(provider default)" /></Field>
             <SelectField label="Reasoning effort" value={form.reasoning_effort} options={["", "minimal", "low", "medium", "high"]} onChange={(v) => setDraft({ ...form, reasoning_effort: v })} />
           </div>
@@ -337,7 +336,6 @@ function formFromConfig(config: Record<string, unknown>): ControlForm {
   const sources = (config.context_sources && typeof config.context_sources === "object" ? config.context_sources : {}) as Record<string, boolean>;
   return {
     enabled: Boolean(config.enabled),
-    command: strFrom(config.command, ""),
     provider: strFrom(config.provider, "codex"),
     model: strFrom(config.model, ""),
     reasoning_effort: strFrom(config.reasoning_effort, ""),
@@ -353,7 +351,6 @@ function formFromConfig(config: Record<string, unknown>): ControlForm {
 function toPayload(form: ControlForm): OptionAgentSettingsInput {
   return {
     enabled: form.enabled,
-    command: form.command,
     provider: form.provider,
     model: form.model,
     reasoning_effort: form.reasoning_effort,

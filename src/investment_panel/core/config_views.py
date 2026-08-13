@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from investment_panel.core.agent_providers import provider_catalog
+
 
 def options_decision_system_dict(raw: Any) -> dict[str, Any]:
     """Return the safe decision-system settings exposed through ``/api/settings``."""
@@ -47,4 +49,6 @@ def option_agent_config_dict(raw: Any) -> dict[str, Any]:
         "experiment_enabled": raw.experiment_enabled,
         "experiment_auto_run_seconds": raw.experiment_auto_run_seconds,
         "context_sources": dict(raw.context_sources),
+        "command_managed_by_provider": True,
+        "provider_catalog": provider_catalog(),
     }

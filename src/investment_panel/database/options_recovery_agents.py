@@ -49,6 +49,7 @@ class RecoveryEventAgentRepository(RecoveryAgentReporting):
         *,
         capture_id: str | None = None,
         now: datetime | None = None,
+        provider: str = "codex",
         model: str = "gpt-5.6-luna",
         reasoning_effort: str = "high",
         debounce_minutes: int = 30,
@@ -130,13 +131,13 @@ class RecoveryEventAgentRepository(RecoveryAgentReporting):
                 INSERT INTO analysis.option_event_agent_batch
                     (event_id, capture_id, cohort_id, trigger, fingerprint_key, fingerprint, provider, model,
                      reasoning_effort, status, task_count, telemetry)
-                VALUES (%s, %s, %s, %s, %s, %s, 'codex', %s, %s, 'queued', %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s, %s)
                 ON CONFLICT (event_id, fingerprint_key) DO NOTHING
                 RETURNING id
                 """,
                 [
                     event_id, context.get("capture_id"), context["cohort_id"], trigger, fingerprint_key, Jsonb(fingerprint),
-                    model, reasoning_effort, task_count,
+                    provider, model, reasoning_effort, task_count,
                     Jsonb({
                         "reasons": reasons, "authority": "advisory_only", "attempts": 0,
                         "cohort_id": str(context["cohort_id"]), "code_version": CURRENT_CODE_VERSION,
@@ -178,6 +179,7 @@ class RecoveryEventAgentRepository(RecoveryAgentReporting):
         self,
         *,
         now: datetime | None = None,
+        provider: str = "codex",
         model: str = "gpt-5.6-luna",
         reasoning_effort: str = "high",
         debounce_minutes: int = 30,
@@ -199,6 +201,7 @@ class RecoveryEventAgentRepository(RecoveryAgentReporting):
             self.queue_if_material(
                 event_id,
                 now=reference,
+                provider=provider,
                 model=model,
                 reasoning_effort=reasoning_effort,
                 debounce_minutes=debounce_minutes,
@@ -249,9 +252,9 @@ class RecoveryEventAgentRepository(RecoveryAgentReporting):
             run = connection.execute(
                 """
                 INSERT INTO analysis.agent_run (provider, model, trigger, started_at, status, summary)
-                VALUES ('codex', %s, %s, now(), 'running', %s) RETURNING id
+                VALUES (%s, %s, %s, now(), 'running', %s) RETURNING id
                 """,
-                [batch["model"], f"options_recovery:{batch['trigger']}", Jsonb({
+                [batch["provider"], batch["model"], f"options_recovery:{batch['trigger']}", Jsonb({
                     "workflow": "options_recovery_event_batch", "batch_id": str(batch["id"]),
                     "authority": "advisory_only", "task_count": len(tasks),
                     "cohort_id": str(batch["cohort_id"]), "code_version": CURRENT_CODE_VERSION,

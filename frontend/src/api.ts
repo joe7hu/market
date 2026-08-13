@@ -281,7 +281,6 @@ export type AgentCommandSettingsInput = {
 
 export type OptionAgentSettingsInput = {
   enabled?: boolean;
-  command?: string;
   timeout_seconds?: number;
   thesis_limit?: number;
   postmortem_limit?: number;

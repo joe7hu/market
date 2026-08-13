@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+from investment_panel.core.agent_providers import resolve_provider_selection, validate_registry_command
+
 
 def update_agent_settings_config(config_path: str | Path | None, payload: dict[str, Any]) -> dict[str, Any]:
     """Persist the editable agent-command block without rewriting the whole file."""
@@ -21,13 +23,16 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
         next_agents[key] = {**current, **_sanitize_agent_settings(payload[key])}
     if "option_agent" in payload:
         current = next_agents.get("option_agent") if isinstance(next_agents.get("option_agent"), dict) else {}
-        sanitized = _sanitize_option_agent_settings(payload["option_agent"])
+        sanitized = _sanitize_option_agent_settings(payload["option_agent"], current=current)
         if isinstance(sanitized.get("context_sources"), dict) and isinstance(current.get("context_sources"), dict):
             sanitized["context_sources"] = {**current["context_sources"], **sanitized["context_sources"]}
         next_agents["option_agent"] = {**current, **sanitized}
     if "thesis_monitor" in payload:
         current = next_agents.get("thesis_monitor") if isinstance(next_agents.get("thesis_monitor"), dict) else {}
-        next_agents["thesis_monitor"] = {**current, **_sanitize_thesis_monitor_settings(payload["thesis_monitor"])}
+        next_agents["thesis_monitor"] = {
+            **current,
+            **_sanitize_thesis_monitor_settings(payload["thesis_monitor"], current=current),
+        }
     raw["agents"] = next_agents
     _write_yaml_top_level_block(path, "agents", {"agents": next_agents})
     return raw
@@ -117,35 +122,31 @@ def _sanitize_agent_settings(value: Any) -> dict[str, Any]:
     return clean
 
 
-def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
+def _sanitize_option_agent_settings(value: Any, *, current: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("agent settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
         clean["enabled"] = bool(value["enabled"])
-    if "command" in value:
-        command = str(value["command"] or "").strip()
-        if len(command) > 240:
-            raise ValueError("agent command is too long")
-        clean["command"] = command
     if "timeout_seconds" in value:
         clean["timeout_seconds"] = _bounded_int(value["timeout_seconds"], "timeout_seconds", minimum=10, maximum=900)
     if "thesis_limit" in value:
         clean["thesis_limit"] = _bounded_int(value["thesis_limit"], "thesis_limit", minimum=0, maximum=50)
     if "postmortem_limit" in value:
         clean["postmortem_limit"] = _bounded_int(value["postmortem_limit"], "postmortem_limit", minimum=0, maximum=50)
-    if "provider" in value:
-        provider = str(value["provider"] or "").strip().lower()
-        if provider != "codex":
-            raise ValueError("provider must be 'codex' while Market uses ChatGPT OAuth")
-        clean["provider"] = provider
-    if "model" in value:
-        clean["model"] = _clean_token(value["model"], "model", maximum=80)
-    if "reasoning_effort" in value:
-        effort = str(value["reasoning_effort"] or "").strip().lower()
-        if effort and effort not in {"low", "medium", "high", "minimal"}:
-            raise ValueError("reasoning_effort must be low, medium, high, or minimal")
-        clean["reasoning_effort"] = effort
+    current = current or {}
+    provider = str(value.get("provider", current.get("provider", "codex"))).strip().lower()
+    model = _clean_token(value.get("model", current.get("model", "")), "model", maximum=80)
+    effort = str(value.get("reasoning_effort", current.get("reasoning_effort", ""))).strip().lower()
+    selection = resolve_provider_selection(provider, model or None, effort or None)
+    if "command" in value:
+        validate_registry_command(selection.provider, value["command"])
+    if {"provider", "model", "reasoning_effort"} & set(value):
+        clean.update({
+            "provider": selection.provider,
+            "model": selection.model,
+            "reasoning_effort": selection.reasoning_effort,
+        })
     if "auto_run_seconds" in value:
         clean["auto_run_seconds"] = _bounded_int(value["auto_run_seconds"], "auto_run_seconds", minimum=0, maximum=604800)
     if "max_runs_per_day" in value:
@@ -159,24 +160,23 @@ def _sanitize_option_agent_settings(value: Any) -> dict[str, Any]:
     return clean
 
 
-def _sanitize_thesis_monitor_settings(value: Any) -> dict[str, Any]:
+def _sanitize_thesis_monitor_settings(value: Any, *, current: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("thesis_monitor settings must be an object")
     clean: dict[str, Any] = {}
     if "enabled" in value:
         clean["enabled"] = bool(value["enabled"])
-    if "provider" in value:
-        provider = str(value["provider"] or "").strip().lower()
-        if provider != "codex":
-            raise ValueError("thesis_monitor provider must be 'codex'")
-        clean["provider"] = provider
-    if "model" in value:
-        clean["model"] = _clean_token(value["model"], "model", maximum=80)
-    if "reasoning_effort" in value:
-        effort = str(value["reasoning_effort"] or "").strip().lower()
-        if effort not in {"low", "medium", "high"}:
-            raise ValueError("reasoning_effort must be low, medium, or high")
-        clean["reasoning_effort"] = effort
+    current = current or {}
+    provider = str(value.get("provider", current.get("provider", "codex"))).strip().lower()
+    model = _clean_token(value.get("model", current.get("model", "")), "model", maximum=80)
+    effort = str(value.get("reasoning_effort", current.get("reasoning_effort", ""))).strip().lower()
+    selection = resolve_provider_selection(provider, model or None, effort or None)
+    if {"provider", "model", "reasoning_effort"} & set(value):
+        clean.update({
+            "provider": selection.provider,
+            "model": selection.model,
+            "reasoning_effort": selection.reasoning_effort,
+        })
     if "prompt_version" in value:
         clean["prompt_version"] = _clean_token(value["prompt_version"], "prompt_version", maximum=80)
     if "concurrency" in value:

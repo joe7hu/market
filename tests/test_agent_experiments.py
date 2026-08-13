@@ -5,7 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from investment_panel.database.agent_experiments import AgentExperimentRepository
+from investment_panel.database.agent_experiments import AgentExperimentRepository, _arm_summary
+from investment_panel.core.agent_providers import provider_cost, resolve_provider_selection
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import run_agent_experiment
 
@@ -89,6 +90,8 @@ def test_paired_experiment_freezes_evidence_and_enforces_daily_cap(migrated_post
             cost_usd=0.01,
         )
         summary = repository.current()
+        with pytest.raises(ValueError, match="cannot be sealed"):
+            repository.seal_report()
         with runtime.read() as connection:
             rows = connection.execute(
                 """
@@ -192,3 +195,37 @@ def test_paired_worker_dispatches_both_providers_against_the_same_frozen_packet(
     assert {row["status"] for row in rows} == {"completed"}
     assert {row["run_status"] for row in rows} == {"succeeded"}
     assert all(row["validation_detail"]["evidence_valid"] is True for row in rows)
+    assert {row["provider"] for row in rows} == {"codex", "deepseek"}
+    assert all(row["validation_detail"]["provider_telemetry"]["pricing"]["pricing_status"] == "provider_rate" for row in rows)
+    assert all(row["validation_detail"]["provider_telemetry"]["reasoning_effort"] == "high" for row in rows)
+
+
+def test_provider_registry_uses_distinct_verified_rate_cards() -> None:
+    luna = resolve_provider_selection("codex", "gpt-5.6-luna", "high")
+    deepseek = resolve_provider_selection("deepseek", "deepseek-v4-flash", "high")
+    luna_cost, luna_detail = provider_cost(
+        {"provider": "codex", "model": "gpt-5.6-luna", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}},
+        selection=luna,
+    )
+    deepseek_cost, deepseek_detail = provider_cost(
+        {"provider": "deepseek", "model": "deepseek-v4-flash", "usage": {"input_tokens": 1_000_000, "output_tokens": 0}},
+        selection=deepseek,
+    )
+    assert luna_detail["pricing_status"] == deepseek_detail["pricing_status"] == "provider_rate"
+    assert luna_cost == 0.1
+    assert deepseek_cost == 0.14
+    assert luna_detail["rate"]["source"] != deepseek_detail["rate"]["source"]
+
+
+def test_failure_and_validation_rates_keep_scheduled_tasks_in_the_denominator() -> None:
+    rows = [
+        {"status": "completed", "validation_status": "passed", "validation_detail": {"evidence_valid": True, "useful_advice": True}, "latency_ms": 1, "cost_usd": 0.01},
+        {"status": "failed", "validation_status": "failed", "validation_detail": {}, "latency_ms": 2, "cost_usd": None},
+        {"status": "queued", "validation_status": None, "validation_detail": {}, "latency_ms": None, "cost_usd": None},
+    ]
+    summary = _arm_summary(rows)
+    assert summary["failure_rate"] == pytest.approx(1 / 3)
+    assert summary["schema_validation_rate"] == pytest.approx(1 / 3)
+    assert summary["evidence_validation_rate"] == pytest.approx(1 / 3)
+    assert summary["unresolved"] == 1
+    assert summary["all_scheduled_tasks_resolved"] is False

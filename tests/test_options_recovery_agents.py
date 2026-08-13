@@ -204,11 +204,23 @@ def test_agent_failure_stays_isolated_from_event_capture(migrated_postgres_dsn: 
                     [event_id, slot, slot, price],
                 )
         repository = RecoveryEventAgentRepository(runtime)
-        queued = repository.queue_if_material(event_id, now=started + timedelta(minutes=31))
+        queued = repository.queue_if_material(
+            event_id,
+            now=started + timedelta(minutes=31),
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            reasoning_effort="high",
+        )
         assert queued["status"] == "queued"
         assert len(queued["tasks"]) == 4
         claim = repository.claim_next()
         assert claim is not None
+        assert claim["batch"]["provider"] == "deepseek"
+        with runtime.read() as connection:
+            run_provider = connection.execute(
+                "SELECT provider FROM analysis.agent_run WHERE id = %s", [claim["run_id"]]
+            ).fetchone()
+        assert run_provider["provider"] == "deepseek"
         failed = repository.fail(claim, "synthetic Codex timeout")
         assert failed["status"] == "retrying"
         retry_one = repository.claim_next()

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from investment_panel.core.config_views import option_agent_config_dict, options_decision_system_dict
+from investment_panel.core.agent_providers import resolve_provider_selection, validate_registry_command
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
@@ -458,9 +459,20 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     option_postmortem_env_command = os.environ.get("MARKET_OPTION_POSTMORTEM_AGENT_COMMAND")
     option_thesis_command = str(option_thesis_env_command or option_thesis_raw.get("command", ""))
     option_postmortem_command = str(option_postmortem_env_command or option_postmortem_raw.get("command", ""))
-    option_agent_raw = agents_raw.get("option_agent", {})
+    option_agent_raw = agents_raw.get("option_agent", {}) if isinstance(agents_raw.get("option_agent", {}), dict) else {}
     option_agent_env_command = os.environ.get("MARKET_OPTION_AGENT_COMMAND")
-    option_agent_command = str(option_agent_env_command or option_agent_raw.get("command", ""))
+    option_agent_provider = str(option_agent_raw.get("provider", "codex")).strip().lower()
+    option_agent_model = str(option_agent_raw.get("model", "")).strip()
+    option_agent_effort = str(option_agent_raw.get("reasoning_effort", "")).strip().lower()
+    option_agent_selection = resolve_provider_selection(
+        option_agent_provider, option_agent_model or None, option_agent_effort or None,
+    )
+    # The legacy setting is accepted only when it already matches the provider
+    # registry.  A UI or environment override cannot reroute a selected model.
+    validate_registry_command(option_agent_selection.provider, option_agent_raw.get("command"))
+    if option_agent_env_command:
+        validate_registry_command(option_agent_selection.provider, option_agent_env_command)
+    option_agent_command = option_agent_selection.command
     thesis_monitor_raw = agents_raw.get("thesis_monitor", {}) if isinstance(agents_raw.get("thesis_monitor", {}), dict) else {}
     agents = AgentsConfig(
         option_thesis=AgentCommandConfig(
@@ -476,14 +488,14 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             limit=int(option_postmortem_raw.get("limit", 20)),
         ),
         option_agent=OptionAgentConfig(
-            enabled=bool(option_agent_env_command) or bool(option_agent_raw.get("enabled", bool(option_agent_command))),
+            enabled=bool(option_agent_raw.get("enabled", bool(option_agent_command))),
             command=option_agent_command,
             timeout_seconds=int(option_agent_raw.get("timeout_seconds", 180)),
             thesis_limit=int(option_agent_raw.get("thesis_limit", option_thesis_raw.get("limit", 8))),
             postmortem_limit=int(option_agent_raw.get("postmortem_limit", option_postmortem_raw.get("limit", 4))),
-            provider=str(option_agent_raw.get("provider", "codex")),
-            model=str(option_agent_raw.get("model", "gpt-5.6-luna")),
-            reasoning_effort=str(option_agent_raw.get("reasoning_effort", "high")),
+            provider=option_agent_selection.provider,
+            model=option_agent_selection.model,
+            reasoning_effort=option_agent_selection.reasoning_effort,
             auto_run_seconds=int(option_agent_raw.get("auto_run_seconds", 0)),
             max_runs_per_day=int(option_agent_raw.get("max_runs_per_day", 1)),
             experiment_enabled=bool(option_agent_raw.get("experiment_enabled", False)),
