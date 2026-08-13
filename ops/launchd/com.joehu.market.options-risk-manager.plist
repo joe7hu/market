@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.joehu.market.options-risk-manager</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/joehu/proj/market &amp;&amp; source /Users/joehu/.zshrc &amp;&amp; MARKET_DATABASE_URL=postgresql:///market /opt/homebrew/bin/uv run python -m investment_panel.jobs.options_paper_execution --config config.yaml</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/market-options-risk-manager.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/market-options-risk-manager.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/joehu/proj/market</string>
+</dict>
+</plist>

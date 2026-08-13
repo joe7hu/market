@@ -50,3 +50,18 @@ def test_premarket_launchd_routes_through_postgresql_job_authority() -> None:
     assert "investment_panel.core.refresh_jobs premarket_options_intelligence" in command
     assert "MARKET_DATABASE_URL=postgresql:///market" in command
     assert "MARKET_DUCKDB_PATH" not in command
+
+
+def test_risk_management_and_research_delivery_have_intraday_cadence() -> None:
+    contracts = {
+        "com.joehu.market.decision-inbox.plist": (60, "investment_panel.jobs.decision_inbox"),
+        "com.joehu.market.options-risk-manager.plist": (60, "investment_panel.jobs.options_paper_execution"),
+        "com.joehu.market.recovery-watch.plist": (120, "investment_panel.jobs.robinhood_option_history"),
+    }
+    for name, (interval, job) in contracts.items():
+        with (PROJECT_ROOT / "ops" / "launchd" / name).open("rb") as handle:
+            payload = plistlib.load(handle)
+        assert payload["StartInterval"] == interval
+        command = payload["ProgramArguments"][2]
+        assert job in command
+        assert "MARKET_DATABASE_URL=postgresql:///market" in command
