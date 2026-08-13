@@ -110,6 +110,10 @@ class StrategyGovernanceRepository:
                   AND outcome.promotion_eligible IS TRUE
                   AND outcome.outcome_classification = 'captured'
                   AND outcome.maturity_state IN ('mature', 'expired')
+                  AND decision.sample_eligible IS TRUE
+                  AND outcome.sample_eligible IS TRUE
+                  AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+                  AND outcome.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
                 ORDER BY outcome.updated_at DESC LIMIT 20
                 """,
                 [active["id"]],

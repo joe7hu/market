@@ -23,6 +23,7 @@ from investment_panel.core.option_underwriting import (
     underwriting_direction,
 )
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.opportunity_episodes import canonical_option_lane, option_episode_key, option_sample_eligibility, scorecard_truth_cohort
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.options_history_v3_candidates import (
     candidate_leg,
@@ -37,6 +38,7 @@ from investment_panel.database.options_history_v3_candidates import (
 )
 from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
 from investment_panel.database.options_history_v3_evidence import quote_package
+from investment_panel.database.options_history_v3_outcomes import upsert_observing_shadow_outcome
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.options_history_policy import apply_publication_cap
 from investment_panel.database.options_history_ticket import published_candidates
@@ -138,6 +140,7 @@ class OptionHistoryV3Materializer:
             rows = connection.execute(
                 """
                 SELECT quote.contract_id, contract.expiration, contract.option_type,
+                       snapshot.history_symbol AS symbol,
                        contract.strike::double precision AS strike,
                        greatest(contract.expiration - snapshot.trading_date, 0) AS dte,
                        quote.observed_at AS quote_observed_at, contract.underlying_instrument_id AS instrument_id,
@@ -352,20 +355,41 @@ class OptionHistoryV3Materializer:
         model_revision: str, lifecycle_enabled: bool,
     ) -> None:
         decision_key = f"history-v3:{relative_value_id}:{structure}"
+        scorecard_lane = canonical_option_lane("qqq", symbol=str(quote.get("symbol") or "QQQ"))
+        quality_status, sample_eligible, quarantine_reason = option_sample_eligibility(
+            value.get("quality_status")
+        )
+        if state["blockers"]:
+            sample_eligible = False
+            quarantine_reason = "quality_gated"
+        episode_key = option_episode_key(
+            lane=scorecard_lane,
+            symbol=str(quote.get("symbol") or "QQQ"),
+            strategy=structure,
+            contract_ladder_slot=str(quote["contract_id"]),
+            entry_at=quote["quote_observed_at"],
+        )
         decision = connection.execute(
             """
             INSERT INTO analysis.decision
                 (run_id, decision_key, kind, instrument_id, as_of, state, score, quality_status,
-                 reasons, blockers, input_hash)
-            VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s)
+                 reasons, blockers, input_hash, lane, episode_key, sample_eligible,
+                 quarantine_reason, calibration_cohort)
+            VALUES (%s, %s, 'option', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id, decision_key) DO UPDATE
             SET state = EXCLUDED.state, score = EXCLUDED.score, reasons = EXCLUDED.reasons,
-                blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash
+                blockers = EXCLUDED.blockers, input_hash = EXCLUDED.input_hash,
+                quality_status = EXCLUDED.quality_status, lane = EXCLUDED.lane,
+                episode_key = EXCLUDED.episode_key, sample_eligible = EXCLUDED.sample_eligible,
+                quarantine_reason = EXCLUDED.quarantine_reason,
+                calibration_cohort = EXCLUDED.calibration_cohort
             RETURNING id
             """,
             [run_id, decision_key, quote["instrument_id"], quote["quote_observed_at"],
-             decision_state(state["paper_state"]), value.get("modeled_net_edge"), value["quality_status"],
-             state["reasons"], state["blockers"], _hash({"value": value, "structure": structure, "scenario": scenario})],
+             decision_state(state["paper_state"]), value.get("modeled_net_edge"), quality_status,
+             state["reasons"], state["blockers"], _hash({"value": value, "structure": structure, "scenario": scenario}),
+             scorecard_lane, episode_key, sample_eligible, quarantine_reason,
+             scorecard_truth_cohort(model_revision)],
         ).fetchone()
         decision_id = decision["id"]
         execution_confidence = calculate_execution_confidence(legs)
@@ -443,6 +467,10 @@ class OptionHistoryV3Materializer:
               AND option_decision.model_version = %s AND outcome.maturity_state IN ('mature', 'expired')
               AND outcome.current_return IS NOT NULL AND outcome.observed_through <= %s
               AND decision.instrument_id = %s
+              AND decision.sample_eligible IS TRUE
+              AND outcome.sample_eligible IS TRUE
+              AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+              AND outcome.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
             """,
             [structure, model_version, as_of, instrument_id],
         ).fetchall()
@@ -571,18 +599,12 @@ class OptionHistoryV3Materializer:
                 "UPDATE analysis.shadow_trade SET metrics = metrics || %s WHERE id = %s",
                 [Jsonb(metrics), row["id"]],
             )
-            connection.execute(
-                """
-                INSERT INTO analysis.option_outcome
-                    (decision_id, maturity_state, observed_through, current_return, outcome_source, shadow_trade_id)
-                VALUES (%s, 'observing', %s, %s, 'options_history_v3', %s)
-                ON CONFLICT (decision_id) DO UPDATE
-                SET maturity_state = EXCLUDED.maturity_state, observed_through = EXCLUDED.observed_through,
-                    current_return = EXCLUDED.current_return, outcome_source = EXCLUDED.outcome_source,
-                    shadow_trade_id = EXCLUDED.shadow_trade_id, updated_at = now()
-                """,
-                [row["decision_id"], latest_available_at(legs) or datetime.now(UTC),
-                 (mark / entry - 1.0) if mark is not None and entry > 0 else None, row["id"]],
+            upsert_observing_shadow_outcome(
+                connection,
+                decision_id=str(row["decision_id"]),
+                shadow_trade_id=str(row["id"]),
+                observed_through=latest_available_at(legs) or datetime.now(UTC),
+                current_return=(mark / entry - 1.0) if mark is not None and entry > 0 else None,
             )
 
 

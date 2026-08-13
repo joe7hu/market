@@ -174,6 +174,10 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                     reasons=[candidate.family, "event_strip_forward_only"],
                     blockers=[],
                     details={
+                        "quality_status": "complete",
+                        "strategy_key": candidate.family,
+                        "event_id": event_id,
+                        "calibration_cohort": CURRENT_OBJECTIVE_VERSION,
                         "structure": "long_option",
                         "premium_mid": _mid(candidate.quote.bid, candidate.quote.ask),
                         "fill_assumption": candidate.maximum_loss / 100.0,
@@ -183,6 +187,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                                     "cohort_code_version": CODE_VERSION},
                     },
                     strategy_revision_id=strategy_id,
+                    lane="recovery",
                 )
                 risk = self._risk_context(
                     event_id=event_id,

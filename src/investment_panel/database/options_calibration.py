@@ -8,6 +8,7 @@ from statistics import mean, pstdev
 from typing import Any
 
 from investment_panel.core.option_trade_ticket import calibrated_cohort_ready
+from investment_panel.database.opportunity_episodes import SCORECARD_TRUTH_PREFIX
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -38,8 +39,12 @@ def calibration_profiles(
                   AND run.feature_versions->>'option' = %s
                   AND outcome.maturity_state IN ('mature', 'expired')
                   AND outcome.current_return IS NOT NULL
+                  AND decision.sample_eligible IS TRUE
+                  AND outcome.sample_eligible IS TRUE
+                  AND decision.calibration_cohort LIKE %s
+                  AND outcome.calibration_cohort LIKE %s
                 """,
-                [strategy_id, feature_version],
+                [strategy_id, feature_version, f"{SCORECARD_TRUTH_PREFIX}%", f"{SCORECARD_TRUTH_PREFIX}%"],
             ).fetchall()
         ]
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)

@@ -31,7 +31,10 @@ from investment_panel.database.options_recovery_cohorts import (
     CURRENT_OBJECTIVE_VERSION,
     RecoveryCohortRepository,
 )
-from investment_panel.database.opportunity_episodes import option_episode_key
+from investment_panel.database.opportunity_episodes import (
+    option_episode_key,
+    scorecard_truth_cohort,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -108,7 +111,8 @@ class RecoveryLearningRepository:
                             str(capture.get("capture_generation_id") or capture["id"]), source.get("event_contract_id"),
                             quote.contract_id, strategy.key, revisions[strategy.key], quote.observed_at,
                             quote.available_at, quote.expiration, Jsonb(_quote_payload(quote, gate)), stage, reason,
-                            cohort["id"], CURRENT_OBJECTIVE_VERSION, episode_key, str(cohort["id"]),
+                            cohort["id"], CURRENT_OBJECTIVE_VERSION, episode_key,
+                            scorecard_truth_cohort(str(cohort["id"])),
                         ],
                     )
                     stored += 1
@@ -478,6 +482,15 @@ class RecoveryLearningRepository:
                     executable_peak_return = %s, realized_return = %s, mae = %s, giveback = %s,
                     exit_efficiency = %s, exit_fill_at = %s, exit_fill_price = %s,
                     outcome_classification = %s, data_status = %s, miss_reason = %s,
+                    sample_eligible = CASE
+                      WHEN %s = 'ok' AND %s IN ('captured', 'missed', 'unfilled') THEN true
+                      ELSE false
+                    END,
+                    quarantine_reason = CASE
+                      WHEN %s <> 'ok' THEN %s
+                      WHEN %s NOT IN ('captured', 'missed', 'unfilled') THEN coalesce(%s, %s)
+                      ELSE NULL
+                    END,
                     measured_through = %s, updated_at = now()
                 WHERE id = %s
                 """,
@@ -487,7 +500,10 @@ class RecoveryLearningRepository:
                     lifecycle.time_to_2x_sessions, lifecycle.time_to_3x_sessions, lifecycle.time_to_4x_sessions,
                     lifecycle.executable_peak_return, metrics.realized_return, lifecycle.mae, lifecycle.giveback,
                     metrics.exit_efficiency, last.observed_at if last else None, last.executable_price if last else None,
-                    classification, data_status, reason, now, observation["id"],
+                    classification, data_status, reason,
+                    data_status, classification,
+                    data_status, data_status, classification, reason, classification,
+                    now, observation["id"],
                 ],
             )
 

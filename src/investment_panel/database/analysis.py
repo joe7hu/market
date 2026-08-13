@@ -11,7 +11,12 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.database.opportunity_episodes import option_episode_key
+from investment_panel.database.opportunity_episodes import (
+    canonical_option_lane,
+    option_episode_key,
+    option_sample_eligibility,
+    scorecard_truth_cohort,
+)
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
@@ -151,17 +156,25 @@ class AnalysisRepository:
             if instrument is None:
                 raise ValueError(f"unknown option instrument: {instrument_id}")
             symbol = str(instrument["symbol"])
-            decision_lane = str(lane or ("qqq" if symbol.upper() == "QQQ" else "radar")).lower()
+            nested_details = option.get("details")
+            event_id = option.get("event_id")
+            if not event_id and isinstance(nested_details, Mapping):
+                event_id = nested_details.get("event_id")
+            decision_lane = canonical_option_lane(lane, symbol=symbol)
+            quality_status, sample_eligible, quarantine_reason = option_sample_eligibility(
+                option.get("quality_status")
+            )
             episode_key = option_episode_key(
                 lane=decision_lane,
                 symbol=symbol,
                 strategy=str(option.get("strategy_key") or option.get("structure") or "option"),
                 contract_ladder_slot=str(option.get("contract_ladder_slot") or contract_id),
                 entry_at=quote_observed_at,
+                event_id=str(event_id or "") or None,
             )
-            quality_status = str(option.get("quality_status") or "ok")
-            sample_eligible = quality_status not in {"invalid", "lookahead_blocked", "continuity_missing"}
-            quarantine_reason = None if sample_eligible else quality_status
+            calibration_cohort = scorecard_truth_cohort(
+                str(option.get("calibration_cohort") or option.get("objective_version") or "default")
+            )
             decision = connection.execute(
                 """
                 INSERT INTO analysis.decision
@@ -182,9 +195,9 @@ class AnalysisRepository:
                 """,
                 [
                     run_id, decision_key, instrument_id, quote_observed_at, state, rank, score,
-                    option.get("quality_status"), strategy_revision_id, list(reasons), list(blockers), _hash(inputs),
+                    quality_status, strategy_revision_id, list(reasons), list(blockers), _hash(inputs),
                     decision_lane, episode_key, sample_eligible, quarantine_reason,
-                    str(option.get("calibration_cohort") or option.get("objective_version") or ""),
+                    calibration_cohort,
                 ],
             ).fetchone()
             decision_id = UUID(str(decision["id"]))

@@ -26,7 +26,11 @@ class OutcomeRepository:
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = connection.execute(
                 """
-                SELECT decision.id::text AS decision_id, decision.as_of, contract.expiration,
+                SELECT decision.id::text AS decision_id, decision.as_of, decision.lane,
+                       decision.episode_key, decision.sample_eligible AS decision_sample_eligible,
+                       decision.quarantine_reason AS decision_quarantine_reason,
+                       decision.calibration_cohort,
+                       contract.expiration,
                        contract.strike, contract.multiplier, option_decision.structure,
                        option_decision.premium_mid, option_decision.entry_price,
                        option_decision.synthetic_legs,
@@ -151,9 +155,11 @@ class OutcomeRepository:
                         peak_return, max_drawdown, time_to_2x_days,
                         time_to_5x_days, time_to_10x_days, paper_status,
                         credit_captured, collateral_return, assigned_basis,
-                        strike_touched, outcome_source, shadow_trade_id, updated_at
+                        strike_touched, outcome_source, shadow_trade_id,
+                        lane, episode_key, sample_eligible, quarantine_reason,
+                        calibration_cohort, updated_at
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                              %s, %s, %s, %s, %s, 'generic', NULL, now())
+                              %s, %s, %s, %s, %s, 'generic', NULL, %s, %s, false, %s, %s, now())
                     ON CONFLICT (decision_id) DO UPDATE
                     SET maturity_state = EXCLUDED.maturity_state,
                         observed_through = GREATEST(analysis.option_outcome.observed_through, EXCLUDED.observed_through),
@@ -172,6 +178,11 @@ class OutcomeRepository:
                         collateral_return = COALESCE(EXCLUDED.collateral_return, analysis.option_outcome.collateral_return),
                         assigned_basis = COALESCE(EXCLUDED.assigned_basis, analysis.option_outcome.assigned_basis),
                         strike_touched = COALESCE(EXCLUDED.strike_touched, analysis.option_outcome.strike_touched),
+                        lane = EXCLUDED.lane,
+                        episode_key = EXCLUDED.episode_key,
+                        sample_eligible = false,
+                        quarantine_reason = EXCLUDED.quarantine_reason,
+                        calibration_cohort = EXCLUDED.calibration_cohort,
                         updated_at = now()
                     """,
                     [
@@ -185,6 +196,9 @@ class OutcomeRepository:
                         marks[-1][2] if marks and maturity != "observing" else None,
                         _number(first.get("effective_assignment_price")) if assigned else None,
                         strike_touched,
+                        first.get("lane"), first.get("episode_key"),
+                        first.get("decision_quarantine_reason") or "generic_mark_not_execution_grade",
+                        first.get("calibration_cohort"),
                     ],
                 )
                 updated += 1

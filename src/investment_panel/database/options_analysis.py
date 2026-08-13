@@ -356,6 +356,8 @@ def _insert_decisions(
             WITH scored AS (
                 SELECT feature.*,
                        instrument.id AS instrument_id,
+                       contract.option_type,
+                       analysis_run.feature_versions,
                        quote.mid, quote.bid, quote.ask, quote.open_interest, quote.volume,
                        %s * feature.liquidity_score + %s * feature.convexity_score AS score,
                        array_remove(ARRAY[
@@ -392,7 +394,8 @@ def _insert_decisions(
             )
             INSERT INTO analysis.decision (
                 run_id, decision_key, kind, instrument_id, as_of, state, rank, score,
-                quality_status, strategy_revision_id, reasons, blockers, input_hash
+                quality_status, strategy_revision_id, reasons, blockers, input_hash,
+                lane, episode_key, sample_eligible, quarantine_reason, calibration_cohort
             )
             SELECT %s, contract_id::text, 'option', instrument_id, quote_observed_at,
                    CASE WHEN cardinality(blockers) > 0 THEN 'REJECTED'
@@ -408,7 +411,16 @@ def _insert_decisions(
                        CASE WHEN convexity_score >= 70 THEN 'convexity_supported' END
                    ], NULL),
                    blockers,
-                   encode(digest(concat_ws('|', %s::text, contract_id::text, score::text), 'sha256'), 'hex')
+                   encode(digest(concat_ws('|', %s::text, contract_id::text, score::text), 'sha256'), 'hex'),
+                   'radar',
+                   concat_ws(
+                       ':', 'radar', instrument_id::text,
+                       concat('long_', option_type),
+                       to_char((quote_observed_at AT TIME ZONE 'America/New_York')::date, 'YYYYMMDD')
+                   ),
+                   cardinality(blockers) = 0,
+                   CASE WHEN cardinality(blockers) = 0 THEN NULL ELSE 'quality_gated' END,
+                   concat('option-scorecard-truth-v1:', coalesce(feature_versions->>'option', 'unknown'))
             FROM ranked
             """,
             [

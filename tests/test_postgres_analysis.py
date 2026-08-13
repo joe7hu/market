@@ -240,7 +240,21 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
             "(SELECT count(*) FROM app.publication_item WHERE publication_id = %s)",
             [publication_id],
         ).fetchone()
+        truth = connection.execute(
+            """
+            SELECT lane, episode_key, quality_status, sample_eligible,
+                   quarantine_reason, calibration_cohort
+            FROM analysis.decision WHERE id = %s
+            """,
+            [decision_id],
+        ).fetchone()
     assert counts == (1, 1, 1, 2)
+    assert truth[0] == "radar"
+    assert truth[1]
+    assert truth[2] == "unverified"
+    assert truth[3] is False
+    assert truth[4] == "quality_status_missing"
+    assert truth[5].startswith("option-scorecard-truth-v1:")
 
 
 def test_publication_validation_failure_never_exposes_partial_state(analysis_context, postgres_dsn: str) -> None:

@@ -294,6 +294,10 @@ _OUTCOME_QUERY = """
       AND outcome.outcome_classification = 'captured'
       AND outcome.peak_return IS NOT NULL
       AND outcome.maturity_state IN ('mature', 'expired')
+      AND decision.sample_eligible IS TRUE
+      AND outcome.sample_eligible IS TRUE
+      AND decision.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
+      AND outcome.calibration_cohort LIKE 'option-scorecard-truth-v1:%%'
       AND decision.strategy_revision_id = %s
 """
 
