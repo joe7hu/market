@@ -6,6 +6,8 @@ import argparse
 import json
 from typing import Any
 
+from psycopg.errors import LockNotAvailable
+
 from investment_panel.core.config import load_config
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.authority import runtime_for_config
@@ -48,12 +50,25 @@ def run_signal_only(
     ``source`` scopes it to one option provider (e.g. 'ibkr')."""
 
     config = load_config(config_path)
-    result = refresh_options_radar(
-        runtime_for_config(config),
-        symbols=symbols,
-        source_id=source,
-        options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
-    )
+    try:
+        result = refresh_options_radar(
+            runtime_for_config(config),
+            symbols=symbols,
+            source_id=source,
+            options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+        )
+    except LockNotAvailable:
+        # A concurrent refresh owns the same catalog rows. Do not report an
+        # operational failure or retry inside this process; the next 15-minute
+        # interval will refresh from the newer writer's completed snapshot.
+        return {
+            "database": "postgresql",
+            "strategy_version": strategy_version,
+            "mode": "signal_only",
+            "source": source or "all",
+            "status": "skipped",
+            "reason": "database_lock_busy",
+        }
     return {"database": "postgresql", "strategy_version": strategy_version, "mode": "signal_only", "source": source or "all", **result}
 
 

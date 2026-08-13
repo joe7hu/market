@@ -9,6 +9,9 @@ from types import SimpleNamespace
 from investment_panel.core import refresh_jobs
 import psycopg
 import pytest
+from psycopg.errors import LockNotAvailable
+
+from investment_panel.jobs import refresh_options_radar as radar_refresh_job
 
 
 def test_material_thesis_monitor_receives_only_changed_symbols(monkeypatch) -> None:
@@ -173,6 +176,32 @@ def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None
 
     assert result["status"] == "succeeded"
     assert result["summary"] == {"job": "refresh_options_radar", "config_path": "config.yaml"}
+
+
+def test_signal_only_radar_skips_a_concurrent_catalog_writer(monkeypatch) -> None:
+    config = SimpleNamespace(
+        analysis=SimpleNamespace(
+            options_decision_system=SimpleNamespace(options_risk_sleeve_capital=500.0)
+        )
+    )
+    monkeypatch.setattr(radar_refresh_job, "load_config", lambda _path: config)
+    monkeypatch.setattr(radar_refresh_job, "runtime_for_config", lambda _config: object())
+    monkeypatch.setattr(
+        radar_refresh_job,
+        "refresh_options_radar",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(LockNotAvailable("busy")),
+    )
+
+    result = radar_refresh_job.run_signal_only("config.yaml", source="robinhood")
+
+    assert result == {
+        "database": "postgresql",
+        "strategy_version": radar_refresh_job.DEFAULT_STRATEGY_VERSION,
+        "mode": "signal_only",
+        "source": "robinhood",
+        "status": "skipped",
+        "reason": "database_lock_busy",
+    }
 
 
 def test_options_radar_hard_refresh_updates_source_then_rebuilds_radar(tmp_path, monkeypatch) -> None:
