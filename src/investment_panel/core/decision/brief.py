@@ -39,12 +39,18 @@ def ticker_decision_brief(symbol: str, tables: dict[str, list[dict[str, Any]]]) 
     valuation_rows = sorted(tables.get("valuations") or [], key=lambda row: _number(row.get("upside_pct")), reverse=True)
     best_valuation = valuation_rows[0] if valuation_rows else {}
     earnings_setup = _latest_row(tables.get("earnings_setups") or [], ("event_date", "as_of"))
-    option_rows = tables.get("options_payoff_scenarios") or []
+    # A ticker can have current option intelligence before the strategy
+    # builder emits a payoff scenario. Keep that signal visible instead of
+    # reporting a misleading missing options context.
+    option_rows = tables.get("options_payoff_scenarios") or tables.get("options_ticker_signals") or []
     live_option_rows = [row for row in option_rows if not _is_option_expired(row)]
     expired_option_rows = [row for row in option_rows if _is_option_expired(row)]
     best_option = _best_option(live_option_rows)
     portfolio_row = _first_row(tables, "portfolio")
-    research_packet = _latest_row(tables.get("research_packets") or [], ("created_at", "as_of"))
+    research_packet = _latest_row(
+        tables.get("research_packets") or tables.get("thesis_monitor") or [],
+        ("created_at", "updated_at", "as_of"),
+    )
     action = _text(decision_row.get("action_grade") or decision_row.get("decision") or "Watch")
     blockers = _text_list(decision_row.get("blocking_gates"))
     if _is_no_trade_action(action) and "decision_reject" not in blockers:
@@ -550,7 +556,7 @@ def _source_health_by_family(tables: dict[str, list[dict[str, Any]]]) -> dict[st
         row_count = sum(len(tables.get(key) or []) for key in keys)
         status = "live" if row_count else "missing"
         if family == "options" and row_count:
-            option_rows = tables.get("options_payoff_scenarios") or []
+            option_rows = tables.get("options_payoff_scenarios") or tables.get("options_ticker_signals") or []
             if option_rows and all(_is_option_expired(row) for row in option_rows):
                 status = "expired"
         health[family] = {"status": status, "rows": row_count}

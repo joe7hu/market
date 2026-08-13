@@ -598,7 +598,7 @@ def load_postgres_tables(
     if "theses" in requested:
         tables["theses"] = thesis_rows(config)
     if "thesis_monitor" in requested:
-        tables["thesis_monitor"] = thesis_monitor_rows(config)
+        tables["thesis_monitor"] = thesis_monitor_rows(config, symbols=query_symbol_filter)
     if "refresh_jobs" in requested:
         tables["refresh_jobs"] = JobRepository(runtime).rows()
     if "broker_status" in requested:

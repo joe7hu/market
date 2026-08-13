@@ -18,6 +18,10 @@ def current_quote_rows(
     """
 
     normalized = sorted({str(symbol).strip().upper() for symbol in symbols or () if str(symbol).strip()})
+    # ``None`` requests the intentionally broad market read. An explicitly
+    # empty portfolio or watchlist requests no instruments.
+    if symbols is not None and not normalized:
+        return []
     if normalized:
         identifiers = [
             int(row["id"])

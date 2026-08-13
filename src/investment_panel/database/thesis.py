@@ -281,10 +281,14 @@ def thesis_monitor_payload(config: dict[str, Any]) -> dict[str, Any]:
     return {"rows": rows, "count": len(rows), "summary": summary}
 
 
-def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+def thesis_monitor_rows(
+    config: dict[str, Any],
+    *,
+    symbols: list[str] | set[str] | None = None,
+) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
-        rows = monitored_thesis_rows(connection)
+        rows = monitored_thesis_rows(connection, symbols=symbols)
         evidence_by_symbol = thesis_source_evidence(connection, [str(row["symbol"]) for row in rows])
         assessments_by_revision_map = assessments_by_revision(connection, [row.get("revision_id") for row in rows])
     total_market_value = 0.0

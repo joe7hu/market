@@ -18,9 +18,11 @@ from investment_panel.database.runtime import DatabaseRuntime
 
 INBOX_EVENT_TYPES = frozenset({
     "ready", "revoked", "expired", "paper_filled", "paper_exited",
-    "portfolio_critical", "paper_engine_halt",
+    "portfolio_critical", "paper_engine_halt", "high_priority_research",
 })
-TELEGRAM_EVENT_TYPES = INBOX_EVENT_TYPES
+# Research delivery is durable in the Inbox but can never become a paper-order
+# or Telegram path.  READY is the only option ticket state that may notify.
+TELEGRAM_EVENT_TYPES = INBOX_EVENT_TYPES - {"high_priority_research"}
 
 
 class DecisionInboxRepository:
@@ -134,7 +136,7 @@ class DecisionInboxRepository:
 
         reference = _utc(now)
         activation_at, is_bootstrap = self._ticket_sync_activation(reference)
-        created = {"ready": 0, "revoked": 0, "expired": 0}
+        created = {"ready": 0, "revoked": 0, "expired": 0, "high_priority_research": 0}
         if is_bootstrap:
             return created
         with self.runtime.read() as connection:
@@ -202,6 +204,21 @@ class DecisionInboxRepository:
                 created["ready"] += int(event["created"])
             else:
                 current[(decision_id, version)] = {"payload": payload, "ticket": ticket, "ready": False}
+                if _is_high_priority_research(payload, ticket):
+                    research_ticket = {**ticket, "state": "HIGH_PRIORITY_RESEARCH"}
+                    event = self.emit(
+                        event_type="high_priority_research",
+                        payload={
+                            **_ticket_event_payload(payload, research_ticket),
+                            "reason": "Timely research setup; execution remains blocked until deterministic gates clear.",
+                        },
+                        opportunity_id=decision_id,
+                        ticket_version=version,
+                        lane=str(ticket.get("lane") or "radar"),
+                        severity="info",
+                        enqueue_telegram=False,
+                    )
+                    created["high_priority_research"] += int(event["created"])
         for row in recovery_rows:
             ticket = dict(row["ticket"] or {})
             decision_id = str(ticket.get("decision_id") or row["decision_id"] or "")
@@ -460,6 +477,23 @@ def _ticket_event_payload(source: dict[str, Any], ticket: dict[str, Any]) -> dic
         "primary_blocker": _first(blockers),
         "detail_url": f"/options-radar?decision={decision_id}" if decision_id else "/options-radar",
     }
+
+
+def _is_high_priority_research(payload: dict[str, Any], ticket: dict[str, Any]) -> bool:
+    """Return true only for a published, non-executable setup worth preserving.
+
+    This is an observation/delivery classification.  It does not change the
+    ticket, quantity, paper status, or any promotion gate.
+    """
+
+    state = str(ticket.get("state") or payload.get("state") or "").upper()
+    source_state = str(payload.get("state") or "").upper()
+    tier = str(payload.get("tier") or "").lower()
+    data_status = str(payload.get("data_contract_status") or "").lower()
+    is_setup = state in {"RESEARCH", "SETUP"} or source_state == "SETUP"
+    is_research = tier in {"research", "setup", ""}
+    is_repair = data_status in {"repair_required", "invalid", "failed"}
+    return bool(is_setup and is_research and not is_repair)
 
 
 def _dedupe_key(*, event_type: str, opportunity_id: str | None, ticket_version: int | None, paper_order_id: str | None) -> str:

@@ -8,7 +8,7 @@ def test_long_setup_is_research_only_with_executable_guidance() -> None:
         "buy_under": 2.8, "max_profit": None,
     })
     assert fields["recommendation_state"] == "RESEARCH_SETUP"
-    assert fields["advisory_action"] == "RESEARCH — BUY TO OPEN"
+    assert fields["advisory_action"] == "RESEARCH — STRUCTURE REVIEW"
     assert fields["paper_ready"] is False
     assert fields["maximum_entry"] == 2.8
     assert fields["break_even_move_pct"] == 0.08

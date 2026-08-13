@@ -191,7 +191,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.joehu.market.hourly-
 launchctl print gui/$(id -u)/com.joehu.market.hourly-options-radar
 ```
 
-The job uses `/tmp/market-hourly-options-radar.lock`, so a slow deterministic
+The job refreshes the broad Radar universe every 15 minutes from PostgreSQL. It uses `/tmp/market-hourly-options-radar.lock`, so a slow deterministic
 run skips the next hourly tick instead of starting overlapping radar
 recomputes. It writes
 `/Volumes/agent/data-sources/status/mini-market-hourly-options-radar.json`.

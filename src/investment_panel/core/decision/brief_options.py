@@ -62,6 +62,20 @@ def _options_context(option: dict[str, Any], option_rows: list[dict[str, Any]], 
                 "expired_scenario_count": expired_count,
             }
         return {"status": "missing", "summary": "No options scenario row loaded.", "scenario_count": 0, "live_scenario_count": 0}
+    if option.get("expected_move_pct") is not None and not _text(option.get("strategy_type")):
+        expected_move = _fmt_pct(_number(option.get("expected_move_pct")))
+        return {
+            "status": "signal",
+            "summary": f"Current option signal implies an expected move of {expected_move}; no executable strategy scenario is loaded.",
+            "scenario_count": len(option_rows),
+            "live_scenario_count": live_count,
+            "expired_scenario_count": expired_count,
+            "iv": _number(option.get("atm_iv") or option.get("iv")),
+            "dte": _number(option.get("dte")),
+            "breakeven": 0.0,
+            "max_loss": "No executable option structure is loaded.",
+            "event_fit": "Refresh chain, liquidity, and legs before any structure review.",
+        }
     spot = _number(option.get("spot"))
     breakevens = option.get("breakevens") if isinstance(option.get("breakevens"), list) else []
     first_breakeven = _number(breakevens[0]) if breakevens else 0.0
@@ -86,7 +100,7 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
     financial_valuation = _first_row(tables, "valuations")
     earnings = _first_row(tables, "earnings_setups", "earnings")
     memo = _first_row(tables, "research_packets", "memos", "theses")
-    option_rows = tables.get("options_payoff_scenarios") or []
+    option_rows = tables.get("options_payoff_scenarios") or tables.get("options_ticker_signals") or []
     expired_options = sum(1 for row in option_rows if _is_option_expired(row))
     live_options = len(option_rows) - expired_options
     return {

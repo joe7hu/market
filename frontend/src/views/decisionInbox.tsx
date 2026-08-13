@@ -51,7 +51,7 @@ export function DecisionInboxPage() {
       <PageHeader
         eyebrow="Decision Inbox"
         title="Actionable ticket updates"
-        subtitle="READY changes, paper fills and exits, critical portfolio risk, and execution halts. Agent and scheduler failures stay in Health."
+        subtitle="READY changes, high-priority research, paper fills and exits, critical portfolio risk, and execution halts. Research events never create paper orders or Telegram delivery."
         actions={<Button type="button" variant="outline" disabled={loading} onClick={() => void loadFirst()}>Refresh</Button>}
       />
       {loading ? <p className="text-sm text-muted-foreground">Loading actionable events…</p> : null}

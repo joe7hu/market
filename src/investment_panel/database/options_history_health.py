@@ -7,6 +7,7 @@ from typing import Any
 from investment_panel.analysis.history_v3 import MODEL_REVISION
 from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.storage_guard import storage_capacity
 
 
 def history_health(runtime: DatabaseRuntime, *, symbol: str | None = None) -> dict[str, Any]:
@@ -72,4 +73,5 @@ def history_health(runtime: DatabaseRuntime, *, symbol: str | None = None) -> di
             "paper_mode_eligible": fit_attempts > 0 and succeeded_groups / fit_attempts >= 0.99
             and int(canary["qualified_regular_sessions"]) >= int(canary["required_regular_sessions"]),
         },
+        "storage_capacity": storage_capacity().payload(),
     }

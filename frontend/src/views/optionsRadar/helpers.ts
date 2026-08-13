@@ -72,6 +72,12 @@ export function compareGroupedOpportunities(left: RowRecord, right: RowRecord): 
 export function opportunityActionText(row: RowRecord): string {
   const ticket = recordField(row, "ticket");
   const ticketRisk = recordField(ticket, "risk");
+  const state = stateOf(row);
+  if (state !== "READY") {
+    return state === "SETUP"
+      ? "RESEARCH — structure review. Quote and revalidate before considering a paper entry."
+      : "NO TRADE — watch only until ranking, data quality, and thesis gates improve.";
+  }
   if ((numberFromRecord(ticketRisk, "recommended_quantity") || 0) === 0) {
     return "NO TRADE — research only. Resolve the ticket blockers before considering a paper entry.";
   }
@@ -95,12 +101,19 @@ export function opportunityActionText(row: RowRecord): string {
 }
 
 export function candidateActionText(row: RowRecord, validation: RowRecord | undefined): string {
+  const state = stateOf(row);
+  // Existing publications can outlive a UI deploy.  Never render a legacy
+  // execution verb until the current deterministic ticket is actually READY.
+  if (state !== "READY") {
+    return state === "SETUP"
+      ? "RESEARCH — structure review. READY remains locked until all blockers clear."
+      : "NO TRADE — watch only until ranking, data quality, and thesis gates improve.";
+  }
   const published = textField(row, ["advisory_action"]);
   if (published) {
     const reason = displayField(row, ["no_trade_reason"]);
     return reason && published === "NO TRADE" ? `${published}: ${reasonLabel(reason)}.` : published;
   }
-  const state = stateOf(row);
   const validationState = textField(validation, ["state"]).toLowerCase();
   const redTeam = textField(validation, ["red_team_status"]).toLowerCase();
   const raw = recordField(row, "raw");

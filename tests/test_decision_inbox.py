@@ -129,6 +129,63 @@ def test_decision_inbox_does_not_read_a_future_publication(
         runtime.close()
 
 
+def test_decision_inbox_persists_high_priority_research_without_notification(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    analysis = AnalysisRepository(runtime)
+    inbox = DecisionInboxRepository(runtime)
+    decision_id = str(uuid4())
+    reference = datetime(2026, 8, 12, 15, 30, tzinfo=UTC)
+    try:
+        # Arm the lifecycle watermark before the new publication arrives.
+        assert inbox.sync_current_tickets(now=reference)["high_priority_research"] == 0
+        run_id = analysis.start_run(
+            "inbox-research-test", input_cutoff=reference, code_version="test",
+            inputs={"reference": reference.isoformat()},
+        )
+        analysis.finish_run(run_id, "succeeded")
+        publication_id = analysis.publish(
+            run_id,
+            "options-radar",
+            {
+                "option_radar_opportunity": [{
+                    "decision_id": decision_id,
+                    "symbol": "NBIS",
+                    "state": "SETUP",
+                    "tier": "Research",
+                    "ticket": {
+                        "decision_id": decision_id,
+                        "ticket_version": 8,
+                        "lane": "radar",
+                        "state": "RESEARCH",
+                        "blockers": ["calibrated_probability_required"],
+                        "expires_at": (reference + timedelta(minutes=2)).isoformat(),
+                    },
+                }],
+            },
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET published_at = %s WHERE id = %s::uuid",
+                [reference + timedelta(minutes=1), publication_id],
+            )
+
+        created = inbox.sync_current_tickets(now=reference + timedelta(minutes=2))
+        page = inbox.rows()
+        with runtime.read() as connection:
+            outbox_count = connection.execute("SELECT count(*) AS count FROM app.notification_outbox").fetchone()["count"]
+
+        assert created["high_priority_research"] == 1
+        assert created["ready"] == 0
+        assert page["items"][0]["event_type"] == "high_priority_research"
+        assert page["items"][0]["payload"]["state"] == "HIGH_PRIORITY_RESEARCH"
+        assert outbox_count == 0
+    finally:
+        runtime.close()
+
+
 def test_decision_inbox_arms_without_replaying_existing_ticket(
     migrated_postgres_dsn: str,
 ) -> None:
@@ -170,7 +227,7 @@ def test_decision_inbox_arms_without_replaying_existing_ticket(
 
         result = inbox.sync_current_tickets(now=reference)
 
-        assert result == {"ready": 0, "revoked": 0, "expired": 0}
+        assert result == {"ready": 0, "revoked": 0, "expired": 0, "high_priority_research": 0}
         assert inbox.rows()["items"] == []
     finally:
         runtime.close()

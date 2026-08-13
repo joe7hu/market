@@ -306,7 +306,13 @@ TICKER_INITIAL_TABLES = (
     "quotes",
     "portfolio",
     "theses",
+    "thesis_monitor",
+    "catalysts",
+    "earnings",
     "options_ticker_signals",
+    "options_payoff_scenarios",
+    "options_expiry_signals",
+    "options_expiries",
 )
 
 ENDPOINT_TABLES: dict[str, str] = {

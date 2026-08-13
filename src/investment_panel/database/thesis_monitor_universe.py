@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 
-def monitored_thesis_rows(connection: Any) -> list[dict[str, Any]]:
-    """Load every instrument whose ownership, watch, option, or thesis state needs monitoring."""
+def monitored_thesis_rows(
+    connection: Any,
+    *,
+    symbols: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load the monitored universe, optionally bounded to explicit symbols."""
+
+    normalized = sorted({str(symbol).strip().upper() for symbol in symbols or () if str(symbol).strip()})
+    if symbols is not None and not normalized:
+        return []
+    symbol_filter = " AND instrument.symbol = ANY(%s)" if normalized else ""
 
     rows = connection.execute(
         """
@@ -30,10 +39,12 @@ def monitored_thesis_rows(connection: Any) -> list[dict[str, Any]]:
              AND option_policy.collection_tier = 'core'
              AND option_policy.requested_state = 'on'
              AND option_policy.effective_state = 'active'
-            WHERE position.instrument_id IS NOT NULL
-               OR (watch.instrument_id IS NOT NULL AND watch.watch_state <> 'excluded')
-               OR option_policy.instrument_id IS NOT NULL
-               OR thesis.id IS NOT NULL
+            WHERE (
+                position.instrument_id IS NOT NULL
+                OR (watch.instrument_id IS NOT NULL AND watch.watch_state <> 'excluded')
+                OR option_policy.instrument_id IS NOT NULL
+                OR thesis.id IS NOT NULL
+            ){symbol_filter}
         ), current_prices AS MATERIALIZED (
             SELECT *
             FROM raw.current_price_at(
@@ -58,6 +69,7 @@ def monitored_thesis_rows(connection: Any) -> list[dict[str, Any]]:
             WHERE instrument_id = monitored.instrument_id ORDER BY started_at DESC LIMIT 1
         ) run ON true
         ORDER BY monitored.symbol
-        """
+        """.format(symbol_filter=symbol_filter),
+        [normalized] if normalized else [],
     ).fetchall()
     return [dict(row) for row in rows]

@@ -52,6 +52,8 @@ export function SignalBriefPanel({
   const strongest = ranked.find((row) => !isServiceRepair(row)) ?? ranked[0];
   const strongestDecisionId = textField(strongest, ["decision_id", "candidate_event_id"]);
   const hasLowerBound = Boolean(strongest) && Number.isFinite(numberField(strongest, ["lower_95_expected_value"], Number.NaN));
+  const probabilitySemantics = textField(strongest, ["probability_semantics"]);
+  const calibratedProbability = probabilitySemantics.startsWith("calibrated");
   const repairRows = rows.filter(isServiceRepair);
   const exceptionalRows = rows.filter((row) => stateOf(row) === "READY" && row["execution_ready"] === true);
   const blockedReadyRows = rows.filter((row) => stateOf(row) === "READY" && row["execution_ready"] !== true);
@@ -97,7 +99,10 @@ export function SignalBriefPanel({
                   label="Lower-Confidence EV / Max Risk"
                   value={formatRatio(numberField(strongest, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))}
                 />
-                <MetricBox label="Profit Probability (Provisional)" value={formatRatio(numberField(strongest, ["probability_profit"], Number.NaN))} />
+                <MetricBox
+                  label={calibratedProbability ? "Calibrated profit probability" : "Model scenario (not calibrated)"}
+                  value={calibratedProbability ? formatRatio(numberField(strongest, ["probability_profit"], Number.NaN)) : "Uncalibrated"}
+                />
                 <MetricBox label={hasLowerBound ? "Lower 95% EV" : "Net EV (Provisional)"} value={moneyField(strongest, hasLowerBound ? ["lower_95_expected_value"] : ["expected_value"])} />
                 <MetricBox label={textField(strongest, ["structure"]) === "cash_secured_put" ? "Minimum Credit" : "Maximum Entry"} value={moneyField(strongest, ["suggested_limit", "entry_price", "premium_mid"])} />
               </div>

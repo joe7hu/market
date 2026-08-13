@@ -6,7 +6,16 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.price_fact_versions import confirm_price_fact
 from investment_panel.database.price_confirmation_retention import PriceConfirmationRetentionRepository
+from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.runtime import DatabaseRuntime
+
+
+def test_current_quote_rows_does_not_expand_an_explicit_empty_scope() -> None:
+    class Connection:
+        def execute(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("empty scope must not query the market universe")
+
+    assert current_quote_rows(Connection(), symbols=[]) == []
 
 
 def test_current_price_prefers_latest_available_intraday_quote_over_daily_nominal_close(

@@ -404,7 +404,10 @@ def ticket_recommendation_fields(row: dict[str, Any]) -> dict[str, Any]:
     paper_ready = state == "READY" and not blockers
     posture = "PAPER_READY" if paper_ready else "RESEARCH_SETUP" if state == "SETUP" else "NO_TRADE"
     verb = "SELL CASH-SECURED PUT" if short_put else "BUY TO OPEN"
-    action = f"PAPER — {verb}" if paper_ready else f"RESEARCH — {verb}" if state == "SETUP" else "NO TRADE"
+    # A research setup is not an order instruction.  In particular, retaining
+    # "BUY TO OPEN" on a blocked/uncalibrated ticket makes stale cards look
+    # executable when deterministic gates still deny a paper entry.
+    action = f"PAPER — {verb}" if paper_ready else "RESEARCH — STRUCTURE REVIEW" if state == "SETUP" else "NO TRADE"
     suggested_limit = entry if short_put else (buy_under if buy_under is not None and buy_under > 0 else entry)
     break_even_move = abs(break_even - spot) / spot if break_even is not None and spot and spot > 0 else None
 

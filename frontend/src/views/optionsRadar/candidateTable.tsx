@@ -493,11 +493,12 @@ export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
   const hardRejects = listFromRecord(raw, "hard_rejects");
   const blockers = listField(row, ["blockers"]).length ? listField(row, ["blockers"]) : listFromRecord(raw, "blockers");
   const positives = listField(row, ["top_reasons"]).length ? listField(row, ["top_reasons"]) : listFromRecord(raw, "positives");
+  const calibrated = textField(row, ["probability_semantics"]).toLowerCase().startsWith("calibrated");
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-3 gap-1.5">
         <MetricPill label="Score" value={formatScore(candidateConviction(row))} />
-        <MetricPill label="Profit P" value={formatRatio(numberField(row, ["probability_profit"], Number.NaN))} />
+        <MetricPill label={calibrated ? "Calibrated profit P" : "Model P (not calibrated)"} value={formatRatio(numberField(row, ["probability_profit"], Number.NaN))} />
         <MetricPill label="Net EV" value={moneyField(row, ["expected_value"])} />
       </div>
       {hardRejects.length ? <ReadableReasonGroup label="Hard rejects" reasons={hardRejects} tone="bad" /> : null}

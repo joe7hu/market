@@ -16,6 +16,7 @@ from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_policy import EVENT_PROFILE, HISTORY_PROFILE, OptionHistoryPolicyRepository
 from investment_panel.database.option_events import OptionEventRepository
 from investment_panel.database.options_recovery_execution import RecoveryExecutionRepository
+from investment_panel.database.storage_guard import storage_capacity
 
 
 def history_slot(now: datetime | None = None) -> datetime | None:
@@ -77,11 +78,26 @@ def run(
             for symbol in dict.fromkeys(symbol for symbol in provider.history_symbols if symbol)
         ]
     symbols = [str(item["symbol"]).upper() for item in scheduled]
+    capacity = storage_capacity()
+    blocked_history = [
+        item for item in scheduled
+        if str(item.get("profile") or HISTORY_PROFILE) == HISTORY_PROFILE
+        and not capacity.history_collection_allowed
+    ]
+    scheduled = [item for item in scheduled if item not in blocked_history]
     ingestion.register_source(
         "robinhood", name="Robinhood", family="broker", kind="option_chain",
         capabilities={"option_quotes": True, "option_history_full": True},
     )
-    captures: list[dict[str, Any]] = []
+    captures: list[dict[str, Any]] = [
+        {
+            "symbol": str(item["symbol"]).upper(),
+            "profile": HISTORY_PROFILE,
+            "status": "skipped",
+            "reason": "storage_below_minimum_free_space",
+        }
+        for item in blocked_history
+    ]
     for schedule in scheduled:
         symbol = str(schedule["symbol"]).upper()
         capture_slot_at = schedule.get("slot_at") or slot_at
@@ -254,10 +270,17 @@ def run(
                     policy.release_provider_lease(lease_id)
     complete = [capture for capture in captures if capture.get("status") == "succeeded"]
     failed = [capture for capture in captures if capture.get("status") == "failed"]
+    skipped_for_storage = [capture for capture in captures if capture.get("reason") == "storage_below_minimum_free_space"]
     return {
-        "status": "failed" if failed and not complete else ("partial" if failed or len(complete) != len(captures) else "ok"),
+        "status": (
+            "failed" if failed and not complete
+            else "partial" if failed or (complete and len(complete) != len(captures))
+            else "skipped" if skipped_for_storage and not complete
+            else "ok"
+        ),
         "slot_at": slot_at.isoformat(), "symbols": symbols, "captures": captures,
         "complete_symbols": len(complete), "failed_symbols": len(failed),
+        "storage": capacity.payload(),
     }
 
 

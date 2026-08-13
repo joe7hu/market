@@ -1059,6 +1059,22 @@ def test_ticker_decision_brief_prefers_quote_row_over_decision_snapshot_price() 
     assert brief["risk_plan"]["max_sizing"] == "No new exposure while decision grade remains Reject."
 
 
+def test_ticker_decision_brief_keeps_current_option_signal_visible_without_strategy() -> None:
+    brief = ticker_decision_brief(
+        "NBIS",
+        {
+            "options_ticker_signals": [
+                {"symbol": "NBIS", "atm_iv": 103.9, "expected_move_pct": 32.6, "nearest_expiry": "2026-09-18"}
+            ],
+            "thesis_monitor": [{"symbol": "NBIS", "thesis": "Verified event thesis."}],
+        },
+    )
+
+    assert brief["options_context"]["status"] == "signal"
+    assert "32.60%" in brief["options_context"]["summary"]
+    assert brief["source_health_by_family"]["options"]["status"] == "live"
+
+
 def test_ticker_decision_brief_surfaces_missing_thesis_news_and_filings() -> None:
     brief = ticker_decision_brief(
         "AMD",

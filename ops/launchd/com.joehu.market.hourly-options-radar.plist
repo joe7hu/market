@@ -8,10 +8,10 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd /Users/joehu/proj/market &amp;&amp; MARKET_DUCKDB_PATH=/Users/joehu/proj/market/data/investment.duckdb /opt/homebrew/bin/uv run python -m investment_panel.jobs.hourly_options_radar --config config.yaml</string>
+    <string>cd /Users/joehu/proj/market &amp;&amp; source /Users/joehu/.zshrc &amp;&amp; MARKET_DATABASE_URL=postgresql:///market /opt/homebrew/bin/uv run python -m investment_panel.core.refresh_jobs refresh_options_radar_signal_robinhood --config config.yaml</string>
   </array>
   <key>StartInterval</key>
-  <integer>3600</integer>
+  <integer>900</integer>
   <key>StandardOutPath</key>
   <string>/tmp/market-hourly-options-radar.out.log</string>
   <key>StandardErrorPath</key>
