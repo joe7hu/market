@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
+    SCORECARD_TRUTH_PREFIX,
     has_current_scorecard_truth,
 )
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
@@ -43,13 +44,56 @@ class OpportunityScorecardRepository:
             raise ValueError("scorecard time must be timezone-aware")
         since = reference - timedelta(days=window_days)
         rows = self._recovery_rows(since, reference) if normalized_lane == "recovery" else self._decision_rows(normalized_lane, since, reference)
+        scope = self._scope_counts(normalized_lane, since, reference)
         return _scorecard(
             lane=normalized_lane,
             as_of=reference,
             window_days=window_days,
-            raw_observation_count=len(rows),
+            raw_observation_count=scope["observed"],
             episodes=rows,
+            external_defects=(
+                {"legacy_or_unversioned_truth_contract": scope["quarantined"]}
+                if scope["quarantined"]
+                else None
+            ),
+            externally_quarantined_episode_count=scope["quarantined"],
         )
+
+    def _scope_counts(self, lane: str, since: datetime, reference: datetime) -> dict[str, int]:
+        """Return cheap cohort health counts without reading publication payloads.
+
+        Historic records are quarantined before the scorecard follows a
+        publication join. This keeps an INVALID / REBUILDING scorecard fast on
+        the large legacy cohort while new versioned writes use the exact join.
+        """
+
+        if lane == "recovery":
+            relation = "analysis.option_opportunity_observation"
+            available_at = "available_at"
+            lane_clause = "lane = 'recovery'"
+        else:
+            relation = "analysis.decision"
+            available_at = "as_of"
+            lane_clause = "kind = 'option' AND lane = %s"
+        parameters: list[Any] = [f"{SCORECARD_TRUTH_PREFIX}%", since, reference]
+        if lane != "recovery":
+            parameters.insert(1, lane)
+        with self.runtime.read(JOB_PROFILE) as connection:
+            row = connection.execute(
+                f"""
+                SELECT count(*) AS observed,
+                       count(*) FILTER (
+                           WHERE calibration_cohort IS NULL
+                              OR calibration_cohort NOT LIKE %s
+                       ) AS quarantined
+                FROM {relation}
+                WHERE {lane_clause}
+                  AND {available_at} >= %s
+                  AND {available_at} <= %s
+                """,
+                parameters,
+            ).fetchone()
+        return {"observed": int(row["observed"] or 0), "quarantined": int(row["quarantined"] or 0)}
 
     def _recovery_rows(self, since: datetime, reference: datetime) -> list[dict[str, Any]]:
         with self.runtime.read(JOB_PROFILE) as connection:
@@ -72,9 +116,10 @@ class OpportunityScorecardRepository:
                 WHERE observation.lane = 'recovery'
                   AND observation.available_at >= %s
                   AND observation.available_at <= %s
+                  AND observation.calibration_cohort LIKE %s
                 ORDER BY observation.available_at, observation.id
                 """,
-                [since, reference],
+                [since, reference, f"{SCORECARD_TRUTH_PREFIX}%"],
             ).fetchall()
         normalized: list[dict[str, Any]] = []
         for row in rows:
@@ -131,9 +176,10 @@ class OpportunityScorecardRepository:
                   AND decision.lane = %s
                   AND decision.as_of >= %s
                   AND decision.as_of <= %s
+                  AND decision.calibration_cohort LIKE %s
                 ORDER BY decision.as_of, decision.id
                 """,
-                [lane, since, reference],
+                [lane, since, reference, f"{SCORECARD_TRUTH_PREFIX}%"],
             ).fetchall()
         normalized: list[dict[str, Any]] = []
         for row in rows:
@@ -182,6 +228,8 @@ def _scorecard(
     window_days: int,
     raw_observation_count: int,
     episodes: list[dict[str, Any]],
+    external_defects: dict[str, int] | None = None,
+    externally_quarantined_episode_count: int = 0,
 ) -> dict[str, Any]:
     # Keep the public computation safe if a future caller supplies raw rows.
     # The repository already does this reduction, but a scorecard must never
@@ -191,7 +239,7 @@ def _scorecard(
     episodes = _latest_by_episode(source_rows)
     all_independent_episodes = len(episodes)
     trusted_episodes: list[dict[str, Any]] = []
-    defects: dict[str, int] = {}
+    defects: dict[str, int] = dict(external_defects or {})
     if missing_episode_key_count:
         defects["missing_episode_key"] = missing_episode_key_count
     for row in episodes:
@@ -278,7 +326,9 @@ def _scorecard(
         "window_days": window_days,
         "raw_observation_count": raw_observation_count,
         "independent_episode_count": len(episodes),
-        "quarantined_independent_episode_count": all_independent_episodes - len(episodes),
+        "quarantined_independent_episode_count": (
+            all_independent_episodes - len(episodes) + externally_quarantined_episode_count
+        ),
         "missing_episode_key_count": missing_episode_key_count,
         "resolved_independent_episode_count": len(resolved_returns),
         "trading_day_count": trading_days,
