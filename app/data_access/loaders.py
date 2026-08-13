@@ -18,6 +18,8 @@ def load_panel_data(
     ensure_source_models: bool | None = None,
     query_row_limits: dict[str, int] | None = None,
     query_symbol_filter: set[str] | None = None,
+    portfolio_summary_include_performance: bool = True,
+    thesis_monitor_include_current_prices: bool = True,
 ) -> PanelData:
     del ensure_decision_models, ensure_source_models
     active_config = config or load_config()
@@ -34,6 +36,10 @@ def load_panel_data(
             query_options["query_row_limits"] = query_row_limits
         if query_symbol_filter is not None:
             query_options["query_symbol_filter"] = query_symbol_filter
+        if not portfolio_summary_include_performance:
+            query_options["portfolio_summary_include_performance"] = False
+        if not thesis_monitor_include_current_prices:
+            query_options["thesis_monitor_include_current_prices"] = False
         tables, metadata = load_postgres_tables(active_config, requested, **query_options)
     except Exception as exc:
         return PanelData(
@@ -65,10 +71,15 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
     )
 
     active_config = config or load_config()
-    seed_names = ("portfolio", "manual_watchlist", "universe_screen", "option_radar_opportunity")
+    # The full universe model joins all recent source evidence. It is useful
+    # for Watchlist, but the prompt seed is the owned set, explicit watches,
+    # and Radar tickets. This avoids a broad discovery read on this API route.
+    seed_names = ("portfolio", "manual_watchlist", "option_radar_opportunity")
     seed = load_panel_data(active_config, table_names=seed_names)
     symbols: set[str] = set()
-    for name in seed_names:
+    # Keep support for a preloaded universe row without loading it in the live
+    # prompt path.
+    for name in (*seed_names, "universe_screen"):
         for row in seed.rows(name):
             watch_state = str(row.get("watch_state") or "").lower()
             if watch_state == "excluded" or (name == "universe_screen" and watch_state not in {"owned", "watched"}):
@@ -77,19 +88,39 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
             if symbol:
                 symbols.add(symbol)
     symbols.update(DAILY_RESEARCH_MACRO_SYMBOLS)
-    remaining = tuple(name for name in DAILY_RESEARCH_TABLES if name not in seed_names)
+    remaining = tuple(
+        name
+        for name in DAILY_RESEARCH_TABLES
+        if name not in seed_names and name not in {"quotes", "universe_screen"}
+    )
     detail = load_panel_data(
         active_config,
         table_names=remaining,
         query_row_limits=DAILY_RESEARCH_QUERY_LIMITS,
         query_symbol_filter=symbols,
+        portfolio_summary_include_performance=False,
+        thesis_monitor_include_current_prices=False,
     )
+    # Position rows already carry provider-backed owned quotes. Reuse them in
+    # the research context. The generic current-price selector can scan for a
+    # long time and still return no admissible fact; it remains in quote-aware
+    # routes and is not an execution input here.
+    owned_quotes = [
+        {
+            "symbol": row.get("symbol") or row.get("ticker"),
+            "price": row.get("price"),
+            "observed_at": row.get("quote_observed_at"),
+            "source": row.get("quote_source"),
+        }
+        for row in seed.rows("portfolio")
+        if row.get("price") is not None
+    ]
     metadata = {**detail.metadata, "daily_research_bounded": True, "daily_research_symbol_count": len(symbols)}
     ready = seed.status.ready and detail.status.ready
     message = "PostgreSQL daily research context loaded with bounded symbol queries." if ready else detail.status.message
     return PanelData(
         status=DataStatus(ready, message, detail.status.source),
-        tables={**seed.tables, **detail.tables},
+        tables={**seed.tables, **detail.tables, "quotes": owned_quotes},
         metadata=metadata,
     )
 

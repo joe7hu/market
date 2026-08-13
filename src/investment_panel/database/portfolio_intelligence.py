@@ -396,14 +396,15 @@ def portfolio_review_action_rows(
 
 
 def portfolio_intelligence_tables(
-    config: dict[str, Any], *, models: set[str] | None = None
+    config: dict[str, Any], *, models: set[str] | None = None, include_performance: bool = True
 ) -> dict[str, list[dict[str, Any]]]:
     """Build only the portfolio read models requested by the caller.
 
     Portfolio pages used to rebuild every expensive intelligence model whenever
     one sibling table was requested.  Read scopes now retain a single snapshot
     transaction, but avoid correlation/performance work unless its model needs
-    it.
+    it. A bounded research context can omit the historical performance replay;
+    its summary then reports unavailable daily P&L rather than a stale value.
     """
     requested = models or {
         "portfolio", "portfolio_summary", "portfolio_performance", "portfolio_transactions",
@@ -412,7 +413,9 @@ def portfolio_intelligence_tables(
     runtime = runtime_for_config(config)
     with runtime.snapshot() as connection:
         needs_positions = bool(requested & {"portfolio", "portfolio_summary", "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions"})
-        needs_performance = bool(requested & {"portfolio_summary", "portfolio_performance"})
+        needs_performance = include_performance and bool(
+            requested & {"portfolio_summary", "portfolio_performance"}
+        )
         needs_correlations = "correlation_edges" in requested
         needs_summary = bool(requested & {"portfolio_summary", "portfolio_risk_cards", "review_actions"})
         positions = portfolio_rows(config, connection=connection) if needs_positions else []

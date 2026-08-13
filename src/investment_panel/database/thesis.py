@@ -285,10 +285,15 @@ def thesis_monitor_rows(
     config: dict[str, Any],
     *,
     symbols: list[str] | set[str] | None = None,
+    include_current_prices: bool = True,
 ) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
-        rows = monitored_thesis_rows(connection, symbols=symbols)
+        rows = monitored_thesis_rows(
+            connection,
+            symbols=symbols,
+            include_current_prices=include_current_prices,
+        )
         evidence_by_symbol = thesis_source_evidence(connection, [str(row["symbol"]) for row in rows])
         assessments_by_revision_map = assessments_by_revision(connection, [row.get("revision_id") for row in rows])
     total_market_value = 0.0

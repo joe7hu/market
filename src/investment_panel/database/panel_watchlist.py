@@ -109,6 +109,24 @@ TECHNICALS_QUERY = """
 """
 
 
+def technical_rows(connection: Any, *, symbols: set[str] | None = None) -> list[dict[str, Any]]:
+    """Return technical rows, constraining the history scan before windows run."""
+
+    normalized = sorted({str(symbol).strip().upper() for symbol in symbols or () if str(symbol).strip()})
+    if symbols is not None and not normalized:
+        return []
+    if not normalized:
+        result = connection.execute(TECHNICALS_QUERY)
+    else:
+        query = TECHNICALS_QUERY.replace(
+            "WHERE bar.interval = '1d' AND bar.close > 0",
+            "WHERE bar.interval = '1d' AND bar.close > 0 AND instrument.symbol = ANY(%s)",
+            1,
+        )
+        result = connection.execute(query, [normalized])
+    return [dict(row) for row in result.fetchall()]
+
+
 def options_ticker_signal_rows(connection: Any, *, symbols: set[str] | None = None) -> list[dict[str, Any]]:
     """Compose current per-ticker option context from PostgreSQL chain facts."""
     if symbols is not None and not symbols:

@@ -68,7 +68,7 @@ def compact_symbol_rows(
                 },
             ),
             "watch_note": _trim(watched.get("notes"), 100),
-            "quote": _quote(latest["quotes"].get(symbol, {})),
+            "quote": _quote(latest["quotes"].get(symbol, position)),
             "fundamentals": _fundamentals(latest["fundamentals"].get(symbol, {})),
             "technicals": _technicals(latest["technicals"].get(symbol, {})),
             "next_estimate": _estimate(latest["analyst_estimates"].get(symbol, {})),

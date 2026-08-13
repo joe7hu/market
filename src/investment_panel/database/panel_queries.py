@@ -33,6 +33,7 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
             custom_loader=(
                 "options_ticker_signals" if name == "options_ticker_signals"
                 else "current_quotes" if name == "quotes"
+                else "technicals" if name == "technicals"
                 else None
             ),
         )

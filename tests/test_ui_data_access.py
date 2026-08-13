@@ -373,6 +373,8 @@ def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch)
     assert {"AAOI", "ETH-USD", "MSFT", "NVDA", "SPY", "QQQ", "TLT", "BTC-USD"} <= calls[1]["query_symbol_filter"]
     assert "NOISE" not in calls[1]["query_symbol_filter"]
     assert calls[1]["query_row_limits"]
+    assert "quotes" not in calls[1]["table_names"]
+    assert calls[1]["portfolio_summary_include_performance"] is False
 
 
 def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None:

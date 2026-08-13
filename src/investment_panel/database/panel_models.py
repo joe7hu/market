@@ -17,7 +17,7 @@ from investment_panel.database.brokers import broker_status_rows
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
-from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows
+from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows, technical_rows
 from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
@@ -566,6 +566,8 @@ def load_postgres_tables(
     *,
     query_row_limits: Mapping[str, int] | None = None,
     query_symbol_filter: set[str] | None = None,
+    portfolio_summary_include_performance: bool = True,
+    thesis_monitor_include_current_prices: bool = True,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     requested = tuple(dict.fromkeys(table_names))
     runtime = runtime_for_config(config)
@@ -587,10 +589,13 @@ def load_postgres_tables(
     elif requested_intelligence:
         # Keep existing test/facade seams compatible while the concrete owner
         # accepts the selected model set for bounded production reads.
-        if "models" in inspect.signature(portfolio_intelligence_tables).parameters:
-            live_tables = portfolio_intelligence_tables(config, models=requested_intelligence)
-        else:
-            live_tables = portfolio_intelligence_tables(config)
+        intelligence_signature = inspect.signature(portfolio_intelligence_tables).parameters
+        intelligence_options: dict[str, Any] = {}
+        if "models" in intelligence_signature:
+            intelligence_options["models"] = requested_intelligence
+        if "include_performance" in intelligence_signature:
+            intelligence_options["include_performance"] = portfolio_summary_include_performance
+        live_tables = portfolio_intelligence_tables(config, **intelligence_options)
         for name in requested_intelligence:
             tables[name] = live_tables.get(name, [])
     if "manual_watchlist" in requested:
@@ -598,7 +603,11 @@ def load_postgres_tables(
     if "theses" in requested:
         tables["theses"] = thesis_rows(config)
     if "thesis_monitor" in requested:
-        tables["thesis_monitor"] = thesis_monitor_rows(config, symbols=query_symbol_filter)
+        tables["thesis_monitor"] = thesis_monitor_rows(
+            config,
+            symbols=query_symbol_filter,
+            include_current_prices=thesis_monitor_include_current_prices,
+        )
     if "refresh_jobs" in requested:
         tables["refresh_jobs"] = JobRepository(runtime).rows()
     if "broker_status" in requested:
@@ -630,6 +639,12 @@ def load_postgres_tables(
                             symbols=query_symbol_filter if symbol_scoped else None,
                             limit=limit,
                         )
+                    elif policy.custom_loader == "technicals":
+                        rows = technical_rows(
+                            connection,
+                            symbols=query_symbol_filter if symbol_scoped else None,
+                        )
+                        query_cache[cache_key] = rows[:limit] if limit else rows
                     else:
                         selected_query = RESEARCH_PACKETS_BASE_QUERY if symbol_scoped and (alias or name) == "research_packets" else policy.query
                         bounded_query = f"SELECT * FROM ({selected_query}) AS daily_research_rows"

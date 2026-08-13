@@ -25,7 +25,6 @@ DAILY_RESEARCH_TABLES = (
 )
 
 DAILY_RESEARCH_QUERY_LIMITS = {
-    "quotes": 100,
     "fundamentals": 400,
     "technicals": 100,
     "analyst_estimates": 100,

@@ -9,6 +9,7 @@ def monitored_thesis_rows(
     connection: Any,
     *,
     symbols: Iterable[str] | None = None,
+    include_current_prices: bool = True,
 ) -> list[dict[str, Any]]:
     """Load the monitored universe, optionally bounded to explicit symbols."""
 
@@ -17,8 +18,24 @@ def monitored_thesis_rows(
         return []
     symbol_filter = " AND instrument.symbol = ANY(%s)" if normalized else ""
 
+    price_cte = """
+        current_prices AS MATERIALIZED (
+            SELECT *
+            FROM raw.current_price_at(
+                now(),
+                ARRAY(SELECT instrument_id FROM monitored)::bigint[]
+            )
+        )
+    """ if include_current_prices else """
+        current_prices AS (
+            SELECT NULL::bigint AS instrument_id,
+                   NULL::double precision AS price,
+                   NULL::timestamptz AS observed_at
+            WHERE false
+        )
+    """
     rows = connection.execute(
-        """
+        f"""
         WITH monitored AS MATERIALIZED (
             SELECT instrument.id AS instrument_id, instrument.symbol,
                    thesis.id AS revision_id, thesis.revision, thesis.thesis,
@@ -45,13 +62,7 @@ def monitored_thesis_rows(
                 OR option_policy.instrument_id IS NOT NULL
                 OR thesis.id IS NOT NULL
             ){symbol_filter}
-        ), current_prices AS MATERIALIZED (
-            SELECT *
-            FROM raw.current_price_at(
-                now(),
-                ARRAY(SELECT instrument_id FROM monitored)::bigint[]
-            )
-        )
+        ), {price_cte}
         SELECT monitored.*, quote.price AS latest_price,
                quote.observed_at AS latest_quote_at,
                catalyst.starts_at AS next_catalyst_at, catalyst.title AS next_catalyst,
@@ -69,7 +80,7 @@ def monitored_thesis_rows(
             WHERE instrument_id = monitored.instrument_id ORDER BY started_at DESC LIMIT 1
         ) run ON true
         ORDER BY monitored.symbol
-        """.format(symbol_filter=symbol_filter),
+        """,
         [normalized] if normalized else [],
     ).fetchall()
     return [dict(row) for row in rows]
