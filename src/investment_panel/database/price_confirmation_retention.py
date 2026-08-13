@@ -157,6 +157,57 @@ class PriceConfirmationRetentionRepository:
             "next_after_available_at": values[-1][1] if values else None,
         }
 
+    def project_availability_batch(
+        self,
+        *,
+        table: ConfirmationTable,
+        after_fact_id: int = 0,
+        after_available_at: Any | None = None,
+        fact_batch_size: int = 1_000,
+        dry_run: bool = False,
+    ) -> dict[str, int | Any | None]:
+        """Project a bounded global batch for a resumable production backfill.
+
+        The caller persists the returned compound cursor after a committed
+        batch. This avoids an unbounded migration scan and lets an interrupted
+        backfill resume without moving any fact's historical availability.
+        """
+
+        if table not in {"price_bar", "quote"}:
+            raise ValueError("confirmation table is invalid")
+        if after_fact_id < 0 or fact_batch_size < 1 or fact_batch_size > 10_000:
+            raise ValueError("availability projection bounds are invalid")
+        fact_relation = f"raw.{table}"
+        history_relation = f"raw.{table}_history"
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            candidates = connection.execute(
+                f"""
+                SELECT fact_id, fact_available_at
+                FROM (
+                    SELECT id AS fact_id, available_at AS fact_available_at
+                    FROM {fact_relation}
+                    UNION
+                    SELECT id AS fact_id, available_at AS fact_available_at
+                    FROM {history_relation}
+                ) facts
+                WHERE (fact_id, fact_available_at) > (
+                    %s::bigint,
+                    coalesce(%s::timestamptz, '-infinity'::timestamptz)
+                )
+                ORDER BY fact_id, fact_available_at
+                LIMIT %s
+                """,
+                [after_fact_id, after_available_at, fact_batch_size],
+            ).fetchall()
+            values = [(int(row["fact_id"]), row["fact_available_at"]) for row in candidates]
+            projected = self._project_pairs(connection, table, values, dry_run=dry_run)
+        return {
+            "fact_versions": len(values),
+            "projected": int(projected),
+            "next_after_fact_id": values[-1][0] if values else None,
+            "next_after_available_at": values[-1][1] if values else None,
+        }
+
     @staticmethod
     def _compact_pairs(
         connection: Any,

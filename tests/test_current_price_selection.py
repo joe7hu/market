@@ -24,7 +24,6 @@ def test_current_price_prefers_latest_available_intraday_quote_over_daily_nomina
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     repository = IngestionRepository(runtime)
-    as_of = datetime(2026, 8, 12, 19, 45, tzinfo=UTC)  # 15:45 ET
     try:
         repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
         repository.register_source("robinhood", name="Robinhood", family="broker", kind="quote")
@@ -47,6 +46,14 @@ def test_current_price_prefers_latest_available_intraday_quote_over_daily_nomina
             instrument_id = connection.execute(
                 "SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'"
             ).fetchone()["id"]
+            as_of = connection.execute(
+                """
+                SELECT greatest(
+                    (SELECT max(available_at) FROM raw.quote),
+                    (SELECT max(finished_at) FROM ingest.run)
+                ) + interval '1 second' AS value
+                """
+            ).fetchone()["value"]
 
         with runtime.read() as connection:
             selected = connection.execute(
@@ -237,7 +244,16 @@ def test_current_price_projection_backfills_existing_successful_confirmations(po
                     ARRAY[(SELECT id FROM catalog.instrument WHERE symbol = 'NVDA')]
                 )
                 """,
-                [datetime(2026, 8, 12, 19, 45, tzinfo=UTC)],
+                [
+                    connection.execute(
+                        """
+                        SELECT greatest(
+                            (SELECT max(available_at) FROM raw.quote),
+                            (SELECT max(finished_at) FROM ingest.run)
+                        ) + interval '1 second' AS value
+                        """
+                    ).fetchone()["value"]
+                ],
             ).fetchone()
         assert bar_projection["projected"] == 1
         assert quote_projection["projected"] == 2

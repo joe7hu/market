@@ -132,3 +132,42 @@ def test_availability_projection_cursor_keeps_multiple_versions_of_one_fact(
 
     assert projected == 3
     assert rows == 3
+
+
+def test_global_availability_projection_is_bounded_and_resumable(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    ingestion = IngestionRepository(runtime)
+    try:
+        ingestion.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        for symbol, close in (("NVDA", 180), ("AMD", 181)):
+            run = ingestion.start_run("daily", "price_bars")
+            ingestion.store_price_bars(
+                run,
+                "daily",
+                [{"symbol": symbol, "date": "2026-08-12", "close": close}],
+                asset_classes={symbol: "equity"},
+            )
+            ingestion.finish_run(run, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute("DELETE FROM raw.price_bar_fact_availability")
+        retention = PriceConfirmationRetentionRepository(runtime)
+        first = retention.project_availability_batch(table="price_bar", fact_batch_size=1)
+        second = retention.project_availability_batch(
+            table="price_bar",
+            after_fact_id=int(first["next_after_fact_id"]),
+            after_available_at=first["next_after_available_at"],
+            fact_batch_size=1,
+        )
+        with runtime.read() as connection:
+            projected = connection.execute(
+                "SELECT count(*) AS count FROM raw.price_bar_fact_availability"
+            ).fetchone()["count"]
+    finally:
+        runtime.close()
+
+    assert first["projected"] == 1
+    assert second["projected"] == 1
+    assert projected == 2
