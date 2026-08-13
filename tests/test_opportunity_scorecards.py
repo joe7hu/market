@@ -6,7 +6,22 @@ from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
     option_episode_key,
 )
-from investment_panel.database.opportunity_scorecards import _scorecard
+from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository, _scorecard
+from investment_panel.database.runtime import DatabaseRuntime
+
+
+def test_scorecard_repository_returns_invalid_rebuilding_state_for_empty_cohort(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        result = OpportunityScorecardRepository(runtime).scorecard(lane="radar")
+    finally:
+        runtime.close()
+
+    assert result["status"] == "COLLECTING"
+    assert result["automatic_strategy_promotion"]["eligible"] is False
 
 
 def test_option_episode_key_deduplicates_contracts_and_capture_retries_for_one_hypothesis() -> None:

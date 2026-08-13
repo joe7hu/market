@@ -48,7 +48,7 @@ class OpportunityScorecardRepository:
             as_of=reference,
             window_days=window_days,
             raw_observation_count=len(rows),
-            episodes=episodes,
+            episodes=rows,
         )
 
     def _recovery_rows(self, since: datetime, reference: datetime) -> list[dict[str, Any]]:
