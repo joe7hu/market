@@ -54,18 +54,22 @@ class OptionsPaperExecutionRepository:
 
         reference = _utc(now)
         lanes = tuple(sorted({str(lane).lower() for lane in enabled_lanes} & GENERIC_LANES))
-        if not lanes:
-            return {"status": "skipped", "reason": "no_generic_paper_lane_enabled", "staged": [], "managed": []}
-        staged = self.stage_current_ready(
-            enabled_lanes=lanes,
-            sleeve_capital=sleeve_capital,
-            daily_loss_halt_pct=daily_loss_halt_pct,
-            max_open_positions=max_open_positions,
-            now=reference,
-            limit=limit,
+        staged = (
+            self.stage_current_ready(
+                enabled_lanes=lanes,
+                sleeve_capital=sleeve_capital,
+                daily_loss_halt_pct=daily_loss_halt_pct,
+                max_open_positions=max_open_positions,
+                now=reference,
+                limit=limit,
+            )
+            if lanes
+            else []
         )
         managed = self.manage_orders(
-            lanes=lanes,
+            # Entry switches only control staging.  Every existing generic
+            # position remains in lifecycle management until it is terminal.
+            lanes=GENERIC_LANES,
             decision_inbox_enabled=decision_inbox_enabled,
             now=reference,
             limit=limit,
@@ -76,6 +80,7 @@ class OptionsPaperExecutionRepository:
             "staged": staged,
             "managed": managed,
             "lane_count": len(lanes),
+            "entry_staging": "enabled" if lanes else "disabled",
         }
 
     def stage_current_ready(
@@ -349,13 +354,27 @@ class OptionsPaperExecutionRepository:
         exits = dict(ticket.get("exits") or {})
         credit = is_credit_structure(structure)
         exit_price = package_price(quoted, phase="exit")
-        reason = forced_exit_reason or _exit_reason(
+        policy_blockers = list(execution.get("blockers") or [])
+        trigger_reason = _exit_reason(
             ticket=ticket, exits=exits, credit=credit, entry_price=_number(order.get("actual_fill_price")),
-            exit_price=exit_price, execution_blockers=list(execution.get("blockers") or []), now=now,
+            exit_price=exit_price, execution_blockers=[], now=now,
         )
+        reason = forced_exit_reason or trigger_reason
+        if policy_blockers:
+            pending_reason = reason or "liquidity_exit"
+            connection.execute(
+                "UPDATE app.paper_order SET unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                [f"{pending_reason}: complete_fresh_executable_exit_quote_required", now, order["id"]],
+            )
+            return {
+                "paper_order_id": str(order["id"]),
+                "status": "filled",
+                "reason": f"{pending_reason}_pending_executable_quote",
+                "blockers": policy_blockers,
+            }
         if reason is None:
             return {"paper_order_id": str(order["id"]), "status": "filled", "reason": "exit_not_triggered"}
-        if exit_price is None or not quoted or ("regular_market_session_required" in execution["blockers"]):
+        if exit_price is None or not quoted:
             connection.execute(
                 "UPDATE app.paper_order SET unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
                 [f"{reason}: fresh_executable_exit_quote_required", now, order["id"]],

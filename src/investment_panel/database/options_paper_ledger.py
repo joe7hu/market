@@ -11,6 +11,97 @@ from investment_panel.core.decision import MARKET_TZ
 OPEN_STATUSES = ("staged", "open", "entered", "partial_exited")
 
 
+def active_paper_exposure(
+    connection: Any,
+    *,
+    symbol: str,
+    instrument_id: int,
+) -> dict[str, Any]:
+    """Return the risk and collateral reserved by every still-open paper order.
+
+    A partial exit releases only the exited fraction.  The order's immutable
+    ticket keeps its original quantity and total risk, so all aggregates must
+    scale that amount by the remaining filled quantity rather than counting the
+    full original ticket or dropping the order entirely.
+    """
+
+    row = connection.execute(
+        """
+        WITH active_order AS (
+          SELECT paper_order.*, instrument.symbol,
+                 CASE
+                   WHEN paper_order.status IN ('staged', 'open')
+                     THEN paper_order.quantity
+                   WHEN paper_order.status IN ('entered', 'partial_exited')
+                     THEN greatest(
+                       coalesce(paper_order.filled_quantity, paper_order.quantity)
+                       - coalesce(paper_order.exited_quantity, 0),
+                       0
+                     )
+                   ELSE 0
+                 END AS remaining_quantity,
+                 CASE
+                   WHEN paper_order.structure = 'cash_secured_put'
+                     THEN paper_order.reserved_collateral
+                   ELSE coalesce(
+                     (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
+                     paper_order.quantity * option_decision.max_loss,
+                     paper_order.reserved_collateral,
+                     abs(paper_order.quantity * paper_order.limit_price)
+                   )
+                 END AS full_commitment
+          FROM app.paper_order paper_order
+          JOIN catalog.instrument instrument ON instrument.id = paper_order.instrument_id
+          LEFT JOIN analysis.decision decision ON decision.id = paper_order.decision_id
+          LEFT JOIN analysis.option_decision option_decision
+            ON option_decision.decision_id = decision.id
+          WHERE paper_order.status = ANY(%s)
+        ), valued_order AS (
+          SELECT *,
+                 CASE
+                   WHEN full_commitment IS NOT NULL
+                    AND full_commitment > 0
+                    AND full_commitment <> 'NaN'::numeric
+                   THEN full_commitment * remaining_quantity / nullif(quantity, 0)
+                 END AS remaining_commitment,
+                 CASE
+                   WHEN reserved_collateral IS NOT NULL
+                    AND reserved_collateral > 0
+                    AND reserved_collateral <> 'NaN'::numeric
+                   THEN reserved_collateral * remaining_quantity / nullif(quantity, 0)
+                 END AS remaining_csp_collateral
+          FROM active_order
+          WHERE remaining_quantity > 0
+        )
+        SELECT
+          coalesce(sum(
+            CASE WHEN coalesce(structure, '') <> 'cash_secured_put' AND symbol = %s
+              THEN remaining_commitment ELSE 0 END
+          ), 0) AS symbol_risk,
+          coalesce(sum(
+            CASE WHEN coalesce(structure, '') <> 'cash_secured_put'
+              THEN remaining_commitment ELSE 0 END
+          ), 0) AS total_risk,
+          coalesce(sum(remaining_commitment), 0) AS total_committed,
+          count(*) FILTER (
+            WHERE remaining_commitment IS NULL
+               OR (structure = 'cash_secured_put' AND remaining_csp_collateral IS NULL)
+          ) AS unvalued_commitments,
+          coalesce(sum(
+            CASE WHEN structure = 'cash_secured_put'
+              THEN remaining_csp_collateral ELSE 0 END
+          ), 0) AS total_csp_collateral,
+          coalesce(sum(
+            CASE WHEN structure = 'cash_secured_put' AND instrument_id = %s
+              THEN remaining_csp_collateral ELSE 0 END
+          ), 0) AS symbol_csp_collateral
+        FROM valued_order
+        """,
+        [list(OPEN_STATUSES), symbol, instrument_id],
+    ).fetchone()
+    return dict(row or {})
+
+
 def shared_sleeve_blockers(
     connection: Any,
     *,

@@ -23,30 +23,15 @@ def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
         if settings.options_paper_actions_enabled and enabled
     ]
     repository = OptionsPaperExecutionRepository(runtime_for_config(config))
-    if lanes:
-        result = repository.process(
-            enabled_lanes=lanes,
-            sleeve_capital=settings.options_risk_sleeve_capital,
-            daily_loss_halt_pct=settings.daily_loss_halt_pct,
-            max_open_positions=settings.max_recovery_open_positions,
-            decision_inbox_enabled=settings.decision_inbox_enabled,
-        )
-    else:
-        # The kill switches are entry gates.  A filled paper position must still
-        # receive its deterministic safety exits after either switch is turned
-        # off.  This path never stages a new order.
-        result = {
-            "status": "ok",
-            "entry_staging": "disabled",
-            "reason": "options_paper_actions_or_lane_disabled",
-            "staged": [],
-            "managed": repository.manage_orders(
-                lanes=("radar", "qqq"),
-                decision_inbox_enabled=settings.decision_inbox_enabled,
-                now=None,
-                limit=50,
-            ),
-        }
+    # The switches are entry gates only.  ``process`` always manages existing
+    # Radar and QQQ orders, including when one or both creation lanes are off.
+    result = repository.process(
+        enabled_lanes=lanes,
+        sleeve_capital=settings.options_risk_sleeve_capital,
+        daily_loss_halt_pct=settings.daily_loss_halt_pct,
+        max_open_positions=settings.max_recovery_open_positions,
+        decision_inbox_enabled=settings.decision_inbox_enabled,
+    )
     return {**result, "paper_only": True, "live_brokerage_submission": False}
 
 

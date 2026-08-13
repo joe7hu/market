@@ -18,7 +18,11 @@ from investment_panel.database.strategy_parameters import (
 )
 from investment_panel.core.option_trade_ticket import TICKET_VERSION, execution_policy
 from investment_panel.core.decision import is_market_open
-from investment_panel.database.options_paper_ledger import acquire_shared_sleeve_lock, shared_sleeve_blockers
+from investment_panel.database.options_paper_ledger import (
+    acquire_shared_sleeve_lock,
+    active_paper_exposure,
+    shared_sleeve_blockers,
+)
 
 
 def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
@@ -279,9 +283,18 @@ class ActionRepository:
                 raise ValueError("requested quantity exceeds the ticket recommendation")
             staged_quantity = connection.execute(
                 """
-                SELECT coalesce(sum(quantity), 0) AS quantity
+                SELECT coalesce(sum(
+                  CASE
+                    WHEN status IN ('staged', 'open') THEN quantity
+                    WHEN status IN ('entered', 'partial_exited') THEN greatest(
+                      coalesce(filled_quantity, quantity) - coalesce(exited_quantity, 0), 0
+                    )
+                    ELSE 0
+                  END
+                ), 0) AS quantity
                 FROM app.paper_order
-                WHERE decision_id = %s AND status IN ('staged', 'open', 'entered')
+                WHERE decision_id = %s
+                  AND status IN ('staged', 'open', 'entered', 'partial_exited')
                 """,
                 [decision_id],
             ).fetchone()["quantity"]
@@ -364,54 +377,11 @@ class ActionRepository:
                 "SELECT symbol FROM catalog.instrument WHERE id = %s",
                 [signal["instrument_id"]],
             ).fetchone()["symbol"]
-            exposures = connection.execute(
-                """
-                SELECT
-                  coalesce(sum(
-                    CASE WHEN coalesce(paper_order.structure, '') <> 'cash_secured_put'
-                           AND instrument.symbol = %s
-                      THEN coalesce(
-                        (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
-                        paper_order.quantity * option_decision.max_loss
-                      ) ELSE 0 END
-                  ), 0) AS symbol_risk,
-                  coalesce(sum(CASE
-                    WHEN coalesce(paper_order.structure, '') <> 'cash_secured_put'
-                    THEN coalesce(
-                      (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
-                      paper_order.quantity * option_decision.max_loss
-                    ) ELSE 0 END), 0) AS total_risk,
-                  coalesce(sum(commitment.amount), 0) AS total_committed,
-                  count(*) FILTER (WHERE commitment.amount IS NULL) AS unvalued_commitments
-                FROM app.paper_order paper_order
-                JOIN catalog.instrument instrument ON instrument.id = paper_order.instrument_id
-                LEFT JOIN analysis.decision decision ON decision.id = paper_order.decision_id
-                LEFT JOIN analysis.option_decision option_decision
-                  ON option_decision.decision_id = decision.id
-                CROSS JOIN LATERAL (
-                  SELECT CASE
-                    WHEN candidate.amount IS NOT NULL
-                      AND candidate.amount > 0
-                      AND candidate.amount <> 'NaN'::numeric
-                    THEN candidate.amount
-                  END AS amount
-                  FROM (
-                    SELECT CASE
-                      WHEN paper_order.structure = 'cash_secured_put'
-                        THEN paper_order.reserved_collateral
-                      ELSE coalesce(
-                        (paper_order.ticket_snapshot->'risk'->>'total_risk')::numeric,
-                        paper_order.quantity * option_decision.max_loss,
-                        paper_order.reserved_collateral,
-                        abs(paper_order.quantity * paper_order.limit_price)
-                      )
-                    END AS amount
-                  ) candidate
-                ) commitment
-                WHERE paper_order.status IN ('staged', 'open', 'entered')
-                """,
-                [symbol],
-            ).fetchone()
+            exposures = active_paper_exposure(
+                connection,
+                symbol=str(symbol),
+                instrument_id=int(signal["instrument_id"]),
+            )
             if int(exposures["unvalued_commitments"] or 0) > 0:
                 raise ValueError("active paper commitment has no authoritative valuation")
             committed_capital = float(exposures["total_committed"] or 0)
@@ -424,19 +394,8 @@ class ActionRepository:
                     else float(account["cash_balance"])
                 )
                 available_cash = min(float(account["cash_balance"]), buying_power)
-                csp_exposure = connection.execute(
-                    """
-                    SELECT
-                      coalesce(sum(reserved_collateral), 0) AS total,
-                      coalesce(sum(reserved_collateral) FILTER (WHERE instrument_id = %s), 0) AS symbol
-                    FROM app.paper_order
-                    WHERE structure = 'cash_secured_put'
-                      AND status IN ('staged', 'open', 'entered')
-                    """,
-                    [signal["instrument_id"]],
-                ).fetchone()
-                reserved = float(csp_exposure["total"] or 0)
-                symbol_reserved = float(csp_exposure["symbol"] or 0)
+                reserved = float(exposures["total_csp_collateral"] or 0)
+                symbol_reserved = float(exposures["symbol_csp_collateral"] or 0)
                 if unit_risk <= 0:
                     raise ValueError("cash-secured-put collateral is unavailable")
                 if symbol_reserved + collateral > sleeve_capital * 0.05:
