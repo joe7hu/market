@@ -110,6 +110,11 @@ class OpportunityScorecardRepository:
                          FROM app.publication publication
                          JOIN app.publication_item item ON item.publication_id = publication.id
                          WHERE publication.status IN ('published', 'superseded')
+                           -- Recovery has its own immutable publication owner.
+                           -- Do not probe the large Radar publication history
+                           -- for every recovery observation.
+                           AND publication.scope = 'options-recovery'
+                           AND item.model_name = 'option_recovery_signal'
                            AND item.payload->>'signal_id' = observation.signal_id::text
                        ) AS published
                 FROM analysis.option_opportunity_observation observation
