@@ -122,6 +122,22 @@ def decision_key(event_id: str, capture_id: str, candidate: RankedRecoveryCandid
     return f"recovery:{event_id}:{capture_id}:{candidate.family}:{candidate.quote.contract_id}"
 
 
+def publication_models(event_id: str, persisted: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Build the immutable public projection for selected recovery signals."""
+
+    return {
+        "option_recovery_signal": [
+            {
+                "stable_key": item["signal_id"], "signal_id": item["signal_id"],
+                "decision_id": item["decision_id"], "event_id": event_id,
+                "family": item["family"], "contract_id": item["contract_id"],
+                "ticket": item["ticket"], "lane": "recovery",
+            }
+            for item in persisted
+        ]
+    }
+
+
 def midpoint(bid: float | None, ask: float | None) -> float | None:
     return (bid + ask) / 2.0 if bid is not None and ask is not None else None
 

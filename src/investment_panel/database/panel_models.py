@@ -263,9 +263,11 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "catalysts": """
         SELECT catalyst.id::text, instrument.symbol, catalyst.starts_at, catalyst.title AS event,
-               catalyst.expected_impact, catalyst.notes
+               catalyst.expected_impact, catalyst.notes, catalyst.confidence,
+               catalyst.source_id AS source, catalyst.version
         FROM app.catalyst catalyst
         LEFT JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
+        WHERE catalyst.status = 'current'
         ORDER BY catalyst.starts_at
     """,
     "disclosures": """

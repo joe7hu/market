@@ -136,18 +136,97 @@ class SourceFactRepository:
                         Jsonb(dict(source.get("details") or {})),
                     ],
                 ).fetchone()
-                connection.execute(
-                    """
-                    INSERT INTO app.catalyst (instrument_id, market_event_id, starts_at, title, expected_impact, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (market_event_id) DO UPDATE
-                    SET instrument_id = EXCLUDED.instrument_id, starts_at = EXCLUDED.starts_at,
-                        title = EXCLUDED.title, expected_impact = EXCLUDED.expected_impact, notes = EXCLUDED.notes
-                    """,
-                    [instrument_id, event["id"], starts_at, title, source.get("expected_impact"), source.get("notes")],
+                self._project_catalyst(
+                    connection,
+                    event_id=int(event["id"]),
+                    instrument_id=instrument_id,
+                    source_id=source_id,
+                    source=source,
+                    starts_at=starts_at,
+                    title=title,
                 )
                 stored += 1
         return stored
+
+    def _project_catalyst(
+        self,
+        connection: Any,
+        *,
+        event_id: int,
+        instrument_id: int | None,
+        source_id: str,
+        source: dict[str, Any],
+        starts_at: datetime,
+        title: str,
+    ) -> None:
+        """Append a canonical catalyst version without letting an estimate win.
+
+        ``raw.market_event`` keeps each provider's current assertion.  The
+        read-model needs a distinct owner because a low-confidence calendar
+        update must not overwrite a company IR or SEC confirmation.  A source
+        may supply ``event_key`` to identify a fiscal event exactly; the
+        deterministic fallback keeps independently sourced earnings for the
+        same quarter in one canonical version chain.
+        """
+
+        event_key = _catalyst_event_key(source, starts_at)
+        source_priority, confidence = _catalyst_authority(source_id, source)
+        expected_impact = source.get("expected_impact")
+        notes = source.get("notes")
+        current = connection.execute(
+            """
+            SELECT id, market_event_id, starts_at, title, expected_impact, notes,
+                   source_id, source_priority, confidence, version
+            FROM app.catalyst
+            WHERE event_key = %s AND status = 'current'
+            FOR UPDATE
+            """,
+            [event_key],
+        ).fetchone()
+        candidate = {
+            "market_event_id": event_id,
+            "instrument_id": instrument_id,
+            "starts_at": starts_at,
+            "title": title,
+            "expected_impact": expected_impact,
+            "notes": notes,
+            "source_id": source_id,
+            "source_priority": source_priority,
+            "confidence": confidence,
+        }
+        if current is not None:
+            current_values = dict(current)
+            comparable = (
+                "market_event_id", "instrument_id", "starts_at", "title",
+                "expected_impact", "notes", "source_id", "source_priority", "confidence",
+            )
+            if all(current_values.get(key) == candidate[key] for key in comparable):
+                return
+            # An estimate is still retained in raw.market_event, but cannot
+            # displace the higher-authority canonical catalyst.
+            if int(current_values["source_priority"] or 0) > source_priority:
+                return
+            connection.execute(
+                "UPDATE app.catalyst SET status = 'superseded', superseded_at = now() WHERE id = %s",
+                [current_values["id"]],
+            )
+            version = int(current_values["version"] or 1) + 1
+            supersedes_id = current_values["id"]
+        else:
+            version = 1
+            supersedes_id = None
+        connection.execute(
+            """
+            INSERT INTO app.catalyst
+                (instrument_id, market_event_id, event_key, version, status,
+                 supersedes_id, starts_at, title, expected_impact, notes,
+                 source_id, source_priority, confidence)
+            VALUES (%(instrument_id)s, %(market_event_id)s, %(event_key)s, %(version)s, 'current',
+                    %(supersedes_id)s, %(starts_at)s, %(title)s, %(expected_impact)s, %(notes)s,
+                    %(source_id)s, %(source_priority)s, %(confidence)s)
+            """,
+            {**candidate, "event_key": event_key, "version": version, "supersedes_id": supersedes_id},
+        )
 
     def store_disclosures(
         self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]], *, payload_id: int | None = None
@@ -199,6 +278,45 @@ def _optional_instrument(connection: Any, raw_symbol: Any, category: str) -> int
         return reconcile_instrument(connection, raw_symbol, category=category)
     except ValueError:
         return None
+
+
+def _catalyst_event_key(source: dict[str, Any], starts_at: datetime) -> str:
+    explicit = str(source.get("event_key") or source.get("canonical_event_key") or "").strip()
+    if explicit:
+        return explicit
+    event_kind = str(source.get("event_kind") or "event").strip().lower()
+    raw_symbol = source.get("symbol") or source.get("ticker")
+    try:
+        symbol = canonical_symbol(raw_symbol) if raw_symbol else ""
+    except ValueError:
+        symbol = ""
+    if symbol and event_kind == "earnings":
+        period = str(source.get("fiscal_period") or source.get("event_period") or "").strip()
+        if not period:
+            period = f"{starts_at.year}-Q{((starts_at.month - 1) // 3) + 1}"
+        return f"{symbol}:earnings:{period}"
+    source_key = str(source.get("source_key") or source.get("id") or "").strip()
+    return f"{symbol or 'market'}:{event_kind}:{source_key}"
+
+
+def _catalyst_authority(source_id: str, source: dict[str, Any]) -> tuple[int, float]:
+    """Return deterministic canonical authority for a source assertion."""
+
+    details = dict(source.get("details") or {})
+    tier = str(source.get("source_tier") or details.get("source_tier") or "").strip().lower()
+    verified = str(source.get("verification_status") or "").strip().lower()
+    normalized_source = source_id.strip().lower()
+    if tier in {"company_ir", "issuer_ir", "company"} or "investor-relations" in normalized_source or normalized_source.endswith("-ir"):
+        return 400, 1.0 if verified == "confirmed" else 0.95
+    if tier in {"sec", "filing"} or normalized_source in {"sec", "sec-edgar"}:
+        return 350, 0.98 if verified == "confirmed" else 0.93
+    if tier in {"verified_wire", "wire"} or verified in {"verified", "confirmed"}:
+        return 300, 0.95 if verified == "confirmed" else 0.90
+    if tier in {"exchange", "official_calendar"} or normalized_source == "official-event-calendar":
+        return 250, 0.90 if verified == "confirmed" else 0.80
+    if tier in {"estimate", "aggregator"} or normalized_source in {"yfinance", "yahoo-finance"}:
+        return 100, 0.45
+    return 150, 0.65 if verified in {"verified", "confirmed"} else 0.50
 
 
 def _number(value: Any) -> float | None:

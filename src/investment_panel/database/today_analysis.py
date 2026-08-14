@@ -77,7 +77,8 @@ def refresh_today_publication(
                        catalyst.expected_impact, catalyst.notes
                 FROM app.catalyst catalyst
                 LEFT JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-                WHERE catalyst.starts_at >= %s AND catalyst.starts_at < %s + interval '14 days'
+                WHERE catalyst.status = 'current'
+                  AND catalyst.starts_at >= %s AND catalyst.starts_at < %s + interval '14 days'
                 ORDER BY catalyst.starts_at LIMIT 20
                 """,
                 [as_of, as_of],

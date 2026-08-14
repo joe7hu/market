@@ -129,7 +129,8 @@ class IngestionRepository:
                            min(catalyst.starts_at) AS starts_at
                     FROM app.catalyst catalyst
                     JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-                    WHERE catalyst.starts_at >= now() AND catalyst.starts_at < now() + interval '90 days'
+                    WHERE catalyst.status = 'current'
+                      AND catalyst.starts_at >= now() AND catalyst.starts_at < now() + interval '90 days'
                     GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
                 ), recent_option_decision AS (
                     SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,

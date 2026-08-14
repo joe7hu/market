@@ -45,6 +45,7 @@ from investment_panel.database.options_recovery_execution_support import (
     midpoint as _mid,
     number as _number,
     one_unit_ticket as _one_unit_ticket,
+    publication_models as _publication_models,
     select_published as _select_published,
     selection_inputs as _selection_inputs,
     utc as _utc,
@@ -241,21 +242,7 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
             publication_id = self.analysis.publish(
                 run_id,
                 "options-recovery",
-                {
-                    "option_recovery_signal": [
-                        {
-                            "stable_key": item["signal_id"],
-                            "signal_id": item["signal_id"],
-                            "decision_id": item["decision_id"],
-                            "event_id": event_id,
-                            "family": item["family"],
-                            "contract_id": item["contract_id"],
-                            "ticket": item["ticket"],
-                            "lane": "recovery",
-                        }
-                        for item in persisted
-                    ],
-                },
+                _publication_models(event_id, persisted),
                 validation={
                     "lane": "recovery",
                     "signal_count": len(persisted),

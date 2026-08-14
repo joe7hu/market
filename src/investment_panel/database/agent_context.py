@@ -73,7 +73,7 @@ def ticker_context(
         SELECT catalyst.starts_at, catalyst.title, catalyst.expected_impact, catalyst.notes
         FROM app.catalyst catalyst
         JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-        WHERE instrument.symbol = %s AND catalyst.starts_at >= now()
+        WHERE instrument.symbol = %s AND catalyst.status = 'current' AND catalyst.starts_at >= now()
         ORDER BY catalyst.starts_at LIMIT 5
         """,
         [symbol],

@@ -288,7 +288,7 @@ WITH source_rollup AS (
 ), catalyst_rollup AS (
     SELECT instrument_id, min(starts_at)::date AS catalyst_start,
            (min(starts_at) + interval '7 days')::date AS catalyst_end
-    FROM app.catalyst WHERE created_at <= %s AND starts_at >= %s GROUP BY instrument_id
+    FROM app.catalyst WHERE status = 'current' AND created_at <= %s AND starts_at >= %s GROUP BY instrument_id
 ), price_rollup AS (
     SELECT instrument_id, count(DISTINCT trading_date) AS price_observations
     FROM raw.price_bar WHERE interval = '1d' AND observed_at <= %s GROUP BY instrument_id
@@ -372,7 +372,7 @@ WITH structure_best AS (
     SELECT instrument_id, min(starts_at)::date AS catalyst_start,
            (min(starts_at) + interval '7 days')::date AS catalyst_end
     FROM app.catalyst
-    WHERE created_at <= %s AND starts_at >= %s
+    WHERE status = 'current' AND created_at <= %s AND starts_at >= %s
     GROUP BY instrument_id
 ), price_rollup AS (
     SELECT instrument_id, count(DISTINCT trading_date) AS price_observations

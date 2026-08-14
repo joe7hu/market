@@ -72,7 +72,7 @@ def monitored_thesis_rows(
         LEFT JOIN current_prices quote ON quote.instrument_id = monitored.instrument_id
         LEFT JOIN LATERAL (
             SELECT starts_at, title FROM app.catalyst
-            WHERE instrument_id = monitored.instrument_id AND starts_at >= now()
+            WHERE instrument_id = monitored.instrument_id AND status = 'current' AND starts_at >= now()
             ORDER BY starts_at ASC LIMIT 1
         ) catalyst ON true
         LEFT JOIN LATERAL (
