@@ -238,13 +238,38 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                     "signal_id": signal, "decision_id": str(decision_id), "family": candidate.family,
                     "contract_id": candidate.quote.contract_id, "ticket": ticket,
                 })
-            self.analysis.finish_run(run_id, "succeeded", {"event_id": event_id, "signals": len(persisted)})
+            publication_id = self.analysis.publish(
+                run_id,
+                "options-recovery",
+                {
+                    "option_recovery_signal": [
+                        {
+                            "stable_key": item["signal_id"],
+                            "signal_id": item["signal_id"],
+                            "decision_id": item["decision_id"],
+                            "event_id": event_id,
+                            "family": item["family"],
+                            "contract_id": item["contract_id"],
+                            "ticket": item["ticket"],
+                            "lane": "recovery",
+                        }
+                        for item in persisted
+                    ],
+                },
+                validation={
+                    "lane": "recovery",
+                    "signal_count": len(persisted),
+                    "ticket_version": 4,
+                },
+                complete_run_summary={"event_id": event_id, "signals": len(persisted)},
+            )
         except Exception:
             self.analysis.finish_run(run_id, "failed", {"event_id": event_id})
             raise
         return {
             "status": "ok", "event_id": event_id, "capture_id": str(capture["id"]),
             "signals": {signal.family: list(signal.reasons) for signal in signals}, "selected": persisted,
+            "publication_id": str(publication_id),
         }
 
     def manage_event_orders(self, event_id: str, *, now: datetime | None = None) -> dict[str, Any]:

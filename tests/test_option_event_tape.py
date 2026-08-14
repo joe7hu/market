@@ -682,12 +682,35 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
             signal = connection.execute(
                 "SELECT decision_id, status, ticket->>'ticket_version' AS version FROM analysis.option_event_signal"
             ).fetchone()
+            publication = connection.execute(
+                """
+                SELECT publication.scope, item.model_name, item.payload->>'signal_id' AS signal_id
+                FROM app.publication publication
+                JOIN app.publication_item item ON item.publication_id = publication.id
+                WHERE publication.id = %s::uuid
+                ORDER BY item.rank
+                LIMIT 1
+                """,
+                [result["publication_id"]],
+            ).fetchone()
             orders = connection.execute("SELECT count(*) AS count FROM app.paper_order").fetchone()
             denominator = connection.execute(
                 "SELECT strategy_key, selection_stage, miss_reason FROM analysis.option_opportunity_observation ORDER BY strategy_key"
             ).fetchall()
         assert signal["status"] == "shadow"
         assert signal["version"] == "4"
+        assert publication == {
+            "scope": "options-recovery",
+            "model_name": "option_recovery_signal",
+            "signal_id": str(result["selected"][0]["signal_id"]),
+        }
+        from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
+
+        scorecard = OpportunityScorecardRepository(runtime).scorecard(
+            lane="recovery",
+            as_of=finished + timedelta(seconds=1),
+        )
+        assert scorecard["funnel"]["published"] == len(result["selected"])
         ticket = RecoveryReadRepository(runtime).ticket(str(signal["decision_id"]))
         assert ticket is not None
         assert ticket["ticket_version"] == 4
