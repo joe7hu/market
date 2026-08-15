@@ -129,10 +129,21 @@ class StorageArchiveService:
                       ON reference.source_relation = 'raw.fundamental_observation'
                      AND reference.source_row_id = observation.id
                     WHERE observation.id > %s
+                      AND (%s <> 'audit'
+                           OR (reference.manifest_id IS NOT NULL
+                               AND reference.source_ingest_run_id IS DISTINCT FROM observation.ingest_run_id))
                     ORDER BY observation.id LIMIT %s
                     """,
-                    [last_id, batch_size],
+                    [last_id, mode, batch_size],
                 ).fetchall()
+            # First group source rows by their canonical JSON.  Large history
+            # arrays are often identical across many observations.  A group
+            # therefore needs one NAS/manifest operation and one batched
+            # reference transaction, rather than two database transactions per
+            # source row.  The cursor remains durable after the whole batch;
+            # a process failure can only repeat idempotent writes.
+            grouped: dict[str, list[Any]] = {}
+            empty_reference_ids: list[int] = []
             for row in rows:
                 # Scan by the primary key, rather than filtering on the large
                 # JSONB value before ordering.  On a nearly full database the
@@ -142,26 +153,21 @@ class StorageArchiveService:
                 history = row["history"]
                 if history is None:
                     if row["reference_manifest_id"] is not None:
-                        self._remove_source_reference(
-                            source_relation="raw.fundamental_observation",
-                            source_row_id=int(row["id"]),
-                        )
-                    self._set_checkpoint(
-                        checkpoint_key,
-                        "fundamental-history",
-                        "raw.fundamental_observation",
-                        "running",
-                        {**cursor, "mode": mode, cursor_key: last_id},
-                        counts={"rows_scanned": last_id, "artifacts_written": written, "deduplicated": deduplicated},
-                    )
+                        empty_reference_ids.append(int(row["id"]))
                     continue
                 if mode == "audit" and row["source_ingest_run_id"] == row["ingest_run_id"]:
                     continue
+                raw = json.dumps(history, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                grouped.setdefault(sha256(raw).hexdigest(), []).append(row)
+
+            references: list[tuple[int, int, Any]] = []
+            for group in grouped.values():
+                row = group[0]
                 artifact = self._write_json_gzip(
                     "fundamental-history",
-                    history,
+                    row["history"],
                     source_relation="raw.fundamental_observation",
-                    row_count=len(history) if isinstance(history, list) else 1,
+                    row_count=len(row["history"]) if isinstance(row["history"], list) else 1,
                     metadata={
                         "observation_id": int(row["id"]),
                         "instrument_id": int(row["instrument_id"]),
@@ -176,22 +182,12 @@ class StorageArchiveService:
                 )
                 if artifact["created"]:
                     written += 1
-                else:
-                    deduplicated += 1
-                self._record_source_reference(
-                    manifest_id=int(artifact["manifest_id"]),
-                    source_relation="raw.fundamental_observation",
-                    source_row_id=int(row["id"]),
-                    source_ingest_run_id=row["ingest_run_id"],
+                deduplicated += len(group) - int(artifact["created"])
+                references.extend(
+                    (int(artifact["manifest_id"]), int(group_row["id"]), group_row["ingest_run_id"])
+                    for group_row in group
                 )
-                self._set_checkpoint(
-                    checkpoint_key,
-                    "fundamental-history",
-                    "raw.fundamental_observation",
-                    "running",
-                    {**cursor, "mode": mode, cursor_key: last_id},
-                    counts={"rows_scanned": last_id, "artifacts_written": written, "deduplicated": deduplicated},
-                )
+            self._apply_fundamental_reference_batch(references, empty_reference_ids)
         except ArchiveCapacityError as exc:
             self._set_checkpoint(
                 checkpoint_key,
@@ -440,6 +436,33 @@ class StorageArchiveService:
                 """,
                 [manifest_id, source_relation, source_row_id, source_ingest_run_id],
             )
+
+    def _apply_fundamental_reference_batch(
+        self, references: list[tuple[int, int, Any]], empty_reference_ids: list[int],
+    ) -> None:
+        """Atomically apply one archive batch's source-row lineage changes."""
+
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            if empty_reference_ids:
+                connection.execute(
+                    "DELETE FROM ops.storage_archive_manifest_reference "
+                    "WHERE source_relation = 'raw.fundamental_observation' "
+                    "AND source_row_id = ANY(%s)",
+                    [empty_reference_ids],
+                )
+            if references:
+                connection.cursor().executemany(
+                    """
+                    INSERT INTO ops.storage_archive_manifest_reference
+                        (manifest_id, source_relation, source_row_id, source_ingest_run_id)
+                    VALUES (%s, 'raw.fundamental_observation', %s, %s)
+                    ON CONFLICT (source_relation, source_row_id) DO UPDATE
+                    SET manifest_id = EXCLUDED.manifest_id,
+                        source_ingest_run_id = EXCLUDED.source_ingest_run_id,
+                        created_at = now()
+                    """,
+                    references,
+                )
 
     def _remove_source_reference(self, *, source_relation: str, source_row_id: int) -> None:
         with self.runtime.transaction(JOB_PROFILE) as connection:

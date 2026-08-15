@@ -8,6 +8,7 @@ from statistics import mean
 from typing import Any
 
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.fundamental_history import hydrate_history
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -63,9 +64,11 @@ def refresh_market_publication(runtime: DatabaseRuntime, *, now: datetime | None
                 """
                 SELECT DISTINCT ON (observation.metric_set)
                        instrument.symbol, observation.period_end, observation.observed_at,
-                       observation.values, observation.source_id, observation.metric_set
+                       observation.values, observation.source_id, observation.metric_set,
+                       payload.archive_uri AS payload_archive_uri, payload.sha256 AS payload_sha256
                 FROM raw.fundamental_observation observation
                 JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+                LEFT JOIN ingest.payload payload ON payload.id = observation.payload_id
                 WHERE observation.metric_set = 'market_valuation'
                    OR observation.metric_set LIKE 'market_valuation:%'
                 ORDER BY observation.metric_set, observation.observed_at DESC
@@ -159,7 +162,11 @@ def _driver_rows(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _valuation_reference(row: dict[str, Any]) -> dict[str, Any]:
-    values = dict(row.get("values") or {})
+    values = hydrate_history(
+        dict(row.get("values") or {}),
+        archive_uri=row.get("payload_archive_uri"),
+        archive_sha256=row.get("payload_sha256"),
+    )
     metric = str(values.get("metric") or row["symbol"])
     return {
         "stable_key": metric,
@@ -172,6 +179,7 @@ def _valuation_reference(row: dict[str, Any]) -> dict[str, Any]:
         "posture": values.get("posture") or "mixed",
         "higher_is_better": bool(values.get("higher_is_better")),
         "history": values.get("history") or [],
+        "history_data_health": values.get("history_data_health"),
         "source": row.get("source_id"),
     }
 
