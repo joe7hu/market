@@ -30,26 +30,42 @@ class PriceConfirmationRetentionRepository:
             raise ValueError("confirmation cleanup bounds are invalid")
         relation = f"raw.{table}_confirmation"
         with self.runtime.transaction(JOB_PROFILE) as connection:
-            candidates = connection.execute(
+            scanned = connection.execute(
                 f"""
-                SELECT confirmation.fact_id, confirmation.fact_available_at
-                FROM {relation} confirmation
-                JOIN ingest.run run ON run.id = confirmation.ingest_run_id
-                WHERE confirmation.fact_id > %s
-                  AND run.status IN ('succeeded', 'partial')
-                GROUP BY confirmation.fact_id, confirmation.fact_available_at
-                HAVING count(*) > 1
-                ORDER BY confirmation.fact_id, confirmation.fact_available_at
+                SELECT DISTINCT ON (fact_id, fact_available_at) fact_id, fact_available_at
+                FROM {relation}
+                WHERE fact_id > %s
+                ORDER BY fact_id, fact_available_at
                 LIMIT %s
                 """,
                 [after_fact_id, fact_batch_size],
+            ).fetchall()
+            scanned_values = [(int(row["fact_id"]), row["fact_available_at"]) for row in scanned]
+            candidates = connection.execute(
+                f"""
+                WITH target AS (
+                    SELECT *
+                    FROM unnest(%s::bigint[], %s::timestamptz[])
+                         AS value(fact_id, fact_available_at)
+                )
+                SELECT confirmation.fact_id, confirmation.fact_available_at
+                FROM {relation} confirmation
+                JOIN target ON target.fact_id = confirmation.fact_id
+                  AND target.fact_available_at = confirmation.fact_available_at
+                JOIN ingest.run run ON run.id = confirmation.ingest_run_id
+                WHERE run.status IN ('succeeded', 'partial')
+                GROUP BY confirmation.fact_id, confirmation.fact_available_at
+                HAVING count(*) > 1
+                ORDER BY confirmation.fact_id, confirmation.fact_available_at
+                """,
+                [[fact_id for fact_id, _ in scanned_values], [available_at for _, available_at in scanned_values]],
             ).fetchall()
             values = [(int(row["fact_id"]), row["fact_available_at"]) for row in candidates]
             deleted = self._compact_pairs(connection, relation, values, dry_run=dry_run)
         return {
             "fact_versions": len(values),
             "deleted": int(deleted),
-            "next_after_fact_id": max((fact_id for fact_id, _ in values), default=None),
+            "next_after_fact_id": max((fact_id for fact_id, _ in scanned_values), default=None),
         }
 
     def compact_for_instruments(
