@@ -62,10 +62,7 @@ class RetentionRepository:
             )
             counts["publications"] = len(publication_candidates)
             if not dry_run and publication_candidates:
-                connection.execute(
-                    "DELETE FROM app.publication WHERE id = ANY(%s)",
-                    [publication_candidates],
-                )
+                counts.update(_delete_publications_and_orphaned_content(connection, publication_candidates))
             if dry_run:
                 counts["publication_dry_run"] = len(publication_candidates)
                 return counts
@@ -192,10 +189,10 @@ class RetentionRepository:
             )
             count = len(candidates)
             if not dry_run and candidates:
-                connection.execute(
-                    "DELETE FROM app.publication WHERE id = ANY(%s)", [candidates]
-                )
-        result = {"publications": count}
+                compact_counts = _delete_publications_and_orphaned_content(connection, candidates)
+            else:
+                compact_counts = {}
+        result = {"publications": count, **compact_counts}
         if dry_run:
             result["publication_dry_run"] = count
         elif vacuum_analyze and count:
@@ -212,7 +209,11 @@ class RetentionRepository:
         with psycopg.connect(self.runtime.dsn, autocommit=True) as connection:
             connection.execute("VACUUM (ANALYZE) app.publication")
             connection.execute("VACUUM (ANALYZE) app.publication_item")
-        return 2
+            connection.execute("VACUUM (ANALYZE) app.publication_bundle")
+            connection.execute("VACUUM (ANALYZE) app.publication_bundle_item")
+            connection.execute("VACUUM (ANALYZE) app.publication_payload")
+            connection.execute("VACUUM (ANALYZE) app.current_publication_item")
+        return 6
 
     def drop_empty_option_partitions(self, *, before: datetime) -> int:
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -292,6 +293,40 @@ def _publication_candidates(
         parameters,
     ).fetchall()
     return [row["id"] for row in rows]
+
+
+def _delete_publications_and_orphaned_content(connection: Any, candidates: list[Any]) -> dict[str, int]:
+    """Delete a bounded publication batch and its now-unreferenced compact content."""
+
+    deleted = connection.execute(
+        "DELETE FROM app.publication WHERE id = ANY(%s) RETURNING bundle_id",
+        [candidates],
+    ).fetchall()
+    bundle_ids = sorted({row["bundle_id"] for row in deleted if row["bundle_id"] is not None})
+    if not bundle_ids:
+        return {}
+    bundles = connection.execute(
+        """
+        DELETE FROM app.publication_bundle bundle
+        WHERE bundle.id = ANY(%s)
+          AND NOT EXISTS (SELECT 1 FROM app.publication publication WHERE publication.bundle_id = bundle.id)
+        """,
+        [bundle_ids],
+    ).rowcount
+    if not bundles:
+        return {}
+    payloads = connection.execute(
+        """
+        DELETE FROM app.publication_payload payload
+        WHERE NOT EXISTS (
+            SELECT 1 FROM app.publication_bundle_item item WHERE item.content_hash = payload.content_hash
+        )
+        """
+    ).rowcount
+    result: dict[str, int] = {"publication_bundles": bundles}
+    if payloads:
+        result["publication_payloads"] = payloads
+    return result
 
 
 def _trading_day_cutoff(reference: datetime, trading_days: int) -> datetime:

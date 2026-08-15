@@ -6,6 +6,7 @@ nas:
   status_dir: /Volumes/agent/data-sources/status
   market_dir: /Volumes/agent/data-sources/market-mini
   postgres_backup_dir: /Volumes/agent/data-sources/market-mini/postgres-backups
+  storage_archive_dir: /Volumes/agent/data-sources/market-mini/storage-archive/v1
 
 arco:
   raw_dir: /Volumes/agent/brain/raw/sources/arco

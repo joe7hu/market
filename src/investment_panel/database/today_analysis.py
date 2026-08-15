@@ -98,7 +98,7 @@ def refresh_today_publication(
                     ORDER BY published_at DESC NULLS LAST, created_at DESC LIMIT 1
                 )
                 SELECT item.payload, latest.id::text AS publication_id, latest.published_at
-                FROM app.publication_item item
+                FROM app.publication_content_item item
                 JOIN latest ON latest.id = item.publication_id
                 WHERE item.model_name = 'option_radar_opportunity'
                 ORDER BY item.rank LIMIT 10
@@ -128,7 +128,7 @@ def refresh_today_publication(
             """
             SELECT item.payload
             FROM app.publication publication
-            JOIN app.publication_item item ON item.publication_id = publication.id
+            JOIN app.publication_content_item item ON item.publication_id = publication.id
             WHERE publication.scope = 'today' AND publication.status = 'published'
               AND item.model_name = 'preopen_daily_brief'
               AND item.payload->>'brief_date' = %s

@@ -47,7 +47,7 @@ def ticker_context(
         """
         SELECT item.payload
         FROM app.publication publication
-        JOIN app.publication_item item ON item.publication_id = publication.id
+        JOIN app.publication_content_item item ON item.publication_id = publication.id
         WHERE publication.scope = 'options-radar' AND publication.status = 'published'
           AND item.model_name = 'option_radar_opportunity'
           AND coalesce(item.payload->>'ticker', item.payload->>'symbol') = %s
@@ -59,7 +59,7 @@ def ticker_context(
         """
         SELECT DISTINCT ON (item.model_name) item.model_name, item.payload
         FROM app.publication publication
-        JOIN app.publication_item item ON item.publication_id = publication.id
+        JOIN app.publication_content_item item ON item.publication_id = publication.id
         WHERE publication.status = 'published'
           AND coalesce(item.payload->>'symbol', item.payload->>'ticker', item.payload->>'underlying') = %s
           AND item.model_name <> ALL(%s)

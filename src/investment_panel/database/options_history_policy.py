@@ -59,7 +59,8 @@ class OptionHistoryPolicyRepository:
                 """
                 SELECT instrument.symbol, policy.requested_state, policy.effective_state,
                        policy.collection_tier, policy.cadence_minutes, policy.publication_cap,
-                       policy.provider, policy.normalized_retention_days, policy.derived_retention_days,
+                       policy.provider, policy.normalized_retention_days, policy.hot_retention_days,
+                       policy.archive_retention_days, policy.derived_retention_days,
                        policy.provider_payload_retention_days, policy.policy_revision,
                        policy.lock_version, policy.reason, policy.activated_at, policy.paused_at,
                        policy.requested_at, policy.updated_at,
@@ -428,7 +429,11 @@ def _policy_payload(row: dict[str, Any]) -> dict[str, Any]:
         "cadence_minutes": int(row["cadence_minutes"]) if row.get("cadence_minutes") is not None else None,
         "publication_cap": row.get("publication_cap"),
         "provider": row.get("provider"),
+        # ``normalized_retention_days`` remains the API-compatible archive
+        # horizon during the storage-policy rollout.
         "normalized_retention_days": int(row["normalized_retention_days"]) if row.get("normalized_retention_days") is not None else None,
+        "hot_retention_days": int(row["hot_retention_days"]) if row.get("hot_retention_days") is not None else None,
+        "archive_retention_days": int(row["archive_retention_days"]) if row.get("archive_retention_days") is not None else None,
         "derived_retention_days": int(row["derived_retention_days"]) if row.get("derived_retention_days") is not None else None,
         "provider_payload_retention_days": int(row["provider_payload_retention_days"]) if row.get("provider_payload_retention_days") is not None else None,
         "policy_revision": row.get("policy_revision"),

@@ -18,6 +18,7 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
 from investment_panel.database.outcomes import OutcomeRepository
+from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -237,8 +238,9 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
             "SELECT (SELECT count(*) FROM raw.option_quote), "
             "(SELECT count(*) FROM analysis.option_feature), "
             "(SELECT count(*) FROM analysis.option_decision), "
-            "(SELECT count(*) FROM app.publication_item WHERE publication_id = %s)",
-            [publication_id],
+            "(SELECT count(*) FROM app.publication_item WHERE publication_id = %s), "
+            "(SELECT count(*) FROM app.current_publication_item WHERE publication_id = %s)",
+            [publication_id, publication_id],
         ).fetchone()
         truth = connection.execute(
             """
@@ -248,7 +250,7 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
             """,
             [decision_id],
         ).fetchone()
-    assert counts == (1, 1, 1, 2)
+    assert counts == (1, 1, 1, 0, 2)
     assert truth[0] == "radar"
     assert truth[1]
     assert truth[2] == "unverified"
@@ -380,8 +382,43 @@ def test_same_input_reactivates_prior_generation_after_intervening_publication(
         run_summary = connection.execute(
             "SELECT summary FROM analysis.run WHERE id = %s", [repeated_run]
         ).fetchone()[0]
+        compact_counts = connection.execute(
+            "SELECT (SELECT count(*) FROM app.publication_bundle WHERE scope = 'market'), "
+            "(SELECT count(*) FROM app.publication_payload), "
+            "(SELECT count(*) FROM app.publication_item), "
+            "(SELECT count(*) FROM app.current_publication_item WHERE scope = 'market')"
+        ).fetchone()
     assert sorted(statuses) == [("published", 1), ("superseded", 1)]
     assert run_summary["reused_publication_id"] == str(first_id)
+    assert compact_counts == (2, 2, 0, 1)
+
+
+def test_panel_publications_choose_latest_compact_scope_for_a_shared_model(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    repository: AnalysisRepository = analysis_context["analysis"]
+    first_run = _start_run(repository, "shared-first")
+    repository.finish_run(first_run, "succeeded")
+    first = repository.publish(
+        first_run, "scope-one", {"shared_model": [{"stable_key": "one", "headline": "first"}]},
+    )
+    second_run = _start_run(repository, "shared-second")
+    repository.finish_run(second_run, "succeeded")
+    second = repository.publish(
+        second_run, "scope-two", {"shared_model": [{"stable_key": "two", "headline": "second"}]},
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE app.publication SET published_at = %s WHERE id = %s",
+            [datetime(2026, 7, 11, 12, 16, tzinfo=UTC), second],
+        )
+        connection.execute(
+            "UPDATE app.publication SET published_at = %s WHERE id = %s",
+            [datetime(2026, 7, 11, 12, 15, tzinfo=UTC), first],
+        )
+
+    tables = published_tables(runtime, ("shared_model",))
+
+    assert [row["headline"] for row in tables["shared_model"]] == ["second"]
 
 
 def test_concurrent_same_input_publish_reuses_one_generation(analysis_context, postgres_dsn: str) -> None:
@@ -618,13 +655,14 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         )
         connection.execute(
             """
-            UPDATE app.publication_item item
-            SET payload = item.payload || %s
-            FROM app.publication publication
-            WHERE item.publication_id = publication.id
-              AND publication.scope = 'options-radar' AND publication.status = 'published'
+            UPDATE app.publication_payload payload
+            SET payload = payload.payload || %s
+            FROM app.current_publication_item item
+            JOIN app.publication publication ON publication.id = item.publication_id
+            WHERE payload.content_hash = item.content_hash
+              AND item.scope = 'options-radar' AND publication.status = 'published'
               AND item.model_name = 'option_radar_opportunity'
-              AND item.payload->>'decision_id' = %s
+              AND payload.payload->>'decision_id' = %s
             """,
             [
                 Jsonb({

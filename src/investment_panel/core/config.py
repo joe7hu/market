@@ -26,6 +26,7 @@ class NasConfig:
     market_dir: Path = Path("/Volumes/agent/data-sources/market-mini")
     duckdb_snapshot_dir: Path = Path("/Volumes/agent/data-sources/market-mini/duckdb-snapshots")
     postgres_backup_dir: Path = Path("/Volumes/agent/data-sources/market-mini/postgres-backups")
+    storage_archive_dir: Path = Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1")
 @dataclass(frozen=True)
 class ArcoConfig:
     raw_dir: Path = Path("/Volumes/agent/brain/raw/sources/arco")
@@ -297,6 +298,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             nas_raw.get("postgres_backup_dir", "/Volumes/agent/data-sources/market-mini/postgres-backups"),
             base,
         ),
+        storage_archive_dir=resolve_path(
+            nas_raw.get("storage_archive_dir", "/Volumes/agent/data-sources/market-mini/storage-archive/v1"),
+            base,
+        ),
     )
     arco_raw = raw.get("arco", {})
     arco = ArcoConfig(
@@ -539,6 +544,7 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "status_dir": str(config.nas.status_dir),
             "market_dir": str(config.nas.market_dir),
             "postgres_backup_dir": str(config.nas.postgres_backup_dir),
+            "storage_archive_dir": str(config.nas.storage_archive_dir),
         },
         "arco": {
             "raw_dir": str(config.arco.raw_dir),

@@ -52,7 +52,7 @@ def scheduled_preopen(config_path: str | None = None, *, now: datetime | None = 
             """
             SELECT EXISTS (
                 SELECT 1 FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
+                JOIN app.publication_content_item item ON item.publication_id = publication.id
                 WHERE publication.scope = 'today' AND publication.status = 'published'
                   AND publication.published_at::date = %s
                   AND item.model_name = 'preopen_daily_brief'

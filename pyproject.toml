@@ -40,6 +40,7 @@ legacy-import = [
 market-db-migrate = "investment_panel.database.migrations:main"
 market-db-import-legacy = "investment_panel.database.legacy_import:main"
 market-snapshot-database = "investment_panel.jobs.snapshot_database:main"
+market-storage = "investment_panel.jobs.storage:main"
 market-update-robinhood-options = "investment_panel.jobs.update_robinhood_options:main"
 market-robinhood-option-history = "investment_panel.jobs.robinhood_option_history:main"
 market-detect-option-events = "investment_panel.jobs.detect_option_events:main"

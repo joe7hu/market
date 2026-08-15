@@ -83,6 +83,8 @@ from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, b
 from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
+from investment_panel.database.authority import runtime_for_config
+from investment_panel.database.storage_archive import StorageArchiveService
 from investment_panel.jobs import run_thesis_monitor
 
 
@@ -105,6 +107,20 @@ _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
         "option_radar_opportunity",
     },
 }
+
+
+def storage_health(config: Any) -> dict[str, Any]:
+    """Read archive health without loading any decision/read-model tables."""
+
+    nas = config.get("nas") if isinstance(config, dict) else getattr(config, "nas", None)
+    archive_dir = (
+        (nas or {}).get("storage_archive_dir")
+        if isinstance(nas, dict)
+        else getattr(nas, "storage_archive_dir", None)
+    )
+    return StorageArchiveService(
+        runtime_for_config(config), Path(archive_dir or "/Volumes/agent/data-sources/market-mini/storage-archive/v1"),
+    ).health()
 
 
 def _panel_snapshot_contract_revision() -> str:

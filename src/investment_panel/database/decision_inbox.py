@@ -144,7 +144,7 @@ class DecisionInboxRepository:
                 """
                 SELECT item.payload
                 FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
+                JOIN app.publication_content_item item ON item.publication_id = publication.id
                 WHERE publication.status = 'published'
                   AND publication.published_at <= %s
                   AND publication.published_at >= %s

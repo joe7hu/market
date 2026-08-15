@@ -103,7 +103,7 @@ class OptionsPaperExecutionRepository:
                 SELECT publication.id::text AS publication_id, publication.scope,
                        publication.published_at, item.payload
                 FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
+                JOIN app.publication_content_item item ON item.publication_id = publication.id
                 WHERE publication.status = 'published'
                   AND publication.published_at <= %s
                   AND (
@@ -442,7 +442,7 @@ class OptionsPaperExecutionRepository:
             """
             SELECT publication.id::text AS publication_id, item.payload
             FROM app.publication publication
-            JOIN app.publication_item item ON item.publication_id = publication.id
+            JOIN app.publication_content_item item ON item.publication_id = publication.id
             WHERE publication.scope = %s AND publication.status = 'published'
               AND publication.published_at <= %s
               AND item.model_name = %s AND item.payload->>'decision_id' = %s

@@ -18,7 +18,7 @@ def current_candidate_payloads(runtime: DatabaseRuntime, *, limit: int) -> list[
             ), ranked AS (
                 SELECT item.payload, item.rank,
                        coalesce(item.payload->>'ticker', item.payload->>'symbol') AS symbol
-                FROM app.publication_item item
+                FROM app.publication_content_item item
                 JOIN latest ON latest.id = item.publication_id
                 WHERE item.model_name = 'option_radar_opportunity'
             ), unique_symbols AS (

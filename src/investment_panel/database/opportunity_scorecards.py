@@ -108,7 +108,7 @@ class OpportunityScorecardRepository:
                        EXISTS (
                          SELECT 1
                          FROM app.publication publication
-                         JOIN app.publication_item item ON item.publication_id = publication.id
+                         JOIN app.publication_content_item item ON item.publication_id = publication.id
                          WHERE publication.status IN ('published', 'superseded')
                            -- Recovery has its own immutable publication owner.
                            -- Do not probe the large Radar publication history
@@ -152,7 +152,7 @@ class OpportunityScorecardRepository:
                        EXISTS (
                          SELECT 1
                          FROM app.publication publication
-                         JOIN app.publication_item item ON item.publication_id = publication.id
+                         JOIN app.publication_content_item item ON item.publication_id = publication.id
                          WHERE publication.analysis_run_id = decision.run_id
                            AND publication.status IN ('published', 'superseded')
                            AND (

@@ -686,7 +686,7 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
                 """
                 SELECT publication.scope, item.model_name, item.payload->>'signal_id' AS signal_id
                 FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
                 WHERE publication.id = %s::uuid
                 ORDER BY item.rank
                 LIMIT 1

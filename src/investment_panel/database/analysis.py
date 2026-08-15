@@ -261,6 +261,8 @@ class AnalysisRepository:
         strategy_root_key: str | None = None,
     ) -> UUID:
         prepared = _prepare_models(models)
+        bundle_rows = _bundle_rows(prepared)
+        bundle_hash = _hash({"scope": scope, "items": bundle_rows})
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"publication:{scope}"])
             if strategy_root_key:
@@ -287,7 +289,7 @@ class AnalysisRepository:
                     )
             existing = connection.execute(
                 """
-                SELECT publication.id, publication.status
+                SELECT publication.id, publication.status, publication.bundle_id
                 FROM app.publication publication
                 JOIN analysis.run prior_run ON prior_run.id = publication.analysis_run_id
                 WHERE publication.scope = %s
@@ -320,6 +322,17 @@ class AnalysisRepository:
                         "WHERE id = %s",
                         [existing_id],
                     )
+                if existing["bundle_id"] is not None:
+                    _replace_current_projection(
+                        connection,
+                        scope=scope,
+                        publication_id=existing_id,
+                        bundle_id=UUID(str(existing["bundle_id"])),
+                    )
+                else:
+                    # A legacy generation has no compact bundle.  Clear any
+                    # newer projection so readers use the legacy fallback.
+                    connection.execute("DELETE FROM app.current_publication_item WHERE scope = %s", [scope])
                 summary = dict(complete_run_summary or {})
                 summary["reused_publication_id"] = str(existing_id)
                 connection.execute(
@@ -333,27 +346,56 @@ class AnalysisRepository:
                     [Jsonb(summary), run_id],
                 )
                 return existing_id
-            publication = connection.execute(
+            bundle = connection.execute(
                 """
-                INSERT INTO app.publication (scope, analysis_run_id, status, validation)
-                VALUES (%s, %s, 'building', %s) RETURNING id
+                INSERT INTO app.publication_bundle (scope, bundle_hash, item_count)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (scope, bundle_hash) DO NOTHING
+                RETURNING id
                 """,
-                [scope, run_id, Jsonb(dict(validation or {}))],
+                [scope, bundle_hash, len(bundle_rows)],
             ).fetchone()
-            publication_id = UUID(str(publication["id"]))
-            for model_name, rows in prepared.items():
+            bundle_created = bundle is not None
+            if bundle is None:
+                bundle = connection.execute(
+                    "SELECT id FROM app.publication_bundle WHERE scope = %s AND bundle_hash = %s FOR UPDATE",
+                    [scope, bundle_hash],
+                ).fetchone()
+            if bundle is None:
+                raise RuntimeError("publication bundle could not be resolved")
+            bundle_id = UUID(str(bundle["id"]))
+            if bundle_created:
                 with connection.cursor() as cursor:
                     cursor.executemany(
                         """
-                        INSERT INTO app.publication_item
-                            (publication_id, model_name, stable_key, rank, instrument_id, payload)
+                        INSERT INTO app.publication_payload (content_hash, payload)
+                        VALUES (%s, %s) ON CONFLICT (content_hash) DO NOTHING
+                        """,
+                        [[row["content_hash"], Jsonb(row["payload"])] for row in bundle_rows],
+                    )
+                    cursor.executemany(
+                        """
+                        INSERT INTO app.publication_bundle_item
+                            (bundle_id, model_name, stable_key, rank, instrument_id, content_hash)
                         VALUES (%s, %s, %s, %s, %s, %s)
                         """,
-                        [
-                            [publication_id, model_name, row["stable_key"], rank, row.get("instrument_id"), Jsonb(row["payload"])]
-                            for rank, row in enumerate(rows, start=1)
-                        ],
+                        [[bundle_id, row["model_name"], row["stable_key"], row["rank"],
+                          row["instrument_id"], row["content_hash"]] for row in bundle_rows],
                     )
+            publication = connection.execute(
+                """
+                INSERT INTO app.publication (scope, analysis_run_id, status, validation, bundle_id)
+                VALUES (%s, %s, 'building', %s, %s) RETURNING id
+                """,
+                [scope, run_id, Jsonb(dict(validation or {})), bundle_id],
+            ).fetchone()
+            publication_id = UUID(str(publication["id"]))
+            _replace_current_projection(
+                connection,
+                scope=scope,
+                publication_id=publication_id,
+                bundle_id=bundle_id,
+            )
             connection.execute(
                 "UPDATE app.publication SET status = 'superseded' "
                 "WHERE scope = %s AND status = 'published'",
@@ -377,15 +419,37 @@ class AnalysisRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT item.payload
-                FROM app.publication publication
-                JOIN app.publication_item item ON item.publication_id = publication.id
-                WHERE publication.scope = %s AND publication.status = 'published'
-                  AND item.model_name = %s
+                SELECT payload.payload
+                FROM app.current_publication_item item
+                JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                JOIN app.publication publication ON publication.id = item.publication_id
+                WHERE item.scope = %s AND item.model_name = %s AND publication.status = 'published'
                 ORDER BY item.rank
                 """,
                 [scope, model_name],
             ).fetchall()
+            has_projection = connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM app.current_publication_item item
+                    JOIN app.publication publication ON publication.id = item.publication_id
+                    WHERE item.scope = %s AND publication.status = 'published'
+                ) AS exists
+                """,
+                [scope],
+            ).fetchone()["exists"]
+            if not rows and not has_projection:
+                rows = connection.execute(
+                    """
+                    SELECT item.payload
+                    FROM app.publication publication
+                    JOIN app.publication_item item ON item.publication_id = publication.id
+                    WHERE publication.scope = %s AND publication.status = 'published'
+                      AND item.model_name = %s
+                    ORDER BY item.rank
+                    """,
+                    [scope, model_name],
+                ).fetchall()
         return [dict(row["payload"]) for row in rows]
 
     def option_signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
@@ -455,6 +519,26 @@ class AnalysisRepository:
             ).fetchall()
             current_item = connection.execute(
                 """
+                SELECT payload.payload, item.publication_id::text AS publication_id,
+                       publication.published_at, item.scope
+                FROM app.current_publication_item item
+                JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                JOIN app.publication publication ON publication.id = item.publication_id
+                WHERE publication.status = 'published'
+                  AND (
+                    (item.scope = 'options-radar' AND item.model_name = 'option_radar_opportunity')
+                    OR
+                    (item.scope = 'options-decision-system' AND item.model_name = 'options_decision_candidate')
+                  )
+                  AND payload.payload->>'decision_id' = %s
+                ORDER BY publication.published_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                [str(decision_id)],
+            ).fetchone()
+            if current_item is None:
+                current_item = connection.execute(
+                    """
                 SELECT item.payload, publication.id::text AS publication_id,
                        publication.published_at, publication.scope
                 FROM app.publication publication
@@ -508,6 +592,46 @@ def _prepare_models(models: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[s
             rows.append({"stable_key": stable_key, "instrument_id": payload.pop("instrument_id", None), "payload": payload})
         prepared[model_name] = rows
     return prepared
+
+
+def _bundle_rows(prepared: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
+    """Flatten a canonical publication bundle into deduplicated payload refs."""
+
+    rows: list[dict[str, Any]] = []
+    for model_name in sorted(prepared):
+        for rank, row in enumerate(prepared[model_name], start=1):
+            payload = dict(row["payload"])
+            rows.append({
+                "model_name": model_name,
+                "stable_key": str(row["stable_key"]),
+                "rank": rank,
+                "instrument_id": row.get("instrument_id"),
+                "content_hash": _hash(payload),
+                "payload": payload,
+            })
+    return rows
+
+
+def _replace_current_projection(
+    connection: Any,
+    *,
+    scope: str,
+    publication_id: UUID,
+    bundle_id: UUID,
+) -> None:
+    """Replace one scope's small hot read model from an immutable bundle."""
+
+    connection.execute("DELETE FROM app.current_publication_item WHERE scope = %s", [scope])
+    connection.execute(
+        """
+        INSERT INTO app.current_publication_item
+            (scope, publication_id, model_name, stable_key, rank, instrument_id, content_hash)
+        SELECT %s, %s, model_name, stable_key, rank, instrument_id, content_hash
+        FROM app.publication_bundle_item
+        WHERE bundle_id = %s
+        """,
+        [scope, publication_id, bundle_id],
+    )
 
 
 def _hash(value: Mapping[str, Any]) -> str:

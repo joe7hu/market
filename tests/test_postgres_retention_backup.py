@@ -200,6 +200,49 @@ def test_publication_only_retention_is_restart_safe(postgres_dsn: str) -> None:
         runtime.close()
 
 
+def test_publication_retention_reclaims_orphaned_compact_content(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn)
+    runtime = DatabaseRuntime(postgres_dsn)
+    runtime.open()
+    reference = datetime(2026, 8, 12, 16, tzinfo=UTC)
+    analysis = AnalysisRepository(runtime)
+    try:
+        first_run = analysis.start_run(
+            "compact-publication", input_cutoff=reference - timedelta(days=100),
+            code_version="first", inputs={"generation": "first"},
+        )
+        analysis.finish_run(first_run, "succeeded")
+        first_publication = analysis.publish(
+            first_run, "research", {"brief": [{"stable_key": "brief", "headline": "first"}]},
+        )
+        second_run = analysis.start_run(
+            "compact-publication", input_cutoff=reference,
+            code_version="second", inputs={"generation": "second"},
+        )
+        analysis.finish_run(second_run, "succeeded")
+        analysis.publish(
+            second_run, "research", {"brief": [{"stable_key": "brief", "headline": "second"}]},
+        )
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE app.publication SET created_at = %s, published_at = %s WHERE id = %s",
+                [reference - timedelta(days=100), reference - timedelta(days=100), first_publication],
+            )
+
+        result = RetentionRepository(runtime).prune_publications(now=reference)
+        with runtime.read() as connection:
+            remaining = connection.execute(
+                "SELECT (SELECT count(*) FROM app.publication_bundle) AS bundles, "
+                "(SELECT count(*) FROM app.publication_payload) AS payloads, "
+                "(SELECT count(*) FROM app.publication WHERE scope = 'research') AS publications"
+            ).fetchone()
+    finally:
+        runtime.close()
+
+    assert result == {"publications": 1, "publication_bundles": 1, "publication_payloads": 1}
+    assert remaining == {"bundles": 1, "payloads": 1, "publications": 1}
+
+
 def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(
     migrated_postgres_dsn: str,
     tmp_path: Path,

@@ -194,7 +194,7 @@ class ActionRepository:
                 LEFT JOIN LATERAL (
                     SELECT publication.id, publication.scope, publication.published_at, item.payload
                     FROM app.publication publication
-                    JOIN app.publication_item item ON item.publication_id = publication.id
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
                     WHERE publication.status = 'published'
                       AND publication.published_at <= %s
                       AND item.payload->>'decision_id' = decision.id::text
@@ -562,6 +562,7 @@ class ActionRepository:
                 "UPDATE app.publication SET status = 'superseded' "
                 "WHERE scope = 'options-radar' AND status = 'published'"
             )
+            connection.execute("DELETE FROM app.current_publication_item WHERE scope = 'options-radar'")
             connection.execute(
                 "UPDATE analysis.agent_task SET validation = %s, updated_at = now() WHERE id = %s",
                 [Jsonb({"status": "promoted", "approved_by": approver}), task["id"]],

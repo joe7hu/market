@@ -73,6 +73,7 @@ class StrategyGovernanceRepository:
                     "UPDATE app.publication SET status = 'superseded' "
                     "WHERE scope = 'options-radar' AND status = 'published'"
                 )
+                connection.execute("DELETE FROM app.current_publication_item WHERE scope = 'options-radar'")
                 connection.execute(
                     "UPDATE analysis.agent_task SET validation = %s, updated_at = now() WHERE id = %s",
                     [
@@ -136,6 +137,7 @@ class StrategyGovernanceRepository:
                 "UPDATE app.publication SET status = 'superseded' "
                 "WHERE scope = 'options-radar' AND status = 'published'"
             )
+            connection.execute("DELETE FROM app.current_publication_item WHERE scope = 'options-radar'")
             restored = connection.execute(
                 """
                 SELECT publication.id
@@ -152,6 +154,18 @@ class StrategyGovernanceRepository:
                     "UPDATE app.publication SET status = 'published', published_at = now(), "
                     "validation = validation || %s WHERE id = %s",
                     [Jsonb({"rollback_reason": "negative_trailing_expectancy"}), restored["id"]],
+                )
+                connection.execute(
+                    """
+                    INSERT INTO app.current_publication_item
+                        (scope, publication_id, model_name, stable_key, rank, instrument_id, content_hash)
+                    SELECT publication.scope, publication.id, item.model_name, item.stable_key,
+                           item.rank, item.instrument_id, item.content_hash
+                    FROM app.publication publication
+                    JOIN app.publication_bundle_item item ON item.bundle_id = publication.bundle_id
+                    WHERE publication.id = %s
+                    """,
+                    [restored["id"]],
                 )
             connection.execute(
                 """
