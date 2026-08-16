@@ -83,13 +83,25 @@ def reconcile_radar_summary(
     summaries: list[dict[str, Any]],
     opportunities: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Overlay live execution state onto an immutable radar publication.
+
+    The publication records the session in which quotes were captured.  That is
+    useful provenance, but it is not the current market state.  The Radar header
+    uses this summary to decide whether a snapshot is tradeable, so retaining a
+    historic ``regular`` value made a days-old Wednesday snapshot look like the
+    current regular session on a weekend.  Keep the capture timestamps intact
+    and expose the current session separately through the existing fields.
+    """
     if not summaries:
         return summaries
+    open_now = is_market_open(datetime.now(UTC))
     ready = sum(row.get("execution_ready") is True for row in opportunities)
     setup = sum(row.get("state") == "SETUP" for row in opportunities)
     watch = len(opportunities) - ready - setup
     return [{
         **summary,
+        "market_session": "rth" if open_now else "closed",
+        "frozen_to_last_rth": not open_now and bool(summary.get("latest_complete_quote_time")),
         "ready_count": ready,
         "setup_count": setup,
         "watch_count": max(watch, 0),
