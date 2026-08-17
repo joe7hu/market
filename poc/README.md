@@ -45,7 +45,7 @@ Inspect the independent server record at `http://127.0.0.1:8801/_log`. Capture
 browser-console CORS messages along with it. A CORS rejection is not proof that
 a request never reached the server.
 
-## T1 manual Actions test
+## T1a manual Actions test
 
 With no VPN, Node 18+, `cloudflared`, and a personal paid ChatGPT account:
 
@@ -63,3 +63,29 @@ Save evidence as `poc/evidence/t1-evidence.json`, `t2-evidence.json`, and
 `t3-evidence.json`. The `poc/evidence/` directory is gitignored because it can
 contain IP addresses, user-agent strings, screenshots, and manual ChatGPT
 results.
+
+## T1b native regular-chat MCP test
+
+This is separate from GPT Actions. It exposes two **read-only** MCP tools:
+`poc_probe_host_reach` returns a mock top-level approval URL; and
+`poc_get_approval_status` returns a mock status. Neither tool creates, approves,
+or submits a payment.
+
+```sh
+npm run poc:mcp
+```
+
+When the script prints its endpoint, use ChatGPT web with Developer mode:
+
+1. Go to **Settings → Apps → Advanced Settings** and confirm Developer mode.
+2. Go to **Apps → Create**, enter the printed `/mcp` endpoint, select no
+   authentication, scan the tools, then create the draft app.
+3. Start an ordinary new chat, select the draft app from the **+** tools menu,
+   and ask: `Use poc_probe_host_reach with nonce t1-mcp-20260817-a.`
+4. Capture the ChatGPT tool result and check `/_log` for `mcp_initialize` and
+   `mcp_probe`, including its observed IP and user agent.
+5. Open the returned URL outside ChatGPT, then ask in the same normal chat:
+   `Use poc_get_approval_status with nonce t1-mcp-20260817-a.`
+
+The app is a draft and must remain read-only. Do not publish it. ChatGPT custom
+MCP apps are remote-server integrations; the quick tunnel is POC-only.

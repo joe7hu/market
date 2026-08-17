@@ -11,8 +11,9 @@ const subtle = webcrypto.subtle;
 const encoder = new TextEncoder();
 const store = {
   enrolments: new Map(),
-  actions: new Map(),
-  challenges: new Map(),
+ actions: new Map(),
+ challenges: new Map(),
+  mcpSessions: new Map(),
   events: [],
   publicBase: process.env.PUBLIC_BASE_URL || null,
 };
@@ -42,6 +43,7 @@ const event = (kind, request, detail = {}) => {
 const canonical = (actionId) => JSON.stringify({ kind: "mock-transfer", amount: "1.00", currency: "USD", actionId });
 const digestFor = async (challenge) => new Uint8Array(await subtle.digest("SHA-256", encoder.encode(`${challenge.id}${challenge.nonce}${challenge.canonicalAction}`)));
 const origin = (req) => `http://${req.headers.host}`;
+const clientIp = (req) => req.headers["cf-connecting-ip"] || req.socket.remoteAddress || null;
 
 async function serveFile(res, filename) {
   const { readFile } = await import("node:fs/promises");
@@ -75,12 +77,78 @@ function apiCorsHeaders(req, mode) {
   };
 }
 
+function jsonRpc(res, status, id, result, headers = {}) {
+  return json(res, status, { jsonrpc: "2.0", id, result }, headers);
+}
+
+function jsonRpcError(res, id, code, message, status = 400) {
+  return json(res, status, { jsonrpc: "2.0", id: id ?? null, error: { code, message } });
+}
+
+const mcpTools = [
+  {
+    name: "poc_probe_host_reach",
+    title: "Probe host reach",
+    description: "Read-only POC: records a unique nonce and returns a top-level mock approval URL.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["nonce"], properties: { nonce: { type: "string", minLength: 1, maxLength: 128, description: "Unique test identifier." } } },
+  },
+  {
+    name: "poc_get_approval_status",
+    title: "Get mock approval status",
+    description: "Read-only POC: returns the mock status for a previously issued nonce.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["nonce"], properties: { nonce: { type: "string", minLength: 1, maxLength: 128, description: "Unique test identifier." } } },
+  },
+];
+
+function validNonce(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+async function handleMcp(req, res) {
+  if (req.method === "GET") return text(res, 405, "MCP endpoint accepts JSON-RPC POST requests only.", { allow: "POST" });
+  if (req.method !== "POST") return text(res, 405, "Method not allowed", { allow: "POST" });
+  const message = await bodyJson(req);
+  if (message.jsonrpc !== "2.0" || typeof message.method !== "string") return jsonRpcError(res, message.id, -32600, "Invalid JSON-RPC request");
+  const id = message.id;
+  const sessionId = req.headers["mcp-session-id"];
+  if (message.method === "initialize") {
+    const newSessionId = `mcp_${nonce()}`;
+    store.mcpSessions.set(newSessionId, { createdAt: new Date().toISOString() });
+    event("mcp_initialize", req, { clientIp: clientIp(req), protocolVersion: message.params?.protocolVersion || null });
+    return jsonRpc(res, 200, id, {
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "native-chat-host-reach-poc", version: "1.0.0" },
+      instructions: "Read-only host-reach POC. It never executes a payment or approval action.",
+    }, { "mcp-session-id": newSessionId });
+  }
+  if (!sessionId || !store.mcpSessions.has(sessionId)) return jsonRpcError(res, id, -32001, "Unknown MCP session", 401);
+  if (message.method === "notifications/initialized") return res.writeHead(202).end();
+  if (message.method === "tools/list") return jsonRpc(res, 200, id, { tools: mcpTools });
+  if (message.method !== "tools/call") return jsonRpcError(res, id, -32601, "Method not found", 404);
+  const { name, arguments: args = {} } = message.params || {};
+  if (!validNonce(args.nonce)) return jsonRpc(res, 200, id, { content: [{ type: "text", text: "nonce must be a non-empty string no longer than 128 characters" }], isError: true });
+  const base = store.publicBase || origin(req);
+  if (name === "poc_probe_host_reach") {
+    const result = { ok: true, nonce: args.nonce, approvalUrl: `${base}/approve/${encodeURIComponent(args.nonce)}`, statusUrl: `${base}/status/${encodeURIComponent(args.nonce)}` };
+    event("mcp_probe", req, { nonce: args.nonce, clientIp: clientIp(req), userAgent: req.headers["user-agent"] || null });
+    return jsonRpc(res, 200, id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+  }
+  if (name === "poc_get_approval_status") {
+    const result = { nonce: args.nonce, status: "awaiting_out_of_band_approval", readOnly: true };
+    event("mcp_status", req, { nonce: args.nonce, clientIp: clientIp(req), userAgent: req.headers["user-agent"] || null });
+    return jsonRpc(res, 200, id, { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
+  }
+  return jsonRpc(res, 200, id, { content: [{ type: "text", text: `Unknown tool: ${String(name)}` }], isError: true });
+}
+
 async function handler(role, req, res) {
   const url = new URL(req.url, origin(req));
   const pathname = url.pathname;
   if (pathname === "/" || pathname === "/custody.html") return serveFile(res, "custody.html");
   if (pathname === "/t3.html") return serveFile(res, "t3.html");
   if (pathname === "/poc-client.js") return serveFile(res, "poc-client.js");
+  if (pathname === "/mcp") return handleMcp(req, res);
   if (pathname === "/_log") return json(res, 200, { events: store.events, publicBase: store.publicBase, enrolments: store.enrolments.size, challenges: store.challenges.size });
   if (pathname === "/health") return json(res, 200, { ok: true, role });
 
