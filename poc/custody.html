@@ -1,0 +1,6 @@
+<!doctype html><html><head><meta charset="utf-8"><title>T2 Browser Key Custody POC</title></head><body>
+<h1>T2 Browser Key Custody POC</h1><p>Origin: <code id="origin"></code></p>
+<label>PIN <input id="pin" value="1234" inputmode="numeric"></label>
+<button id="enrol">Enrol non-extractable P-256 key</button><button id="attest">Sign fresh challenge</button><button id="suite">Run T2 protocol suite</button>
+<pre id="result">Ready.</pre><script>document.querySelector('#origin').textContent=location.origin;</script><script type="module" src="/poc-client.js"></script>
+</body></html>

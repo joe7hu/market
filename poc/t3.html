@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>T3 Cross-Origin POC</title></head><body>
+<h1>T3 Cross-Origin POC</h1><p>Page origin: <code id="origin"></code></p><pre id="result">Ready.</pre>
+<script>
+const api='http://127.0.0.1:8801'; const result=document.querySelector('#result'); document.querySelector('#origin').textContent=location.origin;
+const write=(value)=>{ result.textContent=JSON.stringify(value,null,2); document.body.dataset.result=value.ok?'pass':'fail'; window.__pocResult=value; };
+async function run(scenario) {
+  const request = scenario==='A-simple' ? {method:'POST',headers:{'content-type':'text/plain'},body:'simple'} : {method:'POST',headers:{'content-type':'application/json'},body:'{}'};
+  const target=scenario==='C' ? '/proxy/echo' : `${api}/t3/echo/${scenario[0]}`;
+  try { const response=await fetch(target,request); const payload=await response.json(); write({ok:true,scenario,status:response.status,payload}); }
+  catch(error) { write({ok:false,scenario,error:error.toString()}); }
+}
+const scenario=new URLSearchParams(location.search).get('scenario'); if(scenario) run(scenario);
+</script></body></html>

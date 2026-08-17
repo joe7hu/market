@@ -14,4 +14,5 @@ __pycache__/
 .coverage
 data/migration/coverage.json
 .DS_Store
+poc/evidence/
 .gstack/
