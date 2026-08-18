@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from statistics import median
 from typing import Any
 import xml.etree.ElementTree as ET
 
@@ -68,9 +69,19 @@ def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str,
             submissions_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
             submissions_payload = _http_bytes(submissions_url, user_agent)
             submissions = json.loads(submissions_payload)
-            _record_bytes(repository, config, run_id, source_id, "submissions.json", submissions_payload, submissions_url)
+            _record_bytes(
+                repository,
+                config,
+                run_id,
+                source_id,
+                "submissions.json",
+                submissions_payload,
+                submissions_url,
+            )
             filings = _recent_13f(submissions, int(tracker.get("max_filings") or 1))
-            existing = _existing_source_keys(runtime, source_id, [row["accession_number"] for row in filings])
+            existing = _existing_source_keys(
+                runtime, source_id, [row["accession_number"] for row in filings]
+            )
             ingested = 0
             skipped = 0
             failures: list[str] = []
@@ -83,44 +94,87 @@ def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str,
                     index_url = sec.filing_index_url(cik, accession)
                     index_payload = _http_bytes(index_url, user_agent)
                     index = json.loads(index_payload)
-                    _record_bytes(repository, config, run_id, source_id, f"{accession}-index.json", index_payload, index_url)
-                    candidate = _information_table_candidate(index, filing.get("primary_document"))
+                    _record_bytes(
+                        repository,
+                        config,
+                        run_id,
+                        source_id,
+                        f"{accession}-index.json",
+                        index_payload,
+                        index_url,
+                    )
+                    candidate = _information_table_candidate(
+                        index, filing.get("primary_document")
+                    )
                     if not candidate:
                         raise ValueError("13F information table XML not found")
                     document_url = sec.filing_document_url(cik, accession, candidate)
                     document_payload = _http_bytes(document_url, user_agent)
                     payload_id = _record_bytes(
-                        repository, config, run_id, source_id, f"{accession}-{Path(candidate).name}",
-                        document_payload, document_url,
+                        repository,
+                        config,
+                        run_id,
+                        source_id,
+                        f"{accession}-{Path(candidate).name}",
+                        document_payload,
+                        document_url,
                     )
-                    holdings = _resolve_holdings(_parse_information_table(document_payload), tracker.get("ticker_map") or {})
-                    total_value = sum(int(row.get("value_thousands") or 0) for row in holdings)
+                    holdings = _resolve_holdings(
+                        _parse_information_table(document_payload),
+                        tracker.get("ticker_map") or {},
+                    )
+                    total_value = sum(
+                        int(row.get("value_usd") or 0) for row in holdings
+                    )
                     row = {
-                        "source_key": accession, "source_type": "13f", "trader_name": tracker["name"],
+                        "source_key": accession,
+                        "source_type": "13f",
+                        "trader_name": tracker["name"],
                         "filer_name": filing.get("filer_name") or tracker["name"],
-                        "event_date": filing.get("report_date"), "filed_date": filing.get("filed_date"),
-                        "action": filing.get("form"), "amount_text": str(total_value) if holdings else None,
+                        "event_date": filing.get("report_date"),
+                        "filed_date": filing.get("filed_date"),
+                        "action": filing.get("form"),
+                        "amount_text": str(total_value) if holdings else None,
                         "source_url": document_url,
                         "details": {
-                            "cik": cik, "accession_number": accession, "report_date": filing.get("report_date"),
-                            "holdings": holdings, "holdings_count": len(holdings),
-                            "holdings_value_thousands": total_value, "source_document": candidate,
+                            "cik": cik,
+                            "accession_number": accession,
+                            "report_date": filing.get("report_date"),
+                            "holdings": holdings,
+                            "holdings_count": len(holdings),
+                            "holdings_value_usd": total_value,
+                            "value_unit": holdings[0].get("value_unit")
+                            if holdings
+                            else "usd_native",
+                            "source_document": candidate,
                         },
                     }
-                    ingested += SourceFactRepository(runtime).store_disclosures(run_id, source_id, [row], payload_id=payload_id)
+                    ingested += SourceFactRepository(runtime).store_disclosures(
+                        run_id, source_id, [row], payload_id=payload_id
+                    )
                 except Exception as exc:
                     failures.append(f"{accession}: {type(exc).__name__}: {exc}")
             ingestion_run.finish(
-                "partial" if failures else "succeeded", item_count=ingested,
+                "partial" if failures else "succeeded",
+                item_count=ingested,
                 failure_detail="; ".join(failures[:10]) or None,
                 summary={"filings_found": len(filings), "filings_skipped": skipped},
             )
         return {
-            "source_id": source_id, "status": "partial" if failures else "ok", "rows": ingested,
-            "filings_found": len(filings), "filings_skipped": skipped, "errors": failures,
+            "source_id": source_id,
+            "status": "partial" if failures else "ok",
+            "rows": ingested,
+            "filings_found": len(filings),
+            "filings_skipped": skipped,
+            "errors": failures,
         }
     except Exception as exc:
-        return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
+        return {
+            "source_id": source_id,
+            "status": "failed",
+            "rows": 0,
+            "error": str(exc),
+        }
 
 
 def _recent_13f(submissions: dict[str, Any], limit: int) -> list[dict[str, Any]]:
@@ -132,24 +186,30 @@ def _recent_13f(submissions: dict[str, Any], limit: int) -> list[dict[str, Any]]
         accession = _at(recent, "accessionNumber", index)
         if not accession:
             continue
-        rows.append({
-            "accession_number": accession, "form": form,
-            "filed_date": _at(recent, "filingDate", index),
-            "report_date": _at(recent, "reportDate", index),
-            "primary_document": _at(recent, "primaryDocument", index),
-            "filer_name": submissions.get("name"),
-        })
+        rows.append(
+            {
+                "accession_number": accession,
+                "form": form,
+                "filed_date": _at(recent, "filingDate", index),
+                "report_date": _at(recent, "reportDate", index),
+                "primary_document": _at(recent, "primaryDocument", index),
+                "filer_name": submissions.get("name"),
+            }
+        )
         if len(rows) >= limit:
             break
     return rows
 
 
-def _information_table_candidate(index: dict[str, Any], primary_document: Any) -> str | None:
+def _information_table_candidate(
+    index: dict[str, Any], primary_document: Any
+) -> str | None:
     primary = str(primary_document or "").lower()
     names = [
         str(item.get("name"))
         for item in ((index.get("directory") or {}).get("item") or [])
-        if isinstance(item, dict) and str(item.get("name") or "").lower().endswith(".xml")
+        if isinstance(item, dict)
+        and str(item.get("name") or "").lower().endswith(".xml")
         and str(item.get("name") or "").lower() not in {primary, "filingsummary.xml"}
     ]
     names.sort(key=lambda name: (0 if "info" in name.lower() else 1, name.lower()))
@@ -162,20 +222,56 @@ def _parse_information_table(payload: bytes) -> list[dict[str, Any]]:
     for item in root.iter():
         if item.tag.rsplit("}", 1)[-1] != "infoTable":
             continue
-        values = {child.tag.rsplit("}", 1)[-1]: (child.text or "").strip() for child in item.iter() if child.text and not list(child)}
-        rows.append({
-            "name": values.get("nameOfIssuer"), "title": values.get("titleOfClass"),
-            "cusip": values.get("cusip"), "value_thousands": _int(values.get("value")),
-            "shares_or_principal_amount": _int(values.get("sshPrnamt")),
-            "shares_or_principal_type": values.get("sshPrnamtType"), "put_call": values.get("putCall"),
-        })
+        values = {
+            child.tag.rsplit("}", 1)[-1]: (child.text or "").strip()
+            for child in item.iter()
+            if child.text and not list(child)
+        }
+        rows.append(
+            {
+                "name": values.get("nameOfIssuer"),
+                "title": values.get("titleOfClass"),
+                "cusip": values.get("cusip"),
+                "reported_value": _int(values.get("value")),
+                "shares_or_principal_amount": _int(values.get("sshPrnamt")),
+                "shares_or_principal_type": values.get("sshPrnamtType"),
+                "put_call": values.get("putCall"),
+            }
+        )
+    multiplier = _information_table_value_multiplier(rows)
+    unit = "usd_converted_from_thousands" if multiplier == 1000 else "usd_native"
+    for row in rows:
+        value = row.pop("reported_value", None)
+        row["value_usd"] = value * multiplier if value is not None else None
+        row["value_unit"] = unit
     return rows
 
 
-def _resolve_holdings(rows: list[dict[str, Any]], ticker_map: dict[str, str]) -> list[dict[str, Any]]:
-    normalized_map = {str(key).replace(" ", "").upper(): str(value).upper() for key, value in ticker_map.items()}
+def _information_table_value_multiplier(rows: list[dict[str, Any]]) -> int:
+    ratios = [
+        float(row["reported_value"]) / float(row["shares_or_principal_amount"])
+        for row in rows
+        if not row.get("put_call")
+        and row.get("reported_value") not in (None, 0)
+        and row.get("shares_or_principal_amount") not in (None, 0)
+    ]
+    return 1000 if ratios and median(ratios) < 1.0 else 1
+
+
+def _resolve_holdings(
+    rows: list[dict[str, Any]], ticker_map: dict[str, str]
+) -> list[dict[str, Any]]:
+    normalized_map = {
+        str(key).replace(" ", "").upper(): str(value).upper()
+        for key, value in ticker_map.items()
+    }
     return [
-        {**row, "symbol": normalized_map.get(str(row.get("cusip") or "").replace(" ", "").upper())}
+        {
+            **row,
+            "symbol": normalized_map.get(
+                str(row.get("cusip") or "").replace(" ", "").upper()
+            ),
+        }
         for row in rows
     ]
 
@@ -243,7 +339,10 @@ def _ingest_house(runtime: Any, config: Any, trader: dict[str, Any]) -> dict[str
             run_id = ingestion_run.id
             filings = search_house_member_filings(
                 str(house.get("last_name") or trader["trader_name"].split()[-1]),
-                start_year, end_year, user_agent, state=house.get("state"),
+                start_year,
+                end_year,
+                user_agent,
+                state=house.get("state"),
                 district=str(house.get("district")) if house.get("district") else None,
             )
             wanted = set(house.get("filing_types") or ["PTR Original", "FD Original"])
@@ -252,37 +351,64 @@ def _ingest_house(runtime: Any, config: Any, trader: dict[str, Any]) -> dict[str
             skipped = 0
             for filing in filings:
                 document_id = str(filing.get("document_id") or "")
-                if (wanted and filing.get("filing_type") not in wanted) or document_id in existing:
+                if (
+                    wanted and filing.get("filing_type") not in wanted
+                ) or document_id in existing:
                     skipped += 1
                     continue
                 payload = fetch_house_pdf_bytes(str(filing["url"]), user_agent)
                 archive = _archive_house_pdf(config, source_id, document_id, payload)
                 payload_id = repository.record_payload_file(
-                    run_id, archive, source_url=filing["url"], source_document_id=document_id
+                    run_id,
+                    archive,
+                    source_url=filing["url"],
+                    source_document_id=document_id,
                 )
                 text = parse_house_pdf_bytes(payload)
                 rows = [
                     _normalize_house(row, filing, trader)
-                    for row in parse_house_disclosure_text(text, filing, trader["trader_name"])
+                    for row in parse_house_disclosure_text(
+                        text, filing, trader["trader_name"]
+                    )
                 ]
                 ingested += SourceFactRepository(runtime).store_disclosures(
                     run_id, source_id, rows, payload_id=payload_id
                 )
             ingestion_run.finish(
                 item_count=ingested,
-                summary={"filings_found": len(filings), "filings_skipped": skipped, "years": [start_year, end_year]},
+                summary={
+                    "filings_found": len(filings),
+                    "filings_skipped": skipped,
+                    "years": [start_year, end_year],
+                },
             )
-        return {"source_id": source_id, "status": "ok", "rows": ingested, "filings_found": len(filings), "filings_skipped": skipped}
+        return {
+            "source_id": source_id,
+            "status": "ok",
+            "rows": ingested,
+            "filings_found": len(filings),
+            "filings_skipped": skipped,
+        }
     except Exception as exc:
-        return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
+        return {
+            "source_id": source_id,
+            "status": "failed",
+            "rows": 0,
+            "error": str(exc),
+        }
 
 
-def _normalize_house(row: dict[str, Any], filing: dict[str, Any], trader: dict[str, Any]) -> dict[str, Any]:
+def _normalize_house(
+    row: dict[str, Any], filing: dict[str, Any], trader: dict[str, Any]
+) -> dict[str, Any]:
     return {
-        "source_key": row.get("id") or f"house:{filing.get('document_id')}:{row.get('symbol')}:{row.get('transaction_date')}",
+        "source_key": row.get("id")
+        or f"house:{filing.get('document_id')}:{row.get('symbol')}:{row.get('transaction_date')}",
         "source_type": "public_disclosure_transaction",
         "trader_name": trader["trader_name"],
-        "filer_name": row.get("filer_name") or filing.get("name") or trader.get("filer_name"),
+        "filer_name": row.get("filer_name")
+        or filing.get("name")
+        or trader.get("filer_name"),
         "symbol": row.get("symbol"),
         "event_date": row.get("transaction_date"),
         "filed_date": row.get("filed_date"),
@@ -302,7 +428,9 @@ def _existing_document_ids(runtime: Any, source_id: str) -> set[str]:
     return {str(row["id"]) for row in rows if row.get("id")}
 
 
-def _archive_house_pdf(config: Any, source_id: str, document_id: str, payload: bytes) -> Path:
+def _archive_house_pdf(
+    config: Any, source_id: str, document_id: str, payload: bytes
+) -> Path:
     path = provider_archive_path(config, source_id, "house", f"{document_id}.pdf")
     if not path.exists() or path.read_bytes() != payload:
         path.write_bytes(payload)
@@ -337,25 +465,42 @@ def _ingest_csv(runtime: Any, source: dict[str, Any]) -> dict[str, Any]:
             ingestion_run.finish(item_count=count, summary={"source_file": path.name})
         return {"source_id": source_id, "status": "ok", "rows": count}
     except Exception as exc:
-        return {"source_id": source_id, "status": "failed", "rows": 0, "error": str(exc)}
+        return {
+            "source_id": source_id,
+            "status": "failed",
+            "rows": 0,
+            "error": str(exc),
+        }
 
 
 def _normalize(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | None:
     symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
     event_date = row.get("transaction_date") or row.get("event_date") or row.get("date")
-    action = str(row.get("transaction_type") or row.get("type") or row.get("action") or "").strip().upper()
+    action = (
+        str(row.get("transaction_type") or row.get("type") or row.get("action") or "")
+        .strip()
+        .upper()
+    )
     if not symbol or not event_date or not action:
         return None
     identity = "|".join(
         str(value or "")
         for value in (
-            source.get("trader_name"), symbol, event_date, action,
-            row.get("amount") or row.get("amount_range"), row.get("source_url") or row.get("url"),
+            source.get("trader_name"),
+            symbol,
+            event_date,
+            action,
+            row.get("amount") or row.get("amount_range"),
+            row.get("source_url") or row.get("url"),
         )
     )
     return {
-        "source_key": str(row.get("id") or hashlib.sha256(identity.encode()).hexdigest()),
-        "source_type": str(source.get("source_type") or "public_disclosure_transaction"),
+        "source_key": str(
+            row.get("id") or hashlib.sha256(identity.encode()).hexdigest()
+        ),
+        "source_type": str(
+            source.get("source_type") or "public_disclosure_transaction"
+        ),
         "trader_name": row.get("trader_name") or source.get("trader_name"),
         "filer_name": row.get("filer_name") or source.get("filer_name"),
         "symbol": symbol,
@@ -364,7 +509,9 @@ def _normalize(row: dict[str, Any], source: dict[str, Any]) -> dict[str, Any] | 
         "action": action,
         "amount_text": row.get("amount") or row.get("amount_range"),
         "source_url": row.get("source_url") or row.get("url"),
-        "details": {key: value for key, value in row.items() if value not in (None, "")},
+        "details": {
+            key: value for key, value in row.items() if value not in (None, "")
+        },
     }
 
 
@@ -379,8 +526,12 @@ def _configured_csvs(config_path: str | None) -> list[dict[str, Any]]:
         sources.extend(_source_rows(row, path.parent, {}))
     for trader in disclosures.get("tracked_traders") or []:
         defaults = {
-            "trader_name": trader.get("trader_name") or trader.get("name") or "Tracked Trader",
-            "filer_name": trader.get("filer_name") or trader.get("name") or "Public disclosure",
+            "trader_name": trader.get("trader_name")
+            or trader.get("name")
+            or "Tracked Trader",
+            "filer_name": trader.get("filer_name")
+            or trader.get("name")
+            or "Public disclosure",
             "source_kind": trader.get("source_kind") or "public_disclosure",
         }
         for row in trader.get("daily_csvs") or trader.get("incremental_csvs") or []:
@@ -401,7 +552,9 @@ def _configured_house_traders(config_path: str | None) -> list[dict[str, Any]]:
             "official_house": dict(row.get("official_house") or {}),
         }
         for row in disclosures.get("tracked_traders") or []
-        if isinstance(row, dict) and (row.get("trader_name") or row.get("name")) and row.get("official_house")
+        if isinstance(row, dict)
+        and (row.get("trader_name") or row.get("name"))
+        and row.get("official_house")
     ]
 
 
@@ -414,26 +567,40 @@ def _configured_13f_trackers(config_path: str | None) -> list[dict[str, Any]]:
     return [
         {
             "name": str(row.get("name") or row.get("trader_name") or row["cik"]),
-            "cik": str(row["cik"]), "max_filings": int(row.get("max_filings") or 1),
-            "ticker_map": dict(row.get("ticker_map") or row.get("cusip_ticker_map") or {}),
+            "cik": str(row["cik"]),
+            "max_filings": int(row.get("max_filings") or 1),
+            "ticker_map": dict(
+                row.get("ticker_map") or row.get("cusip_ticker_map") or {}
+            ),
         }
         for row in disclosures.get("13f_trackers") or []
         if isinstance(row, dict) and row.get("cik")
     ]
 
 
-def _source_rows(row: Any, base: Path, defaults: dict[str, Any]) -> list[dict[str, Any]]:
+def _source_rows(
+    row: Any, base: Path, defaults: dict[str, Any]
+) -> list[dict[str, Any]]:
     if isinstance(row, str):
         row = {"path": row}
     if not isinstance(row, dict) or not row.get("path"):
         return []
-    return [{
-        "path": str(resolve_path(row["path"], base)),
-        "trader_name": row.get("trader_name") or row.get("name") or defaults.get("trader_name") or "Tracked Trader",
-        "filer_name": row.get("filer_name") or defaults.get("filer_name") or "Public disclosure",
-        "source_type": row.get("source_type") or "public_disclosure_transaction",
-        "source_kind": row.get("source_kind") or defaults.get("source_kind") or "public_disclosure",
-    }]
+    return [
+        {
+            "path": str(resolve_path(row["path"], base)),
+            "trader_name": row.get("trader_name")
+            or row.get("name")
+            or defaults.get("trader_name")
+            or "Tracked Trader",
+            "filer_name": row.get("filer_name")
+            or defaults.get("filer_name")
+            or "Public disclosure",
+            "source_type": row.get("source_type") or "public_disclosure_transaction",
+            "source_kind": row.get("source_kind")
+            or defaults.get("source_kind")
+            or "public_disclosure",
+        }
+    ]
 
 
 def _slug(value: str) -> str:

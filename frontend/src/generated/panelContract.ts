@@ -94,6 +94,7 @@ export const PANEL_TABLE_KEYS = [
   "strategyCohortResult",
   "strategyForwardTestResult",
   "strategyMutationProposal",
+  "superinvestorPortfolios",
   "symbolDecisionSnapshot",
   "symbolDecisionSnapshots",
   "technicals",

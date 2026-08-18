@@ -3,16 +3,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app import deps
 from app.actions.sources import SourceActions
+from app.actions.superinvestors import SuperinvestorActions
 
 router = APIRouter()
 
 
 def _actions() -> SourceActions:
     return SourceActions(deps.load_config())
+
+
+def _superinvestor_actions() -> SuperinvestorActions:
+    return SuperinvestorActions(deps.load_config())
 
 
 @router.get("/api/source-health")
@@ -69,3 +74,11 @@ def source_consensus() -> dict[str, Any]:
 @router.get("/api/ownership-consensus")
 def ownership_consensus() -> dict[str, Any]:
     return deps._table_payload("ownership_consensus")
+
+
+@router.get("/api/superinvestors/{investor_key}")
+def superinvestor_detail(investor_key: str) -> dict[str, Any]:
+    row = _superinvestor_actions().detail(investor_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Superinvestor portfolio not found")
+    return row

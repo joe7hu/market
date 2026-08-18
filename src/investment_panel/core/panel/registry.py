@@ -156,6 +156,9 @@ READ_MODELS: dict[str, ReadLoader] = {
     "universe_screen": lambda ctx: universe_screen(ctx.con, ctx.active_watchlist),
     "source_consensus": lambda ctx: source_consensus(ctx.con),
     "ownership_consensus": lambda ctx: ownership_consensus(ctx.con),
+    # PostgreSQL runtime owns this detailed disclosure projection.  The legacy
+    # DuckDB panel remains intentionally empty rather than becoming a fallback.
+    "superinvestor_portfolios": lambda ctx: [],
     "market_context": lambda ctx: market_context(ctx.con),
     "market_valuation_reference_charts": lambda ctx: market_valuation_reference_charts(ctx.con),
     "market_valuation_charts": lambda ctx: market_valuation_charts(ctx.con, ctx.active_watchlist),

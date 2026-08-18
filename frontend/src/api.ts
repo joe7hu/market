@@ -404,6 +404,10 @@ export async function loadPanelScope(scope: string, existing?: PanelData, option
   return data;
 }
 
+export async function loadSuperinvestorPortfolio(investorKey: string, signal?: AbortSignal): Promise<RowRecord> {
+  return getJson<RowRecord>(`/api/superinvestors/${encodeURIComponent(investorKey)}`, signal);
+}
+
 export async function saveWatchlistSymbol(symbol: string): Promise<TablePayload> {
   const payload = await sendJson<{ watchlist?: TablePayload }>("/api/watchlist/symbols", "POST", {
     symbol,

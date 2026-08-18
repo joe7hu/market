@@ -21,6 +21,7 @@ from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECH
 from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
+from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 
 
 RESEARCH_PACKETS_BASE_QUERY = """
@@ -141,12 +142,15 @@ DIRECT_QUERIES: dict[str, str] = {
     "ownership_consensus": """
         SELECT disclosure.trader_name, disclosure.filer_name, disclosure.event_date,
                disclosure.filed_date, holding->>'symbol' AS symbol,
-               holding->>'name' AS issuer, (holding->>'value_thousands')::bigint AS value_thousands,
+               holding->>'name' AS issuer,
+               CASE WHEN holding ? 'value_usd' THEN (holding->>'value_usd')::bigint
+                    WHEN disclosure.event_date >= DATE '2023-01-03' THEN (holding->>'value_thousands')::bigint
+                    ELSE (holding->>'value_thousands')::bigint * 1000 END AS value_usd,
                disclosure.source_url, disclosure.details->>'accession_number' AS accession_number
         FROM raw.disclosure disclosure
         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(disclosure.details->'holdings', '[]'::jsonb)) holding
         WHERE disclosure.source_type = '13f' AND holding->>'symbol' IS NOT NULL
-        ORDER BY disclosure.event_date DESC, value_thousands DESC
+        ORDER BY disclosure.event_date DESC, value_usd DESC
     """,
     "options_provider_capabilities": """
         SELECT id AS provider, name, enabled, capabilities, updated_at
@@ -557,7 +561,7 @@ SPECIAL_MODELS = {
     "refresh_jobs", "broker_status",
     "portfolio_summary", "portfolio_performance", "portfolio_transactions",
     "correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions",
-    "paper_orders",
+    "paper_orders", "superinvestor_portfolios",
     *RECOVERY_MODELS,
 }
 
@@ -624,6 +628,9 @@ def load_postgres_tables(
     with runtime.read() as connection:
         for name in requested:
             if name in tables:
+                continue
+            if name == "superinvestor_portfolios":
+                tables[name] = superinvestor_portfolios(connection)
                 continue
             alias = MODEL_ALIASES.get(name)
             policy = QUERY_POLICIES.get(alias or name)

@@ -33,8 +33,12 @@ def test_disclosure_csv_is_archived_normalized_and_idempotent(
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     config = SimpleNamespace(database=SimpleNamespace(url=migrated_postgres_dsn))
-    monkeypatch.setattr(update_disclosure_sources, "load_config", lambda _path=None: config)
-    monkeypatch.setattr(update_disclosure_sources, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(
+        update_disclosure_sources, "load_config", lambda _path=None: config
+    )
+    monkeypatch.setattr(
+        update_disclosure_sources, "runtime_for_config", lambda _config: runtime
+    )
     try:
         assert update_disclosure_sources.run(str(config_path))["rows_ingested"] == 1
         assert update_disclosure_sources.run(str(config_path))["rows_ingested"] == 1
@@ -48,7 +52,9 @@ def test_disclosure_csv_is_archived_normalized_and_idempotent(
                 JOIN ingest.payload payload ON payload.id = disclosure.payload_id
                 """
             ).fetchone()
-            count = connection.execute("SELECT count(*) AS count FROM raw.disclosure").fetchone()["count"]
+            count = connection.execute(
+                "SELECT count(*) AS count FROM raw.disclosure"
+            ).fetchone()["count"]
         assert count == 1
         assert row["source_key"] == "tx-1"
         assert row["symbol"] == "NVDA"
@@ -86,25 +92,45 @@ def test_house_refresh_archives_pdf_and_skips_existing_document(
         report_dir=tmp_path / "reports",
     )
     filing = {
-        "document_id": "20030001", "url": "https://house.example/20030001.pdf",
-        "filing_type": "PTR Original", "name": "Nancy Pelosi",
+        "document_id": "20030001",
+        "url": "https://house.example/20030001.pdf",
+        "filing_type": "PTR Original",
+        "name": "Nancy Pelosi",
     }
     parsed = {
-        "id": "house:20030001:0", "symbol": "NVDA", "transaction_date": "2026-06-01",
-        "filed_date": "2026-06-15", "transaction_type": "BUY", "amount": "1001-15000",
+        "id": "house:20030001:0",
+        "symbol": "NVDA",
+        "transaction_date": "2026-06-01",
+        "filed_date": "2026-06-15",
+        "transaction_type": "BUY",
+        "amount": "1001-15000",
         "filer_name": "Nancy Pelosi",
     }
     fetches = []
-    monkeypatch.setattr(update_disclosure_sources, "load_config", lambda _path=None: config)
-    monkeypatch.setattr(update_disclosure_sources, "runtime_for_config", lambda _config: runtime)
-    monkeypatch.setattr(update_disclosure_sources, "search_house_member_filings", lambda *_args, **_kwargs: [filing])
+    monkeypatch.setattr(
+        update_disclosure_sources, "load_config", lambda _path=None: config
+    )
+    monkeypatch.setattr(
+        update_disclosure_sources, "runtime_for_config", lambda _config: runtime
+    )
+    monkeypatch.setattr(
+        update_disclosure_sources,
+        "search_house_member_filings",
+        lambda *_args, **_kwargs: [filing],
+    )
     monkeypatch.setattr(
         update_disclosure_sources,
         "fetch_house_pdf_bytes",
         lambda *_args: fetches.append("pdf") or b"original-pdf",
     )
-    monkeypatch.setattr(update_disclosure_sources, "parse_house_pdf_bytes", lambda _payload: "parsed")
-    monkeypatch.setattr(update_disclosure_sources, "parse_house_disclosure_text", lambda *_args: [parsed])
+    monkeypatch.setattr(
+        update_disclosure_sources, "parse_house_pdf_bytes", lambda _payload: "parsed"
+    )
+    monkeypatch.setattr(
+        update_disclosure_sources,
+        "parse_house_disclosure_text",
+        lambda *_args: [parsed],
+    )
     try:
         first = update_disclosure_sources.run(str(config_path))
         second = update_disclosure_sources.run(str(config_path))
@@ -152,13 +178,19 @@ def test_13f_refresh_archives_sec_payloads_and_skips_existing_accession(
     )
     submissions = {
         "name": "Test Fund",
-        "filings": {"recent": {
-            "form": ["13F-HR"], "accessionNumber": ["0000000123-26-000001"],
-            "filingDate": ["2026-05-15"], "reportDate": ["2026-03-31"],
-            "primaryDocument": ["primary.xml"],
-        }},
+        "filings": {
+            "recent": {
+                "form": ["13F-HR"],
+                "accessionNumber": ["0000000123-26-000001"],
+                "filingDate": ["2026-05-15"],
+                "reportDate": ["2026-03-31"],
+                "primaryDocument": ["primary.xml"],
+            }
+        },
     }
-    index = {"directory": {"item": [{"name": "primary.xml"}, {"name": "infotable.xml"}]}}
+    index = {
+        "directory": {"item": [{"name": "primary.xml"}, {"name": "infotable.xml"}]}
+    }
     info = b"""<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
       <infoTable><nameOfIssuer>NVIDIA</nameOfIssuer><titleOfClass>COM</titleOfClass>
       <cusip>67066G104</cusip><value>25000</value><shrsOrPrnAmt><sshPrnamt>100</sshPrnamt><sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt></infoTable>
@@ -173,8 +205,12 @@ def test_13f_refresh_archives_sec_payloads_and_skips_existing_accession(
             return json.dumps(index).encode()
         return info
 
-    monkeypatch.setattr(update_disclosure_sources, "load_config", lambda _path=None: config)
-    monkeypatch.setattr(update_disclosure_sources, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(
+        update_disclosure_sources, "load_config", lambda _path=None: config
+    )
+    monkeypatch.setattr(
+        update_disclosure_sources, "runtime_for_config", lambda _config: runtime
+    )
     monkeypatch.setattr(update_disclosure_sources, "_http_bytes", fake_get)
     try:
         first = update_disclosure_sources.run(str(config_path))
@@ -188,6 +224,19 @@ def test_13f_refresh_archives_sec_payloads_and_skips_existing_accession(
             ).fetchone()
         assert row["source_key"] == "0000000123-26-000001"
         assert row["details"]["holdings"][0]["symbol"] == "NVDA"
-        assert row["details"]["holdings_value_thousands"] == 25000
+        assert row["details"]["holdings_value_usd"] == 25000
+        assert row["details"]["value_unit"] == "usd_native"
     finally:
         runtime.close()
+
+
+def test_13f_parser_normalizes_legacy_thousands_scale_to_usd() -> None:
+    payload = b"""<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
+      <infoTable><nameOfIssuer>10X Genomics</nameOfIssuer><titleOfClass>COM</titleOfClass>
+      <cusip>88025U109</cusip><value>15455</value><shrsOrPrnAmt><sshPrnamt>403100</sshPrnamt>
+      <sshPrnamtType>SH</sshPrnamtType></shrsOrPrnAmt></infoTable></informationTable>"""
+
+    holding = update_disclosure_sources._parse_information_table(payload)[0]
+
+    assert holding["value_usd"] == 15455000
+    assert holding["value_unit"] == "usd_converted_from_thousands"

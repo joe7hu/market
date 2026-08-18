@@ -25,7 +25,9 @@ market_data:
   lookback_days: 260
   equity_provider: yahoo-chart
   crypto_provider: coingecko
-  user_agent: "joehu-market-panel/0.1 contact:local"
+  # SEC EDGAR rejects anonymous/local-only identities. Keep a real contact in
+  # the provider identity so scheduled 13F refreshes remain allowed.
+  user_agent: "joehu-market-panel/0.1 gmgmgoldage@gmail.com"
 
 data_sources:
   opencli:
@@ -285,19 +287,22 @@ disclosures:
   13f_trackers:
     - name: Berkshire / Buffett
       cik: "0001067983"
-      max_filings: 1
+      max_filings: 8
     - name: Scion / Burry
       cik: "0001649339"
-      max_filings: 1
+      max_filings: 8
     - name: Bridgewater / Dalio
       cik: "0001350694"
-      max_filings: 1
+      max_filings: 8
     - name: Renaissance / Simons-style
       cik: "0001037389"
-      max_filings: 1
+      max_filings: 8
     - name: Point72
       cik: "0001603466"
-      max_filings: 1
+      max_filings: 8
+    - name: Stanley Druckenmiller / Duquesne
+      cik: "0001536411"
+      max_filings: 8
     - name: Leopold Aschenbrenner / Situational Awareness
       cik: "0002045724"
       max_filings: 4
