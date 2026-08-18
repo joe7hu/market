@@ -29,7 +29,7 @@ export default defineConfig({
     },
   },
   server: {
-    allowedHosts: [".tail46d3fb.ts.net"],
+    allowedHosts: ["mini1.local", ".tail46d3fb.ts.net"],
     proxy: {
       "/api": {
         target: apiProxyTarget,
