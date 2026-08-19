@@ -71,6 +71,10 @@ class _FakeRobinhoodClient:
                     {
                         "id": "chain-nvda",
                         "symbol": underlying_symbol,
+                        "cash_component": None,
+                        "settle_on_open": False,
+                        "trade_value_multiplier": "100.0000",
+                        "underlying_instruments": [{"instrument": "https://provider.test/NVDA"}],
                         "expiration_dates": ["2026-06-26", "2027-06-17", "2027-12-17"],
                     }
                 ]
@@ -214,6 +218,50 @@ def test_option_quote_row_maps_robinhood_fields() -> None:
     assert row["last_trade_at"] == "2026-06-12T19:59:59Z"
     assert row["market_data_status"] == "live"
     assert row["contract_symbol"] == "deba9035-f70b-4257-917c-7bbc9ef06097"
+    assert row["standard_contract_verified"] is False
+
+
+def test_option_quote_row_verifies_provider_proven_standard_equity_contract() -> None:
+    chain = {
+        "id": "chain-nvda", "symbol": "NVDA", "cash_component": None,
+        "settle_on_open": False, "trade_value_multiplier": "100.0000",
+        "underlying_instruments": [{"instrument": "https://provider.test/NVDA"}],
+    }
+    instrument = {
+        "id": "contract-1", "chain_id": "chain-nvda", "chain_symbol": "NVDA",
+        "underlying_type": "equity", "trade_value_multiplier": "100.0000",
+        "expiration_date": "2026-09-18", "strike_price": "200", "type": "call",
+        "_chain_metadata": chain, "_requested_symbol": "NVDA",
+    }
+
+    row = option_quote_row(instrument, {"instrument_id": "contract-1", "bid_price": "2", "ask_price": "2.2"})
+
+    assert row is not None
+    assert row["style"] == "american"
+    assert row["settlement"] == "physical"
+    assert row["deliverable_key"] == "robinhood-chain:chain-nvda"
+    assert row["standard_contract_verified"] is True
+
+
+def test_option_quote_row_rejects_adjusted_or_unproven_deliverable_semantics() -> None:
+    chain = {
+        "id": "chain-nvda-adjusted", "symbol": "NVDA1", "cash_component": "12.50",
+        "settle_on_open": False, "trade_value_multiplier": "100.0000",
+        "underlying_instruments": [{"instrument": "https://provider.test/NVDA"}],
+    }
+    instrument = {
+        "id": "adjusted-1", "chain_id": "chain-nvda-adjusted", "chain_symbol": "NVDA1",
+        "underlying_type": "equity", "trade_value_multiplier": "100.0000",
+        "expiration_date": "2026-09-18", "strike_price": "20", "type": "call",
+        "_chain_metadata": chain, "_requested_symbol": "NVDA",
+    }
+
+    row = option_quote_row(instrument, {"instrument_id": "adjusted-1", "bid_price": "2", "ask_price": "2.2"})
+
+    assert row is not None
+    assert row["style"] is None
+    assert row["settlement"] is None
+    assert row["standard_contract_verified"] is False
 
 
 def test_robinhood_chain_rows_flow_into_option_snapshots(tmp_path: Path) -> None:

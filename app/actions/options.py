@@ -23,6 +23,8 @@ from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.option_ticket_read import revalidate_published_tickets
 from investment_panel.database.decision_inbox import DecisionInboxRepository
 from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
+from investment_panel.database.event_studies import event_study_rows
+from investment_panel.database.options_distribution_shift import surface_shift_rows
 
 
 def _decision_mode(config: Any) -> str:
@@ -183,6 +185,19 @@ class OptionsActions:
         result = self.history.health(symbol=symbol)
         result["mode"] = _decision_mode(self.config)
         return result
+
+    def event_study(self, *, ticker: str, event_kind: str, as_of: datetime) -> dict[str, Any]:
+        rows = event_study_rows(self.runtime, ticker=ticker, event_kind=event_kind, as_of=as_of)
+        return {
+            "ticker": ticker.strip().upper(),
+            "event_kind": rows[0]["event_kind"] if rows else event_kind.strip().lower(),
+            "as_of": as_of,
+            "evidence_state": rows[0]["evidence_state"] if rows else "insufficient_event_evidence",
+            "rows": rows,
+        }
+
+    def distribution_shift(self, *, symbol: str, as_of: datetime) -> dict[str, Any]:
+        return surface_shift_rows(self.runtime, symbol=symbol, as_of=as_of)
 
     def recovery_events(self, **filters: Any) -> dict[str, Any]:
         rows = self.recovery.events(**filters)

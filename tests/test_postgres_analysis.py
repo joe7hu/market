@@ -14,6 +14,7 @@ from app import deps
 from app.routers.options import _encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
+from investment_panel.core.decision import is_us_market_day
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
@@ -137,6 +138,10 @@ def analysis_context(postgres_dsn: str):
                 "open_interest": 1500,
                 "iv": 0.41,
                 "delta": 0.43,
+                "style": "american",
+                "settlement": "physical",
+                "deliverable_key": "nvda-standard",
+                "standard_contract_verified": True,
             }
         ],
     )
@@ -536,6 +541,10 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
                 "open_interest": 2500,
                 "iv": 0.38,
                 "delta": -0.22,
+                "style": "american",
+                "settlement": "physical",
+                "deliverable_key": "nvda-standard",
+                "standard_contract_verified": True,
             }
         ],
     )
@@ -947,7 +956,8 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
 def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) -> None:
     runtime: DatabaseRuntime = analysis_context["runtime"]
     ingestion = IngestionRepository(runtime)
-    observed_at = datetime(2026, 7, 12, 15, 0, tzinfo=UTC)
+    observed_at = datetime.now(UTC) + timedelta(minutes=5)
+    expiration = (observed_at.date() + timedelta(days=40)).isoformat()
     run_id = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         run_id,
@@ -956,22 +966,20 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
         market_session="regular",
         universe="test",
         rows=[
-            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 175, "option_type": "call", "underlying_price": 180, "bid": 7.8, "ask": 8.0, "mid": 7.9, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58},
-            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 190, "option_type": "call", "underlying_price": 180, "bid": 3.8, "ask": 4.0, "mid": 3.9, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35},
+                    {"symbol": "NVDA", "expiration": expiration, "strike": 175, "option_type": "call", "underlying_price": 180, "bid": 7.8, "ask": 8.0, "mid": 7.9, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+                    {"symbol": "NVDA", "expiration": expiration, "strike": 190, "option_type": "call", "underlying_price": 180, "bid": 3.8, "ask": 4.0, "mid": 3.9, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
         ],
     )
-    with runtime.transaction() as connection:
-        connection.execute(
-            """
-            INSERT INTO raw.price_bar
-                (instrument_id, source_id, ingest_run_id, interval, trading_date,
-                 observed_at, close, volume)
-            SELECT %s, 'test-options', %s, '1d', (%s::date - 100 + value),
-                   %s - make_interval(days => 100 - value), 100 + value * 0.8, 1000000
-            FROM generate_series(0, 100) value
-            """,
-            [analysis_context["instrument_id"], run_id, observed_at, observed_at],
-        )
+    dates = [
+        observed_at.date() - timedelta(days=offset)
+        for offset in range(180, -1, -1)
+        if is_us_market_day(observed_at.date() - timedelta(days=offset))
+    ]
+    ingestion.store_price_bars(run_id, "test-options", [
+        {"symbol": "NVDA", "date": trading_date,
+         "close": 100 + value * 0.8, "volume": 1_000_000}
+        for value, trading_date in enumerate(dates)
+    ])
     ingestion.finish_run(run_id, "succeeded")
 
     result = refresh_options_radar(runtime, source_id="test-options", code_version="spread-test")
@@ -988,17 +996,71 @@ def test_options_radar_builds_same_snapshot_call_debit_spread(analysis_context) 
     assert spread["expected_value"] > 0
     assert spread["details"]["same_snapshot_legs"] is True
     assert all(leg["bid"] is not None and leg["ask"] is not None for leg in spread["ticket"]["legs"])
-    mark_at = datetime(2026, 7, 13, 15, 0, tzinfo=UTC)
+    mark_at = observed_at + timedelta(days=1)
     mark_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         mark_run, source_id="test-options", observed_at=mark_at, market_session="regular", universe="test",
         rows=[
-            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 175, "option_type": "call", "underlying_price": 182, "bid": 9.0, "ask": 9.2, "mid": 9.1, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58},
-            {"symbol": "NVDA", "expiration": "2026-08-21", "strike": 190, "option_type": "call", "underlying_price": 182, "bid": 5.3, "ask": 5.5, "mid": 5.4, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35},
+                {"symbol": "NVDA", "expiration": expiration, "strike": 175, "option_type": "call", "underlying_price": 182, "bid": 9.0, "ask": 9.2, "mid": 9.1, "volume": 200, "open_interest": 2000, "iv": .35, "delta": .58, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+                {"symbol": "NVDA", "expiration": expiration, "strike": 190, "option_type": "call", "underlying_price": 182, "bid": 5.3, "ask": 5.5, "mid": 5.4, "volume": 180, "open_interest": 1800, "iv": .34, "delta": .35, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
         ],
     )
     ingestion.finish_run(mark_run, "succeeded")
-    OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 13, 16, 0, tzinfo=UTC))
+    OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
+    with runtime.read() as connection:
+        outcome = connection.execute(
+            "SELECT current_return FROM analysis.option_outcome WHERE decision_id = %s",
+            [spread["decision_id"]],
+        ).fetchone()
+    assert outcome["current_return"] == pytest.approx((9.0 - 5.5) / 4.2 - 1)
+
+
+def test_options_radar_builds_and_marks_same_snapshot_put_debit_spread(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    ingestion = IngestionRepository(runtime)
+    observed_at = datetime.now(UTC) + timedelta(minutes=5)
+    expiration = (observed_at.date() + timedelta(days=40)).isoformat()
+    run_id = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        run_id, source_id="test-options", observed_at=observed_at,
+        market_session="regular", universe="test",
+        rows=[
+                    {"symbol": "NVDA", "expiration": expiration, "strike": 170, "option_type": "put", "underlying_price": 180, "bid": 3.8, "ask": 4.0, "mid": 3.9, "volume": 180, "open_interest": 1800, "iv": .34, "delta": -.35, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+                    {"symbol": "NVDA", "expiration": expiration, "strike": 185, "option_type": "put", "underlying_price": 180, "bid": 7.8, "ask": 8.0, "mid": 7.9, "volume": 200, "open_interest": 2000, "iv": .35, "delta": -.58, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+        ],
+    )
+    dates = [
+        observed_at.date() - timedelta(days=offset)
+        for offset in range(180, -1, -1)
+        if is_us_market_day(observed_at.date() - timedelta(days=offset))
+    ]
+    ingestion.store_price_bars(run_id, "test-options", [
+        {"symbol": "NVDA", "date": trading_date,
+         "close": 260 - value * 0.8, "volume": 1_000_000}
+        for value, trading_date in enumerate(dates)
+    ])
+    ingestion.finish_run(run_id, "succeeded")
+    result = refresh_options_radar(runtime, source_id="test-options", code_version="put-spread-test")
+    assert result["put_debit_spreads"] >= 1
+    spread = next(
+        row for row in published_options_radar_rows(runtime, "option_radar_opportunity")
+        if row["structure"] == "put_debit_spread"
+    )
+    assert spread["max_loss"] == pytest.approx(420)
+    assert spread["max_profit"] == pytest.approx(1080)
+    assert all(leg["bid"] is not None and leg["ask"] is not None for leg in spread["ticket"]["legs"])
+    mark_at = observed_at + timedelta(days=1)
+    mark_run = ingestion.start_run("test-options", "option_quotes")
+    ingestion.store_option_snapshot(
+        mark_run, source_id="test-options", observed_at=mark_at,
+        market_session="regular", universe="test",
+        rows=[
+                {"symbol": "NVDA", "expiration": expiration, "strike": 170, "option_type": "put", "underlying_price": 178, "bid": 5.3, "ask": 5.5, "mid": 5.4, "volume": 180, "open_interest": 1800, "iv": .34, "delta": -.35, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+                {"symbol": "NVDA", "expiration": expiration, "strike": 185, "option_type": "put", "underlying_price": 178, "bid": 9.0, "ask": 9.2, "mid": 9.1, "volume": 200, "open_interest": 2000, "iv": .35, "delta": -.58, "style": "american", "settlement": "physical", "deliverable_key": "nvda-standard", "standard_contract_verified": True},
+        ],
+    )
+    ingestion.finish_run(mark_run, "succeeded")
+    OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
     with runtime.read() as connection:
         outcome = connection.execute(
             "SELECT current_return FROM analysis.option_outcome WHERE decision_id = %s",
@@ -1102,6 +1164,9 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
                 "option_type": "call", "contract_symbol": f"{symbol}-{strike}",
                 "underlying_price": strike - 5, "bid": 4.8, "ask": 5.2, "mid": 5,
                 "volume": 120, "open_interest": 1500, "iv": 0.4, "delta": 0.4,
+                "style": "american", "settlement": "physical",
+                "deliverable_key": f"{symbol.lower()}-standard",
+                "standard_contract_verified": True,
             }],
         )
         ingestion.finish_run(ingest_run, "succeeded")

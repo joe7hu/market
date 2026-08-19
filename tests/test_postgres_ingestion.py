@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 import pytest
 
-from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.ingestion import IngestionRepository, _normalize_option_row
 from investment_panel.core.market_time import market_timezone_for_symbol
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options import _market_session
@@ -20,6 +20,16 @@ from investment_panel.jobs import update_robinhood_options
 def test_option_snapshot_session_includes_listed_option_close_window() -> None:
     assert _market_session(datetime(2026, 7, 10, 20, 14, tzinfo=UTC)) == "regular"
     assert _market_session(datetime(2026, 7, 10, 20, 16, tzinfo=UTC)) == "afterhours"
+
+
+def test_option_normalization_clears_incomplete_standard_contract_claim() -> None:
+    normalized = _normalize_option_row({
+        "symbol": "QQQ", "expiration": "2026-09-18", "strike": 500,
+        "option_type": "call", "standard_contract_verified": True,
+        "style": "american", "settlement": None, "deliverable_key": "qqq-standard",
+    })
+
+    assert normalized["standard_contract_verified"] is False
 
 
 @pytest.fixture
@@ -291,6 +301,10 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
             "open_interest": 1500,
             "iv": 0.41,
             "delta": 0.43,
+            "style": "american",
+            "settlement": "physical",
+            "deliverable_key": "nvda-standard",
+            "standard_contract_verified": True,
             "raw": {"large": "must not be copied into normalized quote facts"},
         },
         {
@@ -320,6 +334,7 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
         completeness=1.0,
     )
     rows[0]["mid"] = 5.1
+    rows[0]["standard_contract_verified"] = False
     second = repository.store_option_snapshot(
         run_id,
         source_id="robinhood",
@@ -340,7 +355,7 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
             "(SELECT count(*) FROM raw.option_quote)"
         ).fetchone()
         quote = connection.execute(
-            "SELECT q.mid, q.provider_iv, c.provider_symbols "
+            "SELECT q.mid, q.provider_iv, q.standard_contract_verified, c.provider_symbols "
             "FROM raw.option_quote q JOIN catalog.option_contract c ON c.id = q.contract_id "
             "ORDER BY c.strike LIMIT 1"
         ).fetchone()
@@ -355,11 +370,64 @@ def test_option_snapshot_is_narrow_deduplicated_partitioned_and_idempotent(
             "SELECT to_regclass('raw.option_quote_202607')::text"
         ).fetchone()[0]
     assert counts == (1, 1, 2, 2)
-    assert quote == (5.1, 0.41, {"robinhood": "rh-nvda-180c"})
+    assert quote == (5.1, 0.41, False, {"robinhood": "rh-nvda-180c"})
     assert "raw" not in columns
     assert "ticker" not in columns
     assert "expiration" not in columns
     assert partition == "raw.option_quote_202607"
+
+
+def test_provider_symbol_never_reuses_a_different_deliverable_identity(
+    repository: IngestionRepository, postgres_dsn: str,
+) -> None:
+    for index, deliverable_key in enumerate(("nvda-standard-a", "nvda-standard-b")):
+        observed_at = datetime(2026, 7, 11, 14, 30 + index, tzinfo=UTC)
+        run_id = repository.start_run("robinhood", "option_quotes")
+        repository.store_option_snapshot(
+            run_id,
+            source_id="robinhood",
+            observed_at=observed_at,
+            market_session="regular",
+            universe=f"deliverable-{index}",
+            rows=[{
+                "symbol": "NVDA", "expiry": "2026-08-21", "strike": 180,
+                "type": "call", "contract_symbol": "provider-contract-1",
+                "bid": 2.0, "ask": 2.2, "mid": 2.1,
+                "style": "american", "settlement": "physical",
+                "deliverable_key": deliverable_key,
+                "standard_contract_verified": True,
+            }],
+        )
+        repository.finish_run(run_id, "succeeded")
+    observed_at = datetime(2026, 7, 11, 14, 32, tzinfo=UTC)
+    run_id = repository.start_run("robinhood", "option_quotes")
+    repository.store_option_snapshot(
+        run_id,
+        source_id="robinhood",
+        observed_at=observed_at,
+        market_session="regular",
+        universe="deliverable-unknown",
+        rows=[{
+            "symbol": "NVDA", "expiry": "2026-08-21", "strike": 180,
+            "type": "call", "contract_symbol": "provider-contract-1",
+            "bid": 2.0, "ask": 2.2, "mid": 2.1,
+        }],
+    )
+    repository.finish_run(run_id, "succeeded")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        keys = connection.execute(
+            """
+            SELECT DISTINCT quote.contract_deliverable_key
+            FROM raw.option_quote quote
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            WHERE contract.provider_symbols ->> 'robinhood' = 'provider-contract-1'
+            ORDER BY quote.contract_deliverable_key
+            """
+        ).fetchall()
+
+    assert [row[0] for row in keys] == [
+        "nvda-standard-a", "nvda-standard-b", "unverified:robinhood:provider-contract-1",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -193,12 +193,14 @@ def test_rejected_contracts_are_aggregated_and_near_misses_retained(migrated_pos
             counts = connection.execute(
                 """
                 SELECT (SELECT count(*) FROM analysis.decision) AS decisions,
+                       (SELECT count(*) FROM analysis.decision WHERE state <> 'REJECTED') AS actionable,
                        (SELECT count(*) FROM analysis.option_feature) AS features,
                        (SELECT sum(reject_count) FROM analysis.reject_summary) AS rejects
                 """
             ).fetchone()
-        assert counts["decisions"] == 1
-        assert counts["features"] == 1
+        assert counts["decisions"] == 2
+        assert counts["actionable"] == 1
+        assert counts["features"] == 2
         assert counts["rejects"] >= 1
     finally:
         runtime.close()
@@ -221,6 +223,8 @@ def _row(mid: float, *, bid: float, ask: float, open_interest: int) -> dict[str,
     return {
         "symbol": "NVDA", "expiration": "2026-08-21", "strike": 180,
         "option_type": "call", "contract_symbol": "NVDA260821C00180000",
+        "style": "american", "settlement": "physical",
+        "deliverable_key": "nvda-standard", "standard_contract_verified": True,
         "underlying_price": 175, "bid": bid, "ask": ask, "mid": mid,
         "volume": 120, "open_interest": open_interest, "iv": 0.4, "delta": 0.4,
     }

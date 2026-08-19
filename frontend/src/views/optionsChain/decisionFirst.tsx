@@ -9,7 +9,7 @@ import {
   loadOptionsCandidates, loadOptionsLearningProgress, loadOptionsPaperJournal,
   loadOptionsShadowObservations,
   loadOptionsWorkspace, type OptionsDecisionBrief, type OptionsDecisionCandidate,
-  type OptionsLearningProgress, type OptionsPaperJournalRow, type OptionsWorkspacePayload,
+  type MarketRegime, type OptionsLearningProgress, type OptionsPaperJournalRow, type OptionsWorkspacePayload, type StrategyRoute,
 } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "../workspacePage";
@@ -238,12 +238,40 @@ function Candidate({ candidate, state }: { candidate: OptionsDecisionCandidate; 
       <Metric label="Total risk" value={money(ticket?.risk.total_risk)} />
       <Metric label="Target / stop" value={ticket ? `${money(ticket.exits.profit_price)} / ${money(ticket.exits.loss_price)}` : "—"} />
     </dl>
+    <RouteContext route={candidate.strategy_route} regime={candidate.market_regime} />
     {ticket ? <div className="mt-3 space-y-1 text-xs text-muted-foreground">
       {ticket.legs.map((leg) => <p key={`${leg.contract_id}-${leg.side}`}>{leg.side.toUpperCase()} {money(leg.strike)} {leg.option_type.toUpperCase()} · {money(leg.bid)} × {money(leg.ask)} · {leg.bid_size ?? "—"} / {leg.ask_size ?? "—"} · age {number(leg.quote_age_seconds, 0)}s</p>)}
       <p>Time exit {ticket.exits.time_exit_dte} DTE · Invalidation: {ticket.exits.thesis_invalidation ?? "required before READY"}</p>
       {ticket.blockers.length ? <p className="font-medium text-amber-700 dark:text-amber-300">NO TRADE — research only · {ticket.required_next_action}</p> : null}
     </div> : null}
   </article>;
+}
+
+export function routeContextFacts(route: StrategyRoute, regime: MarketRegime) {
+  return {
+    selected: route.selected_structure,
+    shadow: route.shadow !== false,
+    trend: route.trend_state || regime.trend_state,
+    trendConfidence: route.trend_confidence ?? regime.trend_confidence,
+    volatility: route.volatility_state || regime.volatility_state,
+    breadth: regime.breadth_state,
+    blockers: route.route_blockers ?? [],
+  };
+}
+
+function RouteContext({ route, regime }: { route: StrategyRoute; regime: MarketRegime }) {
+  const facts = routeContextFacts(route, regime);
+  const context = [
+    facts.trend && `Trend ${sentence(facts.trend)}`,
+    facts.trendConfidence !== null && facts.trendConfidence !== undefined && `confidence ${percent(facts.trendConfidence)}`,
+    facts.volatility && `vol ${sentence(facts.volatility)}`,
+    facts.breadth && `breadth ${sentence(facts.breadth)}`,
+  ].filter(Boolean);
+  return <div className="mt-3 min-w-0 rounded-md border border-border/70 bg-muted/40 p-2.5 text-xs leading-5">
+    <div className="flex flex-wrap items-center gap-1.5"><StatusBadge tone="info">{facts.shadow ? "Shadow route" : "Route context"}</StatusBadge><StatusBadge tone="warn">Paper-only · not authorized</StatusBadge></div>
+    <p className="mt-1 break-words text-muted-foreground"><span className="font-medium text-foreground">{sentence(facts.selected)}</span>{context.length ? ` · ${context.join(" · ")}` : " · Market route data pending"}</p>
+    {facts.blockers.length ? <p className="mt-1 break-words text-amber-700 dark:text-amber-300">Route blocker: {facts.blockers[0]}</p> : null}
+  </div>;
 }
 
 function SectionTitle({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <div className="flex items-start gap-3"><span className="mt-0.5 text-primary">{icon}</span><span><h2 className="font-semibold">{title}</h2><p className="mt-0.5 text-xs leading-5 text-muted-foreground">{detail}</p></span></div>; }

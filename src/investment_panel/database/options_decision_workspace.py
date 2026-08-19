@@ -88,6 +88,21 @@ def workspace_payload(
         "freshness_state": "current" if capture.get("capture_state") == "complete" else "collecting",
         "canary_status": canary,
         "active_revision": MODEL_REVISION,
+        "strategy_route": (
+            (brief.get("strongest_candidate") or {}).get("strategy_route")
+            or {
+                "selected_structure": "NO_TRADE",
+                "route_blockers": ["no_current_candidate_route"],
+            }
+        ),
+        "market_regime": (
+            (brief.get("strongest_candidate") or {}).get("market_regime")
+            or {
+                "trend_state": "unavailable",
+                "quality_status": "unavailable",
+                "reason_codes": ["no_current_candidate_market_regime"],
+            }
+        ),
         "paper_action_capability": {
             "mode": mode,
             "enabled": False,

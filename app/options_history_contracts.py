@@ -22,6 +22,51 @@ class OptionSnapshotSummary(BaseModel):
     contract_count: int
 
 
+class EventStudyRow(BaseModel):
+    id: str
+    ticker: str
+    event_kind: str
+    as_of: datetime
+    event_starts_at: datetime
+    event_session: str
+    horizon: int
+    sample_size: int
+    actual_move_median: float | None = None
+    actual_move_p75: float | None = None
+    actual_move_p90: float | None = None
+    bootstrap_low: float | None = None
+    bootstrap_high: float | None = None
+    win_rate: float | None = None
+    implied_move: float | None = None
+    evidence_state: str
+    feature_version: str
+    details: dict[str, Any]
+
+
+class EventStudyResponse(BaseModel):
+    ticker: str
+    event_kind: str
+    as_of: datetime
+    evidence_state: str
+    rows: list[EventStudyRow]
+
+
+class DistributionShiftResponse(BaseModel):
+    symbol: str
+    as_of: datetime
+    previous_as_of: datetime | None = None
+    feature_version: str
+    tenors: list[int]
+    w1_shift: float | None = None
+    tail_mass_change: float | None = None
+    skew_shift: float | None = None
+    term_shift: float | None = None
+    evidence_state: str
+    details: dict[str, Any]
+    explanation_only: bool = True
+    strategy_effect: bool = False
+
+
 class OptionChainRow(BaseModel):
     snapshot_id: int
     symbol: str
@@ -358,6 +403,8 @@ class OptionsDecisionCandidate(BaseModel):
     blockers: list[str]
     reassessment_date: date | None = None
     comparable_exact_structure_outcomes: dict[str, Any]
+    strategy_route: dict[str, Any] = Field(default_factory=dict)
+    market_regime: dict[str, Any] = Field(default_factory=dict)
     ticket: OptionTradeTicket | None = None
     paper_only: bool
 

@@ -16,10 +16,14 @@ from investment_panel.database.price_fact_versions import confirm_price_fact, lo
 from investment_panel.database.ingestion_coerce import (
     aware_datetime as _aware_datetime,
     calendar_date as _date,
-    integer as _integer,
     number as _number,
 )
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
+from investment_panel.database.option_ingestion_support import (
+    normalize_option_row as _normalize_option_row,
+    option_universe as _option_universe,
+    stage_option_rows as _stage_option_rows,
+)
 from investment_panel.database.option_snapshot_freshness import latest_option_snapshot_by_symbol
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
 @dataclass
@@ -96,109 +100,7 @@ class IngestionRepository:
         )
 
     def option_universe(self, configured: Sequence[dict[str, Any]] = (), *, limit: int | None = None) -> list[str]:
-        with self.runtime.read() as connection:
-            rows = connection.execute(
-                """
-                WITH canonical_instruments AS (
-                    SELECT DISTINCT ON (canonical_symbol)
-                           instrument.id, canonical_symbol AS symbol, instrument.asset_class
-                    FROM (
-                        SELECT instrument.*,
-                               regexp_replace(upper(instrument.symbol), '[.]+$', '') AS canonical_symbol
-                        FROM catalog.instrument instrument
-                    ) instrument
-                    WHERE canonical_symbol <> ''
-                    ORDER BY canonical_symbol,
-                             (upper(instrument.symbol) = canonical_symbol) DESC,
-                             instrument.updated_at DESC, instrument.id
-                ), source_signal AS (
-                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
-                           count(DISTINCT CASE WHEN source.kind = 'news' THEN lower(source.name) ELSE source.id END) AS source_roots,
-                           max(item.observed_at) AS latest_signal_at
-                    FROM raw.content_item_instrument link
-                    JOIN raw.content_item item ON item.id = link.content_item_id
-                    JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
-                    JOIN ingest.source source ON source.id = item.source_id
-                    WHERE source.enabled
-                      AND item.observed_at >= now() - interval '30 days'
-                      AND item.observed_at <= now()
-                      AND COALESCE(item.published_at, item.observed_at) <= now()
-                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
-                ), upcoming_catalyst AS (
-                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
-                           min(catalyst.starts_at) AS starts_at
-                    FROM app.catalyst catalyst
-                    JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
-                    WHERE catalyst.status = 'current'
-                      AND catalyst.starts_at >= now() AND catalyst.starts_at < now() + interval '90 days'
-                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
-                ), recent_option_decision AS (
-                    SELECT regexp_replace(upper(instrument.symbol), '[.]+$', '') AS symbol,
-                           max(decision.as_of) AS latest_decision_at
-                    FROM analysis.decision decision
-                    JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
-                    WHERE decision.kind = 'option' AND decision.as_of >= now() - interval '14 days'
-                    GROUP BY regexp_replace(upper(instrument.symbol), '[.]+$', '')
-                )
-                SELECT i.symbol, p.instrument_id IS NOT NULL AS is_owned, w.watch_state,
-                       coalesce(source_signal.source_roots, 0) AS source_roots,
-                       upcoming_catalyst.starts_at, recent_option_decision.latest_decision_at
-                FROM canonical_instruments i
-                LEFT JOIN app.portfolio_position p ON p.instrument_id = i.id
-                LEFT JOIN app.watchlist_item w ON w.instrument_id = i.id
-                LEFT JOIN source_signal ON source_signal.symbol = i.symbol
-                LEFT JOIN upcoming_catalyst ON upcoming_catalyst.symbol = i.symbol
-                LEFT JOIN recent_option_decision ON recent_option_decision.symbol = i.symbol
-                WHERE p.instrument_id IS NOT NULL OR w.instrument_id IS NOT NULL
-                   OR (i.asset_class IN ('equity', 'etf') AND
-                       (source_signal.symbol IS NOT NULL OR upcoming_catalyst.symbol IS NOT NULL
-                        OR recent_option_decision.symbol IS NOT NULL))
-                ORDER BY (p.instrument_id IS NOT NULL) DESC,
-                         (w.watch_state IS NOT NULL AND w.watch_state <> 'excluded') DESC,
-                         (recent_option_decision.symbol IS NOT NULL) DESC,
-                         (upcoming_catalyst.starts_at IS NOT NULL) DESC,
-                         coalesce(source_signal.source_roots, 0) DESC,
-                         source_signal.latest_signal_at DESC NULLS LAST, i.symbol
-                """
-            ).fetchall()
-        excluded = {
-            str(row["symbol"])
-            for row in rows
-            if row["watch_state"] == "excluded" and not row["is_owned"]
-        }
-        owned = [str(row["symbol"]) for row in rows if row["is_owned"]]
-        persisted_watchlist = [
-            str(row["symbol"]) for row in rows
-            if not row["is_owned"] and row["watch_state"] not in (None, "excluded")
-        ]
-        opportunistic = [
-            str(row["symbol"]) for row in rows
-            if not row["is_owned"] and row["watch_state"] is None
-        ]
-        configured_symbols = [
-            str(item.get("symbol") or "").strip().upper()
-            for item in configured
-            if str(item.get("symbol") or "").strip().upper()
-            and str(item.get("symbol") or "").strip().upper() not in excluded
-        ]
-        output = list(dict.fromkeys(owned))
-        seen = set(output)
-        buckets = [configured_symbols, persisted_watchlist]
-        for index in range(max((len(bucket) for bucket in buckets), default=0)):
-            for bucket in buckets:
-                if index >= len(bucket):
-                    continue
-                symbol = bucket[index]
-                if symbol not in seen:
-                    seen.add(symbol)
-                    output.append(symbol)
-        for symbol in opportunistic:
-            if symbol not in seen:
-                seen.add(symbol)
-                output.append(symbol)
-        if limit is None:
-            return output
-        return output[:max(0, int(limit))]
+        return _option_universe(self.runtime, configured, limit=limit)
 
     def latest_option_snapshot_by_symbol(self, source_id: str, symbols: Sequence[str]) -> dict[str, datetime]:
         return latest_option_snapshot_by_symbol(self.runtime, source_id, symbols)
@@ -535,28 +437,158 @@ class IngestionRepository:
                     )
                 connection.execute(
                     """
+                    UPDATE catalog.option_contract existing
+                    SET deliverable_key = stage.deliverable_key,
+                        standard_contract_verified = (
+                          (existing.standard_contract_verified OR stage.standard_contract_verified)
+                          AND coalesce(existing.style, stage.style) = 'american'
+                          AND coalesce(existing.settlement, stage.settlement) = 'physical'
+                          AND (existing.style IS NULL OR stage.style IS NULL OR existing.style = stage.style)
+                          AND (
+                            existing.settlement IS NULL OR stage.settlement IS NULL
+                            OR existing.settlement = stage.settlement
+                          )
+                        ),
+                        style = CASE
+                          WHEN existing.style IS NULL THEN stage.style
+                          WHEN stage.style IS NULL OR existing.style = stage.style
+                            THEN existing.style ELSE NULL END,
+                        settlement = CASE
+                          WHEN existing.settlement IS NULL THEN stage.settlement
+                          WHEN stage.settlement IS NULL OR existing.settlement = stage.settlement
+                            THEN existing.settlement ELSE NULL END
+                    FROM option_quote_stage stage
+                    JOIN catalog.instrument instrument
+                      ON instrument.symbol = stage.underlying_symbol
+                    WHERE stage.provider_symbol IS NOT NULL
+                      AND stage.deliverable_key IS NOT NULL
+                      AND existing.underlying_instrument_id = instrument.id
+                      AND existing.provider_symbols ->> %s = stage.provider_symbol
+                      AND existing.expiration = stage.expiration
+                      AND existing.strike = stage.strike
+                      AND existing.option_type = stage.option_type
+                      AND existing.multiplier = stage.multiplier
+                      AND existing.deliverable_key LIKE 'legacy-unverified:%%'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM catalog.option_contract conflict
+                        WHERE conflict.id <> existing.id
+                          AND conflict.underlying_instrument_id = existing.underlying_instrument_id
+                          AND conflict.expiration = existing.expiration
+                          AND conflict.strike = existing.strike
+                          AND conflict.option_type = existing.option_type
+                          AND conflict.multiplier = existing.multiplier
+                          AND conflict.deliverable_key = stage.deliverable_key
+                      )
+                    """,
+                    [source_id],
+                )
+                connection.execute(
+                    """
+                    UPDATE option_quote_stage stage
+                    SET resolved_deliverable_key = coalesce(
+                      (
+                        SELECT CASE
+                          WHEN count(DISTINCT existing.deliverable_key) = 1
+                          THEN min(existing.deliverable_key)
+                        END
+                        FROM catalog.option_contract existing
+                        JOIN catalog.instrument instrument
+                          ON instrument.id = existing.underlying_instrument_id
+                        WHERE stage.provider_symbol IS NOT NULL
+                          AND existing.provider_symbols ->> %s = stage.provider_symbol
+                          AND instrument.symbol = stage.underlying_symbol
+                          AND existing.expiration = stage.expiration
+                          AND existing.strike = stage.strike
+                          AND existing.option_type = stage.option_type
+                          AND existing.multiplier = stage.multiplier
+                          AND (
+                            stage.deliverable_key IS NULL
+                            OR existing.deliverable_key = stage.deliverable_key
+                          )
+                      ),
+                      (
+                        SELECT CASE WHEN count(*) = 1 THEN min(existing.deliverable_key) END
+                        FROM catalog.option_contract existing
+                        JOIN catalog.instrument instrument
+                          ON instrument.id = existing.underlying_instrument_id
+                        WHERE stage.provider_symbol IS NULL
+                          AND stage.deliverable_key IS NULL
+                          AND existing.deliverable_key LIKE 'legacy-unverified:%%'
+                          AND instrument.symbol = stage.underlying_symbol
+                          AND existing.expiration = stage.expiration
+                          AND existing.strike = stage.strike
+                          AND existing.option_type = stage.option_type
+                          AND existing.multiplier = stage.multiplier
+                      ),
+                      stage.deliverable_key,
+                      concat('unverified:', %s::text, ':', coalesce(
+                        stage.provider_symbol,
+                        concat(stage.expiration::text, ':', stage.option_type, ':',
+                               stage.strike::text, ':', stage.multiplier::text)
+                      ))
+                    )
+                    """,
+                    [source_id, source_id],
+                )
+                connection.execute(
+                    """
                     INSERT INTO catalog.option_contract
-                        (underlying_instrument_id, expiration, strike, option_type, multiplier, provider_symbols)
+                        (underlying_instrument_id, expiration, strike, option_type, multiplier,
+                         style, settlement, deliverable_key, standard_contract_verified,
+                         provider_symbols)
                     SELECT DISTINCT i.id, s.expiration, s.strike, s.option_type, s.multiplier,
+                           s.style, s.settlement,
+                           s.resolved_deliverable_key, s.standard_contract_verified,
                            CASE WHEN s.provider_symbol IS NULL THEN '{}'::jsonb
                                 ELSE jsonb_build_object(%s::text, s.provider_symbol) END
                     FROM option_quote_stage s
                     JOIN catalog.instrument i ON i.symbol = s.underlying_symbol
-                    ON CONFLICT (underlying_instrument_id, expiration, strike, option_type, multiplier)
-                    DO UPDATE SET provider_symbols = catalog.option_contract.provider_symbols || EXCLUDED.provider_symbols
+                    ON CONFLICT (underlying_instrument_id, expiration, strike, option_type,
+                                 multiplier, deliverable_key)
+                    DO UPDATE SET
+                      provider_symbols = catalog.option_contract.provider_symbols || EXCLUDED.provider_symbols,
+                      style = CASE
+                        WHEN catalog.option_contract.style IS NULL THEN EXCLUDED.style
+                        WHEN EXCLUDED.style IS NULL OR catalog.option_contract.style = EXCLUDED.style
+                          THEN catalog.option_contract.style ELSE NULL END,
+                      settlement = CASE
+                        WHEN catalog.option_contract.settlement IS NULL THEN EXCLUDED.settlement
+                        WHEN EXCLUDED.settlement IS NULL OR catalog.option_contract.settlement = EXCLUDED.settlement
+                          THEN catalog.option_contract.settlement ELSE NULL END,
+                      standard_contract_verified = (
+                        (
+                          catalog.option_contract.standard_contract_verified
+                          OR EXCLUDED.standard_contract_verified
+                        )
+                        AND coalesce(catalog.option_contract.style, EXCLUDED.style) = 'american'
+                        AND coalesce(catalog.option_contract.settlement, EXCLUDED.settlement) = 'physical'
+                        AND (
+                          catalog.option_contract.style IS NULL OR EXCLUDED.style IS NULL
+                          OR catalog.option_contract.style = EXCLUDED.style
+                        )
+                        AND (
+                          catalog.option_contract.settlement IS NULL OR EXCLUDED.settlement IS NULL
+                          OR catalog.option_contract.settlement = EXCLUDED.settlement
+                        )
+                      ),
+                      deliverable_key = catalog.option_contract.deliverable_key
                     """,
                     [source_id],
                 )
                 connection.execute(
                     """
                     INSERT INTO raw.option_quote
-                        (observed_at, snapshot_id, capture_generation_id, contract_id, underlying_price, bid, ask, mid, last,
+                        (observed_at, snapshot_id, capture_generation_id, contract_id,
+                         contract_style, contract_settlement, contract_deliverable_key,
+                         standard_contract_verified, underlying_price, bid, ask, mid, last,
                          bid_size, ask_size, last_trade_at, captured_at, market_data_status, volume, open_interest, provider_iv, provider_delta, provider_gamma,
                          provider_theta, provider_vega, previous_close, provider_rho,
                          chance_of_profit_long, chance_of_profit_short, provider_updated_at, provider_payload,
                          capture_group_key, group_started_at, group_finished_at, provider_observed_at,
                          available_at, underlying_observed_at, underlying_available_at)
-                    SELECT %s, %s, %s, c.id, s.underlying_price, s.bid, s.ask, s.mid, s.last,
+                    SELECT %s, %s, %s, c.id,
+                           s.style, s.settlement, s.resolved_deliverable_key,
+                           s.standard_contract_verified, s.underlying_price, s.bid, s.ask, s.mid, s.last,
                            s.bid_size, s.ask_size, s.last_trade_at, s.captured_at, s.market_data_status, s.volume, s.open_interest, s.provider_iv, s.provider_delta,
                            s.provider_gamma, s.provider_theta, s.provider_vega, s.previous_close,
                            s.provider_rho, s.chance_of_profit_long, s.chance_of_profit_short,
@@ -569,8 +601,13 @@ class IngestionRepository:
                       ON c.underlying_instrument_id = i.id
                      AND c.expiration = s.expiration AND c.strike = s.strike
                      AND c.option_type = s.option_type AND c.multiplier = s.multiplier
+                     AND c.deliverable_key = s.resolved_deliverable_key
                     ON CONFLICT (snapshot_id, contract_id, observed_at) DO UPDATE
-                    SET underlying_price = EXCLUDED.underlying_price,
+                    SET contract_style = EXCLUDED.contract_style,
+                        contract_settlement = EXCLUDED.contract_settlement,
+                        contract_deliverable_key = EXCLUDED.contract_deliverable_key,
+                        standard_contract_verified = EXCLUDED.standard_contract_verified,
+                        underlying_price = EXCLUDED.underlying_price,
                         bid = EXCLUDED.bid, ask = EXCLUDED.ask, mid = EXCLUDED.mid,
                         last = EXCLUDED.last, volume = EXCLUDED.volume,
                         bid_size = EXCLUDED.bid_size, ask_size = EXCLUDED.ask_size,
@@ -593,97 +630,14 @@ class IngestionRepository:
                         underlying_observed_at = EXCLUDED.underlying_observed_at,
                         underlying_available_at = EXCLUDED.underlying_available_at
                     """,
-                    [quote_observed_at or observed_at, snapshot_id, capture_generation_id, observed_at],
+                    [quote_observed_at or observed_at, snapshot_id, capture_generation_id,
+                     observed_at],
                 )
             connection.execute(
                 "UPDATE ingest.run SET item_count = %s, instrument_count = %s WHERE id = %s",
                 [len(normalized), len({row["underlying_symbol"] for row in normalized}), run_id],
             )
         return {"snapshot_id": snapshot_id, "contract_count": len(normalized)}
-
-
-def _stage_option_rows(connection: Any, rows: Sequence[dict[str, Any]]) -> None:
-    connection.execute(
-        """
-        CREATE TEMP TABLE option_quote_stage (
-            underlying_symbol TEXT NOT NULL, expiration DATE NOT NULL, strike NUMERIC(20, 6) NOT NULL,
-            option_type TEXT NOT NULL, multiplier INTEGER NOT NULL, provider_symbol TEXT,
-            underlying_price DOUBLE PRECISION, bid DOUBLE PRECISION, ask DOUBLE PRECISION,
-            mid DOUBLE PRECISION, last DOUBLE PRECISION, bid_size BIGINT, ask_size BIGINT,
-            last_trade_at TIMESTAMPTZ, captured_at TIMESTAMPTZ, market_data_status TEXT,
-            volume BIGINT, open_interest BIGINT,
-            provider_iv DOUBLE PRECISION, provider_delta DOUBLE PRECISION,
-            provider_gamma DOUBLE PRECISION, provider_theta DOUBLE PRECISION,
-            provider_vega DOUBLE PRECISION, previous_close DOUBLE PRECISION,
-            provider_rho DOUBLE PRECISION, chance_of_profit_long DOUBLE PRECISION,
-            chance_of_profit_short DOUBLE PRECISION, provider_updated_at TIMESTAMPTZ,
-            provider_payload JSONB, capture_group_key TEXT, group_started_at TIMESTAMPTZ,
-            group_finished_at TIMESTAMPTZ, provider_observed_at TIMESTAMPTZ,
-            available_at TIMESTAMPTZ, underlying_observed_at TIMESTAMPTZ,
-            underlying_available_at TIMESTAMPTZ
-        ) ON COMMIT DROP
-        """
-    )
-    columns = tuple(rows[0].keys())
-    with connection.cursor().copy(
-        sql.SQL("COPY option_quote_stage ({}) FROM STDIN").format(
-            sql.SQL(", ").join(map(sql.Identifier, columns))
-        )
-    ) as copy:
-        for row in rows:
-            copy.write_row([row[column] for column in columns])
-
-
-def _normalize_option_row(row: dict[str, Any]) -> dict[str, Any]:
-    symbol = canonical_symbol(row.get("underlying_symbol") or row.get("symbol") or row.get("ticker"))
-    option_type = str(row.get("option_type") or row.get("type") or "").strip().lower()
-    if option_type not in {"call", "put"}:
-        raise ValueError("option row option_type must be call or put")
-    try:
-        expiration = row["expiration"] if "expiration" in row else row["expiry"]
-        strike = float(row["strike"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("option row requires expiration and numeric strike") from exc
-    if isinstance(expiration, str):
-        expiration = date.fromisoformat(expiration[:10])
-    return {
-        "underlying_symbol": symbol,
-        "expiration": expiration,
-        "strike": strike,
-        "option_type": option_type,
-        "multiplier": int(row.get("multiplier") or 100),
-        "provider_symbol": str(row.get("provider_symbol") or row.get("contract_symbol") or "").strip() or None,
-        "underlying_price": _number(row.get("underlying_price")),
-        "bid": _number(row.get("bid")),
-        "ask": _number(row.get("ask")),
-        "mid": _number(row.get("mid")),
-        "last": _number(row.get("last")),
-        "bid_size": _integer(row.get("bid_size")),
-        "ask_size": _integer(row.get("ask_size")),
-        "last_trade_at": _aware_datetime(row.get("last_trade_at")),
-        "captured_at": _aware_datetime(row.get("captured_at")),
-        "market_data_status": str(row.get("market_data_status") or row.get("market_data") or "").lower() or None,
-        "volume": _integer(row.get("volume")),
-        "open_interest": _integer(row.get("open_interest")),
-        "provider_iv": _number(row.get("provider_iv") if "provider_iv" in row else row.get("iv")),
-        "provider_delta": _number(row.get("provider_delta") if "provider_delta" in row else row.get("delta")),
-        "provider_gamma": _number(row.get("provider_gamma") if "provider_gamma" in row else row.get("gamma")),
-        "provider_theta": _number(row.get("provider_theta") if "provider_theta" in row else row.get("theta")),
-        "provider_vega": _number(row.get("provider_vega") if "provider_vega" in row else row.get("vega")),
-        "previous_close": _number(row.get("previous_close") if "previous_close" in row else row.get("close")),
-        "provider_rho": _number(row.get("provider_rho") if "provider_rho" in row else row.get("rho")),
-        "chance_of_profit_long": _number(row.get("chance_of_profit_long")),
-        "chance_of_profit_short": _number(row.get("chance_of_profit_short")),
-        "provider_updated_at": _aware_datetime(row.get("provider_updated_at") or row.get("updated_at")),
-        "provider_payload": Jsonb(dict(row.get("provider_payload") or {})),
-        "capture_group_key": str(row.get("capture_group_key") or f"{expiration}:{option_type}"),
-        "group_started_at": _aware_datetime(row.get("group_started_at")),
-        "group_finished_at": _aware_datetime(row.get("group_finished_at")),
-        "provider_observed_at": _aware_datetime(row.get("provider_observed_at") or row.get("provider_updated_at") or row.get("updated_at")),
-        "available_at": _aware_datetime(row.get("available_at") or row.get("captured_at")),
-        "underlying_observed_at": _aware_datetime(row.get("underlying_observed_at")),
-        "underlying_available_at": _aware_datetime(row.get("underlying_available_at")),
-    }
 
 
 def _partition_name(day: date) -> str:

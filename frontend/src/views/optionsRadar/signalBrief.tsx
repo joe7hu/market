@@ -3,7 +3,7 @@
 import {useMemo } from "react";
 import {StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
-import {RowRecord } from "@/types";
+import { JsonValue, RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
 import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
 import {moneyField, formatRatio, formatNumber, formatDate } from "../optionsRadarFormat";
@@ -27,6 +27,7 @@ export function SignalBriefPanel({
   latestSnapshot,
   snapshotLabel,
   latestCandidateTime,
+  marketState,
   onOpenTicker,
   onOpenDecision,
 }: {
@@ -41,6 +42,7 @@ export function SignalBriefPanel({
   latestSnapshot: string;
   snapshotLabel: string;
   latestCandidateTime: string;
+  marketState: RowRecord | undefined;
   onOpenTicker: OpenTicker;
   onOpenDecision: (decisionId: string) => void;
 }) {
@@ -73,6 +75,7 @@ export function SignalBriefPanel({
   const fireGap = fireCount > 0 && exceptionalRows.length === 0;
   return (
     <section className="rounded-md border border-border bg-card p-4">
+      <MarketStateBar row={marketState} />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -126,6 +129,56 @@ export function SignalBriefPanel({
       </div>
     </section>
   );
+}
+
+export function marketStateFacts(row: RowRecord | undefined) {
+  const nested = recordField(row, "market_state");
+  const source: Record<string, JsonValue> | undefined = nested && Object.keys(nested).length
+    ? nested
+    : row as Record<string, JsonValue> | undefined;
+  const value = (keys: string[]) => stringFromRecord(source, keys[0]) || textField(row, keys);
+  const directEr = numberFromRecord(source, "kaufman_er_20d");
+  const er = Number.isFinite(directEr)
+    ? directEr
+    : numberField(row, ["market_kaufman_er_20d"], Number.NaN);
+  const changes = candidateChangeLines(row?.candidate_changes);
+  return {
+    direction: value(["trend_state", "direction", "market_direction", "market_state"]),
+    efficiencyRatio: Number.isFinite(er) ? formatNumber(er, 2) : value(["er"]),
+    volatility: value(["volatility_state", "vol_state"]),
+    breadth: value(["breadth_state"]),
+    asOf: value(["as_of", "market_as_of", "market_state_as_of", "publication_cutoff"]),
+    quality: value(["quality_status", "market_quality", "market_state_quality"]),
+    changes,
+  };
+}
+
+function MarketStateBar({ row }: { row: RowRecord | undefined }) {
+  const facts = marketStateFacts(row);
+  const values = [
+    ["Direction", facts.direction], ["ER", facts.efficiencyRatio], ["Vol", facts.volatility],
+    ["Breadth", facts.breadth], ["As of", facts.asOf ? formatDate(facts.asOf) : ""], ["Quality", facts.quality],
+  ].filter(([, value]) => value);
+  if (!values.length && !facts.changes.length) return null;
+  return <div className="mb-4 min-w-0 rounded-md border border-border/70 bg-muted/40 p-3">
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Market state</span>
+      {values.map(([label, value]) => <StatusBadge key={label} tone={label === "Quality" ? toneFromText(value) : "muted"}>{label} {titleLabel(value)}</StatusBadge>)}
+    </div>
+    {facts.changes.length ? <p className="mt-2 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">Candidate changes: </span>{facts.changes.join(" · ")}</p> : null}
+  </div>;
+}
+
+function valueList(value: JsonValue | undefined): string[] {
+  if (Array.isArray(value)) return value.map((item) => typeof item === "string" || typeof item === "number" ? String(item) : "").filter(Boolean);
+  if (typeof value === "string") return value.split(/[;|]/).map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function candidateChangeLines(value: JsonValue | undefined): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return valueList(value).slice(0, 3);
+  const changes = value as Record<string, JsonValue>;
+  return ["new", "retained", "removed"].flatMap((kind) => valueList(changes[kind]).map((ticker) => `${ticker} ${kind}`)).slice(0, 3);
 }
 
 export function OpportunityThesisSummary({

@@ -26,8 +26,10 @@ from app.options_history_contracts import (
     OptionsPaperJournalPage,
     RelativeValuePage,
 )
+from app.routers.options_research import router as research_router
 
 router = APIRouter()
+router.include_router(research_router)
 
 RADAR_LEARNING_COLLECTIONS = frozenset({
     "candidate_event_mark",

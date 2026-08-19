@@ -274,13 +274,22 @@ def _clean(value: Any) -> float | None:
     return None
 
 
-def chain_row(symbol: str, expiry: str, strike: float, parsed: dict[str, Any], *, delayed: bool) -> dict[str, Any]:
+def chain_row(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    parsed: dict[str, Any],
+    *,
+    delayed: bool,
+    contract_terms: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Assemble a store_options_chain-compatible row from parsed ticks.
 
     OI/volume go into the row so they are preserved in the chain's raw JSON,
     matching how the radar reads liquidity.
     """
 
+    terms = dict(contract_terms or {})
     return {
         "expiry": _iso_expiry(expiry),
         "strike": strike,
@@ -298,9 +307,41 @@ def chain_row(symbol: str, expiry: str, strike: float, parsed: dict[str, Any], *
         "bid_size": parsed["bid_size"],
         "ask_size": parsed["ask_size"],
         "contract_symbol": f"{symbol}{expiry}{parsed['option_type'][0].upper()}{strike}",
+        "style": terms.get("style"),
+        "settlement": terms.get("settlement"),
+        "deliverable_key": terms.get("deliverable_key"),
+        "standard_contract_verified": terms.get("standard_contract_verified") is True,
         "market_data": parsed["market_data_status"] if parsed["market_data_status"] != "unknown" else ("delayed" if delayed else "live"),
         "market_data_status": parsed["market_data_status"],
         "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def verified_ibkr_contract_terms(
+    symbol: str, chain: dict[str, Any], contract: Any, underlying_conid: int,
+) -> dict[str, Any]:
+    """Prove a standard US equity option from qualified IBKR contract facts."""
+
+    trading_class = str(getattr(contract, "tradingClass", "") or "").upper().strip()
+    multiplier = str(getattr(contract, "multiplier", "") or "").strip()
+    verified = (
+        int(chain.get("underlyingConId") or 0) == int(underlying_conid)
+        and str(chain.get("tradingClass") or "").upper().strip() == symbol.upper()
+        and str(chain.get("multiplier") or "").strip() == "100"
+        and str(getattr(contract, "symbol", "") or "").upper().strip() == symbol.upper()
+        and str(getattr(contract, "secType", "") or "").upper().strip() == "OPT"
+        and str(getattr(contract, "currency", "") or "").upper().strip() == "USD"
+        and trading_class == symbol.upper()
+        and multiplier == "100"
+        and int(getattr(contract, "conId", 0) or 0) > 0
+    )
+    return {
+        "style": "american" if verified else None,
+        "settlement": "physical" if verified else None,
+        "deliverable_key": (
+            f"ibkr-standard:{underlying_conid}:{trading_class}:100" if verified else None
+        ),
+        "standard_contract_verified": verified,
     }
 
 
@@ -373,7 +414,14 @@ def collect_ibkr_option_chains(
             self._events.setdefault(reqId, threading.Event()).set()
 
         def securityDefinitionOptionParameter(self, reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes) -> None:  # noqa: N802
-            self.params.append({"exchange": exchange, "tradingClass": tradingClass, "expirations": sorted(expirations), "strikes": sorted(strikes)})
+            self.params.append({
+                "exchange": exchange,
+                "underlyingConId": underlyingConId,
+                "tradingClass": tradingClass,
+                "multiplier": multiplier,
+                "expirations": sorted(expirations),
+                "strikes": sorted(strikes),
+            })
 
         def securityDefinitionOptionParameterEnd(self, reqId) -> None:  # noqa: N802
             self._events.setdefault(reqId, threading.Event()).set()
@@ -478,7 +526,7 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
     # near-spot ones. Avoids error-200 spam and gives real coverage. Calls scan the OTM
     # upside band (10x LEAP delta ~0.20-0.45); puts the 0.75-0.95x downside band.
     rights = ["C", "P"] if collect_puts else ["C"]
-    plan: list[tuple[int, str, float, str]] = []  # (reqId, expiry, strike, right)
+    plan: list[tuple[int, str, float, str, dict[str, Any]]] = []
     contracts: dict[int, Any] = {}
     for expiry in expiries:
         for right in rights:
@@ -491,20 +539,24 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
             rid += 1
             app.reqContractDetails(enum_rid, enum)
             app.wait(enum_rid, 10)
-            valid_strikes = sorted({d.contract.strike for d in (app.details.get(enum_rid) or []) if getattr(d.contract, "strike", 0)})
+            qualified = [
+                detail.contract for detail in (app.details.get(enum_rid) or [])
+                if getattr(detail.contract, "strike", 0)
+            ]
+            valid_strikes = sorted({contract.strike for contract in qualified})
             if right == "P":
                 chosen = select_leap_put_strikes(valid_strikes, spot, strikes_around_spot)
             else:
                 chosen = select_leap_call_strikes(valid_strikes, spot, strikes_around_spot)
             for strike in chosen:
-                opt = Contract()
-                opt.symbol, opt.secType, opt.exchange, opt.currency = symbol, "OPT", "SMART", "USD"
-                opt.lastTradeDateOrContractMonth = expiry
-                opt.strike = float(strike)
-                opt.right = right
-                opt.multiplier = "100"
-                opt.tradingClass = chain["tradingClass"]
-                plan.append((rid, expiry, strike, right))
+                opt = next(
+                    (contract for contract in qualified if float(contract.strike) == float(strike)),
+                    None,
+                )
+                if opt is None:
+                    continue
+                terms = verified_ibkr_contract_terms(symbol, chain, opt, conid)
+                plan.append((rid, expiry, strike, right, terms))
                 contracts[rid] = opt
                 rid += 1
     if not plan:
@@ -514,16 +566,20 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
     rows: list[dict[str, Any]] = []
     for start in range(0, len(plan), batch_size):
         batch = plan[start : start + batch_size]
-        for req_id, _expiry, _strike, _right in batch:
+        for req_id, _expiry, _strike, _right, _terms in batch:
             app.reqMktData(req_id, contracts[req_id], GENERIC_TICKS, False, False, [])
         time.sleep(DEFAULT_LINES_SETTLE_SECONDS)
-        for req_id, expiry, strike, right in batch:
+        for req_id, expiry, strike, right, terms in batch:
             app.cancelMktData(req_id)
             option_type = "put" if right == "P" else "call"
             parsed = parse_option_ticks(app.ticks.get(req_id, {}), app.greeks.get(req_id, {}), option_type=option_type)
             if parsed["delta"] is None and parsed["mid"] is None and parsed["open_interest"] is None:
                 continue  # no data arrived for this contract
-            rows.append(chain_row(symbol, expiry, strike, parsed, delayed=True))
+            rows.append(
+                chain_row(
+                    symbol, expiry, strike, parsed, delayed=True, contract_terms=terms,
+                )
+            )
     app.cancelMktData(spot_rid)  # underlying kept live through the option batches for greeks
     if rows:
         result["rows"][symbol] = rows

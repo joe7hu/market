@@ -18,11 +18,16 @@ class FullChainClient:
         return {"data": {"results": [{"quote": {"symbol": symbols[0], "last_trade_price": "500"}}]}}
 
     def get_option_chains(self, underlying_symbol):
-        return {"data": {"chains": [{"id": "qqq", "expiration_dates": ["2026-08-21"]}]}}
+        return {"data": {"chains": [{
+            "id": "qqq", "symbol": underlying_symbol, "expiration_dates": ["2026-08-21"],
+            "cash_component": None, "settle_on_open": False,
+            "trade_value_multiplier": "100.0000",
+            "underlying_instruments": [{"instrument": "https://provider.test/QQQ"}],
+        }]}}
 
     def get_option_instruments(self, *, chain_id=None, expiration_dates=None, option_type=None, cursor=None, **_kwargs):
         strikes = [495, 500, 505] if cursor is None else []
-        rows = [{"id": f"{option_type}-{strike}", "chain_id": chain_id, "chain_symbol": "QQQ", "expiration_date": expiration_dates, "strike_price": str(strike), "type": option_type, "tradability": "tradable"} for strike in strikes]
+        rows = [{"id": f"{option_type}-{strike}", "chain_id": chain_id, "chain_symbol": "QQQ", "underlying_type": "equity", "trade_value_multiplier": "100.0000", "expiration_date": expiration_dates, "strike_price": str(strike), "type": option_type, "tradability": "tradable"} for strike in strikes]
         return {"data": {"instruments": rows, "next": None}}
 
     def get_option_quotes(self, instrument_ids):
@@ -56,6 +61,11 @@ def test_full_collector_covers_all_expiries_types_and_preserves_payload() -> Non
     assert {row["type"] for row in captured["rows"]} == {"call", "put"}
     assert all(row["provider_payload"]["instrument"]["id"] for row in captured["rows"])
     assert all(row["provider_payload"]["quote"]["rho"] == "0.03" for row in captured["rows"])
+    assert all(row["standard_contract_verified"] is True for row in captured["rows"])
+    assert all(
+        row["style"] == "american" and row["settlement"] == "physical"
+        for row in captured["rows"]
+    )
 
 
 def test_full_collector_retries_incomplete_quote_batches() -> None:
@@ -101,6 +111,9 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
             "underlying_price": 500, "bid": 2.0, "ask": 2.2, "mid": 2.1, "iv": 0.20 + index * 0.01,
             "delta": 0.25 if option_type == "call" else -0.25, "gamma": 0.02, "theta": -0.01,
             "vega": 0.1, "rho": 0.03, "open_interest": 100, "volume": 20,
+            "style": "american", "settlement": "physical",
+            "deliverable_key": "qqq-standard",
+            "standard_contract_verified": True,
             "provider_payload": {"instrument": {"id": f"{option_type}-{strike}"}, "quote": {"rho": "0.03"}},
         }
         for index, (option_type, strike) in enumerate((kind, strike) for kind in ("call", "put") for strike in (495, 500, 505))
@@ -217,6 +230,9 @@ def test_history_health_can_scope_to_symbol_policy_cadence(migrated_postgres_dsn
             "underlying_symbol": symbol, "expiry": "2026-08-21", "strike": 500, "type": "call",
             "underlying_price": 500, "bid": 2.0, "ask": 2.2, "mid": 2.1,
             "iv": 0.2, "delta": 0.25, "open_interest": 100, "volume": 20,
+            "style": "american", "settlement": "physical",
+            "deliverable_key": f"{symbol.lower()}-standard",
+            "standard_contract_verified": True,
         }
         stored = history.store_capture(
             run_id=run_id,
@@ -280,6 +296,9 @@ def test_rematerializing_an_older_snapshot_never_uses_future_changes(migrated_po
             "underlying_symbol": "QQQ", "expiry": "2026-08-21", "strike": strike, "type": option_type,
             "underlying_price": 500, "bid": 2.0, "ask": 2.2, "mid": 2.1, "iv": 0.20 + index * 0.01,
             "delta": 0.25 if option_type == "call" else -0.25,
+            "style": "american", "settlement": "physical",
+            "deliverable_key": "qqq-standard",
+            "standard_contract_verified": True,
         }
         for index, (option_type, strike) in enumerate((kind, strike) for kind in ("call", "put") for strike in (495, 500, 505))
     ]
@@ -292,6 +311,16 @@ def test_rematerializing_an_older_snapshot_never_uses_future_changes(migrated_po
         stored = history.store_capture(run_id=run_id, source_id="robinhood", symbol="QQQ", slot_at=slot, captured={"rows": rows, "expected_contract_count": 6, "received_contract_count": 6, "capture_started_at": slot, "capture_finished_at": slot})
         ingestion.finish_run(run_id, "succeeded", summary=stored)
         snapshot_ids.append(stored["snapshot_id"])
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE catalog.option_contract
+            SET style = NULL, settlement = NULL, standard_contract_verified = false
+            WHERE underlying_instrument_id = (
+              SELECT id FROM catalog.instrument WHERE symbol = 'QQQ'
+            )
+            """
+        )
     history.materialize_snapshot(snapshot_ids[0])
     with runtime.read() as connection:
         v2_rows = connection.execute("SELECT count(*) AS count FROM analysis.option_surface_summary WHERE analysis_run_id IS NULL").fetchone()["count"]

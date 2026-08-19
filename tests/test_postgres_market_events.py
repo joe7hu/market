@@ -37,10 +37,12 @@ def test_market_event_refresh_is_idempotent_and_projects_catalyst(migrated_postg
         assert update_market_events.run()["events"] == 1
         with runtime.read() as connection:
             counts = connection.execute(
-                "SELECT (SELECT count(*) FROM raw.market_event) AS events, (SELECT count(*) FROM app.catalyst) AS catalysts"
+                "SELECT (SELECT count(*) FROM raw.market_event) AS events, "
+                "(SELECT count(*) FROM raw.market_event_version) AS event_versions, "
+                "(SELECT count(*) FROM app.catalyst) AS catalysts"
             ).fetchone()
             catalyst = connection.execute("SELECT title, expected_impact FROM app.catalyst").fetchone()
-        assert (counts["events"], counts["catalysts"]) == (1, 1)
+        assert (counts["events"], counts["event_versions"], counts["catalysts"]) == (1, 2, 1)
         assert (catalyst["title"], catalyst["expected_impact"]) == (
             "June CPI release", "Inflation and rates catalyst"
         )

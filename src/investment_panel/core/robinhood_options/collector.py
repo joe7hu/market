@@ -22,6 +22,10 @@ from investment_panel.core.ibkr_options import select_leap_call_strikes, select_
 from investment_panel.core.option_scan import RADAR_MAX_DTE, RADAR_MIN_DTE
 from investment_panel.core.robinhood_options.equity_quote_batches import fetch_equity_quotes as _fetch_equity_quotes
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
+from investment_panel.core.robinhood_options.contract_terms import (
+    attach_chain_metadata,
+    verified_robinhood_contract_terms,
+)
 
 
 DEFAULT_MAX_COLLECTION_SECONDS = 600
@@ -286,6 +290,7 @@ def option_quote_row(instrument: dict[str, Any], quote: dict[str, Any]) -> dict[
     # that case.
     provider_status = quote.get("market_data_status") or quote.get("data_status")
     normalized_status = str(provider_status).strip().lower() if provider_status is not None else "live"
+    contract_terms = verified_robinhood_contract_terms(instrument)
     return {
         "expiry": str(expiry),
         "strike": strike,
@@ -311,8 +316,12 @@ def option_quote_row(instrument: dict[str, Any], quote: dict[str, Any]) -> dict[
         "contract_symbol": instrument_id,
         "robinhood_instrument_id": instrument_id,
         "chain_id": instrument.get("chain_id"),
+        "deliverable_key": contract_terms["deliverable_key"],
+        "standard_contract_verified": contract_terms["standard_contract_verified"],
         "chain_symbol": instrument.get("chain_symbol"),
         "underlying_type": instrument.get("underlying_type"),
+        "style": contract_terms["style"],
+        "settlement": contract_terms["settlement"],
         "tradability": instrument.get("tradability"),
         "state": instrument.get("state"),
         "updated_at": quote.get("updated_at"),
@@ -407,7 +416,14 @@ def _collect_symbol(
             for option_type in (["call", "put"] if collect_puts else ["call"]):
                 if _deadline_expired(deadline):
                     return rows
-                instruments = _fetch_instruments(client, chain_id=chain_id, expiration=expiry, option_type=option_type, deadline=deadline)
+                instruments = attach_chain_metadata(
+                    _fetch_instruments(
+                        client, chain_id=chain_id, expiration=expiry,
+                        option_type=option_type, deadline=deadline,
+                    ),
+                    chain,
+                    symbol,
+                )
                 selected = _select_instruments(instruments, spot, option_type=option_type, count=strikes_around_spot)
                 quoted = _quote_instruments(client, selected, quote_batch_size=quote_batch_size, deadline=deadline)
                 for row in quoted:

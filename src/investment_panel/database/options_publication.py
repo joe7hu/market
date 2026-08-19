@@ -8,6 +8,8 @@ from typing import Any
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready, ticket_recommendation_fields
 from investment_panel.database.options_risk_context import option_risk_contexts
+from investment_panel.database.options_publication_changes import candidate_changes as _candidate_changes
+from investment_panel.database.options_research_priority import research_priority
 
 
 def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
@@ -50,6 +52,8 @@ def publication_models(
     scanned_contracts: int,
     options_risk_sleeve_capital: float | None = None,
     calibration: list[dict[str, Any]] | None = None,
+    market_regime: dict[str, Any] | None = None,
+    previous_opportunities: list[dict[str, Any]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     with runtime.read(JOB_PROFILE) as connection:
         rows = connection.execute(
@@ -69,6 +73,8 @@ def publication_models(
                    option_decision.risk_adjusted_expectancy,
                    option_decision.tail_cvar, option_decision.data_confidence,
                    option_decision.execution_confidence, option_decision.details,
+                   option_decision.route_version, option_decision.strategy_route,
+                   option_decision.market_regime_detail, option_decision.event_state,
                    option_decision.synthetic_legs, leg_depth.quotes AS leg_quotes,
                    quote.observed_at AS snapshot_time,
                    snapshot.source_id AS data_source, snapshot.market_session,
@@ -84,6 +90,16 @@ def publication_models(
                    feature.required_10x_price, feature.required_move_pct,
                    option_decision.buy_under, decision.reasons AS top_reasons,
                    decision.blockers, decision.quality_status,
+                   symbol_feature.momentum_5d, symbol_feature.momentum_20d,
+                   symbol_feature.relative_strength_20d,
+                   symbol_feature.relative_strength_60d,
+                   symbol_feature.kaufman_er_20d, symbol_feature.kaufman_er_60d,
+                   symbol_feature.kama_fast, symbol_feature.kama_slow,
+                   symbol_feature.kama_fast_slope, symbol_feature.kama_slow_slope,
+                   symbol_feature.trend_state, symbol_feature.trend_confidence,
+                   symbol_feature.volatility_state,
+                   symbol_feature.data_quality_status AS trend_quality_status,
+                   symbol_feature.reason_codes AS trend_reason_codes,
                    active_thesis.thesis AS thesis_payload,
                    active_thesis.revision_id::text AS thesis_revision_id,
                    active_thesis.revision AS thesis_revision,
@@ -111,6 +127,10 @@ def publication_models(
             JOIN catalog.option_contract contract ON contract.id = quote.contract_id
             JOIN catalog.instrument instrument
               ON instrument.id = contract.underlying_instrument_id
+            LEFT JOIN analysis.symbol_feature symbol_feature
+              ON symbol_feature.run_id = decision.run_id
+             AND symbol_feature.instrument_id = decision.instrument_id
+             AND symbol_feature.feature_set = 'daily_trend'
             LEFT JOIN LATERAL (
                 SELECT thesis.id AS revision_id, thesis.revision, thesis.author_kind, thesis.thesis
                 FROM app.thesis thesis
@@ -198,6 +218,10 @@ def publication_models(
             "FROM analysis.option_discovery_run WHERE run_id = %s", [run_id]
         ).fetchone()
     all_rows = [dict(row) for row in rows]
+    for row in all_rows:
+        row["strategy_route"] = dict(row.get("strategy_route") or {})
+        row["market_regime_detail"] = dict(row.get("market_regime_detail") or {})
+        row.update(research_priority(row))
     discovery_by_ticker = {str(row["ticker"]): row for row in discovery_rows}
     readiness_evaluated_at = discovery_run["started_at"] if discovery_run else datetime.now(UTC)
     risk_contexts = option_risk_contexts(
@@ -239,6 +263,19 @@ def publication_models(
     actionable = _shortlist(_prefer_current_data([
         row for row in all_rows if row.get("state") != "REJECTED"
     ]))
+    candidate_changes = _candidate_changes(actionable, previous_opportunities or [])
+    primary_by_ticker: dict[str, dict[str, Any]] = {}
+    for row in actionable:
+        ticker = str(row.get("ticker") or "")
+        current = primary_by_ticker.get(ticker)
+        if current is None or _rank_key(row) > _rank_key(current):
+            primary_by_ticker[ticker] = row
+    for row in actionable:
+        row["candidate_change"] = (
+            "New" if str(row.get("ticker")) in candidate_changes["new"] else "Retained"
+        )
+        row["is_primary_structure"] = primary_by_ticker.get(str(row.get("ticker") or "")) is row
+    primary_actionable = [row for row in actionable if row["is_primary_structure"]]
     published_tickers = {str(row["ticker"]) for row in actionable}
     for row in discovery_rows:
         ticker = str(row["ticker"])
@@ -300,13 +337,24 @@ def publication_models(
         "contracts_evaluated": int(discovery_run["contracts_evaluated"]) if discovery_run else scanned_contracts,
         "universe_hash": discovery_run["universe_hash"] if discovery_run else None,
         "eligible_contracts": sum(row.get("state") != "REJECTED" for row in all_rows),
-        "shortlist_count": len(actionable),
+        "shortlist_count": len(primary_actionable),
         "cash_secured_put_count": sum(row.get("structure") == "cash_secured_put" for row in actionable),
-        "ready_count": sum(_summary_state(row) == "READY" for row in actionable),
-        "setup_count": sum(_summary_state(row) == "SETUP" for row in actionable),
-        "watch_count": sum(_summary_state(row) == "WATCH" for row in actionable),
+        "ready_count": sum(_summary_state(row) == "READY" for row in primary_actionable),
+        "setup_count": sum(_summary_state(row) == "SETUP" for row in primary_actionable),
+        "watch_count": sum(_summary_state(row) == "WATCH" for row in primary_actionable),
         "learning_coverage": 1.0 if all_rows else 0.0,
         "shadow_only": True,
+        "market_state": (market_regime or {}).get("trend_state", "unavailable"),
+        "market_state_as_of": (market_regime or {}).get("as_of"),
+        "market_state_quality": (market_regime or {}).get("quality_status", "unavailable"),
+        "market_trend_confidence": (market_regime or {}).get("trend_confidence", 0.0),
+        "market_kaufman_er_20d": (market_regime or {}).get("kaufman_er_20d"),
+        "breadth_state": (market_regime or {}).get("breadth_state", "unavailable"),
+        "breadth_up_fraction": (market_regime or {}).get("breadth_up_fraction"),
+        "breadth_down_fraction": (market_regime or {}).get("breadth_down_fraction"),
+        "breadth_denominator": (market_regime or {}).get("breadth_denominator", 0),
+        "volatility_state": (market_regime or {}).get("volatility_state", "unstable"),
+        "candidate_changes": candidate_changes,
     }]
     return {
         "option_radar_opportunity": actionable,
@@ -455,14 +503,52 @@ def _shortlist(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         current = best.get(key)
         if current is None or _rank_key(row) > _rank_key(current):
             best[key] = row
-    return sorted(
-        best.values(),
+    primary_by_ticker: dict[str, dict[str, Any]] = {}
+    for row in best.values():
+        ticker = str(row["ticker"])
+        current = primary_by_ticker.get(ticker)
+        if current is None or _rank_key(row) > _rank_key(current):
+            primary_by_ticker[ticker] = row
+    ranked = sorted(
+        primary_by_ticker.values(),
         key=lambda row: (
             -_rank_key(row)[0],
             -_rank_key(row)[1],
             str(row.get("ticker") or ""),
         ),
-    )[:10]
+    )
+    selected: list[dict[str, Any]] = []
+    family_counts: dict[str, int] = {}
+    for row in ranked:
+        family = _structure_family(str(row.get("structure") or "unknown"))
+        if family_counts.get(family, 0) >= 4:
+            continue
+        selected.append(row)
+        family_counts[family] = family_counts.get(family, 0) + 1
+        if len(selected) >= 10:
+            break
+    selected_tickers = {str(row["ticker"]) for row in selected}
+    secondary_counts: dict[str, int] = {}
+    secondary = []
+    for row in sorted(best.values(), key=_rank_key, reverse=True):
+        ticker = str(row["ticker"])
+        if ticker not in selected_tickers or primary_by_ticker[ticker] is row:
+            continue
+        if secondary_counts.get(ticker, 0) >= 3:
+            continue
+        secondary.append(row)
+        secondary_counts[ticker] = secondary_counts.get(ticker, 0) + 1
+    return selected + secondary
+
+
+def _structure_family(structure: str) -> str:
+    if structure in {"long_call", "long_put"}:
+        return "long_option"
+    if structure in {"call_debit_spread", "put_debit_spread"}:
+        return "debit_spread"
+    if structure == "cash_secured_put":
+        return "cash_secured_put"
+    return structure
 
 
 def _prefer_current_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -525,7 +611,7 @@ def _contract_readiness(row: dict[str, Any], evaluated_at: datetime) -> str:
     quote_age = _age_minutes(evaluated_at, quote_at)
     trade_age = _age_minutes(evaluated_at, last_trade_at)
     live_ibkr_depth = row.get("data_source") == "ibkr" and row.get("market_data_status") == "live"
-    if row.get("structure") == "call_debit_spread":
+    if row.get("structure") in {"call_debit_spread", "put_debit_spread"}:
         legs = list(row.get("leg_quotes") or [])
         if len(legs) < 2 or not all(
             _leg_is_grade_a(leg, evaluated_at, str(row.get("data_source") or "")) for leg in legs

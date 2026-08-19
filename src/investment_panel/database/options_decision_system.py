@@ -57,6 +57,8 @@ class OptionsDecisionSystemRepository:
                        option_decision.synthetic_legs, option_decision.details,
                        option_decision.data_confidence, option_decision.execution_confidence,
                        option_decision.market_regime, value.id AS relative_value_id, value.classification,
+                       option_decision.route_version, option_decision.strategy_route,
+                       option_decision.market_regime_detail, option_decision.event_state,
                        value.fair_low, value.fair_high, value.modeled_net_edge, value.confidence,
                        value.evidence, contract.expiration, contract.strike, contract.option_type,
                        option_decision.snapshot_id, value.capture_generation_id,
@@ -144,6 +146,8 @@ class OptionsDecisionSystemRepository:
                        option_decision.data_confidence, option_decision.execution_confidence,
                        option_decision.fair_low, option_decision.fair_high, option_decision.modeled_net_edge,
                        option_decision.market_regime, option_decision.model_version,
+                       option_decision.route_version, option_decision.strategy_route,
+                       option_decision.market_regime_detail, option_decision.event_state,
                        value.id AS relative_value_id, value.classification, value.confidence, value.evidence,
                        contract.expiration, contract.strike, contract.option_type,
                        thesis.thesis AS thesis_payload, thesis.updated_at AS thesis_updated_at
@@ -393,6 +397,34 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
     thesis = {**dict(value.get("thesis_payload") or {}), **dict(details.get("thesis") or {})}
     legs = [dict(leg) for leg in value.get("synthetic_legs") or []]
     fair_low, fair_high = _number(value.get("fair_low")), _number(value.get("fair_high"))
+    market_regime = dict(value.get("market_regime_detail") or {})
+    if not market_regime:
+        market_regime = {
+            "state": value.get("market_regime") or "unavailable",
+            "trend_state": "unavailable",
+            "quality_status": "unavailable",
+            "reason_codes": ["daily_market_regime_not_materialized_for_history_run"],
+        }
+    strategy_route = dict(value.get("strategy_route") or {})
+    if not strategy_route:
+        from investment_panel.analysis.strategy_routing import ROUTE_VERSION
+
+        strategy_route = {
+            "route_version": value.get("route_version") or ROUTE_VERSION,
+            "shadow": True,
+            "selected_structure": "NO_TRADE",
+            "alternative_structures": [],
+            "trend_state": "unavailable",
+            "volatility_state": "unstable",
+            "event_state": value.get("event_state") or "insufficient_event_evidence",
+            "selection_reasons": [],
+            "rejected_structures": [],
+            "route_blockers": ["daily_strategy_route_not_materialized_for_history_run"],
+            "as_of": value.get("as_of").isoformat() if isinstance(value.get("as_of"), datetime) else value.get("as_of"),
+            "evidence_refs": [],
+            "paper_quantity_authorized": False,
+            "ai_can_override": False,
+        }
     return {
         "decision_id": str(value["decision_id"]), "relative_value_id": value["relative_value_id"],
         "paper_state": value["paper_state"], "discovery_lane": value["discovery_lane"],
@@ -435,6 +467,8 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
         "blockers": list(value.get("blockers") or []),
         "reassessment_date": details.get("reassessment_date") or value.get("expiration"),
         "comparable_exact_structure_outcomes": calibration,
+        "strategy_route": strategy_route,
+        "market_regime": market_regime,
         "paper_only": True,
     }
 

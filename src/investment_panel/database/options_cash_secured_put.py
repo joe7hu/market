@@ -50,6 +50,9 @@ def insert_cash_secured_put_decisions(
                    feature.dte, feature.spread_pct, feature.liquidity_score,
                    quote.underlying_price, quote.bid, quote.ask, quote.provider_iv,
                    quote.provider_delta, quote.open_interest, quote.volume,
+                   quote.standard_contract_verified,
+                   quote.contract_style, quote.contract_settlement,
+                   quote.contract_deliverable_key,
                    contract.strike, contract.expiration, contract.multiplier,
                    instrument.id AS instrument_id, instrument.symbol, instrument.asset_class,
                    instrument.category,
@@ -198,6 +201,13 @@ def insert_cash_secured_put_decisions(
 
 def _hard_blockers(row: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
+    if (
+        row.get("standard_contract_verified") is not True
+        or row.get("contract_style") != "american"
+        or row.get("contract_settlement") != "physical"
+        or not row.get("contract_deliverable_key")
+    ):
+        blockers.append("standard_contract_terms_unverified")
     if not row.get("has_fundamentals") and str(row.get("asset_class") or "") != "etf":
         blockers.append("missing_quality_evidence")
     quality_values = dict(row.get("quality_values") or {})

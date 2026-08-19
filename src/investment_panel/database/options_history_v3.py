@@ -1,9 +1,6 @@
 """Persistence and deterministic replay for history-v3 price-shape evidence."""
 
 from __future__ import annotations
-
-import hashlib
-import json
 from datetime import UTC, datetime
 from math import sqrt
 from statistics import mean, pstdev
@@ -14,13 +11,8 @@ from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.history_v3 import MODEL_REVISION, analyze_group
 from investment_panel.core.option_underwriting import (
-    conservative_entry,
-    conservative_mark,
-    historical_payoff_statistics,
-    paper_state,
-    permitted_structures,
-    thesis_blocker,
-    underwriting_direction,
+    conservative_entry, conservative_mark, historical_payoff_statistics, paper_state,
+    permitted_structures, thesis_blocker, underwriting_direction,
 )
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.opportunity_episodes import canonical_option_lane, option_episode_key, option_sample_eligibility, scorecard_truth_cohort
@@ -42,6 +34,17 @@ from investment_panel.database.options_history_v3_outcomes import upsert_observi
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.options_history_policy import apply_publication_cap
 from investment_panel.database.options_history_ticket import published_candidates
+from investment_panel.database.options_history_research import surface_shift_run_summary
+from investment_panel.database.options_history_v3_surface import surface_shape_metrics
+from investment_panel.database.options_history_v3_materialization import (
+    capture_group_quality as _capture_group_quality,
+    deterministic_hash as _hash,
+    group_verified_contract_rows,
+    is_later_capture_cohort,
+    long_delta_eligible as _long_delta_eligible,
+    policy_for_instrument as _policy_for_instrument,
+    surface_summary as _summary,
+)
 class OptionHistoryV3Materializer:
     """Bulk materialize an immutable capture generation into a separate analysis run."""
 
@@ -67,6 +70,7 @@ class OptionHistoryV3Materializer:
             raise ValueError("only complete capture generations can be materialized")
         existing = self._canonical_succeeded_run(capture_generation_id, model_revision, mode)
         if existing is not None:
+            existing.update(surface_shift_run_summary(self.runtime, str(metadata["symbol"]), snapshot_id=snapshot_id, capture_generation_id=capture_generation_id, analysis_run_id=existing["analysis_run_id"], model_revision=model_revision, mode=mode, as_of=metadata["available_at"]))
             return existing
         run_id = self.analysis.start_run(
             "option_history_v3",
@@ -94,6 +98,10 @@ class OptionHistoryV3Materializer:
             )
             publication_id = self._publish_decision_system(run_id, result)
             result["publication_id"] = str(publication_id)
+            result.update(surface_shift_run_summary(
+                self.runtime, str(metadata["symbol"]),
+                snapshot_id=snapshot_id, capture_generation_id=capture_generation_id, analysis_run_id=run_id, model_revision=model_revision, mode=mode, as_of=metadata["available_at"],
+            ))
             return {"analysis_run_id": str(run_id), **result}
         except Exception as exc:
             self.analysis.finish_run(run_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
@@ -142,6 +150,10 @@ class OptionHistoryV3Materializer:
                 SELECT quote.contract_id, contract.expiration, contract.option_type,
                        snapshot.history_symbol AS symbol,
                        contract.strike::double precision AS strike,
+                       contract.multiplier, quote.contract_style AS style,
+                       quote.contract_settlement AS settlement,
+                       quote.contract_deliverable_key AS deliverable_key,
+                       quote.standard_contract_verified,
                        greatest(contract.expiration - snapshot.trading_date, 0) AS dte,
                        quote.observed_at AS quote_observed_at, contract.underlying_instrument_id AS instrument_id,
                        quote.underlying_price, quote.bid, quote.ask, quote.mid,
@@ -171,10 +183,13 @@ class OptionHistoryV3Materializer:
         model_revision: str,
         mode: str,
     ) -> dict[str, Any]:
-        grouped: dict[tuple[Any, str], list[dict[str, Any]]] = {}
-        for row in rows:
-            grouped.setdefault((row["expiration"], str(row["option_type"])), []).append(row)
-        summary_count, relative_count, failures = 0, 0, 0
+        grouped, contract_term_rejections, excluded_contract_rows = (
+            group_verified_contract_rows(rows)
+        )
+        surface_metrics = surface_shape_metrics(
+            grouped, {key: _capture_group_quality(group)[0] for key, group in grouped.items()}
+        )
+        summary_count, relative_count, failures = 0, 0, contract_term_rejections
         eligible_groups, fit_attempts, succeeded_groups, decision_count = 0, 0, 0, 0
         persisted: list[dict[str, Any]] = []
         with self.runtime.transaction(JOB_PROFILE) as connection:
@@ -215,6 +230,7 @@ class OptionHistoryV3Materializer:
                 elif "fit_failed" in result["blockers"]:
                     failures += 1
                 summary = _summary(group, result, spot)
+                summary.update(surface_metrics.get((expiration, option_type), {}))
                 connection.execute(
                     """
                     INSERT INTO analysis.option_surface_summary
@@ -223,12 +239,13 @@ class OptionHistoryV3Materializer:
                          liquidity_score, metrics, analysis_run_id, capture_generation_id, fit_method,
                          fit_status, eligible_point_count, group_duration_seconds,
                          max_quote_age_seconds, fit_rmse, candidate_count)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, NULL, %s, %s, %s,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s, %s, %s,
                             %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     [
                         snapshot_id, expiration, option_type, model_revision, summary["dte"], summary["atm_iv"],
-                        summary["delta_25_iv"], summary["average_spread_pct"], summary["liquidity_score"],
+                        summary["delta_25_iv"], summary.get("skew_25"), summary.get("term_slope"),
+                        summary["average_spread_pct"], summary["liquidity_score"],
                         Jsonb(summary["metrics"]), run_id, capture_generation_id, model_revision, fit.status,
                         result["eligible_count"], summary["group_duration_seconds"], summary["max_quote_age_seconds"],
                         fit.rmse, summary["candidate_count"],
@@ -287,6 +304,8 @@ class OptionHistoryV3Materializer:
             "surface_summaries": summary_count,
             "relative_values": relative_count,
             "solver_failures": failures,
+            "contract_term_rejections": contract_term_rejections,
+            "excluded_contract_rows": excluded_contract_rows,
             "eligible_groups": eligible_groups,
             "fit_attempts": fit_attempts,
             "succeeded_groups": succeeded_groups,
@@ -606,95 +625,3 @@ class OptionHistoryV3Materializer:
                 observed_through=latest_available_at(legs) or datetime.now(UTC),
                 current_return=(mark / entry - 1.0) if mark is not None and entry > 0 else None,
             )
-
-
-def _capture_group_quality(rows: list[dict[str, Any]]) -> tuple[float | None, list[str]]:
-    """Return the only capture-wide rejection reasons.
-
-    Individual quote freshness, status, completeness, and liquidity problems are
-    preserved as row-level evidence by ``analyze_group``.  Only an incoherent
-    underlying or an overlong capture makes the whole expiry/type unusable.
-    """
-
-    if not rows:
-        return None, ["empty_capture_group"]
-    started = min((row.get("group_started_at") for row in rows if row.get("group_started_at")), default=None)
-    finished = max((row.get("group_finished_at") for row in rows if row.get("group_finished_at")), default=None)
-    blockers: list[str] = []
-    if started is None or finished is None:
-        blockers.append("missing_group_timestamps")
-    elif (finished - started).total_seconds() > 60:
-        blockers.append("group_duration_stale")
-    values = [float(row["underlying_price"]) for row in rows if row.get("underlying_price") is not None]
-    observed_at = [row.get("underlying_observed_at") for row in rows]
-    if len(values) != len(rows) or any(value is None for value in observed_at):
-        blockers.append("missing_aligned_underlying")
-    elif len({round(value, 8) for value in values}) != 1 or len({value for value in observed_at}) != 1:
-        blockers.append("inconsistent_aligned_underlying")
-    return (values[0] if not blockers and values else None), sorted(set(blockers))
-
-
-def is_later_capture_cohort(pending_slot: datetime | None, current_slot: datetime | None) -> bool:
-    """True only when a candidate can enter after its own evidence cohort."""
-
-    return pending_slot is not None and current_slot is not None and current_slot > pending_slot
-
-
-def _summary(rows: list[dict[str, Any]], result: dict[str, Any], spot: float | None) -> dict[str, Any]:
-    nearest = min(rows, key=lambda row: abs(float(row["strike"]) - (spot or float(row["strike"]))))
-    spreads = [float(row["ask"] - row["bid"]) / float(row["mid"]) for row in rows if row.get("mid") and row.get("ask") is not None and row.get("bid") is not None]
-    started = min((row.get("group_started_at") for row in rows if row.get("group_started_at")), default=None)
-    finished = max((row.get("group_finished_at") for row in rows if row.get("group_finished_at")), default=None)
-    ages = [(finished - row["provider_observed_at"]).total_seconds() for row in rows if finished and row.get("provider_observed_at")]
-    candidate_count = sum(value["classification"] != "rejected" for value in result["relative_values"])
-    return {
-        "dte": int(nearest["dte"]), "atm_iv": nearest.get("provider_iv"),
-        "delta_25_iv": _nearest_delta_iv(rows),
-        "average_spread_pct": sum(spreads) / len(spreads) if spreads else None,
-        "liquidity_score": float(len(rows)),
-        "group_duration_seconds": (finished - started).total_seconds() if started and finished else None,
-        "max_quote_age_seconds": max(ages) if ages else None,
-        "candidate_count": candidate_count,
-        "metrics": {
-            "blockers": result["blockers"], "static_arbitrage": result["static_findings"],
-            "fit": result["fit"].diagnostics, "row_metrics": result["row_metrics"],
-        },
-    }
-
-
-def _nearest_delta_iv(rows: list[dict[str, Any]]) -> float | None:
-    eligible = [row for row in rows if row.get("provider_delta") is not None and row.get("provider_iv") is not None]
-    if not eligible:
-        return None
-    return float(min(eligible, key=lambda row: abs(abs(float(row["provider_delta"])) - 0.25))["provider_iv"])
-
-
-def _hash(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
-
-
-def _long_delta_eligible(quote: dict[str, Any]) -> bool:
-    """Long candidates require a fresh provider delta in the release-1 band."""
-
-    value = quote.get("provider_delta")
-    observed = quote.get("provider_observed_at")
-    available = quote.get("available_at")
-    try:
-        delta = abs(float(value))
-    except (TypeError, ValueError):
-        return False
-    if not 0.35 <= delta <= 0.65:
-        return False
-    return observed is not None and available is not None and (available - observed).total_seconds() <= 180
-
-
-def _policy_for_instrument(connection: Any, instrument_id: int) -> dict[str, Any] | None:
-    row = connection.execute(
-        """
-        SELECT publication_cap, effective_state, policy_revision, lock_version
-        FROM app.option_history_policy
-        WHERE instrument_id = %s AND profile = 'history_full'
-        """,
-        [instrument_id],
-    ).fetchone()
-    return dict(row) if row else None

@@ -47,9 +47,14 @@ def non_overlapping_returns(bars: list[dict[str, Any]], dte: int) -> tuple[float
     # Match the forecast to the contract's actual DTE.  A LEAP with insufficient
     # point-in-time history must collect more evidence, never masquerade as 120D.
     # ``dte`` is calendar days while daily bars are trading sessions.
-    horizon = max(1, round(dte * 252 / 365))
+    horizon = trading_session_horizon(dte)
     closes = [float(row["close"]) for row in bars if row.get("close") is not None and float(row["close"]) > 0]
     return tuple(closes[index + horizon] / closes[index] - 1.0 for index in range(0, len(closes) - horizon, horizon))
+
+
+def trading_session_horizon(dte: int) -> int:
+    """Convert non-negative calendar DTE to the closest trading-session count."""
+    return max(1, round(max(0, dte) * 252 / 365))
 
 
 def history_truth_blockers(bars: list[dict[str, Any]], as_of: datetime) -> list[str]:

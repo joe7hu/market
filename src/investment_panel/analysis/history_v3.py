@@ -15,7 +15,7 @@ import numpy as np
 from scipy.optimize import LinearConstraint, minimize
 
 
-MODEL_REVISION = "history-v3-price-shape-r4-ticket"
+MODEL_REVISION = "history-v3-price-shape-r5-contract-terms"
 MIN_ELIGIBLE_POINTS = 12
 MIN_PACKAGE_EDGE = 0.05
 COST_ALLOWANCE_PER_LEG = 0.02

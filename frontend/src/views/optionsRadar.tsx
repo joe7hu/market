@@ -96,8 +96,8 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
     () => professionalContract ? opportunityRows : rowsForDisplayTime(opportunityRows, latestCandidateTime),
     [latestCandidateTime, opportunityRows, professionalContract],
   );
-  const opportunityCandidates = currentOpportunityRows;
-  const enrichedOpportunityCandidates = currentOpportunityRows;
+  const opportunityCandidates = currentOpportunityRows.filter((row) => row["is_primary_structure"] !== false);
+  const enrichedOpportunityCandidates = opportunityCandidates;
   const opportunityTickers = useMemo(() => uniqueText(opportunityCandidates, "ticker"), [opportunityCandidates]);
 
   const latestBacktestByProposal = useMemo(() => latestBy(backtests, "proposal_id", "evaluated_at"), [backtests]);
@@ -211,7 +211,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
       }
     >
       <SignalBriefPanel
-        rows={currentOpportunityRows}
+        rows={opportunityCandidates}
         activeAlertCount={0}
         fireCount={fireCount}
         setupCount={setupCount}
@@ -222,6 +222,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         latestSnapshot={latestSnapshot}
         snapshotLabel={snapshotLabel}
         latestCandidateTime={latestCandidateTime}
+        marketState={radarSummary}
         onOpenTicker={onOpenTicker}
         onOpenDecision={openDecision}
       />

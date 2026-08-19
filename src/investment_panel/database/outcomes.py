@@ -57,9 +57,10 @@ class OutcomeRepository:
                        AND mark_snapshot.source_id = entry_snapshot.source_id
                  )
                 LEFT JOIN raw.option_quote short_quote
-                  ON option_decision.structure = 'call_debit_spread'
+                  ON option_decision.structure IN ('call_debit_spread', 'put_debit_spread')
                  AND short_quote.contract_id = (option_decision.synthetic_legs->1->>'contract_id')::bigint
                  AND short_quote.observed_at = quote.observed_at
+                 AND short_quote.snapshot_id = quote.snapshot_id
                 WHERE decision.kind = 'option' AND decision.state <> 'REJECTED'
                   AND decision.as_of >= %s - make_interval(days => %s)
                   AND NOT EXISTS (
@@ -69,7 +70,7 @@ class OutcomeRepository:
                         AND shadow.source_kind = 'options_history_v3'
                   )
                   AND (outcome.decision_id IS NULL OR outcome.maturity_state = 'observing'
-                       OR option_decision.structure = 'call_debit_spread')
+                       OR option_decision.structure IN ('call_debit_spread', 'put_debit_spread'))
                 ORDER BY decision.id, quote.observed_at
                 """,
                 [reference, reference, lookback_days],
@@ -102,7 +103,7 @@ class OutcomeRepository:
                         and _number(row.get("mid")) is not None
                         and secured_cash
                     ]
-                elif structure == "call_debit_spread":
+                elif structure in {"call_debit_spread", "put_debit_spread"}:
                     marks = [
                         (
                             row["observed_at"],

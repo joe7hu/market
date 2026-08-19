@@ -72,11 +72,11 @@ class AnalysisRepository:
                 """
                 INSERT INTO analysis.run
                     (run_type, input_cutoff, code_version, feature_versions,
-                     strategy_revision_id, input_hash, started_at, status)
-                VALUES (%s, %s, %s, %s, %s, %s, now(), 'running')
+                     strategy_revision_id, input_hash, inputs, started_at, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), 'running')
                 RETURNING id
                 """,
-                [run_type, input_cutoff, code_version, Jsonb(dict(feature_versions or {})), strategy_revision_id, input_hash],
+                [run_type, input_cutoff, code_version, Jsonb(dict(feature_versions or {})), strategy_revision_id, input_hash, Jsonb(_jsonable(dict(inputs)))],
             ).fetchone()
         return UUID(str(row["id"]))
 
@@ -449,6 +449,49 @@ class AnalysisRepository:
                     ORDER BY item.rank
                     """,
                     [scope, model_name],
+                ).fetchall()
+        return [dict(row["payload"]) for row in rows]
+
+    def publication_rows_before(
+        self, scope: str, model_name: str, *, cutoff: datetime, source_id: str | None
+    ) -> list[dict[str, Any]]:
+        """Read the latest matching immutable publication strictly before a cutoff."""
+        with self.runtime.read() as connection:
+            predecessor = connection.execute(
+                """
+                SELECT publication.id, publication.bundle_id
+                FROM app.publication publication
+                JOIN analysis.run run ON run.id = publication.analysis_run_id
+                WHERE publication.scope = %s
+                  AND publication.status IN ('published', 'superseded')
+                  AND run.input_cutoff < %s
+                  AND run.inputs->>'source_id' IS NOT DISTINCT FROM %s
+                ORDER BY run.input_cutoff DESC, publication.published_at DESC NULLS LAST,
+                         publication.id DESC LIMIT 1
+                """,
+                [scope, cutoff, source_id],
+            ).fetchone()
+            if predecessor is None:
+                return []
+            if predecessor["bundle_id"] is not None:
+                rows = connection.execute(
+                    """
+                    SELECT payload.payload
+                    FROM app.publication_bundle_item item
+                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    WHERE item.bundle_id = %s AND item.model_name = %s
+                    ORDER BY item.rank
+                    """,
+                    [predecessor["bundle_id"], model_name],
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT item.payload FROM app.publication_item item
+                    WHERE item.publication_id = %s AND item.model_name = %s
+                    ORDER BY item.rank
+                    """,
+                    [predecessor["id"], model_name],
                 ).fetchall()
         return [dict(row["payload"]) for row in rows]
 

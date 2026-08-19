@@ -95,9 +95,10 @@ def reconcile_radar_summary(
     if not summaries:
         return summaries
     open_now = is_market_open(datetime.now(UTC))
-    ready = sum(row.get("execution_ready") is True for row in opportunities)
-    setup = sum(row.get("state") == "SETUP" for row in opportunities)
-    watch = len(opportunities) - ready - setup
+    primary = [row for row in opportunities if row.get("is_primary_structure") is not False]
+    ready = sum(row.get("execution_ready") is True for row in primary)
+    setup = sum(row.get("state") == "SETUP" for row in primary)
+    watch = len(primary) - ready - setup
     return [{
         **summary,
         "market_session": "rth" if open_now else "closed",

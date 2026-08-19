@@ -7,7 +7,11 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.strategy_parameters import normalize_gates
 from investment_panel.database.options_publication import publication_models, publish_degraded_if_needed
-from investment_panel.database.options_expressions import enrich_long_option_expectancy, insert_call_debit_spreads
+from investment_panel.database.options_expressions import (
+    enrich_long_option_expectancy,
+    insert_call_debit_spreads,
+    insert_put_debit_spreads,
+)
 from investment_panel.database.options_calibration import calibration_profiles
 from investment_panel.core.option_trade_ticket import calibrated_cohort_ready
 from investment_panel.database.options_retention import retain_reject_sample
@@ -16,6 +20,9 @@ from investment_panel.database.options_cash_secured_put import (
     DEFAULT_PARAMETERS as DEFAULT_CASH_SECURED_PUT_PARAMETERS,
     insert_cash_secured_put_decisions,
 )
+from investment_panel.database.strategy_routes import apply_strategy_routes
+from investment_panel.database.symbol_trends import refresh_symbol_trend_features
+from investment_panel.database.event_studies import materialize_event_studies
 FEATURE_VERSION = "option-professional-v3-ticket"
 STRATEGY_KEY = "options-radar-core"
 STRATEGY_REVISION = 3
@@ -67,18 +74,36 @@ def refresh_options_radar(
             source_id=source_id,
             symbols=symbols,
         )
+        trend_features = refresh_symbol_trend_features(runtime, run_id, as_of=cutoff)
         decision_count = _insert_decisions(runtime, run_id, strategy_id, strategy_parameters)
         empirical_long_options = enrich_long_option_expectancy(runtime, run_id, calibrated_ready)
         call_debit_spreads = insert_call_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
         decision_count += call_debit_spreads
+        put_debit_spreads = insert_put_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
+        decision_count += put_debit_spreads
         cash_secured_puts = insert_cash_secured_put_decisions(
             runtime, repository, run_id, strategy_id, strategy_parameters, calibrated_ready
         )
         decision_count += cash_secured_puts
+        try:
+            event_studies = {
+                "count": materialize_event_studies(runtime, run_id=run_id, as_of=cutoff),
+                "state": "complete",
+            }
+        except Exception as error:
+            event_studies = {"count": 0, "state": "unavailable", "error": type(error).__name__}
+        strategy_routes = apply_strategy_routes(
+            runtime,
+            run_id,
+            market_regime=dict(trend_features["market_regime"]),
+        )
         shadow_trades = _ensure_shadow_trades(runtime, run_id)
         discovery = materialize_discovery_foundation(
             runtime, run_id, cutoff=cutoff, contracts_evaluated=feature_count,
             source_id=source_id, requested_scope=symbols,
+        )
+        previous_opportunities = repository.publication_rows_before(
+            "options-radar", "option_radar_opportunity", cutoff=cutoff, source_id=source_id
         )
         models = publication_models(
             runtime,
@@ -88,6 +113,8 @@ def refresh_options_radar(
             scanned_contracts=feature_count,
             options_risk_sleeve_capital=options_risk_sleeve_capital,
             calibration=calibration,
+            market_regime=dict(trend_features["market_regime"]),
+            previous_opportunities=previous_opportunities,
         )
         models["option_calibration"] = calibration
         publication_id = repository.publish(
@@ -100,6 +127,10 @@ def refresh_options_radar(
                 "cash_secured_puts": cash_secured_puts,
                 "empirical_long_options": empirical_long_options,
                 "call_debit_spreads": call_debit_spreads,
+                "put_debit_spreads": put_debit_spreads,
+                "trend_features": trend_features,
+                "strategy_routes": strategy_routes,
+                "event_studies": event_studies,
                 "shadow_trades": shadow_trades,
                 "discovery": discovery,
                 "raw_payload_duplicated": False,
@@ -124,6 +155,10 @@ def refresh_options_radar(
         "cash_secured_puts": cash_secured_puts,
         "empirical_long_options": empirical_long_options,
         "call_debit_spreads": call_debit_spreads,
+        "put_debit_spreads": put_debit_spreads,
+        "trend_features": trend_features,
+        "strategy_routes": strategy_routes,
+        "event_studies": event_studies,
         "shadow_trades": shadow_trades,
         "discovery": discovery,
         "actionable": len(models["option_radar_opportunity"]),
@@ -365,6 +400,11 @@ def _insert_decisions(
                            CASE WHEN quote.bid IS NULL OR quote.ask IS NULL THEN 'incomplete_market' END,
                            CASE WHEN quote.bid < 0 OR quote.ask <= 0 OR quote.bid > quote.ask THEN 'crossed_or_empty_market' END,
                            CASE WHEN quote.mid IS NULL OR quote.mid <= 0 THEN 'missing_premium' END,
+                           CASE WHEN NOT quote.standard_contract_verified
+                             OR quote.contract_style <> 'american'
+                             OR quote.contract_settlement <> 'physical'
+                             OR quote.contract_deliverable_key IS NULL
+                             THEN 'standard_contract_terms_unverified' END,
                            CASE WHEN snapshot.market_session <> 'regular' THEN 'not_regular_session' END,
                            CASE WHEN quote.observed_at < analysis_run.input_cutoff - interval '90 minutes' THEN 'stale_quote' END,
                            CASE WHEN feature.spread_pct IS NULL THEN 'missing_spread' END,

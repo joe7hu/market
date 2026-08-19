@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,11 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.actions import _v3_paper_readiness
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_v3 import is_later_capture_cohort
+from investment_panel.database.options_history_v3_materialization import (
+    group_verified_contract_rows,
+    surface_summary,
+)
+from investment_panel.database.options_history_v3_surface import surface_shape_metrics
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.thesis import save_thesis
@@ -34,6 +40,119 @@ def _rows(option_type: str = "call") -> list[dict[str, object]]:
         }
         for index in range(12)
     ]
+
+
+def test_surface_shape_metrics_materialize_skew_and_term_slope() -> None:
+    grouped = {}
+    spots = {}
+    observed = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    for dte, expiration, atm_iv, delta_iv in (
+        (10, "2026-08-01", 0.20, 0.23),
+        (20, "2026-08-11", 0.22, 0.25),
+        (30, "2026-08-21", 0.24, 0.27),
+    ):
+        key = (expiration, "call")
+        grouped[key] = [
+            {
+                "strike": 500, "dte": dte, "provider_iv": atm_iv,
+                "provider_delta": 0.50, "bid": 2.0, "ask": 2.1, "mid": 2.05,
+                "open_interest": 500, "underlying_price": 500,
+                "provider_observed_at": observed,
+                "group_finished_at": observed + timedelta(seconds=2),
+            },
+            {
+                "strike": 520, "dte": dte, "provider_iv": delta_iv,
+                "provider_delta": 0.25, "bid": 1.0, "ask": 1.1, "mid": 1.05,
+                "open_interest": 500, "underlying_price": 500,
+                "provider_observed_at": observed,
+                "group_finished_at": observed + timedelta(seconds=2),
+            },
+        ]
+        spots[key] = 500.0
+    metrics = surface_shape_metrics(grouped, spots, minimum_points=2)
+    assert all(row["skew_25"] == pytest.approx(0.03) for row in metrics.values())
+    assert all(row["term_slope"] == pytest.approx(0.002) for row in metrics.values())
+
+
+def test_adjusted_rows_do_not_reject_the_verified_standard_surface() -> None:
+    standard = {
+        "expiration": "2026-08-21", "option_type": "call", "multiplier": 100,
+        "style": "american", "settlement": "physical",
+        "deliverable_key": "standard-chain", "standard_contract_verified": True,
+    }
+    adjusted = {
+        **standard, "deliverable_key": "adjusted-chain",
+        "standard_contract_verified": False,
+    }
+
+    grouped, ambiguous, excluded = group_verified_contract_rows(
+        [{**standard, "contract_id": 1}, {**adjusted, "contract_id": 2}]
+    )
+
+    assert [row["contract_id"] for row in grouped[("2026-08-21", "call")]] == [1]
+    assert ambiguous == 0
+    assert excluded == 1
+
+
+def test_surface_shape_metrics_ignore_quality_rejected_nearest_quote() -> None:
+    observed = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    common = {
+        "dte": 30, "open_interest": 500, "underlying_price": 500,
+        "group_finished_at": observed + timedelta(seconds=2),
+    }
+    rows = [
+        {
+            **common, "strike": 500, "provider_iv": 0.90, "provider_delta": 0.50,
+            "bid": 2.0, "ask": 2.1, "mid": 2.05,
+            "provider_observed_at": observed - timedelta(minutes=10),
+        },
+        {
+            **common, "strike": 505, "provider_iv": 0.20, "provider_delta": 0.50,
+            "bid": 2.0, "ask": 2.1, "mid": 2.05, "provider_observed_at": observed,
+        },
+        {
+            **common, "strike": 520, "provider_iv": 0.23, "provider_delta": 0.25,
+            "bid": 1.0, "ask": 1.1, "mid": 1.05, "provider_observed_at": observed,
+        },
+    ]
+
+    metrics = surface_shape_metrics(
+        {("2026-08-21", "call"): rows},
+        {("2026-08-21", "call"): 500},
+        minimum_points=2,
+    )
+
+    assert metrics[("2026-08-21", "call")]["skew_25"] == pytest.approx(0.03)
+
+
+def test_surface_summary_atm_iv_ignores_quality_rejected_nearest_quote() -> None:
+    observed = datetime(2026, 7, 20, 14, 30, tzinfo=UTC)
+    rows = []
+    for index in range(12):
+        strike = 490 + index * 2
+        if strike == 500:
+            strike = 501
+        rows.append({
+            "contract_id": index + 1, "strike": strike, "option_type": "call",
+            "dte": 30, "provider_iv": 0.20, "provider_delta": 0.50,
+            "bid": 2.0, "ask": 2.1, "mid": 2.05, "open_interest": 500,
+            "underlying_price": 500, "provider_observed_at": observed,
+            "group_started_at": observed,
+            "group_finished_at": observed + timedelta(seconds=2),
+        })
+    rows.append({
+        **rows[0], "contract_id": 99, "strike": 500, "provider_iv": 0.90,
+        "provider_observed_at": observed - timedelta(minutes=10),
+    })
+    result = {
+        "relative_values": [{"classification": "rejected"} for _row in rows],
+        "blockers": [], "static_findings": [],
+        "fit": SimpleNamespace(diagnostics={}), "row_metrics": {},
+    }
+
+    summary = surface_summary(rows, result, 500)
+
+    assert summary["atm_iv"] == pytest.approx(0.20)
 
 
 def test_price_shape_fit_is_deterministic_and_clean_chain_has_no_static_candidate() -> None:
@@ -102,7 +221,9 @@ def test_append_only_retry_advances_pointer_without_mixing_quotes(migrated_postg
     rows = [
         {"underlying_symbol": "QQQ", "expiry": "2026-08-21", "strike": 480 + index * 5,
          "type": "call", "underlying_price": 500, "bid": 5 - index * 0.1,
-         "ask": 5.2 - index * 0.1, "mid": 5.1 - index * 0.1, "open_interest": 200}
+         "ask": 5.2 - index * 0.1, "mid": 5.1 - index * 0.1, "open_interest": 200,
+         "style": "american", "settlement": "physical", "deliverable_key": "qqq-standard",
+         "standard_contract_verified": True}
         for index in range(12)
     ]
     first_run = ingestion.start_run("robinhood", "option_history_full")
@@ -166,6 +287,8 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         ingestion = IngestionRepository(runtime)
         history = OptionHistoryRepository(runtime)
         ingestion.register_source("robinhood", name="Robinhood", family="broker", kind="option_chain")
+        slot = datetime.now(UTC) + timedelta(minutes=1)
+        expiration = (slot.date() + timedelta(days=30)).isoformat()
         save_thesis(
             {"database": {"url": migrated_postgres_dsn}},
             "QQQ",
@@ -173,18 +296,17 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 "thesis": "QQQ remains bullish while the current trend and breadth regime hold.",
                 "why": "Core QQQ options-underwriting benchmark.",
                 "direction": "long",
-                "horizon_date": "2026-08-21",
+                "horizon_date": expiration,
                 "invalidation_rules": [
                     {"type": "price", "operator": "<=", "price": 480, "text": "QQQ closes below 480"},
                 ],
             },
         )
-        slot = datetime.now(UTC) + timedelta(minutes=1)
         finished_at = slot + timedelta(seconds=5)
         rows = [
             {
                 "underlying_symbol": "QQQ",
-                "expiry": "2026-08-21",
+                "expiry": expiration,
                 "strike": 470 + index * 5,
                 "type": "call",
                 "underlying_price": 500,
@@ -196,6 +318,10 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 "open_interest": 500,
                 "provider_delta": 0.5,
                 "market_data_status": "open",
+                "style": "american",
+                "settlement": "physical",
+                "deliverable_key": "qqq-standard",
+                "standard_contract_verified": True,
             }
             for index in range(12)
         ]
@@ -215,7 +341,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 "capture_finished_at": finished_at,
                 "quote_diagnostics": {
                     "groups": {
-                        "2026-08-21:call": {
+                        f"{expiration}:call": {
                             "started_at": slot,
                             "finished_at": finished_at,
                             "underlying_observed_at": slot,
@@ -225,7 +351,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
             },
         )
         assert captured["decision_candidates"] >= 1
-        diagnostic = captured["quote_diagnostics"]["groups"]["2026-08-21:call"]
+        diagnostic = captured["quote_diagnostics"]["groups"][f"{expiration}:call"]
         assert datetime.fromisoformat(diagnostic["finished_at"]) == finished_at
         ingestion.finish_run(run_id, "succeeded", summary=captured)
 
@@ -287,7 +413,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         assert observation["record_kind"] == "shadow_observation"
         assert observation["admission"]["decision_state"] in {"COLLECTING", "WATCH"}
         assert observation["admission"]["paper_state"] in {"COLLECTING", "WATCH"}
-        assert observation["contract"]["expiration"] == "2026-08-21"
+        assert observation["contract"]["expiration"] == expiration
         assert observation["contract"]["legs"][0]["strike"] is not None
         assert observation["thesis"]["revision"] == 1
         assert observation["thesis"]["direction"] == "long"
@@ -434,7 +560,9 @@ def test_health_counts_observed_dates_and_qualified_sessions_not_snapshots(
                     {"underlying_symbol": "QQQ", "expiry": "2026-08-21", "strike": 470 + index * 5,
                      "type": "call", "underlying_price": 500, "bid": 30 - index * 2,
                      "ask": 30.1 - index * 2, "mid": 30.05 - index * 2, "open_interest": 500,
-                     "market_data_status": "live"}
+                     "market_data_status": "live", "style": "american",
+                     "settlement": "physical", "deliverable_key": "qqq-standard",
+                     "standard_contract_verified": True}
                     for index in range(12)
                 ]
                 run_id = ingestion.start_run("robinhood", "option_history_full")

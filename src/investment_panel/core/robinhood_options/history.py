@@ -19,6 +19,7 @@ from investment_panel.core.robinhood_options.collector import (
     option_quote_row,
 )
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
+from investment_panel.core.robinhood_options.contract_terms import attach_chain_metadata
 
 # Robinhood can return a short ``results`` page even for otherwise valid quote
 # requests.  Four total attempts keeps the retry budget below a second per
@@ -60,8 +61,12 @@ def collect_robinhood_full_option_chain(
         for expiry in chain.get("expiration_dates") or []:
             for option_type in ("call", "put"):
                 try:
-                    key = f"{expiry}:{option_type}"
-                    groups[key] = _all_instruments(client, chain_id, str(expiry), option_type, deadline)
+                    key = f"{chain_id}:{expiry}:{option_type}"
+                    groups[key] = attach_chain_metadata(
+                        _all_instruments(client, chain_id, str(expiry), option_type, deadline),
+                        chain,
+                        symbol,
+                    )
                 except Exception as exc:  # keep independently auditable partial captures
                     errors.append(f"{expiry}:{option_type}:{type(exc).__name__}: {exc}")
                 if time.monotonic() > deadline:
@@ -144,7 +149,9 @@ def collect_robinhood_full_option_chain(
                     # tradability state.  A later status-policy change can replay
                     # this evidence without guessing which provider value we saw.
                     row["provider_payload"] = {
-                        "instrument": instrument,
+                        "instrument": {
+                            key: value for key, value in instrument.items() if not key.startswith("_")
+                        },
                         "quote": quote,
                         "underlying": equity,
                         "provider_market_data_status": quote.get("market_data_status") or quote.get("data_status"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
 from investment_panel.core.free_sources import store_options_chain
@@ -14,6 +15,7 @@ from investment_panel.core.ibkr_options import (
     select_leap_put_strikes,
     select_strikes_around_spot,
     select_term_structure_expiries,
+    verified_ibkr_contract_terms,
 )
 from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.jobs.update_ibkr_options import _ibkr_status
@@ -129,6 +131,28 @@ def test_pick_chain_param_set_falls_back_to_most_strikes() -> None:
     ]
     chosen = pick_chain_param_set(param_sets, "XYZ")
     assert len(chosen["strikes"]) == 4
+
+
+def test_ibkr_contract_terms_require_qualified_standard_contract_facts() -> None:
+    chain = {
+        "underlyingConId": 756733, "tradingClass": "SPY", "multiplier": "100",
+    }
+    contract = SimpleNamespace(
+        symbol="SPY", secType="OPT", currency="USD", tradingClass="SPY",
+        multiplier="100", conId=12345,
+    )
+
+    terms = verified_ibkr_contract_terms("SPY", chain, contract, 756733)
+
+    assert terms == {
+        "style": "american", "settlement": "physical",
+        "deliverable_key": "ibkr-standard:756733:SPY:100",
+        "standard_contract_verified": True,
+    }
+    contract.tradingClass = "2SPY"
+    assert verified_ibkr_contract_terms("SPY", chain, contract, 756733)[
+        "standard_contract_verified"
+    ] is False
 
 
 def test_parse_option_ticks_from_real_delayed_probe_data() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from investment_panel.analysis.option_expressions import (
@@ -7,7 +9,40 @@ from investment_panel.analysis.option_expressions import (
     LongOptionInputs,
     evaluate_call_debit_spread,
     evaluate_long_option,
+    evaluate_put_debit_spread,
 )
+from investment_panel.database.options_expressions import (
+    _contiguous_confirmed_closes, _history_bar_limits, _horizon_returns,
+    compatible_contract_terms,
+)
+from investment_panel.database.options_history_v3_candidates import trading_session_horizon
+
+
+def test_empirical_history_rejects_a_missing_trading_session() -> None:
+    rows = [
+        {"trading_date": date(2026, 8, 17), "close": 100},
+        {"trading_date": date(2026, 8, 19), "close": 102},
+    ]
+    assert _contiguous_confirmed_closes(rows) == []
+
+
+def test_vertical_spread_requires_matching_contract_terms() -> None:
+    standard = {
+        "multiplier": 100, "style": "american", "settlement": "physical",
+        "deliverable_key": "qqq-standard", "standard_contract_verified": True,
+    }
+    assert compatible_contract_terms(standard, dict(standard))
+    assert not compatible_contract_terms(standard, {**standard, "multiplier": 10})
+    assert not compatible_contract_terms(standard, {**standard, "settlement": "cash"})
+    assert not compatible_contract_terms(standard, {**standard, "deliverable_key": None})
+
+
+def test_calendar_dte_is_converted_to_trading_sessions_without_a_sixty_day_cap() -> None:
+    assert trading_session_horizon(40) == 28
+    assert trading_session_horizon(90) == 62
+    prices = [float(value) for value in range(1, 80)]
+    assert len(_horizon_returns(prices, 90)) == len(prices) - 62
+    assert _history_bar_limits([{"instrument_id": 1, "dte": 180}]) == {1: 144}
 
 
 def test_long_call_empirical_expectancy_uses_ask_and_round_trip_cost() -> None:
@@ -89,6 +124,25 @@ def test_call_debit_spread_rejects_crossed_or_non_debit_structure() -> None:
             historical_horizon_returns=(0.1,),
         )
     ) is None
+
+
+def test_put_debit_spread_has_bounded_risk_and_bearish_payoff() -> None:
+    result = evaluate_put_debit_spread(
+        DebitSpreadInputs(
+            spot=100,
+            long_strike=100,
+            short_strike=95,
+            long_ask=4,
+            short_bid=2,
+            historical_horizon_returns=(-0.10, -0.05, 0.05),
+            option_type="put",
+        )
+    )
+    assert result is not None
+    assert result.entry_cost == 200
+    assert result.max_loss == 200
+    assert result.max_profit == 300
+    assert result.break_even == 98
 
 
 def test_lower_bound_uses_effective_sample_size_for_overlapping_returns() -> None:

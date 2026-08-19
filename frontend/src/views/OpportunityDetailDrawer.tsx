@@ -64,6 +64,13 @@ function DrawerBody({ opportunity, volSurface, onOpenTicker, onLogTrade }: { opp
   const alternatives = parseArray(opportunity["alternative_contracts"]);
   const topReasons = listField(opportunity, ["top_reasons"]);
   const blockers = listField(opportunity, ["blockers"]);
+  const route = parseRecord(opportunity["strategy_route"], []) ?? parseRecord(detail?.["strategy_route"], []) ?? detail;
+  const routeAlternatives = listField(route, ["alternative_structures"]);
+  const routeReasons = listField(route, ["selection_reasons"]);
+  const rejectedRoutes = parseArray(route?.["rejected_structures"]);
+  const freshness = textField(opportunity, ["freshness_status", "freshness_state", "data_freshness"])
+    || textField(detail, ["freshness_status", "freshness_state", "data_freshness"]);
+  const routeAsOf = textField(route, ["as_of"]);
 
   return (
     <>
@@ -153,6 +160,18 @@ function DrawerBody({ opportunity, volSurface, onOpenTicker, onLogTrade }: { opp
             </div>
           ) : null}
         </Section>
+
+        {(routeAlternatives.length || rejectedRoutes.length || routeReasons.length || freshness || routeAsOf) ? (
+          <Section title="Route & freshness" hint="Shadow research context; not an authorization">
+            <div className="space-y-2 rounded-md border border-border/70 bg-background p-3 text-sm">
+              <p><span className="font-semibold">Selected route: </span>{titleLabel(textField(route, ["selected_structure"], textField(opportunity, ["structure"], "not recorded")))}</p>
+              {routeReasons.length ? <p className="text-muted-foreground">{routeReasons.slice(0, 2).join(" · ")}</p> : null}
+              {routeAlternatives.length ? <p><span className="font-semibold">Alternatives considered: </span>{routeAlternatives.map(titleLabel).join(", ")}</p> : null}
+              {rejectedRoutes.length ? <div><span className="font-semibold">Not selected: </span>{rejectedRoutes.slice(0, 3).map((item) => `${titleLabel(textField(item, ["structure"], "route"))}${textField(item, ["reason"]) ? ` — ${textField(item, ["reason"])}` : ""}`).join(" · ")}</div> : null}
+              {freshness || routeAsOf ? <p className="text-xs text-muted-foreground">{freshness ? `Freshness: ${titleLabel(freshness)}` : ""}{freshness && routeAsOf ? " · " : ""}{routeAsOf ? `As of ${routeAsOf}` : ""}</p> : null}
+            </div>
+          </Section>
+        ) : null}
 
         {alternatives.length ? (
           <Section title="Alternative contracts" hint={`${alternatives.length} on the same ticker`}>

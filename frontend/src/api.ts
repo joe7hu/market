@@ -71,6 +71,15 @@ export type OptionHistorySurfaceGroup = { expiration: string; option_type: "call
 export type OptionHistorySurfaceGroups = { snapshot_id: number | null; rows: OptionHistorySurfaceGroup[] };
 export type OptionHistoryCurves = { snapshot_id: number | null; smiles: Array<Record<string, unknown>>; term_structure: Array<Record<string, unknown>>; history: Array<Record<string, unknown>>; history_state: string };
 export type OptionHistoryAnomaly = { id: number; snapshot_id: number; contract_id: number | null; expiration: string | null; option_type: string | null; anomaly_type: string; state: string; observed_value: number | null; expected_value: number | null; z_score: number | null; details: Record<string, unknown>; created_at: string; strike: number | null };
+export type OptionEventStudy = {
+  ticker: string; event_kind: string; as_of: string; evidence_state: string;
+  rows: Array<{ id: string; event_starts_at: string; event_session: string; horizon: number; sample_size: number; actual_move_median: number | null; actual_move_p75: number | null; actual_move_p90: number | null; bootstrap_low: number | null; bootstrap_high: number | null; implied_move: number | null; evidence_state: string; details: Record<string, unknown> }>;
+};
+export type OptionDistributionShift = {
+  symbol: string; as_of: string; previous_as_of: string | null; feature_version: string; tenors: number[];
+  w1_shift: number | null; tail_mass_change: number | null; skew_shift: number | null; term_shift: number | null;
+  evidence_state: string; details: Record<string, unknown>; explanation_only: boolean; strategy_effect: boolean;
+};
 export type OptionRelativeValue = { id: number; analysis_run_id: string; capture_generation_id: number; classification: string; verification_status: string | null; verified_at: string | null; fair_low: number | null; fair_high: number | null; modeled_net_edge: number | null; edge_side: string | null; confidence: number | null; quality_status: string; blockers: string[]; evidence: Record<string, unknown>; contract_id: number; expiration: string; strike: number; option_type: "call" | "put"; snapshot_id: number };
 export type OptionHistoryHealth = {
   snapshots: number; complete_captures: number; post_fix_complete_captures: number;
@@ -146,8 +155,12 @@ export type OptionsDecisionCandidate = {
   thesis: { id: number | null; revision: string | null; invalidation: string | null; eligible: boolean };
   state_reasons: string[]; blockers: string[]; reassessment_date: string | null;
   comparable_exact_structure_outcomes: { sample_size?: number; lower_95_expectancy?: number | null; brier_score?: number | null; other_regime_monitoring_count?: number };
+  strategy_route: StrategyRoute;
+  market_regime: MarketRegime;
   ticket: OptionTradeTicket | null; paper_only: boolean;
 };
+export type StrategyRoute = { route_version?: string; shadow?: boolean; selected_structure: string; alternative_structures?: string[]; trend_state?: string; trend_confidence?: number | null; volatility_state?: string; event_state?: string; selection_reasons?: string[]; rejected_structures?: Array<{ structure: string; reason: string }>; route_blockers: string[]; as_of?: string | null; paper_quantity_authorized?: boolean; ai_can_override?: boolean };
+export type MarketRegime = { state?: string; trend_state: string; trend_confidence?: number; volatility_state?: string; breadth_state?: string; quality_status: string; reason_codes?: string[]; as_of?: string | null };
 export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: OptionsDecisionState; summary: { message?: string; [key: string]: unknown }; readiness: OptionsDecisionReadiness; strongest_candidate: OptionsDecisionCandidate | null; paper_only: boolean };
 export type OptionsWorkspacePayload = {
   symbol: string;
@@ -158,6 +171,8 @@ export type OptionsWorkspacePayload = {
   freshness_state: string;
   canary_status: OptionsDecisionReadiness["canary"];
   active_revision: string;
+  strategy_route: StrategyRoute;
+  market_regime: MarketRegime;
   paper_action_capability: { mode: string; enabled: boolean; reason: string };
   tab_counts: {
     candidates: number;
@@ -447,6 +462,14 @@ export async function loadOptionHistorySurfaceGroups(params: Record<string, stri
 
 export async function loadOptionHistoryCurves(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryCurves> {
   return getJson(`/api/options/history/curves?${optionHistoryParams(params)}`, signal);
+}
+
+export async function loadOptionEventStudy(symbol: string, eventKind: string, asOf: string, signal?: AbortSignal): Promise<OptionEventStudy> {
+  return getJson(`/api/options/event-study?ticker=${encodeURIComponent(symbol)}&event_kind=${encodeURIComponent(eventKind)}&as_of=${encodeURIComponent(asOf)}`, signal);
+}
+
+export async function loadOptionDistributionShift(symbol: string, asOf: string, signal?: AbortSignal): Promise<OptionDistributionShift> {
+  return getJson(`/api/options/history/distribution-shift?symbol=${encodeURIComponent(symbol)}&as_of=${encodeURIComponent(asOf)}`, signal);
 }
 
 export async function loadOptionHistoryAnomalies(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionHistoryAnomaly>> {

@@ -1,0 +1,35 @@
+"""Bounded options-research HTTP routes."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Query
+
+from app import deps
+from app.actions.options import OptionsActions
+from app.options_history_contracts import DistributionShiftResponse, EventStudyResponse
+
+router = APIRouter()
+
+
+def _actions() -> OptionsActions:
+    return OptionsActions(deps.load_config())
+
+
+@router.get("/api/options/event-study", response_model=EventStudyResponse)
+def option_event_study(
+    ticker: str = Query(..., min_length=1, max_length=16),
+    event_kind: str = Query(..., min_length=1, max_length=64),
+    as_of: datetime = Query(...),
+) -> dict[str, Any]:
+    return _actions().event_study(ticker=ticker, event_kind=event_kind, as_of=as_of)
+
+
+@router.get("/api/options/history/distribution-shift", response_model=DistributionShiftResponse)
+def option_distribution_shift(
+    symbol: str = Query("QQQ", min_length=1, max_length=16),
+    as_of: datetime = Query(...),
+) -> dict[str, Any]:
+    return _actions().distribution_shift(symbol=symbol, as_of=as_of)

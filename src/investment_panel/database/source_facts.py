@@ -136,6 +136,24 @@ class SourceFactRepository:
                         Jsonb(dict(source.get("details") or {})),
                     ],
                 ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO raw.market_event_version (
+                        market_event_id, instrument_id, source_id, ingest_run_id, payload_id,
+                        source_key, event_scope, event_kind, title, starts_at, ends_at,
+                        importance, verification_status, source_url, details
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (market_event_id, ingest_run_id) DO NOTHING
+                    """,
+                    [
+                        event["id"], instrument_id, source_id, run_id, payload_id, source_key,
+                        str(source.get("event_scope") or "macro"),
+                        str(source.get("event_kind") or "economic"), title, starts_at,
+                        _aware_datetime(source.get("ends_at") or source.get("end_at")),
+                        source.get("importance"), source.get("verification_status"),
+                        source.get("source_url"), Jsonb(dict(source.get("details") or {})),
+                    ],
+                )
                 self._project_catalyst(
                     connection,
                     event_id=int(event["id"]),

@@ -29,8 +29,11 @@ def confirmed_daily_bars(
     instrument_ids: Iterable[int],
     *,
     as_of: datetime,
+    max_bars: int | None = None,
+    include_versions: bool = False,
+    max_fact_versions: int | None = None,
 ) -> dict[int, list[dict[str, Any]]]:
-    """One provider-priority confirmed daily bar per instrument/date."""
+    """Confirmed daily bars, optionally retaining point-in-time fact versions."""
 
     ids = sorted({int(item) for item in instrument_ids})
     if not ids:
@@ -38,26 +41,76 @@ def confirmed_daily_bars(
     reference = _utc(as_of)
     rows = connection.execute(
         """
-        SELECT DISTINCT ON (instrument_id, trading_date)
-               instrument_id, trading_date, close, source_id, observed_at, available_at
-        FROM raw.confirmed_price_bar
-        WHERE instrument_id = ANY(%s) AND interval = '1d' AND close > 0
-          AND observed_at <= %s AND available_at <= %s
-        ORDER BY instrument_id, trading_date,
-                 CASE source_id
-                   WHEN 'polygon' THEN 1
-                   WHEN 'yahoo_chart' THEN 2
-                   WHEN 'yfinance' THEN 3
-                   ELSE 10
-                 END,
-                 available_at DESC, source_id
+        WITH facts AS (
+            SELECT * FROM raw.price_bar
+            UNION ALL
+            SELECT * FROM raw.price_bar_history
+        ), confirmed AS (
+            SELECT fact.*, confirmation_run.finished_at AS confirmed_at
+            FROM facts fact
+            JOIN LATERAL (
+                SELECT price_run.finished_at
+                FROM raw.price_bar_confirmation confirmation
+                JOIN ingest.run price_run ON price_run.id = confirmation.ingest_run_id
+                WHERE confirmation.fact_id = fact.id
+                  AND confirmation.fact_available_at = fact.available_at
+                  AND price_run.status IN ('succeeded', 'partial')
+                  AND price_run.finished_at <= %s
+                ORDER BY price_run.finished_at, price_run.id
+                LIMIT 1
+            ) confirmation_run ON true
+            WHERE fact.instrument_id = ANY(%s) AND fact.interval = '1d' AND fact.close > 0
+              AND fact.observed_at <= %s AND fact.available_at <= %s
+        ), versioned AS (
+            SELECT fact.*,
+                   row_number() OVER (
+                     PARTITION BY fact.instrument_id, fact.trading_date
+                     ORDER BY CASE fact.source_id
+                       WHEN 'polygon' THEN 1
+                       WHEN 'yahoo_chart' THEN 2
+                       WHEN 'yfinance' THEN 3
+                       ELSE 10
+                     END, fact.available_at DESC, fact.confirmed_at, fact.source_id
+                   ) AS canonical_rank
+            FROM confirmed fact
+        ), selected AS (
+            SELECT * FROM versioned WHERE %s OR canonical_rank = 1
+        ), ranked AS (
+            SELECT selected.*,
+                   dense_rank() OVER (PARTITION BY instrument_id ORDER BY trading_date DESC) AS recency_rank
+            FROM selected
+        ), bounded AS (
+            SELECT ranked.*,
+                   row_number() OVER (
+                     PARTITION BY instrument_id
+                     ORDER BY trading_date DESC, available_at DESC, confirmed_at, source_id
+                   ) AS fact_rank
+            FROM ranked
+            WHERE %s::integer IS NULL OR recency_rank <= %s
+        )
+        SELECT instrument_id, trading_date, open, high, low, close, volume,
+               source_id, observed_at, available_at, confirmed_at, fact_rank
+        FROM bounded
+        WHERE %s::integer IS NULL OR fact_rank <= %s::integer + 1
+        ORDER BY instrument_id, trading_date, available_at, confirmed_at, source_id
         """,
-        [ids, reference, reference],
+        [
+            reference, ids, reference, reference, include_versions,
+            max_bars, max_bars, max_fact_versions, max_fact_versions,
+        ],
     ).fetchall()
     output: dict[int, list[dict[str, Any]]] = {}
+    overflowed: set[int] = set()
     for raw in rows:
         row = dict(raw)
-        output.setdefault(int(row["instrument_id"]), []).append(row)
+        instrument_id = int(row["instrument_id"])
+        if max_fact_versions is not None and int(row["fact_rank"]) > max_fact_versions:
+            overflowed.add(instrument_id)
+            continue
+        row.pop("fact_rank", None)
+        output.setdefault(instrument_id, []).append(row)
+    for instrument_id in overflowed:
+        output[instrument_id] = []
     return output
 
 

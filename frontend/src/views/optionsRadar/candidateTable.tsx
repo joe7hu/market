@@ -259,6 +259,7 @@ export function CandidateEventsTable({
                   </Cell>
                   <Cell>
                     <ContractIdentity row={row} />
+                    <CandidateDecisionSummary row={row} />
                   </Cell>
                   <Cell className="text-right tabular-nums">
                     <div>{moneyField(row, ["entry_price", "premium_mid"])}</div>
@@ -374,6 +375,7 @@ export function CandidateMobileCard({
         <InlineMetric label={textField(row, ["structure"]) === "cash_secured_put" ? "Secured Cash" : "Break-even"} value={textField(row, ["structure"]) === "cash_secured_put" ? moneyField(row, ["secured_cash"]) : formatRatio(numberField(row, ["break_even_move_pct"], Number.NaN))} />
       </div>
       <div className="mt-2"><BidAsk row={row} label="Bid×Ask" /></div>
+      <div className="mt-3"><CandidateDecisionSummary row={row} /></div>
 
       <div className="mt-3 space-y-3">
         <MobileSection label="Signal Evidence"><CandidateSignalEvidence row={row} /></MobileSection>
@@ -507,4 +509,46 @@ export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
       {!hardRejects.length && !blockers.length && !positives.length ? <StatusBadge tone="muted">No stored evidence</StatusBadge> : null}
     </div>
   );
+}
+
+// Keep the primary decision explanation short. The drawer contains the longer
+// evidence trail; this is the trader-facing answer to why this ticker and route.
+export function candidateDecisionFacts(row: RowRecord) {
+  const raw = recordField(row, "raw");
+  const first = (keys: string[]) => textField(row, keys) || keys.map((key) => stringFromRecord(raw, key)).find(Boolean) || "";
+  const blockers = listField(row, ["blockers"]).length ? listField(row, ["blockers"]) : listFromRecord(raw, "blockers");
+  const change = first(["candidate_change", "change_state", "candidate_status"]);
+  const trend = first(["trend_state"]);
+  const relativeStrength = numberField(row, ["relative_strength_20d", "relative_strength_60d"], Number.NaN);
+  const route = recordField(row, "strategy_route");
+  const routeReasons = listFromRecord(route, "selection_reasons");
+  const structure = first(["structure"]);
+  const selectedRoute = stringFromRecord(route, "selected_structure");
+  const routeMatchesCandidate = Boolean(structure && selectedRoute && structure === selectedRoute);
+  const routeExplanation = routeMatchesCandidate
+    ? routeReasons[0] || `${titleLabel(structure)} selected by the current route`
+    : structure && selectedRoute
+      ? `Candidate is ${titleLabel(structure)}; shadow route is ${titleLabel(selectedRoute)}`
+      : structure
+        ? `${titleLabel(structure)} is ranked by candidate expectancy; no matching route rationale is stored`
+        : "";
+  return {
+    whyTicker: first(["why_ticker", "ticker_reason", "symbol_reason"]) || [trend && `Trend ${titleLabel(trend)}`, Number.isFinite(relativeStrength) && `relative strength ${relativeStrength.toFixed(2)}`].filter(Boolean).join(" · "),
+    whyStructure: first(["why_structure", "structure_reason", "selection_reason"]) || routeExplanation,
+    blocker: blockers[0] || first(["main_blocker", "primary_blocker"]),
+    change: change ? titleLabel(change) : "Retained",
+  };
+}
+
+export function CandidateDecisionSummary({ row }: { row: RowRecord }) {
+  const facts = candidateDecisionFacts(row);
+  const details = [
+    facts.whyTicker && ["Why ticker", facts.whyTicker],
+    facts.whyStructure && ["Why structure", facts.whyStructure],
+    facts.blocker && ["Blocker", facts.blocker],
+  ].filter((value): value is [string, string] => Boolean(value));
+  return <div className="mt-2 min-w-0 space-y-1 text-xs leading-5 text-muted-foreground">
+    <div><StatusBadge tone={facts.change.toLowerCase().includes("new") ? "info" : "muted"}>{facts.change}</StatusBadge></div>
+    {details.map(([label, value]) => <p key={label} className="break-words"><span className="font-semibold text-foreground">{label}: </span>{value}</p>)}
+  </div>;
 }

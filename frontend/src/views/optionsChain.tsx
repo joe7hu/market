@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from "react";
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useSearchParams } from "react-router-dom";
-import { loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api";
+import { loadOptionDistributionShift, loadOptionEventStudy, loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionDistributionShift, type OptionEventStudy, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api";
 import { StatusBadge } from "@/components/market/workstation";
 import { blockerCopy } from "./optionsChain/decisionDesk";
 import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
@@ -27,6 +27,8 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const [surfaceGrid, setSurfaceGrid] = useState<OptionHistorySurfaceGrid | null>(null);
   const [curves, setCurves] = useState<OptionHistoryCurves | null>(null);
   const [anomalies, setAnomalies] = useState<OptionHistoryPage<OptionHistoryAnomaly>>({ rows: [], count: 0, offset: 0, limit: 250 });
+  const [eventStudy, setEventStudy] = useState<OptionEventStudy | null>(null);
+  const [distributionShift, setDistributionShift] = useState<OptionDistributionShift | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [webgl, setWebgl] = useState<boolean | null>(null);
   const snapshot = numberParam(search.get("snapshot"));
@@ -112,6 +114,21 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const expiries = useMemo(() => [...new Set(groups.map((group) => group.expiration))], [groups]);
   const types = useMemo(() => [...new Set(groups.filter((group) => group.expiration === expiration).map((group) => group.option_type))], [groups, expiration]);
   const selected = snapshots.find((row) => row.snapshot_id === snapshot);
+  useEffect(() => {
+    if (!selected) return;
+    const asOf = selected.capture_finished_at ?? selected.slot_at ?? selected.observed_at;
+    setEventStudy(null);
+    setDistributionShift(null);
+    const controller = new AbortController();
+    void Promise.all([
+      loadOptionEventStudy(symbol, "nearest", asOf, controller.signal),
+      loadOptionDistributionShift(symbol, asOf, controller.signal),
+    ]).then(([nextEventStudy, nextDistributionShift]) => {
+      setEventStudy(nextEventStudy);
+      setDistributionShift(nextDistributionShift);
+    }).catch(asError(setError));
+    return () => controller.abort();
+  }, [selected?.capture_finished_at, selected?.observed_at, selected?.slot_at, symbol]);
   const maxPage = Math.max(0, Math.ceil(chain.count / CHAIN_PAGE_SIZE) - 1);
   const filters = <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
     <Select label="Snapshot" value={String(snapshot ?? "")} onChange={(value) => update({ snapshot: value || undefined, page: "0" })}><option value="" disabled>{snapshots.length ? "Choose capture" : "No complete capture"}</option>{snapshots.map((row) => <option key={row.snapshot_id} value={row.snapshot_id}>{formatCaptureWindow(row)} · {(row.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}</option>)}</Select>
@@ -129,12 +146,29 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
       </div>
     </section>
     {filters}
+    <ResearchEvidenceBar eventStudy={eventStudy} distributionShift={distributionShift} />
     <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="min-h-11 rounded border px-3 text-sm" onClick={() => update(fullChain ? { full_chain: undefined, min: "-0.10", max: "0.10", page: "0" } : { full_chain: "1", min: undefined, max: undefined, page: "0" })}>{fullChain ? "Return to near-ATM chain" : "Expand to full chain"}</button>{error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}</div>
     <div className="flex w-fit rounded-md border border-border bg-muted p-1"><Tab active={view === "chain"} onClick={() => update({ evidence_view: "chain" })}>Chain</Tab><Tab active={view === "surface"} onClick={() => update({ evidence_view: "surface" })}>IV Surface</Tab><Tab active={view === "curves"} onClick={() => update({ evidence_view: "curves" })}>Curves & History</Tab></div>
     {view === "chain" ? <ChainTable rows={chain.rows} page={page} maxPage={maxPage} count={chain.count} onPage={(next) => update({ page: String(next) })} /> : null}
     {view === "surface" ? <SurfacePanel snapshot={selected} surface={surface} surfaceGrid={surfaceGrid} optionType={(optionType || "call") as "call" | "put"} selectedDte={groups.find((group) => group.expiration === expiration && group.option_type === optionType)?.dte} selectedExpiration={expiration} surfaceView={surfaceView} onSurfaceViewChange={(next) => update({ surface_view: next })} webgl={webgl} /> : null}
     {view === "curves" ? <CurvesPanel curves={curves} anomalies={anomalies.rows} /> : null}
   </div>;
+}
+
+function ResearchEvidenceBar({ eventStudy, distributionShift }: { eventStudy: OptionEventStudy | null; distributionShift: OptionDistributionShift | null }) {
+  const event = eventStudy?.rows[0];
+  return <section className="grid min-w-0 gap-2 rounded-lg border border-border bg-card p-3 sm:grid-cols-2 xl:grid-cols-5">
+    <EvidenceMetric label="Event window" value={event ? `${eventStudy?.event_kind.toUpperCase()} · ${new Date(event.event_starts_at).toLocaleDateString()} · ${event.event_session.replaceAll("_", " ")} · n=${event.sample_size}` : "Insufficient event evidence"} />
+    <EvidenceMetric label="Actual / implied move" value={event?.actual_move_median !== null && event?.actual_move_median !== undefined && event?.implied_move !== null && event?.implied_move !== undefined ? `${percent(event.actual_move_median)} / ${percent(event.implied_move)}` : "Unavailable"} />
+    <EvidenceMetric label="Constant-tenor W1" value={number(distributionShift?.w1_shift, 4)} />
+    <EvidenceMetric label="Skew / term shift" value={`${number(distributionShift?.skew_shift, 4)} / ${number(distributionShift?.term_shift, 4)}`} />
+    <EvidenceMetric label="Tail change" value={distributionShift?.tail_mass_change === null || distributionShift?.tail_mass_change === undefined ? "Not materialized" : number(distributionShift.tail_mass_change, 4)} />
+    <p className="break-words text-xs leading-5 text-muted-foreground sm:col-span-2 xl:col-span-5">Research evidence only. Surface W1 measures instability; it is not a long-vol signal. Tail change remains unavailable until a constrained risk-neutral density is materialized.</p>
+  </section>;
+}
+
+function EvidenceMetric({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p><p className="mt-1 break-words text-sm font-medium">{value}</p></div>;
 }
 
 function ChainTable({ rows, page, maxPage, count, onPage }: { rows: OptionHistoryChainRow[]; page: number; maxPage: number; count: number; onPage: (page: number) => void }) {

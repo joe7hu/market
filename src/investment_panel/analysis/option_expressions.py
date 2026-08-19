@@ -28,6 +28,7 @@ class DebitSpreadInputs:
     historical_horizon_returns: tuple[float, ...]
     multiplier: int = 100
     return_stride: int = 1
+    option_type: str = "call"
 
 
 @dataclass(frozen=True)
@@ -98,10 +99,28 @@ def evaluate_long_option(inputs: LongOptionInputs) -> ExpressionResult | None:
 
 
 def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | None:
+    if inputs.option_type != "call":
+        return None
+    return _evaluate_debit_spread(inputs)
+
+
+def evaluate_put_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | None:
+    if inputs.option_type != "put":
+        return None
+    return _evaluate_debit_spread(inputs)
+
+
+def _evaluate_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | None:
     values = (inputs.spot, inputs.long_strike, inputs.short_strike, inputs.long_ask, inputs.short_bid)
     debit = inputs.long_ask - inputs.short_bid
-    width = inputs.short_strike - inputs.long_strike
+    width = (
+        inputs.short_strike - inputs.long_strike
+        if inputs.option_type == "call"
+        else inputs.long_strike - inputs.short_strike
+    )
     if (
+        inputs.option_type not in {"call", "put"}
+        or
         any(not math.isfinite(value) for value in values)
         or inputs.spot <= 0
         or inputs.long_strike <= 0
@@ -117,14 +136,23 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
     scenario_pnls = []
     for horizon_return in inputs.historical_horizon_returns:
         terminal = inputs.spot * (1 + horizon_return)
-        payoff = min(width, max(0.0, terminal - inputs.long_strike))
+        intrinsic = (
+            terminal - inputs.long_strike
+            if inputs.option_type == "call"
+            else inputs.long_strike - terminal
+        )
+        payoff = min(width, max(0.0, intrinsic))
         scenario_pnls.append(payoff * inputs.multiplier - entry)
     expected_value, expected_loss, probability_profit = _moments(scenario_pnls)
     conservative, optimistic, lower_95 = _uncertainty(scenario_pnls, inputs.return_stride)
     targets: dict[int, float | None] = {}
     reasons: dict[str, str] = {}
     for multiple in (2, 5, 10):
-        target = inputs.long_strike + debit * multiple
+        target = (
+            inputs.long_strike + debit * multiple
+            if inputs.option_type == "call"
+            else inputs.long_strike - debit * multiple
+        )
         if debit * multiple <= width:
             targets[multiple] = round(target, 4)
         else:
@@ -134,7 +162,10 @@ def evaluate_call_debit_spread(inputs: DebitSpreadInputs) -> ExpressionResult | 
         entry_cost=round(entry, 2),
         max_loss=round(entry, 2),
         max_profit=round(max_profit, 2),
-        break_even=round(inputs.long_strike + debit, 4),
+        break_even=round(
+            inputs.long_strike + debit if inputs.option_type == "call" else inputs.long_strike - debit,
+            4,
+        ),
         expected_value=round(expected_value, 2),
         expected_loss=round(expected_loss, 2),
         risk_adjusted_expectancy=expected_value / entry,
