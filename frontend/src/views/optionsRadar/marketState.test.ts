@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { candidateDecisionFacts } from "./candidateTable";
-import { marketStateFacts } from "./signalBrief";
+import { emptySignalBlocker, marketStateFacts } from "./signalBrief";
 
 describe("radar market-state explanations", () => {
   it("projects the compact market state and bounded candidate changes", () => {
@@ -37,5 +37,10 @@ describe("radar market-state explanations", () => {
       },
     });
     expect(facts.whyStructure).toBe("Candidate is Long Call; shadow route is Call Debit Spread");
+  });
+
+  it("states the qualification failure when the shortlist is empty", () => {
+    expect(emptySignalBlocker([])).toBe("No contract passed the full qualification gates.");
+    expect(emptySignalBlocker([{ticker: "QQQ"}])).toBeNull();
   });
 });

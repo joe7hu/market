@@ -62,6 +62,7 @@ export function SignalBriefPanel({
   const researchRows = rows.filter((row) => tierOf(row) === "Research");
   const topBlockers = commonBlockers(rows).slice(0, 3);
   const dataFailures = commonDataContractFailures(repairRows).slice(0, 3);
+  const emptyBlocker = emptySignalBlocker(rows);
   const decisionTone: Tone = exceptionalRows.length ? "good" : repairRows.length ? "bad" : researchRows.length ? "info" : "muted";
   const decisionLabel = exceptionalRows.length
     ? `${exceptionalRows.length} trade-ready opportunit${exceptionalRows.length === 1 ? "y" : "ies"}`
@@ -122,13 +123,17 @@ export function SignalBriefPanel({
           />
           <BriefCallout
             label={repairRows.length ? "Data Blocker" : "Main Blocker"}
-            tone={repairRows.length ? "bad" : topBlockers.length ? "warn" : "good"}
-            value={repairRows.length ? summarizeReasons(dataFailures, "Data contract is clean.") : summarizeReasons(topBlockers, "Strict gates are clean.")}
+            tone={repairRows.length ? "bad" : emptyBlocker ? "muted" : topBlockers.length ? "warn" : "good"}
+            value={repairRows.length ? summarizeReasons(dataFailures, "Data contract is clean.") : emptyBlocker ?? summarizeReasons(topBlockers, "Strict gates are clean.")}
           />
         </div>
       </div>
     </section>
   );
+}
+
+export function emptySignalBlocker(rows: RowRecord[]): string | null {
+  return rows.length ? null : "No contract passed the full qualification gates.";
 }
 
 export function marketStateFacts(row: RowRecord | undefined) {
