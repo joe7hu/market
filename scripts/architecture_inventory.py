@@ -413,7 +413,12 @@ def compatibility_references() -> dict[str, int]:
         count = 0
         for root in scan_roots:
             for path in root.rglob("*"):
-                if path.is_file() and marker.casefold() in path.read_text(encoding="utf-8", errors="replace").casefold():
+                if (
+                    path.is_file()
+                    and "__pycache__" not in path.parts
+                    and path.suffix in {".py", ".ts", ".tsx"}
+                    and marker.casefold() in path.read_text(encoding="utf-8", errors="replace").casefold()
+                ):
                     count += 1
         counts[marker] = count
     return counts
