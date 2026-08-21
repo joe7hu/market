@@ -73,7 +73,7 @@ from app.data_access import (
     user_state_table_payload,
     watchlist_rows,
 )
-from app.data_access.config import load_config
+from app.data_access.config import database_path, load_config
 from app.dependencies import database_url, runtime_for_config
 from app.job_control import (
     ALLOWLIST,
@@ -101,7 +101,10 @@ from app.panel_snapshot import (
 )
 from app.request_security import TAILSCALE_CGNAT, require_local_request
 from fastapi import Request
+from investment_panel.core.config import config_to_dict, load_config as load_core_config
 from investment_panel.core.daily_research_prompt import build_daily_research_prompt
+from investment_panel.core.daily_research_prompt_fields import DAILY_RESEARCH_TABLES
+from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.storage_archive import StorageArchiveService
@@ -190,7 +193,10 @@ def scope_panel_snapshot_payload(
     offset: int = 0,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    return scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+    return scope_snapshot_payload(
+        config, panel_data, scope, offset=offset, limit=limit,
+        cache_path_loader=_scope_snapshot_cache_path,
+    )
 
 
 __all__ = [
@@ -199,16 +205,20 @@ __all__ = [
     "AgentAnalyzeInput",
     "AgentSettingsInput",
     "CONTEXT_CACHE_TTL_SECONDS",
+    "DAILY_RESEARCH_TABLES",
     "DEFAULT_STRATEGY_VERSION",
     "HEAD_REVISION",
     "OptionPaperEntryInput",
     "OptionsHistoryToggleInput",
     "PANEL_SNAPSHOT_CONTRACT_REVISION",
+    "PANEL_SCOPE_TABLES",
     "PortfolioPositionInput",
     "PortfolioTransactionInput",
     "PortfolioTransactionReversalInput",
     "ResearchSourcesInput",
     "SOURCE_FRESHNESS_DEFAULT_LIMIT",
+    "SCOPED_TABLE_COMPACT_FIELDS",
+    "SCOPED_TABLE_ROW_LIMITS",
     "StrategyPromotionInput",
     "TAILSCALE_CGNAT",
     "ThesisAutomationInput",
@@ -230,12 +240,15 @@ __all__ = [
     "_table_payload",
     "_with_data_freshness",
     "build_daily_research_prompt",
+    "config_to_dict",
     "dashboard_payload",
+    "database_path",
     "database_url",
     "delete_watchlist_symbol",
     "execute_refresh_job",
     "execute_refresh_job_subprocess",
     "load_config",
+    "load_core_config",
     "load_daily_research_panel_data",
     "load_market_panel_data",
     "load_panel_data",

@@ -118,16 +118,22 @@ def scope_snapshot_payload(
     *,
     offset: int = 0,
     limit: int | None = None,
+    cache_path_loader: Callable[[dict[str, Any], str], Path] | None = None,
 ) -> dict[str, Any]:
+    path_loader = cache_path_loader or _scope_snapshot_cache_path
     payload = panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
     if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES:
         return payload
     status = payload.get("status")
     if isinstance(status, dict) and status.get("ready") is True:
         _mark_snapshot_state(payload, "current")
-        _store_last_good_scope_snapshot(config, scope, payload, offset=offset, limit=limit)
+        _store_last_good_scope_snapshot(
+            config, scope, payload, offset=offset, limit=limit, cache_path_loader=path_loader,
+        )
         return payload
-    fallback = _load_last_good_scope_snapshot(config, scope, offset=offset, limit=limit)
+    fallback = _load_last_good_scope_snapshot(
+        config, scope, offset=offset, limit=limit, cache_path_loader=path_loader,
+    )
     if fallback is None:
         message = str(status.get("message") if isinstance(status, dict) else "") or "No current or last-good snapshot is available."
         raise HTTPException(status_code=503, detail=message)
@@ -153,12 +159,15 @@ def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
     return False
 
 
-def _store_last_good_scope_snapshot(config: dict[str, Any], scope: str, payload: dict[str, Any], *, offset: int = 0, limit: int | None = None) -> None:
+def _store_last_good_scope_snapshot(
+    config: dict[str, Any], scope: str, payload: dict[str, Any], *, offset: int = 0,
+    limit: int | None = None, cache_path_loader: Callable[[dict[str, Any], str], Path],
+) -> None:
     snapshot = deepcopy(payload)
     _mark_snapshot_state(snapshot, "current", last_good_at=datetime.now().astimezone().isoformat())
     key = _scope_snapshot_cache_key(scope, offset, limit)
     _LAST_GOOD_SCOPE_SNAPSHOTS[key] = snapshot
-    path = _scope_snapshot_cache_path(config, key)
+    path = cache_path_loader(config, key)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -168,12 +177,15 @@ def _store_last_good_scope_snapshot(config: dict[str, Any], scope: str, payload:
         return
 
 
-def _load_last_good_scope_snapshot(config: dict[str, Any], scope: str, *, offset: int = 0, limit: int | None = None) -> dict[str, Any] | None:
+def _load_last_good_scope_snapshot(
+    config: dict[str, Any], scope: str, *, offset: int = 0, limit: int | None = None,
+    cache_path_loader: Callable[[dict[str, Any], str], Path],
+) -> dict[str, Any] | None:
     key = _scope_snapshot_cache_key(scope, offset, limit)
     cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(key)
     if cached is not None:
         return deepcopy(cached) if _snapshot_schema_is_compatible(cached) else None
-    path = _scope_snapshot_cache_path(config, key)
+    path = cache_path_loader(config, key)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
