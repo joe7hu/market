@@ -152,6 +152,7 @@ function PreopenBrief({ row }: { row: RowRecord | null }) {
   if (!row) return null;
   const forecast = recordField(row, "qqq_forecast");
   const backtest = recordField(row, "backtest");
+  const outcome = recordField(row, "qqq_outcome");
   const events = recordList(row, "key_events");
   const risks = listField(row, ["risks"]);
   const watchItems = listField(row, ["watch_items"]);
@@ -163,6 +164,11 @@ function PreopenBrief({ row }: { row: RowRecord | null }) {
     pctStat("Move", forecast.expected_return_pct),
     pctStat("Backtest MAE", backtest.mae_pct),
     pctStat("Range hit", backtest.range_hit_rate_pct),
+  ].filter(Boolean) as string[];
+  const outcomeStats = [
+    moneyStat("Actual mark", outcome.actual_price),
+    pctStat("Actual move", outcome.actual_return_pct),
+    pctStat("Error", outcome.absolute_error_pct),
   ].filter(Boolean) as string[];
 
   return (
@@ -182,6 +188,12 @@ function PreopenBrief({ row }: { row: RowRecord | null }) {
           {forecastStats.length ? <StatRow stats={forecastStats} className="mt-2" /> : null}
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{textField(row, ["qqq_path"])}</p>
           <p className="mt-1 text-sm leading-6 text-muted-foreground">{textField(row, ["opening_scenario"])}</p>
+          <div className="mt-3 border-t border-border pt-3">
+            <p className="text-sm font-semibold">Forecast loop</p>
+            <p className="mt-1 text-xs text-muted-foreground">{String(outcome.status ?? "pending")} · observed only when a point-in-time QQQ mark is available.</p>
+            {outcomeStats.length ? <StatRow stats={outcomeStats} className="mt-2" /> : null}
+            <p className="mt-1 text-xs text-muted-foreground">Range hit: {outcome.within_forecast_range === true ? "yes" : outcome.within_forecast_range === false ? "no" : "pending"}; direction: {outcome.direction_correct === true ? "correct" : outcome.direction_correct === false ? "wrong" : "pending"}.</p>
+          </div>
         </div>
         <div className="rounded-md border border-border p-3">
           <p className="text-sm font-semibold">Key events</p>

@@ -105,7 +105,7 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
     <WorkspacePage
       eyebrow="QQQ · paper underwriting"
       title="Options Trade Desk"
-      subtitle="A decision workstation for one question: is there a QQQ options setup worth taking on paper right now?"
+      subtitle="QQQ-only paper underwriting: is there a QQQ options setup worth taking on paper right now?"
       metrics={[
         ["Verdict", brief ? verdictMetric(brief) : "Loading", brief ? decisionPresentation(brief).detail : "Reading the latest complete evidence.", brief ? decisionPresentation(brief).tone : "muted"],
         ["Market data", capture?.capture_state === "complete" ? "Current" : "Unavailable", capture ? `${capture.complete_captures.toLocaleString()} complete captures · latest ${(capture.completeness ?? 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })}` : "Loading capture health.", capture?.capture_state === "complete" ? "good" : "warn"],

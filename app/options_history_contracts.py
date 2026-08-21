@@ -224,6 +224,7 @@ class OptionsDecisionBrief(BaseModel):
     readiness: "OptionsDecisionReadiness"
     strongest_candidate: "OptionsDecisionCandidate | None" = None
     paper_only: bool
+    decision_truth: dict[str, Any] = Field(default_factory=dict)
 
 
 class OptionBlockerCount(BaseModel):

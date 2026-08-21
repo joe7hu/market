@@ -2344,6 +2344,11 @@
             ],
             "title": "As Of"
           },
+          "decision_truth": {
+            "additionalProperties": true,
+            "title": "Decision Truth",
+            "type": "object"
+          },
           "lane": {
             "title": "Lane",
             "type": "string"

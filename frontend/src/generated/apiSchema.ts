@@ -3478,6 +3478,10 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
+            /** Decision Truth */
+            decision_truth?: {
+                [key: string]: unknown;
+            };
             /** Lane */
             lane: string;
             /** Mode */
