@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from investment_panel.core.event_truth import build_options_decision_truth
+from investment_panel.core.decision import MARKET_TZ
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
@@ -113,13 +114,14 @@ def refresh_today_publication(
         ).fetchone()
         qqq_history = []
         if qqq_instrument is not None:
+            qqq_market_date = as_of.astimezone(MARKET_TZ).date()
             qqq_history = [
                 {"date": row["trading_date"], "close": row["close"]}
                 for row in confirmed_daily_bars(
-                    connection, [int(qqq_instrument["id"])], as_of=as_of, max_bars=280
+                    connection, [int(qqq_instrument["id"])], as_of=as_of, max_bars=281
                 ).get(int(qqq_instrument["id"]), [])
-                if row["trading_date"] < as_of.date()
-            ]
+                if row["trading_date"] < qqq_market_date
+            ][-280:]
         qqq_actual_row = connection.execute(
             """
             SELECT quote.price, quote.observed_at, source.kind AS source_kind
@@ -132,7 +134,7 @@ def refresh_today_publication(
             WHERE instrument.symbol = 'QQQ' AND quote.trading_date = %s
             LIMIT 1
             """,
-            [as_of, as_of.date()],
+            [as_of, as_of.astimezone(MARKET_TZ).date()],
         ).fetchone()
         prior_preopen_row = connection.execute(
             """
