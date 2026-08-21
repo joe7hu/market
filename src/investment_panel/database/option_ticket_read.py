@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from investment_panel.core.config import AppConfig
 from investment_panel.core.decision import is_market_open
 from investment_panel.core.option_trade_ticket import TICKET_VERSION, build_option_trade_ticket, ticket_recommendation_fields
 from investment_panel.database.analysis import AnalysisRepository
@@ -33,13 +34,11 @@ _DYNAMIC_BLOCKERS = {
 def reconcile_loaded_radar_tables(
     runtime: DatabaseRuntime,
     tables: dict[str, list[dict[str, Any]]],
-    config: dict[str, Any],
+    config: AppConfig,
 ) -> None:
     if not {"option_radar_opportunity", "option_radar_summary"}.intersection(tables):
         return
-    sleeve = ((config.get("analysis") or {}).get("options_decision_system") or {}).get(
-        "options_risk_sleeve_capital"
-    )
+    sleeve = config.analysis.options_decision_system.options_risk_sleeve_capital
     opportunities = tables.get("option_radar_opportunity")
     if opportunities is None:
         opportunities = AnalysisRepository(runtime).publication_rows(

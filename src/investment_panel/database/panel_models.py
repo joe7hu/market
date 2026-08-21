@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import inspect
 from typing import Any, Iterable, Mapping
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.panel_queries import OWNED_CORRELATIONS_QUERY, build_query_policies
 from investment_panel.database.panel_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
 from investment_panel.database.event_panel_models import EVENT_DIRECT_QUERIES
@@ -567,7 +568,7 @@ SPECIAL_MODELS = {
 
 
 def load_postgres_tables(
-    config: dict[str, Any],
+    config: AppConfig,
     table_names: Iterable[str],
     *,
     query_row_limits: Mapping[str, int] | None = None,
@@ -620,8 +621,8 @@ def load_postgres_tables(
         tables["broker_status"] = broker_status_rows(runtime)
     requested_recovery = RECOVERY_MODELS.intersection(requested)
     if requested_recovery:
-        recovery_settings = ((config.get("analysis") or {}).get("options_decision_system") or {})
-        tables.update(recovery_panel_models(runtime, requested_recovery, recovery_paper_actions_enabled=bool(recovery_settings.get("recovery_paper_actions_enabled", False))))
+        recovery_settings = config.analysis.options_decision_system
+        tables.update(recovery_panel_models(runtime, requested_recovery, recovery_paper_actions_enabled=recovery_settings.recovery_paper_actions_enabled))
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}

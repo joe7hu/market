@@ -5,48 +5,43 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.actions.agents import AgentActions
 from app import job_control, panel_snapshot
+from app import dependencies
 from app.contracts import AgentAnalyzeInput
-from app.data_access import config as config_owner
 from app.data_access import loaders
-from app.request_security import require_local_request
 from app.response_contracts import (
     AgentAnalyzeResponse,
     AgentExperimentResponse,
     AgentOverviewResponse,
     AgentResearchPromptResponse,
 )
+from investment_panel.core.config import AppConfig
 from investment_panel.core.daily_research_prompt import build_daily_research_prompt
 
 router = APIRouter()
 
 
-def _actions() -> AgentActions:
-    # Route actions must share the app's request-config seam so test and
-    # alternate-runtime callers never fall through to the host's live database.
-    return AgentActions(config_owner.load_config(), job_control.start_refresh_job)
-
-
 @router.get("/api/agent", response_model=AgentOverviewResponse, response_model_exclude_unset=True)
-def agent_overview() -> dict[str, Any]:
-    return _actions().overview()
+def agent_overview(actions: AgentActions = Depends(dependencies.get_agent_actions)) -> dict[str, Any]:
+    return actions.overview()
 
 
 @router.get("/api/agent/experiments/current", response_model=AgentExperimentResponse, response_model_exclude_unset=True)
-def current_agent_experiment() -> dict[str, Any]:
+def current_agent_experiment(actions: AgentActions = Depends(dependencies.get_agent_actions)) -> dict[str, Any]:
     """Expose only the experiment conclusion and gates, never batch rows."""
 
-    return _actions().current_experiment()
+    return actions.current_experiment()
 
 
 @router.get("/api/agent/research-prompt", response_model=AgentResearchPromptResponse, response_model_exclude_unset=True)
-def agent_research_prompt() -> dict[str, Any]:
+def agent_research_prompt(config: AppConfig = Depends(dependencies.get_config)) -> dict[str, Any]:
     _, research_data = panel_snapshot.context(
         cache_key="agent:daily-research",
         loader=loaders.load_daily_research_panel_data,
+        config_loader=lambda: config,
     )
     research_prompt = build_daily_research_prompt(
         research_data.tables,
@@ -61,9 +56,13 @@ def agent_research_prompt() -> dict[str, Any]:
 
 
 @router.post("/api/agent/analyze", response_model=AgentAnalyzeResponse, response_model_exclude_unset=True)
-def analyze_ticker(payload: AgentAnalyzeInput, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    require_local_request(request)
-    actions = _actions()
+def analyze_ticker(
+    payload: AgentAnalyzeInput,
+    background_tasks: BackgroundTasks,
+    actions: AgentActions = Depends(dependencies.get_agent_actions),
+    config: AppConfig = Depends(dependencies.get_config),
+    _request=Depends(dependencies.get_authorized_request),
+) -> dict[str, Any]:
     try:
         result = actions.queue_analysis(payload.ticker, prompt=payload.prompt or "")
     except ValueError as exc:
@@ -74,7 +73,7 @@ def analyze_ticker(payload: AgentAnalyzeInput, request: Request, background_task
             job_control.execute_background_refresh_job,
             job["id"],
             "run_option_agents_ondemand",
-            actions.config.database.url,
+            config.database.url,
         )
     panel_snapshot.invalidate_context_cache()
     return result

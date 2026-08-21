@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, instrument_identity, reconcile_instrument
+from conftest import typed_config
 
 
 def test_instrument_identity_normalizes_aliases_and_classification() -> None:
@@ -11,7 +12,7 @@ def test_instrument_identity_normalizes_aliases_and_classification() -> None:
 
 
 def test_reconcile_instrument_improves_placeholders_without_downgrading(migrated_postgres_dsn: str) -> None:
-    runtime = runtime_for_config({"database": {"url": migrated_postgres_dsn}})
+    runtime = runtime_for_config(typed_config(migrated_postgres_dsn))
     with runtime.transaction() as connection:
         first_id = reconcile_instrument(
             connection,

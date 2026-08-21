@@ -5,14 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Iterable
 
-from app.data_access.config import load_config, tables_for_scope
+from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.panel import tables_for_scope
 from app.data_access.types import DataStatus, PanelData
 from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS, TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
 from investment_panel.database.panel_models import load_postgres_tables
 
 
 def load_panel_data(
-    config: dict[str, Any] | None = None,
+    config: AppConfig | None = None,
     table_names: Iterable[str] | None = None,
     ensure_decision_models: bool | None = None,
     ensure_source_models: bool | None = None,
@@ -22,7 +23,7 @@ def load_panel_data(
     thesis_monitor_include_current_prices: bool = True,
 ) -> PanelData:
     del ensure_decision_models, ensure_source_models
-    active_config = config or load_config()
+    active_config = config if config is not None else load_config()
     requested = _all_contract_tables() if table_names is None else tuple(table_names)
     if not requested:
         return PanelData(
@@ -61,7 +62,7 @@ def load_panel_data(
     )
 
 
-def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> PanelData:
+def load_daily_research_panel_data(config: AppConfig | None = None) -> PanelData:
     """Load the prompt seed first, then SQL-bound symbol detail for that universe."""
 
     from investment_panel.core.daily_research_prompt_fields import (
@@ -70,7 +71,7 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
         DAILY_RESEARCH_TABLES,
     )
 
-    active_config = config or load_config()
+    active_config = config if config is not None else load_config()
     # The full universe model joins all recent source evidence. It is useful
     # for Watchlist, but the prompt seed is the owned set, explicit watches,
     # and Radar tickets. This avoids a broad discovery read on this API route.
@@ -125,8 +126,8 @@ def load_daily_research_panel_data(config: dict[str, Any] | None = None) -> Pane
     )
 
 
-def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelData:
-    active_config = config or load_config()
+def load_panel_scope_data(config: AppConfig | None, scope: str) -> PanelData:
+    active_config = config if config is not None else load_config()
     if scope == "portfolio":
         return load_portfolio_scope_data(active_config)
     requested = tuple(tables_for_scope(scope))
@@ -138,7 +139,7 @@ def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelDat
     return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
 
 
-def load_portfolio_scope_data(config: dict[str, Any] | None = None) -> PanelData:
+def load_portfolio_scope_data(config: AppConfig | None = None) -> PanelData:
     """Load portfolio detail only for currently held instruments.
 
     The generic ``quotes`` model has an intentionally broad no-filter mode.
@@ -147,7 +148,7 @@ def load_portfolio_scope_data(config: dict[str, Any] | None = None) -> PanelData
     materializing the whole instrument catalog.
     """
 
-    active_config = config or load_config()
+    active_config = config if config is not None else load_config()
     seed = load_panel_data(active_config, table_names=("portfolio",))
     if not seed.status.ready:
         return seed
@@ -176,7 +177,7 @@ def load_portfolio_scope_data(config: dict[str, Any] | None = None) -> PanelData
 
 
 def load_watchlist_scope_data(
-    config: dict[str, Any] | None, scope: str, *, offset: int = 0, limit: int | None = None
+    config: AppConfig | None, scope: str, *, offset: int = 0, limit: int | None = None
 ) -> PanelData:
     """Load a watchlist page in two bounded passes.
 
@@ -185,7 +186,7 @@ def load_watchlist_scope_data(
     PostgreSQL and avoids scanning every historical fundamental/option row just
     to render the first page.
     """
-    active_config = config or load_config()
+    active_config = config if config is not None else load_config()
     seed = load_panel_data(active_config, table_names=("universe_screen", "manual_watchlist", "portfolio"))
     rows = seed.rows("universe_screen")
     if scope == "watchlist-watched":
@@ -217,7 +218,7 @@ def load_watchlist_scope_data(
     )
 
 
-def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
+def load_table_panel_data(config: AppConfig | None, table_name: str) -> PanelData:
     limits = {
         "event_decision_packets": 200,
         "decision_truth": 500,
@@ -231,7 +232,7 @@ def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> Pan
 
 
 def load_table_panel_page(
-    config: dict[str, Any] | None,
+    config: AppConfig | None,
     table_name: str,
     *,
     limit: int,
@@ -241,7 +242,7 @@ def load_table_panel_page(
     from investment_panel.database.panel_pagination import load_postgres_table_page
 
     return load_postgres_table_page(
-        config or load_config(),
+        config if config is not None else load_config(),
         table_name,
         limit=limit,
         snapshot_at=snapshot_at,
@@ -249,7 +250,7 @@ def load_table_panel_page(
     )
 
 
-def load_ticker_panel_data(config: dict[str, Any] | None, ticker: str) -> PanelData:
+def load_ticker_panel_data(config: AppConfig | None, ticker: str) -> PanelData:
     normalized = ticker.strip().upper()
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
@@ -271,7 +272,7 @@ def panel_contract_payload() -> dict[str, Any]:
     return contract_panel_payload()
 
 
-def load_market_panel_data(config: dict[str, Any] | None = None) -> PanelData:
+def load_market_panel_data(config: AppConfig | None = None) -> PanelData:
     return load_panel_scope_data(config, "market")
 
 

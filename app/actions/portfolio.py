@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app.data_access import mutations
+from investment_panel.core.config import AppConfig
 from investment_panel.database.portfolio_ledger import (
     preview_portfolio_transaction as preview_transaction_owner,
     record_portfolio_transaction as record_transaction_owner,
@@ -21,7 +22,7 @@ __all__ = ["PortfolioActions"]
 class PortfolioActions:
     def __init__(
         self,
-        config: dict[str, Any],
+        config: AppConfig,
         *,
         portfolio_rows: Callable[..., list[dict[str, Any]]] | None = None,
         table_payload: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,

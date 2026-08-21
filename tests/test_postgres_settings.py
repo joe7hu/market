@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.data_access.config import load_config as load_api_config
 from investment_panel.core.config import load_config as load_core_config
 from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.configuration import SettingRepository
@@ -32,11 +31,7 @@ def test_postgresql_settings_overlay_yaml_without_rewriting_it(
     finally:
         runtime.close()
     try:
-        api = load_api_config(config_path)
         core = load_core_config(config_path)
-        assert api["agents"]["option_thesis"]["enabled"] is False
-        assert api["agents"]["option_thesis"]["limit"] == 3
-        assert api["research_sources"]["news"]["providers"] == ["hackernews"]
         assert core.agents.option_thesis.enabled is False
         assert core.agents.option_thesis.limit == 3
         assert core.research_sources.news.providers == ["hackernews"]

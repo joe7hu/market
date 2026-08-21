@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.actions.options import OptionsActions
 from app.actions.portfolio import PortfolioActions
+from conftest import typed_config
 
 
 def test_options_action_owns_thesis_response_assembly() -> None:
@@ -30,7 +31,7 @@ def test_portfolio_action_owns_transaction_response_reload() -> None:
         return {"id": "tx-1", **transaction}
 
     actions = PortfolioActions(
-        {"database": {"url": "postgresql:///market"}},
+        typed_config(),
         portfolio_rows=lambda _config: [{"symbol": "NVDA"}],
         table_payload=lambda rows: {"rows": rows, "count": len(rows)},
         preview_transaction=lambda *_args: {},

@@ -12,6 +12,8 @@ from investment_panel.core.panel import (
 
 from app.data_access.types import PanelData
 from app.data_access.coerce import _int_value, jsonable
+from investment_panel.core.agent_config import ThesisMonitorAgentConfig
+from investment_panel.core.config import AgentCommandConfig, AppConfig, OptionAgentConfig
 from investment_panel.core.decision import ticker_decision_brief
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
@@ -29,24 +31,24 @@ def status_payload(panel_data: PanelData) -> dict[str, Any]:
 
 
 
-def runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
-    agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
-    option_thesis = agents.get("option_thesis", {}) if isinstance(agents.get("option_thesis"), dict) else {}
-    option_postmortem = agents.get("option_postmortem", {}) if isinstance(agents.get("option_postmortem"), dict) else {}
-    option_agent = agents.get("option_agent", {}) if isinstance(agents.get("option_agent"), dict) else {}
-    thesis_monitor = agents.get("thesis_monitor", {}) if isinstance(agents.get("thesis_monitor"), dict) else {}
+def runtime_metadata(config: AppConfig) -> dict[str, Any]:
+    agents = config.agents
+    option_thesis = agents.option_thesis
+    option_postmortem = agents.option_postmortem
+    option_agent = agents.option_agent
+    thesis_monitor = agents.thesis_monitor
     return {
         "agents": {
             # Unified single-pass agent runtime. Sub-limits keep thesis/postmortem
             # counts visible even though one consolidated call covers both.
             "option_agent": _agent_runtime_metadata(option_agent, default_limit=8) | {
-                "thesis_limit": _int_value(option_agent.get("thesis_limit"), 8),
-                "postmortem_limit": _int_value(option_agent.get("postmortem_limit"), 4),
+                "thesis_limit": _int_value(option_agent.thesis_limit, 8),
+                "postmortem_limit": _int_value(option_agent.postmortem_limit, 4),
                 "request_cap": DEFAULT_AGENT_THESIS_REQUEST_LIMIT,
                 "queue_policy": "current_ranked_candidates_plus_ondemand",
                 "cadence": "launchd_weekdays_0815_or_ondemand",
                 "schedule_owner": "launchd",
-                "max_runs_per_day": _int_value(option_agent.get("max_runs_per_day"), 1),
+                "max_runs_per_day": _int_value(option_agent.max_runs_per_day, 1),
                 "mode": "consolidated_single_pass",
             },
             "option_thesis": _agent_runtime_metadata(option_thesis, default_limit=20) | {
@@ -71,24 +73,28 @@ def runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
 
 
 
-def _agent_runtime_metadata(config: dict[str, Any], *, default_limit: int) -> dict[str, Any]:
-    command = str(config.get("command") or "")
-    enabled = bool(config.get("enabled", bool(command)))
+def _agent_runtime_metadata(
+    config: AgentCommandConfig | OptionAgentConfig,
+    *,
+    default_limit: int,
+) -> dict[str, Any]:
+    command = str(getattr(config, "command", "") or "")
+    enabled = bool(getattr(config, "enabled", bool(command)))
     configured = bool(command.strip())
     return {
         "enabled": enabled,
         "configured": configured,
         "active": enabled and configured,
         "status": "active" if enabled and configured else "paused",
-        "limit": _int_value(config.get("limit"), default_limit),
-        "timeout_seconds": _int_value(config.get("timeout_seconds"), 120),
+        "limit": _int_value(getattr(config, "limit", None), default_limit),
+        "timeout_seconds": _int_value(getattr(config, "timeout_seconds", None), 120),
     }
 
 
-def _thesis_monitor_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
-    enabled = bool(config.get("enabled", False))
-    provider = str(config.get("provider") or "codex")
-    model = str(config.get("model") or "")
+def _thesis_monitor_runtime_metadata(config: ThesisMonitorAgentConfig) -> dict[str, Any]:
+    enabled = bool(getattr(config, "enabled", False))
+    provider = str(getattr(config, "provider", None) or "codex")
+    model = str(getattr(config, "model", None) or "")
     configured_providers = {"codex", "deepseek", "openai"}
     return {
         "enabled": enabled,
@@ -97,15 +103,15 @@ def _thesis_monitor_runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
         "status": "active" if enabled else "paused",
         "provider": provider,
         "model": model or "gpt-5.6-luna",
-        "reasoning_effort": str(config.get("reasoning_effort") or "high"),
-        "prompt_version": str(config.get("prompt_version") or "thesis_v3_20260725"),
-        "concurrency": _int_value(config.get("concurrency"), 2),
-        "evidence_items_per_symbol": _int_value(config.get("evidence_items_per_symbol"), 12),
+        "reasoning_effort": str(getattr(config, "reasoning_effort", None) or "high"),
+        "prompt_version": str(getattr(config, "prompt_version", None) or "thesis_v3_20260725"),
+        "concurrency": _int_value(getattr(config, "concurrency", None), 2),
+        "evidence_items_per_symbol": _int_value(getattr(config, "evidence_items_per_symbol", None), 12),
         "cadence": "preopen_plus_material_events",
-        "preopen_enabled": bool(config.get("preopen_enabled", False)),
-        "material_event_enabled": bool(config.get("material_event_enabled", False)),
-        "debounce_minutes": _int_value(config.get("debounce_minutes"), 30),
-        "max_material_runs_per_symbol_per_day": _int_value(config.get("max_material_runs_per_symbol_per_day"), 2),
+        "preopen_enabled": bool(getattr(config, "preopen_enabled", False)),
+        "material_event_enabled": bool(getattr(config, "material_event_enabled", False)),
+        "debounce_minutes": _int_value(getattr(config, "debounce_minutes", None), 30),
+        "max_material_runs_per_symbol_per_day": _int_value(getattr(config, "max_material_runs_per_symbol_per_day", None), 2),
         "authority": "research_ranking_only",
     }
 

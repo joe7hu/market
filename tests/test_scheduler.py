@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from app import scheduler
+from investment_panel.core import job_policy
 from investment_panel.core.refresh_jobs import ALLOWLIST
+from conftest import typed_config
 
 
 def test_scheduler_enabled_defaults_on(monkeypatch) -> None:
@@ -154,12 +156,10 @@ def test_agent_pass_on_by_default_daily(monkeypatch) -> None:
     for var in ("MARKET_RADAR_OPTION_SOURCE", "MARKET_AGENT_REFRESH_SECONDS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
-    import investment_panel.core.config as config
-
     monkeypatch.setattr(
-        config,
+        job_policy,
         "load_config",
-        lambda: SimpleNamespace(agents=SimpleNamespace(option_agent=SimpleNamespace(enabled=True, auto_run_seconds=0))),
+        lambda: typed_config(raw={"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 0}}}),
     )
     intervals = scheduler.job_intervals()
     assert intervals["run_option_agents"] == 86400  # daily by default (Phase 2c)
@@ -170,7 +170,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_AGENT_REFRESH_SECONDS", raising=False)
     monkeypatch.setenv("MARKET_IN_PROCESS_HEAVY_REFRESH", "1")
     status = scheduler.scheduler_status(
-        {"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 123}}}
+        typed_config(raw={"agents": {"option_agent": {"enabled": True, "auto_run_seconds": 123}}})
     )
 
     assert status["agent_refresh_seconds"] == "123"

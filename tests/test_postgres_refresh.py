@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from datetime import UTC, datetime
 
 from investment_panel.jobs import (
@@ -15,10 +14,11 @@ from investment_panel.jobs import (
     update_market_events,
     update_robinhood_options,
 )
+from conftest import typed_config
 
 
 def test_full_refresh_reports_unavailable_optional_providers_as_partial(monkeypatch) -> None:
-    config = SimpleNamespace(database=SimpleNamespace(url="postgresql:///market"))
+    config = typed_config()
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: object())
     monkeypatch.setattr(update_market_data, "run", lambda _path, publish=False: {"status": "ok"})
@@ -62,12 +62,7 @@ def test_scheduled_preopen_skips_outside_window_and_publishes_inside(
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
-    config = SimpleNamespace(
-        database=SimpleNamespace(url=migrated_postgres_dsn),
-        agents=SimpleNamespace(
-            thesis_monitor=SimpleNamespace(model="gpt-5.6-luna", reasoning_effort="high")
-        ),
-    )
+    config = typed_config(migrated_postgres_dsn)
     monkeypatch.setattr(postgres_refresh, "load_config", lambda _path=None: config)
     monkeypatch.setattr(postgres_refresh, "runtime_for_config", lambda _config: runtime)
     monkeypatch.setattr(

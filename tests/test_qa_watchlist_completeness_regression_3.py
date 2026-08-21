@@ -7,6 +7,7 @@ import pytest
 from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 # Regression: ISSUE-003 — Watchlist option IV, expected move, and skew were empty.
@@ -95,7 +96,7 @@ def test_current_chain_is_composed_into_complete_watchlist_option_context(
         repository.finish_run(run_id, "succeeded")
 
         panel = loaders_owner.load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "options_ticker_signals"
+            typed_config(migrated_postgres_dsn), "options_ticker_signals"
         )
         row = next(
             item for item in panel.rows("options_ticker_signals") if item["symbol"] == "CHAIN"

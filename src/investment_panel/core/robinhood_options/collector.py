@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from investment_panel.core.config import RobinhoodConfig
 from investment_panel.core.coercion import to_finite_float as as_float
 from investment_panel.core.coercion import to_int_or_none as as_int
 from investment_panel.core.ibkr_options import select_leap_call_strikes, select_leap_put_strikes
@@ -186,7 +187,7 @@ class RobinhoodMcpClient:
 
 
 def collect_robinhood_option_chains(
-    config: Any,
+    config: RobinhoodConfig,
     symbols: list[str],
     *,
     client: RobinhoodClient | None = None,
@@ -448,7 +449,7 @@ def _latest_option_quote_time(rows_by_symbol: dict[str, list[dict[str, Any]]]) -
 
 
 def collect_robinhood_equity_quotes(
-    config: Any,
+    config: RobinhoodConfig,
     symbols: list[str],
     *,
     client: RobinhoodClient | None = None,

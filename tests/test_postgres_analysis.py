@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from app.data_access import config as config_owner, loaders as loaders_owner
+from app import dependencies
+from app.data_access import loaders as loaders_owner
 from app.routers.options import _encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
@@ -21,6 +22,7 @@ from investment_panel.database.options_analysis import published_options_radar_r
 from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def test_no_regular_snapshot_replaces_legacy_contract_with_explicit_empty_publication(postgres_dsn: str) -> None:
@@ -1180,7 +1182,7 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
     assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
     from app.data_access.loaders import load_table_panel_data
 
-    chain = load_table_panel_data({"database": {"url": postgres_dsn}}, "options_chain").rows("options_chain")
+    chain = load_table_panel_data(typed_config(postgres_dsn), "options_chain").rows("options_chain")
     assert {row["symbol"] for row in chain} == {"AAPL", "NVDA"}
     assert {float(row["strike"]) for row in chain if row["symbol"] == "NVDA"} == {185.0}
 
@@ -1218,8 +1220,8 @@ def test_options_learning_api_pages_in_postgresql(
             """,
             [Jsonb({"ticker": "MSFT"})],
         ).fetchone()["id"]
-    monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": postgres_dsn}})
     application = FastAPI()
+    monkeypatch.setitem(application.dependency_overrides, dependencies.get_config, lambda: typed_config(postgres_dsn))
     application.include_router(options_router)
     with TestClient(application) as client:
         first = client.get("/api/options-radar/learning/agent_thesis?limit=2").json()

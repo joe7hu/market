@@ -16,33 +16,34 @@ from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.migrations import upgrade_database
-from app.data_access.settings import settings_payload, update_agent_settings_config, update_research_sources_config
+from app.data_access.settings import settings_payload
 from app.data_access.types import DataStatus, PanelData
-from app.data_access import config as config_owner, loaders as loaders_owner, settings as settings_owner
+from app.data_access import loaders as loaders_owner, settings as settings_owner
 from app import job_control
+from app import dependencies
 import app.panel_snapshot as panel_owner
 import app.main as app_main
 from app.main import app
 from app.request_security import require_local_request
 from investment_panel.core.panel import PANEL_SCOPE_TABLES
 from investment_panel.core.decision import ticker_decision_brief
+from investment_panel.core.config import AppConfig
+from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
+from conftest import typed_config
 
 
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     panel_owner.invalidate_context_cache()
-    monkeypatch.setattr(
-        config_owner,
-        "load_config",
-        lambda _path=None: {
-            "database": {"url": "postgresql:///market"},
-            "nas": {"status_dir": str(db_path.parent / "status")},
-        },
-    )
+    config = typed_config(status_dir=db_path.parent / "status")
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: config)
+    monkeypatch.setattr(panel_owner, "load_config", lambda: config)
 
 
 def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
     panel_owner.invalidate_context_cache()
-    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": dsn}})
+    config = typed_config(dsn)
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: config)
+    monkeypatch.setattr(panel_owner, "load_config", lambda: config)
 
 
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -50,14 +51,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     credentials = info.user if not info.password else f"{info.user}:{info.password}"
     postgres_dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
     upgrade_database(postgres_dsn)
-    monkeypatch.setattr(
-        config_owner,
-        "load_config",
-        lambda _path=None: {
-            "database": {"url": postgres_dsn},
-            "nas": {"status_dir": str(tmp_path / "status")},
-        },
-    )
+    _use_postgres_api(monkeypatch, postgres_dsn)
     client = TestClient(app)
     try:
         paths = [
@@ -146,7 +140,9 @@ def test_removed_compatibility_routes_return_404() -> None:
 
 def test_settings_payload_includes_agent_control_metadata() -> None:
     payload = settings_payload(
-        {
+        typed_config(
+            "postgresql:///test",
+            raw={
             "database": {"url": "postgresql:///test"},
             "research_sources": {
                 "x": {"enabled": True, "list_id": "123", "priority_handles": ["balajis"]},
@@ -157,7 +153,8 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
                 "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "timeout_seconds": 180, "limit": 8},
                 "option_postmortem": {"enabled": False, "command": "market-codex-option-postmortem-agent", "timeout_seconds": 120, "limit": 2},
             },
-        },
+            },
+        ),
         PanelData(
             status=DataStatus(True, "ok", "test"),
             tables={
@@ -281,7 +278,7 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
     _use_temp_api_db(monkeypatch, db_path)
     captured: dict[str, Any] = {}
 
-    def fake_update(config: dict[str, Any], section: str, payload: dict[str, Any]) -> None:
+    def fake_update(config: AppConfig, section: str, payload: dict[str, Any]) -> None:
         captured["config"] = config
         captured["section"] = section
         captured["payload"] = payload
@@ -331,7 +328,7 @@ def test_ticker_route_reuses_cached_snapshot(monkeypatch) -> None:
             tables={"quotes": [{"symbol": "NVDA", "price": 175}]},
         )
 
-    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": "postgresql:///cached"}})
+    _use_postgres_api(monkeypatch, "postgresql:///cached")
     monkeypatch.setattr(loaders_owner, "load_ticker_panel_data", loader)
     client = TestClient(app)
     assert client.get("/api/tickers/NVDA").status_code == 200
@@ -402,7 +399,7 @@ def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(t
     db_path = tmp_path / "unavailable-watchlist-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    panel_owner._scope_snapshot_cache_path({}, "watchlist").unlink(missing_ok=True)
+    panel_owner._scope_snapshot_cache_path(typed_config(), "watchlist").unlink(missing_ok=True)
     monkeypatch.setattr(
         loaders_owner,
         "load_panel_scope_data",
@@ -570,11 +567,7 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
 
 
 def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        config_owner,
-        "load_config",
-        lambda _path=None: {"database": {"url": migrated_postgres_dsn}},
-    )
+    _use_postgres_api(monkeypatch, migrated_postgres_dsn)
     client = TestClient(app)
     response = client.get("/api/refresh-jobs")
 
@@ -865,7 +858,7 @@ def test_local_write_guard_allows_private_lan_clients() -> None:
 
 def test_thesis_monitor_automation_accepts_symbol_scoped_background_run(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": "postgresql://test/market"}})
+    _use_postgres_api(monkeypatch, "postgresql://test/market")
     monkeypatch.setattr(panel_owner, "invalidate_context_cache", lambda: None)
     monkeypatch.setattr(
         job_control,

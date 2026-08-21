@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from app.data_access import config as config_owner
 from app.data_access import loaders as loaders_owner
 from app.data_access import mutations as mutations_owner
 from app.data_access import payloads as payloads_owner
@@ -15,10 +14,12 @@ from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
 from investment_panel.database.user_state import portfolio_rows, watchlist_rows
 from investment_panel.core.panel import panel_contract_payload
+from investment_panel.core.config import load_config
+from conftest import typed_config
 
 
 def test_unavailable_postgresql_returns_explicit_status() -> None:
-    panel_data = loaders_owner.load_panel_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}})
+    panel_data = loaders_owner.load_panel_data(typed_config("postgresql://127.0.0.1:1/missing"))
 
     assert panel_data.status.ready is False
     assert panel_data.status.source == "postgresql-error"
@@ -28,7 +29,7 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
 
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
     panel_data = loaders_owner.load_table_panel_data(
-        {"database": {"url": migrated_postgres_dsn}}, "technicals"
+        typed_config(migrated_postgres_dsn), "technicals"
     )
 
     assert panel_data.status.ready is True
@@ -38,7 +39,7 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
 
 
 def test_complete_contract_has_no_unavailable_postgresql_models(migrated_postgres_dsn: str) -> None:
-    panel_data = loaders_owner.load_panel_data({"database": {"url": migrated_postgres_dsn}})
+    panel_data = loaders_owner.load_panel_data(typed_config(migrated_postgres_dsn))
 
     assert panel_data.status.ready is True
     assert panel_data.metadata["unavailable_models"] == []
@@ -48,9 +49,9 @@ def test_load_config_honors_market_database_url_override(tmp_path, monkeypatch) 
     url = "postgresql://localhost/market-test"
     monkeypatch.setenv("MARKET_DATABASE_URL", url)
 
-    config = config_owner.load_config(tmp_path / "missing-config.yaml")
+    config = load_config(tmp_path / "missing-config.yaml")
 
-    assert config["database"]["url"] == url
+    assert config.database.url == url
 
 
 def test_table_payload_normalizes_rows() -> None:
@@ -277,7 +278,7 @@ def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
 
 
 def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
 
     panel_data = loaders_owner.load_panel_scope_data(config, "feed")
 
@@ -294,7 +295,7 @@ def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> Non
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    loaders_owner.load_table_panel_data({"database": {"url": "postgresql:///test"}}, "source_items")
+    loaders_owner.load_table_panel_data(typed_config("postgresql:///test"), "source_items")
 
     assert calls == [("source_items",)]
 
@@ -318,7 +319,7 @@ def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch)
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel = loaders_owner.load_daily_research_panel_data({"database": {"url": "postgresql:///test"}})
+    panel = loaders_owner.load_daily_research_panel_data(typed_config("postgresql:///test"))
 
     assert panel.status.ready is True
     assert {"AAOI", "ETH-USD", "MSFT", "NVDA", "SPY", "QQQ", "TLT", "BTC-USD"} <= calls[1]["query_symbol_filter"]
@@ -341,7 +342,7 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel = loaders_owner.load_panel_scope_data({"database": {"url": "postgresql:///test"}}, "portfolio")
+    panel = loaders_owner.load_panel_scope_data(typed_config("postgresql:///test"), "portfolio")
 
     assert panel.status.ready is True
     assert panel.metadata["portfolio_bounded"] is True
@@ -362,7 +363,7 @@ def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> Non
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
     loaders_owner.load_panel_data(
-        {"database": {"url": "postgresql:///test"}},
+        typed_config("postgresql:///test"),
         table_names=("fundamentals",),
         query_symbol_filter=set(),
     )
@@ -379,7 +380,7 @@ def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
 
     monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel_data = loaders_owner.load_panel_data({"database": {"url": "postgresql:///test"}})
+    panel_data = loaders_owner.load_panel_data(typed_config("postgresql:///test"))
 
     assert panel_data.status.ready is True
     assert len(calls) == 1
@@ -388,7 +389,7 @@ def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
 
 
 def test_empty_settings_scope_does_not_touch_missing_database() -> None:
-    panel_data = loaders_owner.load_panel_scope_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}}, "settings")
+    panel_data = loaders_owner.load_panel_scope_data(typed_config("postgresql://127.0.0.1:1/missing"), "settings")
 
     assert panel_data.status.ready is True
     assert panel_data.status.source == "postgresql"
@@ -396,7 +397,7 @@ def test_empty_settings_scope_does_not_touch_missing_database() -> None:
 
 
 def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str) -> None:
-    panel_data = loaders_owner.load_market_panel_data({"database": {"url": migrated_postgres_dsn}})
+    panel_data = loaders_owner.load_market_panel_data(typed_config(migrated_postgres_dsn))
 
     assert panel_data.status.ready is True
     assert panel_data.status.source == "postgresql"
@@ -407,14 +408,14 @@ def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str
 
 
 def test_pure_scoped_postgresql_read_is_empty_when_unpublished(migrated_postgres_dsn: str) -> None:
-    panel_data = loaders_owner.load_table_panel_data({"database": {"url": migrated_postgres_dsn}}, "source_health")
+    panel_data = loaders_owner.load_table_panel_data(typed_config(migrated_postgres_dsn), "source_health")
 
     assert panel_data.status.source == "postgresql"
     assert panel_data.rows("source_health") == []
 
 
 def test_scoped_panel_status_is_ready_when_publication_has_rows(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     repository = AnalysisRepository(runtime)
@@ -644,11 +645,7 @@ def test_ticker_page_does_not_render_operational_data_coverage_panel() -> None:
 
 
 def test_settings_payload_exposes_config_and_integration_metadata() -> None:
-    config = {
-        "database": {"url": "postgresql:///market"},
-        "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
-        "birdclaw": {"command": "birdclaw export"},
-    }
+    config = typed_config()
     panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
 
     payload = settings_owner.settings_payload(config, panel_data)
@@ -657,32 +654,37 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
     assert payload["config"]["database"]["url"] == "postgresql:///market"
     assert payload["integration"]["database_url"] == "postgresql:///market"
     assert payload["integration"]["arco_raw_dir"] == "/Volumes/agent/brain/raw/sources/arco"
-    assert payload["integration"]["birdclaw_command"] == "birdclaw export"
+    assert payload["integration"]["birdclaw_command"] == "Not configured"
 
 
 def test_settings_payload_redacts_database_credentials() -> None:
-    config = {
-        "database": {"url": "postgresql://market:secret@db.internal:5433/market?sslmode=require"},
-        "runtime_overrides": {"MARKET_DATABASE_URL": "postgresql://market:secret@db.internal:5433/market"},
-        "provider": {"api_key": "provider-secret"},
-    }
+    config = typed_config(
+        "postgresql://market:secret@db.internal:5433/market?sslmode=require",
+    )
     panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
 
     payload = settings_owner.settings_payload(config, panel_data)
 
     assert payload["config"]["database"]["url"] == "postgresql://db.internal:5433/market"
     assert payload["integration"]["database_url"] == "postgresql://db.internal:5433/market"
-    assert payload["config"]["runtime_overrides"]["MARKET_DATABASE_URL"] == "postgresql://db.internal:5433/market"
-    assert payload["config"]["provider"]["api_key"] == "***"
+    assert "runtime_overrides" not in payload["config"]
+    assert "provider" not in payload["config"]
     assert "secret" not in str(payload)
 
 
 def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
-    config = {
-        "agents": {
-            "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "limit": 20, "timeout_seconds": 180},
+    config = typed_config(
+        raw={
+            "agents": {
+                "option_thesis": {
+                    "enabled": True,
+                    "command": "market-codex-option-thesis-agent",
+                    "limit": 20,
+                    "timeout_seconds": 180,
+                },
+            },
         },
-    }
+    )
     panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
     panel_data.metadata.update(payloads_owner.runtime_metadata(config))
 
@@ -699,7 +701,7 @@ def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
 
 
 def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
-    config = {"agents": {"option_thesis": {"enabled": False, "command": ""}}}
+    config = typed_config(raw={"agents": {"option_thesis": {"enabled": False, "command": ""}}})
     panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
     panel_data.metadata.update(payloads_owner.runtime_metadata(config))
 
@@ -714,14 +716,13 @@ def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch)
     runtime_url = "postgresql://localhost/runtime"
     monkeypatch.setenv("MARKET_DATABASE_URL", runtime_url)
 
-    config = config_owner.load_config(tmp_path / "missing.yaml")
+    config = load_config(tmp_path / "missing.yaml")
 
-    assert config["database"]["url"] == runtime_url
-    assert config["runtime_overrides"]["MARKET_DATABASE_URL"] == runtime_url
+    assert config.database.url == runtime_url
 
 
 def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
 
     saved = record_portfolio_transaction(
         config,
@@ -745,7 +746,7 @@ def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_p
 
 
 def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "NVDA"}]}
+    config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "NVDA"}]})
 
     saved = mutations_owner.save_thesis(
         config,
@@ -772,13 +773,13 @@ def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str
 
 
 def test_save_thesis_requires_thesis_text(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
     with pytest.raises(ValueError):
         mutations_owner.save_thesis(config, "ZZZT", {"thesis": "   "})
 
 
 def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "MU"}]}
+    config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "MU"}]})
 
     mutations_owner.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
     reviewed = mutations_owner.mark_thesis_reviewed(config, "mu")
@@ -788,7 +789,7 @@ def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> 
 
 
 def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "TSLA"}]}
+    config = typed_config(migrated_postgres_dsn, raw={"watchlist": [{"symbol": "TSLA"}]})
 
     first = mutations_owner.save_thesis(
         config,
@@ -832,7 +833,7 @@ def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_ds
     from investment_panel.database.instruments import reconcile_instrument
     from psycopg.types.json import Jsonb
 
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
     runtime = runtime_for_config(config)
     with runtime.transaction() as connection:
         instrument_id = reconcile_instrument(connection, "BLNK", name="Blank", category="thesis")
@@ -846,11 +847,11 @@ def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_ds
 
 
 def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
-    config = {
-        "database": {"url": migrated_postgres_dsn},
-        "watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}],
-    }
-    mutations_owner.save_watchlist_symbol(config, config["watchlist"][0])
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={"watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}]},
+    )
+    mutations_owner.save_watchlist_symbol(config, config.watchlist[0])
 
     deleted = mutations_owner.delete_watchlist_symbol(config, "NVDA")
     assert deleted == {"symbol": "NVDA", "deleted": True}
@@ -859,7 +860,7 @@ def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postg
 
 
 def test_delete_source_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}, "watchlist": []}
+    config = typed_config(migrated_postgres_dsn, raw={"watchlist": []})
     mutations_owner.save_watchlist_symbol(config, {"symbol": "PLTR", "name": "Palantir"})
 
     deleted = mutations_owner.delete_watchlist_symbol(config, "PLTR")
@@ -869,7 +870,7 @@ def test_delete_source_watchlist_symbol_persists_unwatch_override(migrated_postg
 
 
 def test_save_watchlist_crypto_alias_uses_crypto_asset_class(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
 
     saved = mutations_owner.save_watchlist_symbol(config, {"symbol": "btc", "asset_class": "equity"})
     assert saved["symbol"] == "BTC-USD"
@@ -881,17 +882,19 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
     import pandas as pd
     from investment_panel.jobs import update_market_data
 
-    config = {
-        "database": {"url": migrated_postgres_dsn},
-        "market_data": {"lookback_days": 30, "mode": "online"},
-        "data_sources": {
-            "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},
-            "tradingview": {"enabled": True},
-            "yfinance": {"enabled": False},
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={
+            "market_data": {"lookback_days": 30, "mode": "online"},
+            "data_sources": {
+                "opencli": {"enabled": True, "command": "opencli", "timeout_seconds": 25},
+                "tradingview": {"enabled": True},
+                "yfinance": {"enabled": False},
+            },
+            "scoring": {"weights": {"technical": 1.0}},
+            "watchlist": [],
         },
-        "scoring": {"weights": {"technical": 1.0}},
-        "watchlist": [],
-    }
+    )
     mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
 
     def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
@@ -922,11 +925,10 @@ def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
 ) -> None:
     from investment_panel.jobs import update_market_data
 
-    config = {
-        "database": {"url": migrated_postgres_dsn},
-        "market_data": {"mode": "online"},
-        "data_sources": {"yfinance": {"enabled": False}},
-    }
+    config = typed_config(
+        migrated_postgres_dsn,
+        raw={"market_data": {"mode": "online"}, "data_sources": {"yfinance": {"enabled": False}}},
+    )
     mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
     monkeypatch.setattr(update_market_data, "fetch_prices", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider failed")))
 
@@ -937,7 +939,7 @@ def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
 
 
 def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: str) -> None:
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
 
     with pytest.raises(ValueError, match="valid ticker"):
         mutations_owner.save_watchlist_symbol(config, {"symbol": "ABC!"})

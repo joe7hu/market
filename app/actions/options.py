@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
@@ -30,38 +31,21 @@ from investment_panel.database.options_distribution_shift import surface_shift_r
 __all__ = ["OptionsActions"]
 
 
-def _decision_mode(config: Any) -> str:
-    """Read the mode from either the web dict config or typed job config."""
-
-    if isinstance(config, dict):
-        return str((config.get("analysis") or {}).get("options_decision_system", {}).get("mode", "shadow"))
-    return str(getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "mode", "shadow"))
+def _decision_mode(config: AppConfig) -> str:
+    return config.analysis.options_decision_system.mode
 
 
-def _paper_actions_enabled(config: Any) -> bool:
-    """Read the paper-action kill switch from web dict or typed job config."""
-
-    if isinstance(config, dict):
-        raw = (config.get("analysis") or {}).get("options_decision_system", {})
-        return bool(raw.get("options_paper_actions_enabled", False))
-    raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_paper_actions_enabled", False)
-    return bool(raw)
+def _paper_actions_enabled(config: AppConfig) -> bool:
+    return bool(config.analysis.options_decision_system.options_paper_actions_enabled)
 
 
-def _recovery_paper_actions_enabled(config: Any) -> bool:
+def _recovery_paper_actions_enabled(config: AppConfig) -> bool:
     """Read the separate recovery canary kill switch."""
 
-    if isinstance(config, dict):
-        raw = (config.get("analysis") or {}).get("options_decision_system", {})
-        return bool(raw.get("recovery_paper_actions_enabled", False))
-    raw = getattr(
-        getattr(getattr(config, "analysis", None), "options_decision_system", None),
-        "recovery_paper_actions_enabled", False,
-    )
-    return bool(raw)
+    return bool(config.analysis.options_decision_system.recovery_paper_actions_enabled)
 
 
-def _lane_paper_actions_enabled(config: Any, lane: str) -> bool:
+def _lane_paper_actions_enabled(config: AppConfig, lane: str) -> bool:
     """Require both the global kill switch and an explicit lane switch."""
 
     normalized = lane.strip().lower()
@@ -70,28 +54,16 @@ def _lane_paper_actions_enabled(config: Any, lane: str) -> bool:
     if normalized not in {"radar", "qqq", "recovery"}:
         return False
     key = f"{normalized}_paper_actions_enabled"
-    if isinstance(config, dict):
-        raw = (config.get("analysis") or {}).get("options_decision_system", {})
-        return bool(raw.get(key, False))
-    raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), key, False)
-    return bool(raw)
+    return bool(getattr(config.analysis.options_decision_system, key, False))
 
 
-def _options_risk_sleeve_capital(config: Any) -> float | None:
-    if isinstance(config, dict):
-        raw = (config.get("analysis") or {}).get("options_decision_system", {})
-        value = raw.get("options_risk_sleeve_capital")
-    else:
-        raw = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "options_risk_sleeve_capital", None)
-        value = raw
+def _options_risk_sleeve_capital(config: AppConfig) -> float | None:
+    value = config.analysis.options_decision_system.options_risk_sleeve_capital
     return float(value) if value is not None and float(value) > 0 else None
 
 
-def _options_daily_loss_halt_pct(config: Any) -> float | None:
-    if isinstance(config, dict):
-        value = ((config.get("analysis") or {}).get("options_decision_system", {}) or {}).get("daily_loss_halt_pct")
-    else:
-        value = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "daily_loss_halt_pct", None)
+def _options_daily_loss_halt_pct(config: AppConfig) -> float | None:
+    value = config.analysis.options_decision_system.daily_loss_halt_pct
     try:
         result = float(value)
     except (TypeError, ValueError):
@@ -99,11 +71,8 @@ def _options_daily_loss_halt_pct(config: Any) -> float | None:
     return result if 0 <= result <= 1 else None
 
 
-def _options_max_open_positions(config: Any) -> int | None:
-    if isinstance(config, dict):
-        value = ((config.get("analysis") or {}).get("options_decision_system", {}) or {}).get("max_recovery_open_positions")
-    else:
-        value = getattr(getattr(getattr(config, "analysis", None), "options_decision_system", None), "max_recovery_open_positions", None)
+def _options_max_open_positions(config: AppConfig) -> int | None:
+    value = config.analysis.options_decision_system.max_recovery_open_positions
     try:
         result = int(value)
     except (TypeError, ValueError):
@@ -111,22 +80,12 @@ def _options_max_open_positions(config: Any) -> int | None:
     return result if result > 0 else None
 
 
-def _robinhood_config(config: Any) -> Any:
-    """Return Robinhood config from dict-backed web config or typed config."""
-
-    if isinstance(config, dict):
-        return (((config.get("data_sources") or {}).get("brokers") or {}).get("robinhood") or {})
-    return getattr(getattr(getattr(config, "data_sources", None), "brokers", None), "robinhood", None)
-
-
-def _cfg_get(raw: Any, key: str, default: Any = None) -> Any:
-    if isinstance(raw, dict):
-        return raw.get(key, default)
-    return getattr(raw, key, default)
+def _robinhood_config(config: AppConfig) -> Any:
+    return config.data_sources.brokers.robinhood
 
 
 class OptionsActions:
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.runtime = runtime_for_config(config)
         self.actions = ActionRepository(self.runtime)
@@ -279,13 +238,13 @@ class OptionsActions:
 
     def verify_static_arbitrage(self, candidate_id: int) -> dict[str, Any]:
         robinhood = _robinhood_config(self.config)
-        if robinhood is None or not bool(_cfg_get(robinhood, "enabled", False)):
+        if robinhood is None or not robinhood.enabled:
             return self.decision_system.verification_result(candidate_id)
         client = RobinhoodMcpClient(
-            str(_cfg_get(robinhood, "mcp_url", "https://agent.robinhood.com/mcp/trading")),
+            robinhood.mcp_url,
             auth_token=load_robinhood_access_token(robinhood),
-            timeout_seconds=min(10, int(_cfg_get(robinhood, "timeout_seconds", 10))),
-            max_response_bytes=int(_cfg_get(robinhood, "max_response_bytes", 8 * 1024 * 1024)),
+            timeout_seconds=min(10, int(robinhood.timeout_seconds)),
+            max_response_bytes=int(robinhood.max_response_bytes),
         )
         return self.decision_system.verification_result(candidate_id, client)
 

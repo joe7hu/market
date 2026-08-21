@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
 from app import panel_snapshot as panel_owner
+from app import dependencies
 from app.data_access import loaders, payloads
 from app.response_contracts import QuotesResponse
+from investment_panel.core.config import AppConfig
 
 router = APIRouter()
 
 
 @router.get("/api/quotes", response_model=QuotesResponse, response_model_exclude_unset=True)
-def quotes(symbols: str | None = Query(default=None, description="Comma-separated symbols, maximum 100.")) -> dict[str, Any]:
+def quotes(
+    symbols: str | None = Query(default=None, description="Comma-separated symbols, maximum 100."),
+    config: AppConfig = Depends(dependencies.get_config),
+) -> dict[str, Any]:
     requested = {symbol.strip().upper() for symbol in (symbols or "").split(",") if symbol.strip()}
     if len(requested) > 100:
         return {"status": "invalid", "error": "symbols supports at most 100 symbols", "rows": []}
@@ -29,6 +34,7 @@ def quotes(symbols: str | None = Query(default=None, description="Comma-separate
             query_symbol_filter=requested,
             query_row_limits={"quotes": len(requested)},
         ),
+        config_loader=lambda: config,
     )
     return payloads.table_payload(panel_data, "quotes")
 

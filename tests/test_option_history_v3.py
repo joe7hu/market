@@ -23,6 +23,7 @@ from investment_panel.database.options_history_v3_materialization import (
 from investment_panel.database.options_history_v3_surface import surface_shape_metrics
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 from investment_panel.database.thesis import save_thesis
 
 
@@ -290,7 +291,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         slot = datetime.now(UTC) + timedelta(minutes=1)
         expiration = (slot.date() + timedelta(days=30)).isoformat()
         save_thesis(
-            {"database": {"url": migrated_postgres_dsn}},
+            typed_config(migrated_postgres_dsn),
             "QQQ",
             {
                 "thesis": "QQQ remains bullish while the current trend and breadth regime hold.",
@@ -513,7 +514,7 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
         long_call = next(row for row in learning["rows"] if row["structure"] == "long_call")
         assert long_call["mature_outcomes"] == 1
         save_thesis(
-            {"database": {"url": migrated_postgres_dsn}},
+            typed_config(migrated_postgres_dsn),
             "QQQ",
             {
                 "thesis": "QQQ is range-bound pending a decisive macro or breadth signal.",

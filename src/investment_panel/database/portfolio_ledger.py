@@ -8,6 +8,7 @@ from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.user_state import DEFAULT_OWNED_THESIS
 from investment_panel.database.authority import runtime_for_config
@@ -20,7 +21,7 @@ TRANSACTION_TYPES = POSITION_TYPES | CASH_TYPES | {"split"}
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
-def preview_portfolio_transaction(config: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+def preview_portfolio_transaction(config: AppConfig, fields: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_transaction(fields)
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
@@ -31,7 +32,7 @@ def preview_portfolio_transaction(config: dict[str, Any], fields: dict[str, Any]
     return preview
 
 
-def record_portfolio_transaction(config: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+def record_portfolio_transaction(config: AppConfig, fields: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_transaction(fields)
     runtime = runtime_for_config(config)
     with runtime.transaction() as connection:
@@ -107,7 +108,7 @@ def record_portfolio_transaction(config: dict[str, Any], fields: dict[str, Any])
 
 
 def reverse_portfolio_transaction(
-    config: dict[str, Any],
+    config: AppConfig,
     transaction_id: str,
     *,
     idempotency_key: str,
@@ -189,7 +190,7 @@ def reverse_portfolio_transaction(
 
 
 def portfolio_transaction_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     limit: int | None = 100,
     *,
     connection: Any | None = None,

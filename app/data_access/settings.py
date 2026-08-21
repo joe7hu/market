@@ -3,7 +3,6 @@
 from __future__ import annotations
 import os
 import re
-from copy import deepcopy
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -11,7 +10,7 @@ from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
 from app.data_access.coerce import _deep_merge
 from app.data_access.payloads import runtime_metadata, status_payload
-from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
+from investment_panel.core.config import AppConfig, public_config_payload
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.configuration import SettingRepository
 from investment_panel.database.ingestion import IngestionRepository
@@ -23,8 +22,8 @@ def slug(value: Any) -> str:
 
 
 
-def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
-    public_config = _redact_config(deepcopy(config))
+def settings_payload(config: AppConfig, panel_data: PanelData) -> dict[str, Any]:
+    public_config = public_config_payload(config)
     database = public_config.get("database")
     if isinstance(database, dict) and database.get("url"):
         database["url"] = _public_database_url(str(database["url"]))
@@ -36,9 +35,9 @@ def settings_payload(config: dict[str, Any], panel_data: PanelData) -> dict[str,
         "integration": {
             "core_modules": ["investment_panel.database"],
             "helper_names": ["load_panel_data", "load_ticker_dossier_data"],
-            "database_url": _public_database_url(str(config.get("database", {}).get("url") or "postgresql:///market")),
-            "arco_raw_dir": config.get("arco", {}).get("raw_dir"),
-            "birdclaw_command": config.get("birdclaw", {}).get("command") or "Not configured",
+            "database_url": _public_database_url(config.database.url),
+            "arco_raw_dir": str(config.arco.raw_dir),
+            "birdclaw_command": "Not configured",
         },
     }
 
@@ -54,27 +53,11 @@ def _public_database_url(value: str) -> str:
     return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"
 
 
-def _redact_config(value: Any, *, parent_key: str = "") -> Any:
-    if isinstance(value, dict):
-        output: dict[str, Any] = {}
-        for key, item in value.items():
-            normalized = str(key).lower()
-            if normalized in {"password", "secret", "client_secret", "api_key", "access_token", "refresh_token"}:
-                output[str(key)] = "***"
-            elif normalized in {"market_database_url", "database_url"}:
-                output[str(key)] = _public_database_url(str(item))
-            else:
-                output[str(key)] = _redact_config(item, parent_key=normalized)
-        return output
-    if isinstance(value, list):
-        return [_redact_config(item, parent_key=parent_key) for item in value]
-    return value
-
-
-def persist_setting_section(config: dict[str, Any], section: str, update: dict[str, Any]) -> None:
-    current = config.get(section) if isinstance(config.get(section), dict) else {}
+def persist_setting_section(config: AppConfig, section: str, update: dict[str, Any]) -> None:
+    configured = public_config_payload(config).get(section)
+    current = configured if isinstance(configured, dict) else {}
     value = _deep_merge(dict(current), update)
-    runtime = runtime_for_url(str(config.get("database", {}).get("url") or "postgresql:///market"))
+    runtime = runtime_for_url(config.database.url)
     SettingRepository(runtime).set_section(section, value)
     if section == "research_sources":
         news = value.get("news", {}) if isinstance(value.get("news"), dict) else {}
@@ -92,7 +75,7 @@ def persist_setting_section(config: dict[str, Any], section: str, update: dict[s
         )
 
 
-def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> dict[str, Any]:
+def research_source_inventory(config: AppConfig, panel_data: PanelData) -> dict[str, Any]:
     """Configured live research sources plus latest run stats.
 
     Settings is the edit/delete surface for user-configured live pulls, so this
@@ -100,14 +83,14 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
     source IDs are produced by the live ingestion helpers.
     """
 
-    research = config.get("research_sources", {}) if isinstance(config.get("research_sources"), dict) else {}
-    x = research.get("x", {}) if isinstance(research.get("x"), dict) else {}
-    news = research.get("news", {}) if isinstance(research.get("news"), dict) else {}
-    blogs = research.get("blogs", {}) if isinstance(research.get("blogs"), dict) else {}
+    research = config.research_sources
+    x = research.x
+    news = research.news
+    blogs = research.blogs
     run_index = _source_run_index(panel_data.rows("source_runs"))
     rows: list[dict[str, Any]] = []
 
-    list_id = str(x.get("list_id") or "").strip()
+    list_id = str(x.list_id or "").strip()
     if list_id:
         rows.append(
             _inventory_row(
@@ -119,11 +102,11 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
                 value=list_id,
                 config_path="research_sources.x.list_id",
                 removable=True,
-                enabled=bool(x.get("enabled", True)),
+                enabled=x.enabled,
                 capability="x_list",
             )
         )
-    for handle in _config_list(x.get("priority_handles")):
+    for handle in _config_list(x.priority_handles):
         rows.append(
             _inventory_row(
                 run_index,
@@ -134,11 +117,11 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
                 value=handle,
                 config_path="research_sources.x.priority_handles",
                 removable=True,
-                enabled=bool(x.get("enabled", True)),
+                enabled=x.enabled,
                 capability="x_account",
             )
         )
-    for provider in _config_list(news.get("providers")):
+    for provider in _config_list(news.providers):
         rows.append(
             _inventory_row(
                 run_index,
@@ -149,11 +132,11 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
                 value=provider,
                 config_path="research_sources.news.providers",
                 removable=True,
-                enabled=bool(news.get("enabled", True)),
+                enabled=news.enabled,
                 capability="news",
             )
         )
-    for url in _config_list(blogs.get("substack_urls")):
+    for url in _config_list(blogs.substack_urls):
         rows.append(
             _inventory_row(
                 run_index,
@@ -164,11 +147,11 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
                 value=url,
                 config_path="research_sources.blogs.substack_urls",
                 removable=True,
-                enabled=bool(blogs.get("enabled", True)),
+                enabled=blogs.enabled,
                 capability="substack",
             )
         )
-    for url in _config_list(blogs.get("rss_urls")):
+    for url in _config_list(blogs.rss_urls):
         rows.append(
             _inventory_row(
                 run_index,
@@ -179,7 +162,7 @@ def research_source_inventory(config: dict[str, Any], panel_data: PanelData) -> 
                 value=url,
                 config_path="research_sources.blogs.rss_urls",
                 removable=True,
-                enabled=bool(blogs.get("enabled", True)),
+                enabled=blogs.enabled,
                 capability="rss",
             )
         )
@@ -267,8 +250,8 @@ def _host(url: str) -> str:
 
 
 
-def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
-    agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
+def agent_control_payload(config: AppConfig) -> dict[str, Any]:
+    agents = public_config_payload(config).get("agents", {})
     return {
         "config": jsonable(agents),
         "runtime": runtime_metadata(config).get("agents", {}),

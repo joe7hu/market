@@ -18,7 +18,7 @@ from investment_panel.database.storage_archive import (
     StorageArchiveService,
     _ensure_mounted_archive_root,
 )
-from investment_panel.core.config import config_to_dict, load_config
+from investment_panel.core.config import load_config, public_config_payload
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_storage_archive_dir_round_trips_through_config(tmp_path: Path) -> None:
     config = load_config(config_path)
 
     assert config.nas.storage_archive_dir == configured_archive
-    assert config_to_dict(config)["nas"]["storage_archive_dir"] == str(configured_archive)
+    assert public_config_payload(config)["nas"]["storage_archive_dir"] == str(configured_archive)
 
 
 def test_archive_is_content_addressed_verified_and_restorable(storage_postgres_dsn: str, tmp_path: Path) -> None:

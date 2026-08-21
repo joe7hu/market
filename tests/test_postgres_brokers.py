@@ -12,6 +12,7 @@ from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import refresh_options_radar
 from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def test_disabled_broker_source_is_not_an_operational_incident(migrated_postgres_dsn: str) -> None:
@@ -105,7 +106,7 @@ def test_broker_snapshot_recommendation_and_paper_order_are_postgresql_native(po
         refresh_options_radar(runtime, source_id="option-test", code_version="broker-test")
 
         tables, _metadata = load_postgres_tables(
-            {"database": {"url": postgres_dsn}},
+            typed_config(postgres_dsn),
             ("broker_status", "broker_accounts", "broker_positions", "paper_orders"),
         )
     finally:

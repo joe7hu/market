@@ -9,6 +9,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.panel_models import AGENT_MODELS, MODEL_ALIASES, QUERY_POLICIES
@@ -18,7 +19,7 @@ MAX_REVIEW_SNAPSHOT_ROWS = 50_000
 
 
 def load_postgres_table_page(
-    config: dict[str, Any],
+    config: AppConfig,
     table_name: str,
     *,
     limit: int,

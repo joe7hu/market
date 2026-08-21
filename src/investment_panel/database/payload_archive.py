@@ -6,8 +6,9 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
+from investment_panel.core.config import AppConfig
 
-def provider_archive_path(config: Any, *parts: str) -> Path:
+def provider_archive_path(config: AppConfig, *parts: str) -> Path:
     preferred = Path(config.nas.market_dir) / "provider-payloads"
     fallback = Path(config.report_dir).parent / "provider-payloads"
     for root in dict.fromkeys((preferred, fallback)):

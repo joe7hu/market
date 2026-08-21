@@ -8,6 +8,7 @@ import json
 from math import floor, isfinite
 from typing import Any
 
+from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig
 
 @dataclass(frozen=True)
 class RecoveryRiskContext:
@@ -79,16 +80,16 @@ class RecoveryRiskDecision:
     policy_version: str
 
 
-def recovery_risk_policy(config: Any) -> RecoveryRiskPolicy:
+def recovery_risk_policy(config: OptionsDecisionSystemConfig) -> RecoveryRiskPolicy:
     """Compile typed config into a versioned immutable recovery risk policy."""
 
     raw = {
-        "sleeve_capital": getattr(config, "options_risk_sleeve_capital", None),
-        "max_risk_per_trade_pct": getattr(config, "max_risk_per_trade_pct", None),
-        "max_open_risk_pct": getattr(config, "max_open_risk_pct", None),
-        "max_symbol_risk_pct": getattr(config, "max_symbol_risk_pct", None),
-        "daily_loss_halt_pct": getattr(config, "daily_loss_halt_pct", None),
-        "max_open_positions": getattr(config, "max_recovery_open_positions", None),
+        "sleeve_capital": config.options_risk_sleeve_capital,
+        "max_risk_per_trade_pct": config.max_risk_per_trade_pct,
+        "max_open_risk_pct": config.max_open_risk_pct,
+        "max_symbol_risk_pct": config.max_symbol_risk_pct,
+        "daily_loss_halt_pct": config.daily_loss_halt_pct,
+        "max_open_positions": config.max_recovery_open_positions,
     }
     values = {key: _number(value) for key, value in raw.items() if key != "max_open_positions"}
     try:

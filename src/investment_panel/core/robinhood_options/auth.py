@@ -24,13 +24,14 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
+from investment_panel.core.config import RobinhoodConfig
 
 
 class RobinhoodAuthRequired(RuntimeError):
     """Raised when the runtime has no usable Robinhood MCP access token."""
 
 
-def load_robinhood_access_token(config: Any) -> str:
+def load_robinhood_access_token(config: RobinhoodConfig) -> str:
     """Load a usable Robinhood MCP access token from env or local OAuth cache."""
 
     env_name = str(getattr(config, "auth_token_env", "ROBINHOOD_MCP_TOKEN"))
@@ -51,7 +52,7 @@ def load_robinhood_access_token(config: Any) -> str:
     raise RobinhoodAuthRequired(f"Robinhood MCP token cache is expired: {token_path}")
 
 
-def _load_access_token_from_payload_path(path: Path, *, config: Any, refresh: bool) -> str | None:
+def _load_access_token_from_payload_path(path: Path, *, config: RobinhoodConfig, refresh: bool) -> str | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -69,7 +70,7 @@ def _load_access_token_from_payload_path(path: Path, *, config: Any, refresh: bo
     return None
 
 
-def authorize_robinhood_mcp(config: Any) -> dict[str, Any]:
+def authorize_robinhood_mcp(config: RobinhoodConfig) -> dict[str, Any]:
     """Run a browser OAuth + PKCE flow and persist a local token cache."""
 
     if bool(getattr(config, "prefer_codex_credentials", True)):
@@ -242,7 +243,7 @@ def _exchange_authorization_code(
     return _token_payload_with_expiry(token_payload)
 
 
-def _refresh_robinhood_token(config: Any, payload: dict[str, Any]) -> dict[str, Any] | None:
+def _refresh_robinhood_token(config: RobinhoodConfig, payload: dict[str, Any]) -> dict[str, Any] | None:
     refresh_token = payload.get("refresh_token")
     token_endpoint = payload.get("token_endpoint") or _robinhood_token_endpoint(config)
     client_id = payload.get("client_id") or getattr(config, "client_id", None)
@@ -270,7 +271,7 @@ def _refresh_robinhood_token(config: Any, payload: dict[str, Any]) -> dict[str, 
     return refreshed
 
 
-def _load_codex_mcp_access_token(config: Any) -> str | None:
+def _load_codex_mcp_access_token(config: RobinhoodConfig) -> str | None:
     payload = _codex_mcp_credential(config)
     if not payload:
         return None
@@ -285,7 +286,7 @@ def _load_codex_mcp_access_token(config: Any) -> str | None:
     return str(refreshed["access_token"])
 
 
-def _codex_mcp_credential(config: Any) -> dict[str, Any] | None:
+def _codex_mcp_credential(config: RobinhoodConfig) -> dict[str, Any] | None:
     path = _codex_credentials_path(config)
     try:
         credentials = json.loads(path.read_text(encoding="utf-8"))
@@ -305,7 +306,7 @@ def _codex_mcp_credential(config: Any) -> dict[str, Any] | None:
     return None
 
 
-def _write_codex_mcp_credential(config: Any, refreshed: dict[str, Any]) -> None:
+def _write_codex_mcp_credential(config: RobinhoodConfig, refreshed: dict[str, Any]) -> None:
     path = _codex_credentials_path(config)
     try:
         credentials = json.loads(path.read_text(encoding="utf-8"))
@@ -336,7 +337,7 @@ def _write_codex_mcp_credential(config: Any, refreshed: dict[str, Any]) -> None:
         return
 
 
-def _authorize_with_codex_cli(config: Any) -> dict[str, Any]:
+def _authorize_with_codex_cli(config: RobinhoodConfig) -> dict[str, Any]:
     codex = shutil.which("codex")
     if not codex:
         return {"status": "unavailable", "auth_provider": "codex_mcp", "reason": "codex CLI was not found"}
@@ -358,7 +359,7 @@ def _authorize_with_codex_cli(config: Any) -> dict[str, Any]:
     }
 
 
-def _robinhood_token_endpoint(config: Any) -> str | None:
+def _robinhood_token_endpoint(config: RobinhoodConfig) -> str | None:
     try:
         timeout = int(getattr(config, "timeout_seconds", 30))
         resource_metadata_url = _discover_resource_metadata_url(str(getattr(config, "mcp_url")), timeout)
@@ -442,11 +443,11 @@ def _token_payload_with_expiry(payload: dict[str, Any]) -> dict[str, Any]:
     return token_payload
 
 
-def _token_path(config: Any) -> Path:
+def _token_path(config: RobinhoodConfig) -> Path:
     return Path(os.path.expandvars(str(getattr(config, "token_path", "~/.config/market/robinhood-mcp-token.json")))).expanduser()
 
 
-def _codex_credentials_path(config: Any) -> Path:
+def _codex_credentials_path(config: RobinhoodConfig) -> Path:
     return Path(os.path.expandvars(str(getattr(config, "codex_credentials_path", "~/.codex/.credentials.json")))).expanduser()
 
 

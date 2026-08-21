@@ -8,6 +8,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, instrument_identity, reconcile_instrument
 
@@ -29,7 +30,7 @@ INVALIDATION_PRICE_RE = re.compile(
 )
 
 
-def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> list[dict[str, Any]]:
+def portfolio_rows(config: AppConfig, *, connection: Any | None = None) -> list[dict[str, Any]]:
     if connection is None:
         runtime = runtime_for_config(config)
         with runtime.read() as owned_connection:
@@ -97,7 +98,7 @@ def portfolio_rows(config: dict[str, Any], *, connection: Any | None = None) -> 
     return output
 
 
-def save_watchlist_item(config: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+def save_watchlist_item(config: AppConfig, item: dict[str, Any]) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     symbol = canonical_symbol(item.get("symbol"))
     name = str(item.get("name") or symbol).strip()
@@ -121,7 +122,7 @@ def save_watchlist_item(config: dict[str, Any], item: dict[str, Any]) -> dict[st
     return {"symbol": symbol, "name": name, "asset_class": asset_class, "watch_state": "watched", "notes": notes}
 
 
-def delete_watchlist_item(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def delete_watchlist_item(config: AppConfig, symbol: str) -> dict[str, Any]:
     runtime = runtime_for_config(config)
     normalized = canonical_symbol(symbol)
     with runtime.transaction() as connection:
@@ -134,7 +135,7 @@ def delete_watchlist_item(config: dict[str, Any], symbol: str) -> dict[str, Any]
     return {"symbol": normalized, "deleted": True}
 
 
-def watchlist_rows(config: dict[str, Any], *, include_excluded: bool = False) -> list[dict[str, Any]]:
+def watchlist_rows(config: AppConfig, *, include_excluded: bool = False) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     state_filter = "" if include_excluded else "AND w.watch_state <> 'excluded'"
     with runtime.read() as connection:
@@ -154,7 +155,7 @@ def table_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"rows": rows, "count": len(rows)}
 
 
-def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
+def save_thesis(config: AppConfig, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
     normalized = canonical_symbol(symbol)
     thesis_text = str(fields.get("thesis") or "").strip()
     if not thesis_text:
@@ -226,7 +227,7 @@ def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> 
     return {"symbol": normalized, "thesis": thesis, "revision": revision}
 
 
-def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def mark_thesis_reviewed(config: AppConfig, symbol: str) -> dict[str, Any]:
     normalized = canonical_symbol(symbol)
     runtime = runtime_for_config(config)
     reviewed_at = datetime.now(UTC).isoformat()
@@ -260,7 +261,7 @@ def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
     return {"symbol": normalized, "last_reviewed": reviewed_at, "revision": revision}
 
 
-def thesis_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+def thesis_rows(config: AppConfig) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
         rows = connection.execute(
@@ -271,7 +272,7 @@ def thesis_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def thesis_monitor_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+def thesis_monitor_rows(config: AppConfig) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
         rows = [dict(row) for row in connection.execute(

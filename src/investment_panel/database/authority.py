@@ -3,18 +3,12 @@
 from __future__ import annotations
 
 from threading import RLock
-from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime
 
 
-def database_url(config: Any) -> str:
-    if isinstance(config, dict):
-        value = (config.get("database") or {}).get("url")
-    else:
-        database = getattr(config, "database", None)
-        value = getattr(database, "url", None)
-    dsn = str(value or "postgresql:///market")
+def database_url(config: "AppConfig") -> str:
+    dsn = str(config.database.url or "postgresql:///market")
     if not dsn.startswith(("postgresql://", "postgresql+psycopg://")):
         raise ValueError("database.url must identify PostgreSQL")
     return dsn
@@ -34,7 +28,7 @@ def runtime_for_url(dsn: str) -> DatabaseRuntime:
         return runtime
 
 
-def runtime_for_config(config: Any) -> DatabaseRuntime:
+def runtime_for_config(config: "AppConfig") -> DatabaseRuntime:
     return runtime_for_url(database_url(config))
 
 

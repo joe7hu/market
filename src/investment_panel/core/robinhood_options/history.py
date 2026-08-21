@@ -6,6 +6,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from investment_panel.core.config import RobinhoodConfig
 from investment_panel.core.coercion import to_finite_float as as_float
 from investment_panel.core.robinhood_options.collector import (
     DEFAULT_MAX_COLLECTION_SECONDS,
@@ -29,7 +30,7 @@ MAX_QUOTE_RESULT_ATTEMPTS = 4
 
 
 def collect_robinhood_full_option_chain(
-    config: Any,
+    config: RobinhoodConfig,
     symbol: str,
     *,
     client: RobinhoodClient | None = None,

@@ -6,18 +6,19 @@ from datetime import UTC, datetime, time
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 
 
-def option_universe(config: Any, *, limit: int) -> list[str]:
+def option_universe(config: AppConfig, *, limit: int) -> list[str]:
     repository = IngestionRepository(runtime_for_config(config))
-    configured = list(getattr(config, "watchlist", None) or [])
+    configured = list(config.watchlist)
     return repository.option_universe(configured)[:limit]
 
 
 def incremental_option_symbols(
-    config: Any,
+    config: AppConfig,
     source_id: str,
     symbols: Sequence[str],
     *,
@@ -37,7 +38,7 @@ def incremental_option_symbols(
 
 
 def persist_collected_option_chains(
-    config: Any,
+    config: AppConfig,
     source_id: str,
     collected: dict[str, Any],
 ) -> dict[str, Any]:

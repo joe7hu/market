@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import os
 from typing import Any, Literal, Mapping
 
+from investment_panel.core.config import AppConfig, load_config
+
 
 STAGGER_SECONDS = 5.0
 _TRUTHY_OFF = {"0", "false", "off", "no"}
@@ -137,7 +139,8 @@ def heavy_refresh_enabled() -> bool:
     return os.environ.get("MARKET_IN_PROCESS_HEAVY_REFRESH", "0").strip().lower() not in _TRUTHY_OFF
 
 
-def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
+def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
+    active_config = config or load_config()
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
     if option_source == "ibkr":
         signal_job, source_job = "refresh_options_radar_signal_ibkr", "update_ibkr_options"
@@ -186,24 +189,17 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
 
     agent_seconds = _env_int_optional("MARKET_AGENT_REFRESH_SECONDS")
     agent_seconds = (86400 if heavy_refresh else 0) if agent_seconds is None else agent_seconds
-    auto_run_enabled = True
-    try:
-        option_agent = _option_agent_config(config)
-        auto_run_enabled = bool(_config_value(option_agent, "enabled", True))
-        configured = int(_config_value(option_agent, "auto_run_seconds", 0) or 0)
-        if configured > 0:
-            agent_seconds = configured
-    except Exception:
-        pass
+    option_agent = active_config.agents.option_agent
+    auto_run_enabled = option_agent.enabled
+    configured = int(option_agent.auto_run_seconds or 0)
+    if configured > 0:
+        agent_seconds = configured
     if auto_run_enabled and agent_seconds > 0:
         intervals["run_option_agents"] = agent_seconds
     experiment_enabled = False
     experiment_seconds = 0
-    try:
-        experiment_enabled = bool(_config_value(option_agent, "experiment_enabled", False))
-        experiment_seconds = int(_config_value(option_agent, "experiment_auto_run_seconds", 86_400) or 0)
-    except Exception:
-        pass
+    experiment_enabled = option_agent.experiment_enabled
+    experiment_seconds = int(option_agent.experiment_auto_run_seconds or 0)
     if experiment_enabled and experiment_seconds > 0:
         intervals["run_agent_experiment"] = experiment_seconds
 
@@ -212,9 +208,9 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
     if auto_run_enabled and recovery_agent_seconds > 0:
         intervals["run_option_recovery_agents"] = recovery_agent_seconds
 
-    decision_settings = _options_decision_config(config)
+    decision_settings = active_config.analysis.options_decision_system
     inbox_seconds = _env_int("MARKET_DECISION_INBOX_REFRESH_SECONDS", 15, allow_zero=True)
-    if bool(_config_value(decision_settings, "decision_inbox_enabled", True)) and inbox_seconds > 0:
+    if decision_settings.decision_inbox_enabled and inbox_seconds > 0:
         intervals["sync_decision_inbox"] = inbox_seconds
     paper_seconds = _env_int("MARKET_OPTIONS_PAPER_EXECUTION_SECONDS", 15, allow_zero=True)
     # Keep the deterministic manager alive even when all entry gates are off.
@@ -239,7 +235,7 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
     return intervals
 
 
-def scheduler_status(config: Any | None = None) -> dict[str, Any]:
+def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
     intervals = scheduler_intervals(config)
     option_source = os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower()
     return {
@@ -359,27 +355,3 @@ def _first_interval(intervals: dict[str, int], *prefixes: str) -> int:
             if job.startswith(prefix):
                 return seconds
     return 0
-
-
-def _option_agent_config(config: Any | None) -> Any:
-    if config is None:
-        from investment_panel.core.config import load_config
-
-        config = load_config()
-    agents = _config_value(config, "agents", {})
-    return _config_value(agents, "option_agent", {})
-
-
-def _options_decision_config(config: Any | None) -> Any:
-    if config is None:
-        from investment_panel.core.config import load_config
-
-        config = load_config()
-    analysis = _config_value(config, "analysis", {})
-    return _config_value(analysis, "options_decision_system", {})
-
-
-def _config_value(source: Any, key: str, default: Any = None) -> Any:
-    if isinstance(source, dict):
-        return source.get(key, default)
-    return getattr(source, key, default)

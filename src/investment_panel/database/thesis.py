@@ -8,6 +8,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.thesis_evidence import assessments_by_revision, thesis_source_evidence
@@ -24,7 +25,7 @@ INVALIDATION_PRICE_RE = re.compile(
 REVIEW_OUTCOMES = {"unchanged", "updated", "invalidated", "closed"}
 
 
-def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
+def save_thesis(config: AppConfig, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
     normalized = canonical_symbol(symbol)
     runtime = runtime_for_config(config)
     now = datetime.now(UTC)
@@ -141,7 +142,7 @@ def normalize_thesis_v3(fields: dict[str, Any], *, previous: dict[str, Any] | No
     )
 
 
-def record_thesis_review(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
+def record_thesis_review(config: AppConfig, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
     normalized = canonical_symbol(symbol)
     outcome = str(fields.get("outcome") or "unchanged").lower()
     if outcome not in REVIEW_OUTCOMES:
@@ -199,11 +200,11 @@ def record_thesis_review(config: dict[str, Any], symbol: str, fields: dict[str, 
     }
 
 
-def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def mark_thesis_reviewed(config: AppConfig, symbol: str) -> dict[str, Any]:
     return record_thesis_review(config, symbol, {"outcome": "unchanged"})
 
 
-def thesis_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+def thesis_rows(config: AppConfig) -> list[dict[str, Any]]:
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
         rows = connection.execute(
@@ -221,7 +222,7 @@ def thesis_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def thesis_history(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def thesis_history(config: AppConfig, symbol: str) -> dict[str, Any]:
     normalized = canonical_symbol(symbol)
     runtime = runtime_for_config(config)
     with runtime.read() as connection:
@@ -259,7 +260,7 @@ def thesis_history(config: dict[str, Any], symbol: str) -> dict[str, Any]:
     }
 
 
-def thesis_monitor_payload(config: dict[str, Any]) -> dict[str, Any]:
+def thesis_monitor_payload(config: AppConfig) -> dict[str, Any]:
     rows = thesis_monitor_rows(config)
     summary = {
         "total": len(rows),
@@ -282,7 +283,7 @@ def thesis_monitor_payload(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def thesis_monitor_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     symbols: list[str] | set[str] | None = None,
     include_current_prices: bool = True,

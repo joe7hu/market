@@ -6,8 +6,9 @@ import socket
 import pytest
 from fastapi.testclient import TestClient
 
-from app.data_access import config as config_owner
+from app import dependencies
 from app.main import app
+from conftest import typed_config
 from investment_panel.database.options_history_policy import (
     MAX_PROVIDER_LEASES,
     OptionHistoryPolicyRepository,
@@ -177,7 +178,7 @@ def test_shadow_publication_cap_downgrades_only_paper_ready() -> None:
 def test_options_history_policy_api_and_conflict(
     migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": migrated_postgres_dsn}})
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: typed_config(migrated_postgres_dsn))
     client = TestClient(app)
     symbols = client.get("/api/options/history/symbols")
     assert symbols.status_code == 200

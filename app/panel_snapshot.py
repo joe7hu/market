@@ -18,11 +18,12 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
-from app.data_access import config as config_owner
 from app.data_access import loaders as loaders_owner
 from app.data_access.payloads import panel_snapshot_payload, table_payload
 from app.data_access.types import PanelData
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
+from investment_panel.database.authority import database_url
 from investment_panel.database.migrations import HEAD_REVISION
 
 
@@ -63,12 +64,12 @@ def context(
     cache_key: str = "full",
     loader: Callable[[dict[str, Any]], Any] | None = None,
     *,
-    config_loader: Callable[[], dict[str, Any]] | None = None,
-    database_url_loader: Callable[[dict[str, Any]], str] | None = None,
+    config_loader: Callable[[], AppConfig] | None = None,
+    database_url_loader: Callable[[AppConfig], str] | None = None,
     panel_loader: Callable[..., Any] | None = None,
 ) -> tuple[dict[str, Any], Any]:
-    active_config_loader = config_loader or config_owner.load_config
-    active_database_url_loader = database_url_loader or config_owner.database_url
+    active_config_loader = config_loader or load_config
+    active_database_url_loader = database_url_loader or database_url
     active_panel_loader = panel_loader or loaders_owner.load_panel_data
     config = active_config_loader()
     config_key = active_database_url_loader(config)
@@ -90,7 +91,7 @@ def context(
         return value
 
 
-def _load_panel_data_without_repairs(active_config: dict[str, Any], *, panel_loader: Callable[..., Any]) -> Any:
+def _load_panel_data_without_repairs(active_config: AppConfig, *, panel_loader: Callable[..., Any]) -> Any:
     parameters = inspect.signature(panel_loader).parameters
     if "ensure_decision_models" not in parameters:
         return panel_loader(active_config)
@@ -100,8 +101,8 @@ def _load_panel_data_without_repairs(active_config: dict[str, Any], *, panel_loa
 def table_payload_for(
     table_name: str,
     *,
-    config_loader: Callable[[], dict[str, Any]] | None = None,
-    database_url_loader: Callable[[dict[str, Any]], str] | None = None,
+    config_loader: Callable[[], AppConfig] | None = None,
+    database_url_loader: Callable[[AppConfig], str] | None = None,
     table_loader: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     active_table_loader = table_loader or loaders_owner.load_table_panel_data
@@ -115,7 +116,7 @@ def table_payload_for(
 
 
 def scope_snapshot_payload(
-    config: dict[str, Any],
+    config: AppConfig,
     panel_data: Any,
     scope: str,
     *,
@@ -163,7 +164,7 @@ def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
 
 
 def _store_last_good_scope_snapshot(
-    config: dict[str, Any], scope: str, payload: dict[str, Any], *, offset: int = 0,
+    config: AppConfig, scope: str, payload: dict[str, Any], *, offset: int = 0,
     limit: int | None = None, cache_path_loader: Callable[[dict[str, Any], str], Path],
 ) -> None:
     snapshot = deepcopy(payload)
@@ -181,7 +182,7 @@ def _store_last_good_scope_snapshot(
 
 
 def _load_last_good_scope_snapshot(
-    config: dict[str, Any], scope: str, *, offset: int = 0, limit: int | None = None,
+    config: AppConfig, scope: str, *, offset: int = 0, limit: int | None = None,
     cache_path_loader: Callable[[dict[str, Any], str], Path],
 ) -> dict[str, Any] | None:
     key = _scope_snapshot_cache_key(scope, offset, limit)
@@ -211,7 +212,7 @@ def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str
     return f"{scope}{suffix}"
 
 
-def _scope_snapshot_cache_path(config: dict[str, Any], cache_key: str) -> Path:
+def _scope_snapshot_cache_path(config: AppConfig, cache_key: str) -> Path:
     del config
     return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{cache_key}.json"
 
@@ -246,8 +247,8 @@ def invalidate_context_cache() -> None:
     _CONTEXT_CACHE.update({"entries": {}, "expires_at": 0.0, "config_key": None, "value": None})
 
 
-def full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None:
-    status_dir = Path(config.get("nas", {}).get("status_dir", "/Volumes/agent/data-sources/status"))
+def full_market_refresh_status(config: AppConfig) -> dict[str, Any] | None:
+    status_dir = config.nas.status_dir
     status_path = status_dir / "mini-market-full-refresh.json"
     if not status_path.exists():
         return None

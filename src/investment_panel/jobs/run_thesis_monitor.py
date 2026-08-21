@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from typing import Any
 
-from investment_panel.core.config import config_to_dict, load_config
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
 from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
@@ -28,11 +28,10 @@ def run(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     config = load_config(config_path)
-    config_dict = config_to_dict(config)
     settings = config.agents.thesis_monitor
     if not settings.enabled and not force and trigger != "ondemand":
         return {"status": "skipped", "reason": "thesis monitor automation disabled", "completed": 0, "failed": 0}
-    rows = _selected_rows(config_dict, symbols)
+    rows = _selected_rows(config, symbols)
     repository = ThesisAutomationRepository(runtime_for_config(config))
     recovered = repository.recover_stale_runs()
     completed = failed = skipped = 0
@@ -43,7 +42,7 @@ def run(
         futures = [
             executor.submit(
                 _run_one,
-                config_dict,
+                config,
                 repository,
                 row,
                 trigger=trigger,
@@ -83,7 +82,7 @@ def run(
 
 
 def _run_one(
-    config: dict[str, Any],
+    config: AppConfig,
     repository: ThesisAutomationRepository,
     row: dict[str, Any],
     *,
@@ -295,7 +294,7 @@ def _validate_invalidations(thesis: dict[str, Any]) -> None:
                 raise ThesisAutomationValidationError("price invalidation requires price")
 
 
-def _selected_rows(config: dict[str, Any], symbols: list[str] | None) -> list[dict[str, Any]]:
+def _selected_rows(config: AppConfig, symbols: list[str] | None) -> list[dict[str, Any]]:
     rows = thesis_monitor_rows(config)
     if not symbols:
         return rows

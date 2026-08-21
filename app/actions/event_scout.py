@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from investment_panel.core.config import AppConfig
 from investment_panel.core.event_scout import EventScout, replay_mrna
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.event_scout import persist_event_packet
@@ -44,7 +45,7 @@ def _prepare_signal(signal: dict[str, Any], reference: datetime) -> dict[str, An
     return prepared
 
 
-def persist_mrna_replay(config: Any, *, symbol: str) -> dict[str, Any]:
+def persist_mrna_replay(config: AppConfig, *, symbol: str) -> dict[str, Any]:
     if symbol.strip().upper() != "MRNA":
         raise ValueError("Only the MRNA acceptance replay is available")
     packet = replay_mrna()
@@ -61,7 +62,7 @@ def persist_mrna_replay(config: Any, *, symbol: str) -> dict[str, Any]:
     return packet
 
 
-def process_signal(config: Any, signal: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+def process_signal(config: AppConfig, signal: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     reference = _reference_time(now)
     prepared_signal = _prepare_signal(signal, reference)
     runtime = runtime_for_config(config)

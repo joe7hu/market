@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 # Regression: ISSUE-002 — Watchlist history, momentum, volume, and ATR fields were empty.
@@ -46,7 +47,7 @@ def test_daily_bars_are_composed_into_complete_watchlist_technicals(
         repository.finish_run(run_id, "succeeded")
 
         panel = loaders_owner.load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "technicals"
+            typed_config(migrated_postgres_dsn), "technicals"
         )
         row = next(item for item in panel.rows("technicals") if item["symbol"] == "HIST")
 

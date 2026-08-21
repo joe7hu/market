@@ -11,13 +11,14 @@ from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.today_analysis import _option_item, refresh_today_publication
 from investment_panel.jobs import codex_preopen_brief
 from investment_panel.database.portfolio_ledger import record_portfolio_transaction
+from conftest import typed_config
 
 
 def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
-        config = {"database": {"url": migrated_postgres_dsn}}
+        config = typed_config(migrated_postgres_dsn)
         record_portfolio_transaction(
             config,
             {
@@ -193,7 +194,7 @@ def test_today_uses_available_same_day_daily_close_before_synthetic_session_mark
     as_of = datetime(2026, 7, 11, 13, tzinfo=UTC)
     try:
         record_portfolio_transaction(
-            {"database": {"url": migrated_postgres_dsn}},
+            typed_config(migrated_postgres_dsn),
             {
                 "symbol": "7203.T", "transaction_type": "opening_balance", "quantity": 1, "price": 100,
                 "executed_at": "2026-07-01T00:00:00Z", "idempotency_key": "today-daily-close",
@@ -239,7 +240,7 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
     as_of = datetime(2026, 7, 13, 13, tzinfo=UTC)
     try:
         record_portfolio_transaction(
-            {"database": {"url": migrated_postgres_dsn}},
+            typed_config(migrated_postgres_dsn),
             {
                 "symbol": "NVDA", "transaction_type": "opening_balance", "quantity": 2, "price": 100,
                 "executed_at": "2026-07-01T00:00:00Z", "idempotency_key": "today-source-changes-nvda",

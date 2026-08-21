@@ -9,6 +9,7 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def test_market_publication_builds_visible_models_from_normalized_quotes(migrated_postgres_dsn: str) -> None:
@@ -40,11 +41,11 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
             "Valuation", "Price Trend", "Market Breadth", "Risk Appetite"
         }
 
-        panel = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "market")
+        panel = load_panel_scope_data(typed_config(migrated_postgres_dsn), "market")
         assert panel.status.ready is True
         assert len(panel.rows("market_environment_assets")) == 2
         assert len(panel.rows("market_environment_model")) == 4
-        complete = load_panel_scope_data({"database": {"url": migrated_postgres_dsn}}, "dashboard")
+        complete = load_panel_scope_data(typed_config(migrated_postgres_dsn), "dashboard")
         assert complete.status.ready is True
         assert complete.metadata["unavailable_models"] == []
         assert {row["symbol"] for row in complete.rows("technicals")} == {"SPY", "QQQ"}

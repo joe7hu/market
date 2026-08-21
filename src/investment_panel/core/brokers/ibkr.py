@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any, Protocol
 from uuid import uuid4
+from investment_panel.core.config import IBKRConfig
 from investment_panel.core.instruments import infer_asset_class, normalize_symbol
 
 from investment_panel.core.brokers.constants import IBKR_ACCOUNT_TAGS, IBKR_GENERIC_TICKS, IBKR_TICK_GENERIC_FIELDS, IBKR_TICK_PRICE_FIELDS, IBKR_TICK_SIZE_FIELDS
@@ -21,7 +22,7 @@ class IBKRProvider:
 
     name = "ibkr"
 
-    def __init__(self, config: Any):
+    def __init__(self, config: IBKRConfig):
         self.config = config
 
     def collect(self, symbols: list[str]) -> BrokerSnapshot:
@@ -69,7 +70,7 @@ class IBKRProvider:
 
 
 
-def collect_ibkr_snapshot(config: Any, symbols: list[str], checked_at: datetime, started: float) -> BrokerSnapshot:
+def collect_ibkr_snapshot(config: IBKRConfig, symbols: list[str], checked_at: datetime, started: float) -> BrokerSnapshot:
     from ibapi.client import EClient
     from ibapi.contract import Contract
     from ibapi.execution import ExecutionFilter
@@ -366,7 +367,7 @@ def collect_ibkr_snapshot(config: Any, symbols: list[str], checked_at: datetime,
 
 
 
-def ibkr_session_failure(config: Any, checked_at: datetime, started: float, detail: str, errors: list[dict[str, Any]]) -> BrokerSnapshot:
+def ibkr_session_failure(config: IBKRConfig, checked_at: datetime, started: float, detail: str, errors: list[dict[str, Any]]) -> BrokerSnapshot:
     return BrokerSnapshot(
         ProviderStatus(
             "ibkr",
@@ -384,7 +385,7 @@ def ibkr_session_failure(config: Any, checked_at: datetime, started: float, deta
 
 
 
-def ibkr_account_mode_mismatch(config: Any, checked_at: datetime, started: float, account_ids: list[str], errors: list[dict[str, Any]]) -> BrokerSnapshot:
+def ibkr_account_mode_mismatch(config: IBKRConfig, checked_at: datetime, started: float, account_ids: list[str], errors: list[dict[str, Any]]) -> BrokerSnapshot:
     return BrokerSnapshot(
         ProviderStatus(
             "ibkr",
@@ -506,7 +507,7 @@ def ibkr_snapshot_status(
 
 
 
-def ibkr_accept_account(config: Any, account_id: Any) -> bool:
+def ibkr_accept_account(config: IBKRConfig, account_id: Any) -> bool:
     configured = str(getattr(config, "account_id", "") or "").strip()
     if not configured:
         return True
@@ -515,7 +516,7 @@ def ibkr_accept_account(config: Any, account_id: Any) -> bool:
 
 
 
-def ibkr_paper_account_mismatch(config: Any, app: Any, checked_at: datetime, started: float) -> BrokerSnapshot | None:
+def ibkr_paper_account_mismatch(config: IBKRConfig, app: Any, checked_at: datetime, started: float) -> BrokerSnapshot | None:
     if not getattr(config, "paper_only", True):
         return None
     account_ids = sorted(
@@ -565,7 +566,7 @@ def ibkr_stock_quote_symbol(symbol: str) -> bool:
 
 
 
-def ibkr_accounts(values: dict[str, dict[str, Any]], config: Any, checked_at: datetime) -> list[dict[str, Any]]:
+def ibkr_accounts(values: dict[str, dict[str, Any]], config: IBKRConfig, checked_at: datetime) -> list[dict[str, Any]]:
     accounts: list[dict[str, Any]] = []
     for account_id, row in values.items():
         unrealized = ibkr_number(row.get("unrealized_pnl")) or 0.0

@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 import yaml
 
-from investment_panel.core.config import load_config, resolve_path
+from investment_panel.core.config import AppConfig, load_config, resolve_path
 from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.core.house_disclosures import (
     fetch_house_pdf_bytes,
@@ -50,7 +50,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     }
 
 
-def _ingest_13f(runtime: Any, config: Any, tracker: dict[str, Any]) -> dict[str, Any]:
+def _ingest_13f(runtime: Any, config: AppConfig, tracker: dict[str, Any]) -> dict[str, Any]:
     cik = str(tracker["cik"]).zfill(10)
     source_id = _slug(f"sec_13f_{cik}")
     repository = IngestionRepository(runtime)
@@ -282,7 +282,7 @@ def _http_bytes(url: str, user_agent: str) -> bytes:
 
 def _record_bytes(
     repository: IngestionRepository,
-    config: Any,
+    config: AppConfig,
     run_id: Any,
     source_id: str,
     filename: str,
@@ -318,7 +318,7 @@ def _int(value: Any) -> int | None:
         return None
 
 
-def _ingest_house(runtime: Any, config: Any, trader: dict[str, Any]) -> dict[str, Any]:
+def _ingest_house(runtime: Any, config: AppConfig, trader: dict[str, Any]) -> dict[str, Any]:
     house = trader["official_house"]
     source_id = _slug(f"house_{trader['trader_name']}")
     repository = IngestionRepository(runtime)
@@ -429,7 +429,7 @@ def _existing_document_ids(runtime: Any, source_id: str) -> set[str]:
 
 
 def _archive_house_pdf(
-    config: Any, source_id: str, document_id: str, payload: bytes
+    config: AppConfig, source_id: str, document_id: str, payload: bytes
 ) -> Path:
     path = provider_archive_path(config, source_id, "house", f"{document_id}.pdf")
     if not path.exists() or path.read_bytes() != payload:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from investment_panel.core.config import load_config
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
@@ -116,15 +116,10 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     }
 
 
-def _refresh_option_outcomes(runtime: Any, config: Any) -> dict[str, Any]:
+def _refresh_option_outcomes(runtime: Any, config: AppConfig) -> dict[str, Any]:
     """Keep automatic promotion explicitly disabled unless configuration opts in."""
 
-    if isinstance(config, dict):
-        enabled = bool((((config.get("analysis") or {}).get("options_decision_system") or {}).get("strategy_auto_promotion_enabled")))
-    else:
-        analysis = getattr(config, "analysis", None)
-        decision_system = getattr(analysis, "options_decision_system", None)
-        enabled = bool(getattr(decision_system, "strategy_auto_promotion_enabled", False))
+    enabled = bool(config.analysis.options_decision_system.strategy_auto_promotion_enabled)
     repository = OutcomeRepository(runtime)
     return repository.refresh(strategy_auto_promotion_enabled=True) if enabled else repository.refresh()
 

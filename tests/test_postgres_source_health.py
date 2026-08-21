@@ -4,15 +4,17 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from app.data_access import config as config_owner, loaders as loaders_owner
+from app import dependencies
+from app.data_access import loaders as loaders_owner
 import app.panel_snapshot as panel_owner
 from app.main import app
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def _source_rows(dsn: str) -> dict[str, dict[str, object]]:
-    panel = loaders_owner.load_table_panel_data({"database": {"url": dsn}}, "source_catalog")
+    panel = loaders_owner.load_table_panel_data(typed_config(dsn), "source_catalog")
     return {str(row["source_id"]): row for row in panel.rows("source_catalog")}
 
 
@@ -403,7 +405,7 @@ def test_source_catalog_endpoint_matches_health_snapshot_contract(
         runtime.close()
 
     panel_owner.invalidate_context_cache()
-    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": migrated_postgres_dsn}})
+    monkeypatch.setitem(app.dependency_overrides, dependencies.get_config, lambda: typed_config(migrated_postgres_dsn))
     client = TestClient(app)
     catalog = client.get("/api/source-catalog")
     snapshot = client.get("/api/panel-snapshot?scope=health")

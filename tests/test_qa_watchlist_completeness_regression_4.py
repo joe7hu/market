@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 # Regression: ISSUE-004 — The page left the percentile cell blank and mislabeled price history.
@@ -35,7 +36,7 @@ def test_watchlist_exposes_an_explicit_one_year_price_percentile(
         repository.finish_run(run_id, "succeeded")
 
         panel = loaders_owner.load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "technicals"
+            typed_config(migrated_postgres_dsn), "technicals"
         )
         row = next(item for item in panel.rows("technicals") if item["symbol"] == "RANK")
 

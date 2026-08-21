@@ -11,6 +11,7 @@ from statistics import fmean
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.portfolio_ledger import portfolio_transaction_rows
 from investment_panel.database.portfolio_math import adjacent_session_dates, aligned_pair_returns
 from investment_panel.database.user_state import portfolio_rows
@@ -23,7 +24,7 @@ MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def portfolio_summary(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     positions: list[dict[str, Any]] | None = None,
     performance: list[dict[str, Any]] | None = None,
@@ -85,7 +86,7 @@ def portfolio_summary(
 
 
 def portfolio_performance_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     connection: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -170,7 +171,7 @@ def portfolio_performance_rows(
 
 
 def portfolio_correlation_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     positions: list[dict[str, Any]] | None = None,
     connection: Any | None = None,
@@ -260,7 +261,7 @@ def portfolio_correlation_rows(
 
 
 def portfolio_exposure_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     positions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -292,7 +293,7 @@ def portfolio_exposure_rows(
 
 
 def portfolio_risk_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     positions: list[dict[str, Any]] | None = None,
     summary: dict[str, Any] | None = None,
@@ -375,7 +376,7 @@ def portfolio_risk_rows(
 
 
 def portfolio_review_action_rows(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     risk_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -396,7 +397,7 @@ def portfolio_review_action_rows(
 
 
 def portfolio_intelligence_tables(
-    config: dict[str, Any], *, models: set[str] | None = None, include_performance: bool = True
+    config: AppConfig, *, models: set[str] | None = None, include_performance: bool = True
 ) -> dict[str, list[dict[str, Any]]]:
     """Build only the portfolio read models requested by the caller.
 
@@ -581,7 +582,7 @@ def _transaction_flow(row: dict[str, Any]) -> float:
 
 
 def _portfolio_accounting_totals(
-    config: dict[str, Any],
+    config: AppConfig,
     *,
     connection: Any | None = None,
 ) -> dict[str, float]:

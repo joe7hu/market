@@ -269,6 +269,31 @@ def test_application_seams_are_static_and_split() -> None:
     assert not (seam_dir / "panel_contracts.py").exists()
 
 
+def test_configuration_has_one_typed_owner_and_no_raw_config_parameters() -> None:
+    config_owners: list[Path] = []
+    raw_parameters: list[str] = []
+    for path in _prod_py_files():
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "load_config":
+                config_owners.append(path)
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+                if argument.arg != "config" or argument.annotation is None:
+                    continue
+                annotation = ast.unparse(argument.annotation)
+                if any(token in annotation for token in ("Any", "dict", "Mapping")):
+                    raw_parameters.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} config: {annotation}"
+                    )
+
+    assert config_owners == [REPO_ROOT / "src" / "investment_panel" / "core" / "config.py"]
+    assert not raw_parameters, "Application owners must accept typed configuration:\n  " + "\n  ".join(raw_parameters)
+    assert not (REPO_ROOT / "app" / "data_access" / "config.py").exists()
+    assert not (REPO_ROOT / "src" / "investment_panel" / "core" / "retention.py").exists()
+
+
 def test_known_compatibility_files_and_routes_are_closed_sets() -> None:
     observed_files = {
         path.relative_to(REPO_ROOT).as_posix()

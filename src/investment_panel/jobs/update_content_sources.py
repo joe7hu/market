@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
-from investment_panel.core.config import load_config
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.payload_archive import provider_archive_path
@@ -112,7 +112,7 @@ def run_social(config_path: str | None = None) -> dict[str, Any]:
     return run(config_path, kinds={"social"})
 
 
-def _run_source(config: Any, runtime: Any, known: set[str], spec: dict[str, Any]) -> dict[str, Any]:
+def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str, Any]) -> dict[str, Any]:
     repository = IngestionRepository(runtime)
     source_id = str(spec["source_id"])
     repository.register_source(
@@ -197,7 +197,7 @@ def _symbols(text: str, known: set[str]) -> list[str]:
     return sorted(found)
 
 
-def _archive_payload(config: Any, source_id: str, run_id: Any, payload: Any) -> Path:
+def _archive_payload(config: AppConfig, source_id: str, run_id: Any, payload: Any) -> Path:
     day = datetime.now(UTC).strftime("%Y/%m/%d")
     path = provider_archive_path(config, source_id, day, f"{run_id}.json.gz")
     with gzip.open(path, "wt", encoding="utf-8") as handle:

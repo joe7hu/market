@@ -384,8 +384,9 @@ def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from app.data_access import config as config_owner
+    from app import dependencies
     from app.routers.options import router as options_router
+    from conftest import typed_config
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -414,8 +415,8 @@ def test_recovery_event_and_health_routes_expose_only_their_bounded_surfaces(
                 """,
                 [legacy_event_id],
             )
-        monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
         application = FastAPI()
+        monkeypatch.setitem(application.dependency_overrides, dependencies.get_config, lambda: typed_config(migrated_postgres_dsn))
         application.include_router(options_router)
 
         with TestClient(application) as client:
@@ -721,11 +722,12 @@ def test_event_capture_creates_at_most_two_typed_forward_shadow_tickets(
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from app.data_access import config as config_owner
+        from app import dependencies
         from app.routers.options import router as options_router
+        from conftest import typed_config
 
-        monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": migrated_postgres_dsn}})
         application = FastAPI()
+        monkeypatch.setitem(application.dependency_overrides, dependencies.get_config, lambda: typed_config(migrated_postgres_dsn))
         application.include_router(options_router)
         with TestClient(application) as client:
             api_ticket = client.get(f"/api/options/tickets/{signal['decision_id']}")

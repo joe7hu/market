@@ -13,10 +13,41 @@ complete run for CI / pre-push.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from pathlib import Path
+import tempfile
+
 import pytest
 
+from investment_panel.core.config import AppConfig, load_config
+from investment_panel.database.configuration import DatabaseConfig
+from dataclasses import replace
 from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.migrations import upgrade_database
+
+
+def typed_config(
+    dsn: str = "postgresql:///market",
+    *,
+    raw: dict[str, object] | None = None,
+    status_dir: Path | None = None,
+) -> AppConfig:
+    """Build the typed application config used by direct owner tests."""
+
+    values = deepcopy(raw or {})
+    database = values.setdefault("database", {})
+    if isinstance(database, dict):
+        database["url"] = dsn
+    with tempfile.TemporaryDirectory(prefix="market-test-config-") as directory:
+        path = Path(directory) / "config.yaml"
+        import yaml
+
+        path.write_text(yaml.safe_dump(values), encoding="utf-8")
+        config = load_config(path)
+    config = replace(config, database=DatabaseConfig(url=dsn))
+    if status_dir is not None:
+        config = replace(config, nas=replace(config.nas, status_dir=status_dir))
+    return config
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

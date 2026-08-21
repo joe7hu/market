@@ -6,6 +6,7 @@ import importlib.util
 import time
 from typing import Any, Protocol
 
+from investment_panel.core.config import MoomooConfig
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
 from investment_panel.core.brokers.coerce import tcp_open
 
@@ -16,7 +17,7 @@ class MoomooProvider:
 
     name = "moomoo"
 
-    def __init__(self, config: Any):
+    def __init__(self, config: MoomooConfig):
         self.config = config
 
     def collect(self, symbols: list[str]) -> BrokerSnapshot:

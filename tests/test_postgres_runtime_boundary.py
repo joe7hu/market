@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +24,16 @@ from investment_panel.jobs import update_arco_sources, update_broker_sources, up
 from investment_panel.jobs import update_disclosure_sources, update_market_data, update_market_events
 assert app.main.app is not None
 """
+    environment = dict(os.environ)
+    source_paths = os.pathsep.join((str(ROOT), str(ROOT / "src")))
+    existing_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = source_paths + (os.pathsep + existing_path if existing_path else "")
     completed = subprocess.run(
-        [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, check=False
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode == 0, completed.stderr

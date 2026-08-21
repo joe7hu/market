@@ -22,6 +22,7 @@ import time
 from datetime import date, datetime, timezone
 from typing import Any
 
+from investment_panel.core.config import IBKRConfig
 from investment_panel.core.option_scan import RADAR_BASELINE_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_HI, RADAR_CALL_STRIKE_OTM_LO, RADAR_LOTTERY_CALL_STRIKE_OTM_LO
 
 # IBKR tick types we read. Live model greeks arrive as tickType 13; delayed model
@@ -366,7 +367,7 @@ MARKET_DATA_LIVE = 1
 
 
 def collect_ibkr_option_chains(
-    config: Any,
+    config: IBKRConfig,
     symbols: list[str],
     *,
     min_dte: int = 365,

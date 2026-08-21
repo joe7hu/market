@@ -12,6 +12,7 @@ from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from psycopg.types.json import Jsonb
+from conftest import typed_config
 
 
 def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
@@ -65,10 +66,10 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
         assert outcome["peak_return"] == pytest.approx(2.0)
         assert counts == {"outcomes": 1, "decisions": 1}
         mark = load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "candidate_event_mark"
+            typed_config(migrated_postgres_dsn), "candidate_event_mark"
         ).rows("candidate_event_mark")[0]
         attribution = load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "candidate_event_attribution"
+            typed_config(migrated_postgres_dsn), "candidate_event_attribution"
         ).rows("candidate_event_attribution")[0]
         assert mark["current_return"] == pytest.approx(2.0)
         assert mark["max_return_since_alert"] == pytest.approx(2.0)
@@ -78,12 +79,12 @@ def test_actionable_decision_keeps_one_incremental_outcome_without_mark_history(
             connection.execute("UPDATE analysis.option_outcome SET peak_return = 5")
             connection.execute("UPDATE analysis.decision SET state = 'FIRE'")
         assert load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "missed_winner_event"
+            typed_config(migrated_postgres_dsn), "missed_winner_event"
         ).rows("missed_winner_event") == []
         with runtime.transaction() as connection:
             connection.execute("UPDATE analysis.decision SET state = 'WATCH'")
         missed = load_table_panel_data(
-            {"database": {"url": migrated_postgres_dsn}}, "missed_winner_event"
+            typed_config(migrated_postgres_dsn), "missed_winner_event"
         ).rows("missed_winner_event")
         assert missed[0]["prior_state"] == "WATCH"
         assert missed[0]["outcome_type"] == "5x"

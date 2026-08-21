@@ -9,6 +9,7 @@ from investment_panel.database.thesis import thesis_monitor_rows
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def _source(
@@ -116,7 +117,7 @@ def test_feed_balances_sources_groups_tickers_and_excludes_future_rows(migrated_
                 observed_at=now + timedelta(days=index + 1), title=f"Future event {index}",
             )
 
-    tables, _ = load_postgres_tables({"database": {"url": migrated_postgres_dsn}}, ("feed_signals",))
+    tables, _ = load_postgres_tables(typed_config(migrated_postgres_dsn), ("feed_signals",))
     rows = tables["feed_signals"]
 
     assert {row["source"] for row in rows} == {"crowded wire", "Second Wire"}
@@ -161,7 +162,7 @@ def test_source_evidence_promotes_canonical_candidates_into_both_universe_models
         assert pltr != malformed_pltr
 
     tables, _ = load_postgres_tables(
-        {"database": {"url": migrated_postgres_dsn}},
+        typed_config(migrated_postgres_dsn),
         ("discovered_universe", "universe_screen"),
     )
 
@@ -230,7 +231,7 @@ def test_thesis_monitor_consumes_diverse_source_evidence_without_replacing_user_
             observed_at=now - timedelta(hours=1), title="NVDA supply-chain discussion",
         )
 
-    row = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})[0]
+    row = thesis_monitor_rows(typed_config(migrated_postgres_dsn))[0]
 
     assert row["thesis"] == "User-authored AI infrastructure thesis."
     assert set(row["source_names"]) == {"Thesis Social", "Thesis Wire"}

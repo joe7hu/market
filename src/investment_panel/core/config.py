@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from investment_panel.core.config_views import option_agent_config_dict, options_decision_system_dict
 from investment_panel.core.agent_providers import resolve_provider_selection, validate_registry_command
@@ -519,7 +520,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
 
 
-def config_to_dict(config: AppConfig) -> dict[str, Any]:
+def public_config_payload(config: AppConfig) -> dict[str, Any]:
+    """Return the redacted settings view owned by the config module."""
+
+    payload = _config_payload(config)
+    database = payload.get("database")
+    if isinstance(database, dict) and database.get("url"):
+        database["url"] = _redacted_database_url(str(database["url"]))
+    return payload
+
+
+def _config_payload(config: AppConfig) -> dict[str, Any]:
     return {
         "database": {"url": config.database.url},
         "nas": {
@@ -678,3 +689,14 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
         "trader_profile_dir": str(config.trader_profile_dir),
         "prompt_dir": str(config.prompt_dir),
     }
+
+
+def _redacted_database_url(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.hostname:
+        return f"{parsed.scheme or 'postgresql'}://{parsed.path}"
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'postgresql'}://{host}{port}{parsed.path}"

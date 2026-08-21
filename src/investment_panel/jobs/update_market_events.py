@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from investment_panel.core.config import load_config
+from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.provider_identity import provider_user_agent
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
@@ -97,7 +97,7 @@ def _bls_events(user_agent: str) -> tuple[list[dict[str, Any]], list[dict[str, s
     return events, errors, payloads
 
 
-def _archive_payload(config: Any, run_id: Any, payloads: list[dict[str, str]]) -> Any:
+def _archive_payload(config: AppConfig, run_id: Any, payloads: list[dict[str, str]]) -> Any:
     from pathlib import Path
 
     path = provider_archive_path(

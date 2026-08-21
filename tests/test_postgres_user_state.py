@@ -9,7 +9,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.data_access import config as config_owner, mutations as mutations_owner
+from app import dependencies
+from app.data_access import mutations as mutations_owner
 import app.panel_snapshot as panel_owner
 from app.routers.portfolio import router
 from app.routers.panel import router as panel_router
@@ -18,6 +19,7 @@ from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
+from conftest import typed_config
 
 
 def _confirm_price_facts(connection: psycopg.Connection, run_id: object) -> None:
@@ -50,7 +52,7 @@ def postgres_dsn(postgresql) -> str:
 @pytest.fixture
 def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     upgrade_database(postgres_dsn)
-    monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": postgres_dsn}})
+    config = typed_config(postgres_dsn)
     monkeypatch.setattr(
         mutations_owner,
         "populate_watchlist_symbol_data",
@@ -59,6 +61,7 @@ def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         },
     )
     application = FastAPI()
+    monkeypatch.setitem(application.dependency_overrides, dependencies.get_config, lambda: config)
     application.include_router(router)
     application.include_router(panel_router)
     application.include_router(theses_router)
@@ -1116,7 +1119,7 @@ def test_portfolio_only_panel_read_skips_full_intelligence_bundle(
     monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", fail_if_bundled)
 
     tables, _metadata = postgres_panel.load_postgres_tables(
-        {"database": {"url": postgres_dsn}},
+        typed_config(postgres_dsn),
         ("portfolio",),
     )
 
@@ -1143,7 +1146,7 @@ def test_shared_risk_models_use_live_portfolio_contracts(
     monkeypatch.setattr(postgres_panel, "_published_tables", lambda _runtime, _requested: published.copy())
     monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
     tables, _metadata = postgres_panel.load_postgres_tables(
-        {"database": {"url": postgres_dsn}},
+        typed_config(postgres_dsn),
         ("portfolio_risk_cards", "review_actions"),
     )
     assert tables["portfolio_risk_cards"] == live["portfolio_risk_cards"]
@@ -1175,7 +1178,7 @@ def test_shared_scopes_load_one_live_portfolio_contract_bundle(
     monkeypatch.setattr(postgres_panel, "portfolio_intelligence_tables", lambda _config: live)
 
     tables, _metadata = postgres_panel.load_postgres_tables(
-        {"database": {"url": postgres_dsn}},
+        typed_config(postgres_dsn),
         ("correlation_edges", "exposure_clusters", "portfolio_risk_cards", "review_actions"),
     )
     assert tables["correlation_edges"] == live["correlation_edges"]

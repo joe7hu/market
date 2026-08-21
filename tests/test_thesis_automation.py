@@ -13,6 +13,7 @@ from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
 from investment_panel.database.thesis import save_thesis
 from investment_panel.jobs import run_thesis_monitor
 from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
+from conftest import typed_config
 
 _TEST_SYMBOLS = {"THIN", "HALL", "PRES", "DBNC"}
 
@@ -31,7 +32,7 @@ def test_thesis_automation_low_evidence_activation(migrated_postgres_dsn: str, t
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", lambda _request, **_kwargs: _model_output("THIN"))
 
     result = run_thesis_monitor.run(str(cfg), symbols=["THIN"], force=True)
-    rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
+    rows = thesis_monitor_rows(typed_config(migrated_postgres_dsn))
 
     assert result["completed"] == 1
     thin = next(row for row in rows if row["symbol"] == "THIN")
@@ -43,7 +44,7 @@ def test_thesis_automation_low_evidence_activation(migrated_postgres_dsn: str, t
 def test_core_options_underwriting_symbol_is_monitored_without_watchlist_enrollment(
     migrated_postgres_dsn: str,
 ) -> None:
-    runtime = runtime_for_config({"database": {"url": migrated_postgres_dsn}})
+    runtime = runtime_for_config(typed_config(migrated_postgres_dsn))
     with runtime.transaction() as connection:
         instrument_id = reconcile_instrument(connection, "THIN", name="THIN", category="option-history")
         connection.execute(
@@ -57,7 +58,7 @@ def test_core_options_underwriting_symbol_is_monitored_without_watchlist_enrollm
             [instrument_id],
         )
 
-    rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
+    rows = thesis_monitor_rows(typed_config(migrated_postgres_dsn))
     thin = next(row for row in rows if row["symbol"] == "THIN")
 
     assert thin["owned"] is False
@@ -88,7 +89,7 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
     monkeypatch.setattr(run_thesis_monitor, "generate_codex_thesis_monitor", fake_model)
 
     result = run_thesis_monitor.run(str(cfg), symbols=["HALL"], force=True)
-    history = thesis_history({"database": {"url": migrated_postgres_dsn}}, "HALL")
+    history = thesis_history(typed_config(migrated_postgres_dsn), "HALL")
 
     assert result["failed"] == 1
     assert "hallucinated evidence reference" in result["errors"][0]
@@ -105,7 +106,7 @@ def test_thesis_automation_rejects_hallucinated_evidence(migrated_postgres_dsn: 
 
 def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:
     _watch(migrated_postgres_dsn, "PRES")
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
     save_thesis(config, "PRES", {"thesis": "Initial monitored setup.", "invalidation": "Below $300."})
     cfg = _config(tmp_path, migrated_postgres_dsn)
     monkeypatch.setattr(
@@ -138,7 +139,7 @@ def test_preopen_skips_codex_when_decision_inputs_are_unchanged(
     migrated_postgres_dsn: str, tmp_path: Path, monkeypatch,
 ) -> None:
     _watch(migrated_postgres_dsn, "THIN")
-    config = {"database": {"url": migrated_postgres_dsn}}
+    config = typed_config(migrated_postgres_dsn)
     save_thesis(config, "THIN", _model_output("THIN")["thesis"])
     row = next(item for item in thesis_monitor_rows(config) if item["symbol"] == "THIN")
     evidence = list(row.get("source_evidence") or [])[:12]
@@ -189,7 +190,7 @@ def test_thesis_automation_routes_to_deepseek_provider(
     monkeypatch.setattr(run_thesis_monitor, "generate_deepseek_thesis_monitor", fake_deepseek)
 
     result = run_thesis_monitor.run(str(cfg), symbols=["THIN"], force=True)
-    rows = thesis_monitor_rows({"database": {"url": migrated_postgres_dsn}})
+    rows = thesis_monitor_rows(typed_config(migrated_postgres_dsn))
 
     assert result["completed"] == 1
     assert len(deepseek_calls) == 1
@@ -236,7 +237,7 @@ def test_thesis_automation_dry_run_is_non_writing(migrated_postgres_dsn: str, tm
 
 def test_thesis_automation_run_serializes_datetime_evidence(migrated_postgres_dsn: str) -> None:
     _watch(migrated_postgres_dsn, "THIN")
-    repository = ThesisAutomationRepository(runtime_for_config({"database": {"url": migrated_postgres_dsn}}))
+    repository = ThesisAutomationRepository(runtime_for_config(typed_config(migrated_postgres_dsn)))
 
     run_id = repository.start_run(
         "THIN",
@@ -279,7 +280,7 @@ def _cleanup_symbols(dsn: str) -> None:
 
 
 def _watch(dsn: str, symbol: str) -> None:
-    runtime = runtime_for_config({"database": {"url": dsn}})
+    runtime = runtime_for_config(typed_config(dsn))
     with runtime.transaction() as connection:
         instrument_id = reconcile_instrument(connection, symbol, name=symbol, category="watchlist")
         connection.execute(

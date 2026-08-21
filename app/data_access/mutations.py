@@ -3,6 +3,7 @@
 from __future__ import annotations
 from typing import Any, Iterable
 
+from investment_panel.core.config import AppConfig
 from investment_panel.database.user_state import (
     delete_watchlist_item,
     save_watchlist_item,
@@ -14,7 +15,7 @@ from investment_panel.database.thesis import (
 
 
 
-def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+def save_watchlist_symbol(config: AppConfig, item: dict[str, Any]) -> dict[str, Any]:
     """Insert or update a manually entered watchlist symbol."""
 
     symbol = str(item.get("symbol", "")).strip().upper()
@@ -44,7 +45,7 @@ def save_watchlist_symbol(config: dict[str, Any], item: dict[str, Any]) -> dict[
 
 
 
-def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_class: str | None = None) -> dict[str, Any]:
+def populate_watchlist_symbol_data(config: AppConfig, symbol: str, asset_class: str | None = None) -> dict[str, Any]:
     """Run the canonical targeted market-data refresh for a newly watched symbol."""
 
     normalized = str(symbol or "").strip().upper()
@@ -79,7 +80,7 @@ def populate_watchlist_symbol_data(config: dict[str, Any], symbol: str, asset_cl
 
 
 
-def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def delete_watchlist_symbol(config: AppConfig, symbol: str) -> dict[str, Any]:
     normalized = symbol.strip().upper()
     if not normalized:
         raise ValueError("symbol is required")
@@ -95,7 +96,7 @@ def delete_watchlist_symbol(config: dict[str, Any], symbol: str) -> dict[str, An
 
 
 
-def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
+def save_thesis(config: AppConfig, symbol: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Author or update the structured thesis content for a symbol.
 
     Merges supplied fields onto any existing thesis_json and stamps last_reviewed
@@ -105,7 +106,7 @@ def save_thesis(config: dict[str, Any], symbol: str, fields: dict[str, Any]) -> 
     return save_postgres_thesis(config, symbol, fields)
 
 
-def mark_thesis_reviewed(config: dict[str, Any], symbol: str) -> dict[str, Any]:
+def mark_thesis_reviewed(config: AppConfig, symbol: str) -> dict[str, Any]:
     """Stamp the thesis last_reviewed date so an audited thesis leaves the queue."""
 
     return mark_postgres_thesis_reviewed(config, symbol)

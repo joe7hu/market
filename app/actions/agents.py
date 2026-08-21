@@ -5,22 +5,20 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from investment_panel.core.config import AppConfig, public_config_payload
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.agent_experiments import AgentExperimentRepository
 from investment_panel.database.authority import database_url, runtime_for_config
 
 
 class AgentActions:
-    def __init__(self, config: Any, start_job: Callable[[str, Any], dict[str, Any]]) -> None:
+    def __init__(self, config: AppConfig, start_job: Callable[[str, Any], dict[str, Any]]) -> None:
         self.config = config
         self.repository = AgentRepository(runtime_for_config(config))
         self.start_job = start_job
 
     def overview(self) -> dict[str, Any]:
-        from investment_panel.core.config import config_to_dict
-
-        settings = self.config if isinstance(self.config, dict) else config_to_dict(self.config)
-        agents = dict(settings.get("agents") or {})
+        agents = public_config_payload(self.config)["agents"]
         overview = self.repository.overview()
         return {
             "config": agents.get("option_agent", {}),
@@ -38,7 +36,7 @@ class AgentActions:
         if not normalized:
             raise ValueError("ticker is required")
         option_agent = _option_agent_settings(self.config)
-        if not option_agent.get("command"):
+        if not self.config.agents.option_agent.command:
             raise ValueError("Set the option agent command before running on-demand analysis.")
         request = self.repository.queue_thesis(normalized, prompt=prompt, trigger="ondemand")
         job = self.start_job("run_option_agents_ondemand", database_url(self.config))
@@ -56,8 +54,8 @@ class AgentActions:
         }
 
 
-def _scheduler_agent_seconds(config: Any) -> int:
-    configured = int(_option_agent_settings(config).get("auto_run_seconds") or 0)
+def _scheduler_agent_seconds(config: AppConfig) -> int:
+    configured = int(config.agents.option_agent.auto_run_seconds or 0)
     if configured > 0:
         return configured
     try:
@@ -66,10 +64,5 @@ def _scheduler_agent_seconds(config: Any) -> int:
         return 0
 
 
-def _option_agent_settings(config: Any) -> dict[str, Any]:
-    if isinstance(config, dict):
-        return dict((config.get("agents") or {}).get("option_agent") or {})
-    return {
-        "command": config.agents.option_agent.command,
-        "auto_run_seconds": config.agents.option_agent.auto_run_seconds,
-    }
+def _option_agent_settings(config: AppConfig) -> Any:
+    return config.agents.option_agent
