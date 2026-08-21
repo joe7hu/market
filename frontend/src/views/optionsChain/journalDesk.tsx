@@ -1,7 +1,7 @@
 import { ArrowRight, BookOpenCheck, FlaskConical, Microscope } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { OptionsDecisionBrief, OptionsLearningProgress, OptionsPaperJournalRow } from "@/api";
+import type { OptionsDecisionBrief, OptionsLearningProgress, OptionsPaperJournalRow } from "@/api/options";
 import { StatusBadge } from "@/components/market/workstation";
 import { sentence } from "./decisionDesk";
 import { buildJournalDeskModel, observationLabel, researchBlockerLabel } from "./journalDeskModel";
@@ -149,8 +149,8 @@ function contract(row: OptionsPaperJournalRow) { return `${row.contract.expirati
 function money(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "currency", currency: "USD" }); }
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }); }
 function decimal(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toFixed(3); }
-function hours(value: number | null) { return value === null ? "pending" : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}h`; }
-function dateTime(value: string | null) { return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "time unavailable"; }
+function hours(value: number | null | undefined) { return value === null || value === undefined ? "pending" : `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })}h`; }
+function dateTime(value: string | null | undefined) { return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "time unavailable"; }
 function currentBenefit(brief: OptionsDecisionBrief | null, experiments: number) {
   if (!brief) return "Loading the current underwriting state.";
   if (!brief.readiness.thesis.eligible) {

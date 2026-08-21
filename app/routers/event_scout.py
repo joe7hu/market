@@ -12,6 +12,12 @@ from app.actions.event_scout import persist_mrna_replay, process_signal
 from app.data_access import config as config_owner
 from app.data_access import loaders
 from app.request_security import require_local_request
+from app.response_contracts import (
+    EventScoutEventsResponse,
+    EventScoutPacketsResponse,
+    EventScoutReplayResponse,
+    EventScoutSignalResponse,
+)
 from investment_panel.core.event_scout import replay_mrna
 
 
@@ -29,7 +35,7 @@ class EventScoutSignalInput(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.get("/api/event-scout")
+@router.get("/api/event-scout", response_model=EventScoutEventsResponse, response_model_exclude_unset=True)
 def event_scout_events(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
     config = config_owner.load_config()
     panel = loaders.load_panel_data(
@@ -47,7 +53,7 @@ def event_scout_events(symbol: str | None = Query(None, min_length=1, max_length
     }
 
 
-@router.get("/api/event-scout/packets")
+@router.get("/api/event-scout/packets", response_model=EventScoutPacketsResponse, response_model_exclude_unset=True)
 def event_scout_packets(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
     config = config_owner.load_config()
     panel = loaders.load_panel_data(
@@ -60,14 +66,14 @@ def event_scout_packets(symbol: str | None = Query(None, min_length=1, max_lengt
     return {"status": {"ready": panel.status.ready, "message": panel.status.message, "source": panel.status.source}, "rows": rows, "count": len(rows)}
 
 
-@router.get("/api/event-scout/replay")
+@router.get("/api/event-scout/replay", response_model=EventScoutReplayResponse, response_model_exclude_unset=True)
 def event_scout_replay(symbol: str = Query("MRNA", min_length=1, max_length=16)) -> dict[str, Any]:
     if symbol.strip().upper() != "MRNA":
         raise HTTPException(status_code=404, detail="Only the MRNA acceptance replay is available")
     return {"status": "replay_only", "packet": replay_mrna()}
 
 
-@router.post("/api/event-scout/replay")
+@router.post("/api/event-scout/replay", response_model=EventScoutReplayResponse, response_model_exclude_unset=True)
 def persist_event_scout_replay(request: Request, symbol: str = Query("MRNA", min_length=1, max_length=16)) -> dict[str, Any]:
     require_local_request(request)
     if symbol.strip().upper() != "MRNA":
@@ -77,7 +83,7 @@ def persist_event_scout_replay(request: Request, symbol: str = Query("MRNA", min
     return {"status": "persisted", "packet": packet}
 
 
-@router.post("/api/event-scout/signals")
+@router.post("/api/event-scout/signals", response_model=EventScoutSignalResponse, response_model_exclude_unset=True)
 def event_scout_signal(payload: EventScoutSignalInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     config = config_owner.load_config()

@@ -1,12 +1,11 @@
 import { Clock3, MessageCircle, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { loadSettings, updateResearchSources, type ResearchSourcesInput } from "@/api";
+import { loadSettings, updateResearchSources, type ResearchSourcesInput, type SettingsPayload } from "@/api/panel";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useMarketData } from "@/marketData";
-import type { SettingsPayload } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { titleLabel, toneFromText } from "@/views/rowFormat";
 import { WorkspacePage, type MetricSpec } from "./workspacePage";

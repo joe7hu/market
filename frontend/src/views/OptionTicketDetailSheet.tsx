@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-import { loadOptionTicketDetail } from "@/api";
+import { loadOptionTicketDetail } from "@/api/options";
 import { StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -35,7 +35,7 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
     setLoading(true);
     setError(null);
     loadOptionTicketDetail(decisionId, controller.signal)
-      .then((payload) => setDetail(payload))
+      .then((payload) => setDetail(payload as unknown as RowRecord))
       .catch((cause: unknown) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
         setDetail(null);

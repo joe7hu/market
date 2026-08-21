@@ -49,3 +49,19 @@ def test_openapi_baseline_and_json_success_schemas() -> None:
                     if media_type == "application/json" and "schema" not in payload:
                         missing.append(f"{method.upper()} {path} {status}")
     assert not missing, "JSON success responses need an OpenAPI schema:\n  " + "\n  ".join(missing)
+
+
+def test_json_success_responses_use_named_backend_models() -> None:
+    contract = _contract()
+    unnamed: list[str] = []
+    for path, path_item in contract["paths"].items():
+        for method, operation in path_item.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            for status, response in operation.get("responses", {}).items():
+                if not status.startswith("2"):
+                    continue
+                schema = response.get("content", {}).get("application/json", {}).get("schema")
+                if schema and "$ref" not in schema:
+                    unnamed.append(f"{method.upper()} {path} {status}")
+    assert not unnamed, "JSON success responses must reference named schemas:\n  " + "\n  ".join(unnamed)

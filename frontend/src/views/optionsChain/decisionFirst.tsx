@@ -10,7 +10,7 @@ import {
   loadOptionsShadowObservations,
   loadOptionsWorkspace, type OptionsDecisionBrief, type OptionsDecisionCandidate,
   type MarketRegime, type OptionsLearningProgress, type OptionsPaperJournalRow, type OptionsWorkspacePayload, type StrategyRoute,
-} from "@/api";
+} from "@/api/options";
 import { StatusBadge } from "@/components/market/workstation";
 import { WorkspacePage } from "../workspacePage";
 import { blockerCopy, decisionPresentation, sentence } from "./decisionDesk";
@@ -294,7 +294,7 @@ function verdictMetric(brief: OptionsDecisionBrief) { return decisionPresentatio
 function verdictClass(toneValue: "good" | "warn" | "info" | "muted") { return toneValue === "good" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-950 dark:text-emerald-50" : toneValue === "warn" ? "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-50" : toneValue === "info" ? "border-sky-500/30 bg-sky-500/10 text-sky-950 dark:text-sky-50" : "border-border bg-card text-foreground"; }
 function tone(state?: string): "good" | "warn" | "info" | "muted" { return state === "PAPER_READY" ? "good" : state === "REJECT" ? "warn" : state === "WATCH" ? "info" : "muted"; }
 function regularSessionNow() { const now = new Date(); const day = now.getDay(); const minutes = now.getHours() * 60 + now.getMinutes(); return day >= 1 && day <= 5 && minutes >= 9 * 60 + 30 && minutes <= 16 * 60; }
-function formatDateTime(value: string | null) { return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "pending"; }
+function formatDateTime(value: string | null | undefined) { return value ? new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "pending"; }
 function money(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "currency", currency: "USD" }); }
 function percent(value: number | null | undefined) { return value === null || value === undefined ? "—" : value.toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 }); }
 function number(value: number | null | undefined, digits = 0) { return value === null || value === undefined ? "—" : value.toFixed(digits); }

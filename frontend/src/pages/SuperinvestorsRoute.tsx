@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Search } from "lucide-react";
-import { loadSuperinvestorPortfolio } from "@/api";
+import { loadSuperinvestorPortfolio } from "@/api/panel";
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
 import { DataGridSection } from "@/views/dataGridSection";

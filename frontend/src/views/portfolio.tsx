@@ -1,7 +1,7 @@
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
-import { previewPortfolioTransaction, recordPortfolioTransaction, reversePortfolioTransaction, type PortfolioTransactionInput, type PortfolioTransactionPreview } from "@/api";
+import { previewPortfolioTransaction, recordPortfolioTransaction, reversePortfolioTransaction, type PortfolioTransactionInput, type PortfolioTransactionPreview } from "@/api/portfolio";
 import { DecisionCard, EmptyState, StatusBadge } from "@/components/market/workstation";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { Button } from "@/components/ui/button";
@@ -199,7 +199,7 @@ function AddTradeSheet({ open, onOpenChange, holdings, onRecorded }: { open: boo
     setPreview(null);
     onOpenChange(false);
     setSubmitting(false);
-    await onRecorded(trade.symbol);
+    await onRecorded(trade.symbol ?? "");
   };
   const close = (next: boolean) => { if (!next && !submitting) { setPreview(null); setError(""); } onOpenChange(next); };
   return <Sheet open={open} onOpenChange={close}><SheetContent className="flex w-full flex-col overflow-y-auto sm:max-w-lg"><SheetHeader><SheetTitle>Add trade</SheetTitle><SheetDescription>Preview the position and realized P&L impact before this appends to the portfolio ledger.</SheetDescription></SheetHeader><form className="mt-6 flex flex-1 flex-col gap-5" onSubmit={onPreview}>

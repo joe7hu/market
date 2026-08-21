@@ -18,7 +18,7 @@ def _actions() -> OptionsActions:
     return OptionsActions(config_owner.load_config())
 
 
-@router.get("/api/options/event-study", response_model=EventStudyResponse)
+@router.get("/api/options/event-study", response_model=EventStudyResponse, response_model_exclude_unset=True)
 def option_event_study(
     ticker: str = Query(..., min_length=1, max_length=16),
     event_kind: str = Query(..., min_length=1, max_length=64),
@@ -27,7 +27,7 @@ def option_event_study(
     return _actions().event_study(ticker=ticker, event_kind=event_kind, as_of=as_of)
 
 
-@router.get("/api/options/history/distribution-shift", response_model=DistributionShiftResponse)
+@router.get("/api/options/history/distribution-shift", response_model=DistributionShiftResponse, response_model_exclude_unset=True)
 def option_distribution_shift(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     as_of: datetime = Query(...),

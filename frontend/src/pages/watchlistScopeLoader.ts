@@ -1,5 +1,5 @@
 import type { PanelScope } from "../marketData";
-import type { PanelScopeOptions } from "../api";
+import type { PanelScopeOptions } from "../api/panel";
 
 export type ScopeLoader = (scope: PanelScope, options?: PanelScopeOptions) => Promise<void>;
 

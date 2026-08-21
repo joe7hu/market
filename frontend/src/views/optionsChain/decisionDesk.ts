@@ -1,4 +1,4 @@
-import type { OptionsDecisionBrief } from "@/api";
+import type { OptionsDecisionBrief } from "@/api/options";
 
 export type DecisionPresentation = {
   eyebrow: string;

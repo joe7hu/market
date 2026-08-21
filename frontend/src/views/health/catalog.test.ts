@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { SourceCatalogRow } from "@/api";
+import type { SourceCatalogRow } from "@/api/panel";
 import type { PanelData } from "@/types";
 import {
   collectSourceErrors,

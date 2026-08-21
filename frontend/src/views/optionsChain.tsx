@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from "react";
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
 import { useSearchParams } from "react-router-dom";
-import { loadOptionDistributionShift, loadOptionEventStudy, loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionDistributionShift, type OptionEventStudy, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionHistoryPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api";
+import { loadOptionDistributionShift, loadOptionEventStudy, loadOptionHistoryAnomalies, loadOptionHistoryChain, loadOptionHistoryCurves, loadOptionHistorySnapshots, loadOptionHistorySurface, loadOptionHistorySurfaceGrid, loadOptionHistorySurfaceGroups, type OptionDistributionShift, type OptionEventStudy, type OptionHistoryAnomaly, type OptionHistoryChainRow, type OptionHistoryCurves, type OptionChainPage, type OptionAnomalyPage, type OptionHistorySnapshot, type OptionHistorySurface, type OptionHistorySurfaceGrid, type OptionHistorySurfaceGroup } from "@/api/options";
 import { StatusBadge } from "@/components/market/workstation";
 import { blockerCopy } from "./optionsChain/decisionDesk";
 import { DecisionFirstOptionsChainPage } from "./optionsChain/decisionFirst";
@@ -22,11 +22,11 @@ export function EvidenceWorkspace({ embedded: _embedded = false }: { embedded?: 
   const [search, setSearch] = useSearchParams();
   const [snapshots, setSnapshots] = useState<OptionHistorySnapshot[]>([]);
   const [groups, setGroups] = useState<OptionHistorySurfaceGroup[]>([]);
-  const [chain, setChain] = useState<OptionHistoryPage<OptionHistoryChainRow>>({ rows: [], count: 0, offset: 0, limit: CHAIN_PAGE_SIZE });
+  const [chain, setChain] = useState<OptionChainPage>({ rows: [], count: 0, offset: 0, limit: CHAIN_PAGE_SIZE });
   const [surface, setSurface] = useState<OptionHistorySurface | null>(null);
   const [surfaceGrid, setSurfaceGrid] = useState<OptionHistorySurfaceGrid | null>(null);
   const [curves, setCurves] = useState<OptionHistoryCurves | null>(null);
-  const [anomalies, setAnomalies] = useState<OptionHistoryPage<OptionHistoryAnomaly>>({ rows: [], count: 0, offset: 0, limit: 250 });
+  const [anomalies, setAnomalies] = useState<OptionAnomalyPage>({ rows: [], count: 0, offset: 0, limit: 250 });
   const [eventStudy, setEventStudy] = useState<OptionEventStudy | null>(null);
   const [distributionShift, setDistributionShift] = useState<OptionDistributionShift | null>(null);
   const [error, setError] = useState<string | null>(null);

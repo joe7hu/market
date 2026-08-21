@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { loadTicker } from "./api";
+import { loadTicker, type TickerPayload } from "./api/panel";
 import { useMarketData, type PanelScope } from "./marketData";
-import type { TickerPayload } from "./types";
 
 export function usePanelScope(scope: PanelScope) {
   const { loadScope } = useMarketData();

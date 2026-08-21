@@ -1,4 +1,4 @@
-import type { OptionHistoryCurves, OptionHistorySurfaceGrid } from "@/api";
+import type { OptionHistoryCurves, OptionHistorySurfaceGrid } from "@/api/options";
 
 type CurveRecord = Record<string, unknown>;
 

@@ -4,7 +4,7 @@ import { AriaComponent, DataZoomComponent, GridComponent, LegendComponent, Title
 import { HeatmapChart, LineChart, ScatterChart } from "echarts/charts";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption, EChartsType } from "echarts/core";
-import type { OptionHistoryCurves, OptionHistorySurface, OptionHistorySurfaceGrid } from "@/api";
+import type { OptionHistoryCurves, OptionHistorySurface, OptionHistorySurfaceGrid } from "@/api/options";
 import { buildOptionCurvePlotData, buildProviderIVSurfaceData, curveChoices, type SurfaceViewportPreset } from "./optionsChainPlotData";
 
 echarts.use([

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, History, Newspaper } from "lucide-react";
 
-import { getThesisHistory, markThesisReviewed, saveThesis } from "@/api";
+import { getThesisHistory, markThesisReviewed, saveThesis } from "@/api/userState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTableFrame, DecisionCard, EmptyState, EvidenceList, MetricTile, PageHeader, StatusBadge } from "@/components/market/workstation";
@@ -138,7 +138,7 @@ function ThesisCard({ row, onOpenTicker, onViewFeed, onReload }: { row: RowRecor
   const quoteFreshness = textField(row, ["quote_freshness"], "unknown");
   const evidenceCards = recordArray(row, "evidence_cards");
 
-  async function runAction(action: () => Promise<void>) {
+  async function runAction(action: () => Promise<unknown>) {
     if (!primarySymbol) return;
     setBusy(true);
     setError(null);
@@ -159,7 +159,7 @@ function ThesisCard({ row, onOpenTicker, onViewFeed, onReload }: { row: RowRecor
     setError(null);
     try {
       const payload = await getThesisHistory(primarySymbol);
-      setHistoryRows(recordArray(payload, "revisions"));
+      setHistoryRows(recordArray(payload as unknown as RowRecord, "revisions"));
       setHistoryOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "History failed");

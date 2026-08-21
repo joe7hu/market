@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 from contextlib import redirect_stdout
 from io import StringIO
+import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -333,6 +335,32 @@ def test_generated_contracts_are_current() -> None:
     panel_contract = REPO_ROOT / "frontend" / "src" / "generated" / "panelContract.ts"
     assert openapi.read_text(encoding="utf-8") == rendered_schema()
     assert panel_contract.read_text(encoding="utf-8") == rendered_contract()
+
+
+def test_frontend_domain_responses_are_named_and_api_modules_are_local() -> None:
+    openapi = json.loads(
+        (REPO_ROOT / "frontend" / "src" / "generated" / "openapi.json").read_text(encoding="utf-8")
+    )
+    schema_names = set(openapi["components"]["schemas"])
+    frontend_root = REPO_ROOT / "frontend" / "src"
+    assert not (frontend_root / "api.ts").exists()
+
+    broad_imports: list[str] = []
+    duplicate_types: list[str] = []
+    declaration = re.compile(r"^\s*export\s+(?:type|interface)\s+([A-Za-z0-9_]+)")
+    for path in sorted(frontend_root.rglob("*.ts")) + sorted(frontend_root.rglob("*.tsx")):
+        if "generated" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"from\s+[\"'](?:@/api|\.\.?/api)[\"']", text):
+            broad_imports.append(path.relative_to(REPO_ROOT).as_posix())
+        for line in text.splitlines():
+            match = declaration.search(line)
+            if match and match.group(1) in schema_names and "ApiSchema[" not in line and "components[" not in line:
+                duplicate_types.append(f"{path.relative_to(REPO_ROOT)}: {match.group(1)}")
+
+    assert not broad_imports, "Frontend imports the deleted broad API module:\n  " + "\n  ".join(broad_imports)
+    assert not duplicate_types, "Handwritten frontend types duplicate named OpenAPI schemas:\n  " + "\n  ".join(duplicate_types)
 
 
 def test_shallow_postgres_reexport_modules_are_removed() -> None:

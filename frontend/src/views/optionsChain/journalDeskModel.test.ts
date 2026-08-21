@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { OptionsPaperJournalRow } from "@/api";
+import type { OptionsPaperJournalRow } from "@/api/options";
 import { buildJournalDeskModel, observationLabel, researchBlockerLabel } from "./journalDeskModel";
 
 function observation(overrides: Partial<OptionsPaperJournalRow>): OptionsPaperJournalRow {

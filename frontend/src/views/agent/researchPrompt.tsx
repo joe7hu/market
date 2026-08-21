@@ -1,7 +1,7 @@
 import { Check, ClipboardCopy, FileSearch2 } from "lucide-react";
 import { useState } from "react";
 
-import type { DailyResearchPrompt } from "@/api";
+import type { DailyResearchPrompt } from "@/api/agent";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 

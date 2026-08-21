@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api";
+import { deleteWatchlistSymbol, saveWatchlistSymbol } from "@/api/userState";
 import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import type { PanelData, ScopeSnapshotStatus } from "@/types";
 import { buildWatchlistViewModel, type WatchState, type WatchlistFilters } from "@/viewModels/watchlist";

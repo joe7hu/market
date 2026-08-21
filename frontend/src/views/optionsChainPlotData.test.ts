@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { OptionHistoryCurves, OptionHistorySurfaceGrid } from "@/api";
+import type { OptionHistoryCurves, OptionHistorySurfaceGrid } from "@/api/options";
 import { buildOptionCurvePlotData, buildProviderIVSurfaceData, curveChoices } from "./optionsChainPlotData";
 
 const curves: OptionHistoryCurves = {

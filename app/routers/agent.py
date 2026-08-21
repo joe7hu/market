@@ -13,6 +13,12 @@ from app.contracts import AgentAnalyzeInput
 from app.data_access import config as config_owner
 from app.data_access import loaders
 from app.request_security import require_local_request
+from app.response_contracts import (
+    AgentAnalyzeResponse,
+    AgentExperimentResponse,
+    AgentOverviewResponse,
+    AgentResearchPromptResponse,
+)
 from investment_panel.core.daily_research_prompt import build_daily_research_prompt
 
 router = APIRouter()
@@ -24,19 +30,19 @@ def _actions() -> AgentActions:
     return AgentActions(config_owner.load_config(), job_control.start_refresh_job)
 
 
-@router.get("/api/agent")
+@router.get("/api/agent", response_model=AgentOverviewResponse, response_model_exclude_unset=True)
 def agent_overview() -> dict[str, Any]:
     return _actions().overview()
 
 
-@router.get("/api/agent/experiments/current")
+@router.get("/api/agent/experiments/current", response_model=AgentExperimentResponse, response_model_exclude_unset=True)
 def current_agent_experiment() -> dict[str, Any]:
     """Expose only the experiment conclusion and gates, never batch rows."""
 
     return _actions().current_experiment()
 
 
-@router.get("/api/agent/research-prompt")
+@router.get("/api/agent/research-prompt", response_model=AgentResearchPromptResponse, response_model_exclude_unset=True)
 def agent_research_prompt() -> dict[str, Any]:
     _, research_data = panel_snapshot.context(
         cache_key="agent:daily-research",
@@ -54,7 +60,7 @@ def agent_research_prompt() -> dict[str, Any]:
     return research_prompt
 
 
-@router.post("/api/agent/analyze")
+@router.post("/api/agent/analyze", response_model=AgentAnalyzeResponse, response_model_exclude_unset=True)
 def analyze_ticker(payload: AgentAnalyzeInput, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     require_local_request(request)
     actions = _actions()

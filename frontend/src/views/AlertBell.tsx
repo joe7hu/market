@@ -1,7 +1,7 @@
 import { Bell, Check } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { acknowledgeRadarAlert } from "@/api";
+import { acknowledgeRadarAlert } from "@/api/panel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { RowRecord } from "@/types";

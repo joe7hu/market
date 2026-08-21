@@ -1,6 +1,6 @@
 import {useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api";
+import {loadOptionsRadarLearning, promoteStrategyMutation } from "@/api/options";
 import {StatusBadge } from "@/components/market/workstation";
 import {PanelData, RowRecord } from "@/types";
 import {numberField, textField } from "./rowFormat";

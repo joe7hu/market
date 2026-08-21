@@ -8,11 +8,12 @@ from fastapi import APIRouter, Query
 
 from app import panel_snapshot as panel_owner
 from app.data_access import loaders, payloads
+from app.response_contracts import QuotesResponse
 
 router = APIRouter()
 
 
-@router.get("/api/quotes")
+@router.get("/api/quotes", response_model=QuotesResponse, response_model_exclude_unset=True)
 def quotes(symbols: str | None = Query(default=None, description="Comma-separated symbols, maximum 100.")) -> dict[str, Any]:
     requested = {symbol.strip().upper() for symbol in (symbols or "").split(",") if symbol.strip()}
     if len(requested) > 100:

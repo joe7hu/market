@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { OptionsDecisionBrief } from "@/api";
+import type { OptionsDecisionBrief } from "@/api/options";
 import { blockerCopy, decisionPresentation, summaryNumber } from "./decisionDesk";
 
 function brief(overrides: Partial<OptionsDecisionBrief> = {}): OptionsDecisionBrief {

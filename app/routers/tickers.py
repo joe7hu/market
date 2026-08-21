@@ -8,11 +8,12 @@ from fastapi import APIRouter
 
 from app import panel_snapshot
 from app.data_access import loaders, payloads
+from app.response_contracts import TickerDecisionSnapshotResponse, TickerDetailResponse
 
 router = APIRouter()
 
 
-@router.get("/api/tickers/{ticker}")
+@router.get("/api/tickers/{ticker}", response_model=TickerDetailResponse, response_model_exclude_unset=True)
 def ticker_detail(ticker: str) -> dict[str, Any]:
     normalized = ticker.strip().upper()
     _, panel_data = panel_snapshot.context(
@@ -22,7 +23,7 @@ def ticker_detail(ticker: str) -> dict[str, Any]:
     return payloads.ticker_payload(panel_data, normalized)
 
 
-@router.get("/api/tickers/{ticker}/decision-snapshot")
+@router.get("/api/tickers/{ticker}/decision-snapshot", response_model=TickerDecisionSnapshotResponse, response_model_exclude_unset=True)
 def ticker_decision_snapshot(ticker: str) -> dict[str, Any]:
     _, panel_data = panel_snapshot.context()
     normalized = ticker.upper()

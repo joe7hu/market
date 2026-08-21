@@ -1,4 +1,5 @@
 import type { PanelTableKey } from "./generated/panelContract";
+import type { components } from "./generated/apiSchema";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -78,27 +79,8 @@ export type TickerDossier = {
   };
 };
 
-export type TickerPayload = {
-  symbol?: string;
-  ticker?: string;
-  status?: ApiStatus;
-  as_of?: string | null;
-  dossier?: TickerDossier;
-  found?: boolean;
-};
-
-export type SettingsPayload = {
-  status?: ApiStatus;
-  config?: Record<string, JsonValue>;
-  sources?: TablePayload;
-  agents?: {
-    config?: Record<string, JsonValue>;
-    runtime?: Record<string, JsonValue>;
-    scheduler?: Record<string, JsonValue>;
-    model_overrides?: Record<string, JsonValue>;
-  };
-  integration?: Record<string, JsonValue>;
-};
+export type TickerPayload = components["schemas"]["TickerDetailResponse"] & { dossier: TickerDossier };
+export type SettingsPayload = components["schemas"]["SettingsResponse"];
 
 export type KnownPanelTables = Record<PanelTableKey, TablePayload> & {
   refreshJobs: TablePayload;

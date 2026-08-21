@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { OptionsPaperJournalRow } from "@/api";
+import type { OptionsPaperJournalRow } from "@/api/options";
 import { buildJournalDeskModel } from "./journalDeskModel";
 
 describe("learning log research preview", () => {

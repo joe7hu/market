@@ -16,6 +16,24 @@ from app.contracts import OptionPaperEntryInput, StrategyPromotionInput
 from app.data_access import config as config_owner
 from app.data_access import loaders
 from app.request_security import require_local_request
+from app.response_contracts import (
+    AgentSubmissionResponse,
+    DecisionInboxResponse,
+    OpportunityScorecardResponse,
+    OptionHistoryHealthResponse,
+    OptionHistorySymbolsResponse,
+    OptionLearningCollectionResponse,
+    OptionSignalDetailResponse,
+    OptionTicketDetailResponse,
+    PaperEntryResponse,
+    RadarAlertAcknowledgementResponse,
+    RecoveryEventResponse,
+    RecoveryEventsResponse,
+    RecoveryHealthResponse,
+    StaticArbitrageVerificationResponse,
+    StrategyPromotionResponse,
+    OptionsWorkspaceResponse,
+)
 from app.options_history_contracts import (
     IVSurfaceGrid,
     IVCurveSet,
@@ -96,7 +114,7 @@ def _actions() -> OptionsActions:
     return OptionsActions(config_owner.load_config())
 
 
-@router.get("/api/options/history/snapshots", response_model=OptionSnapshotPage)
+@router.get("/api/options/history/snapshots", response_model=OptionSnapshotPage, response_model_exclude_unset=True)
 def historical_option_snapshots(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
@@ -106,12 +124,12 @@ def historical_option_snapshots(
     return _actions().history_snapshots(symbol=symbol, offset=offset, limit=limit, include_partial=include_partial)
 
 
-@router.get("/api/options/history/symbols")
+@router.get("/api/options/history/symbols", response_model=OptionHistorySymbolsResponse, response_model_exclude_unset=True)
 def historical_option_symbols() -> dict[str, Any]:
     return _actions().history_symbols()
 
 
-@router.get("/api/options/history/chain", response_model=OptionChainPage)
+@router.get("/api/options/history/chain", response_model=OptionChainPage, response_model_exclude_unset=True)
 def historical_option_chain(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -130,7 +148,7 @@ def historical_option_chain(
     )
 
 
-@router.get("/api/options/history/surface", response_model=OptionSurfaceEvidence)
+@router.get("/api/options/history/surface", response_model=OptionSurfaceEvidence, response_model_exclude_unset=True)
 def historical_option_surface(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -140,7 +158,7 @@ def historical_option_surface(
     return _actions().history_surface(symbol=symbol, snapshot=snapshot, expiration=expiration, option_type=option_type)
 
 
-@router.get("/api/options/history/surface-groups", response_model=OptionSurfaceGroups)
+@router.get("/api/options/history/surface-groups", response_model=OptionSurfaceGroups, response_model_exclude_unset=True)
 def historical_option_surface_groups(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -148,7 +166,7 @@ def historical_option_surface_groups(
     return _actions().history_surface_groups(symbol=symbol, snapshot=snapshot)
 
 
-@router.get("/api/options/history/surface-grid", response_model=IVSurfaceGrid)
+@router.get("/api/options/history/surface-grid", response_model=IVSurfaceGrid, response_model_exclude_unset=True)
 def historical_option_surface_grid(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -170,7 +188,7 @@ def historical_option_surface_grid(
     )
 
 
-@router.get("/api/options/history/curves", response_model=IVCurveSet)
+@router.get("/api/options/history/curves", response_model=IVCurveSet, response_model_exclude_unset=True)
 def historical_option_curves(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -179,7 +197,7 @@ def historical_option_curves(
     return _actions().history_curves(symbol=symbol, snapshot=snapshot, expiration=expiration)
 
 
-@router.get("/api/options/history/anomalies", response_model=OptionAnomalyPage)
+@router.get("/api/options/history/anomalies", response_model=OptionAnomalyPage, response_model_exclude_unset=True)
 def historical_option_anomalies(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -189,19 +207,19 @@ def historical_option_anomalies(
     return _actions().history_anomalies(symbol=symbol, snapshot=snapshot, offset=offset, limit=limit)
 
 
-@router.get("/api/options/history/health")
+@router.get("/api/options/history/health", response_model=OptionHistoryHealthResponse, response_model_exclude_unset=True)
 def historical_option_health(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
     """Operational storage and completeness reporting for the Health surface."""
     return _actions().history_health(symbol=symbol)
 
 
-@router.get("/api/health/options-recovery")
+@router.get("/api/health/options-recovery", response_model=RecoveryHealthResponse, response_model_exclude_unset=True)
 def recovery_option_health() -> dict[str, Any]:
     """Recovery capacity, lease, storage, and scheduler diagnostics for Health only."""
     return _actions().recovery_health()
 
 
-@router.get("/api/options/events")
+@router.get("/api/options/events", response_model=RecoveryEventsResponse, response_model_exclude_unset=True)
 def recovery_events(
     status: Literal["active", "deferred_capacity", "closed", "invalidated"] | None = None,
     cohort: str | None = Query(None, min_length=1, max_length=96),
@@ -215,7 +233,7 @@ def recovery_events(
     )
 
 
-@router.get("/api/options/events/{event_id}")
+@router.get("/api/options/events/{event_id}", response_model=RecoveryEventResponse, response_model_exclude_unset=True)
 def recovery_event(
     event_id: UUID,
     cohort: str | None = Query(None, min_length=1, max_length=96),
@@ -231,7 +249,7 @@ def recovery_event(
     return detail
 
 
-@router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief)
+@router.get("/api/options/decision-brief", response_model=OptionsDecisionBrief, response_model_exclude_unset=True)
 def options_decision_brief(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     lane: Literal["thesis", "anomaly"] = "thesis",
@@ -239,7 +257,7 @@ def options_decision_brief(
     return _actions().decision_brief(symbol=symbol, lane=lane)
 
 
-@router.get("/api/options/workspace")
+@router.get("/api/options/workspace", response_model=OptionsWorkspaceResponse, response_model_exclude_unset=True)
 def options_workspace(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     lane: Literal["thesis", "anomaly"] = "thesis",
@@ -247,7 +265,7 @@ def options_workspace(
     return _actions().workspace(symbol=symbol, lane=lane)
 
 
-@router.get("/api/options/candidates", response_model=OptionsCandidatePage)
+@router.get("/api/options/candidates", response_model=OptionsCandidatePage, response_model_exclude_unset=True)
 def options_candidates(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     scope: Literal["current", "history"] = "current",
@@ -270,7 +288,7 @@ def options_candidates(
     )
 
 
-@router.get("/api/options/history/relative-values", response_model=RelativeValuePage)
+@router.get("/api/options/history/relative-values", response_model=RelativeValuePage, response_model_exclude_unset=True)
 def historical_relative_values(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     snapshot: int | None = Query(None, ge=1),
@@ -281,7 +299,7 @@ def historical_relative_values(
     return _actions().relative_values(symbol=symbol, snapshot=snapshot, classification=classification, offset=offset, limit=limit)
 
 
-@router.post("/api/options/history/static-arbitrage-candidates/{candidate_id}/verify")
+@router.post("/api/options/history/static-arbitrage-candidates/{candidate_id}/verify", response_model=StaticArbitrageVerificationResponse, response_model_exclude_unset=True)
 def verify_static_arbitrage_candidate(candidate_id: int, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -290,7 +308,7 @@ def verify_static_arbitrage_candidate(candidate_id: int, request: Request) -> di
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.get("/api/options/paper-journal", response_model=OptionsPaperJournalPage)
+@router.get("/api/options/paper-journal", response_model=OptionsPaperJournalPage, response_model_exclude_unset=True)
 def options_paper_journal(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
@@ -299,7 +317,7 @@ def options_paper_journal(
     return _actions().paper_journal(symbol=symbol, offset=offset, limit=limit)
 
 
-@router.get("/api/options/shadow-observations", response_model=OptionsPaperJournalPage)
+@router.get("/api/options/shadow-observations", response_model=OptionsPaperJournalPage, response_model_exclude_unset=True)
 def options_shadow_observations(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
@@ -314,14 +332,14 @@ def options_shadow_observations(
     )
 
 
-@router.get("/api/options/learning-progress", response_model=OptionsLearningProgressPage)
+@router.get("/api/options/learning-progress", response_model=OptionsLearningProgressPage, response_model_exclude_unset=True)
 def options_learning_progress(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
 ) -> dict[str, Any]:
     return _actions().learning_progress(symbol=symbol)
 
 
-@router.get("/api/opportunity-scorecard")
+@router.get("/api/opportunity-scorecard", response_model=OpportunityScorecardResponse, response_model_exclude_unset=True)
 def opportunity_scorecard(
     lane: Literal["radar", "qqq", "recovery"] = Query("radar"),
     window: int = Query(120, ge=1, le=3650),
@@ -332,7 +350,7 @@ def opportunity_scorecard(
     )
 
 
-@router.get("/api/decision-inbox")
+@router.get("/api/decision-inbox", response_model=DecisionInboxResponse, response_model_exclude_unset=True)
 def decision_inbox(
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = Query(None, max_length=256),
@@ -343,7 +361,7 @@ def decision_inbox(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/options-radar/signals/{decision_id}")
+@router.get("/api/options-radar/signals/{decision_id}", response_model=OptionSignalDetailResponse, response_model_exclude_unset=True)
 def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
     if detail is None:
@@ -351,7 +369,7 @@ def option_radar_signal_detail(decision_id: UUID) -> dict[str, Any]:
     return detail
 
 
-@router.get("/api/options-radar/learning/{collection}")
+@router.get("/api/options-radar/learning/{collection}", response_model=OptionLearningCollectionResponse, response_model_exclude_unset=True)
 def option_radar_learning_collection(
     collection: str,
     cursor: str | None = Query(None, max_length=256),
@@ -379,7 +397,7 @@ def option_radar_learning_collection(
     }
 
 
-@router.get("/api/options/tickets/{decision_id}")
+@router.get("/api/options/tickets/{decision_id}", response_model=OptionTicketDetailResponse, response_model_exclude_unset=True)
 def option_trade_ticket(decision_id: UUID) -> dict[str, Any]:
     detail = _actions().signal_detail(decision_id)
     if detail is not None:
@@ -430,7 +448,7 @@ def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> d
     }
 
 
-@router.post("/api/options-radar/signals/{decision_id}/paper-entry")
+@router.post("/api/options-radar/signals/{decision_id}/paper-entry", response_model=PaperEntryResponse, response_model_exclude_unset=True)
 def stage_option_radar_paper_entry(
     decision_id: UUID,
     payload: OptionPaperEntryInput,
@@ -445,7 +463,7 @@ def stage_option_radar_paper_entry(
     return result
 
 
-@router.post("/api/agent-thesis")
+@router.post("/api/agent-thesis", response_model=AgentSubmissionResponse, response_model_exclude_unset=True)
 def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -456,7 +474,7 @@ def submit_agent_thesis(payload: dict[str, Any], request: Request) -> dict[str, 
     return result
 
 
-@router.post("/api/agent-postmortems")
+@router.post("/api/agent-postmortems", response_model=AgentSubmissionResponse, response_model_exclude_unset=True)
 def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -467,7 +485,7 @@ def submit_agent_postmortem(payload: dict[str, Any], request: Request) -> dict[s
     return result
 
 
-@router.post("/api/radar-alerts/{alert_id}/ack")
+@router.post("/api/radar-alerts/{alert_id}/ack", response_model=RadarAlertAcknowledgementResponse, response_model_exclude_unset=True)
 def acknowledge_radar_alert_endpoint(alert_id: str, request: Request) -> dict[str, Any]:
     require_local_request(request)
     acknowledged = _actions().acknowledge_alert(alert_id)
@@ -477,7 +495,7 @@ def acknowledge_radar_alert_endpoint(alert_id: str, request: Request) -> dict[st
     return acknowledged
 
 
-@router.post("/api/strategy-mutation-proposals/{proposal_id}/promote")
+@router.post("/api/strategy-mutation-proposals/{proposal_id}/promote", response_model=StrategyPromotionResponse, response_model_exclude_unset=True)
 def promote_strategy_mutation_endpoint(
     proposal_id: str,
     request: Request,

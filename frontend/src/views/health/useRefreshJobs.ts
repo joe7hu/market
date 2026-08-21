@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { loadRefreshJobs, startRefreshJob, type RefreshJobsPayload } from "@/api";
+import { loadRefreshJobs, startRefreshJob, type RefreshJobsPayload } from "@/api/panel";
 import { latestByJob } from "@/views/health/aggregate";
 
 export type UseRefreshJobs = ReturnType<typeof useRefreshJobs>;

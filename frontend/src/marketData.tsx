@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { emptyPanelData, loadEventScoutSnapshot, loadPanelScope, type PanelScopeOptions } from "./api";
+import { emptyPanelData, loadEventScoutSnapshot, loadPanelScope, type PanelScopeOptions } from "./api/panel";
 import { mergeSnapshot, withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData, ScopeSnapshotStatus } from "./types";

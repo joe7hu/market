@@ -18,6 +18,13 @@ from app.contracts import (
 from app.data_access import config as config_owner
 from app.data_access import loaders, mutations, payloads
 from app.request_security import require_local_request
+from app.response_contracts import (
+    OptionsHistoryPolicyResponse,
+    PortfolioTransactionPreviewResponse,
+    PortfolioTransactionResultResponse,
+    TablePayloadResponse,
+    WatchlistMutationResponse,
+)
 
 router = APIRouter()
 
@@ -31,7 +38,7 @@ def _actions() -> PortfolioActions:
     )
 
 
-@router.get("/api/portfolio/transactions")
+@router.get("/api/portfolio/transactions", response_model=TablePayloadResponse, response_model_exclude_unset=True)
 def portfolio_transactions(limit: int = 100) -> dict[str, Any]:
     _, panel_data = panel_snapshot.context(
         cache_key=f"table:portfolio_transactions:{limit}",
@@ -44,7 +51,7 @@ def portfolio_transactions(limit: int = 100) -> dict[str, Any]:
     return payloads.table_payload(panel_data, "portfolio_transactions")
 
 
-@router.post("/api/portfolio/transactions/preview")
+@router.post("/api/portfolio/transactions/preview", response_model=PortfolioTransactionPreviewResponse, response_model_exclude_unset=True)
 def preview_transaction(transaction: PortfolioTransactionInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -53,7 +60,7 @@ def preview_transaction(transaction: PortfolioTransactionInput, request: Request
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/portfolio/transactions")
+@router.post("/api/portfolio/transactions", response_model=PortfolioTransactionResultResponse, response_model_exclude_unset=True)
 def create_portfolio_transaction(transaction: PortfolioTransactionInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -64,7 +71,7 @@ def create_portfolio_transaction(transaction: PortfolioTransactionInput, request
     return result
 
 
-@router.post("/api/portfolio/transactions/{transaction_id}/reverse")
+@router.post("/api/portfolio/transactions/{transaction_id}/reverse", response_model=PortfolioTransactionResultResponse, response_model_exclude_unset=True)
 def reverse_transaction(
     transaction_id: str,
     reversal: PortfolioTransactionReversalInput,
@@ -79,7 +86,7 @@ def reverse_transaction(
     return result
 
 
-@router.post("/api/watchlist/symbols")
+@router.post("/api/watchlist/symbols", response_model=WatchlistMutationResponse, response_model_exclude_unset=True)
 def save_watchlist_symbol_endpoint(item: WatchlistSymbolInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -90,7 +97,7 @@ def save_watchlist_symbol_endpoint(item: WatchlistSymbolInput, request: Request)
     return result
 
 
-@router.delete("/api/watchlist/symbols/{symbol}")
+@router.delete("/api/watchlist/symbols/{symbol}", response_model=WatchlistMutationResponse, response_model_exclude_unset=True)
 def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -101,7 +108,7 @@ def delete_watchlist_symbol_endpoint(symbol: str, request: Request) -> dict[str,
     return result
 
 
-@router.patch("/api/watchlist/symbols/{symbol}/options-history")
+@router.patch("/api/watchlist/symbols/{symbol}/options-history", response_model=OptionsHistoryPolicyResponse, response_model_exclude_unset=True)
 def set_watchlist_options_history_endpoint(
     symbol: str,
     payload: OptionsHistoryToggleInput,

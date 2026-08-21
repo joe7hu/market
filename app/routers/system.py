@@ -11,11 +11,12 @@ from app.contracts import AgentSettingsInput, ResearchSourcesInput
 from app.data_access import config as config_owner
 from app.data_access import loaders, settings as settings_owner
 from app.request_security import require_local_request
+from app.response_contracts import RefreshJobResponse, RefreshJobsResponse, SettingsResponse
 
 router = APIRouter()
 
 
-@router.get("/api/refresh-jobs")
+@router.get("/api/refresh-jobs", response_model=RefreshJobsResponse, response_model_exclude_unset=True)
 def refresh_jobs() -> dict[str, Any]:
     config = config_owner.load_config()
     rows = job_control.refresh_job_rows(config_owner.database_url(config))
@@ -27,7 +28,7 @@ def refresh_jobs() -> dict[str, Any]:
     }
 
 
-@router.post("/api/refresh-jobs/{job_name}")
+@router.post("/api/refresh-jobs/{job_name}", response_model=RefreshJobResponse, response_model_exclude_unset=True)
 def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
     require_local_request(request)
     config = config_owner.load_config()
@@ -39,7 +40,7 @@ def launch_refresh_job(job_name: str, request: Request) -> dict[str, Any]:
     return result
 
 
-@router.post("/api/refresh-jobs/{job_name}/background")
+@router.post("/api/refresh-jobs/{job_name}/background", response_model=RefreshJobResponse, response_model_exclude_unset=True)
 def launch_refresh_job_background(job_name: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     require_local_request(request)
     config = config_owner.load_config()
@@ -53,13 +54,13 @@ def launch_refresh_job_background(job_name: str, request: Request, background_ta
     return job
 
 
-@router.get("/api/settings")
+@router.get("/api/settings", response_model=SettingsResponse, response_model_exclude_unset=True)
 def settings() -> dict[str, Any]:
     config, panel_data = _settings_context()
     return settings_owner.settings_payload(config, panel_data)
 
 
-@router.patch("/api/settings/agents")
+@router.patch("/api/settings/agents", response_model=SettingsResponse, response_model_exclude_unset=True)
 def update_agent_settings(payload: AgentSettingsInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:
@@ -71,7 +72,7 @@ def update_agent_settings(payload: AgentSettingsInput, request: Request) -> dict
     return settings_owner.settings_payload(config, panel_data)
 
 
-@router.patch("/api/settings/research-sources")
+@router.patch("/api/settings/research-sources", response_model=SettingsResponse, response_model_exclude_unset=True)
 def update_research_sources(payload: ResearchSourcesInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     try:

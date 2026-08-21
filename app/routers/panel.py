@@ -10,11 +10,12 @@ from app import panel_snapshot as panel_owner
 from app.actions.options import OptionsActions
 from app.data_access import config as config_owner
 from app.data_access import loaders, payloads
+from app.response_contracts import PanelContractResponse, PanelSnapshotResponse, StatusResponse
 
 router = APIRouter()
 
 
-@router.get("/api/status")
+@router.get("/api/status", response_model=StatusResponse, response_model_exclude_unset=True)
 def status() -> dict[str, Any]:
     config = config_owner.load_config()
     panel_data = loaders.load_panel_data(
@@ -31,12 +32,12 @@ def status() -> dict[str, Any]:
     return response
 
 
-@router.get("/api/panel-contract")
+@router.get("/api/panel-contract", response_model=PanelContractResponse, response_model_exclude_unset=True)
 def panel_contract() -> dict[str, Any]:
     return loaders.panel_contract_payload()
 
 
-@router.get("/api/panel-snapshot")
+@router.get("/api/panel-snapshot", response_model=PanelSnapshotResponse, response_model_exclude_unset=True)
 def panel_snapshot(scope: str = "dashboard", offset: int = 0, limit: int | None = None) -> dict[str, Any]:
     if scope == "market":
         config = config_owner.load_config()

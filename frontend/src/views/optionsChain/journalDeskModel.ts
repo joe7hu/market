@@ -1,4 +1,4 @@
-import type { OptionsPaperJournalRow } from "@/api";
+import type { OptionsPaperJournalRow } from "@/api/options";
 
 type JournalDeskInput = {
   journal: OptionsPaperJournalRow[];

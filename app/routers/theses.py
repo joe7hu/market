@@ -11,11 +11,17 @@ from app.actions.theses import ThesisActions
 from app.contracts import ThesisAutomationInput, ThesisInput, ThesisReviewInput
 from app.data_access import config as config_owner
 from app.request_security import require_local_request
+from app.response_contracts import (
+    ThesisAutomationResponse,
+    ThesisHistoryResponse,
+    ThesisMutationResponse,
+    ThesisReviewResponse,
+)
 
 router = APIRouter()
 
 
-@router.put("/api/theses/{symbol}")
+@router.put("/api/theses/{symbol}", response_model=ThesisMutationResponse, response_model_exclude_unset=True)
 def save_thesis_endpoint(symbol: str, payload: ThesisInput, request: Request) -> dict[str, Any]:
     require_local_request(request)
     config = config_owner.load_config()
@@ -25,7 +31,7 @@ def save_thesis_endpoint(symbol: str, payload: ThesisInput, request: Request) ->
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/theses/{symbol}/review")
+@router.post("/api/theses/{symbol}/review", response_model=ThesisReviewResponse, response_model_exclude_unset=True)
 def review_thesis_endpoint(symbol: str, request: Request, payload: ThesisReviewInput | None = None) -> dict[str, Any]:
     require_local_request(request)
     config = config_owner.load_config()
@@ -35,12 +41,12 @@ def review_thesis_endpoint(symbol: str, request: Request, payload: ThesisReviewI
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/theses/{symbol}/history")
+@router.get("/api/theses/{symbol}/history", response_model=ThesisHistoryResponse, response_model_exclude_unset=True)
 def thesis_history_endpoint(symbol: str) -> dict[str, Any]:
     return ThesisActions(config_owner.load_config()).history(symbol)
 
 
-@router.post("/api/thesis-monitor/automation")
+@router.post("/api/thesis-monitor/automation", response_model=ThesisAutomationResponse, response_model_exclude_unset=True)
 def run_thesis_automation_endpoint(
     payload: ThesisAutomationInput,
     request: Request,

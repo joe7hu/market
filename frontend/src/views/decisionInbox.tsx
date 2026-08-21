@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { loadDecisionInbox } from "@/api";
+import { loadDecisionInbox } from "@/api/options";
 import { PageHeader, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";

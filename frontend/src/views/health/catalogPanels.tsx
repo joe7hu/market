@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Database, Loader2, RefreshCw, Search } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 
-import type { SourceCatalogRow } from "@/api";
+import type { SourceCatalogRow } from "@/api/panel";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

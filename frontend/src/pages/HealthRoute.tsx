@@ -15,7 +15,7 @@ import { SourceHealthControlPlane } from "@/views/health/catalogPanels";
 import { TopErrorsPanel } from "@/views/health/categoryPanels";
 import { RefreshHistoryTable } from "@/views/health/tables";
 import { formatDateTime } from "@/views/health/format";
-import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api";
+import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options";
 import {numberFromRecord, recordField } from "@/views/optionsRadarData";
 
 export function HealthRoute() {

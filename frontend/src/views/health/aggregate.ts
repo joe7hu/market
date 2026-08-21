@@ -1,4 +1,4 @@
-import { type RefreshJob } from "@/api";
+import { type RefreshJob } from "@/api/panel";
 import type { PanelData, RowRecord } from "@/types";
 import type { Tone } from "@/ui/tone";
 import { rows } from "@/utils";

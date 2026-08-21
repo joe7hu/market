@@ -25,6 +25,28 @@
         "title": "AgentAnalyzeInput",
         "type": "object"
       },
+      "AgentAnalyzeResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/RefreshJobResponse"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "request_id",
+          "job"
+        ],
+        "title": "AgentAnalyzeResponse",
+        "type": "object"
+      },
       "AgentCommandSettingsInput": {
         "properties": {
           "command": {
@@ -75,6 +97,514 @@
         "title": "AgentCommandSettingsInput",
         "type": "object"
       },
+      "AgentCostResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "last_7d": {
+            "$ref": "#/components/schemas/AgentCostWindowResponse"
+          },
+          "today": {
+            "$ref": "#/components/schemas/AgentCostWindowResponse"
+          }
+        },
+        "title": "AgentCostResponse",
+        "type": "object"
+      },
+      "AgentCostWindowResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "est_cost_usd": {
+            "default": 0,
+            "title": "Est Cost Usd",
+            "type": "number"
+          },
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          }
+        },
+        "title": "AgentCostWindowResponse",
+        "type": "object"
+      },
+      "AgentExperimentResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "advisory_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisory Only"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "routing_changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Routing Changed"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "AgentExperimentResponse",
+        "type": "object"
+      },
+      "AgentMaterializationResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "completed": {
+            "default": 0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "historical_unmaterialized": {
+            "default": 0,
+            "title": "Historical Unmaterialized",
+            "type": "integer"
+          },
+          "materialized": {
+            "default": 0,
+            "title": "Materialized",
+            "type": "integer"
+          }
+        },
+        "title": "AgentMaterializationResponse",
+        "type": "object"
+      },
+      "AgentOverviewResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/AgentCostResponse"
+          },
+          "materialization": {
+            "$ref": "#/components/schemas/AgentMaterializationResponse"
+          },
+          "pricing": {
+            "additionalProperties": true,
+            "title": "Pricing",
+            "type": "object"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/AgentQueueResponse"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunResponse"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "scheduler": {
+            "additionalProperties": true,
+            "title": "Scheduler",
+            "type": "object"
+          },
+          "workflows": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AgentWorkflowResponse"
+            },
+            "title": "Workflows",
+            "type": "object"
+          }
+        },
+        "title": "AgentOverviewResponse",
+        "type": "object"
+      },
+      "AgentQueueResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "oldest_open_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Open At"
+          },
+          "postmortem_open": {
+            "default": 0,
+            "title": "Postmortem Open",
+            "type": "integer"
+          },
+          "thesis_open": {
+            "default": 0,
+            "title": "Thesis Open",
+            "type": "integer"
+          },
+          "total_open": {
+            "default": 0,
+            "title": "Total Open",
+            "type": "integer"
+          }
+        },
+        "title": "AgentQueueResponse",
+        "type": "object"
+      },
+      "AgentResearchCoverageResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "events": {
+            "default": 0,
+            "title": "Events",
+            "type": "integer"
+          },
+          "future_dated_rows_excluded": {
+            "default": 0,
+            "title": "Future Dated Rows Excluded",
+            "type": "integer"
+          },
+          "macro_indicators": {
+            "default": 0,
+            "title": "Macro Indicators",
+            "type": "integer"
+          },
+          "market_intelligence_items": {
+            "default": 0,
+            "title": "Market Intelligence Items",
+            "type": "integer"
+          },
+          "option_signals": {
+            "default": 0,
+            "title": "Option Signals",
+            "type": "integer"
+          },
+          "portfolio_positions": {
+            "default": 0,
+            "title": "Portfolio Positions",
+            "type": "integer"
+          },
+          "portfolio_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Portfolio Symbols",
+            "type": "array"
+          },
+          "theses": {
+            "default": 0,
+            "title": "Theses",
+            "type": "integer"
+          },
+          "watchlist": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watchlist",
+            "type": "array"
+          },
+          "watchlist_symbols": {
+            "default": 0,
+            "title": "Watchlist Symbols",
+            "type": "integer"
+          }
+        },
+        "title": "AgentResearchCoverageResponse",
+        "type": "object"
+      },
+      "AgentResearchFreshnessResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "future_rows_excluded": {
+            "default": 0,
+            "title": "Future Rows Excluded",
+            "type": "integer"
+          },
+          "latest_observed": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Observed"
+          },
+          "rows": {
+            "default": 0,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table"
+          }
+        },
+        "title": "AgentResearchFreshnessResponse",
+        "type": "object"
+      },
+      "AgentResearchPromptResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "character_count": {
+            "title": "Character Count",
+            "type": "integer"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/AgentResearchCoverageResponse"
+          },
+          "estimated_tokens": {
+            "title": "Estimated Tokens",
+            "type": "integer"
+          },
+          "freshness": {
+            "items": {
+              "$ref": "#/components/schemas/AgentResearchFreshnessResponse"
+            },
+            "title": "Freshness",
+            "type": "array"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "message",
+          "prompt",
+          "character_count",
+          "estimated_tokens"
+        ],
+        "title": "AgentResearchPromptResponse",
+        "type": "object"
+      },
+      "AgentRunResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "est_cost_usd": {
+            "default": 0,
+            "title": "Est Cost Usd",
+            "type": "number"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "postmortem_accepted": {
+            "default": 0,
+            "title": "Postmortem Accepted",
+            "type": "integer"
+          },
+          "postmortem_attempted": {
+            "default": 0,
+            "title": "Postmortem Attempted",
+            "type": "integer"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "thesis_accepted": {
+            "default": 0,
+            "title": "Thesis Accepted",
+            "type": "integer"
+          },
+          "thesis_attempted": {
+            "default": 0,
+            "title": "Thesis Attempted",
+            "type": "integer"
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker"
+          },
+          "tokens_estimated": {
+            "default": false,
+            "title": "Tokens Estimated",
+            "type": "boolean"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger"
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow"
+          }
+        },
+        "title": "AgentRunResponse",
+        "type": "object"
+      },
       "AgentSettingsInput": {
         "properties": {
           "option_agent": {
@@ -119,6 +649,148 @@
           }
         },
         "title": "AgentSettingsInput",
+        "type": "object"
+      },
+      "AgentSubmissionResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Version"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "AgentSubmissionResponse",
+        "type": "object"
+      },
+      "AgentWorkflowResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "failed": {
+            "default": 0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "running": {
+            "default": 0,
+            "title": "Running",
+            "type": "integer"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "succeeded": {
+            "default": 0,
+            "title": "Succeeded",
+            "type": "integer"
+          }
+        },
+        "title": "AgentWorkflowResponse",
+        "type": "object"
+      },
+      "ApiStatusResponse": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ready",
+          "message",
+          "source"
+        ],
+        "title": "ApiStatusResponse",
+        "type": "object"
+      },
+      "DashboardResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "metrics": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Metrics",
+            "type": "object"
+          },
+          "priority_candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Priority Candidates",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "DashboardResponse",
+        "type": "object"
+      },
+      "DecisionInboxResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "title": "DecisionInboxResponse",
         "type": "object"
       },
       "DistributionShiftResponse": {
@@ -230,6 +902,71 @@
         "title": "DistributionShiftResponse",
         "type": "object"
       },
+      "EventScoutEventsResponse": {
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          },
+          "tables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TablePayloadResponse"
+            },
+            "title": "Tables",
+            "type": "object"
+          }
+        },
+        "required": [
+          "status",
+          "tables"
+        ],
+        "title": "EventScoutEventsResponse",
+        "type": "object"
+      },
+      "EventScoutPacketsResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "EventScoutPacketsResponse",
+        "type": "object"
+      },
+      "EventScoutReplayResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "packet": {
+            "additionalProperties": true,
+            "title": "Packet",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "packet"
+        ],
+        "title": "EventScoutReplayResponse",
+        "type": "object"
+      },
       "EventScoutSignalInput": {
         "properties": {
           "data": {
@@ -301,6 +1038,35 @@
           "trigger_type"
         ],
         "title": "EventScoutSignalInput",
+        "type": "object"
+      },
+      "EventScoutSignalResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "EventScoutSignalResponse",
         "type": "object"
       },
       "EventStudyResponse": {
@@ -615,6 +1381,115 @@
           "observed"
         ],
         "title": "IVSurfaceGrid",
+        "type": "object"
+      },
+      "MarketRegime": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "breadth_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breadth State"
+          },
+          "quality_status": {
+            "default": "unavailable",
+            "title": "Quality Status",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "trend_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend Confidence"
+          },
+          "trend_state": {
+            "default": "unavailable",
+            "title": "Trend State",
+            "type": "string"
+          },
+          "volatility_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volatility State"
+          }
+        },
+        "title": "MarketRegime",
+        "type": "object"
+      },
+      "OpportunityScorecardResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lane"
+          },
+          "window_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Days"
+          }
+        },
+        "title": "OpportunityScorecardResponse",
         "type": "object"
       },
       "OptionAgentSettingsInput": {
@@ -1437,6 +2312,183 @@
         "title": "OptionChainRow",
         "type": "object"
       },
+      "OptionHistoryHealthResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "average_completeness": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Completeness"
+          },
+          "canary_revision": {
+            "default": "",
+            "title": "Canary Revision",
+            "type": "string"
+          },
+          "canary_started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canary Started At"
+          },
+          "complete_captures": {
+            "default": 0,
+            "title": "Complete Captures",
+            "type": "integer"
+          },
+          "disqualification_reasons": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Disqualification Reasons",
+            "type": "array"
+          },
+          "latest_complete_slot": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Complete Slot"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "observed_regular_session_dates": {
+            "default": 0,
+            "title": "Observed Regular Session Dates",
+            "type": "integer"
+          },
+          "option_quote_bytes": {
+            "default": 0,
+            "title": "Option Quote Bytes",
+            "type": "integer"
+          },
+          "post_fix_complete_captures": {
+            "default": 0,
+            "title": "Post Fix Complete Captures",
+            "type": "integer"
+          },
+          "qualified_regular_sessions": {
+            "default": 0,
+            "title": "Qualified Regular Sessions",
+            "type": "integer"
+          },
+          "required_regular_sessions": {
+            "default": 0,
+            "title": "Required Regular Sessions",
+            "type": "integer"
+          },
+          "retention_days": {
+            "default": 0,
+            "title": "Retention Days",
+            "type": "integer"
+          },
+          "snapshots": {
+            "default": 0,
+            "title": "Snapshots",
+            "type": "integer"
+          },
+          "storage_bytes": {
+            "default": 0,
+            "title": "Storage Bytes",
+            "type": "integer"
+          },
+          "surface_summary_bytes": {
+            "default": 0,
+            "title": "Surface Summary Bytes",
+            "type": "integer"
+          }
+        },
+        "title": "OptionHistoryHealthResponse",
+        "type": "object"
+      },
+      "OptionHistorySymbolsResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "policy_revision": {
+            "default": "",
+            "title": "Policy Revision",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "OptionHistorySymbolsResponse",
+        "type": "object"
+      },
+      "OptionLearningCollectionResponse": {
+        "properties": {
+          "collection": {
+            "title": "Collection",
+            "type": "string"
+          },
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "collection"
+        ],
+        "title": "OptionLearningCollectionResponse",
+        "type": "object"
+      },
       "OptionPaperEntryInput": {
         "properties": {
           "idempotency_key": {
@@ -1465,6 +2517,20 @@
           "limit_price"
         ],
         "title": "OptionPaperEntryInput",
+        "type": "object"
+      },
+      "OptionSignalDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id"
+        ],
+        "title": "OptionSignalDetailResponse",
         "type": "object"
       },
       "OptionSnapshotPage": {
@@ -1730,6 +2796,90 @@
         "title": "OptionSurfaceGroups",
         "type": "object"
       },
+      "OptionTicketDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "agent_provenance": {
+            "additionalProperties": true,
+            "title": "Agent Provenance",
+            "type": "object"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "expiration": {
+            "format": "date",
+            "title": "Expiration",
+            "type": "string"
+          },
+          "legs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Legs",
+            "type": "array"
+          },
+          "outcome": {
+            "additionalProperties": true,
+            "title": "Outcome",
+            "type": "object"
+          },
+          "publication": {
+            "additionalProperties": true,
+            "title": "Publication",
+            "type": "object"
+          },
+          "signal": {
+            "additionalProperties": true,
+            "title": "Signal",
+            "type": "object"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "structure": {
+            "title": "Structure",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "ticket": {
+            "additionalProperties": true,
+            "title": "Ticket",
+            "type": "object"
+          },
+          "ticket_version": {
+            "title": "Ticket Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ticket_version",
+          "decision_id",
+          "symbol",
+          "state",
+          "structure",
+          "expiration",
+          "ticket",
+          "signal",
+          "publication"
+        ],
+        "title": "OptionTicketDetailResponse",
+        "type": "object"
+      },
       "OptionTradeTicket": {
         "properties": {
           "blockers": {
@@ -1749,9 +2899,7 @@
             "type": "string"
           },
           "entry": {
-            "additionalProperties": true,
-            "title": "Entry",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionTradeTicketEntry"
           },
           "episode_key": {
             "anyOf": [
@@ -1777,9 +2925,7 @@
             "title": "Execution Ready At"
           },
           "exits": {
-            "additionalProperties": true,
-            "title": "Exits",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionTradeTicketExits"
           },
           "expiration": {
             "format": "date",
@@ -1799,9 +2945,7 @@
             "title": "Expires At"
           },
           "forecast": {
-            "additionalProperties": true,
-            "title": "Forecast",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionTradeTicketForecast"
           },
           "lane": {
             "anyOf": [
@@ -1833,6 +2977,7 @@
             "title": "Lower Confidence Expectancy Per Max Risk"
           },
           "paper_only": {
+            "default": true,
             "title": "Paper Only",
             "type": "boolean"
           },
@@ -1847,13 +2992,12 @@
             "type": "object"
           },
           "required_next_action": {
+            "default": "research_only",
             "title": "Required Next Action",
             "type": "string"
           },
           "risk": {
-            "additionalProperties": true,
-            "title": "Risk",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionTradeTicketRisk"
           },
           "risk_policy_version": {
             "anyOf": [
@@ -1879,9 +3023,7 @@
             "type": "string"
           },
           "thesis": {
-            "additionalProperties": true,
-            "title": "Thesis",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionTradeTicketThesis"
           },
           "ticket_version": {
             "title": "Ticket Version",
@@ -1894,20 +3036,226 @@
           "symbol",
           "state",
           "structure",
-          "expiration",
-          "legs",
-          "entry",
-          "risk",
-          "thesis",
-          "exits",
-          "forecast",
-          "blockers",
-          "required_next_action",
-          "data_model_revisions",
-          "provenance",
-          "paper_only"
+          "expiration"
         ],
         "title": "OptionTradeTicket",
+        "type": "object"
+      },
+      "OptionTradeTicketEntry": {
+        "additionalProperties": true,
+        "properties": {
+          "expected_slippage": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Slippage"
+          },
+          "limit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit Price"
+          },
+          "maximum_chase_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Chase Price"
+          },
+          "minimum_credit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Credit"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "validity_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validity Seconds"
+          }
+        },
+        "title": "OptionTradeTicketEntry",
+        "type": "object"
+      },
+      "OptionTradeTicketExits": {
+        "additionalProperties": true,
+        "properties": {
+          "liquidity_exit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidity Exit"
+          },
+          "loss_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loss Price"
+          },
+          "profit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit Price"
+          },
+          "thesis_invalidation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis Invalidation"
+          },
+          "time_exit_dte": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Exit Dte"
+          }
+        },
+        "title": "OptionTradeTicketExits",
+        "type": "object"
+      },
+      "OptionTradeTicketForecast": {
+        "additionalProperties": true,
+        "properties": {
+          "effective_sample_size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Sample Size"
+          },
+          "expected_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Value"
+          },
+          "interval": {
+            "title": "Interval"
+          },
+          "lower_confidence_expected_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Expected Value"
+          },
+          "no_trade_expected_value": {
+            "default": 0,
+            "title": "No Trade Expected Value",
+            "type": "number"
+          },
+          "probability_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Profit"
+          },
+          "probability_semantics": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Semantics"
+          },
+          "tail_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tail Loss"
+          }
+        },
+        "title": "OptionTradeTicketForecast",
         "type": "object"
       },
       "OptionTradeTicketLeg": {
@@ -2031,6 +3379,134 @@
           "side"
         ],
         "title": "OptionTradeTicketLeg",
+        "type": "object"
+      },
+      "OptionTradeTicketRisk": {
+        "additionalProperties": true,
+        "properties": {
+          "available_risk_budget": {
+            "default": 0,
+            "title": "Available Risk Budget",
+            "type": "number"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "broker_available_capital": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broker Available Capital"
+          },
+          "fully_cash_secured": {
+            "default": false,
+            "title": "Fully Cash Secured",
+            "type": "boolean"
+          },
+          "one_unit_collateral": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "One Unit Collateral"
+          },
+          "one_unit_max_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "One Unit Max Loss"
+          },
+          "recommended_quantity": {
+            "default": 0,
+            "title": "Recommended Quantity",
+            "type": "integer"
+          },
+          "sleeve_capital": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sleeve Capital"
+          },
+          "symbol_exposure_after_entry": {
+            "default": 0,
+            "title": "Symbol Exposure After Entry",
+            "type": "number"
+          },
+          "total_options_exposure_after_entry": {
+            "default": 0,
+            "title": "Total Options Exposure After Entry",
+            "type": "number"
+          },
+          "total_risk": {
+            "default": 0,
+            "title": "Total Risk",
+            "type": "number"
+          }
+        },
+        "title": "OptionTradeTicketRisk",
+        "type": "object"
+      },
+      "OptionTradeTicketThesis": {
+        "additionalProperties": true,
+        "properties": {
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "title": "OptionTradeTicketThesis",
         "type": "object"
       },
       "OptionsAnalysisReadiness": {
@@ -2172,6 +3648,29 @@
           "disqualification_reasons"
         ],
         "title": "OptionsCanaryReadiness",
+        "type": "object"
+      },
+      "OptionsCandidateEntry": {
+        "additionalProperties": true,
+        "properties": {
+          "fill_basis": {
+            "default": "worst_side_quote",
+            "title": "Fill Basis",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          }
+        },
+        "title": "OptionsCandidateEntry",
         "type": "object"
       },
       "OptionsCandidatePage": {
@@ -2345,9 +3844,14 @@
             "title": "As Of"
           },
           "decision_truth": {
-            "additionalProperties": true,
-            "title": "Decision Truth",
-            "type": "object"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OptionsDecisionTruth"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "lane": {
             "title": "Lane",
@@ -2415,9 +3919,7 @@
             "type": "object"
           },
           "conservative_entry": {
-            "additionalProperties": true,
-            "title": "Conservative Entry",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsCandidateEntry"
           },
           "decision_id": {
             "title": "Decision Id",
@@ -2426,6 +3928,11 @@
           "discovery_lane": {
             "title": "Discovery Lane",
             "type": "string"
+          },
+          "execution_ready": {
+            "default": false,
+            "title": "Execution Ready",
+            "type": "boolean"
           },
           "expected_value_interval": {
             "additionalProperties": {
@@ -2460,6 +3967,11 @@
             "title": "Fair Value Interval",
             "type": "object"
           },
+          "forecast": {
+            "additionalProperties": true,
+            "title": "Forecast",
+            "type": "object"
+          },
           "legs": {
             "items": {
               "$ref": "#/components/schemas/OptionCandidateLeg"
@@ -2473,9 +3985,7 @@
             "type": "object"
           },
           "market_regime": {
-            "additionalProperties": true,
-            "title": "Market Regime",
-            "type": "object"
+            "$ref": "#/components/schemas/MarketRegime"
           },
           "modeled_net_edge": {
             "anyOf": [
@@ -2540,9 +4050,7 @@
             "type": "array"
           },
           "strategy_route": {
-            "additionalProperties": true,
-            "title": "Strategy Route",
-            "type": "object"
+            "$ref": "#/components/schemas/StrategyRoute"
           },
           "strike": {
             "title": "Strike",
@@ -2592,7 +4100,6 @@
           "strike",
           "option_type",
           "legs",
-          "conservative_entry",
           "fair_value_interval",
           "expected_value_interval",
           "uncertainty",
@@ -2656,6 +4163,123 @@
         "title": "OptionsDecisionReadiness",
         "type": "object"
       },
+      "OptionsDecisionTruth": {
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "candidate_state": {
+            "title": "Candidate State",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "execution_state": {
+            "title": "Execution State",
+            "type": "string"
+          },
+          "lane": {
+            "title": "Lane",
+            "type": "string"
+          },
+          "next_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Action"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "readiness_state": {
+            "title": "Readiness State",
+            "type": "string"
+          },
+          "route_verdict": {
+            "title": "Route Verdict",
+            "type": "string"
+          },
+          "route_version": {
+            "title": "Route Version",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "lane",
+          "candidate_state",
+          "route_verdict",
+          "readiness_state",
+          "execution_state",
+          "route_version"
+        ],
+        "title": "OptionsDecisionTruth",
+        "type": "object"
+      },
+      "OptionsHistoryPolicyResponse": {
+        "properties": {
+          "options_history_policy": {
+            "additionalProperties": true,
+            "title": "Options History Policy",
+            "type": "object"
+          }
+        },
+        "required": [
+          "options_history_policy"
+        ],
+        "title": "OptionsHistoryPolicyResponse",
+        "type": "object"
+      },
       "OptionsHistoryToggleInput": {
         "properties": {
           "lock_version": {
@@ -2676,6 +4300,648 @@
           "lock_version"
         ],
         "title": "OptionsHistoryToggleInput",
+        "type": "object"
+      },
+      "OptionsJournalAdmission": {
+        "additionalProperties": true,
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "decision_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision At"
+          },
+          "decision_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision State"
+          },
+          "discovery_lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovery Lane"
+          },
+          "market_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Regime"
+          },
+          "model_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Revision"
+          },
+          "paper_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paper State"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "title": "OptionsJournalAdmission",
+        "type": "object"
+      },
+      "OptionsJournalAttribution": {
+        "additionalProperties": true,
+        "properties": {
+          "iv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Iv"
+          },
+          "spread": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread"
+          },
+          "theta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Theta"
+          },
+          "underlying": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Underlying"
+          },
+          "unexplained": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unexplained"
+          }
+        },
+        "title": "OptionsJournalAttribution",
+        "type": "object"
+      },
+      "OptionsJournalContract": {
+        "additionalProperties": true,
+        "properties": {
+          "expiration": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiration"
+          },
+          "legs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Legs",
+            "type": "array"
+          },
+          "multiplier": {
+            "default": 100,
+            "title": "Multiplier",
+            "type": "integer"
+          },
+          "option_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Type"
+          },
+          "strike": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strike"
+          }
+        },
+        "title": "OptionsJournalContract",
+        "type": "object"
+      },
+      "OptionsJournalExecution": {
+        "additionalProperties": true,
+        "properties": {
+          "entry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry At"
+          },
+          "entry_cohort_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Cohort Id"
+          },
+          "entry_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Price"
+          },
+          "exit_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit At"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "fill_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Basis"
+          },
+          "holding_period_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holding Period Hours"
+          },
+          "latest_mark": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Mark"
+          },
+          "signal_quote_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Quote At"
+          },
+          "staged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged At"
+          }
+        },
+        "title": "OptionsJournalExecution",
+        "type": "object"
+      },
+      "OptionsJournalForecast": {
+        "additionalProperties": true,
+        "properties": {
+          "data_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Confidence"
+          },
+          "execution_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Confidence"
+          },
+          "expected_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Value"
+          },
+          "fair_value_high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fair Value High"
+          },
+          "fair_value_low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fair Value Low"
+          },
+          "lower_95_expected_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower 95 Expected Value"
+          },
+          "max_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Loss"
+          },
+          "modeled_net_edge": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modeled Net Edge"
+          },
+          "probability_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Profit"
+          },
+          "risk_adjusted_expectancy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Adjusted Expectancy"
+          },
+          "scenario_count": {
+            "default": 0,
+            "title": "Scenario Count",
+            "type": "integer"
+          }
+        },
+        "title": "OptionsJournalForecast",
+        "type": "object"
+      },
+      "OptionsJournalOutcome": {
+        "additionalProperties": true,
+        "properties": {
+          "attribution": {
+            "$ref": "#/components/schemas/OptionsJournalAttribution"
+          },
+          "current_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Return"
+          },
+          "max_drawdown": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Drawdown"
+          },
+          "observed_through": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Through"
+          },
+          "peak_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Return"
+          },
+          "realized_exit_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Exit Basis"
+          },
+          "realized_exit_return": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Exit Return"
+          },
+          "return_1d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 1D"
+          },
+          "return_20d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 20D"
+          },
+          "return_5d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 5D"
+          },
+          "return_60d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return 60D"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "title": "OptionsJournalOutcome",
+        "type": "object"
+      },
+      "OptionsJournalThesis": {
+        "additionalProperties": true,
+        "properties": {
+          "core_thesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Core Thesis"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "horizon_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon Date"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "title": "OptionsJournalThesis",
         "type": "object"
       },
       "OptionsLearningProgress": {
@@ -2802,9 +5068,7 @@
       "OptionsPaperJournalRow": {
         "properties": {
           "admission": {
-            "additionalProperties": true,
-            "title": "Admission",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalAdmission"
           },
           "assignment_warning": {
             "anyOf": [
@@ -2840,9 +5104,7 @@
             "title": "Conservative Fill Basis"
           },
           "contract": {
-            "additionalProperties": true,
-            "title": "Contract",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalContract"
           },
           "current_return": {
             "anyOf": [
@@ -2872,14 +5134,10 @@
             "title": "Entry At"
           },
           "execution": {
-            "additionalProperties": true,
-            "title": "Execution",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalExecution"
           },
           "forecast": {
-            "additionalProperties": true,
-            "title": "Forecast",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalForecast"
           },
           "latest_mark": {
             "anyOf": [
@@ -2906,9 +5164,7 @@
             "type": "boolean"
           },
           "outcome": {
-            "additionalProperties": true,
-            "title": "Outcome",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalOutcome"
           },
           "outcome_state": {
             "anyOf": [
@@ -2970,29 +5226,42 @@
             "title": "Structure"
           },
           "thesis": {
-            "additionalProperties": true,
-            "title": "Thesis",
-            "type": "object"
+            "$ref": "#/components/schemas/OptionsJournalThesis"
           }
         },
         "required": [
           "record_kind",
           "decision_id",
           "lifecycle",
-          "missing_mark_gap",
-          "admission",
-          "contract",
-          "thesis",
-          "forecast",
-          "execution",
-          "outcome",
-          "metrics"
+          "missing_mark_gap"
         ],
         "title": "OptionsPaperJournalRow",
         "type": "object"
       },
       "OptionsThesisReadiness": {
         "properties": {
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
           "eligible": {
             "title": "Eligible",
             "type": "boolean"
@@ -3007,6 +5276,17 @@
               }
             ],
             "title": "Invalidation"
+          },
+          "present": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Present"
           },
           "revision": {
             "anyOf": [
@@ -3047,6 +5327,206 @@
           "groups_with_inconsistent_underlying"
         ],
         "title": "OptionsUnderlyingReadiness",
+        "type": "object"
+      },
+      "OptionsWorkspaceResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "active_revision": {
+            "default": "",
+            "title": "Active Revision",
+            "type": "string"
+          },
+          "canary_status": {
+            "additionalProperties": true,
+            "title": "Canary Status",
+            "type": "object"
+          },
+          "capture_generation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Generation Id"
+          },
+          "decision_brief": {
+            "$ref": "#/components/schemas/OptionsDecisionBrief"
+          },
+          "evidence_as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence As Of"
+          },
+          "freshness_state": {
+            "default": "unknown",
+            "title": "Freshness State",
+            "type": "string"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "market_regime": {
+            "$ref": "#/components/schemas/MarketRegime"
+          },
+          "paper_action_capability": {
+            "additionalProperties": true,
+            "title": "Paper Action Capability",
+            "type": "object"
+          },
+          "strategy_route": {
+            "$ref": "#/components/schemas/StrategyRoute"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "tab_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tab Counts",
+            "type": "object"
+          }
+        },
+        "required": [
+          "symbol",
+          "decision_brief"
+        ],
+        "title": "OptionsWorkspaceResponse",
+        "type": "object"
+      },
+      "PanelContractResponse": {
+        "properties": {
+          "frontend_table_keys": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Frontend Table Keys",
+            "type": "object"
+          },
+          "scopes": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Scopes",
+            "type": "object"
+          },
+          "ticker_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ticker Tables",
+            "type": "array"
+          },
+          "watchlist_section_output_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watchlist Section Output Tables",
+            "type": "array"
+          },
+          "watchlist_section_tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Watchlist Section Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scopes",
+          "watchlist_section_tables",
+          "watchlist_section_output_tables",
+          "ticker_tables",
+          "frontend_table_keys"
+        ],
+        "title": "PanelContractResponse",
+        "type": "object"
+      },
+      "PanelSnapshotResponse": {
+        "properties": {
+          "dashboard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DashboardResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          },
+          "tables": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TablePayloadResponse"
+            },
+            "title": "Tables",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scope",
+          "status"
+        ],
+        "title": "PanelSnapshotResponse",
+        "type": "object"
+      },
+      "PaperEntryResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "PaperEntryResponse",
         "type": "object"
       },
       "PortfolioTransactionInput": {
@@ -3157,6 +5637,137 @@
         "title": "PortfolioTransactionInput",
         "type": "object"
       },
+      "PortfolioTransactionPreviewResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fees"
+          },
+          "new_average_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Average Cost"
+          },
+          "new_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Quantity"
+          },
+          "old_average_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Average Cost"
+          },
+          "old_quantity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Quantity"
+          },
+          "position_version": {
+            "title": "Position Version",
+            "type": "string"
+          },
+          "realized_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Pnl"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          },
+          "transaction_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Type"
+          }
+        },
+        "required": [
+          "position_version"
+        ],
+        "title": "PortfolioTransactionPreviewResponse",
+        "type": "object"
+      },
+      "PortfolioTransactionResultResponse": {
+        "properties": {
+          "portfolio": {
+            "$ref": "#/components/schemas/TablePayloadResponse"
+          },
+          "transaction": {
+            "additionalProperties": true,
+            "title": "Transaction",
+            "type": "object"
+          }
+        },
+        "required": [
+          "transaction",
+          "portfolio"
+        ],
+        "title": "PortfolioTransactionResultResponse",
+        "type": "object"
+      },
       "PortfolioTransactionReversalInput": {
         "properties": {
           "idempotency_key": {
@@ -3173,6 +5784,346 @@
           "idempotency_key"
         ],
         "title": "PortfolioTransactionReversalInput",
+        "type": "object"
+      },
+      "QuotesResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "QuotesResponse",
+        "type": "object"
+      },
+      "RadarAlertAcknowledgementResponse": {
+        "properties": {
+          "alert_id": {
+            "title": "Alert Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "alert_id"
+        ],
+        "title": "RadarAlertAcknowledgementResponse",
+        "type": "object"
+      },
+      "RecoveryEventResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "title": "RecoveryEventResponse",
+        "type": "object"
+      },
+      "RecoveryEventsResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          }
+        },
+        "title": "RecoveryEventsResponse",
+        "type": "object"
+      },
+      "RecoveryHealthResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "scheduler": {
+            "additionalProperties": true,
+            "title": "Scheduler",
+            "type": "object"
+          }
+        },
+        "title": "RecoveryHealthResponse",
+        "type": "object"
+      },
+      "RefreshJobResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "job_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Name"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "summary": {
+            "title": "Summary"
+          }
+        },
+        "title": "RefreshJobResponse",
+        "type": "object"
+      },
+      "RefreshJobsResponse": {
+        "properties": {
+          "allowlist": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowlist",
+            "type": "array"
+          },
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "latest_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RefreshLatestStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RefreshJobResponse"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "RefreshJobsResponse",
+        "type": "object"
+      },
+      "RefreshLatestStatusResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "data_finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Finished At"
+          },
+          "data_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Ok"
+          },
+          "failed_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Step"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job"
+          },
+          "ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ok"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "RefreshLatestStatusResponse",
         "type": "object"
       },
       "RelativeValuePage": {
@@ -3556,6 +6507,465 @@
         "title": "ResearchXSettingsInput",
         "type": "object"
       },
+      "SettingsResponse": {
+        "properties": {
+          "agents": {
+            "additionalProperties": true,
+            "title": "Agents",
+            "type": "object"
+          },
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "integration": {
+            "additionalProperties": true,
+            "title": "Integration",
+            "type": "object"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceAuditResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "SettingsResponse",
+        "type": "object"
+      },
+      "SourceAuditResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "SourceAuditResponse",
+        "type": "object"
+      },
+      "SourceCapabilityResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "capability": {
+            "default": "",
+            "title": "Capability",
+            "type": "string"
+          },
+          "failure_detail": {
+            "default": "",
+            "title": "Failure Detail",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "SourceCapabilityResponse",
+        "type": "object"
+      },
+      "SourceCatalogResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "groups": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Groups",
+            "type": "object"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SourceCatalogRowResponse"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SourceCatalogSummaryResponse"
+          }
+        },
+        "title": "SourceCatalogResponse",
+        "type": "object"
+      },
+      "SourceCatalogRowResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "cadence_label": {
+            "default": "event driven",
+            "title": "Cadence Label",
+            "type": "string"
+          },
+          "capability_health": {
+            "items": {
+              "$ref": "#/components/schemas/SourceCapabilityResponse"
+            },
+            "title": "Capability Health",
+            "type": "array"
+          },
+          "effective_status": {
+            "default": "missing",
+            "title": "Effective Status",
+            "type": "string"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "failure_detail": {
+            "default": "",
+            "title": "Failure Detail",
+            "type": "string"
+          },
+          "freshness_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Status"
+          },
+          "ingestion_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingestion Mode"
+          },
+          "inherited_check": {
+            "default": false,
+            "title": "Inherited Check",
+            "type": "boolean"
+          },
+          "item_count": {
+            "default": 0,
+            "title": "Item Count",
+            "type": "integer"
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
+          },
+          "last_data_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Data At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "latest_capability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Capability"
+          },
+          "operational_group": {
+            "default": "other",
+            "title": "Operational Group",
+            "type": "string"
+          },
+          "refresh_job": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Job"
+          },
+          "refresh_jobs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Refresh Jobs",
+            "type": "array"
+          },
+          "remediation": {
+            "default": "",
+            "title": "Remediation",
+            "type": "string"
+          },
+          "run_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Status"
+          },
+          "source_family": {
+            "default": "",
+            "title": "Source Family",
+            "type": "string"
+          },
+          "source_id": {
+            "default": "",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_kind": {
+            "default": "",
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "source_name": {
+            "default": "",
+            "title": "Source Name",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "status_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status At"
+          },
+          "ticker_count": {
+            "default": 0,
+            "title": "Ticker Count",
+            "type": "integer"
+          }
+        },
+        "title": "SourceCatalogRowResponse",
+        "type": "object"
+      },
+      "SourceCatalogSummaryResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "attention": {
+            "default": 0,
+            "title": "Attention",
+            "type": "integer"
+          },
+          "disabled": {
+            "default": 0,
+            "title": "Disabled",
+            "type": "integer"
+          },
+          "enabled": {
+            "default": 0,
+            "title": "Enabled",
+            "type": "integer"
+          },
+          "failed": {
+            "default": 0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "healthy": {
+            "default": 0,
+            "title": "Healthy",
+            "type": "integer"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "title": "SourceCatalogSummaryResponse",
+        "type": "object"
+      },
+      "SourceDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          }
+        },
+        "title": "SourceDetailResponse",
+        "type": "object"
+      },
+      "StaticArbitrageVerificationResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "title": "StaticArbitrageVerificationResponse",
+        "type": "object"
+      },
+      "StatusResponse": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "options_history": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OptionHistoryHealthResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ready",
+          "message",
+          "source"
+        ],
+        "title": "StatusResponse",
+        "type": "object"
+      },
+      "StorageHealthResponse": {
+        "additionalProperties": true,
+        "description": "Storage observability payload with an explicit outage-only shape.",
+        "properties": {},
+        "title": "StorageHealthResponse",
+        "type": "object"
+      },
       "StrategyPromotionInput": {
         "properties": {
           "approved_by": {
@@ -3565,6 +6975,247 @@
           }
         },
         "title": "StrategyPromotionInput",
+        "type": "object"
+      },
+      "StrategyPromotionResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "radar_refresh": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radar Refresh"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy_version": {
+            "title": "Strategy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "proposal_id",
+          "strategy_version",
+          "approved_by"
+        ],
+        "title": "StrategyPromotionResponse",
+        "type": "object"
+      },
+      "StrategyRoute": {
+        "additionalProperties": true,
+        "properties": {
+          "ai_can_override": {
+            "default": false,
+            "title": "Ai Can Override",
+            "type": "boolean"
+          },
+          "alternative_structures": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alternative Structures",
+            "type": "array"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "event_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event State"
+          },
+          "paper_quantity_authorized": {
+            "default": false,
+            "title": "Paper Quantity Authorized",
+            "type": "boolean"
+          },
+          "rejected_structures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rejected Structures",
+            "type": "array"
+          },
+          "route_blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Route Blockers",
+            "type": "array"
+          },
+          "route_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Version"
+          },
+          "selected_structure": {
+            "default": "NO_TRADE",
+            "title": "Selected Structure",
+            "type": "string"
+          },
+          "selection_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selection Reasons",
+            "type": "array"
+          },
+          "shadow": {
+            "default": true,
+            "title": "Shadow",
+            "type": "boolean"
+          },
+          "trend_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend Confidence"
+          },
+          "trend_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend State"
+          },
+          "volatility_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volatility State"
+          }
+        },
+        "title": "StrategyRoute",
+        "type": "object"
+      },
+      "SuperinvestorDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "holdings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Holdings",
+            "type": "array"
+          },
+          "investor_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Investor Key"
+          }
+        },
+        "title": "SuperinvestorDetailResponse",
+        "type": "object"
+      },
+      "TablePayloadResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit"
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "TablePayloadResponse",
         "type": "object"
       },
       "ThesisAutomationInput": {
@@ -3595,6 +7246,80 @@
           }
         },
         "title": "ThesisAutomationInput",
+        "type": "object"
+      },
+      "ThesisAutomationResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "force": {
+            "title": "Force",
+            "type": "boolean"
+          },
+          "job": {
+            "additionalProperties": true,
+            "title": "Job",
+            "type": "object"
+          },
+          "symbols": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Symbols"
+          }
+        },
+        "required": [
+          "job",
+          "symbols",
+          "dry_run",
+          "force"
+        ],
+        "title": "ThesisAutomationResponse",
+        "type": "object"
+      },
+      "ThesisHistoryResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "review_events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Review Events",
+            "type": "array"
+          },
+          "revisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          }
+        },
+        "title": "ThesisHistoryResponse",
         "type": "object"
       },
       "ThesisInput": {
@@ -4001,6 +7726,33 @@
         "title": "ThesisMonitorSettingsInput",
         "type": "object"
       },
+      "ThesisMutationResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "thesis": {
+            "additionalProperties": true,
+            "title": "Thesis",
+            "type": "object"
+          },
+          "thesis_monitor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis Monitor"
+          }
+        },
+        "required": [
+          "thesis"
+        ],
+        "title": "ThesisMutationResponse",
+        "type": "object"
+      },
       "ThesisReviewInput": {
         "properties": {
           "notes": {
@@ -4032,6 +7784,97 @@
           }
         },
         "title": "ThesisReviewInput",
+        "type": "object"
+      },
+      "ThesisReviewResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "review": {
+            "additionalProperties": true,
+            "title": "Review",
+            "type": "object"
+          },
+          "thesis_monitor": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thesis Monitor"
+          }
+        },
+        "required": [
+          "review"
+        ],
+        "title": "ThesisReviewResponse",
+        "type": "object"
+      },
+      "TickerDecisionSnapshotResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "found": {
+            "default": true,
+            "title": "Found",
+            "type": "boolean"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ],
+        "title": "TickerDecisionSnapshotResponse",
+        "type": "object"
+      },
+      "TickerDetailResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "dossier": {
+            "additionalProperties": true,
+            "title": "Dossier",
+            "type": "object"
+          },
+          "found": {
+            "default": false,
+            "title": "Found",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "ticker",
+          "status"
+        ],
+        "title": "TickerDetailResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -4072,6 +7915,36 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WatchlistMutationResponse": {
+        "properties": {
+          "data_refresh": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Refresh"
+          },
+          "watchlist": {
+            "$ref": "#/components/schemas/TablePayloadResponse"
+          },
+          "watchlist_symbol": {
+            "additionalProperties": true,
+            "title": "Watchlist Symbol",
+            "type": "object"
+          }
+        },
+        "required": [
+          "watchlist_symbol",
+          "watchlist"
+        ],
+        "title": "WatchlistMutationResponse",
         "type": "object"
       },
       "WatchlistSymbolInput": {
@@ -4124,9 +7997,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Agent Overview Api Agent Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentOverviewResponse"
                 }
               }
             },
@@ -4156,9 +8027,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Submit Agent Postmortem Api Agent Postmortems Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentSubmissionResponse"
                 }
               }
             },
@@ -4198,9 +8067,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Submit Agent Thesis Api Agent Thesis Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentSubmissionResponse"
                 }
               }
             },
@@ -4238,9 +8105,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Analyze Ticker Api Agent Analyze Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentAnalyzeResponse"
                 }
               }
             },
@@ -4269,9 +8134,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Current Agent Experiment Api Agent Experiments Current Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentExperimentResponse"
                 }
               }
             },
@@ -4289,9 +8152,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Agent Research Prompt Api Agent Research Prompt Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/AgentResearchPromptResponse"
                 }
               }
             },
@@ -4340,9 +8201,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Decision Inbox Api Decision Inbox Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/DecisionInboxResponse"
                 }
               }
             },
@@ -4390,9 +8249,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Event Scout Events Api Event Scout Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EventScoutEventsResponse"
                 }
               }
             },
@@ -4440,9 +8297,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Event Scout Packets Api Event Scout Packets Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EventScoutPacketsResponse"
                 }
               }
             },
@@ -4484,9 +8339,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Event Scout Replay Api Event Scout Replay Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EventScoutReplayResponse"
                 }
               }
             },
@@ -4526,9 +8379,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Persist Event Scout Replay Api Event Scout Replay Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EventScoutReplayResponse"
                 }
               }
             },
@@ -4566,9 +8417,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Event Scout Signal Api Event Scout Signals Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/EventScoutSignalResponse"
                 }
               }
             },
@@ -4597,9 +8446,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Recovery Option Health Api Health Options Recovery Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RecoveryHealthResponse"
                 }
               }
             },
@@ -4617,9 +8464,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Storage Health Api Health Storage Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/StorageHealthResponse"
                 }
               }
             },
@@ -4666,9 +8511,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Opportunity Scorecard Api Opportunity Scorecard Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OpportunityScorecardResponse"
                 }
               }
             },
@@ -4736,9 +8579,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Option Radar Learning Collection Api Options Radar Learning  Collection  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionLearningCollectionResponse"
                 }
               }
             },
@@ -4778,9 +8619,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Option Radar Signal Detail Api Options Radar Signals  Decision Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionSignalDetailResponse"
                 }
               }
             },
@@ -4830,9 +8669,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Stage Option Radar Paper Entry Api Options Radar Signals  Decision Id  Paper Entry Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PaperEntryResponse"
                 }
               }
             },
@@ -5229,9 +9066,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Recovery Events Api Options Events Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RecoveryEventsResponse"
                 }
               }
             },
@@ -5299,9 +9134,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Recovery Event Api Options Events  Event Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RecoveryEventResponse"
                 }
               }
             },
@@ -5712,9 +9545,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Historical Option Health Api Options History Health Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionHistoryHealthResponse"
                 }
               }
             },
@@ -5933,9 +9764,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Verify Static Arbitrage Candidate Api Options History Static Arbitrage Candidates  Candidate Id  Verify Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/StaticArbitrageVerificationResponse"
                 }
               }
             },
@@ -6207,9 +10036,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Historical Option Symbols Api Options History Symbols Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionHistorySymbolsResponse"
                 }
               }
             },
@@ -6421,9 +10248,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Option Trade Ticket Api Options Tickets  Decision Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionTicketDetailResponse"
                 }
               }
             },
@@ -6479,9 +10304,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Options Workspace Api Options Workspace Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionsWorkspaceResponse"
                 }
               }
             },
@@ -6509,9 +10332,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Panel Contract Api Panel Contract Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PanelContractResponse"
                 }
               }
             },
@@ -6567,9 +10388,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Panel Snapshot Api Panel Snapshot Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PanelSnapshotResponse"
                 }
               }
             },
@@ -6609,9 +10428,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Portfolio Transactions Api Portfolio Transactions Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/TablePayloadResponse"
                 }
               }
             },
@@ -6647,9 +10464,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Portfolio Transaction Api Portfolio Transactions Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PortfolioTransactionResultResponse"
                 }
               }
             },
@@ -6687,9 +10502,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Preview Transaction Api Portfolio Transactions Preview Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PortfolioTransactionPreviewResponse"
                 }
               }
             },
@@ -6738,9 +10551,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Reverse Transaction Api Portfolio Transactions  Transaction Id  Reverse Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PortfolioTransactionResultResponse"
                 }
               }
             },
@@ -6788,9 +10599,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Quotes Api Quotes Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/QuotesResponse"
                 }
               }
             },
@@ -6829,9 +10638,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Acknowledge Radar Alert Endpoint Api Radar Alerts  Alert Id  Ack Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RadarAlertAcknowledgementResponse"
                 }
               }
             },
@@ -6859,9 +10666,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Refresh Jobs Api Refresh Jobs Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RefreshJobsResponse"
                 }
               }
             },
@@ -6890,9 +10695,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Launch Refresh Job Api Refresh Jobs  Job Name  Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RefreshJobResponse"
                 }
               }
             },
@@ -6931,9 +10734,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Launch Refresh Job Background Api Refresh Jobs  Job Name  Background Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/RefreshJobResponse"
                 }
               }
             },
@@ -6961,9 +10762,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Settings Api Settings Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SettingsResponse"
                 }
               }
             },
@@ -6991,9 +10790,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Agent Settings Api Settings Agents Patch",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SettingsResponse"
                 }
               }
             },
@@ -7031,9 +10828,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Update Research Sources Api Settings Research Sources Patch",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SettingsResponse"
                 }
               }
             },
@@ -7062,9 +10857,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Source Catalog Api Source Catalog Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SourceCatalogResponse"
                 }
               }
             },
@@ -7082,9 +10875,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Source Audit Api Source Ingestion Audit Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SourceAuditResponse"
                 }
               }
             },
@@ -7113,9 +10904,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Source Detail Api Sources  Source Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SourceDetailResponse"
                 }
               }
             },
@@ -7143,9 +10932,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Status Api Status Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/StatusResponse"
                 }
               }
             },
@@ -7191,9 +10978,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Promote Strategy Mutation Endpoint Api Strategy Mutation Proposals  Proposal Id  Promote Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/StrategyPromotionResponse"
                 }
               }
             },
@@ -7232,9 +11017,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Superinvestor Detail Api Superinvestors  Investor Key  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SuperinvestorDetailResponse"
                 }
               }
             },
@@ -7283,9 +11066,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Save Thesis Endpoint Api Theses  Symbol  Put",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ThesisMutationResponse"
                 }
               }
             },
@@ -7324,9 +11105,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Thesis History Endpoint Api Theses  Symbol  History Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ThesisHistoryResponse"
                 }
               }
             },
@@ -7382,9 +11161,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Review Thesis Endpoint Api Theses  Symbol  Review Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ThesisReviewResponse"
                 }
               }
             },
@@ -7422,9 +11199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Run Thesis Automation Endpoint Api Thesis Monitor Automation Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ThesisAutomationResponse"
                 }
               }
             },
@@ -7463,9 +11238,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ticker Detail Api Tickers  Ticker  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/TickerDetailResponse"
                 }
               }
             },
@@ -7504,9 +11277,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ticker Decision Snapshot Api Tickers  Ticker  Decision Snapshot Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/TickerDecisionSnapshotResponse"
                 }
               }
             },
@@ -7544,9 +11315,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Save Watchlist Symbol Endpoint Api Watchlist Symbols Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/WatchlistMutationResponse"
                 }
               }
             },
@@ -7585,9 +11354,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Delete Watchlist Symbol Endpoint Api Watchlist Symbols  Symbol  Delete",
-                  "type": "object"
+                  "$ref": "#/components/schemas/WatchlistMutationResponse"
                 }
               }
             },
@@ -7636,9 +11403,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Set Watchlist Options History Endpoint Api Watchlist Symbols  Symbol  Options History Patch",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OptionsHistoryPolicyResponse"
                 }
               }
             },

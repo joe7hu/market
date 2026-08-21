@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OptionSnapshotSummary(BaseModel):
@@ -213,6 +213,22 @@ class RelativeValuePage(BaseModel):
     limit: int
 
 
+class OptionsDecisionTruth(BaseModel):
+    symbol: str
+    lane: str
+    as_of: datetime | None = None
+    publication_id: str | None = None
+    candidate_state: str
+    route_verdict: str
+    readiness_state: str
+    execution_state: str
+    primary_blocker: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    next_action: str | None = None
+    route_version: str
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class OptionsDecisionBrief(BaseModel):
     symbol: str
     lane: str
@@ -224,7 +240,7 @@ class OptionsDecisionBrief(BaseModel):
     readiness: "OptionsDecisionReadiness"
     strongest_candidate: "OptionsDecisionCandidate | None" = None
     paper_only: bool
-    decision_truth: dict[str, Any] = Field(default_factory=dict)
+    decision_truth: OptionsDecisionTruth | None = None
 
 
 class OptionBlockerCount(BaseModel):
@@ -254,8 +270,11 @@ class OptionsAnalysisReadiness(BaseModel):
 
 class OptionsThesisReadiness(BaseModel):
     eligible: bool
+    present: bool | None = None
     revision: str | None = None
     invalidation: str | None = None
+    blocker: str | None = None
+    direction: str | None = None
 
 
 class OptionsCalibrationReadiness(BaseModel):
@@ -325,6 +344,93 @@ class RecoveryOptionTradeTicketLeg(OptionTradeTicketLeg):
     occ_symbol: str
 
 
+class FlexibleOptionModel(BaseModel):
+    """Allow additive evidence fields while typing the fields used by views."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class StrategyRoute(FlexibleOptionModel):
+    route_version: str | None = None
+    shadow: bool = True
+    selected_structure: str = "NO_TRADE"
+    alternative_structures: list[str] = Field(default_factory=list)
+    trend_state: str | None = None
+    trend_confidence: float | None = None
+    volatility_state: str | None = None
+    event_state: str | None = None
+    selection_reasons: list[str] = Field(default_factory=list)
+    rejected_structures: list[dict[str, Any]] = Field(default_factory=list)
+    route_blockers: list[str] = Field(default_factory=list)
+    as_of: datetime | None = None
+    paper_quantity_authorized: bool = False
+    ai_can_override: bool = False
+
+
+class MarketRegime(FlexibleOptionModel):
+    state: str | None = None
+    trend_state: str = "unavailable"
+    trend_confidence: float | None = None
+    volatility_state: str | None = None
+    breadth_state: str | None = None
+    quality_status: str = "unavailable"
+    reason_codes: list[str] = Field(default_factory=list)
+    as_of: datetime | None = None
+
+
+class OptionsCandidateEntry(FlexibleOptionModel):
+    price: float | None = None
+    fill_basis: str = "worst_side_quote"
+
+
+class OptionTradeTicketEntry(FlexibleOptionModel):
+    limit_price: float | None = None
+    maximum_chase_price: float | None = None
+    minimum_credit: float | None = None
+    valid_until: datetime | None = None
+    validity_seconds: int | None = None
+    expected_slippage: float | None = None
+
+
+class OptionTradeTicketRisk(FlexibleOptionModel):
+    sleeve_capital: float | None = None
+    broker_available_capital: float | None = None
+    one_unit_max_loss: float | None = None
+    one_unit_collateral: float | None = None
+    available_risk_budget: float = 0
+    recommended_quantity: int = 0
+    total_risk: float = 0
+    symbol_exposure_after_entry: float = 0
+    total_options_exposure_after_entry: float = 0
+    fully_cash_secured: bool = False
+    blockers: list[str] = Field(default_factory=list)
+
+
+class OptionTradeTicketThesis(FlexibleOptionModel):
+    summary: str | None = None
+    catalyst: str | None = None
+    invalidation: str | None = None
+
+
+class OptionTradeTicketExits(FlexibleOptionModel):
+    profit_price: float | None = None
+    loss_price: float | None = None
+    time_exit_dte: int | None = None
+    thesis_invalidation: str | None = None
+    liquidity_exit: str | None = None
+
+
+class OptionTradeTicketForecast(FlexibleOptionModel):
+    interval: Any = None
+    expected_value: float | None = None
+    lower_confidence_expected_value: float | None = None
+    probability_profit: float | None = None
+    probability_semantics: str | None = None
+    effective_sample_size: float | None = None
+    tail_loss: float | None = None
+    no_trade_expected_value: float = 0
+
+
 class OptionTradeTicket(BaseModel):
     ticket_version: int
     decision_id: str
@@ -338,18 +444,18 @@ class OptionTradeTicket(BaseModel):
     state: str
     structure: str
     expiration: date
-    legs: list[OptionTradeTicketLeg]
-    entry: dict[str, Any]
-    risk: dict[str, Any]
-    thesis: dict[str, Any]
-    exits: dict[str, Any]
-    forecast: dict[str, Any]
+    legs: list[OptionTradeTicketLeg] = Field(default_factory=list)
+    entry: OptionTradeTicketEntry = Field(default_factory=OptionTradeTicketEntry)
+    risk: OptionTradeTicketRisk = Field(default_factory=OptionTradeTicketRisk)
+    thesis: OptionTradeTicketThesis = Field(default_factory=OptionTradeTicketThesis)
+    exits: OptionTradeTicketExits = Field(default_factory=OptionTradeTicketExits)
+    forecast: OptionTradeTicketForecast = Field(default_factory=OptionTradeTicketForecast)
     lower_confidence_expectancy_per_max_risk: float | None = None
-    blockers: list[str]
-    required_next_action: str
-    data_model_revisions: dict[str, Any]
-    provenance: dict[str, Any]
-    paper_only: bool
+    blockers: list[str] = Field(default_factory=list)
+    required_next_action: str = "research_only"
+    data_model_revisions: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    paper_only: bool = True
 
 
 class RecoveryOptionTradeTicketV4(BaseModel):
@@ -391,7 +497,7 @@ class OptionsDecisionCandidate(BaseModel):
     strike: float
     option_type: str
     legs: list[OptionCandidateLeg]
-    conservative_entry: dict[str, Any]
+    conservative_entry: OptionsCandidateEntry = Field(default_factory=OptionsCandidateEntry)
     one_unit_max_loss: float | None = None
     fair_value_interval: dict[str, float | None]
     expected_value_interval: dict[str, float | None]
@@ -404,8 +510,10 @@ class OptionsDecisionCandidate(BaseModel):
     blockers: list[str]
     reassessment_date: date | None = None
     comparable_exact_structure_outcomes: dict[str, Any]
-    strategy_route: dict[str, Any] = Field(default_factory=dict)
-    market_regime: dict[str, Any] = Field(default_factory=dict)
+    forecast: dict[str, Any] = Field(default_factory=dict)
+    execution_ready: bool = False
+    strategy_route: StrategyRoute = Field(default_factory=StrategyRoute)
+    market_regime: MarketRegime = Field(default_factory=MarketRegime)
     ticket: OptionTradeTicket | None = None
     paper_only: bool
 
@@ -426,6 +534,83 @@ class OptionsCandidatePage(BaseModel):
     limit: int
 
 
+class OptionsJournalAdmission(FlexibleOptionModel):
+    decision_at: datetime | None = None
+    decision_state: str | None = None
+    paper_state: str | None = None
+    discovery_lane: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    model_revision: str | None = None
+    market_regime: str | None = None
+
+
+class OptionsJournalContract(FlexibleOptionModel):
+    expiration: date | None = None
+    strike: float | None = None
+    option_type: str | None = None
+    multiplier: int = 100
+    legs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OptionsJournalThesis(FlexibleOptionModel):
+    revision: int | None = None
+    direction: str | None = None
+    core_thesis: str | None = None
+    invalidation: str | None = None
+    horizon_date: date | None = None
+
+
+class OptionsJournalForecast(FlexibleOptionModel):
+    probability_profit: float | None = None
+    expected_value: float | None = None
+    lower_95_expected_value: float | None = None
+    max_loss: float | None = None
+    risk_adjusted_expectancy: float | None = None
+    modeled_net_edge: float | None = None
+    fair_value_low: float | None = None
+    fair_value_high: float | None = None
+    scenario_count: int = 0
+    data_confidence: float | None = None
+    execution_confidence: float | None = None
+
+
+class OptionsJournalExecution(FlexibleOptionModel):
+    staged_at: datetime | None = None
+    signal_quote_at: datetime | None = None
+    entry_cohort_id: str | None = None
+    entry_at: datetime | None = None
+    entry_price: float | None = None
+    fill_basis: str | None = None
+    latest_mark: float | None = None
+    exit_at: datetime | None = None
+    exit_price: float | None = None
+    holding_period_hours: float | None = None
+
+
+class OptionsJournalAttribution(FlexibleOptionModel):
+    underlying: float | None = None
+    iv: float | None = None
+    theta: float | None = None
+    spread: float | None = None
+    unexplained: float | None = None
+
+
+class OptionsJournalOutcome(FlexibleOptionModel):
+    state: str | None = None
+    observed_through: datetime | None = None
+    current_return: float | None = None
+    return_1d: float | None = None
+    return_5d: float | None = None
+    return_20d: float | None = None
+    return_60d: float | None = None
+    peak_return: float | None = None
+    max_drawdown: float | None = None
+    realized_exit_return: float | None = None
+    realized_exit_basis: str | None = None
+    attribution: OptionsJournalAttribution = Field(default_factory=OptionsJournalAttribution)
+
+
 class OptionsPaperJournalRow(BaseModel):
     record_kind: str
     paper_order_id: str | None = None
@@ -442,13 +627,13 @@ class OptionsPaperJournalRow(BaseModel):
     outcome_state: str | None = None
     pending_entry_reason: str | None = None
     assignment_warning: str | None = None
-    admission: dict[str, Any]
-    contract: dict[str, Any]
-    thesis: dict[str, Any]
-    forecast: dict[str, Any]
-    execution: dict[str, Any]
-    outcome: dict[str, Any]
-    metrics: dict[str, Any]
+    admission: OptionsJournalAdmission = Field(default_factory=OptionsJournalAdmission)
+    contract: OptionsJournalContract = Field(default_factory=OptionsJournalContract)
+    thesis: OptionsJournalThesis = Field(default_factory=OptionsJournalThesis)
+    forecast: OptionsJournalForecast = Field(default_factory=OptionsJournalForecast)
+    execution: OptionsJournalExecution = Field(default_factory=OptionsJournalExecution)
+    outcome: OptionsJournalOutcome = Field(default_factory=OptionsJournalOutcome)
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class OptionsPaperJournalPage(BaseModel):

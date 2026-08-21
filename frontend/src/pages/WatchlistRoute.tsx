@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadRefreshJobs, startRefreshJob, type RefreshJob, type RefreshJobsPayload } from "../api";
+import { loadRefreshJobs, startRefreshJob, type RefreshJob, type RefreshJobsPayload } from "../api/panel";
 import { useMarketData } from "../marketData";
 import { WatchlistPage } from "@/views/watchlist";
 import { CANDIDATE_PAGE_SIZE, loadVisibleWatchlistScopes } from "./watchlistScopeLoader";

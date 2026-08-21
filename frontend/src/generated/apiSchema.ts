@@ -1171,6 +1171,14 @@ export interface components {
             /** Ticker */
             ticker: string;
         };
+        /** AgentAnalyzeResponse */
+        AgentAnalyzeResponse: {
+            job: components["schemas"]["RefreshJobResponse"];
+            /** Request Id */
+            request_id: string;
+            /** Ticker */
+            ticker: string;
+        };
         /** AgentCommandSettingsInput */
         AgentCommandSettingsInput: {
             /** Command */
@@ -1182,12 +1190,353 @@ export interface components {
             /** Timeout Seconds */
             timeout_seconds?: number | null;
         };
+        /** AgentCostResponse */
+        AgentCostResponse: {
+            last_7d?: components["schemas"]["AgentCostWindowResponse"];
+            today?: components["schemas"]["AgentCostWindowResponse"];
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentCostWindowResponse */
+        AgentCostWindowResponse: {
+            /**
+             * Est Cost Usd
+             * @default 0
+             */
+            est_cost_usd: number;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentExperimentResponse */
+        AgentExperimentResponse: {
+            /** Advisory Only */
+            advisory_only?: boolean | null;
+            /** Message */
+            message?: string | null;
+            /** Routing Changed */
+            routing_changed?: boolean | null;
+            /** Status */
+            status?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentMaterializationResponse */
+        AgentMaterializationResponse: {
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /**
+             * Historical Unmaterialized
+             * @default 0
+             */
+            historical_unmaterialized: number;
+            /**
+             * Materialized
+             * @default 0
+             */
+            materialized: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentOverviewResponse */
+        AgentOverviewResponse: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            cost?: components["schemas"]["AgentCostResponse"];
+            materialization?: components["schemas"]["AgentMaterializationResponse"];
+            /** Pricing */
+            pricing?: {
+                [key: string]: unknown;
+            };
+            queue?: components["schemas"]["AgentQueueResponse"];
+            /** Runs */
+            runs?: components["schemas"]["AgentRunResponse"][];
+            /** Scheduler */
+            scheduler?: {
+                [key: string]: unknown;
+            };
+            /** Workflows */
+            workflows?: {
+                [key: string]: components["schemas"]["AgentWorkflowResponse"];
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentQueueResponse */
+        AgentQueueResponse: {
+            /** Oldest Open At */
+            oldest_open_at?: string | null;
+            /**
+             * Postmortem Open
+             * @default 0
+             */
+            postmortem_open: number;
+            /**
+             * Thesis Open
+             * @default 0
+             */
+            thesis_open: number;
+            /**
+             * Total Open
+             * @default 0
+             */
+            total_open: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentResearchCoverageResponse */
+        AgentResearchCoverageResponse: {
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
+            /**
+             * Future Dated Rows Excluded
+             * @default 0
+             */
+            future_dated_rows_excluded: number;
+            /**
+             * Macro Indicators
+             * @default 0
+             */
+            macro_indicators: number;
+            /**
+             * Market Intelligence Items
+             * @default 0
+             */
+            market_intelligence_items: number;
+            /**
+             * Option Signals
+             * @default 0
+             */
+            option_signals: number;
+            /**
+             * Portfolio Positions
+             * @default 0
+             */
+            portfolio_positions: number;
+            /** Portfolio Symbols */
+            portfolio_symbols?: string[];
+            /**
+             * Theses
+             * @default 0
+             */
+            theses: number;
+            /** Watchlist */
+            watchlist?: string[];
+            /**
+             * Watchlist Symbols
+             * @default 0
+             */
+            watchlist_symbols: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentResearchFreshnessResponse */
+        AgentResearchFreshnessResponse: {
+            /**
+             * Future Rows Excluded
+             * @default 0
+             */
+            future_rows_excluded: number;
+            /** Latest Observed */
+            latest_observed?: string | null;
+            /**
+             * Rows
+             * @default 0
+             */
+            rows: number;
+            /** Table */
+            table?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentResearchPromptResponse */
+        AgentResearchPromptResponse: {
+            /** Character Count */
+            character_count: number;
+            coverage?: components["schemas"]["AgentResearchCoverageResponse"];
+            /** Estimated Tokens */
+            estimated_tokens: number;
+            /** Freshness */
+            freshness?: components["schemas"]["AgentResearchFreshnessResponse"][];
+            /** Generated At */
+            generated_at?: string | null;
+            /** Message */
+            message: string;
+            /** Prompt */
+            prompt: string;
+            /** Ready */
+            ready: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentRunResponse */
+        AgentRunResponse: {
+            /** Error */
+            error?: string | null;
+            /**
+             * Est Cost Usd
+             * @default 0
+             */
+            est_cost_usd: number;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Id */
+            id?: string | null;
+            /**
+             * Input Tokens
+             * @default 0
+             */
+            input_tokens: number;
+            /** Model */
+            model?: string | null;
+            /**
+             * Output Tokens
+             * @default 0
+             */
+            output_tokens: number;
+            /**
+             * Postmortem Accepted
+             * @default 0
+             */
+            postmortem_accepted: number;
+            /**
+             * Postmortem Attempted
+             * @default 0
+             */
+            postmortem_attempted: number;
+            /** Provider */
+            provider?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * Thesis Accepted
+             * @default 0
+             */
+            thesis_accepted: number;
+            /**
+             * Thesis Attempted
+             * @default 0
+             */
+            thesis_attempted: number;
+            /** Ticker */
+            ticker?: string | null;
+            /**
+             * Tokens Estimated
+             * @default false
+             */
+            tokens_estimated: boolean;
+            /** Trigger */
+            trigger?: string | null;
+            /** Workflow */
+            workflow?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** AgentSettingsInput */
         AgentSettingsInput: {
             option_agent?: components["schemas"]["OptionAgentSettingsInput"] | null;
             option_postmortem?: components["schemas"]["AgentCommandSettingsInput"] | null;
             option_thesis?: components["schemas"]["AgentCommandSettingsInput"] | null;
             thesis_monitor?: components["schemas"]["ThesisMonitorSettingsInput"] | null;
+        };
+        /** AgentSubmissionResponse */
+        AgentSubmissionResponse: {
+            /** Status */
+            status: string;
+            /** Strategy Version */
+            strategy_version?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** AgentWorkflowResponse */
+        AgentWorkflowResponse: {
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Running
+             * @default 0
+             */
+            running: number;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Succeeded
+             * @default 0
+             */
+            succeeded: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ApiStatusResponse */
+        ApiStatusResponse: {
+            /** Message */
+            message: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Ready */
+            ready: boolean;
+            /** Source */
+            source: string;
+        };
+        /** DashboardResponse */
+        DashboardResponse: {
+            /** Metrics */
+            metrics?: {
+                [key: string]: number;
+            };
+            /** Priority Candidates */
+            priority_candidates?: {
+                [key: string]: unknown;
+            }[];
+            status?: components["schemas"]["ApiStatusResponse"] | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** DecisionInboxResponse */
+        DecisionInboxResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Items */
+            items?: {
+                [key: string]: unknown;
+            }[];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** DistributionShiftResponse */
         DistributionShiftResponse: {
@@ -1229,6 +1578,38 @@ export interface components {
             /** W1 Shift */
             w1_shift?: number | null;
         };
+        /** EventScoutEventsResponse */
+        EventScoutEventsResponse: {
+            status: components["schemas"]["ApiStatusResponse"];
+            /** Tables */
+            tables: {
+                [key: string]: components["schemas"]["TablePayloadResponse"];
+            };
+        };
+        /** EventScoutPacketsResponse */
+        EventScoutPacketsResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+            status: components["schemas"]["ApiStatusResponse"];
+        };
+        /** EventScoutReplayResponse */
+        EventScoutReplayResponse: {
+            /** Packet */
+            packet: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** EventScoutSignalInput */
         EventScoutSignalInput: {
             /** Data */
@@ -1255,6 +1636,15 @@ export interface components {
             symbol: string;
             /** Trigger Type */
             trigger_type: string;
+        };
+        /** EventScoutSignalResponse */
+        EventScoutSignalResponse: {
+            /** Signal Id */
+            signal_id?: string | null;
+            /** Status */
+            status?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** EventStudyResponse */
         EventStudyResponse: {
@@ -1361,6 +1751,42 @@ export interface components {
             x: number[];
             /** Y */
             y: number[];
+        };
+        /** MarketRegime */
+        MarketRegime: {
+            /** As Of */
+            as_of?: string | null;
+            /** Breadth State */
+            breadth_state?: string | null;
+            /**
+             * Quality Status
+             * @default unavailable
+             */
+            quality_status: string;
+            /** Reason Codes */
+            reason_codes?: string[];
+            /** State */
+            state?: string | null;
+            /** Trend Confidence */
+            trend_confidence?: number | null;
+            /**
+             * Trend State
+             * @default unavailable
+             */
+            trend_state: string;
+            /** Volatility State */
+            volatility_state?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OpportunityScorecardResponse */
+        OpportunityScorecardResponse: {
+            /** Lane */
+            lane?: string | null;
+            /** Window Days */
+            window_days?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /** OptionAgentSettingsInput */
         OptionAgentSettingsInput: {
@@ -1559,6 +1985,111 @@ export interface components {
             /** Volume */
             volume?: number | null;
         };
+        /** OptionHistoryHealthResponse */
+        OptionHistoryHealthResponse: {
+            /** Average Completeness */
+            average_completeness?: number | null;
+            /**
+             * Canary Revision
+             * @default
+             */
+            canary_revision: string;
+            /** Canary Started At */
+            canary_started_at?: string | null;
+            /**
+             * Complete Captures
+             * @default 0
+             */
+            complete_captures: number;
+            /** Disqualification Reasons */
+            disqualification_reasons?: {
+                [key: string]: unknown;
+            }[];
+            /** Latest Complete Slot */
+            latest_complete_slot?: string | null;
+            /** Mode */
+            mode?: string | null;
+            /**
+             * Observed Regular Session Dates
+             * @default 0
+             */
+            observed_regular_session_dates: number;
+            /**
+             * Option Quote Bytes
+             * @default 0
+             */
+            option_quote_bytes: number;
+            /**
+             * Post Fix Complete Captures
+             * @default 0
+             */
+            post_fix_complete_captures: number;
+            /**
+             * Qualified Regular Sessions
+             * @default 0
+             */
+            qualified_regular_sessions: number;
+            /**
+             * Required Regular Sessions
+             * @default 0
+             */
+            required_regular_sessions: number;
+            /**
+             * Retention Days
+             * @default 0
+             */
+            retention_days: number;
+            /**
+             * Snapshots
+             * @default 0
+             */
+            snapshots: number;
+            /**
+             * Storage Bytes
+             * @default 0
+             */
+            storage_bytes: number;
+            /**
+             * Surface Summary Bytes
+             * @default 0
+             */
+            surface_summary_bytes: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionHistorySymbolsResponse */
+        OptionHistorySymbolsResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /**
+             * Policy Revision
+             * @default
+             */
+            policy_revision: string;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** OptionLearningCollectionResponse */
+        OptionLearningCollectionResponse: {
+            /** Collection */
+            collection: string;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Items */
+            items?: {
+                [key: string]: unknown;
+            }[];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** OptionPaperEntryInput */
         OptionPaperEntryInput: {
             /** Idempotency Key */
@@ -1572,6 +2103,13 @@ export interface components {
              * @default 1
              */
             ticket_version: number;
+        };
+        /** OptionSignalDetailResponse */
+        OptionSignalDetailResponse: {
+            /** Decision Id */
+            decision_id: string;
+        } & {
+            [key: string]: unknown;
         };
         /** OptionSnapshotPage */
         OptionSnapshotPage: {
@@ -1665,28 +2203,70 @@ export interface components {
             /** Snapshot Id */
             snapshot_id?: number | null;
         };
-        /** OptionTradeTicket */
-        OptionTradeTicket: {
-            /** Blockers */
-            blockers: string[];
-            /** Data Model Revisions */
-            data_model_revisions: {
+        /** OptionTicketDetailResponse */
+        OptionTicketDetailResponse: {
+            /** Agent Provenance */
+            agent_provenance?: {
                 [key: string]: unknown;
             };
             /** Decision Id */
             decision_id: string;
-            /** Entry */
-            entry: {
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Expiration
+             * Format: date
+             */
+            expiration: string;
+            /** Legs */
+            legs?: {
+                [key: string]: unknown;
+            }[];
+            /** Outcome */
+            outcome?: {
                 [key: string]: unknown;
             };
+            /** Publication */
+            publication: {
+                [key: string]: unknown;
+            };
+            /** Signal */
+            signal: {
+                [key: string]: unknown;
+            };
+            /** State */
+            state: string;
+            /** Structure */
+            structure: string;
+            /** Symbol */
+            symbol: string;
+            /** Ticket */
+            ticket: {
+                [key: string]: unknown;
+            };
+            /** Ticket Version */
+            ticket_version: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionTradeTicket */
+        OptionTradeTicket: {
+            /** Blockers */
+            blockers?: string[];
+            /** Data Model Revisions */
+            data_model_revisions?: {
+                [key: string]: unknown;
+            };
+            /** Decision Id */
+            decision_id: string;
+            entry?: components["schemas"]["OptionTradeTicketEntry"];
             /** Episode Key */
             episode_key?: string | null;
             /** Execution Ready At */
             execution_ready_at?: string | null;
-            /** Exits */
-            exits: {
-                [key: string]: unknown;
-            };
+            exits?: components["schemas"]["OptionTradeTicketExits"];
             /**
              * Expiration
              * Format: date
@@ -1694,32 +2274,32 @@ export interface components {
             expiration: string;
             /** Expires At */
             expires_at?: string | null;
-            /** Forecast */
-            forecast: {
-                [key: string]: unknown;
-            };
+            forecast?: components["schemas"]["OptionTradeTicketForecast"];
             /** Lane */
             lane?: string | null;
             /** Legs */
-            legs: components["schemas"]["OptionTradeTicketLeg"][];
+            legs?: components["schemas"]["OptionTradeTicketLeg"][];
             /** Lower Confidence Expectancy Per Max Risk */
             lower_confidence_expectancy_per_max_risk?: number | null;
-            /** Paper Only */
+            /**
+             * Paper Only
+             * @default true
+             */
             paper_only: boolean;
             /** Provenance */
-            provenance: {
+            provenance?: {
                 [key: string]: unknown;
             };
             /** Publication Lineage */
             publication_lineage?: {
                 [key: string]: unknown;
             };
-            /** Required Next Action */
+            /**
+             * Required Next Action
+             * @default research_only
+             */
             required_next_action: string;
-            /** Risk */
-            risk: {
-                [key: string]: unknown;
-            };
+            risk?: components["schemas"]["OptionTradeTicketRisk"];
             /** Risk Policy Version */
             risk_policy_version?: string | null;
             /** State */
@@ -1728,12 +2308,65 @@ export interface components {
             structure: string;
             /** Symbol */
             symbol: string;
-            /** Thesis */
-            thesis: {
-                [key: string]: unknown;
-            };
+            thesis?: components["schemas"]["OptionTradeTicketThesis"];
             /** Ticket Version */
             ticket_version: number;
+        };
+        /** OptionTradeTicketEntry */
+        OptionTradeTicketEntry: {
+            /** Expected Slippage */
+            expected_slippage?: number | null;
+            /** Limit Price */
+            limit_price?: number | null;
+            /** Maximum Chase Price */
+            maximum_chase_price?: number | null;
+            /** Minimum Credit */
+            minimum_credit?: number | null;
+            /** Valid Until */
+            valid_until?: string | null;
+            /** Validity Seconds */
+            validity_seconds?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionTradeTicketExits */
+        OptionTradeTicketExits: {
+            /** Liquidity Exit */
+            liquidity_exit?: string | null;
+            /** Loss Price */
+            loss_price?: number | null;
+            /** Profit Price */
+            profit_price?: number | null;
+            /** Thesis Invalidation */
+            thesis_invalidation?: string | null;
+            /** Time Exit Dte */
+            time_exit_dte?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionTradeTicketForecast */
+        OptionTradeTicketForecast: {
+            /** Effective Sample Size */
+            effective_sample_size?: number | null;
+            /** Expected Value */
+            expected_value?: number | null;
+            /** Interval */
+            interval?: unknown;
+            /** Lower Confidence Expected Value */
+            lower_confidence_expected_value?: number | null;
+            /**
+             * No Trade Expected Value
+             * @default 0
+             */
+            no_trade_expected_value: number;
+            /** Probability Profit */
+            probability_profit?: number | null;
+            /** Probability Semantics */
+            probability_semantics?: string | null;
+            /** Tail Loss */
+            tail_loss?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /** OptionTradeTicketLeg */
         OptionTradeTicketLeg: {
@@ -1761,6 +2394,62 @@ export interface components {
             strike?: number | null;
             /** Volume */
             volume?: number | null;
+        };
+        /** OptionTradeTicketRisk */
+        OptionTradeTicketRisk: {
+            /**
+             * Available Risk Budget
+             * @default 0
+             */
+            available_risk_budget: number;
+            /** Blockers */
+            blockers?: string[];
+            /** Broker Available Capital */
+            broker_available_capital?: number | null;
+            /**
+             * Fully Cash Secured
+             * @default false
+             */
+            fully_cash_secured: boolean;
+            /** One Unit Collateral */
+            one_unit_collateral?: number | null;
+            /** One Unit Max Loss */
+            one_unit_max_loss?: number | null;
+            /**
+             * Recommended Quantity
+             * @default 0
+             */
+            recommended_quantity: number;
+            /** Sleeve Capital */
+            sleeve_capital?: number | null;
+            /**
+             * Symbol Exposure After Entry
+             * @default 0
+             */
+            symbol_exposure_after_entry: number;
+            /**
+             * Total Options Exposure After Entry
+             * @default 0
+             */
+            total_options_exposure_after_entry: number;
+            /**
+             * Total Risk
+             * @default 0
+             */
+            total_risk: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionTradeTicketThesis */
+        OptionTradeTicketThesis: {
+            /** Catalyst */
+            catalyst?: string | null;
+            /** Invalidation */
+            invalidation?: string | null;
+            /** Summary */
+            summary?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** OptionsAnalysisReadiness */
         OptionsAnalysisReadiness: {
@@ -1807,6 +2496,18 @@ export interface components {
             /** Required Regular Sessions */
             required_regular_sessions: number;
         };
+        /** OptionsCandidateEntry */
+        OptionsCandidateEntry: {
+            /**
+             * Fill Basis
+             * @default worst_side_quote
+             */
+            fill_basis: string;
+            /** Price */
+            price?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** OptionsCandidatePage */
         OptionsCandidatePage: {
             /** Analysis Run Id */
@@ -1851,10 +2552,7 @@ export interface components {
             analysis_run_id?: string | null;
             /** As Of */
             as_of?: string | null;
-            /** Decision Truth */
-            decision_truth?: {
-                [key: string]: unknown;
-            };
+            decision_truth?: components["schemas"]["OptionsDecisionTruth"] | null;
             /** Lane */
             lane: string;
             /** Mode */
@@ -1880,14 +2578,16 @@ export interface components {
             comparable_exact_structure_outcomes: {
                 [key: string]: unknown;
             };
-            /** Conservative Entry */
-            conservative_entry: {
-                [key: string]: unknown;
-            };
+            conservative_entry?: components["schemas"]["OptionsCandidateEntry"];
             /** Decision Id */
             decision_id: string;
             /** Discovery Lane */
             discovery_lane: string;
+            /**
+             * Execution Ready
+             * @default false
+             */
+            execution_ready: boolean;
             /** Expected Value Interval */
             expected_value_interval: {
                 [key: string]: number | null;
@@ -1901,16 +2601,17 @@ export interface components {
             fair_value_interval: {
                 [key: string]: number | null;
             };
+            /** Forecast */
+            forecast?: {
+                [key: string]: unknown;
+            };
             /** Legs */
             legs: components["schemas"]["OptionCandidateLeg"][];
             /** Liquidity */
             liquidity: {
                 [key: string]: unknown;
             };
-            /** Market Regime */
-            market_regime?: {
-                [key: string]: unknown;
-            };
+            market_regime?: components["schemas"]["MarketRegime"];
             /** Modeled Net Edge */
             modeled_net_edge?: number | null;
             /** One Unit Max Loss */
@@ -1931,10 +2632,7 @@ export interface components {
             relative_value_id: number;
             /** State Reasons */
             state_reasons: string[];
-            /** Strategy Route */
-            strategy_route?: {
-                [key: string]: unknown;
-            };
+            strategy_route?: components["schemas"]["StrategyRoute"];
             /** Strike */
             strike: number;
             /** Structure */
@@ -1963,6 +2661,44 @@ export interface components {
             top_blockers: components["schemas"]["OptionBlockerCount"][];
             underlying: components["schemas"]["OptionsUnderlyingReadiness"];
         };
+        /** OptionsDecisionTruth */
+        OptionsDecisionTruth: {
+            /** As Of */
+            as_of?: string | null;
+            /** Blockers */
+            blockers?: string[];
+            /** Candidate State */
+            candidate_state: string;
+            /** Evidence Refs */
+            evidence_refs?: {
+                [key: string]: unknown;
+            }[];
+            /** Execution State */
+            execution_state: string;
+            /** Lane */
+            lane: string;
+            /** Next Action */
+            next_action?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Readiness State */
+            readiness_state: string;
+            /** Route Verdict */
+            route_verdict: string;
+            /** Route Version */
+            route_version: string;
+            /** Symbol */
+            symbol: string;
+        };
+        /** OptionsHistoryPolicyResponse */
+        OptionsHistoryPolicyResponse: {
+            /** Options History Policy */
+            options_history_policy: {
+                [key: string]: unknown;
+            };
+        };
         /** OptionsHistoryToggleInput */
         OptionsHistoryToggleInput: {
             /** Lock Version */
@@ -1972,6 +2708,160 @@ export interface components {
              * @enum {string}
              */
             requested_state: "on" | "off";
+        };
+        /** OptionsJournalAdmission */
+        OptionsJournalAdmission: {
+            /** Blockers */
+            blockers?: string[];
+            /** Decision At */
+            decision_at?: string | null;
+            /** Decision State */
+            decision_state?: string | null;
+            /** Discovery Lane */
+            discovery_lane?: string | null;
+            /** Market Regime */
+            market_regime?: string | null;
+            /** Model Revision */
+            model_revision?: string | null;
+            /** Paper State */
+            paper_state?: string | null;
+            /** Reasons */
+            reasons?: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalAttribution */
+        OptionsJournalAttribution: {
+            /** Iv */
+            iv?: number | null;
+            /** Spread */
+            spread?: number | null;
+            /** Theta */
+            theta?: number | null;
+            /** Underlying */
+            underlying?: number | null;
+            /** Unexplained */
+            unexplained?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalContract */
+        OptionsJournalContract: {
+            /** Expiration */
+            expiration?: string | null;
+            /** Legs */
+            legs?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Multiplier
+             * @default 100
+             */
+            multiplier: number;
+            /** Option Type */
+            option_type?: string | null;
+            /** Strike */
+            strike?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalExecution */
+        OptionsJournalExecution: {
+            /** Entry At */
+            entry_at?: string | null;
+            /** Entry Cohort Id */
+            entry_cohort_id?: string | null;
+            /** Entry Price */
+            entry_price?: number | null;
+            /** Exit At */
+            exit_at?: string | null;
+            /** Exit Price */
+            exit_price?: number | null;
+            /** Fill Basis */
+            fill_basis?: string | null;
+            /** Holding Period Hours */
+            holding_period_hours?: number | null;
+            /** Latest Mark */
+            latest_mark?: number | null;
+            /** Signal Quote At */
+            signal_quote_at?: string | null;
+            /** Staged At */
+            staged_at?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalForecast */
+        OptionsJournalForecast: {
+            /** Data Confidence */
+            data_confidence?: number | null;
+            /** Execution Confidence */
+            execution_confidence?: number | null;
+            /** Expected Value */
+            expected_value?: number | null;
+            /** Fair Value High */
+            fair_value_high?: number | null;
+            /** Fair Value Low */
+            fair_value_low?: number | null;
+            /** Lower 95 Expected Value */
+            lower_95_expected_value?: number | null;
+            /** Max Loss */
+            max_loss?: number | null;
+            /** Modeled Net Edge */
+            modeled_net_edge?: number | null;
+            /** Probability Profit */
+            probability_profit?: number | null;
+            /** Risk Adjusted Expectancy */
+            risk_adjusted_expectancy?: number | null;
+            /**
+             * Scenario Count
+             * @default 0
+             */
+            scenario_count: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalOutcome */
+        OptionsJournalOutcome: {
+            attribution?: components["schemas"]["OptionsJournalAttribution"];
+            /** Current Return */
+            current_return?: number | null;
+            /** Max Drawdown */
+            max_drawdown?: number | null;
+            /** Observed Through */
+            observed_through?: string | null;
+            /** Peak Return */
+            peak_return?: number | null;
+            /** Realized Exit Basis */
+            realized_exit_basis?: string | null;
+            /** Realized Exit Return */
+            realized_exit_return?: number | null;
+            /** Return 1D */
+            return_1d?: number | null;
+            /** Return 20D */
+            return_20d?: number | null;
+            /** Return 5D */
+            return_5d?: number | null;
+            /** Return 60D */
+            return_60d?: number | null;
+            /** State */
+            state?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** OptionsJournalThesis */
+        OptionsJournalThesis: {
+            /** Core Thesis */
+            core_thesis?: string | null;
+            /** Direction */
+            direction?: string | null;
+            /** Horizon Date */
+            horizon_date?: string | null;
+            /** Invalidation */
+            invalidation?: string | null;
+            /** Revision */
+            revision?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /** OptionsLearningProgress */
         OptionsLearningProgress: {
@@ -2012,48 +2902,33 @@ export interface components {
         };
         /** OptionsPaperJournalRow */
         OptionsPaperJournalRow: {
-            /** Admission */
-            admission: {
-                [key: string]: unknown;
-            };
+            admission?: components["schemas"]["OptionsJournalAdmission"];
             /** Assignment Warning */
             assignment_warning?: string | null;
             /** Conservative Entry Price */
             conservative_entry_price?: number | null;
             /** Conservative Fill Basis */
             conservative_fill_basis?: string | null;
-            /** Contract */
-            contract: {
-                [key: string]: unknown;
-            };
+            contract?: components["schemas"]["OptionsJournalContract"];
             /** Current Return */
             current_return?: number | null;
             /** Decision Id */
             decision_id: string;
             /** Entry At */
             entry_at?: string | null;
-            /** Execution */
-            execution: {
-                [key: string]: unknown;
-            };
-            /** Forecast */
-            forecast: {
-                [key: string]: unknown;
-            };
+            execution?: components["schemas"]["OptionsJournalExecution"];
+            forecast?: components["schemas"]["OptionsJournalForecast"];
             /** Latest Mark */
             latest_mark?: number | null;
             /** Lifecycle */
             lifecycle: string;
             /** Metrics */
-            metrics: {
+            metrics?: {
                 [key: string]: unknown;
             };
             /** Missing Mark Gap */
             missing_mark_gap: boolean;
-            /** Outcome */
-            outcome: {
-                [key: string]: unknown;
-            };
+            outcome?: components["schemas"]["OptionsJournalOutcome"];
             /** Outcome State */
             outcome_state?: string | null;
             /** Paper Order Id */
@@ -2066,17 +2941,20 @@ export interface components {
             shadow_id?: string | null;
             /** Structure */
             structure?: string | null;
-            /** Thesis */
-            thesis: {
-                [key: string]: unknown;
-            };
+            thesis?: components["schemas"]["OptionsJournalThesis"];
         };
         /** OptionsThesisReadiness */
         OptionsThesisReadiness: {
+            /** Blocker */
+            blocker?: string | null;
+            /** Direction */
+            direction?: string | null;
             /** Eligible */
             eligible: boolean;
             /** Invalidation */
             invalidation?: string | null;
+            /** Present */
+            present?: boolean | null;
             /** Revision */
             revision?: string | null;
         };
@@ -2088,6 +2966,81 @@ export interface components {
             groups_with_inconsistent_underlying: number;
             /** Groups With Missing Underlying */
             groups_with_missing_underlying: number;
+        };
+        /** OptionsWorkspaceResponse */
+        OptionsWorkspaceResponse: {
+            /**
+             * Active Revision
+             * @default
+             */
+            active_revision: string;
+            /** Canary Status */
+            canary_status?: {
+                [key: string]: unknown;
+            };
+            /** Capture Generation Id */
+            capture_generation_id?: number | null;
+            decision_brief: components["schemas"]["OptionsDecisionBrief"];
+            /** Evidence As Of */
+            evidence_as_of?: string | null;
+            /**
+             * Freshness State
+             * @default unknown
+             */
+            freshness_state: string;
+            /** Generated At */
+            generated_at?: string | null;
+            market_regime?: components["schemas"]["MarketRegime"];
+            /** Paper Action Capability */
+            paper_action_capability?: {
+                [key: string]: unknown;
+            };
+            strategy_route?: components["schemas"]["StrategyRoute"];
+            /** Symbol */
+            symbol: string;
+            /** Tab Counts */
+            tab_counts?: {
+                [key: string]: number;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** PanelContractResponse */
+        PanelContractResponse: {
+            /** Frontend Table Keys */
+            frontend_table_keys: {
+                [key: string]: string;
+            };
+            /** Scopes */
+            scopes: {
+                [key: string]: string[];
+            };
+            /** Ticker Tables */
+            ticker_tables: string[];
+            /** Watchlist Section Output Tables */
+            watchlist_section_output_tables: string[];
+            /** Watchlist Section Tables */
+            watchlist_section_tables: string[];
+        };
+        /** PanelSnapshotResponse */
+        PanelSnapshotResponse: {
+            dashboard?: components["schemas"]["DashboardResponse"] | null;
+            /** Scope */
+            scope: string;
+            status: components["schemas"]["ApiStatusResponse"];
+            /** Tables */
+            tables?: {
+                [key: string]: components["schemas"]["TablePayloadResponse"];
+            };
+        };
+        /** PaperEntryResponse */
+        PaperEntryResponse: {
+            /** Decision Id */
+            decision_id?: string | null;
+            /** Status */
+            status?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** PortfolioTransactionInput */
         PortfolioTransactionInput: {
@@ -2131,6 +3084,39 @@ export interface components {
              */
             transaction_type: "opening_balance" | "buy" | "sell" | "dividend" | "fee" | "split" | "transfer_in" | "transfer_out";
         };
+        /** PortfolioTransactionPreviewResponse */
+        PortfolioTransactionPreviewResponse: {
+            /** Amount */
+            amount?: number | null;
+            /** Fees */
+            fees?: number | null;
+            /** New Average Cost */
+            new_average_cost?: number | null;
+            /** New Quantity */
+            new_quantity?: number | null;
+            /** Old Average Cost */
+            old_average_cost?: number | null;
+            /** Old Quantity */
+            old_quantity?: number | null;
+            /** Position Version */
+            position_version: string;
+            /** Realized Pnl */
+            realized_pnl?: number | null;
+            /** Symbol */
+            symbol?: string | null;
+            /** Transaction Type */
+            transaction_type?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** PortfolioTransactionResultResponse */
+        PortfolioTransactionResultResponse: {
+            portfolio: components["schemas"]["TablePayloadResponse"];
+            /** Transaction */
+            transaction: {
+                [key: string]: unknown;
+            };
+        };
         /** PortfolioTransactionReversalInput */
         PortfolioTransactionReversalInput: {
             /** Idempotency Key */
@@ -2140,6 +3126,113 @@ export interface components {
              * @default
              */
             notes: string;
+        };
+        /** QuotesResponse */
+        QuotesResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Limit */
+            limit?: number | null;
+            /** Offset */
+            offset?: number | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+            status?: components["schemas"]["ApiStatusResponse"] | null;
+        };
+        /** RadarAlertAcknowledgementResponse */
+        RadarAlertAcknowledgementResponse: {
+            /** Alert Id */
+            alert_id: string;
+            /** Status */
+            status: string;
+        };
+        /** RecoveryEventResponse */
+        RecoveryEventResponse: {
+            /** Event Id */
+            event_id?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** RecoveryEventsResponse */
+        RecoveryEventsResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Events */
+            events?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** RecoveryHealthResponse */
+        RecoveryHealthResponse: {
+            /** Scheduler */
+            scheduler?: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** RefreshJobResponse */
+        RefreshJobResponse: {
+            /** Error */
+            error?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Job Name */
+            job_name?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Summary */
+            summary?: unknown;
+        } & {
+            [key: string]: unknown;
+        };
+        /** RefreshJobsResponse */
+        RefreshJobsResponse: {
+            /** Allowlist */
+            allowlist?: string[];
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            latest_status?: components["schemas"]["RefreshLatestStatusResponse"] | null;
+            /** Rows */
+            rows?: components["schemas"]["RefreshJobResponse"][];
+        };
+        /** RefreshLatestStatusResponse */
+        RefreshLatestStatusResponse: {
+            /** Data Finished At */
+            data_finished_at?: string | null;
+            /** Data Ok */
+            data_ok?: boolean | null;
+            /** Failed Step */
+            failed_step?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Host */
+            host?: string | null;
+            /** Job */
+            job?: string | null;
+            /** Ok */
+            ok?: boolean | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** RelativeValuePage */
         RelativeValuePage: {
@@ -2235,6 +3328,239 @@ export interface components {
             /** Priority Handles */
             priority_handles?: string[] | string | null;
         };
+        /** SettingsResponse */
+        SettingsResponse: {
+            /** Agents */
+            agents?: {
+                [key: string]: unknown;
+            };
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** Integration */
+            integration?: {
+                [key: string]: unknown;
+            };
+            sources?: components["schemas"]["SourceAuditResponse"] | null;
+            status: components["schemas"]["ApiStatusResponse"];
+        };
+        /** SourceAuditResponse */
+        SourceAuditResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** SourceCapabilityResponse */
+        SourceCapabilityResponse: {
+            /**
+             * Capability
+             * @default
+             */
+            capability: string;
+            /**
+             * Failure Detail
+             * @default
+             */
+            failure_detail: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SourceCatalogResponse */
+        SourceCatalogResponse: {
+            /** Groups */
+            groups?: {
+                [key: string]: string[];
+            };
+            /** Rows */
+            rows?: components["schemas"]["SourceCatalogRowResponse"][];
+            summary?: components["schemas"]["SourceCatalogSummaryResponse"];
+        } & {
+            [key: string]: unknown;
+        };
+        /** SourceCatalogRowResponse */
+        SourceCatalogRowResponse: {
+            /**
+             * Cadence Label
+             * @default event driven
+             */
+            cadence_label: string;
+            /** Capability Health */
+            capability_health?: components["schemas"]["SourceCapabilityResponse"][];
+            /**
+             * Effective Status
+             * @default missing
+             */
+            effective_status: string;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Failure Detail
+             * @default
+             */
+            failure_detail: string;
+            /** Freshness Status */
+            freshness_status?: string | null;
+            /** Ingestion Mode */
+            ingestion_mode?: string | null;
+            /**
+             * Inherited Check
+             * @default false
+             */
+            inherited_check: boolean;
+            /**
+             * Item Count
+             * @default 0
+             */
+            item_count: number;
+            /** Last Attempt At */
+            last_attempt_at?: string | null;
+            /** Last Data At */
+            last_data_at?: string | null;
+            /** Last Success At */
+            last_success_at?: string | null;
+            /** Latest Capability */
+            latest_capability?: string | null;
+            /**
+             * Operational Group
+             * @default other
+             */
+            operational_group: string;
+            /** Refresh Job */
+            refresh_job?: string | null;
+            /** Refresh Jobs */
+            refresh_jobs?: string[];
+            /**
+             * Remediation
+             * @default
+             */
+            remediation: string;
+            /** Run Status */
+            run_status?: string | null;
+            /**
+             * Source Family
+             * @default
+             */
+            source_family: string;
+            /**
+             * Source Id
+             * @default
+             */
+            source_id: string;
+            /**
+             * Source Kind
+             * @default
+             */
+            source_kind: string;
+            /**
+             * Source Name
+             * @default
+             */
+            source_name: string;
+            /** Source Url */
+            source_url?: string | null;
+            /** Status At */
+            status_at?: string | null;
+            /**
+             * Ticker Count
+             * @default 0
+             */
+            ticker_count: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SourceCatalogSummaryResponse */
+        SourceCatalogSummaryResponse: {
+            /**
+             * Attention
+             * @default 0
+             */
+            attention: number;
+            /**
+             * Disabled
+             * @default 0
+             */
+            disabled: number;
+            /**
+             * Enabled
+             * @default 0
+             */
+            enabled: number;
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * Healthy
+             * @default 0
+             */
+            healthy: number;
+            /** Last Success At */
+            last_success_at?: string | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SourceDetailResponse */
+        SourceDetailResponse: {
+            /** Source Id */
+            source_id?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** StaticArbitrageVerificationResponse */
+        StaticArbitrageVerificationResponse: {
+            /** Candidate Id */
+            candidate_id?: number | null;
+            /** Status */
+            status?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** StatusResponse */
+        StatusResponse: {
+            /** Message */
+            message: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            options_history?: components["schemas"]["OptionHistoryHealthResponse"] | null;
+            /** Ready */
+            ready: boolean;
+            /** Source */
+            source: string;
+        };
+        /**
+         * StorageHealthResponse
+         * @description Storage observability payload with an explicit outage-only shape.
+         */
+        StorageHealthResponse: {
+            [key: string]: unknown;
+        };
         /** StrategyPromotionInput */
         StrategyPromotionInput: {
             /**
@@ -2242,6 +3568,98 @@ export interface components {
              * @default joe
              */
             approved_by: string;
+        };
+        /** StrategyPromotionResponse */
+        StrategyPromotionResponse: {
+            /** Approved By */
+            approved_by: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Radar Refresh */
+            radar_refresh?: {
+                [key: string]: unknown;
+            } | null;
+            /** Status */
+            status: string;
+            /** Strategy Version */
+            strategy_version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** StrategyRoute */
+        StrategyRoute: {
+            /**
+             * Ai Can Override
+             * @default false
+             */
+            ai_can_override: boolean;
+            /** Alternative Structures */
+            alternative_structures?: string[];
+            /** As Of */
+            as_of?: string | null;
+            /** Event State */
+            event_state?: string | null;
+            /**
+             * Paper Quantity Authorized
+             * @default false
+             */
+            paper_quantity_authorized: boolean;
+            /** Rejected Structures */
+            rejected_structures?: {
+                [key: string]: unknown;
+            }[];
+            /** Route Blockers */
+            route_blockers?: string[];
+            /** Route Version */
+            route_version?: string | null;
+            /**
+             * Selected Structure
+             * @default NO_TRADE
+             */
+            selected_structure: string;
+            /** Selection Reasons */
+            selection_reasons?: string[];
+            /**
+             * Shadow
+             * @default true
+             */
+            shadow: boolean;
+            /** Trend Confidence */
+            trend_confidence?: number | null;
+            /** Trend State */
+            trend_state?: string | null;
+            /** Volatility State */
+            volatility_state?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SuperinvestorDetailResponse */
+        SuperinvestorDetailResponse: {
+            /** Holdings */
+            holdings?: {
+                [key: string]: unknown;
+            }[];
+            /** Investor Key */
+            investor_key?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TablePayloadResponse */
+        TablePayloadResponse: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Limit */
+            limit?: number | null;
+            /** Offset */
+            offset?: number | null;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[];
+            status?: components["schemas"]["ApiStatusResponse"] | null;
         };
         /** ThesisAutomationInput */
         ThesisAutomationInput: {
@@ -2257,6 +3675,36 @@ export interface components {
             force: boolean;
             /** Symbols */
             symbols?: string[] | null;
+        };
+        /** ThesisAutomationResponse */
+        ThesisAutomationResponse: {
+            /** Dry Run */
+            dry_run: boolean;
+            /** Force */
+            force: boolean;
+            /** Job */
+            job: {
+                [key: string]: unknown;
+            };
+            /** Symbols */
+            symbols: string[] | string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ThesisHistoryResponse */
+        ThesisHistoryResponse: {
+            /** Review Events */
+            review_events?: {
+                [key: string]: unknown;
+            }[];
+            /** Revisions */
+            revisions?: {
+                [key: string]: unknown;
+            }[];
+            /** Symbol */
+            symbol?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** ThesisInput */
         ThesisInput: {
@@ -2352,6 +3800,19 @@ export interface components {
             /** Reasoning Effort */
             reasoning_effort?: string | null;
         };
+        /** ThesisMutationResponse */
+        ThesisMutationResponse: {
+            /** Thesis */
+            thesis: {
+                [key: string]: unknown;
+            };
+            /** Thesis Monitor */
+            thesis_monitor?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** ThesisReviewInput */
         ThesisReviewInput: {
             /**
@@ -2368,6 +3829,52 @@ export interface components {
             /** Reviewed Evidence Cutoff */
             reviewed_evidence_cutoff?: string | null;
         };
+        /** ThesisReviewResponse */
+        ThesisReviewResponse: {
+            /** Review */
+            review: {
+                [key: string]: unknown;
+            };
+            /** Thesis Monitor */
+            thesis_monitor?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TickerDecisionSnapshotResponse */
+        TickerDecisionSnapshotResponse: {
+            /**
+             * Found
+             * @default true
+             */
+            found: boolean;
+            /** Symbol */
+            symbol: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TickerDetailResponse */
+        TickerDetailResponse: {
+            /** As Of */
+            as_of?: string | null;
+            /** Dossier */
+            dossier?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Found
+             * @default false
+             */
+            found: boolean;
+            status: components["schemas"]["ApiStatusResponse"];
+            /** Symbol */
+            symbol: string;
+            /** Ticker */
+            ticker: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -2380,6 +3887,18 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WatchlistMutationResponse */
+        WatchlistMutationResponse: {
+            /** Data Refresh */
+            data_refresh?: {
+                [key: string]: unknown;
+            } | null;
+            watchlist: components["schemas"]["TablePayloadResponse"];
+            /** Watchlist Symbol */
+            watchlist_symbol: {
+                [key: string]: unknown;
+            };
         };
         /** WatchlistSymbolInput */
         WatchlistSymbolInput: {
@@ -2422,9 +3941,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentOverviewResponse"];
                 };
             };
         };
@@ -2450,9 +3967,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentSubmissionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2487,9 +4002,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentSubmissionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2522,9 +4035,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentAnalyzeResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2553,9 +4064,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentExperimentResponse"];
                 };
             };
         };
@@ -2575,9 +4084,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["AgentResearchPromptResponse"];
                 };
             };
         };
@@ -2600,9 +4107,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["DecisionInboxResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2633,9 +4138,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EventScoutEventsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2666,9 +4169,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EventScoutPacketsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2699,9 +4200,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EventScoutReplayResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2732,9 +4231,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EventScoutReplayResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2767,9 +4264,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EventScoutSignalResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2798,9 +4293,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RecoveryHealthResponse"];
                 };
             };
         };
@@ -2820,9 +4313,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StorageHealthResponse"];
                 };
             };
         };
@@ -2845,9 +4336,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OpportunityScorecardResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2881,9 +4370,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionLearningCollectionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2914,9 +4401,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionSignalDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2951,9 +4436,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PaperEntryResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3092,9 +4575,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RecoveryEventsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3128,9 +4609,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RecoveryEventResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3298,9 +4777,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionHistoryHealthResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3400,9 +4877,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StaticArbitrageVerificationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3533,9 +5008,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionHistorySymbolsResponse"];
                 };
             };
         };
@@ -3655,9 +5128,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionTicketDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3689,9 +5160,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionsWorkspaceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3720,9 +5189,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PanelContractResponse"];
                 };
             };
         };
@@ -3746,9 +5213,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PanelSnapshotResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3779,9 +5244,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TablePayloadResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3814,9 +5277,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PortfolioTransactionResultResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3849,9 +5310,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PortfolioTransactionPreviewResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3886,9 +5345,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PortfolioTransactionResultResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3920,9 +5377,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["QuotesResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3953,9 +5408,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RadarAlertAcknowledgementResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3984,9 +5437,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RefreshJobsResponse"];
                 };
             };
         };
@@ -4008,9 +5459,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RefreshJobResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4041,9 +5490,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["RefreshJobResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4072,9 +5519,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SettingsResponse"];
                 };
             };
         };
@@ -4098,9 +5543,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SettingsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4133,9 +5576,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SettingsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4164,9 +5605,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SourceCatalogResponse"];
                 };
             };
         };
@@ -4186,9 +5625,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SourceAuditResponse"];
                 };
             };
         };
@@ -4210,9 +5647,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SourceDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4241,9 +5676,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StatusResponse"];
                 };
             };
         };
@@ -4269,9 +5702,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["StrategyPromotionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4302,9 +5733,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SuperinvestorDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4339,9 +5768,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ThesisMutationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4372,9 +5799,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ThesisHistoryResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4409,9 +5834,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ThesisReviewResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4444,9 +5867,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ThesisAutomationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4477,9 +5898,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TickerDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4510,9 +5929,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TickerDecisionSnapshotResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4545,9 +5962,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["WatchlistMutationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4578,9 +5993,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["WatchlistMutationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4615,9 +6028,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["OptionsHistoryPolicyResponse"];
                 };
             };
             /** @description Validation Error */

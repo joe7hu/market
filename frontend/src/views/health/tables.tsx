@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 
-import { type RefreshJob } from "@/api";
+import { type RefreshJob } from "@/api/panel";
 import { StatusBadge } from "@/components/market/workstation";
 import type { RowRecord } from "@/types";
 import { displayField, titleLabel, toneFromText } from "@/views/rowFormat";

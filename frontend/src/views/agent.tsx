@@ -5,13 +5,12 @@ import {
   analyzeTicker,
   loadAgent,
   loadAgentResearchPrompt,
-  startRefreshJob,
-  updateAgentSettings,
   type AgentOverview,
   type AgentRun,
   type DailyResearchPrompt,
   type OptionAgentSettingsInput,
-} from "@/api";
+} from "@/api/agent";
+import { startRefreshJob, updateAgentSettings } from "@/api/panel";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,7 +117,7 @@ export function AgentPage() {
       const latestOptionRunId = data?.runs.find((run) => run.workflow === "option_agent")?.id;
       await startRefreshJob(FORCE_JOB);
       setMessage("Queue run started — processing all open requests…");
-      setPending({ latestOptionRunId, label: "Queue run" });
+      setPending({ latestOptionRunId: latestOptionRunId ?? undefined, label: "Queue run" });
       await refresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to start agent run");
@@ -137,7 +136,7 @@ export function AgentPage() {
       const latestOptionRunId = data?.runs.find((run) => run.workflow === "option_agent")?.id;
       await analyzeTicker(symbol, prompt.trim() || undefined);
       setMessage(`Analyzing ${symbol}… this runs in the background and will appear in Run history below.`);
-      setPending({ latestOptionRunId, label: `${symbol} analysis` });
+      setPending({ latestOptionRunId: latestOptionRunId ?? undefined, label: `${symbol} analysis` });
       setTicker("");
       setPrompt("");
       await refresh();
