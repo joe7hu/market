@@ -54,16 +54,29 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
             )
         ingestion.register_source("test-content", name="Test content", family="news", kind="article")
         content_run = ingestion.start_run("test-content", "content")
-        SourceFactRepository(runtime).store_content_items(
+        facts = SourceFactRepository(runtime)
+        facts.store_content_items(
             content_run,
             "test-content",
             [{
                 "source_key": "nvda-news", "title": "NVDA demand update",
                 "summary": "Demand remains firm", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC),
                 "symbols": ["NVDA"], "metadata": {"legacy_id": "nvda-news"},
-            }],
+        }],
         )
         ingestion.finish_run(content_run, "succeeded", item_count=1, instrument_count=1)
+        analysis_run = AnalysisRepository(runtime).start_run(
+            "source-signals",
+            input_cutoff=datetime(2026, 7, 11, 12, tzinfo=UTC),
+            code_version="test",
+            inputs={"source": "test-content"},
+        )
+        facts.store_signals(analysis_run, "test-content", [{
+            "source_item_id": "nvda-news", "source_id": "test-content",
+            "symbol": "NVDA", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC),
+            "signal_type": "thesis", "sentiment": "bullish", "confidence": 0.8,
+            "thesis": "Demand remains firm", "evidence_refs": "[]",
+        }])
         result = refresh_today_publication(runtime, now=datetime(2026, 7, 11, 13, tzinfo=UTC))
         assert result["daily_brief"] == 3
         assert result["source_changes"] == 1
@@ -251,7 +264,13 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
             ]
             facts.store_content_items(run_id, source_id, rows)
             ingestion.finish_run(run_id, "succeeded", item_count=count, instrument_count=1)
-            import_source_signals(runtime, [
+            analysis_run = AnalysisRepository(runtime).start_run(
+                "source-signals",
+                input_cutoff=observed_at,
+                code_version="test",
+                inputs={"source": source_id},
+            )
+            facts.store_signals(analysis_run, source_id, [
                 {
                     "id": f"signal-{source_id}-{index}",
                     "source_item_id": f"{source_id}-{index}",

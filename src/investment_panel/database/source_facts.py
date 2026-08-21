@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 import hashlib
+import json
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -97,6 +98,60 @@ class SourceFactRepository:
             "instrument_links": linked,
             "affected_symbols": sorted(affected_symbols),
         }
+
+    def store_signals(
+        self, analysis_run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]]
+    ) -> int:
+        """Persist normalized source signals for an existing analysis run."""
+
+        stored = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for signal in rows:
+                source_key = str(signal.get("source_item_id") or signal.get("source_key") or "").strip()
+                symbol = str(signal.get("symbol") or "").strip()
+                if not source_key or not symbol:
+                    continue
+                item = connection.execute(
+                    "SELECT id FROM raw.content_item WHERE source_id = %s AND source_key = %s",
+                    [source_id, source_key],
+                ).fetchone()
+                if item is None:
+                    continue
+                instrument_id = reconcile_instrument(connection, symbol, name=symbol, category="content_reference")
+                details = dict(signal.get("details") or {})
+                evidence_refs = signal.get("evidence_refs")
+                if isinstance(evidence_refs, str):
+                    try:
+                        details["evidence_refs"] = json.loads(evidence_refs)
+                    except json.JSONDecodeError:
+                        details["evidence_refs"] = []
+                connection.execute(
+                    """
+                    INSERT INTO analysis.source_signal
+                        (run_id, content_item_id, instrument_id, observed_at, signal_type,
+                         sentiment, direction, confidence, thesis, antithesis, invalidation, details)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (run_id, content_item_id, instrument_id, signal_type)
+                    DO UPDATE SET observed_at = EXCLUDED.observed_at,
+                                  sentiment = EXCLUDED.sentiment,
+                                  direction = EXCLUDED.direction,
+                                  confidence = EXCLUDED.confidence,
+                                  thesis = EXCLUDED.thesis,
+                                  antithesis = EXCLUDED.antithesis,
+                                  invalidation = EXCLUDED.invalidation,
+                                  details = EXCLUDED.details
+                    """,
+                    [
+                        analysis_run_id, item["id"], instrument_id,
+                        _aware_datetime(signal.get("observed_at")) or datetime.now(UTC),
+                        str(signal.get("signal_type") or "thesis"), signal.get("sentiment"),
+                        signal.get("direction"), _number(signal.get("confidence")),
+                        signal.get("thesis"), signal.get("antithesis"), signal.get("invalidation"),
+                        Jsonb(details),
+                    ],
+                )
+                stored += 1
+        return stored
 
     def store_market_events(
         self, run_id: UUID, source_id: str, rows: Sequence[dict[str, Any]], *, payload_id: int | None = None

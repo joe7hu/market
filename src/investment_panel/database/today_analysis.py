@@ -11,6 +11,7 @@ from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
 from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, evaluate_qqq_forecast, qqq_preopen_forecast
 
 
 def refresh_today_publication(
@@ -116,15 +117,29 @@ def refresh_today_publication(
                     FROM raw.price_bar bar
                     JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
                     WHERE instrument.symbol = 'QQQ' AND bar.interval = '1d'
-                      AND bar.trading_date < %s
+                      AND bar.trading_date < %s AND bar.observed_at <= %s
                     ORDER BY bar.trading_date DESC, bar.observed_at DESC
                 ) daily
                 ORDER BY date DESC
                 LIMIT 280
                 """,
-                [as_of.date()],
+                [as_of.date(), as_of],
             ).fetchall()
         ]
+        qqq_actual_row = connection.execute(
+            """
+            SELECT quote.price, quote.observed_at, source.kind AS source_kind
+            FROM raw.current_price_at(
+                %s,
+                ARRAY(SELECT instrument.id FROM catalog.instrument instrument WHERE instrument.symbol = 'QQQ')::bigint[]
+            ) quote
+            JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
+            JOIN ingest.source source ON source.id = quote.source_id
+            WHERE instrument.symbol = 'QQQ'
+            LIMIT 1
+            """,
+            [as_of],
+        ).fetchone()
         prior_preopen_row = connection.execute(
             """
             SELECT item.payload
@@ -188,6 +203,11 @@ def refresh_today_publication(
     option_items = [_option_item(row) for row in option_rows]
     source_items = [_source_change_item(row) for row in source_changes]
     catalyst_rows = [_catalyst_item(row, as_of) for row in catalysts]
+    forecast_history = list(reversed(qqq_history))
+    qqq_forecast = qqq_preopen_forecast(forecast_history)
+    qqq_backtest = backtest_qqq_preopen_model(forecast_history)
+    qqq_actual = dict(qqq_actual_row) if qqq_actual_row else None
+    qqq_outcome = evaluate_qqq_forecast(qqq_forecast, qqq_actual)
     daily_brief = sorted(
         review_rows + source_items + catalyst_rows + portfolio_rows,
         key=lambda row: (-float(row.get("score") or 0), str(row.get("symbol") or "")),

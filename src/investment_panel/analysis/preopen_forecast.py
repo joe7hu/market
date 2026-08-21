@@ -45,6 +45,62 @@ def qqq_preopen_forecast(history: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def evaluate_qqq_forecast(forecast: dict[str, Any], actual: dict[str, Any] | None) -> dict[str, Any]:
+    """Close the forecast loop with a point-in-time QQQ observation."""
+
+    if forecast.get("status") != "ok":
+        return {
+            "status": "unavailable",
+            "model_version": forecast.get("model_version") or FORECAST_MODEL_VERSION,
+            "reason": "forecast_not_available",
+        }
+    if not actual or actual.get("price") is None:
+        return {
+            "status": "pending",
+            "model_version": forecast.get("model_version") or FORECAST_MODEL_VERSION,
+            "reason": "no_same_day_qqq_observation_at_publication_as_of",
+        }
+    try:
+        prior_close = float(forecast["prior_close"])
+        actual_price = float(actual["price"])
+    except (KeyError, TypeError, ValueError):
+        return {
+            "status": "pending",
+            "model_version": forecast.get("model_version") or FORECAST_MODEL_VERSION,
+            "reason": "incomplete_actual_observation",
+        }
+    if prior_close <= 0:
+        return {
+            "status": "pending",
+            "model_version": forecast.get("model_version") or FORECAST_MODEL_VERSION,
+            "reason": "invalid_prior_close",
+        }
+    actual_return = (actual_price / prior_close - 1) * 100
+    expected_return = float(forecast.get("expected_return_pct") or 0)
+    low = forecast.get("low")
+    high = forecast.get("high")
+    low_value = float(low) if low is not None else None
+    high_value = float(high) if high is not None else None
+    return {
+        "status": "observed",
+        "model_version": forecast.get("model_version") or FORECAST_MODEL_VERSION,
+        "actual_price": round(actual_price, 2),
+        "actual_return_pct": round(actual_return, 2),
+        "expected_return_pct": round(expected_return, 2),
+        "absolute_error_pct": round(abs(actual_return - expected_return), 2),
+        "within_forecast_range": (
+            low_value <= actual_price <= high_value
+            if low_value is not None and high_value is not None else None
+        ),
+        "direction_correct": (
+            (expected_return >= 0 and actual_return >= 0)
+            or (expected_return < 0 and actual_return < 0)
+        ),
+        "actual_observed_at": actual.get("observed_at"),
+        "actual_source_kind": actual.get("source_kind"),
+    }
+
+
 def backtest_qqq_preopen_model(history: list[dict[str, Any]], *, min_train: int = 80) -> dict[str, Any]:
     if len(history) <= min_train + 5:
         return {"status": "insufficient_history", "model_version": FORECAST_MODEL_VERSION}
