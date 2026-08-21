@@ -11,7 +11,7 @@ from investment_panel.core.panel import (
 )
 
 from app.data_access.types import PanelData
-from app.data_access.coerce import _int_value, jsonable
+from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
 from investment_panel.core.decision import ticker_decision_brief

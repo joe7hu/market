@@ -125,7 +125,6 @@ export function DecisionFirstOptionsChainPage({ EvidenceWorkspace }: { EvidenceW
           journalCount={journalCount}
           shadow={shadow}
           shadowCount={shadowCount}
-          legacyShadowCount={workspace?.tab_counts.legacy_shadow_observations ?? 0}
           learning={learning}
         /> : null}
       </div>

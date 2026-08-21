@@ -12,12 +12,11 @@ type Props = {
   journalCount: number;
   shadow: OptionsPaperJournalRow[];
   shadowCount: number;
-  legacyShadowCount: number;
   learning: OptionsLearningProgress[];
 };
 
-export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount, legacyShadowCount, learning }: Props) {
-  const model = buildJournalDeskModel({ journal, journalCount, shadow, shadowCount, legacyShadowCount });
+export function JournalDesk({ brief, journal, journalCount, shadow, shadowCount, learning }: Props) {
+  const model = buildJournalDeskModel({ journal, journalCount, shadow, shadowCount });
   return <div className="space-y-4">
     <section className="grid overflow-hidden rounded-xl border border-sky-500/25 bg-[linear-gradient(135deg,hsl(var(--card)),hsl(var(--muted)/0.35))] lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.55fr)]">
       <div className="p-5 sm:p-6">

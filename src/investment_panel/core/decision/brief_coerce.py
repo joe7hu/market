@@ -149,3 +149,24 @@ def jsonable(value: Any) -> Any:
         except Exception:
             pass
     return value
+
+
+# Decision brief is one package interface. These names are the explicit
+# helpers consumed by the sibling brief composers; implementation callers use
+# the package facade instead of private cross-module names.
+first_row = _first_row
+latest_row = _latest_row
+number = _number
+object_value = _object
+text = _text
+text_list = _text_list
+text_join = _text_join
+format_money = _fmt_money
+format_pct = _fmt_pct
+parse_date = _parse_date
+
+
+__all__ = [
+    "first_row", "format_money", "format_pct", "jsonable", "latest_row",
+    "number", "object_value", "parse_date", "text", "text_join", "text_list",
+]

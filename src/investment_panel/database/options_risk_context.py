@@ -135,3 +135,6 @@ def _broker_available(account: Any, evaluated_at: datetime | None) -> float | No
     if not all(isfinite(value) and value >= 0 for value in values):
         return None
     return min(values)
+
+
+broker_available = _broker_available

@@ -514,3 +514,6 @@ def _wilson_interval(successes: int, total: int, *, z: float = 1.96) -> dict[str
     center = (proportion + z * z / (2 * total)) / denominator
     margin = z * ((proportion * (1 - proportion) / total + z * z / (4 * total * total)) ** 0.5) / denominator
     return {"lower": round(max(0.0, center - margin), 6), "upper": round(min(1.0, center + margin), 6), "confidence": 0.95}
+
+
+arm_summary = _arm_summary

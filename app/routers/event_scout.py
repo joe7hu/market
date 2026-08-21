@@ -17,7 +17,7 @@ from app.response_contracts import (
     EventScoutReplayResponse,
     EventScoutSignalResponse,
 )
-from investment_panel.core.event_scout import replay_mrna
+from investment_panel.core.event_replays import replay_mrna
 from investment_panel.core.config import AppConfig
 
 

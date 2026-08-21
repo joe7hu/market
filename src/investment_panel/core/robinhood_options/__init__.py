@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from investment_panel.core.robinhood_options.auth import (
     RobinhoodAuthRequired,
-    _authorization_server_metadata,
+    authorization_server_metadata,
     authorize_robinhood_mcp,
     load_robinhood_access_token,
 )
@@ -28,6 +28,7 @@ __all__ = [
     "RobinhoodAuthRequired",
     "RobinhoodClient",
     "RobinhoodMcpClient",
+    "authorization_server_metadata",
     "authorize_robinhood_mcp",
     "collect_robinhood_equity_quotes",
     "collect_robinhood_option_chains",

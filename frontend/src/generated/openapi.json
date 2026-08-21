@@ -10121,16 +10121,6 @@
               "title": "Limit",
               "type": "integer"
             }
-          },
-          {
-            "in": "query",
-            "name": "include_legacy",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Include Legacy",
-              "type": "boolean"
-            }
           }
         ],
         "responses": {

@@ -5070,7 +5070,6 @@ export interface operations {
                 symbol?: string;
                 offset?: number;
                 limit?: number;
-                include_legacy?: boolean;
             };
             header?: never;
             path?: never;

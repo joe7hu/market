@@ -54,7 +54,7 @@ function observation(overrides: Partial<OptionsPaperJournalRow>): OptionsPaperJo
 }
 
 describe("journal desk model", () => {
-  it("summarizes current experiments without presenting legacy rows as current blockers", () => {
+  it("summarizes current experiments without hiding research rows", () => {
     const pending = observation({});
     const tracking = observation({
       shadow_id: "shadow-2",
@@ -67,7 +67,6 @@ describe("journal desk model", () => {
       journalCount: 0,
       shadow: [pending, tracking],
       shadowCount: 3,
-      legacyShadowCount: 210,
     });
 
     expect(model.paperStatus).toBe("No paper track record yet");
@@ -75,10 +74,9 @@ describe("journal desk model", () => {
     expect(model.tracking).toBe(1);
     expect(model.awaitingEntry).toBe(1);
     expect(model.marked).toBe(1);
-    expect(model.legacyArchived).toBe(210);
     expect(observationLabel(pending)).toBe("Awaiting next quote");
     expect(observationLabel(tracking)).toBe("Tracking path");
     expect(researchBlockerLabel("thesis_direction_required")).toBe("Neutral thesis — no directional trade");
-    expect(researchBlockerLabel("thesis_upgrade_required")).toBe("Legacy pre-v3 thesis format");
+    expect(researchBlockerLabel("thesis_upgrade_required")).toBe("Thesis revision required");
   });
 });

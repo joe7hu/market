@@ -13,7 +13,7 @@ import pytest
 
 from investment_panel.database.actions import ActionRepository
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.agents import AgentRepository, _command_args
+from investment_panel.database.agents import AgentRepository, command_args
 from investment_panel.database.agent_process import market_day_start_utc
 from investment_panel.database.agent_context import option_opportunity_context
 from investment_panel.database.migrations import upgrade_database
@@ -467,7 +467,7 @@ def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: py
     command.write_text("")
     monkeypatch.setattr("investment_panel.database.agent_process.shutil.which", lambda _name: None)
     monkeypatch.setattr("investment_panel.database.agent_process.sys.executable", str(python))
-    resolved = _command_args("market-run-option-agent")
+    resolved = command_args("market-run-option-agent")
     assert resolved[0] == str(command)
 
 

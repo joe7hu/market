@@ -8,8 +8,8 @@ from investment_panel.core.event_scout import (
     build_options_decision_truth,
     latest_short_interest_snapshot,
     match_historical_cases,
-    replay_mrna,
 )
+from investment_panel.core.event_replays import replay_mrna
 
 
 def test_short_interest_uses_latest_report_date_without_mixing_history() -> None:
@@ -104,6 +104,7 @@ def test_event_scout_options_collection_feeds_positioning_metrics() -> None:
                 "volume_to_open_interest": 1.8,
             },
         },
+        packet_builder=build_event_decision_packet,
         now="2026-08-20T14:00:00Z",
     )
     assert result["accepted"] is True

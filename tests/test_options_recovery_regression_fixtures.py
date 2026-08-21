@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from investment_panel.core.options_recovery import ExecutableLeg, QuoteCapture, evaluate_lifecycle
-from investment_panel.database.options_recovery_learning import _classification
+from investment_panel.database.options_recovery_learning import classification as classify_observation
 
 
 NOW = datetime(2026, 8, 3, 14, tzinfo=UTC)
@@ -50,7 +50,7 @@ def test_tsla_290p_fixture_is_a_full_denominator_miss_when_not_ticketed() -> Non
             _capture(30, bid=5.40, ask=5.50, session=3),
         ],
     )
-    classification, data_status, reason = _classification(
+    classification, data_status, reason = classify_observation(
         {
             "paper_status": None,
             "miss_reason": "ranked_out",
@@ -93,7 +93,7 @@ def test_closed_event_horizon_never_leaves_an_observation_observing_forever() ->
         captures=[_capture(15, bid=0.99, ask=1.00, session=1)],
     )
 
-    classification, data_status, reason = _classification(
+    classification, data_status, reason = classify_observation(
         {
             "paper_status": None,
             "miss_reason": None,

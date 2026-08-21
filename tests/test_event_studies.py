@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import investment_panel.database.event_studies as event_studies
 from investment_panel.database.event_studies import (
     bootstrap_median_interval, bounded_event_cohort, bounded_event_targets,
-    deduplicate_logical_events, event_session, _event_move, _latest_completed_market_date,
-    _minimum_event_expiration, _canonical_event_bars, paired_atm_straddle_cost,
+    deduplicate_logical_events, event_session, event_move, latest_completed_market_date,
+    minimum_event_expiration, canonical_event_bars, paired_atm_straddle_cost,
     percentile, summarize_actual_moves,
 )
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
@@ -67,8 +67,8 @@ def test_event_session_uses_new_york_market_boundaries() -> None:
 
 
 def test_event_regime_cutoff_includes_only_completed_new_york_session() -> None:
-    assert _latest_completed_market_date(datetime(2026, 8, 19, 19, 59, tzinfo=UTC)).isoformat() == "2026-08-18"
-    assert _latest_completed_market_date(datetime(2026, 8, 19, 20, 1, tzinfo=UTC)).isoformat() == "2026-08-19"
+    assert latest_completed_market_date(datetime(2026, 8, 19, 19, 59, tzinfo=UTC)).isoformat() == "2026-08-18"
+    assert latest_completed_market_date(datetime(2026, 8, 19, 20, 1, tzinfo=UTC)).isoformat() == "2026-08-19"
 
 
 def test_event_regime_trend_input_is_strictly_window_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,8 +124,8 @@ def test_confirmed_bar_version_overflow_fails_closed() -> None:
 
 
 def test_post_market_event_requires_an_expiry_after_the_event_date() -> None:
-    assert _minimum_event_expiration(datetime(2026, 8, 19, 19, 0, tzinfo=UTC)).isoformat() == "2026-08-19"
-    assert _minimum_event_expiration(datetime(2026, 8, 19, 21, 0, tzinfo=UTC)).isoformat() == "2026-08-20"
+    assert minimum_event_expiration(datetime(2026, 8, 19, 19, 0, tzinfo=UTC)).isoformat() == "2026-08-19"
+    assert minimum_event_expiration(datetime(2026, 8, 19, 21, 0, tzinfo=UTC)).isoformat() == "2026-08-20"
 
 
 def test_historical_event_uses_the_bar_version_visible_at_its_cutoff() -> None:
@@ -138,7 +138,7 @@ def test_historical_event_uses_the_bar_version_visible_at_its_cutoff() -> None:
         {"trading_date": trading_date, "close": 101, "source_id": "polygon",
          "observed_at": early, "available_at": correction, "confirmed_at": correction},
     ]
-    selected = _canonical_event_bars(
+    selected = canonical_event_bars(
         rows, reference=early + timedelta(hours=1), completed_date=trading_date,
     )
     assert [row["close"] for row in selected] == [100]
@@ -151,9 +151,9 @@ def test_event_move_uses_new_york_date_and_exact_next_session() -> None:
         {"trading_date": datetime(2026, 8, 20).date(), "close": 103},
     ]
     starts_at = datetime(2026, 8, 20, 0, 30, tzinfo=UTC)
-    assert _event_move(bars, starts_at, 1, session="post_market") == pytest.approx(103 / 101 - 1)
-    assert _event_move([bars[0], bars[2]], starts_at, 1, session="post_market") is None
-    assert _event_move(bars, starts_at, 1, session="regular") is None
+    assert event_move(bars, starts_at, 1, session="post_market") == pytest.approx(103 / 101 - 1)
+    assert event_move([bars[0], bars[2]], starts_at, 1, session="post_market") is None
+    assert event_move(bars, starts_at, 1, session="regular") is None
 
 
 def test_duplicate_feed_events_count_as_one_logical_occurrence() -> None:

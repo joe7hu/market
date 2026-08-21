@@ -300,3 +300,9 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+detector_collection_deadline = _detector_collection_deadline
+detector_symbol_limit = _detector_symbol_limit
+detector_universe = _detector_universe
+post_ingestion_reference = _post_ingestion_reference

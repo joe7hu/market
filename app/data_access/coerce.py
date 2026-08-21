@@ -332,3 +332,12 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+# These two routines are application-owned seams used by the settings and
+# payload owners. Keep the remaining scalar helpers local to this module.
+int_value = _int_value
+deep_merge = _deep_merge
+
+
+__all__ = ["deep_merge", "int_value", "jsonable", "normalize_rows"]

@@ -380,3 +380,6 @@ def _calibration(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "baseline": baseline,
         "sample_size": len(pairs),
     }
+
+
+scorecard_payload = _scorecard

@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
-from app.data_access.coerce import _deep_merge
+from app.data_access.coerce import deep_merge as _deep_merge
 from app.data_access.payloads import runtime_metadata, status_payload
 from investment_panel.core.config import AppConfig, public_config_payload
 from investment_panel.database.authority import runtime_for_url

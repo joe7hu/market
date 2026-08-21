@@ -16,7 +16,7 @@ from investment_panel.database.storage_archive import (
     ARCHIVE_FREE_RESERVE_BYTES,
     ArchiveCapacityError,
     StorageArchiveService,
-    _ensure_mounted_archive_root,
+    ensure_mounted_archive_root,
 )
 from investment_panel.core.config import load_config, public_config_payload
 
@@ -151,7 +151,7 @@ def test_market_nas_archive_rejects_a_stale_unmounted_mountpoint(monkeypatch) ->
     monkeypatch.setattr("investment_panel.database.storage_archive.os.path.ismount", lambda _path: False)
 
     with pytest.raises(FileNotFoundError, match="archive mount is unavailable"):
-        _ensure_mounted_archive_root(Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1"))
+        ensure_mounted_archive_root(Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1"))
 
 
 def test_archive_writer_rejects_writes_below_nas_reserve(storage_postgres_dsn: str, tmp_path: Path, monkeypatch) -> None:

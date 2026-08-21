@@ -569,6 +569,9 @@ def _ensure_mounted_archive_root(root: Path) -> None:
         raise FileNotFoundError(f"archive parent is unavailable: {root.parent}")
 
 
+ensure_mounted_archive_root = _ensure_mounted_archive_root
+
+
 class ArchiveCapacityError(RuntimeError):
     """Archive writes must pause before they consume the NAS reserve."""
 

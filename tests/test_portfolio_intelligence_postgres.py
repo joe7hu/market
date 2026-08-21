@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from investment_panel.database.portfolio_intelligence import _performance_rows, portfolio_risk_rows
+from investment_panel.database.portfolio_intelligence import performance_rows, portfolio_risk_rows
 from investment_panel.database.portfolio_math import adjacent_session_dates, aligned_pair_returns
 
 
@@ -63,7 +63,7 @@ def test_performance_all_history_is_not_silently_truncated() -> None:
         {"instrument_id": 1, "symbol": "NVDA", "trading_date": start + timedelta(days=index), "close": 100 + index}
         for index in range(800)
     ]
-    assert len(_performance_rows(transactions, bars, [])) == 800
+    assert len(performance_rows(transactions, bars, [])) == 800
 
 
 def test_performance_buckets_executions_on_new_york_market_date() -> None:
@@ -78,7 +78,7 @@ def test_performance_buckets_executions_on_new_york_market_date() -> None:
         "executed_at": datetime(2026, 7, 2, 1, 0, tzinfo=UTC),
     }]
     bars = [{"instrument_id": 1, "symbol": "NVDA", "trading_date": date(2026, 7, 1), "close": 100}]
-    assert [row["date"] for row in _performance_rows(transactions, bars, [])] == ["2026-07-01"]
+    assert [row["date"] for row in performance_rows(transactions, bars, [])] == ["2026-07-01"]
 
 
 def test_performance_refreshes_cost_fallback_after_each_unpriced_acquisition() -> None:
@@ -105,7 +105,7 @@ def test_performance_refreshes_cost_fallback_after_each_unpriced_acquisition() -
         },
     ]
 
-    last = _performance_rows(transactions, [], [])[-1]
+    last = performance_rows(transactions, [], [])[-1]
 
     assert last["portfolio_value"] == 300
     assert last["total_pnl"] == 0
@@ -130,7 +130,7 @@ def test_performance_uses_latest_known_price_before_first_acquisition() -> None:
         "observed_at": datetime(2026, 7, 1, 20, tzinfo=UTC),
     }]
 
-    last = _performance_rows(transactions, bars, [])[-1]
+    last = performance_rows(transactions, bars, [])[-1]
 
     assert last["portfolio_value"] == 900
     assert last["total_pnl"] == -100
@@ -167,7 +167,7 @@ def test_performance_adjusts_pre_split_same_day_close_for_after_close_split() ->
         "observed_at": datetime(2026, 7, 1, 20, tzinfo=UTC),
     }]
 
-    last = _performance_rows(transactions, bars, [])[-1]
+    last = performance_rows(transactions, bars, [])[-1]
 
     assert last["portfolio_value"] == 1000
     assert last["total_pnl"] == 0

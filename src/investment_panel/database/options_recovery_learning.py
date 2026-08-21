@@ -623,3 +623,6 @@ def _utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+classification = _classification

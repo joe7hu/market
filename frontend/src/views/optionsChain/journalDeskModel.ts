@@ -5,7 +5,6 @@ type JournalDeskInput = {
   journalCount: number;
   shadow: OptionsPaperJournalRow[];
   shadowCount: number;
-  legacyShadowCount: number;
 };
 
 export type JournalDeskModel = {
@@ -17,7 +16,6 @@ export type JournalDeskModel = {
   tracking: number;
   awaitingEntry: number;
   marked: number;
-  legacyArchived: number;
   visibleExperiments: OptionsPaperJournalRow[];
 };
 
@@ -32,7 +30,6 @@ export function buildJournalDeskModel(input: JournalDeskInput): JournalDeskModel
     tracking: input.shadow.filter((row) => ["entered", "observing"].includes(row.lifecycle)).length,
     awaitingEntry: input.shadow.filter((row) => row.lifecycle === "pending").length,
     marked: input.shadow.filter((row) => row.latest_mark !== null || row.current_return !== null).length,
-    legacyArchived: input.legacyShadowCount,
     visibleExperiments: input.shadow.slice(0, 5),
   };
 }
@@ -47,7 +44,7 @@ export function observationLabel(row: OptionsPaperJournalRow): string {
 
 export function researchBlockerLabel(blocker: string): string {
   if (blocker === "thesis_direction_required") return "Neutral thesis — no directional trade";
-  if (blocker === "thesis_upgrade_required") return "Legacy pre-v3 thesis format";
+  if (blocker === "thesis_upgrade_required") return "Thesis revision required";
   return sentence(blocker);
 }
 

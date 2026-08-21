@@ -11,10 +11,10 @@ from investment_panel.database.options_recovery_cohorts import (
 )
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs.detect_option_events import (
-    _detector_collection_deadline,
-    _detector_symbol_limit,
-    _detector_universe,
-    _post_ingestion_reference,
+    detector_collection_deadline,
+    detector_symbol_limit,
+    detector_universe,
+    post_ingestion_reference,
     detector_slot,
 )
 
@@ -39,15 +39,15 @@ def test_detector_uses_a_post_ingestion_cutoff_for_newly_confirmed_quotes() -> N
     scheduled = datetime(2026, 8, 3, 19, 55, tzinfo=UTC)
     completed = scheduled + timedelta(seconds=4)
 
-    assert _post_ingestion_reference(scheduled, completed) == completed
-    assert _post_ingestion_reference(completed, scheduled) == completed
+    assert post_ingestion_reference(scheduled, completed) == completed
+    assert post_ingestion_reference(completed, scheduled) == completed
 
 
 def test_detector_collection_deadline_reserves_the_post_collection_tail(monkeypatch) -> None:
     monkeypatch.setattr("investment_panel.jobs.detect_option_events.time.monotonic", lambda: 100.0)
     monkeypatch.setattr("investment_panel.jobs.detect_option_events.job_timeout_seconds", lambda _: 90)
 
-    assert _detector_collection_deadline() == 175.0
+    assert detector_collection_deadline() == 175.0
 
 
 def test_detector_universe_is_bounded_and_keeps_current_events_first(monkeypatch) -> None:
@@ -67,7 +67,7 @@ def test_detector_universe_is_bounded_and_keeps_current_events_first(monkeypatch
             return ["TSLA", "SNDK"]
 
     ingestion = Ingestion()
-    symbols, active = _detector_universe(
+    symbols, active = detector_universe(
         ingestion,  # type: ignore[arg-type]
         Events(),  # type: ignore[arg-type]
         configured=[{"symbol": "NVDA"}],
@@ -79,7 +79,7 @@ def test_detector_universe_is_bounded_and_keeps_current_events_first(monkeypatch
     assert ingestion.configured == [{"symbol": "TSLA"}, {"symbol": "SNDK"}, {"symbol": "NVDA"}]
     assert ingestion.limit == 3
     monkeypatch.setenv("MARKET_ROBINHOOD_MAX_SYMBOLS", "2")
-    assert _detector_symbol_limit(80) == 2
+    assert detector_symbol_limit(80) == 2
 
 
 def test_detector_denominator_stops_at_an_early_market_close() -> None:

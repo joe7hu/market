@@ -75,8 +75,8 @@ posting structured JSON to the local-only endpoints:
   proposed strategy mutation, and immediately runs deterministic backtest and
   forward-test gates.
 
-The same handoff can run as a job with `market-run-option-agents` or the
-allowlisted `run_option_agents` refresh job. Configure commands under:
+The same handoff runs from the allowlisted `run_option_agents` refresh job.
+Configure the typed option-agent command under:
 
 ```yaml
 agents:

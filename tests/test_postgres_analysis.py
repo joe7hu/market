@@ -12,7 +12,7 @@ from psycopg.types.json import Jsonb
 
 from app import dependencies
 from app.data_access import loaders as loaders_owner
-from app.routers.options import _encode_learning_cursor, router as options_router
+from app.routers.options import encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
 from investment_panel.core.decision import is_us_market_day
@@ -1256,7 +1256,7 @@ def test_options_learning_api_pages_in_postgresql(
         invalid_snapshot = client.get(
             "/api/options-radar/learning/candidate_event_mark",
             params={
-                "cursor": _encode_learning_cursor(
+                "cursor": encode_learning_cursor(
                     datetime.now(UTC),
                     ("not-a-uuid", "0"),
                 )

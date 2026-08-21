@@ -8,7 +8,7 @@ from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from conftest import typed_config
-from investment_panel.jobs.update_market_data import _market_metrics_row
+from investment_panel.jobs.update_market_data import market_metrics_row
 from investment_panel.providers.yfinance_provider import return_on_invested_capital
 
 
@@ -51,7 +51,7 @@ def test_market_metrics_are_composed_into_watchlist_screen(migrated_postgres_dsn
             run_id,
             "daily-market-prices",
             "market_metrics",
-            [_market_metrics_row("EXM", "equity", info, observed_at)],
+            [market_metrics_row("EXM", "equity", info, observed_at)],
         )
         repository.finish_run(run_id, "succeeded")
         with runtime.transaction() as connection:

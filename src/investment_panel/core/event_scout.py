@@ -18,9 +18,7 @@ import hashlib
 from typing import Any, Iterable, Mapping
 
 from investment_panel.core.event_decisions import build_event_decisions
-from investment_panel.core.event_replays import (
-    MRNA_EVENT_SOURCE, MRNA_REPLAY_SOURCE, MRNA_SHORT_SOURCE, mrna_replay_fixture, replay_mrna,
-)
+from investment_panel.core.event_time import parse_event_timestamp as _timestamp
 from investment_panel.core.event_scout_runtime import (
     SCOUT_COOLDOWN_MINUTES, SCOUT_MAX_SYMBOLS, SCOUT_TRIGGER_TYPES, EventScout, ScoutSignal,
 )
@@ -31,29 +29,6 @@ from investment_panel.core.event_truth import (
 
 EVIDENCE_CLASSES = frozenset({"verified_fact", "reported_fact", "derived_metric", "inference", "missing"})
 FRESHNESS_VALUES = frozenset({"fresh", "aging", "stale", "unknown"})
-def _timestamp(value: Any, *, default: datetime | None = None) -> datetime | None:
-    if value is None or value == "":
-        return default
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, date):
-        parsed = datetime(value.year, value.month, value.day, tzinfo=UTC)
-    else:
-        text = str(value).strip()
-        if not text:
-            return default
-        try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            try:
-                parsed = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=UTC)
-            except ValueError:
-                return default
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
 def _iso(value: Any) -> str | None:
     parsed = _timestamp(value)
     return parsed.isoformat() if parsed else None
@@ -668,6 +643,6 @@ def build_event_decision_packet(
 __all__ = [
     "EVIDENCE_CLASSES", "FRESHNESS_VALUES", "SCOUT_TRIGGER_TYPES", "SCOUT_MAX_SYMBOLS", "SCOUT_COOLDOWN_MINUTES",
     "EVENT_SCOUT_ROUTE_VERSION", "OPTIONS_DECISION_ROUTE_VERSION", "ScoutSignal", "EventScout", "evidence_field", "latest_short_interest_snapshot",
-    "select_latest_short_interest", "match_historical_cases", "build_event_decision_packet", "mrna_replay_fixture",
-    "replay_mrna", "build_decision_truth", "build_options_decision_truth",
+    "select_latest_short_interest", "match_historical_cases", "build_event_decision_packet",
+    "build_decision_truth", "build_options_decision_truth",
 ]

@@ -182,3 +182,10 @@ def decode_fields(row: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any
             except Exception:
                 pass
     return decoded
+
+
+symbols_from_value = _symbols_from_value
+normalize_symbol_token = _normalize_symbol_token
+
+
+__all__ = ["normalize_symbol_token", "symbols_from_value"]

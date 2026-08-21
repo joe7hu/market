@@ -599,3 +599,7 @@ def _is_transient_codex_failure(message: str) -> bool:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+agent_trigger = _agent_trigger
+validate_output_for_persistence = _validate_output_for_persistence

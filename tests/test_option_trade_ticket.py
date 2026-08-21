@@ -10,17 +10,17 @@ from investment_panel.core.option_trade_ticket import (
     sizing_policy,
 )
 from investment_panel.core.decision import is_market_open
-from investment_panel.database.actions import _ordered_ticket_snapshot
+from investment_panel.database.actions import ordered_ticket_snapshot
 from investment_panel.database.options_history_v3_candidates import (
     history_truth_blockers,
     non_overlapping_returns,
 )
 from investment_panel.database.options_publication import (
-    _add_contract_fields,
-    _shortlist,
-    _summary_state,
+    add_contract_fields,
+    shortlist,
+    summary_state,
 )
-from investment_panel.database.options_risk_context import _broker_available
+from investment_panel.database.options_risk_context import broker_available
 
 
 NOW = datetime(2026, 7, 30, 15, 0, tzinfo=UTC)
@@ -95,8 +95,8 @@ def test_exchange_early_close_is_not_treated_as_regular_session() -> None:
 
 
 def test_summary_ready_count_follows_the_ticket_not_nominal_analysis_state() -> None:
-    assert _summary_state({"state": "READY", "ticket": {"state": "RESEARCH"}}) == "WATCH"
-    assert _summary_state({"state": "READY", "ticket": {"state": "READY"}}) == "READY"
+    assert summary_state({"state": "READY", "ticket": {"state": "RESEARCH"}}) == "WATCH"
+    assert summary_state({"state": "READY", "ticket": {"state": "READY"}}) == "READY"
 
 
 def test_cash_secured_put_sizing_respects_symbol_and_aggregate_collateral() -> None:
@@ -290,7 +290,7 @@ def test_shortlist_preserves_zero_expectancy_over_negative_expectancy() -> None:
         {"ticker": "NVDA", "structure": "long_call", "decision_id": "negative", "lower_confidence_expectancy_per_max_risk": -0.1},
         {"ticker": "NVDA", "structure": "long_call", "decision_id": "zero", "lower_confidence_expectancy_per_max_risk": 0.0},
     ]
-    assert _shortlist(rows)[0]["decision_id"] == "zero"
+    assert shortlist(rows)[0]["decision_id"] == "zero"
 
 
 def test_shortlist_falls_back_to_candidate_quality_when_expectancy_is_missing() -> None:
@@ -298,11 +298,11 @@ def test_shortlist_falls_back_to_candidate_quality_when_expectancy_is_missing() 
         {"ticker": "NVDA", "structure": "long_call", "decision_id": "low", "score": 10},
         {"ticker": "NVDA", "structure": "long_call", "decision_id": "high", "score": 90},
     ]
-    assert _shortlist(rows)[0]["decision_id"] == "high"
+    assert shortlist(rows)[0]["decision_id"] == "high"
 
 
 def test_zero_broker_capacity_is_preserved_as_a_hard_limit() -> None:
-    available = _broker_available(
+    available = broker_available(
         {
             "observed_at": NOW,
             "net_liquidation": 50_000,
@@ -312,7 +312,7 @@ def test_zero_broker_capacity_is_preserved_as_a_hard_limit() -> None:
         evaluated_at=NOW,
     )
     assert available == 0
-    assert _broker_available(
+    assert broker_available(
         {
             "observed_at": NOW,
             "net_liquidation": 50_000,
@@ -324,7 +324,7 @@ def test_zero_broker_capacity_is_preserved_as_a_hard_limit() -> None:
 
 
 def test_ordered_ticket_snapshot_recomputes_exposure_for_reduced_quantity() -> None:
-    snapshot = _ordered_ticket_snapshot(
+    snapshot = ordered_ticket_snapshot(
         {
             "risk": {
                 "recommended_quantity": 3,
@@ -398,7 +398,7 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
         "thesis_expression_id": "expression-id-1",
         "thesis_expression": {"direction": "long", "preferred_structures": ["cash_secured_put"]},
     }]
-    _add_contract_fields(
+    add_contract_fields(
         rows,
         "option-professional-v3-ticket",
         3,

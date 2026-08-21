@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from investment_panel.database.agent_experiments import AgentExperimentRepository, _arm_summary
+from investment_panel.database.agent_experiments import AgentExperimentRepository, arm_summary
 from investment_panel.core.agent_providers import provider_cost, resolve_provider_selection
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import run_agent_experiment
@@ -225,7 +225,7 @@ def test_failure_and_validation_rates_keep_scheduled_tasks_in_the_denominator() 
         {"status": "failed", "validation_status": "failed", "validation_detail": {}, "latency_ms": 2, "cost_usd": None},
         {"status": "queued", "validation_status": None, "validation_detail": {}, "latency_ms": None, "cost_usd": None},
     ]
-    summary = _arm_summary(rows)
+    summary = arm_summary(rows)
     assert summary["failure_rate"] == pytest.approx(1 / 3)
     assert summary["schema_validation_rate"] == pytest.approx(1 / 3)
     assert summary["evidence_validation_rate"] == pytest.approx(1 / 3)

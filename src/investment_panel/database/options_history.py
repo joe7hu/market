@@ -14,6 +14,7 @@ from investment_panel.database.options_history_v3 import OptionHistoryV3Material
 from investment_panel.database.options_history_health import history_health
 from investment_panel.database.options_history_surface import surface_groups as _surface_groups
 from investment_panel.database.options_history_capture import store_capture as _store_capture
+from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
 from investment_panel.database.options_surface_grid import surface_grid_payload
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 HISTORY_PROFILE = "history_full"
@@ -283,13 +284,6 @@ class OptionHistoryRepository:
         rows = [row for row in rows if int(row["dte"]) <= max_dte]
         return surface_grid_payload(symbol=symbol, snapshot_id=snapshot_id, rows=rows, option_types=[option_type])
 
-    def legacy_surface(self, *, symbol: str = "QQQ", snapshot: int | None = None, option_type: str | None = None) -> dict[str, Any]:
-        snapshot_id = self._resolve_snapshot(symbol, snapshot)
-        if snapshot_id is None:
-            return {"snapshot_id": None, "symbol": symbol.upper(), "x": [], "y": [], "surfaces": {}, "observed": []}
-        rows, _ = self._chain_rows(snapshot_id, offset=0, limit=50_000)
-        by_type = [option_type] if option_type else ["call", "put"]
-        return surface_grid_payload(symbol=symbol, snapshot_id=snapshot_id, rows=rows, option_types=by_type)
     def surface_groups(self, *, symbol: str = "QQQ", snapshot: int | None = None) -> dict[str, Any]:
         snapshot_id = self._resolve_snapshot(symbol, snapshot)
         if snapshot_id is None:
@@ -672,3 +666,66 @@ def _history_universe(symbol: str) -> str:
 
 def _universe_for_profile(collection_profile: str, symbol: str) -> str:
     return _history_universe(symbol) if collection_profile == HISTORY_PROFILE else f"{collection_profile}:{symbol.upper()}"
+
+
+class OptionsHistoryService:
+    """Application-facing history owner for capture policy and read models."""
+
+    def __init__(self, runtime: DatabaseRuntime, *, options_risk_sleeve_capital: float | None = None) -> None:
+        self.repository = OptionHistoryRepository(
+            runtime,
+            options_risk_sleeve_capital=options_risk_sleeve_capital,
+        )
+        self.policy = OptionHistoryPolicyRepository(runtime)
+
+    @staticmethod
+    def is_policy_conflict(exc: Exception) -> bool:
+        return isinstance(exc, PolicyConflict)
+
+    def symbols(self) -> dict[str, Any]:
+        return self.policy.symbols()
+
+    def set_requested_state(self, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "options_history_policy": self.policy.set_requested_state(
+                symbol,
+                requested_state=str(payload.get("requested_state") or ""),
+                lock_version=int(payload.get("lock_version") or 0),
+            )
+        }
+
+    def snapshots(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.snapshots(**filters)
+
+    def chain(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.chain(**filters)
+
+    def surface(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.surface(**filters)
+
+    def surface_groups(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.surface_groups(**filters)
+
+    def surface_grid(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.surface_grid(**filters)
+
+    def curves(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.curves(**filters)
+
+    def anomalies(self, **filters: Any) -> dict[str, Any]:
+        return self.repository.anomalies(**filters)
+
+    def health(self, *, symbol: str | None = None, mode: str = "disabled") -> dict[str, Any]:
+        result = self.repository.health(symbol=symbol)
+        result["mode"] = mode
+        return result
+
+
+residual_eligible = _residual_eligible
+surface_summaries = _surface_summaries
+
+
+__all__ = [
+    "EVENT_PROFILE", "FEATURE_VERSION", "HISTORY_PROFILE", "OptionHistoryRepository",
+    "OptionsHistoryService", "residual_eligible", "surface_summaries",
+]

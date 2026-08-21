@@ -652,3 +652,6 @@ def _month_start(day: date) -> date:
 
 def _next_month(day: date) -> date:
     return date(day.year + (day.month == 12), 1 if day.month == 12 else day.month + 1, 1)
+
+
+normalize_option_row = _normalize_option_row

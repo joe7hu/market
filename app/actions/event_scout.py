@@ -6,7 +6,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from investment_panel.core.config import AppConfig
-from investment_panel.core.event_scout import EventScout, replay_mrna
+from investment_panel.core.event_replays import replay_mrna
+from investment_panel.core.event_scout import EventScout, build_event_decision_packet
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.event_scout import persist_event_packet
 
@@ -66,7 +67,11 @@ def process_signal(config: AppConfig, signal: dict[str, Any], *, now: datetime |
     reference = _reference_time(now)
     prepared_signal = _prepare_signal(signal, reference)
     runtime = runtime_for_config(config)
-    result = EventScout().process_signal(prepared_signal, now=reference)
+    result = EventScout().process_signal(
+        prepared_signal,
+        packet_builder=build_event_decision_packet,
+        now=reference,
+    )
     if result.get("accepted"):
         persisted = persist_event_packet(
             runtime,

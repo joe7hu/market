@@ -14,8 +14,8 @@ from investment_panel.database.instruments import reconcile_instrument
 from investment_panel.database.option_events import OptionEventRepository
 from investment_panel.database.options_recovery_agents import (
     RecoveryEventAgentRepository,
-    _agent_trigger,
-    _validate_output_for_persistence,
+    agent_trigger,
+    validate_output_for_persistence,
 )
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -59,7 +59,7 @@ def test_unknown_agent_mutation_is_rejected_before_proposal_persistence() -> Non
         {"outputs": [_output(mutation={"strategy_key": "shock_reversal_call_v1", "changes": {"made_up_edge": 99}})]},
         expected_tasks=[{"id": "task-1", "role": MUTATION_DRAFTER}],
     )
-    persisted, validation = _validate_output_for_persistence(normalized["task-1"])
+    persisted, validation = validate_output_for_persistence(normalized["task-1"])
 
     assert persisted["mutation"] is None
     assert validation["mutation_status"] == "rejected_unsupported_mutation"
@@ -116,10 +116,10 @@ def test_material_trigger_requires_a_real_event_fingerprint_change() -> None:
         "signal_families": ["shock_reversal_call_v1:shadow"],
     }
 
-    trigger, reasons = _agent_trigger(current, previous, preopen=False)
+    trigger, reasons = agent_trigger(current, previous, preopen=False)
     assert trigger == "underlying_move_2pct"
     assert set(reasons) == {"underlying_move_2pct", "new_material_evidence"}
-    assert _agent_trigger(current, current, preopen=False) == (None, [])
+    assert agent_trigger(current, current, preopen=False) == (None, [])
 
 
 class _AgentContextResult:

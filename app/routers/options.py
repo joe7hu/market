@@ -338,14 +338,12 @@ def options_shadow_observations(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    include_legacy: bool = False,
     actions: OptionsActions = Depends(dependencies.get_options_actions),
 ) -> dict[str, Any]:
     return actions.shadow_observations(
         symbol=symbol,
         offset=offset,
         limit=limit,
-        include_legacy=include_legacy,
     )
 
 
@@ -431,10 +429,8 @@ def option_trade_ticket(
         ticket = detail.get("ticket")
         if isinstance(ticket, dict):
             return _ticket_detail_contract(ticket, detail)
-    # A recovery signal has an analysis.decision row for provenance, so the
-    # legacy detail reader can find it without owning its v4 ticket.  Always
-    # prefer the canonical recovery ticket before treating the decision as an
-    # incomplete legacy publication.
+    # A recovery signal has an analysis.decision row for provenance. Prefer its
+    # canonical recovery ticket before treating the decision as incomplete.
     recovery_ticket = actions.recovery_ticket(decision_id)
     if recovery_ticket is not None:
         return _ticket_detail_contract(recovery_ticket, detail or {})
@@ -444,11 +440,10 @@ def option_trade_ticket(
 
 
 def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> dict[str, Any]:
-    """Keep legacy ticket fields while adding the immutable deep-dive contract.
+    """Expose the immutable ticket and its surrounding evidence.
 
-    Older clients read ``ticket_version`` and ``legs`` at the top level.  New
-    clients use the named sections so a signal remains inspectable even when a
-    ticker dossier has no independent data.
+    The top-level ticket fields keep the named detail contract easy to inspect,
+    while the nested sections preserve the complete decision evidence.
     """
 
     outcome_fields = (
@@ -464,7 +459,7 @@ def _ticket_detail_contract(ticket: dict[str, Any], signal: dict[str, Any]) -> d
         "current": bool(signal.get("current_publication", False)),
     }
     return {
-        # Top-level ticket fields preserve the former endpoint contract.
+        # Keep the ticket fields at the detail boundary for direct inspection.
         **ticket,
         "ticket": ticket,
         "signal": signal,
@@ -545,3 +540,6 @@ def promote_strategy_mutation_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     panel_snapshot.invalidate_context_cache()
     return result
+
+
+encode_learning_cursor = _encode_learning_cursor

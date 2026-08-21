@@ -119,3 +119,6 @@ def _completeness(collected: dict[str, Any]) -> float | None:
         if (row.get("bid") or 0) > 0 or (row.get("ask") or 0) > 0
     )
     return quoted / total
+
+
+market_session = _market_session

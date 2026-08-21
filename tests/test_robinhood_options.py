@@ -9,7 +9,7 @@ import httpx
 
 from investment_panel.core.robinhood_options import (
     RobinhoodMcpClient,
-    _authorization_server_metadata,
+    authorization_server_metadata,
     authorize_robinhood_mcp,
     collect_robinhood_equity_quotes,
     collect_robinhood_option_chains,
@@ -439,7 +439,7 @@ def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypat
 
     monkeypatch.setattr("investment_panel.core.robinhood_options.auth._get_json", fake_get_json)
 
-    metadata = _authorization_server_metadata("https://agent.robinhood.com/mcp/trading", timeout=30)
+    metadata = authorization_server_metadata("https://agent.robinhood.com/mcp/trading", timeout=30)
 
     assert metadata["authorization_endpoint"] == "https://robinhood.com/oauth"
     assert "https://agent.robinhood.com/.well-known/oauth-authorization-server/mcp/trading" in calls

@@ -28,9 +28,9 @@ from investment_panel.database.options_paper_ledger import (
 def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
     """Grade an immutable v3 quote package without turning it into a live order."""
 
-    from investment_panel.database.options_publication import _as_datetime
+    from investment_panel.database.options_publication import as_datetime
 
-    quote_at = _as_datetime(payload.get("quote_observed_at"))
+    quote_at = as_datetime(payload.get("quote_observed_at"))
     if quote_at is None or (evaluated_at - quote_at).total_seconds() > 5 * 60:
         return "C"
     legs = list(payload.get("leg_quotes") or [])
@@ -41,10 +41,10 @@ def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
         bid, ask = leg.get("bid"), leg.get("ask")
         if bid is None or ask is None or float(ask) < float(bid) or leg.get("size_available") is not True:
             return "C"
-        observed_at = _as_datetime(leg.get("observed_at"))
+        observed_at = as_datetime(leg.get("observed_at"))
         if observed_at is not None:
             timestamps.append(observed_at)
-            available_at = _as_datetime(leg.get("available_at")) or quote_at
+            available_at = as_datetime(leg.get("available_at")) or quote_at
             if available_at is None:
                 return "C"
             age = (available_at - observed_at).total_seconds()
@@ -226,7 +226,7 @@ class ActionRepository:
                     raise ValueError("pending system shadow is required before paper staging")
                 if shadow["entry_at"] is not None:
                     raise ValueError("paper entry is stale because the shadow already entered")
-            from investment_panel.database.options_publication import _contract_readiness
+            from investment_panel.database.options_publication import contract_readiness
 
             publication_payload = dict(signal["publication_payload"] or {})
             ticket = dict(publication_payload.get("ticket") or {})
@@ -335,7 +335,7 @@ class ActionRepository:
             if str(signal["publication_scope"] or "") == "options-decision-system":
                 readiness = _v3_paper_readiness(publication_payload, now)
             else:
-                readiness = _contract_readiness(publication_payload, now)
+                readiness = contract_readiness(publication_payload, now)
             if readiness != "A":
                 raise ValueError("signal quote is no longer execution-grade")
             structure = str(signal["structure"] or "long_option")
@@ -625,3 +625,7 @@ def _candidate_contains_changes(candidate: dict[str, Any], changes: dict[str, An
         if actual != value:
             return False
     return True
+
+
+ordered_ticket_snapshot = _ordered_ticket_snapshot
+v3_paper_readiness = _v3_paper_readiness

@@ -10,17 +10,61 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrage_findings
-from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
+from investment_panel.core.robinhood_options.collector import RobinhoodClient, option_quote_row, payload_list
 from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
 from investment_panel.core.event_scout import OPTIONS_DECISION_ROUTE_VERSION, build_decision_truth
 from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.database.options_decision_readiness import next_required_action
 from investment_panel.database.options_journal import learning_progress, paper_journal, shadow_observations
 from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
-from investment_panel.database.options_decision_verification import candidate_finding, same_finding_identity
 
 __all__ = ["OptionsDecisionSystemRepository"]
+
+
+def _next_required_action(
+    analysis: dict[str, int],
+    thesis: dict[str, Any],
+    canary: dict[str, Any],
+) -> str:
+    if int(canary["post_fix_complete_captures"]) == 0:
+        return "collect_post_fix_complete_capture"
+    if analysis["eligible_groups"] == 0:
+        return "restore_eligible_fresh_quote_groups"
+    active_thesis_blocker = thesis_blocker(thesis)
+    if active_thesis_blocker == "thesis_direction_required" and thesis:
+        return "wait_for_directional_qqq_thesis"
+    if active_thesis_blocker is not None:
+        return "run_qqq_thesis_monitor"
+    if int(canary["qualified_regular_sessions"]) < int(canary["required_regular_sessions"]):
+        return "complete_five_qualified_post_fix_sessions"
+    return "collect_exact_structure_mature_outcomes"
+
+
+def _candidate_finding(findings: list[dict[str, Any]], contract_id: int) -> dict[str, Any] | None:
+    matches = [
+        finding
+        for finding in findings
+        if contract_id in {int(value) for value in finding.get("contract_ids", [])}
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda finding: float(finding.get("edge") or 0))
+
+
+def _same_finding_identity(expected: dict[str, Any], observed: dict[str, Any]) -> bool:
+    expected_identity = dict(expected.get("package_identity") or {})
+    observed_identity = dict(observed.get("package_identity") or {})
+    expected_kind = expected_identity.get("kind") or expected.get("kind")
+    observed_kind = observed_identity.get("kind") or observed.get("kind")
+    expected_contracts = expected_identity.get("ordered_contract_ids") or expected.get("contract_ids")
+    observed_contracts = observed_identity.get("ordered_contract_ids") or observed.get("contract_ids")
+    expected_sides = expected_identity.get("leg_sides") or expected.get("leg_sides")
+    observed_sides = observed_identity.get("leg_sides") or observed.get("leg_sides")
+    return (
+        expected_kind == observed_kind
+        and [int(value) for value in expected_contracts or []] == [int(value) for value in observed_contracts or []]
+        and list(expected_sides or []) == list(observed_sides or [])
+    )
 
 
 class OptionsDecisionSystemRepository:
@@ -291,14 +335,12 @@ class OptionsDecisionSystemRepository:
         symbol: str = "QQQ",
         offset: int = 0,
         limit: int = 100,
-        include_legacy: bool = False,
     ) -> dict[str, Any]:
         return shadow_observations(
             self.runtime,
             symbol=symbol,
             offset=offset,
             limit=limit,
-            include_legacy=include_legacy,
         )
 
     def learning_progress(self, *, symbol: str = "QQQ") -> dict[str, Any]:
@@ -316,12 +358,12 @@ class OptionsDecisionSystemRepository:
             return self._record_verification(candidate_id, "unavailable", ["live_requote_required"], {})
         try:
             equity_payload = client.get_equity_quotes([context["symbol"]])
-            equity_rows = _payload_list(equity_payload, "results")
+            equity_rows = payload_list(equity_payload, "results")
             equity = dict(equity_rows[0].get("quote") or {}) if equity_rows else {}
             spot = _number(equity.get("last_trade_price") or equity.get("adjusted_mark_price"))
             instruments = [row["instrument"] for row in context["rows"] if row.get("instrument")]
             payload = client.get_option_quotes(instruments)
-            quotes = {str((item.get("quote") or {}).get("instrument_id") or item.get("instrument_id") or ""): dict(item.get("quote") or {}) for item in _payload_list(payload, "results")}
+            quotes = {str((item.get("quote") or {}).get("instrument_id") or item.get("instrument_id") or ""): dict(item.get("quote") or {}) for item in payload_list(payload, "results")}
             live_rows: list[dict[str, Any]] = []
             timestamps = [_timestamp(equity.get("updated_at"))]
             blockers: list[str] = []
@@ -349,7 +391,7 @@ class OptionsDecisionSystemRepository:
             if len(usable_times) != len(timestamps) or (usable_times and (max(usable_times) - min(usable_times)).total_seconds() > 5):
                 blockers.append("live_package_timestamp_skew")
             findings = static_arbitrage_findings(live_rows, spot=spot, option_type=context["option_type"]) if not blockers else []
-            verified = any(same_finding_identity(context["finding"], finding) for finding in findings)
+            verified = any(_same_finding_identity(context["finding"], finding) for finding in findings)
             if not verified and not blockers:
                 blockers.append("live_worst_side_edge_not_present")
             status = "verified" if verified and not blockers else "rejected"
@@ -380,7 +422,7 @@ class OptionsDecisionSystemRepository:
             fallback_contract = connection.execute(
                 "SELECT contract_id FROM analysis.option_relative_value WHERE id = %s", [candidate_id]
             ).fetchone()["contract_id"]
-            finding = candidate_finding(findings, int(fallback_contract))
+            finding = _candidate_finding(findings, int(fallback_contract))
             contract_ids = [int(value) for value in finding.get("contract_ids", [])] if finding else [int(fallback_contract)]
             rows = connection.execute(
                 """
@@ -607,7 +649,7 @@ def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[
             "disqualification_reasons": list(canary["disqualification_reasons"]),
         },
         "top_blockers": top_blockers,
-        "next_required_action": next_required_action(analysis, thesis_payload, canary),
+        "next_required_action": _next_required_action(analysis, thesis_payload, canary),
     }
 
 

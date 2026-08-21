@@ -6,7 +6,7 @@ from investment_panel.analysis.cash_secured_put import (
     CashSecuredPutInputs,
     evaluate_cash_secured_put,
 )
-from investment_panel.database.options_cash_secured_put import _hard_blockers
+from investment_panel.database.options_cash_secured_put import hard_blockers
 
 
 def test_cash_secured_put_payoff_and_assignment_basis() -> None:
@@ -84,7 +84,7 @@ def test_cash_secured_put_costs_reduce_return_and_raise_assignment_basis() -> No
 
 
 def test_cash_secured_put_requires_quote_time_standard_contract_proof() -> None:
-    blockers = _hard_blockers({
+    blockers = hard_blockers({
         "standard_contract_verified": True,
         "asset_class": "etf",
         "history_observations": 100,

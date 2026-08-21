@@ -9,7 +9,7 @@ from pathlib import Path
 import psycopg
 
 from investment_panel.database.analysis import AnalysisRepository
-from investment_panel.database.backup import _credential_safe_connection, create_verified_backup
+from investment_panel.database.backup import credential_safe_connection, create_verified_backup
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.jobs import JobRepository
 from investment_panel.database.migrations import upgrade_database
@@ -262,7 +262,7 @@ def test_backup_is_custom_format_sha_verified_and_contains_all_schemas(
 
 
 def test_backup_removes_password_from_pg_dump_arguments() -> None:
-    safe_dsn, environment = _credential_safe_connection(
+    safe_dsn, environment = credential_safe_connection(
         "postgresql://market_user:do-not-expose@db.internal:5432/market?sslmode=require"
     )
 
@@ -274,7 +274,7 @@ def test_backup_removes_password_from_pg_dump_arguments() -> None:
 
 
 def test_backup_normalizes_sqlalchemy_psycopg_url() -> None:
-    safe_dsn, environment = _credential_safe_connection(
+    safe_dsn, environment = credential_safe_connection(
         "postgresql+psycopg://market_user:secret@db.internal:5432/market"
     )
 

@@ -358,3 +358,8 @@ def _contiguous_confirmed_closes(rows: list[dict[str, Any]]) -> list[float]:
 def _horizon_returns(prices: list[float], dte: int) -> list[float]:
     horizon = trading_session_horizon(dte)
     return [prices[index] / prices[index - horizon] - 1 for index in range(horizon, len(prices))]
+
+
+contiguous_confirmed_closes = _contiguous_confirmed_closes
+history_bar_limits = _history_bar_limits
+horizon_returns = _horizon_returns

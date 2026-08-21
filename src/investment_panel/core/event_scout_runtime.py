@@ -6,6 +6,8 @@ from dataclasses import dataclass, field as dataclass_field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Iterable, Mapping
 
+from investment_panel.core.event_time import parse_event_timestamp as _timestamp
+
 
 SCOUT_TRIGGER_TYPES = frozenset({
     "formal_announcement", "regulatory_announcement", "credible_news",
@@ -14,12 +16,6 @@ SCOUT_TRIGGER_TYPES = frozenset({
 })
 SCOUT_MAX_SYMBOLS = 5
 SCOUT_COOLDOWN_MINUTES = 30
-
-
-def _timestamp(value: Any, *, default: datetime | None = None) -> datetime | None:
-    from investment_panel.core.event_scout import _timestamp as parse_timestamp
-
-    return parse_timestamp(value, default=default)
 
 
 @dataclass
@@ -95,10 +91,11 @@ class EventScout:
         signal: Mapping[str, Any],
         *,
         collectors: Mapping[str, Callable[[Mapping[str, Any]], Mapping[str, Any] | None]] | None = None,
+        packet_builder: Callable[..., dict[str, Any]] | None = None,
         now: Any = None,
     ) -> dict[str, Any]:
-        from investment_panel.core.event_scout import build_event_decision_packet
-
+        if packet_builder is None:
+            raise ValueError("packet_builder is required for Event Scout signal processing")
         accepted = self.accept_signals([signal], now=now)
         if not accepted:
             return {"status": "cooldown_or_invalid", "accepted": False, "symbol": str(signal.get("symbol") or "").upper()}
@@ -133,7 +130,7 @@ class EventScout:
                     collector_data["positioning"] = positioning
                 else:
                     collector_data[name] = normalized_result
-        packet = build_event_decision_packet(
+        packet = packet_builder(
             event["symbol"],
             as_of=event["observed_at"],
             event_kind=event["event_kind"],

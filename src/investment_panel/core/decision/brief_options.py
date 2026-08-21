@@ -6,14 +6,14 @@ from datetime import date
 from typing import Any
 
 from investment_panel.core.decision.brief_coerce import (
-    _first_row,
-    _fmt_money,
-    _fmt_pct,
-    _number,
-    _object,
-    _parse_date,
-    _text,
-    _text_join,
+    first_row as _first_row,
+    format_money as _fmt_money,
+    format_pct as _fmt_pct,
+    number as _number,
+    object_value as _object,
+    parse_date as _parse_date,
+    text as _text,
+    text_join as _text_join,
 )
 
 
@@ -146,3 +146,17 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
             {"label": "Entry Plan", "value": _text(_object(memo.get("entry_plan")).get("initial_weight")) or "Review required", "caption": _text(_object(memo.get("entry_plan")).get("ideal_entry"))},
         ],
     }
+
+
+is_option_expired = _is_option_expired
+best_option = _best_option
+missing_families = _missing_families
+max_loss = _max_loss
+options_context = _options_context
+ticker_tab_summaries = _ticker_tab_summaries
+
+
+__all__ = [
+    "best_option", "is_option_expired", "max_loss", "missing_families",
+    "options_context", "ticker_tab_summaries",
+]

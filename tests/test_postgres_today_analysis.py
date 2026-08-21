@@ -8,7 +8,7 @@ from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.preopen_context import compact_preopen_context
-from investment_panel.database.today_analysis import _option_item, refresh_today_publication
+from investment_panel.database.today_analysis import option_item, refresh_today_publication
 from investment_panel.jobs import codex_preopen_brief
 from investment_panel.database.portfolio_ledger import record_portfolio_transaction
 from conftest import typed_config
@@ -125,7 +125,7 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
 
 
 def test_today_option_item_preserves_published_rationale() -> None:
-    row = _option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
+    row = option_item({"symbol": "NVDA", "top_reasons": ["liquidity_supported", "convexity_supported"]})
     assert row["summary"] == "liquidity_supported; convexity_supported"
 
 

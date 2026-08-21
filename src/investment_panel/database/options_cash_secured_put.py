@@ -246,3 +246,6 @@ def _float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+hard_blockers = _hard_blockers

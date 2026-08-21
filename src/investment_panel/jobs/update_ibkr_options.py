@@ -119,3 +119,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+ibkr_status = _ibkr_status

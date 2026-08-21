@@ -2,11 +2,11 @@
 
 from investment_panel.core.decision.brief import (
     GATE_LABELS,
-    _brief_summary,
-    _is_no_trade_action,
+    brief_summary,
+    is_no_trade_action,
     ticker_decision_brief,
 )
-from investment_panel.core.decision.brief_options import _is_option_expired
+from investment_panel.core.decision.brief_options import is_option_expired
 from investment_panel.core.decision.calendar import (
     classify_freshness,
     easter_date,
@@ -86,9 +86,9 @@ __all__ = [
     "PRIMARY_EVIDENCE_SOURCES",
     "STATIC_SOURCES",
     "SYMBOL_RE",
-    "_brief_summary",
-    "_is_no_trade_action",
-    "_is_option_expired",
+    "brief_summary",
+    "is_no_trade_action",
+    "is_option_expired",
     "action_grade_for",
     "apply_blocking_penalties",
     "best_freshness",

@@ -48,7 +48,6 @@ uv run market-update-event-calendar --config config.yaml
 uv run market-update-robinhood-options --config config.yaml
 uv run market-refresh-options-radar --config config.yaml
 uv run market-premarket-options-intelligence --config config.yaml
-uv run market-run-option-agents --config config.yaml
 uv run market-update-broker-sources --config config.yaml
 uv run market-snapshot-database --config config.yaml
 ```

@@ -662,3 +662,9 @@ def _positive(value: Any) -> bool:
 
 def _utc(value: datetime) -> datetime:
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+canonical_event_bars = _canonical_event_bars
+event_move = _event_move
+latest_completed_market_date = _latest_completed_market_date
+minimum_event_expiration = _minimum_event_expiration

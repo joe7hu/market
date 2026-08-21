@@ -18,7 +18,6 @@ describe("learning log research preview", () => {
       journalCount: 0,
       shadow,
       shadowCount: 50,
-      legacyShadowCount: 210,
     });
 
     expect(model.currentExperiments).toBe(50);

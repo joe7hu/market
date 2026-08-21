@@ -13,7 +13,7 @@ from investment_panel.core.option_underwriting import (
     paper_state,
 )
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.actions import _v3_paper_readiness
+from investment_panel.database.actions import v3_paper_readiness
 from investment_panel.database.options_history import OptionHistoryRepository
 from investment_panel.database.options_history_v3 import is_later_capture_cohort
 from investment_panel.database.options_history_v3_materialization import (
@@ -429,10 +429,8 @@ def test_candidate_capture_persists_json_safe_leg_observation_times(migrated_pos
                 [decision_id],
             )
         assert repository.shadow_observations(symbol="QQQ")["count"] == 0
-        assert repository.shadow_observations(symbol="QQQ", include_legacy=True)["count"] >= 1
-        legacy_counts = repository.workspace(symbol="QQQ")["tab_counts"]
-        assert legacy_counts["shadow_observations"] == 0
-        assert legacy_counts["legacy_shadow_observations"] >= 1
+        current_counts = repository.workspace(symbol="QQQ")["tab_counts"]
+        assert current_counts["shadow_observations"] == 0
         with runtime.transaction() as connection:
             connection.execute("UPDATE analysis.decision SET blockers = ARRAY[]::text[] WHERE id = %s", [decision_id])
         with runtime.transaction() as connection:
@@ -693,10 +691,10 @@ def test_v3_paper_readiness_requires_a_fresh_coherent_leg_package() -> None:
         "leg_quotes": [{"bid": 2.0, "ask": 2.2, "size_available": True, "observed_at": now.isoformat(), "available_at": now.isoformat()}],
     }
 
-    assert _v3_paper_readiness(payload, now) == "A"
-    assert _v3_paper_readiness(payload, now + timedelta(minutes=6)) == "C"
-    assert _v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.2, "ask": 2.0}]}, now) == "C"
-    assert _v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.0, "ask": 2.2}]}, now) == "C"
+    assert v3_paper_readiness(payload, now) == "A"
+    assert v3_paper_readiness(payload, now + timedelta(minutes=6)) == "C"
+    assert v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.2, "ask": 2.0}]}, now) == "C"
+    assert v3_paper_readiness({**payload, "leg_quotes": [{"bid": 2.0, "ask": 2.2}]}, now) == "C"
     assert conservative_entry([{**payload["leg_quotes"][0], "side": "long", "option_type": "call", "strike": 500, "size_available": None}], "long_call")[0] is None
 
 

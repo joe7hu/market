@@ -11,6 +11,8 @@ from investment_panel.database.options_recovery_cohorts import RecoveryCohortRep
 from investment_panel.database.options_recovery_learning import RecoveryLearningRepository
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
+__all__ = ["RecoveryReadRepository"]
+
 
 class RecoveryReadRepository:
     """Bounded recovery product models; operational diagnostics stay in health()."""

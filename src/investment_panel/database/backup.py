@@ -72,3 +72,6 @@ def _credential_safe_connection(database_url: str) -> tuple[str, dict[str, str] 
     environment = dict(os.environ)
     environment["PGPASSWORD"] = password
     return make_conninfo(**parameters), environment
+
+
+credential_safe_connection = _credential_safe_connection

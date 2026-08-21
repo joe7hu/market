@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from investment_panel.core.panel.contracts import tables_for_scope
-from investment_panel.core.panel.coerce import _symbols_from_value
+from investment_panel.core.panel.coerce import symbols_from_value as _symbols_from_value
 
 
 RowsForTable = Callable[[str], list[dict[str, Any]]]

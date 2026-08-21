@@ -671,3 +671,8 @@ def _uuid(value: str):
     from uuid import UUID
 
     return UUID(value)
+
+
+available_quantity = _available_quantity
+exit_reason = _exit_reason
+net_pnl = _net_pnl

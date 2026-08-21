@@ -26,38 +26,8 @@ from scripts.architecture_inventory import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROD_ROOTS = [REPO_ROOT / "app", REPO_ROOT / "src" / "investment_panel"]
 
-# Phase 0 is a ratchet. These are the known leaks at the starting commit; new
-# leaks fail immediately. Phase 5 removes the remaining entries instead of
-# growing this list.
-KNOWN_CYCLE_COMPONENTS = {
-    frozenset(
-        {
-            "investment_panel.core.event_replays",
-            "investment_panel.core.event_scout",
-            "investment_panel.core.event_scout_runtime",
-        }
-    )
-}
-KNOWN_PRIVATE_IMPORT_EDGES = frozenset(
-    {
-        "app/data_access/config.py app.data_access.coerce",
-        "app/data_access/payloads.py app.data_access.coerce",
-        "app/data_access/settings.py app.data_access.coerce",
-        "app/data_access/settings.py app.data_access.payloads",
-        "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief",
-        "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief_options",
-        "src/investment_panel/core/decision/brief.py investment_panel.core.decision.brief_coerce",
-        "src/investment_panel/core/decision/brief.py investment_panel.core.decision.brief_options",
-        "src/investment_panel/core/decision/brief_options.py investment_panel.core.decision.brief_coerce",
-        "src/investment_panel/core/event_scout_runtime.py investment_panel.core.event_scout",
-        "src/investment_panel/core/panel/payloads.py investment_panel.core.panel.coerce",
-        "src/investment_panel/core/panel/ticker_sections.py investment_panel.core.panel.coerce",
-        "src/investment_panel/core/robinhood_options/__init__.py investment_panel.core.robinhood_options.auth",
-        "src/investment_panel/core/robinhood_options/history.py investment_panel.core.robinhood_options.collector",
-        "src/investment_panel/database/actions.py investment_panel.database.options_publication",
-        "src/investment_panel/database/options_decision_system.py investment_panel.core.robinhood_options.collector",
-    }
-)
+KNOWN_CYCLE_COMPONENTS = frozenset()
+KNOWN_PRIVATE_IMPORT_EDGES = frozenset()
 
 
 def _prod_py_files() -> list[Path]:
@@ -110,13 +80,61 @@ def _private_import_edge(finding: str) -> str:
 def test_import_cycles_are_ratchet_guarded() -> None:
     actual = {frozenset(cycle) for cycle in local_import_cycles()}
     unexpected = actual - KNOWN_CYCLE_COMPONENTS
-    assert not unexpected, f"New local import cycles: {sorted(map(sorted, unexpected))}"
+    assert not unexpected, f"Local import cycles remain: {sorted(map(sorted, unexpected))}"
 
 
 def test_private_cross_module_imports_are_ratchet_guarded() -> None:
     actual = {_private_import_edge(finding) for finding in production_private_imports()}
     unexpected = actual - KNOWN_PRIVATE_IMPORT_EDGES
-    assert not unexpected, "New production private imports:\n  " + "\n  ".join(sorted(unexpected))
+    assert not unexpected, "Production private imports remain:\n  " + "\n  ".join(sorted(unexpected))
+
+
+def test_tests_use_public_module_interfaces() -> None:
+    violations = []
+    for path in (REPO_ROOT / "tests").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            private = [alias.name for alias in node.names if alias.name.startswith("_")]
+            if private:
+                violations.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} imports {', '.join(private)}")
+    assert not violations, "Tests import private module names:\n  " + "\n  ".join(violations)
+
+
+def test_options_actions_uses_bounded_domain_owners() -> None:
+    path = REPO_ROOT / "app" / "actions" / "options.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    domain_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith("investment_panel.database.")
+        and node.module != "investment_panel.database.authority"
+    }
+    assert domain_modules == {
+        "investment_panel.database.options_decision_system",
+        "investment_panel.database.options_execution",
+        "investment_panel.database.options_history",
+        "investment_panel.database.options_recovery_read",
+        "investment_panel.database.options_research",
+    }
+    assert len(domain_modules) <= 5
+
+
+def test_deep_owner_modules_have_explicit_exports() -> None:
+    modules = (
+        "src/investment_panel/core/event_scout.py",
+        "src/investment_panel/core/event_scout_runtime.py",
+        "src/investment_panel/database/options_decision_system.py",
+        "src/investment_panel/database/options_execution.py",
+        "src/investment_panel/database/options_history.py",
+        "src/investment_panel/database/options_recovery_read.py",
+        "src/investment_panel/database/options_research.py",
+    )
+    missing = [module for module in modules if "__all__" not in (REPO_ROOT / module).read_text(encoding="utf-8")]
+    assert not missing, "Deep owner modules need explicit __all__: " + ", ".join(missing)
 
 
 def _forbidden_runtime_tokens() -> tuple[str, ...]:
@@ -314,6 +332,7 @@ def test_advisory_provider_and_option_agent_are_single_typed_seams() -> None:
         "market-deepseek-option-agent",
     }
     assert not retired_scripts & set(scripts)
+    assert [name for name in scripts if "option-agent" in name] == ["market-run-option-agent"]
     assert scripts.get("market-run-option-agent") == "investment_panel.jobs.run_option_agent:main"
 
     from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection

@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from investment_panel.core.config import AppConfig
-from investment_panel.database.actions import ActionRepository
-from investment_panel.database.agents import AgentRepository
-from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.authority import runtime_for_config
-from investment_panel.database.options_analysis import refresh_options_radar
-from investment_panel.database.options_history import OptionHistoryRepository
+from investment_panel.database.options_execution import OptionsExecutionRepository
+from investment_panel.database.options_history import OptionsHistoryService
 from investment_panel.database.options_decision_system import OptionsDecisionSystemRepository
-from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
 from investment_panel.database.options_recovery_read import RecoveryReadRepository
-from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
-from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
-from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
-from investment_panel.core.event_scout import build_options_decision_truth
-from investment_panel.core.decision import is_market_open
-from investment_panel.database.options_risk_context import option_risk_contexts
-from investment_panel.database.option_ticket_read import revalidate_published_tickets
-from investment_panel.database.decision_inbox import DecisionInboxRepository
-from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository
-from investment_panel.database.event_studies import event_study_rows
-from investment_panel.database.options_distribution_shift import surface_shift_rows
+from investment_panel.database.options_research import OptionsResearchRepository
 
 __all__ = ["OptionsActions"]
 
@@ -57,67 +43,35 @@ def _lane_paper_actions_enabled(config: AppConfig, lane: str) -> bool:
     return bool(getattr(config.analysis.options_decision_system, key, False))
 
 
-def _options_risk_sleeve_capital(config: AppConfig) -> float | None:
-    value = config.analysis.options_decision_system.options_risk_sleeve_capital
-    return float(value) if value is not None and float(value) > 0 else None
-
-
-def _options_daily_loss_halt_pct(config: AppConfig) -> float | None:
-    value = config.analysis.options_decision_system.daily_loss_halt_pct
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if 0 <= result <= 1 else None
-
-
-def _options_max_open_positions(config: AppConfig) -> int | None:
-    value = config.analysis.options_decision_system.max_recovery_open_positions
-    try:
-        result = int(value)
-    except (TypeError, ValueError):
-        return None
-    return result if result > 0 else None
-
-
-def _robinhood_config(config: AppConfig) -> Any:
-    return config.data_sources.brokers.robinhood
-
-
 class OptionsActions:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.runtime = runtime_for_config(config)
-        self.actions = ActionRepository(self.runtime)
-        self.agents = AgentRepository(self.runtime)
-        self.analysis = AnalysisRepository(self.runtime)
-        self.history = OptionHistoryRepository(
+        self.history = OptionsHistoryService(
             self.runtime,
-            options_risk_sleeve_capital=_options_risk_sleeve_capital(config),
+            options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
         )
-        self.policy = OptionHistoryPolicyRepository(self.runtime)
         self.recovery = RecoveryReadRepository(
             self.runtime,
             recovery_paper_actions_enabled=_recovery_paper_actions_enabled(config),
         )
         mode = _decision_mode(config)
         self.decision_system = OptionsDecisionSystemRepository(self.runtime, mode=mode)
+        self.research = OptionsResearchRepository(self.runtime, config)
+        self.execution = OptionsExecutionRepository(self.runtime, config)
+        # Kept as a local application test seam. New callers use the research
+        # owner directly; it is not a repository facade.
+        self.agents = self.research.agents
 
     def history_symbols(self) -> dict[str, Any]:
-        return self.policy.symbols()
+        return self.history.symbols()
 
     def set_history_requested_state(self, symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "options_history_policy": self.policy.set_requested_state(
-                symbol,
-                requested_state=str(payload.get("requested_state") or ""),
-                lock_version=int(payload.get("lock_version") or 0),
-            )
-        }
+        return self.history.set_requested_state(symbol, payload)
 
     @staticmethod
     def is_policy_conflict(exc: Exception) -> bool:
-        return isinstance(exc, PolicyConflict)
+        return OptionsHistoryService.is_policy_conflict(exc)
 
     def history_snapshots(self, **filters: Any) -> dict[str, Any]:
         return self.history.snapshots(**filters)
@@ -134,9 +88,6 @@ class OptionsActions:
     def history_surface_grid(self, **filters: Any) -> dict[str, Any]:
         return self.history.surface_grid(**filters)
 
-    def history_legacy_surface(self, **filters: Any) -> dict[str, Any]:
-        return self.history.legacy_surface(**filters)
-
     def history_curves(self, **filters: Any) -> dict[str, Any]:
         return self.history.curves(**filters)
 
@@ -144,22 +95,13 @@ class OptionsActions:
         return self.history.anomalies(**filters)
 
     def history_health(self, *, symbol: str | None = None) -> dict[str, Any]:
-        result = self.history.health(symbol=symbol)
-        result["mode"] = _decision_mode(self.config)
-        return result
+        return self.history.health(symbol=symbol, mode=_decision_mode(self.config))
 
     def event_study(self, *, ticker: str, event_kind: str, as_of: datetime) -> dict[str, Any]:
-        rows = event_study_rows(self.runtime, ticker=ticker, event_kind=event_kind, as_of=as_of)
-        return {
-            "ticker": ticker.strip().upper(),
-            "event_kind": rows[0]["event_kind"] if rows else event_kind.strip().lower(),
-            "as_of": as_of,
-            "evidence_state": rows[0]["evidence_state"] if rows else "insufficient_event_evidence",
-            "rows": rows,
-        }
+        return self.research.event_study(ticker=ticker, event_kind=event_kind, as_of=as_of)
 
     def distribution_shift(self, *, symbol: str, as_of: datetime) -> dict[str, Any]:
-        return surface_shift_rows(self.runtime, symbol=symbol, as_of=as_of)
+        return self.research.distribution_shift(symbol=symbol, as_of=as_of)
 
     def recovery_events(self, **filters: Any) -> dict[str, Any]:
         rows = self.recovery.events(**filters)
@@ -179,7 +121,7 @@ class OptionsActions:
     def decision_brief(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.decision_brief(**filters)
         if payload.get("strongest_candidate"):
-            current_candidate = self._with_ticket(
+            current_candidate = self.execution.with_ticket(
                 dict(payload["strongest_candidate"]),
                 symbol=str(payload.get("symbol") or filters.get("symbol") or "QQQ"),
                 evaluated_at=payload.get("as_of"),
@@ -192,7 +134,7 @@ class OptionsActions:
                 *list(existing_truth.get("blockers") or []),
                 *list(ticket.get("blockers") or []),
             ]))
-            truth = build_options_decision_truth(
+            truth = self.execution.decision_truth(
                 {**current_candidate, "blockers": blockers, "ticket": ticket},
                 lane=str(payload.get("lane") or filters.get("lane") or "thesis"),
                 publication_id=existing_truth.get("publication_id"),
@@ -220,7 +162,7 @@ class OptionsActions:
     def candidates(self, **filters: Any) -> dict[str, Any]:
         payload = self.decision_system.candidates(**filters)
         symbol = str(filters.get("symbol") or "QQQ")
-        payload["items"] = [self._with_ticket(dict(row), symbol=symbol, evaluated_at=payload.get("as_of")) for row in payload["items"]]
+        payload["items"] = [self.execution.with_ticket(dict(row), symbol=symbol, evaluated_at=payload.get("as_of")) for row in payload["items"]]
         payload["rows"] = payload["items"]
         return payload
 
@@ -237,155 +179,38 @@ class OptionsActions:
         return self.decision_system.learning_progress(**filters)
 
     def verify_static_arbitrage(self, candidate_id: int) -> dict[str, Any]:
-        robinhood = _robinhood_config(self.config)
-        if robinhood is None or not robinhood.enabled:
-            return self.decision_system.verification_result(candidate_id)
-        client = RobinhoodMcpClient(
-            robinhood.mcp_url,
-            auth_token=load_robinhood_access_token(robinhood),
-            timeout_seconds=min(10, int(robinhood.timeout_seconds)),
-            max_response_bytes=int(robinhood.max_response_bytes),
-        )
-        return self.decision_system.verification_result(candidate_id, client)
+        return self.execution.verify_static_arbitrage(self.decision_system, candidate_id)
 
     def signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
-        detail = self.analysis.option_signal_detail(decision_id)
-        if detail is None:
-            return None
-        return revalidate_published_tickets(
-            self.runtime,
-            [detail],
-            sleeve_capital=_options_risk_sleeve_capital(self.config),
-        )[0]
+        return self.execution.signal_detail(decision_id)
 
     def opportunity_scorecard(self, *, lane: str, window_days: int) -> dict[str, Any]:
-        return OpportunityScorecardRepository(self.runtime).scorecard(
-            lane=lane,
-            window_days=window_days,
-        )
+        return self.research.opportunity_scorecard(lane=lane, window_days=window_days)
 
     def decision_inbox(self, *, limit: int, cursor: str | None) -> dict[str, Any]:
-        return DecisionInboxRepository(self.runtime).rows(limit=limit, cursor=cursor)
+        return self.research.decision_inbox(limit=limit, cursor=cursor)
 
     def stage_paper_entry(self, decision_id: UUID, payload: dict[str, Any]) -> dict[str, Any]:
-        mode = _decision_mode(self.config)
-        if mode != "paper":
-            raise ValueError("options decision system is in shadow mode; paper entry is disabled")
-        if not _paper_actions_enabled(self.config):
-            raise ValueError("options paper actions kill switch is disabled")
-        detail = self.signal_detail(decision_id)
-        if detail is None or not isinstance(detail.get("ticket"), dict):
-            raise ValueError("current option ticket is required before paper staging")
-        lane = str(detail["ticket"].get("lane") or "radar")
-        if not _lane_paper_actions_enabled(self.config, lane):
-            raise ValueError(f"{lane}_paper_actions_enabled is disabled")
-        return self.actions.stage_option_paper_entry(
-            decision_id=decision_id,
-            idempotency_key=payload.get("idempotency_key"),
-            ticket_version=payload.get("ticket_version"),
-            quantity=payload.get("quantity"),
-            limit_price=payload.get("limit_price"),
-            current_options_risk_sleeve_capital=_options_risk_sleeve_capital(self.config),
-            daily_loss_halt_pct=_options_daily_loss_halt_pct(self.config),
-            max_open_positions=_options_max_open_positions(self.config),
-        )
-
-    def _with_ticket(self, candidate: dict[str, Any], *, symbol: str, evaluated_at: Any) -> dict[str, Any]:
-        thesis = dict(candidate.get("thesis") or {})
-        forecast = {
-            "expected_value": (candidate.get("expected_value_interval") or {}).get("expected"),
-            "lower_95_expected_value": (candidate.get("expected_value_interval") or {}).get("lower_95"),
-            "probability_profit": (candidate.get("forecast") or {}).get("probability_profit"),
-            "probability_semantics": (
-                "calibrated_exact_cohort"
-                if calibrated_cohort_ready(candidate.get("comparable_exact_structure_outcomes"))
-                else "provisional_uncalibrated"
-            ),
-            "effective_sample_size": (candidate.get("comparable_exact_structure_outcomes") or {}).get("sample_size"),
-        }
-        now = datetime.now(UTC)
-        risk_context = option_risk_contexts(
-            self.runtime,
-            [symbol],
-            evaluated_at=now,
-        ).get(symbol.upper(), {})
-        candidate["ticket"] = build_option_trade_ticket(
-            decision_id=str(candidate["decision_id"]),
-            symbol=symbol,
-            structure=str(candidate.get("structure") or ""),
-            expiration=candidate.get("expiration"),
-            legs=list(candidate.get("legs") or []),
-            entry_price=(candidate.get("conservative_entry") or {}).get("price"),
-            one_unit_max_loss=candidate.get("one_unit_max_loss"),
-            state=str(candidate.get("paper_state") or "WATCH"),
-            blockers=list(candidate.get("blockers") or []),
-            evaluated_at=now,
-            market_session="regular" if is_market_open(now) else "closed",
-            sleeve_capital=_options_risk_sleeve_capital(self.config),
-            **risk_context,
-            thesis=thesis,
-            forecast=forecast,
-            provenance={
-                "analysis_evaluated_at": evaluated_at,
-                "revisions": {"model": candidate.get("model_version")},
-            },
-        )
-        candidate["execution_ready"] = candidate["ticket"]["state"] == "READY"
-        if not candidate["execution_ready"] and candidate.get("paper_state") == "PAPER_READY":
-            candidate["paper_state"] = "WATCH"
-        candidate["blockers"] = list(candidate["ticket"]["blockers"])
-        return candidate
+        return self.execution.stage_paper_entry(decision_id, payload)
 
     def submit_thesis(self, payload: dict[str, Any]) -> dict[str, Any]:
-        thesis_id = self.agents.submit("option_thesis", payload)
-        return {
-            "status": "accepted",
-            "thesis_id": thesis_id,
-            "strategy_version": _strategy_version(payload),
-            "agent_thesis_validations": 1,
-        }
+        if not hasattr(self, "research"):
+            thesis_id = self.agents.submit("option_thesis", payload)
+            return {"status": "accepted", "thesis_id": thesis_id, "strategy_version": str(payload.get("strategy_version") or ""), "agent_thesis_validations": 1}
+        return self.research.submit_thesis(payload)
 
     def submit_postmortem(self, payload: dict[str, Any]) -> dict[str, Any]:
-        postmortem_id, evaluations = self.agents.submit_postmortem(payload)
-        return {
-            "status": "accepted",
-            "postmortem_id": postmortem_id,
-            "strategy_version": _strategy_version(payload),
-            "strategy_evaluations": evaluations["strategy_backtests"] + evaluations["strategy_forward_tests"],
-            **evaluations,
-        }
+        return self.research.submit_postmortem(payload)
 
     def acknowledge_alert(self, alert_id: str) -> dict[str, Any] | None:
-        if not self.actions.acknowledge_alert(alert_id):
-            return None
-        return {"status": "acknowledged", "alert_id": alert_id}
+        return self.execution.acknowledge_alert(alert_id)
 
     def record_trade_journal(self, payload: dict[str, Any]) -> dict[str, Any]:
-        journal_id = self.actions.record_trade_journal(**payload)
-        return {"status": "recorded", "journal_id": journal_id}
+        return self.execution.record_trade_journal(payload)
 
     def promote_strategy(self, proposal_id: str, *, approved_by: str) -> dict[str, Any]:
-        strategy_version = self.actions.promote_strategy_proposal(proposal_id, approved_by=approved_by)
-        try:
-            radar_refresh = refresh_options_radar(
-                self.runtime,
-                code_version="strategy-promotion",
-                options_risk_sleeve_capital=_options_risk_sleeve_capital(self.config),
-            )
-        except Exception as exc:
-            radar_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
-        return {
-            "status": "promoted",
-            "proposal_id": proposal_id,
-            "strategy_version": strategy_version,
-            "approved_by": approved_by,
-            "radar_refresh": radar_refresh,
-        }
-
-
-def _strategy_version(payload: dict[str, Any]) -> str:
-    request = payload.get("request")
-    request_strategy = request.get("strategy_version") if isinstance(request, dict) else None
-    from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
-
-    return str(payload.get("strategy_version") or request_strategy or DEFAULT_STRATEGY_VERSION)
+        return self.research.promote_strategy(
+            proposal_id,
+            approved_by=approved_by,
+            sleeve_capital=self.config.analysis.options_decision_system.options_risk_sleeve_capital,
+        )

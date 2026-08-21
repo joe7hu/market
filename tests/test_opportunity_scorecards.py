@@ -6,7 +6,7 @@ from investment_panel.database.opportunity_episodes import (
     SCORECARD_TRUTH_VERSION,
     option_episode_key,
 )
-from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository, _scorecard
+from investment_panel.database.opportunity_scorecards import OpportunityScorecardRepository, scorecard_payload
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -81,7 +81,7 @@ def test_scorecard_uses_independent_episode_denominator_and_hides_immature_ev() 
     }
     repeated = {**row, "available_at": datetime(2026, 8, 12, 14, 30, tzinfo=UTC)}
 
-    result = _scorecard(
+    result = scorecard_payload(
         lane="recovery",
         as_of=datetime(2026, 8, 12, 20, tzinfo=UTC),
         window_days=120,
@@ -107,7 +107,7 @@ def test_scorecard_uses_independent_episode_denominator_and_hides_immature_ev() 
 
 
 def test_scorecard_quarantines_legacy_rows_and_does_not_offer_promotion() -> None:
-    result = _scorecard(
+    result = scorecard_payload(
         lane="radar",
         as_of=datetime(2026, 8, 12, 20, tzinfo=UTC),
         window_days=120,
@@ -154,7 +154,7 @@ def test_scorecard_brier_uses_probability_profit_not_ev() -> None:
         "exit_fill_at": None,
     } for index in range(30)]
 
-    result = _scorecard(
+    result = scorecard_payload(
         lane="radar",
         as_of=datetime(2026, 8, 12, 20, tzinfo=UTC),
         window_days=120,

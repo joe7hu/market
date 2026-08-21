@@ -205,3 +205,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+market_metrics_row = _market_metrics_row

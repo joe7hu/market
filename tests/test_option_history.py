@@ -7,7 +7,7 @@ import pytest
 
 from investment_panel.core.robinhood_options.history import collect_robinhood_full_option_chain
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.options_history import OptionHistoryRepository, _residual_eligible, _surface_summaries
+from investment_panel.database.options_history import OptionHistoryRepository, residual_eligible, surface_summaries
 from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs.robinhood_option_history import history_slot
@@ -122,12 +122,6 @@ def test_history_snapshot_persists_complete_rows_and_excludes_partial(migrated_p
     ingestion.finish_run(run_id, "succeeded", summary=stored)
     assert stored["capture_state"] == "complete"
     assert history.chain(symbol="QQQ")["count"] == 6
-    surface = history.legacy_surface(symbol="QQQ")
-    assert surface["surfaces"]["call"]
-    call_grid = surface["surfaces"]["call"]
-    x_index = {x: index for index, x in enumerate(surface["x"])}
-    call_dte_index = surface["y"].index(32)
-    assert all(call_grid[call_dte_index][x_index[row["log_moneyness"]]] is not None for row in history.chain(symbol="QQQ", option_type="call")["rows"])
     bounded_surface = history.surface_grid(symbol="QQQ", option_type="call", max_dte=40)
     assert bounded_surface["y"] == [32]
     assert set(bounded_surface["surfaces"]) == {"call"}
@@ -271,7 +265,7 @@ def test_surface_summaries_keep_term_slopes_separate_by_option_type() -> None:
         for option_type, ivs in (("call", (0.20, 0.22, 0.24)), ("put", (0.30, 0.31, 0.32)))
         for expiry, dte, iv in zip(("2026-08-01", "2026-08-11", "2026-08-21"), (10, 20, 30), ivs)
     ]
-    summaries = _surface_summaries(rows)
+    summaries = surface_summaries(rows)
     call_slopes = [summary["term_slope"] for summary in summaries if summary["option_type"] == "call"]
     put_slopes = [summary["term_slope"] for summary in summaries if summary["option_type"] == "put"]
     assert call_slopes == pytest.approx([0.002, 0.002, 0.002])
@@ -280,9 +274,9 @@ def test_surface_summaries_keep_term_slopes_separate_by_option_type() -> None:
 
 def test_residual_eligibility_requires_a_liquid_delta_band() -> None:
     valid = {"provider_delta": 0.25, "bid": 2.0, "ask": 2.2, "mid": 2.1}
-    assert _residual_eligible(valid)
-    assert not _residual_eligible({**valid, "provider_delta": 0.01})
-    assert not _residual_eligible({**valid, "bid": 1.0, "ask": 2.2, "mid": 1.0})
+    assert residual_eligible(valid)
+    assert not residual_eligible({**valid, "provider_delta": 0.01})
+    assert not residual_eligible({**valid, "bid": 1.0, "ask": 2.2, "mid": 1.0})
 
 
 def test_rematerializing_an_older_snapshot_never_uses_future_changes(migrated_postgres_dsn: str) -> None:

@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.actions.event_scout import process_signal
-from investment_panel.core.event_scout import replay_mrna
 from investment_panel.core.event_scout import build_event_decision_packet
+from investment_panel.core.event_replays import replay_mrna
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.event_scout import (
     decision_truth_rows,

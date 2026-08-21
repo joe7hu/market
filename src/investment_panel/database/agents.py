@@ -682,3 +682,6 @@ def _batch_payload(tasks: Sequence[Any]) -> dict[str, Any]:
             "forbidden": ["trade_execution", "silent_strategy_promotion", "invented_evidence"],
         },
     }
+
+
+command_args = _command_args

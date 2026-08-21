@@ -473,3 +473,12 @@ def _expiry_seconds(value: Any) -> float | None:
     if expires_at is None:
         return None
     return expires_at / 1000 if expires_at > 10_000_000_000 else expires_at
+
+
+authorization_server_metadata = _authorization_server_metadata
+
+
+__all__ = [
+    "RobinhoodAuthRequired", "authorization_server_metadata", "authorize_robinhood_mcp",
+    "load_robinhood_access_token",
+]
