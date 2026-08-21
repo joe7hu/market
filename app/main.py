@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,10 +77,22 @@ def _mount_frontend(app: FastAPI) -> None:
 
     @app.get("/{path:path}", include_in_schema=False)
     def frontend(path: str = "") -> FileResponse:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
         requested = dist_dir / path
         if requested.is_file():
             return FileResponse(requested)
         return FileResponse(index_path, headers=index_headers)
+
+    @app.api_route(
+        "/{path:path}",
+        methods=["POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        include_in_schema=False,
+    )
+    def frontend_non_get(path: str = "") -> None:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        raise HTTPException(status_code=405, detail="Method not allowed")
 
 
 app = create_app()
