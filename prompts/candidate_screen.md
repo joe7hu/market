@@ -1,6 +1,6 @@
 # Candidate Screen Prompt
 
-Review candidate securities from the configured DuckDB output and produce a ranked watchlist.
+Review candidate securities from the canonical PostgreSQL read models and produce a ranked watchlist.
 
 ## Required fields
 
@@ -16,4 +16,3 @@ Review candidate securities from the configured DuckDB output and produce a rank
 ## Ranking rubric
 
 Prioritize names with clear business quality, asymmetric risk/reward, identifiable catalysts, and evidence that can be checked against filings or trusted primary sources.
-

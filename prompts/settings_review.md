@@ -4,7 +4,7 @@ Review the panel configuration for completeness.
 
 ## Checks
 
-- DuckDB path exists and points to Arco output
+- PostgreSQL connection is configured and the expected schema is available
 - Birdclaw command is configured
 - Prompt directory is present
 - Trader profile directory is present
@@ -14,4 +14,3 @@ Review the panel configuration for completeness.
 ## Output
 
 Return missing setup items first, then optional improvements.
-

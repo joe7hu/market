@@ -55,10 +55,17 @@ def main() -> int:
         print(f"  {relative}")
 
     failures: list[str] = []
-    scan_roots = (ROOT / "app", ROOT / "src", ROOT / "tests", ROOT / "scripts")
+    scan_roots = (
+        ROOT / "app",
+        ROOT / "src",
+        ROOT / "tests",
+        ROOT / "scripts",
+        ROOT / "frontend" / "src",
+        ROOT / "prompts",
+    )
     for root in scan_roots:
         for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in {".py", ".toml", ".lock", ".json", ".ts", ".tsx", ".sh"}:
+            if not path.is_file() or path.suffix not in {".md", ".py", ".toml", ".lock", ".json", ".ts", ".tsx", ".sh"}:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace").casefold()
             for token in FORBIDDEN_TOKENS:

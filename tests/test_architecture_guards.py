@@ -60,7 +60,26 @@ def _forbidden_runtime_tokens() -> tuple[str, ...]:
 
 
 def test_runtime_has_no_retired_storage_or_importer_markers() -> None:
-    files = [*_all_py_files(), REPO_ROOT / "pyproject.toml", REPO_ROOT / "uv.lock"]
+    runtime_roots = (
+        REPO_ROOT / "frontend" / "src",
+        REPO_ROOT / "prompts",
+        REPO_ROOT / "scripts",
+    )
+    runtime_files = [
+        path
+        for root in runtime_roots
+        for path in root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
+    files = [
+        *_all_py_files(),
+        *runtime_files,
+        REPO_ROOT / "pyproject.toml",
+        REPO_ROOT / "uv.lock",
+        REPO_ROOT / "package.json",
+        REPO_ROOT / "package-lock.json",
+        REPO_ROOT / "Makefile",
+    ]
     violations = []
     tokens = _forbidden_runtime_tokens()
     for path in files:
