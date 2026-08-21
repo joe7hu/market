@@ -5,12 +5,12 @@ from datetime import UTC, datetime
 
 import psycopg
 
-from app.data_access.postgres_panel import load_postgres_tables
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
 from investment_panel.database.brokers import BrokerRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import refresh_options_radar
+from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
 
 

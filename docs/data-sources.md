@@ -61,12 +61,12 @@ Sources:
 ## yfinance / Stooq
 
 - `yfinance` is unofficial, not affiliated with Yahoo, and intended for research/education/personal use.
-- `pandas-datareader` supports Stooq through `StooqDailyReader`, but Stooq is website-backed rather than a contracted API.
-- The app treats both as replaceable fetch adapters. Provider failures should be visible as missing/stale data, not hidden by synthetic fallback rows.
+- The app treats public market-data providers as replaceable fetch adapters.
+  Provider failures should be visible as missing/stale data, not hidden by
+  synthetic fallback rows.
 
 Sources:
 - https://pypi.org/project/yfinance/
-- https://pydata.github.io/pandas-datareader/readers/stooq.html
 
 ## OpenCLI / TradingView
 

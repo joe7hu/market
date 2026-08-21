@@ -1,126 +1,120 @@
-# Architecture Map
+# Market architecture
 
-Navigation guide for the Market codebase. Package-level; skim this before grepping.
-For deeper detail, every package's `__init__.py` and each submodule carry a one-line
-responsibility docstring — `ls` a package and read the docstrings.
+Market has one runtime data seam: PostgreSQL 18. Alembic owns schema changes.
+The NAS keeps historical migration evidence only. The repository has no archive
+reader, restore path, fallback store, or dual-write path for that evidence.
 
-## Request flow (read path)
+## Request flow
 
-```
-Browser (frontend/src) ──HTTP──▶ app/main.py (FastAPI routes)
-                                      │
-                                      ▼
-                          app/data_access/ (load + normalize for API)
-                                      │
-                                      ▼
-                  app.publication + normalized PostgreSQL tables
-                                      │
-                                      ▼
-        database/ repositories ──▶ PostgreSQL 18 (catalog/ingest/raw/
-                                  analysis/app/ops)
+```text
+Browser
+  -> frontend/src/apiTransport.ts
+  -> frontend/src/api.ts and domain request modules
+  -> app/routers/
+  -> app/dependencies.py / app/panel_snapshot.py / app/job_control.py
+  -> app/actions or app/data_access query owners
+  -> src/investment_panel/database/
+  -> PostgreSQL 18
 ```
 
-Write path: PostgreSQL-native `jobs/*` entry points pull from providers, archive
-one payload manifest, normalize raw facts, compute analysis rows, and atomically
-publish application read models. `core/refresh_jobs.py` is the only live job
-allowlist. Older DuckDB modules under `core/` and retired job modules are kept
-only for legacy-import/test compatibility and are not installed or scheduled.
+Writes use an action or workflow owner. Read-only requests use a query/read-model
+owner. Routers do not construct database adapters.
 
-## Backend layout (`src/investment_panel/` unless noted)
+## Stable owners
 
-| Location | Responsibility | Go here to change… |
+| Owner | Interface | Change this when… |
 |---|---|---|
-| `app/main.py` | **Thin app factory**: builds FastAPI, includes `app/routers/`, mounts SPA, runs the scheduler lifespan | app wiring / startup |
-| `app/routers/` | HTTP routes by domain (`panel`, `tickers`, `portfolio`, `theses`, `sources`, `market_data`, `options`, `brokers`, `system`); registered via `ALL_ROUTERS`. Add a router here, don't grow `main.py` | an API endpoint / route shape |
-| `app/actions/` | **Application action layer**: domain workflows for options, portfolio/watchlist, sources, brokers, and agents. Routers are transport adapters; actions select repositories, sequence mutations, and assemble results | a user-triggered workflow / mutation sequence |
-| `app/deps.py` | Shared route service layer: loaders, the `_context`/`_table_payload` helpers, request guard, Pydantic input models, constants. Routers reference these as `deps.X` (single patch seam) | a shared route helper / request model |
-| `app/data_access/` | **API adapters only**: request PostgreSQL-owned read models and normalize them into API payloads. Compatibility modules re-export database-owned portfolio and panel behavior without owning SQL or transactions | how database rows are shaped for the UI / a payload field |
-| `app/panel_contracts.py` | Scope→table contracts (which tables each page needs) | which tables a page scope loads |
-| `app/scheduler.py` | In-app background refresh scheduler | scheduled in-app agent passes |
-| `database/` | **PostgreSQL authority layer**: pooled runtime, Alembic migrations, ingestion/raw repositories, durable user state, portfolio accounting, canonical instrument identity, panel model retrieval, analysis runs, atomic publications, jobs, agents, retention, and backup | schemas, transactions, persistence, catalog identity, or read-model behavior |
-| `database/instruments.py` | Canonical symbol normalization, classification, timezone, and catalog reconciliation used by every live writer | instrument identity or catalog conflict policy |
-| `database/user_state.py`, `portfolio_ledger.py`, `portfolio_intelligence.py` | Durable portfolio/watchlist/thesis operations, append-only transactions, projections, and reconciled portfolio read models | user-owned investment state or portfolio accounting |
-| `database/panel_models.py` | Model catalog: SQL/publication/repository source, aliases, symbol scope, future-row policy, and availability metadata | how a named panel model is retrieved |
-| `database/ingestion.py:IngestionRun` | Managed ingestion lifecycle with one terminal state and automatic exception recording | ingestion run completion, counts, summaries, or failure semantics |
-| `database/agents.py`, `agent_process.py`, `agent_telemetry.py`, `preopen_context.py` | Option-agent queue/repository, isolated child-process boundary, cross-workflow invocation accounting, and hard-bounded pre-open prompt assembly | agent task lifecycle, command execution, run/token visibility, or prompt budgets |
-| `database/options_analysis.py`, `options_cash_secured_put.py` | Thin options publication orchestration plus strategy-lane modules that own selection, gates, sizing, scoring, and persistence end to end | live options decision publication or one strategy lane |
-| `core/panel/` | **Read-model layer**: ~120 `con→list[dict]` accessors + `load_panel_data` dispatcher. Submodules: `snapshot` (orchestration), `read_equity`/`read_options`/`read_learning` (accessors), `market_environment`, `feed`, `technicals`, `disclosures`, `sources`, `metrics`, `coerce` | a read model / what a table returns |
-| `core/decision/` | **Decision engine**: universe build, freshness, queue, readiness, grading, watchlist, market calendar. Submodules: `builders`, `read_models`, `grading`, `readiness`, `freshness`, `calendar`, `watchlist`, `portfolio`, `quotes`, `service`, `coerce`, `constants` | decision grades, gating, freshness rules |
-| `core/options_radar/` | Options-radar pipeline: candidates, gates, scoring, opportunities, alerts, learning loop | options-radar logic |
-| `analysis/history_v3.py`, `database/options_history_v3.py`, `database/options_decision_system.py`, `database/options_history_policy.py` | Immutable option-history capture generations, price-space evidence/replay, policy-gated symbol enrollment, provider leases, and bounded decision read models | QQQ underwriting/evidence, the NVDA hourly shadow exception, policy/capacity gates; not broad discovery |
-| `core/brokers/` | Broker integration: `ibkr`, `moomoo` providers, `persistence`, `read_models`, `policy`, `recommendations`, `service` | broker data, paper orders, agent recs |
-| `core/free_sources/` | Free market-data updates: `tradingview_sources`, `yfinance_sources`, `options`, `store`, `provenance`, `coerce` | TradingView/yfinance ingestion + storage |
-| `core/source_ingestion/` | Followed-source directory ingestion (canonical, health, definitions). `raw_sources/` is a sub-package: `sync` (orchestration), `tweets`, `browser`, `io`, `coerce`, `constants` | followed-source pipeline / raw Birdclaw+browser ingest |
-| `core/disclosures/` | SEC 13F + public/House disclosure ingestion. Submodules: `config`, `public_csv`, `house`, `prices`, `replica` (replica portfolios), `thirteen_f` (13F + SEC XML), `coerce`, `constants` | a disclosure ingestion / 13F parsing rule |
-| `core/option_agent_thesis/` | Structured agent-thesis handoff for the options radar. Submodules: `requests` (build/retire requests + prompt), `thesis` (upsert/normalize/attach), `validation` (proof/catalyst/red-team checks), `dbutil`, `coerce`, `constants` | agent-thesis request/validation logic |
-| `core/portfolio_intelligence/` | Portfolio-level risk read models. Submodules: `exposure` (clusters), `correlation` (edges), `cards` (risk cards + review actions), `holdings` (shared accessors), `coerce` | portfolio risk/exposure read models |
-| `core/db.py` + `core/schema.py` | Retired DuckDB compatibility used only by legacy tests/import-era code; never a live authority | legacy compatibility only; new persistence belongs in `database/` and Alembic |
-| `core/config.py` | App config loading (`AppConfig`, `load_config`) | config defaults/shape |
-| `core/job_policy.py`, `core/job_execution.py`, `core/executable.py` | Canonical refresh-job identity/cadence/freshness/source routing, one subprocess lifecycle contract, and launchd-safe executable resolution shared by API, scheduler, and providers | job policy, scheduling, timeout, cancellation, or command resolution |
-| `core/robinhood_options/` | Read-only Robinhood option-chain collector. Submodules: `auth` (MCP OAuth/PKCE token dance + Codex credential bridge), `collector` (chain collection + `store_options_chain` normalization) | Robinhood auth or chain collection |
-| `core/*.py` (leaf modules) | Domain helpers: `signals`, `sources`, `technicals`, `scoring`, `prices`, `fundamentals`, `portfolio`, `thesis_monitor`, `daily_brief`, `ibkr_options`, `options_intelligence`, `option_agent_runner`/`option_agent_postmortem`, `research`, `instruments`, `event_calendar`, `sec`, `arco`, `crypto`, `refresh_jobs` | that specific domain |
-| `analysis/` | Pure computations: `valuation`, `sepa`, `liquidity`, `correlation`, `earnings_setup`, `option_ev`, `options_payoff`, `market_environment`, `stats` (+ `registry`, `run`) | a quantitative model |
-| `providers/` | External data adapters: `yfinance_provider`, `tradingview`, `opencli` | how an external source is fetched |
-| `jobs/` | PostgreSQL-native installed entry points plus explicitly retired legacy modules. Live routing is defined by `pyproject.toml` scripts and `core/refresh_jobs.py:ALLOWLIST` | a pipeline step / job orchestration |
+| `app/main.py` | `create_app()` | app wiring or router registration changes |
+| `app/contracts.py` | Pydantic HTTP input models | an HTTP request contract changes |
+| `app/dependencies.py` | typed config and runtime providers | a dependency needs a new provider |
+| `app/panel_snapshot.py` | scope snapshots, pagination, freshness, last-good cache | a panel read needs snapshot behavior |
+| `app/job_control.py` | refresh start, heartbeat, subprocess boundary | a refresh workflow changes |
+| `app/request_security.py` | local/private-network request gate | mutation access policy changes |
+| `app/actions/options.py` | option decision, ticket, paper gate workflow | options sequencing or fail-closed policy changes |
+| `app/actions/event_scout.py` | Event Scout packet, cooldown, replay workflow | Event Scout mutation or replay changes |
+| `app/data_access/loaders.py` | panel query adapters | a read-model query needs a new API shape |
+| `database/panel_models.py` | model catalog and read-model ownership | a named panel model is added or moved |
+| `database/panel_queries.py` | PostgreSQL panel query implementation | a canonical panel table query changes |
+| `database/event_scout.py` | PostgreSQL Event Scout repository | Event Scout persistence or truth linkage changes |
+| `database/options_decision_system.py` | option decision repository | options decision publication changes |
+| `database/options_history_v3.py` | capture, evidence, materialization owner | option history evidence changes |
+| `database/portfolio_ledger.py` | transaction, reversal, and position projection | portfolio accounting changes |
+| `database/source_facts.py` | source facts and publication inputs | source ingestion facts change |
+| `database/ingestion.py` | managed ingestion run lifecycle | a collector lifecycle changes |
+| `core/refresh_jobs.py` | canonical job allowlist and job identity | a scheduled job changes |
+| `migrations/versions/` | Alembic migrations | a PostgreSQL schema changes |
+| `frontend/src/generated/apiSchema.ts` | generated OpenAPI TypeScript types | backend HTTP schemas change |
+| `frontend/src/apiTransport.ts` | GET/POST/PATCH transport and errors | browser transport behavior changes |
+| `frontend/src/api.ts` | thin domain request wrappers and view adapters | a frontend request path changes |
 
-## Frontend layout (`frontend/src/`)
+Pure rules stay in the smallest domain module that owns them. A package facade
+may expose a documented public API, but it must use explicit imports and
+`__all__`. New code must not add lazy exports, dynamic module loading, or a
+second compatibility layer.
 
-| Location | Responsibility |
-|---|---|
-| `App.tsx`, `main.tsx` | Router + app shell |
-| `pages/*Route.tsx` | One route per page (Market, Watchlist, OptionsRadar, Health, Ticker, …) — thin; compose views |
-| `views/` | Feature view modules. Larger features are folders: `health/`, `optionsRadar/`, `watchlist/` (`index` composition, `columns`, `format`, `cells`, `table`, `controls`), `market/` (`panels`, `chart`, `cells`, `format`, `types`), `ticker/` (`index` composition, `panels`, `cells`, `data`). Shared: `rowFormat.ts`, `workspacePage.tsx` |
-| `components/` | Reusable UI primitives (incl. `components/ui/`, `components/market/`) |
-| `api.ts`, `marketData.tsx`, `model.ts`, `types.ts`, `hooks.ts`, `utils.ts` | API client, data context/model, shared types/hooks/utils |
+## Configuration rule
 
-`/options-radar` owns broad-universe discovery. `/options-chain` owns the policy-driven option-history underwriting workflow: QQQ is the core 15-minute `PAPER_READY` symbol, and NVDA is the sole early hourly `WATCH`-capped shadow collection exception. Compact decision brief comes first, then optional discovery, evidence, journal, and learning reads. The chain and 3D surface remain secondary evidence and are not decision signals.
-| `generated/panelContract.ts`, `adapters/` | Generated backend-owned panel table keys plus feature-owned row normalization before view code | panel contract drift or feature payload adaptation |
+`investment_panel.core.config.load_config()` is the internal typed boundary.
+Application owners receive `AppConfig` or a narrow typed config object. The
+settings endpoint may call `public_config_payload()` to make a redacted dict;
+that public dict must not flow back into internal owners.
 
-## Conventions (read before adding code)
+## Frontend contract rule
 
-- **Facade packages, not god-files.** The large former monoliths (`panel`,
-  `data_access`, `decision`, `brokers`, `free_sources`, `disclosures`) are now packages: the
-  package `__init__.py` re-exports the public API; logic lives in responsibility
-  submodules. **Import from the package** (`from investment_panel.core.panel import X`),
-  not from submodules, in external code.
-- **Don't re-grow a monolith.** Add a new responsibility submodule and re-export it
-  from the facade rather than appending to an existing large file. Keep submodules
-  scannable (target < ~700 lines). Keep orchestration thin.
-- **Move, don't rewrite.** When extracting, preserve behavior and the public import
-  contract; tests and the API import names from the facade.
-- **Schema evolution lives in Alembic** under `migrations/versions/`. The
-  PostgreSQL authority is separated into `catalog`, `ingest`, `raw`, `analysis`,
-  `app`, and `ops`; do not add live tables to the retired `core/schema.py` DDL.
-  See `docs/postgresql-migration.md` for the authority and retention model.
-  Frontend page = `pages/XRoute.tsx`; its logic/components live under `views/`.
+`scripts/generate_openapi.py` writes the stable backend contract to
+`frontend/src/generated/openapi.json`. The pinned `openapi-typescript` version
+generates `frontend/src/generated/apiSchema.ts`. Run `npm run generate:api` after
+an intentional HTTP schema change. CI and `make check` run both generators in
+check mode and fail when either file is stale.
 
-## Guardrails (enforced, not just documented)
+`frontend/src/api.ts` keeps existing request function names for UI stability.
+It contains thin domain wrappers and frontend-only adapters. Transport logic is
+in `apiTransport.ts`; backend-owned request and response shapes come from the
+generated schema whenever the route has a named OpenAPI model.
 
-The conventions above are checked mechanically so they can't silently rot:
+## Five change recipes
 
-- **`make check`** — the fast pre-commit gate: generated panel-contract check + architecture guards + ruff + frontend typecheck.
-- **`tests/test_architecture_guards.py`** — turns two conventions into tests:
-  - *Module-size guard*: fails if any module exceeds **700 lines** (the "don't re-grow a
-    monolith" rule). Deliberate exceptions live in `SIZE_ALLOWLIST` with a reason.
-  - *Facade-import guard*: fails if external code imports a facade **submodule**
-    (`core.panel.feed`) instead of the package (`core.panel`). Pre-existing leaks are
-    frozen in `FACADE_IMPORT_ALLOWLIST` (a ratchet — new ones are blocked; shrink the
-    list over time). Both allowlists have staleness tests so dead entries get removed.
-  - *Transport/action guard*: fails if an HTTP router imports a database Module instead of calling `app.actions`.
-- **`scripts/generate_panel_contract.py --check`** — ensures frontend panel table keys are generated from the backend contract owner rather than maintained as a second handwritten interface.
-- **ruff** (`pyproject.toml [tool.ruff]`) — a curated, green-today set of real bug-class
-  rules (syntax/runtime errors, `%`-format bugs, `== None`, bare `except`). `F401`
-  unused-import is intentionally *not* enabled yet: this codebase has implicit
-  re-exports without `__all__`, so F401 false-positives (and its autofix breaks imports).
-  Adding `__all__` to re-exporting modules is the prerequisite to turning it on.
+1. Add an endpoint: add a Pydantic response model beside the router contract,
+   call an action or query owner, run `npm run generate:api`,
+   `make check`, and the focused route tests.
+2. Add a read model: add the SQL and normalization to the owning `database/`
+   read module, register its catalog contract, then verify the scope route and
+   its PostgreSQL interface test. Do not add SQL to a router.
+3. Add a job: add one canonical owner under `jobs/`, register its identity in
+   `core/refresh_jobs.py`, add lifecycle tests, then run the job-control tests.
+4. Add a migration: add one Alembic revision, test fresh `base -> head` and
+   previous revision `-> head` on PostgreSQL 18, then run the affected owner
+   tests and `uv lock --check`.
+5. Add a frontend field: update the response model first, regenerate the
+   OpenAPI TypeScript files, update the domain adapter/view, then run Vitest,
+   `npm run typecheck`, and the production build.
 
-## Verify changes
+## Guardrails
 
-- **`make check`** runs the gate below in one shot; targets are also runnable individually
-  (`make guards`, `make lint`, `make test`).
-- Backend: `uv run python -m pytest tests/<relevant>.py -q` (focused first).
-  The full suite provisions ephemeral PostgreSQL 18 databases. DuckDB is an
-  optional test/legacy-import dependency only; the running FastAPI process does
-  not need to stop for tests because PostgreSQL readers and writers do not share
-  an embedded-file lock.
-- Frontend: `node_modules/.bin/tsc --noEmit` (typecheck); `npm run build` for a full build.
+`make check` runs:
+
+- generated panel and OpenAPI contract checks;
+- architecture tests for module size, local imports, explicit facades,
+  PostgreSQL-only runtime markers, router boundaries, console entry points,
+  and OpenAPI baseline/schema rules;
+- Ruff;
+- all frontend Vitest tests and TypeScript checking.
+
+Run the compact inventory with `uv run python scripts/architecture_inventory.py`.
+It prints entry points, owner modules, forbidden dependency checks, and only a
+failure summary. It does not print the complete import graph.
+
+## Verification
+
+```sh
+make check
+uv run --extra test pytest tests/<focused_test>.py -q
+uv lock --check
+uv build --wheel
+npm run build
+```
+
+For a live check, bind the API and Vite server to `0.0.0.0`, probe `/api/status`
+and the changed routes, and compare the served frontend asset between `:5173`
+and canonical `:8000`. Paper trading, promotion, and Telegram remain
+fail-closed unless their existing readiness gates pass.

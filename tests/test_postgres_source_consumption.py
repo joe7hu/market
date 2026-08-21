@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 from psycopg.types.json import Jsonb
 
-from app.data_access.postgres_panel import load_postgres_tables
 from app.data_access.user_state import thesis_monitor_rows
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.panel_models import load_postgres_tables
 from investment_panel.database.runtime import DatabaseRuntime
 
 

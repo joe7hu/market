@@ -8,6 +8,8 @@ import type {
   TickerPayload,
 } from "./types";
 import { EMPTY_TABLE, emptyPanelData, mergeSnapshot, type PanelSnapshotPayload } from "./apiPanelData";
+import type { ApiSchema } from "./apiContract";
+import { getJson, patchJson, sendJson } from "./apiTransport";
 
 export { emptyPanelData } from "./apiPanelData";
 
@@ -40,48 +42,19 @@ export type RefreshJobsPayload = {
   } | null;
 };
 
-export type OptionHistorySnapshot = {
-  snapshot_id: number; symbol: string; slot_at: string | null; observed_at: string;
-  capture_started_at: string | null; capture_finished_at: string | null;
-  expected_contract_count: number | null; received_contract_count: number | null;
-  completeness: number | null; capture_state: string; contract_count: number;
-};
-
-export type OptionHistoryChainRow = {
-  snapshot_id: number; symbol: string; slot_at: string | null; contract_id: number;
-  expiration: string; strike: number; option_type: "call" | "put"; dte: number;
-  log_moneyness: number | null; underlying_price: number | null; bid: number | null; ask: number | null;
-  mid: number | null; last: number | null; previous_close: number | null; bid_size: number | null; ask_size: number | null;
-  provider_iv: number | null; provider_delta: number | null; provider_gamma: number | null; provider_theta: number | null;
-  provider_vega: number | null; provider_rho: number | null; volume: number | null; open_interest: number | null;
-  chance_of_profit_long: number | null; chance_of_profit_short: number | null; market_data_status: string | null;
-  quality_status: string | null; evidence_classification: string | null; evidence_blockers: string[];
-};
+export type OptionHistorySnapshot = ApiSchema["OptionSnapshotSummary"];
+export type OptionHistoryChainRow = ApiSchema["OptionChainRow"] & Required<Pick<ApiSchema["OptionChainRow"], "bid" | "ask">> & { option_type: "call" | "put" };
 
 export type OptionHistoryPage<T> = { rows: T[]; count: number; offset: number; limit: number; snapshot_id?: number | null };
-export type OptionHistorySurface = { snapshot_id: number | null; symbol: string; expiration: string; option_type: "call" | "put"; observed: Array<Record<string, unknown>>; fitted: Array<Record<string, unknown>>; uncertainty: Array<Record<string, unknown>>; fit_status: string; diagnostics: Record<string, unknown> };
-export type OptionHistorySurfaceGrid = {
-  snapshot_id: number | null;
-  symbol: string;
-  x: number[];
-  y: number[];
-  surfaces: Partial<Record<"call" | "put", Array<Array<number | null>>>>;
-  observed: Array<Record<string, unknown>>;
-};
-export type OptionHistorySurfaceGroup = { expiration: string; option_type: "call" | "put"; dte: number; contract_count: number };
-export type OptionHistorySurfaceGroups = { snapshot_id: number | null; rows: OptionHistorySurfaceGroup[] };
-export type OptionHistoryCurves = { snapshot_id: number | null; smiles: Array<Record<string, unknown>>; term_structure: Array<Record<string, unknown>>; history: Array<Record<string, unknown>>; history_state: string };
-export type OptionHistoryAnomaly = { id: number; snapshot_id: number; contract_id: number | null; expiration: string | null; option_type: string | null; anomaly_type: string; state: string; observed_value: number | null; expected_value: number | null; z_score: number | null; details: Record<string, unknown>; created_at: string; strike: number | null };
-export type OptionEventStudy = {
-  ticker: string; event_kind: string; as_of: string; evidence_state: string;
-  rows: Array<{ id: string; event_starts_at: string; event_session: string; horizon: number; sample_size: number; actual_move_median: number | null; actual_move_p75: number | null; actual_move_p90: number | null; bootstrap_low: number | null; bootstrap_high: number | null; implied_move: number | null; evidence_state: string; details: Record<string, unknown> }>;
-};
-export type OptionDistributionShift = {
-  symbol: string; as_of: string; previous_as_of: string | null; feature_version: string; tenors: number[];
-  w1_shift: number | null; tail_mass_change: number | null; skew_shift: number | null; term_shift: number | null;
-  evidence_state: string; details: Record<string, unknown>; explanation_only: boolean; strategy_effect: boolean;
-};
-export type OptionRelativeValue = { id: number; analysis_run_id: string; capture_generation_id: number; classification: string; verification_status: string | null; verified_at: string | null; fair_low: number | null; fair_high: number | null; modeled_net_edge: number | null; edge_side: string | null; confidence: number | null; quality_status: string; blockers: string[]; evidence: Record<string, unknown>; contract_id: number; expiration: string; strike: number; option_type: "call" | "put"; snapshot_id: number };
+export type OptionHistorySurface = ApiSchema["OptionSurfaceEvidence"] & { option_type: "call" | "put" };
+export type OptionHistorySurfaceGrid = ApiSchema["IVSurfaceGrid"];
+export type OptionHistorySurfaceGroup = ApiSchema["OptionSurfaceGroup"] & { option_type: "call" | "put" };
+export type OptionHistorySurfaceGroups = ApiSchema["OptionSurfaceGroups"] & { rows: OptionHistorySurfaceGroup[] };
+export type OptionHistoryCurves = ApiSchema["IVCurveSet"];
+export type OptionHistoryAnomaly = ApiSchema["OptionAnomaly"];
+export type OptionEventStudy = ApiSchema["EventStudyResponse"];
+export type OptionDistributionShift = ApiSchema["DistributionShiftResponse"];
+export type OptionRelativeValue = ApiSchema["RelativeValueRow"];
 export type OptionHistoryHealth = {
   snapshots: number; complete_captures: number; post_fix_complete_captures: number;
   observed_regular_session_dates: number; qualified_regular_sessions: number;
@@ -237,6 +210,7 @@ export type OptionsPaperJournalRow = {
 };
 export type OptionsLearningProgress = { structure: string; market_regime: string | null; model_revision: string; mature_outcomes: number; required_mature_outcomes: number; lower_95_expectancy: number | null; brier_score: number | null; missing_prerequisites: string[] };
 
+
 // --- Source catalog (GET /api/source-catalog) ------------------------------
 export type SourceCatalogRow = {
   source_id: string;
@@ -289,51 +263,10 @@ export type StrategyPromotionResult = {
   approved_by?: string;
 };
 
-export type AgentCommandSettingsInput = {
-  enabled?: boolean;
-  command?: string;
-  timeout_seconds?: number;
-  limit?: number;
-};
-
-export type OptionAgentSettingsInput = {
-  enabled?: boolean;
-  timeout_seconds?: number;
-  thesis_limit?: number;
-  postmortem_limit?: number;
-  provider?: string;
-  model?: string;
-  reasoning_effort?: string;
-  auto_run_seconds?: number;
-  max_runs_per_day?: number;
-  context_sources?: Record<string, boolean>;
-};
-
-export type AgentSettingsInput = {
-  option_thesis?: AgentCommandSettingsInput;
-  option_postmortem?: AgentCommandSettingsInput;
-  option_agent?: OptionAgentSettingsInput;
-};
-
-export type ResearchSourcesInput = {
-  x?: {
-    enabled?: boolean;
-    list_id?: string;
-    priority_handles?: string[];
-    limit?: number;
-    account_fetch_cap?: number;
-  };
-  news?: {
-    enabled?: boolean;
-    providers?: string[];
-    limit?: number;
-  };
-  blogs?: {
-    enabled?: boolean;
-    substack_urls?: string[];
-    rss_urls?: string[];
-  };
-};
+export type AgentCommandSettingsInput = ApiSchema["AgentCommandSettingsInput"];
+export type OptionAgentSettingsInput = ApiSchema["OptionAgentSettingsInput"];
+export type AgentSettingsInput = ApiSchema["AgentSettingsInput"];
+export type ResearchSourcesInput = ApiSchema["ResearchSourcesInput"];
 
 export type PanelScopeOptions = {
   offset?: number;
@@ -341,69 +274,6 @@ export type PanelScopeOptions = {
   append?: boolean;
   force?: boolean;
 };
-
-async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`${path}${path.includes("?") ? "&" : "?"}_=${Date.now()}`, {
-    cache: "no-store",
-    signal,
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    const text = await response.text();
-    throw new Error(`Expected JSON from ${path}, got ${contentType || "unknown"}: ${text.slice(0, 40)}`);
-  }
-  return (await response.json()) as T;
-}
-
-async function sendJson<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    cache: "no-store",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || `${response.status} ${response.statusText}`;
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown };
-      if (typeof parsed.detail === "string") {
-        message = parsed.detail;
-      }
-    } catch {
-      // Keep the raw response text when the server does not return JSON.
-    }
-    throw new Error(message);
-  }
-  return (await response.json()) as T;
-}
-
-async function patchJson<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: "PATCH",
-    cache: "no-store",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    let message = text || `${response.status} ${response.statusText}`;
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown };
-      if (typeof parsed.detail === "string") {
-        message = parsed.detail;
-      }
-    } catch {
-      // Keep the raw response text when the server does not return JSON.
-    }
-    throw new Error(message);
-  }
-  return (await response.json()) as T;
-}
 
 export async function loadPanelData(): Promise<PanelData> {
   return loadPanelScope("feed");
@@ -447,39 +317,39 @@ export async function loadRefreshJobs(): Promise<RefreshJobsPayload> {
   return getJson<RefreshJobsPayload>("/api/refresh-jobs");
 }
 
-export async function loadOptionHistorySnapshots(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionHistorySnapshot>> {
+export async function loadOptionHistorySnapshots(symbol = "QQQ", signal?: AbortSignal): Promise<ApiSchema["OptionSnapshotPage"]> {
   return getJson(`/api/options/history/snapshots?symbol=${encodeURIComponent(symbol)}&limit=500`, signal);
 }
 
 export async function loadOptionHistoryChain(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionHistoryChainRow>> {
-  return getJson(`/api/options/history/chain?${optionHistoryParams(params)}`, signal);
+  return getJson<OptionHistoryPage<OptionHistoryChainRow>>(`/api/options/history/chain?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionHistorySurface(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistorySurface> {
-  return getJson(`/api/options/history/surface?${optionHistoryParams(params)}`, signal);
+  return getJson<OptionHistorySurface>(`/api/options/history/surface?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionHistorySurfaceGrid(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistorySurfaceGrid> {
-  return getJson(`/api/options/history/surface-grid?${optionHistoryParams(params)}`, signal);
+  return getJson<OptionHistorySurfaceGrid>(`/api/options/history/surface-grid?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionHistorySurfaceGroups(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistorySurfaceGroups> {
-  return getJson(`/api/options/history/surface-groups?${optionHistoryParams(params)}`, signal);
+  return getJson<OptionHistorySurfaceGroups>(`/api/options/history/surface-groups?${optionHistoryParams(params)}`, signal);
 }
 
-export async function loadOptionHistoryCurves(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryCurves> {
+export async function loadOptionHistoryCurves(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<ApiSchema["IVCurveSet"]> {
   return getJson(`/api/options/history/curves?${optionHistoryParams(params)}`, signal);
 }
 
-export async function loadOptionEventStudy(symbol: string, eventKind: string, asOf: string, signal?: AbortSignal): Promise<OptionEventStudy> {
+export async function loadOptionEventStudy(symbol: string, eventKind: string, asOf: string, signal?: AbortSignal): Promise<ApiSchema["EventStudyResponse"]> {
   return getJson(`/api/options/event-study?ticker=${encodeURIComponent(symbol)}&event_kind=${encodeURIComponent(eventKind)}&as_of=${encodeURIComponent(asOf)}`, signal);
 }
 
-export async function loadOptionDistributionShift(symbol: string, asOf: string, signal?: AbortSignal): Promise<OptionDistributionShift> {
+export async function loadOptionDistributionShift(symbol: string, asOf: string, signal?: AbortSignal): Promise<ApiSchema["DistributionShiftResponse"]> {
   return getJson(`/api/options/history/distribution-shift?symbol=${encodeURIComponent(symbol)}&as_of=${encodeURIComponent(asOf)}`, signal);
 }
 
-export async function loadOptionHistoryAnomalies(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionHistoryAnomaly>> {
+export async function loadOptionHistoryAnomalies(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<ApiSchema["OptionAnomalyPage"]> {
   return getJson(`/api/options/history/anomalies?${optionHistoryParams(params)}`, signal);
 }
 
@@ -504,7 +374,7 @@ export async function loadOptionsWorkspace(symbol = "QQQ", lane: "thesis" | "ano
 }
 
 export async function loadOptionsCandidates(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionsDecisionCandidate>> {
-  return getJson(`/api/options/candidates?${optionHistoryParams(params)}`, signal);
+  return getJson<OptionHistoryPage<OptionsDecisionCandidate>>(`/api/options/candidates?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionsRadarLearning(
@@ -533,19 +403,19 @@ export async function loadDecisionInbox(cursor: string | null = null, signal?: A
 }
 
 export async function loadOptionsPaperJournal(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
-  return getJson(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
+  return getJson<OptionHistoryPage<OptionsPaperJournalRow>>(`/api/options/paper-journal?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
 }
 
 export async function loadOptionsShadowObservations(symbol = "QQQ", signal?: AbortSignal): Promise<OptionHistoryPage<OptionsPaperJournalRow>> {
-  return getJson(`/api/options/shadow-observations?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
+  return getJson<OptionHistoryPage<OptionsPaperJournalRow>>(`/api/options/shadow-observations?symbol=${encodeURIComponent(symbol)}&limit=100`, signal);
 }
 
-export async function loadOptionRelativeValues(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<OptionHistoryPage<OptionRelativeValue>> {
+export async function loadOptionRelativeValues(params: Record<string, string | number | undefined>, signal?: AbortSignal): Promise<ApiSchema["RelativeValuePage"]> {
   return getJson(`/api/options/history/relative-values?${optionHistoryParams(params)}`, signal);
 }
 
 export async function loadOptionsLearningProgress(symbol = "QQQ", signal?: AbortSignal): Promise<{ rows: OptionsLearningProgress[]; count: number }> {
-  return getJson(`/api/options/learning-progress?symbol=${encodeURIComponent(symbol)}`, signal);
+  return getJson<{ rows: OptionsLearningProgress[]; count: number }>(`/api/options/learning-progress?symbol=${encodeURIComponent(symbol)}`, signal);
 }
 
 function optionHistoryParams(params: Record<string, string | number | undefined>): string {

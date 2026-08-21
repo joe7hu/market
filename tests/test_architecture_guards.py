@@ -55,6 +55,7 @@ def _forbidden_runtime_tokens() -> tuple[str, ...]:
         "market_" + retired_store + "_path",
         "investment." + retired_store,
         "legacy_" + "import",
+        "pandas-" + "datareader",
     )
 
 
@@ -151,6 +152,31 @@ def test_public_facades_are_explicit() -> None:
         if "__getattr__" in text or "import_module" in text:
             violations.append(f"{path.relative_to(REPO_ROOT)} uses dynamic compatibility loading")
     assert not violations, "Facade contract violations:\n  " + "\n  ".join(violations)
+
+
+def test_application_seams_are_static_and_split() -> None:
+    expected = {
+        "dependencies.py",
+        "panel_snapshot.py",
+        "job_control.py",
+        "request_security.py",
+    }
+    seam_dir = REPO_ROOT / "app"
+    assert {path.name for path in seam_dir.glob("*.py")} >= expected
+    deps_text = (seam_dir / "deps.py").read_text(encoding="utf-8")
+    assert "__getattr__" not in deps_text
+    assert "import_module" not in deps_text
+    assert "__all__" in deps_text
+
+
+def test_shallow_postgres_reexport_modules_are_removed() -> None:
+    removed = (
+        "postgres_panel.py",
+        "postgres_queries.py",
+        "postgres_source_queries.py",
+        "postgres_watchlist.py",
+    )
+    assert not [name for name in removed if (REPO_ROOT / "app" / "data_access" / name).exists()]
 
 
 def test_live_catalog_writes_use_instrument_owner() -> None:

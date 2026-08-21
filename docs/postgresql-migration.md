@@ -2,15 +2,16 @@
 
 ## Goal packet
 
-- User request: replace DuckDB with PostgreSQL 18 and simplify the schema into
-  catalog, ingest, raw, analysis, app, and ops layers.
+- User request: make PostgreSQL 18 the only runtime data seam and simplify the
+  schema into catalog, ingest, raw, analysis, app, and ops layers.
 - Success criteria: PostgreSQL is authoritative for reads, writes, jobs,
   backups, and recovery; existing API/UI behavior is preserved; selective
   import retains durable data; coverage, concurrency, cutover, and live ticker
   verification pass.
-- Non-negotiable constraints: no DuckDB runtime fallback, no dual-write final
-  state, raw provider facts stay separate from analytical decisions, and exact
-  source payloads are archived once rather than copied through derived tables.
+- Non-negotiable constraints: no embedded-storage runtime, no fallback, no
+  dual-write final state, raw provider facts stay separate from analytical
+  decisions, and exact source payloads are archived once rather than copied
+  through derived tables.
 - Non-goals: retaining full reject/mark history or preserving DuckDB SQL and
   lock semantics through a compatibility translator.
 - External dependencies: PostgreSQL 18 on the canonical `mini1.local` runtime
@@ -30,8 +31,8 @@
 | PG-06 | Ingestion and normalized raw facts ported | done | Idempotent payload manifests plus market bars, content/X/RSS, Arco, official events, House/13F/CSV disclosures, broker/options collectors, and narrow monthly option partitions |
 | PG-07 | Analysis decisions/outcomes and atomic publications ported | done | Actionable-only option features/decisions, aggregated rejects, one-row incremental outcomes, calibration/cohort read models, `/today`/market publications, and atomic publication swaps |
 | PG-08 | Jobs, agents, brokers, retention, and backups ported | done | PostgreSQL-only API and CLI orchestration, external agent queue, broker snapshots/recommendations, guarded strategy promotion, reference-safe retention, and streamed verified backups |
-| PG-09 | Selective DuckDB importer and reconciliation report | done | Canonical mini1 import and idempotent rerun retained 2 positions, 13 watchlist items, 2 theses, 7 strategies, 84 agent artifacts, 370,945 bars after existing-row reconciliation, 24,522 content items, 1,319 disclosures, and 34 events; excluded ~10.1M derived rows |
-| PG-10 | All DuckDB runtime dependencies and vocabulary removed | done | DuckDB exists only in test/legacy-import extras; FastAPI plus full/hourly/premarket installed entrypoints import with DuckDB blocked; retired DuckDB collectors are absent from live allowlist and console scripts |
+| PG-09 | Historical migration evidence retained | done | NAS snapshots and migration reports remain immutable evidence; the main repository does not provide an import, read, compare, or restore interface |
+| PG-10 | Embedded-storage runtime removed | done | Storage implementation, importer, bootstrap, retired jobs, dependency, config, console entry points, and implementation tests were removed; PostgreSQL is the only authority |
 | PG-11 | Full tests, coverage, concurrency, and performance gates pass | done | 597 passed, 2 skipped; 83.59% coverage; Ruff/architecture/TypeScript/build pass; restored DB revision/counts match. Live revision-0004 concurrent 50-request p95: status 304ms, `/today` 270ms, NVDA 463ms, portfolio 224ms; all responses 200. Local DB is 139MB versus 32GB while retaining compact durable raw facts |
 | PG-12 | Canonical runtime cut over and live NVDA probe verified | done | `mini1.local` runs PostgreSQL revision `20260711_0004`; API and Vite bind all interfaces; `/api/status`, `/today`, portfolio, options radar, and `/api/tickers/NVDA` returned 200. Live custom backup `market-20260712T114339Z.dump` is 12.9MB with SHA-256 `df219d1b04be04d9b72c9df7023fd3e4048a10dad8c53fd40f77bf5292f91c6a` |
 | PG-13 | Adversarial review has no accepted findings | done | Joe approved the final three findings. Canonical alias normalization, promotion/publication coordination, stale-run rejection, authority reconciliation, and a unique active-authority constraint were implemented with regression tests; the finding-originating independent reviewer returned `CLEAN` on commit `5c4f7ed` |
@@ -39,10 +40,10 @@
 
 ## Authority model
 
-PostgreSQL is the only live authority. The final DuckDB file is an explicitly
-named legacy import/recovery artifact retained for 30 days after cutover. Raw
-facts point to one archived provider payload manifest. Analytical rows point to
-raw identifiers and analytical runs; they never embed provider payloads.
+PostgreSQL is the only live and development-test authority. Historical NAS
+snapshots and reports are evidence only. Raw facts point to one archived
+provider payload manifest. Analytical rows point to raw identifiers and
+analytical runs; they never embed provider payloads.
 
 Options default to the daily/premarket cadence. Intraday option pulls require an
 explicit environment interval. Full chains remain available as the latest

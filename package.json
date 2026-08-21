@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc --noEmit && vite build",
-    "test:frontend": "vitest run",
+  "build": "tsc --noEmit && vite build",
+  "test:frontend": "vitest run",
+  "typecheck": "tsc --noEmit",
+    "generate:api": "uv run python scripts/generate_openapi.py && openapi-typescript frontend/src/generated/openapi.json -o frontend/src/generated/apiSchema.ts",
+    "check:api": "uv run python scripts/generate_openapi.py --check && openapi-typescript frontend/src/generated/openapi.json -o frontend/src/generated/apiSchema.ts --check",
     "preview": "vite preview --host 127.0.0.1",
     "api": "uv run uvicorn app.main:app --reload --reload-dir app --reload-dir src --host 0.0.0.0 --port 8000",
     "poc": "node poc/poc.mjs",
@@ -39,6 +42,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "openapi-typescript": "7.13.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^3.2.7"

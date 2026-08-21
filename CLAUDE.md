@@ -1,22 +1,26 @@
 # Market
 
-Personal investment panel: FastAPI backend (`app/`, `src/investment_panel/`) +
-React/TypeScript frontend (`frontend/`), DuckDB storage.
+Personal investment panel: FastAPI backend (`app/`, `src/investment_panel/`) and
+React/TypeScript frontend (`frontend/`). PostgreSQL 18 is the only runtime and
+development-test data authority.
 
 ## Start here
 
 **Read [ARCHITECTURE.md](ARCHITECTURE.md) before navigating or adding code** — it maps
 where each responsibility lives and the conventions to follow.
 
-Key rule: the backend's former god-modules are now **facade packages**
-(`core/panel/`, `app/data_access/`, `core/decision/`, `core/brokers/`,
-`core/free_sources/`). Import from the package; add new responsibility submodules and
-re-export them from the package `__init__.py` rather than growing a single large file.
+Use the owner modules and change recipes in ARCHITECTURE.md. New code must not
+add a storage fallback, dual-write path, dynamic compatibility export, or
+direct router-to-database adapter import.
 
 ## Verify
 
-- Backend tests: `.venv/bin/python -m pytest tests/<file>.py -q` (run focused suites first).
-- Frontend typecheck: `node_modules/.bin/tsc --noEmit`.
-- See ARCHITECTURE.md → "Verify changes" for the shared-DuckDB lock caveat on full runs.
+- Backend focused tests: `uv run --extra test pytest tests/<file>.py -q`.
+- Fast gate: `make check`.
+- Frontend: `npm run test:frontend`, `npm run typecheck`, `npm run build`.
+- Migration: run the affected Alembic tests on PostgreSQL 18.
+
+The NAS retains historical migration evidence outside the application runtime.
+The repository does not read, restore, or compare that evidence.
 
 See also `AGENTS.md` for brain-wiring and project-boundary rules.

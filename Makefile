@@ -13,14 +13,16 @@
 PY := uv run python
 RUFF := uvx ruff
 
-.PHONY: check contracts guards lint typecheck test coverage build
+.PHONY: check contracts guards lint frontend typecheck test coverage build
 
-check: contracts guards lint typecheck
+check: contracts guards lint frontend
 	@echo "✓ check passed"
 
 contracts:
 	@echo "→ generated panel contract"
 	@$(PY) scripts/generate_panel_contract.py --check
+	@echo "→ generated OpenAPI contract"
+	@npm run check:api
 
 guards:
 	@echo "→ architecture guards (module size + facade imports)"
@@ -30,13 +32,13 @@ lint:
 	@echo "→ ruff (high-signal rules)"
 	@$(RUFF) check app src
 
-typecheck:
-	@if [ -x node_modules/.bin/tsc ]; then \
-		echo "→ frontend typecheck"; \
-		node_modules/.bin/tsc --noEmit; \
-	else \
-		echo "→ frontend typecheck skipped (run 'npm ci' to enable)"; \
-	fi
+frontend:
+	@echo "→ frontend Vitest"
+	@npm run test:frontend
+	@echo "→ frontend typecheck"
+	@npm run typecheck
+
+typecheck: frontend
 
 test:
 	@$(PY) -m pytest tests -q
