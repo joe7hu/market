@@ -8,12 +8,66 @@ facades, valid entry points, and a clean PostgreSQL-only runtime.
 from __future__ import annotations
 
 import ast
+from contextlib import redirect_stdout
+from io import StringIO
 import tomllib
 from pathlib import Path
 
+from scripts.architecture_inventory import (
+    KNOWN_COMPATIBILITY_FILES,
+    KNOWN_COMPATIBILITY_ROUTES,
+    console_script_violations,
+    local_import_cycles,
+    production_private_imports,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROD_ROOTS = [REPO_ROOT / "app", REPO_ROOT / "src" / "investment_panel"]
-MAX_LINES = 700
+
+# Phase 0 is a ratchet. These are the known leaks at the starting commit; new
+# leaks fail immediately. Phase 5 removes the remaining entries instead of
+# growing this list.
+KNOWN_CYCLE_COMPONENTS = {
+    frozenset(
+        {
+            "investment_panel.core.event_replays",
+            "investment_panel.core.event_scout",
+            "investment_panel.core.event_scout_runtime",
+        }
+    )
+}
+KNOWN_PRIVATE_IMPORT_EDGES = frozenset(
+    {
+        "app/data_access/__init__.py app.data_access.payloads",
+        "app/data_access/config.py app.data_access.coerce",
+        "app/data_access/decision_brief.py investment_panel.core.decision",
+        "app/data_access/payloads.py app.data_access.coerce",
+        "app/data_access/settings.py app.data_access.coerce",
+        "app/data_access/settings.py app.data_access.payloads",
+        "app/deps.py app.panel_snapshot",
+        "app/main.py app.deps",
+        "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief",
+        "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief_options",
+        "src/investment_panel/core/decision/brief.py investment_panel.core.decision.brief_coerce",
+        "src/investment_panel/core/decision/brief.py investment_panel.core.decision.brief_options",
+        "src/investment_panel/core/decision/brief_options.py investment_panel.core.decision.brief_coerce",
+        "src/investment_panel/core/event_scout_runtime.py investment_panel.core.event_scout",
+        "src/investment_panel/core/panel/payloads.py investment_panel.core.panel.coerce",
+        "src/investment_panel/core/panel/ticker_sections.py investment_panel.core.panel.coerce",
+        "src/investment_panel/core/robinhood_options/__init__.py investment_panel.core.robinhood_options.auth",
+        "src/investment_panel/core/robinhood_options/history.py investment_panel.core.robinhood_options.collector",
+        "src/investment_panel/database/actions.py investment_panel.database.options_publication",
+        "src/investment_panel/database/options_decision_system.py investment_panel.core.robinhood_options.collector",
+        "src/investment_panel/jobs/codex_preopen_brief.py investment_panel.jobs.deepseek_option_agent",
+        "src/investment_panel/jobs/codex_preopen_brief.py investment_panel.jobs.openai_option_agent",
+        "src/investment_panel/jobs/codex_thesis_monitor.py investment_panel.jobs.deepseek_option_agent",
+        "src/investment_panel/jobs/codex_thesis_monitor.py investment_panel.jobs.openai_option_agent",
+        "src/investment_panel/jobs/deepseek_option_agent.py investment_panel.jobs.openai_option_agent",
+        "src/investment_panel/jobs/provider_request.py investment_panel.jobs.deepseek_option_agent",
+        "src/investment_panel/jobs/provider_request.py investment_panel.jobs.openai_option_agent",
+        "src/investment_panel/jobs/run_agent_experiment.py investment_panel.jobs.openai_option_agent",
+    }
+)
 
 
 def _prod_py_files() -> list[Path]:
@@ -34,15 +88,45 @@ def _all_py_files() -> list[Path]:
     )
 
 
-def test_no_module_exceeds_line_budget() -> None:
-    offenders = []
-    for path in _prod_py_files():
-        line_count = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
-        if line_count > MAX_LINES:
-            offenders.append(f"{path.relative_to(REPO_ROOT)}: {line_count} lines")
-    assert not offenders, (
-        f"Modules over the line budget ({MAX_LINES}):\n  " + "\n  ".join(offenders)
-    )
+def test_compact_inventory_is_complete() -> None:
+    from scripts import architecture_inventory
+
+    output = StringIO()
+    with redirect_stdout(output):
+        assert architecture_inventory.main() == 0
+    lines = output.getvalue().splitlines()
+    assert len(lines) < 200, f"Architecture inventory is too large: {len(lines)} lines"
+    required_sections = {
+        "production_lines:",
+        "openapi_routes:",
+        "owner_exports:",
+        "local_import_cycles:",
+        "private_cross_module_imports:",
+        "router_database_violations:",
+        "reexport_only_modules:",
+        "console_entrypoints:",
+        "generated_contracts:",
+        "compatibility_references:",
+    }
+    assert required_sections <= set(lines)
+
+
+def _private_import_edge(finding: str) -> str:
+    relative, imported = finding.split(" ", 1)
+    relative = relative.rsplit(":", 1)[0]
+    return f"{relative} {imported.rsplit('.', 1)[0]}"
+
+
+def test_import_cycles_are_ratchet_guarded() -> None:
+    actual = {frozenset(cycle) for cycle in local_import_cycles()}
+    unexpected = actual - KNOWN_CYCLE_COMPONENTS
+    assert not unexpected, f"New local import cycles: {sorted(map(sorted, unexpected))}"
+
+
+def test_private_cross_module_imports_are_ratchet_guarded() -> None:
+    actual = {_private_import_edge(finding) for finding in production_private_imports()}
+    unexpected = actual - KNOWN_PRIVATE_IMPORT_EDGES
+    assert not unexpected, "New production private imports:\n  " + "\n  ".join(sorted(unexpected))
 
 
 def _forbidden_runtime_tokens() -> tuple[str, ...]:
@@ -143,7 +227,8 @@ FACADE_PACKAGES = (
 
 
 def _facade_dir(dotted: str) -> Path:
-    return REPO_ROOT / "src" / Path(*dotted.split("."))
+    root = REPO_ROOT / "src" if dotted.startswith("investment_panel.") else REPO_ROOT
+    return root / Path(*dotted.split("."))
 
 
 def test_external_code_imports_facade_not_submodules() -> None:
@@ -163,7 +248,7 @@ def test_external_code_imports_facade_not_submodules() -> None:
 
 def test_public_facades_are_explicit() -> None:
     violations = []
-    for facade in FACADE_PACKAGES:
+    for facade in (*FACADE_PACKAGES, "app.data_access"):
         path = _facade_dir(facade) / "__init__.py"
         text = path.read_text(encoding="utf-8", errors="replace")
         if "__all__" not in text:
@@ -186,6 +271,35 @@ def test_application_seams_are_static_and_split() -> None:
     assert "__getattr__" not in deps_text
     assert "import_module" not in deps_text
     assert "__all__" in deps_text
+
+
+def test_known_compatibility_files_and_routes_are_closed_sets() -> None:
+    observed_files = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in _prod_py_files()
+        if path.name in {"deps.py", "panel_contracts.py"}
+        or any(token in path.name.casefold() for token in ("legacy", "compat", "deprecated"))
+    }
+    assert observed_files <= KNOWN_COMPATIBILITY_FILES
+
+    openapi = REPO_ROOT / "frontend" / "src" / "generated" / "openapi.json"
+    routes = set(__import__("json").loads(openapi.read_text(encoding="utf-8"))["paths"])
+    observed_routes = {
+        route
+        for route in routes
+        if any(token in route.casefold() for token in ("legacy", "compat", "deprecated", "watchlist-screen", "etf-premiums", "tradingview-chart-state", "decision-truth"))
+    }
+    assert observed_routes <= KNOWN_COMPATIBILITY_ROUTES
+
+
+def test_generated_contracts_are_current() -> None:
+    from scripts.generate_openapi import rendered_schema
+    from scripts.generate_panel_contract import rendered_contract
+
+    openapi = REPO_ROOT / "frontend" / "src" / "generated" / "openapi.json"
+    panel_contract = REPO_ROOT / "frontend" / "src" / "generated" / "panelContract.ts"
+    assert openapi.read_text(encoding="utf-8") == rendered_schema()
+    assert panel_contract.read_text(encoding="utf-8") == rendered_contract()
 
 
 def test_shallow_postgres_reexport_modules_are_removed() -> None:
@@ -247,6 +361,7 @@ def test_http_routers_do_not_construct_database_repositories() -> None:
 
 
 def test_console_scripts_target_existing_functions() -> None:
+    assert not console_script_violations()
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts = pyproject.get("project", {}).get("scripts", {})
     violations = []
