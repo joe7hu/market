@@ -1,4 +1,5 @@
 import type {
+  DashboardPayload,
   PanelData,
   JsonValue,
   RowRecord,
@@ -161,7 +162,8 @@ export type OptionsDecisionCandidate = {
 };
 export type StrategyRoute = { route_version?: string; shadow?: boolean; selected_structure: string; alternative_structures?: string[]; trend_state?: string; trend_confidence?: number | null; volatility_state?: string; event_state?: string; selection_reasons?: string[]; rejected_structures?: Array<{ structure: string; reason: string }>; route_blockers: string[]; as_of?: string | null; paper_quantity_authorized?: boolean; ai_can_override?: boolean };
 export type MarketRegime = { state?: string; trend_state: string; trend_confidence?: number; volatility_state?: string; breadth_state?: string; quality_status: string; reason_codes?: string[]; as_of?: string | null };
-export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: OptionsDecisionState; summary: { message?: string; [key: string]: unknown }; readiness: OptionsDecisionReadiness; strongest_candidate: OptionsDecisionCandidate | null; paper_only: boolean };
+export type DecisionTruth = { symbol: string; lane: string; as_of: string | null; publication_id: string | null; candidate_state: string; route_verdict: string; readiness_state: string; execution_state: string; primary_blocker: string | null; blockers: string[]; next_action: string | null; route_version: string; evidence_refs: Array<Record<string, unknown>> };
+export type OptionsDecisionBrief = { symbol: string; lane: "thesis" | "anomaly"; mode: "disabled" | "shadow" | "paper" | string; analysis_run_id: string | null; as_of: string | null; state: OptionsDecisionState; summary: { message?: string; [key: string]: unknown }; readiness: OptionsDecisionReadiness; strongest_candidate: OptionsDecisionCandidate | null; paper_only: boolean; decision_truth?: DecisionTruth };
 export type OptionsWorkspacePayload = {
   symbol: string;
   decision_brief: OptionsDecisionBrief;
@@ -417,6 +419,11 @@ export async function loadPanelScope(scope: string, existing?: PanelData, option
     data.settings = await getJson<SettingsPayload>("/api/settings");
   }
   return data;
+}
+
+export async function loadEventScoutSnapshot(signal?: AbortSignal): Promise<PanelSnapshotPayload> {
+  const payload = await getJson<{ status?: DashboardPayload["status"]; tables?: Record<string, TablePayload> }>("/api/event-scout", signal);
+  return { scope: "event-scout", status: payload.status, tables: payload.tables };
 }
 
 export async function loadSuperinvestorPortfolio(investorKey: string, signal?: AbortSignal): Promise<RowRecord> {

@@ -12,6 +12,7 @@ import type { JsonValue, PanelData, RowRecord, ScopeSnapshotStatus } from "@/typ
 import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/viewModels/today";
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
+import { EventScoutPanel } from "./EventScoutPanel";
 
 type TodayPageProps = {
   data: PanelData;
@@ -68,6 +69,7 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
       </div>
 
       <PreopenBrief row={vm.preopenBrief} />
+      <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
       <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
 
       {hasBrief ? (
@@ -94,8 +96,15 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
 }
 
 function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void; onOpenDecision: (decisionId: string) => void }) {
-  if (!rows.length) return null;
-  const decisions = rows.map(adaptOptionDecision);
+  const gatedRows = rows.filter((row) => {
+    const truth = row.decision_truth;
+    return truth && typeof truth === "object" && !Array.isArray(truth)
+      && truth.route_verdict === "PAPER_ONLY"
+      && truth.readiness_state === "ready"
+      && truth.execution_state === "PAPER_ONLY_READY";
+  });
+  if (!gatedRows.length) return null;
+  const decisions = gatedRows.map(adaptOptionDecision);
   return (
     <section className="mb-6">
       <div className="mb-3 flex items-end justify-between gap-3">
@@ -107,16 +116,15 @@ function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord
       </div>
       <div className="grid gap-3 lg:grid-cols-3">
         {decisions.slice(0, 3).map((decision, index) => {
-          const source = rows[index];
+          const source = gatedRows[index];
           const decisionId = textField(source, ["decision_id", "opportunity_id"]);
           const state = textField(source, ["state"], decision.action).toUpperCase();
-          const ready = state === "READY" && source?.execution_ready === true;
           return (
             <Card key={decision.key}>
               <CardContent className="space-y-3 p-4">
                 <div className="flex items-start justify-between gap-2">
                   <button type="button" className="font-semibold hover:underline" onClick={() => decisionId ? onOpenDecision(decisionId) : onOpenTicker(decision.symbol)}>{decision.symbol}</button>
-                  <StatusBadge tone={ready ? "good" : "warn"}>{ready ? "READY" : titleLabel(state || "SETUP")}</StatusBadge>
+                  <StatusBadge tone="good">PAPER ONLY</StatusBadge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <OptionMetric label={decision.cashSecured ? "Credit" : "Entry"} value={formatMoney(decision.entryPrice)} />
@@ -125,7 +133,7 @@ function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord
                   <OptionMetric label={decision.cashSecured ? "Assignment" : "State"} value={decision.cashSecured ? `${(decision.probabilityAssignment * 100).toFixed(1)}%` : decision.action} />
                 </div>
                 <p className="line-clamp-2 text-sm text-muted-foreground">{decision.summary}</p>
-                <p className="text-xs font-medium text-muted-foreground">{ready ? "Paper entry is eligible only while this ticket remains current." : "Research / resolve blocker. This is not a trade instruction."}</p>
+                <p className="text-xs font-medium text-muted-foreground">Paper entry is eligible only while this ticket remains current; this is not a live-trade instruction.</p>
                 {decisionId ? <Button type="button" variant="outline" size="sm" onClick={() => onOpenDecision(decisionId)}>View immutable ticket</Button> : null}
               </CardContent>
             </Card>

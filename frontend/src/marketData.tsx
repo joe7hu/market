@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { emptyPanelData, loadPanelScope, type PanelScopeOptions } from "./api";
-import { withScopeStatus } from "./apiPanelData";
+import { emptyPanelData, loadEventScoutSnapshot, loadPanelScope, type PanelScopeOptions } from "./api";
+import { mergeSnapshot, withScopeStatus } from "./apiPanelData";
 import { buildModel, type AppModel } from "./model";
 import type { PanelData, ScopeSnapshotStatus } from "./types";
 
@@ -42,7 +42,15 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
       setLoading(true);
       setData((current) => withScopeStatus(current, scope, { state: "loading" }));
       try {
-        const nextData = await loadPanelScope(scope, dataRef.current, options);
+        let nextData = await loadPanelScope(scope, dataRef.current, options);
+        if (scope === "today" || scope === "options-radar") {
+          try {
+            nextData = mergeSnapshot(nextData, await loadEventScoutSnapshot());
+          } catch {
+            // Event Scout is a bounded supplemental read; the core page keeps
+            // its existing last-good snapshot when the event endpoint is down.
+          }
+        }
         dataRef.current = nextData;
         setData(nextData);
         setLastRefresh(new Date());

@@ -64,6 +64,11 @@ READ_MODELS: dict[str, ReadLoader] = {
     "source_freshness": lambda ctx: source_freshness(ctx.con),
     "symbol_decision_snapshot": lambda ctx: ctx.decision_snapshots,
     "symbol_decision_snapshots": lambda ctx: ctx.decision_snapshots,
+    # Event Scout is PostgreSQL-owned.  The legacy DuckDB panel registry must
+    # not provide a second read path while this compatibility island remains.
+    "event_decision_packets": lambda ctx: [],
+    "decision_truth": lambda ctx: [],
+    "event_scout_events": lambda ctx: [],
     "candidates": lambda ctx: candidates(ctx.con),
     "portfolio": lambda ctx: portfolio(ctx.con),
     # PostgreSQL authority supplies these through app.data_access.portfolio_intelligence.

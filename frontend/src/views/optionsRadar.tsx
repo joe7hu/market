@@ -13,6 +13,7 @@ import {MissedWinnersTable, LearningProgressPanel, CohortResultsTable } from "./
 import {StrategyProposalsTable } from "./optionsRadar/strategyProposals";
 import {WorkspacePage, OpenTicker } from "./workspacePage";
 import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
+import { EventScoutPanel } from "./EventScoutPanel";
 
 type OptionsRadarPageProps = {
   data: PanelData;
@@ -210,6 +211,7 @@ export function OptionsRadarPage({ data, onOpenTicker, onRefresh }: OptionsRadar
         </div>
       }
     >
+      <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
       <SignalBriefPanel
         rows={opportunityCandidates}
         activeAlertCount={0}

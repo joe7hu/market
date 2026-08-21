@@ -23,11 +23,17 @@ SCOPED_TABLE_ROW_LIMITS: dict[str, dict[str, int]] = {
         # publication.  Its primary screen can act on at most three current
         # opportunities; complete immutable tickets remain available by ID.
         "option_radar_opportunity": 3,
+        "event_decision_packets": 50,
+        "decision_truth": 100,
+        "event_scout_events": 100,
     },
     "options-radar": {
         "missed_winner_event": 80,
         "strategy_backtest_result": 100,
         "strategy_forward_test_result": 100,
+        "event_decision_packets": 50,
+        "decision_truth": 100,
+        "event_scout_events": 100,
     },
 }
 

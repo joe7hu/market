@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 from investment_panel.analysis.history_v3 import MODEL_REVISION, static_arbitrage_findings
 from investment_panel.core.robinhood_options.collector import RobinhoodClient, _payload_list, option_quote_row
 from investment_panel.core.option_underwriting import thesis_blocker, thesis_invalidation
+from investment_panel.core.event_scout import OPTIONS_DECISION_ROUTE_VERSION, build_decision_truth
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.options_decision_readiness import next_required_action
 from investment_panel.database.options_journal import learning_progress, paper_journal, shadow_observations
@@ -78,12 +79,31 @@ class OptionsDecisionSystemRepository:
             ).fetchone()
             readiness = _readiness(connection, latest=dict(latest), symbol=symbol.upper())
         candidate_data = dict(candidate) if candidate else None
+        candidate_payload = _candidate_payload(candidate_data) if candidate_data else None
+        candidate_blockers = list(candidate_data.get("blockers") or []) if candidate_data else []
+        candidate_route = dict(candidate_data.get("strategy_route") or {}) if candidate_data else {}
+        readiness_blockers = [str(item.get("blocker")) for item in readiness.get("top_blockers") or [] if item.get("blocker")]
+        blockers = list(dict.fromkeys([*readiness_blockers, *candidate_blockers, *list(candidate_route.get("route_blockers") or [])]))
+        state = candidate_data["paper_state"] if candidate_data else "COLLECTING"
         return {
             "symbol": symbol.upper(), "lane": lane, "mode": self.mode, "analysis_run_id": str(latest["id"]),
-            "as_of": latest["finished_at"], "state": candidate_data["paper_state"] if candidate_data else "COLLECTING",
+            "as_of": latest["finished_at"], "state": state,
             "summary": dict(latest["summary"] or {}), "readiness": readiness,
-            "strongest_candidate": _candidate_payload(candidate_data) if candidate_data else None,
+            "strongest_candidate": candidate_payload,
             "paper_only": True,
+            "decision_truth": build_decision_truth(
+                symbol=symbol,
+                lane=lane,
+                as_of=latest["finished_at"],
+                candidate_state=state,
+                route_verdict="PAPER_ONLY" if not blockers and state == "PAPER_READY" else "NO_TRADE",
+                readiness_state="ready" if not blockers and state == "PAPER_READY" else "incomplete",
+                execution_state="DISABLED" if self.mode == "disabled" else "PAPER_ONLY",
+                blockers=blockers,
+                next_action=readiness.get("next_required_action"),
+                route_version=candidate_route.get("route_version") or OPTIONS_DECISION_ROUTE_VERSION,
+                evidence_refs=candidate_route.get("evidence_refs") or [],
+            ),
         }
 
     def candidates(
@@ -476,7 +496,14 @@ def _candidate_payload(value: dict[str, Any]) -> dict[str, Any]:
 def _empty_brief(symbol: str, lane: str, message: str, *, mode: str) -> dict[str, Any]:
     return {"symbol": symbol.upper(), "lane": lane, "mode": mode, "analysis_run_id": None,
             "as_of": None, "state": "COLLECTING", "summary": {"message": message},
-            "readiness": _empty_readiness(), "strongest_candidate": None, "paper_only": True}
+            "readiness": _empty_readiness(), "strongest_candidate": None, "paper_only": True,
+            "decision_truth": build_decision_truth(
+                symbol=symbol, lane=lane, as_of=None, candidate_state="COLLECTING",
+                route_verdict="NO_TRADE", readiness_state="incomplete",
+                execution_state="DISABLED" if mode == "disabled" else "PAPER_ONLY",
+                blockers=["no_current_option_evidence"], next_action=message,
+                route_version=OPTIONS_DECISION_ROUTE_VERSION,
+            )}
 
 
 def _readiness(connection: Any, *, latest: dict[str, Any], symbol: str) -> dict[str, Any]:

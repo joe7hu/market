@@ -1,5 +1,4 @@
 """PostgreSQL panel model catalog and retrieval policies."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -8,6 +7,7 @@ from typing import Any, Iterable, Mapping
 
 from investment_panel.database.panel_queries import OWNED_CORRELATIONS_QUERY, build_query_policies
 from investment_panel.database.panel_source_queries import SOURCE_QUERIES, SOURCE_UNIVERSE_QUERIES
+from investment_panel.database.event_panel_models import EVENT_DIRECT_QUERIES
 from investment_panel.database.portfolio_intelligence import portfolio_intelligence_tables
 from investment_panel.database.thesis import thesis_monitor_rows, thesis_rows
 from investment_panel.database.user_state import portfolio_rows, watchlist_rows
@@ -22,8 +22,6 @@ from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_p
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
-
-
 RESEARCH_PACKETS_BASE_QUERY = """
     SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
            item.published_at,
@@ -518,7 +516,7 @@ DIRECT_QUERIES: dict[str, str] = {
 }
 
 
-DIRECT_QUERIES.update(SOURCE_QUERIES)
+DIRECT_QUERIES.update({**SOURCE_QUERIES, **EVENT_DIRECT_QUERIES})
 
 
 MODEL_ALIASES = {

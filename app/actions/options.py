@@ -18,6 +18,7 @@ from investment_panel.database.options_recovery_read import RecoveryReadReposito
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 from investment_panel.core.robinhood_options.collector import RobinhoodMcpClient
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready
+from investment_panel.core.event_scout import build_options_decision_truth
 from investment_panel.core.decision import is_market_open
 from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.option_ticket_read import revalidate_published_tickets
@@ -224,10 +225,24 @@ class OptionsActions:
             )
             payload["strongest_candidate"] = current_candidate
             payload["state"] = current_candidate["paper_state"]
+            existing_truth = dict(payload.get("decision_truth") or {})
+            ticket = dict(current_candidate.get("ticket") or {})
+            blockers = list(dict.fromkeys([
+                *list(existing_truth.get("blockers") or []),
+                *list(ticket.get("blockers") or []),
+            ]))
+            truth = build_options_decision_truth(
+                {**current_candidate, "blockers": blockers, "ticket": ticket},
+                lane=str(payload.get("lane") or filters.get("lane") or "thesis"),
+                publication_id=existing_truth.get("publication_id"),
+            )
+            if payload.get("mode") == "disabled":
+                truth["execution_state"] = "DISABLED"
+            payload["decision_truth"] = truth
             payload["summary"] = {
                 **dict(payload.get("summary") or {}),
-                "current_ticket_state": current_candidate["ticket"]["state"],
-                "current_required_next_action": current_candidate["ticket"]["required_next_action"],
+                "current_ticket_state": ticket["state"],
+                "current_required_next_action": ticket["required_next_action"],
             }
         return payload
 

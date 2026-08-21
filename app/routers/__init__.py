@@ -2,10 +2,11 @@
 `ALL_ROUTERS`; do not grow route logic back into `app/main.py`."""
 from __future__ import annotations
 
-from app.routers import agent, brokers, market_data, options, panel, portfolio, sources, storage, system, theses, tickers
+from app.routers import agent, brokers, event_scout, market_data, options, panel, portfolio, sources, storage, system, theses, tickers
 
 ALL_ROUTERS = [
     panel.router,
+    event_scout.router,
     tickers.router,
     portfolio.router,
     theses.router,

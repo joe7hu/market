@@ -9,6 +9,7 @@ from app.data_access.config import load_config, tables_for_scope
 from app.data_access.postgres_panel import load_postgres_tables
 from app.data_access.types import DataStatus, PanelData
 from app.panel_contracts import TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
+from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS
 
 
 def load_panel_data(
@@ -129,7 +130,13 @@ def load_panel_scope_data(config: dict[str, Any] | None, scope: str) -> PanelDat
     active_config = config or load_config()
     if scope == "portfolio":
         return load_portfolio_scope_data(active_config)
-    return load_panel_data(active_config, table_names=tables_for_scope(scope))
+    requested = tuple(tables_for_scope(scope))
+    query_row_limits = {
+        table: limit
+        for table, limit in SCOPED_TABLE_ROW_LIMITS.get(scope, {}).items()
+        if table in requested
+    }
+    return load_panel_data(active_config, table_names=requested, query_row_limits=query_row_limits or None)
 
 
 def load_portfolio_scope_data(config: dict[str, Any] | None = None) -> PanelData:
@@ -212,7 +219,16 @@ def load_watchlist_scope_data(
 
 
 def load_table_panel_data(config: dict[str, Any] | None, table_name: str) -> PanelData:
-    return load_panel_data(config, table_names=(table_name,))
+    limits = {
+        "event_decision_packets": 200,
+        "decision_truth": 500,
+        "event_scout_events": 200,
+    }
+    return load_panel_data(
+        config,
+        table_names=(table_name,),
+        query_row_limits={table_name: limits[table_name]} if table_name in limits else None,
+    )
 
 
 def load_table_panel_page(

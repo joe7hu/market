@@ -295,6 +295,9 @@ TICKER_TABLES = (
     "portfolio_risk_cards",
     "review_actions",
     "ticker_memos",
+    "decision_truth",
+    "event_decision_packets",
+    "event_scout_events",
 )
 
 # The dossier route must not load every evidence model before it can render a
@@ -395,6 +398,9 @@ ENDPOINT_TABLES: dict[str, str] = {
     "broker/positions": "broker_positions",
     "paper-orders": "paper_orders",
     "daily-brief": "daily_brief",
+    "decision-truth": "decision_truth",
+    "event-decision-packets": "event_decision_packets",
+    "event-scout-events": "event_scout_events",
     "feed": "feed_signals",
     "watchlist-screen": "universe_screen",
     "watchlist/symbols": "manual_watchlist",

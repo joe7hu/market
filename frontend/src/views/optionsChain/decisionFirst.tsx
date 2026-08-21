@@ -196,13 +196,25 @@ function DecisionGate({ brief }: { brief: OptionsDecisionBrief }) {
   const ticket = brief.strongest_candidate?.ticket;
   const ticketBlocker = ticket?.blockers?.[0];
   const failed = brief.readiness.top_blockers[0];
-  const blocker = ticketBlocker ?? failed?.blocker;
+  const truth = brief.decision_truth;
+  const blocker = ticketBlocker ?? failed?.blocker ?? truth?.primary_blocker ?? truth?.blockers?.[0];
+  const incomplete = brief.state !== "PAPER_READY"
+    || brief.mode === "disabled"
+    || brief.readiness.capture.capture_state !== "complete"
+    || brief.readiness.analysis.eligible_groups <= 0
+    || !brief.readiness.thesis.eligible
+    || brief.readiness.canary.qualified_regular_sessions < brief.readiness.canary.required_regular_sessions
+    || !ticket
+    || Boolean(ticket.blockers?.length)
+    || truth?.route_verdict === "NO_TRADE"
+    || truth?.readiness_state === "incomplete"
+    || truth?.execution_state === "DISABLED";
   const copy = blocker ? blockerCopy(blocker) : null;
   return <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
     <SectionTitle
-      icon={blocker ? <X className="size-4" /> : <ShieldCheck className="size-4" />}
-      title={copy?.label ?? "Decision gates are clear"}
-      detail={copy?.detail ?? "No failed decision gate is active in the current publication."}
+      icon={blocker || incomplete ? <X className="size-4" /> : <ShieldCheck className="size-4" />}
+      title={copy?.label ?? (incomplete ? "Decision gates incomplete" : "Decision gates are clear")}
+      detail={copy?.detail ?? (incomplete ? "QQQ-only paper underwriting remains blocked until data, thesis, route, and execution gates are complete." : "All current QQQ paper-underwriting gates are complete.")}
     />
     <div className="mt-4 rounded-lg border border-border bg-background p-3">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Required next action</p>

@@ -6,6 +6,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from investment_panel.core.event_truth import build_options_decision_truth
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
 from investment_panel.database.preopen_context import compact_preopen_context
@@ -245,6 +246,10 @@ def refresh_today_publication(
         "macro_regime": (narrative or {}).get("macro_regime"),
         "opening_scenario": (narrative or {}).get("opening_scenario"),
         "qqq_path": (narrative or {}).get("qqq_path"),
+        "forecast_as_of": as_of,
+        "qqq_forecast": qqq_forecast,
+        "backtest": qqq_backtest,
+        "qqq_outcome": qqq_outcome,
         "risks": (narrative or {}).get("risks") or [],
         "watch_items": (narrative or {}).get("watch_items") or [],
         "error": narrative_error,
@@ -398,6 +403,7 @@ def _review_item(row: dict[str, Any]) -> dict[str, Any]:
 
 def _option_item(row: dict[str, Any]) -> dict[str, Any]:
     symbol = str(row.get("symbol") or row.get("ticker") or "")
+    decision_truth = build_options_decision_truth(row, publication_id=row.get("publication_id"))
     return {
         "stable_key": f"option:{row.get('opportunity_id') or row.get('decision_id') or symbol}",
         "category": "decide_now",
@@ -424,6 +430,7 @@ def _option_item(row: dict[str, Any]) -> dict[str, Any]:
         "contract_version": row.get("contract_version"),
         "feature_version": row.get("feature_version"),
         "blockers": row.get("blockers") or [],
+        "decision_truth": decision_truth,
     }
 
 

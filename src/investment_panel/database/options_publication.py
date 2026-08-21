@@ -7,6 +7,7 @@ from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready, ticket_recommendation_fields
+from investment_panel.core.event_scout import build_options_decision_truth
 from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.options_publication_changes import candidate_changes as _candidate_changes
 from investment_panel.database.options_research_priority import research_priority
@@ -260,6 +261,7 @@ def publication_models(
             and row.get("portfolio_context_status") == "complete"
         )
         row.update(ticket_recommendation_fields(row))
+        row["decision_truth"] = build_options_decision_truth(row)
     actionable = _shortlist(_prefer_current_data([
         row for row in all_rows if row.get("state") != "REJECTED"
     ]))

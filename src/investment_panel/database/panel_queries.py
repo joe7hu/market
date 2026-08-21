@@ -22,6 +22,7 @@ def build_query_policies(queries: Mapping[str, str]) -> dict[str, QueryPolicy]:
     symbol_scoped = {
         "quotes", "fundamentals", "technicals", "analyst_estimates",
         "options_ticker_signals", "catalysts", "earnings", "research_packets",
+        "event_decision_packets", "decision_truth", "event_scout_events",
     }
     return {
         name: QueryPolicy(
