@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.free_sources import store_options_chain
-from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.core.robinhood_options import (
     RobinhoodMcpClient,
     _authorization_server_metadata,
@@ -264,53 +261,6 @@ def test_option_quote_row_rejects_adjusted_or_unproven_deliverable_semantics() -
     assert row["standard_contract_verified"] is False
 
 
-def test_robinhood_chain_rows_flow_into_option_snapshots(tmp_path: Path) -> None:
-    row = option_quote_row(
-        {
-            "id": "rh-contract-1",
-            "chain_id": "chain-nvda",
-            "chain_symbol": "NVDA",
-            "underlying_type": "equity",
-            "expiration_date": "2027-06-17",
-            "strike_price": "210.0000",
-            "type": "call",
-            "state": "active",
-            "tradability": "tradable",
-        },
-        {
-            "instrument_id": "rh-contract-1",
-            "bid_price": "40.00",
-            "ask_price": "42.00",
-            "mark_price": "41.00",
-            "implied_volatility": "0.455",
-            "delta": "0.622",
-            "gamma": "0.012",
-            "theta": "-0.1",
-            "vega": "0.5",
-            "open_interest": 7928,
-            "volume": 3,
-        },
-    )
-    assert row is not None
-
-    db_path = tmp_path / "investment.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"})
-        con.execute(
-            "INSERT INTO quotes_intraday VALUES ('NVDA', '2026-06-12T20:00:00Z', 205.14, 0.13, 0.27, 'USD', 'robinhood', '{}')"
-        )
-        assert store_options_chain(con, "NVDA", "2026-06-12T20:00:00Z", [row], source="robinhood") == 1
-        assert persist_option_snapshots(con, symbols=["NVDA"], source="robinhood") == 1
-        rows = query_rows(con, "SELECT open_interest, volume, iv, delta, data_source, contract_id FROM option_snapshot")
-
-    assert rows[0]["open_interest"] == 7928
-    assert rows[0]["volume"] == 3
-    assert round(float(rows[0]["delta"]), 3) == 0.622
-    assert rows[0]["data_source"] == "robinhood"
-    assert rows[0]["contract_id"] == "rh-contract-1"
-
-
 def test_select_robinhood_expiries_filters_to_radar_window() -> None:
     out = select_robinhood_expiries(
         ["2026-06-26", "2027-06-17", "2027-12-17", "2029-01-19", "bad"],
@@ -502,7 +452,7 @@ def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypa
     config_path.write_text(
         f"""
 database:
-  duckdb_path: {tmp_path / "investment.duckdb"}
+  url: postgresql:///market
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:
@@ -528,7 +478,7 @@ def test_update_robinhood_options_reports_provider_error(tmp_path: Path) -> None
     config_path.write_text(
         f"""
 database:
-  duckdb_path: {tmp_path / "investment.duckdb"}
+  url: postgresql:///market
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:
@@ -546,33 +496,3 @@ data_sources:
     assert result["status"] == "error"
     assert result["provider"] == "robinhood"
     assert "timed out" in result["error"]
-
-
-def test_incremental_robinhood_symbols_prioritize_known_stale_before_missing(tmp_path: Path, monkeypatch) -> None:
-    db_path = tmp_path / "investment.duckdb"
-    init_db(db_path)
-    now = datetime.now(UTC)
-    row = option_quote_row(
-        {
-            "id": "contract-1",
-            "chain_id": "chain-1",
-            "chain_symbol": "NVDA",
-            "underlying_type": "equity",
-            "expiration_date": "2027-06-17",
-            "strike_price": "210.0000",
-            "type": "call",
-            "state": "active",
-            "tradability": "tradable",
-        },
-        {"instrument_id": "contract-1", "bid_price": "1", "ask_price": "2", "mark_price": "1.5"},
-    )
-    assert row is not None
-    with db(db_path) as con:
-        store_options_chain(con, "NVDA", (now - timedelta(minutes=10)).isoformat(), [row], source="robinhood")
-        store_options_chain(con, "AAPL", (now - timedelta(hours=2)).isoformat(), [row], source="robinhood")
-        store_options_chain(con, "MSFT", (now - timedelta(hours=3)).isoformat(), [row], source="robinhood")
-
-        monkeypatch.setenv("MARKET_ROBINHOOD_INCREMENTAL_SYMBOLS", "2")
-        selected = update_robinhood_options._incremental_robinhood_symbols(con, ["NVDA", "AAPL", "MSFT", "TSLA"])
-
-    assert selected == ["MSFT", "AAPL"]

@@ -11,8 +11,7 @@ from psycopg.types.json import Jsonb
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from investment_panel.core.db import db, init_db, query_rows
-from investment_panel.core.options_radar import DEFAULT_STRATEGY_VERSION, refresh_options_radar
+from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
 from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.authority import runtime_for_url
@@ -22,8 +21,6 @@ import app.main as app_main
 import app.deps as app_deps
 from app import panel_contracts
 from app.main import app, _require_local_request
-from tests.test_option_agent_postmortem import seed_missed_winner
-from tests.test_option_agent_thesis import seed_fire_candidate
 
 
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
@@ -32,7 +29,7 @@ def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
         app_deps,
         "load_config",
         lambda _path=None: {
-            "database": {"duckdb_path": str(db_path)},
+            "database": {"url": "postgresql:///market"},
             "nas": {"status_dir": str(db_path.parent / "status")},
         },
     )
@@ -48,13 +45,11 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     credentials = info.user if not info.password else f"{info.user}:{info.password}"
     postgres_dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
     upgrade_database(postgres_dsn)
-    duckdb_path = tmp_path / "api-smoke.duckdb"
-    _use_temp_api_db(monkeypatch, duckdb_path)
     monkeypatch.setattr(
         app_deps,
         "load_config",
         lambda _path=None: {
-            "database": {"url": postgres_dsn, "duckdb_path": str(duckdb_path)},
+            "database": {"url": postgres_dsn},
             "nas": {"status_dir": str(tmp_path / "status")},
         },
     )
@@ -197,7 +192,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
 def test_settings_payload_includes_agent_control_metadata() -> None:
     payload = settings_payload(
         {
-            "database": {"duckdb_path": "data/test.duckdb"},
+            "database": {"url": "postgresql:///test"},
             "research_sources": {
                 "x": {"enabled": True, "list_id": "123", "priority_handles": ["balajis"]},
                 "news": {"enabled": True, "providers": ["bloomberg"]},
@@ -225,7 +220,7 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "0"
-    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "3600"
+    assert payload["agents"]["scheduler"]["market_environment_refresh_seconds"] == "0"
     sources = payload["sources"]["rows"]
     assert len(sources) == 5
     bloomberg = next(row for row in sources if row["source_id"] == "news_bloomberg")
@@ -241,7 +236,7 @@ def test_update_agent_settings_config_rewrites_only_agents_block(tmp_path) -> No
     config_path.write_text(
         """
 database:
-  duckdb_path: data/test.duckdb
+  url: postgresql:///test
 
 agents:
   option_thesis:
@@ -270,7 +265,7 @@ disclosures:
     )
 
     text = config_path.read_text(encoding="utf-8")
-    assert "duckdb_path: data/test.duckdb" in text
+    assert "url: postgresql:///test" in text
     assert "command: new-thesis" in text
     assert "limit: 3" in text
     assert "option_postmortem:" in text
@@ -283,7 +278,7 @@ def test_update_research_sources_config_rewrites_only_research_block(tmp_path) -
     config_path.write_text(
         """
 database:
-  duckdb_path: data/test.duckdb
+  url: postgresql:///test
 
 research_sources:
   x:
@@ -308,7 +303,7 @@ disclosures:
     )
 
     text = config_path.read_text(encoding="utf-8")
-    assert "duckdb_path: data/test.duckdb" in text
+    assert "url: postgresql:///test" in text
     assert "list_id: '1734567890'" in text or "list_id: \"1734567890\"" in text or "list_id: 1734567890" in text
     # @ stripped, de-duped
     assert "balajis" in text and "karpathy" in text
@@ -327,7 +322,7 @@ def test_update_research_sources_config_rejects_bad_values(tmp_path) -> None:
 
 
 def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "settings-api.duckdb"
+    db_path = tmp_path / "settings-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     captured: dict[str, Any] = {}
 
@@ -412,7 +407,7 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
 
 
 def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "fallback-api.duckdb"
+    db_path = tmp_path / "fallback-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     calls = 0
@@ -429,7 +424,7 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
                     "option_radar_opportunity": [{"decision_id": "event-1"}],
                 },
             )
-        return PanelData(status=DataStatus(False, "DuckDB locked", "core-error"), tables={})
+        return PanelData(status=DataStatus(False, "PostgreSQL unavailable", "postgresql-error"), tables={})
 
     monkeypatch.setattr(app_deps, "load_panel_scope_data", fake_scope_loader)
 
@@ -449,7 +444,7 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
 
 
 def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "unavailable-watchlist-api.duckdb"
+    db_path = tmp_path / "unavailable-watchlist-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     app_deps._scope_snapshot_cache_path({}, "watchlist").unlink(missing_ok=True)
@@ -466,7 +461,7 @@ def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(t
 
 
 def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailable(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "ready-empty-api.duckdb"
+    db_path = tmp_path / "ready-empty-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
@@ -493,7 +488,7 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
 
 
 def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "stale-schema-api.duckdb"
+    db_path = tmp_path / "stale-schema-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     monkeypatch.setattr(app_deps, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
@@ -518,7 +513,7 @@ def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) 
 
 
 def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "stale-contract-api.duckdb"
+    db_path = tmp_path / "stale-contract-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     monkeypatch.setattr(app_deps, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
@@ -546,7 +541,7 @@ def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_p
 
 
 def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "scoped-api.duckdb"
+    db_path = tmp_path / "scoped-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     calls: list[str] = []
 
@@ -568,7 +563,7 @@ def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
 
 
 def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "cache-lock.duckdb"
+    db_path = tmp_path / "cache-lock.json"
     _use_temp_api_db(monkeypatch, db_path)
     cached = PanelData(status=DataStatus(True, "cached", "test"), tables={"signals": [{"id": "cached"}]})
     slow_started = threading.Event()
@@ -612,7 +607,7 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
 
 
 def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "source-rankings-api.duckdb"
+    db_path = tmp_path / "source-rankings-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     calls: list[str] = []
 
@@ -668,7 +663,7 @@ def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(
 
 
 def test_source_freshness_defaults_to_capped_browser_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "source-freshness-api.duckdb"
+    db_path = tmp_path / "source-freshness-api.json"
     _use_temp_api_db(monkeypatch, db_path)
     rows = [
         {

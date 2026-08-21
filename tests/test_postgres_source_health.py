@@ -229,7 +229,7 @@ def test_source_health_cadences_match_operational_schedulers(migrated_postgres_d
     assert rows["robinhood"]["cadence_label"] == "3 day"
 
 
-def test_legacy_import_snapshots_are_event_driven_and_non_actionable(migrated_postgres_dsn: str) -> None:
+def test_historical_snapshots_are_event_driven_and_non_actionable(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     repository = IngestionRepository(runtime)
@@ -239,20 +239,20 @@ def test_legacy_import_snapshots_are_event_driven_and_non_actionable(migrated_po
             name="Legacy Market Snapshot",
             family="market_data",
             kind="daily_quote",
-            origin="legacy-duckdb",
+            origin="historical-archive",
             capabilities={"daily_quote": True},
         )
         origin_run_id = _finish(repository, "legacy-market-snapshot", "succeeded", capability="daily_quote")
         repository.register_source(
-            "capability_legacy_snapshot",
+            "legacy-capability-snapshot",
             name="Capability Legacy Snapshot",
             family="market_data",
             kind="daily_quote",
             origin="migration",
-            capabilities={"legacy_import": True},
+            capabilities={"historical_snapshot": True},
         )
         capability_run_id = _finish(
-            repository, "capability_legacy_snapshot", "succeeded", capability="legacy_import"
+            repository, "legacy-capability-snapshot", "succeeded", capability="historical_snapshot"
         )
         with runtime.transaction() as connection:
             connection.execute(
@@ -268,7 +268,7 @@ def test_legacy_import_snapshots_are_event_driven_and_non_actionable(migrated_po
     finally:
         runtime.close()
 
-    for source_id in ("legacy-market-snapshot", "capability_legacy_snapshot"):
+    for source_id in ("legacy-market-snapshot", "legacy-capability-snapshot"):
         snapshot = rows[source_id]
         assert snapshot["freshness_status"] == "fresh"
         assert snapshot["cadence_label"] == "event driven"
@@ -305,7 +305,7 @@ def test_source_health_degrades_abandoned_running_attempts_and_ignores_legacy_ag
         _register(repository, "health_abandoned")
         run_id = repository.start_run("health_abandoned", "news")
         _register(repository, "health_legacy", family="legacy", kind="content")
-        legacy_run = _finish(repository, "health_legacy", "succeeded", capability="legacy_import")
+        legacy_run = _finish(repository, "health_legacy", "succeeded", capability="historical_snapshot")
         with runtime.transaction() as connection:
             connection.execute(
                 "UPDATE ingest.run SET started_at = %s WHERE id = %s",

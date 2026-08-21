@@ -1,7 +1,7 @@
 """PostgreSQL connection-pool and transaction semantics.
 
-The public interface intentionally exposes PostgreSQL behavior instead of
-emulating DuckDB connections. Callers choose a read or write transaction and
+The public interface intentionally exposes PostgreSQL behavior. Callers choose
+a read or write transaction and
 the runtime enforces bounded pool, statement, and lock waits.
 """
 

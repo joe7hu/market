@@ -52,7 +52,7 @@ def _postgresql_job_authority(migrated_postgres_dsn: str, monkeypatch: pytest.Mo
 
 
 def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True, "rows": 3})
 
     job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
@@ -68,7 +68,7 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
 
 
 def test_refresh_job_preserves_partial_result_status(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     summary = {"status": "partial", "captures": [{"symbol": "QQQ", "completeness": 0.64}]}
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: summary)
 
@@ -80,7 +80,7 @@ def test_refresh_job_preserves_partial_result_status(tmp_path, monkeypatch) -> N
 
 
 def test_refresh_job_rows_reads_completed_postgresql_job(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     job = refresh_jobs.run_refresh_job("unit_refresh", db_path)
 
@@ -91,7 +91,7 @@ def test_refresh_job_rows_reads_completed_postgresql_job(tmp_path, monkeypatch) 
 
 
 def test_refresh_job_rows_returns_running_postgresql_job(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
 
@@ -105,7 +105,7 @@ def test_refresh_job_rows_returns_running_postgresql_job(tmp_path, monkeypatch) 
 
 
 def test_refresh_job_records_failure_without_reraising(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     def fail(_config_path):
         raise RuntimeError("provider unavailable")
@@ -123,7 +123,7 @@ def test_refresh_job_records_failure_without_reraising(tmp_path, monkeypatch) ->
 
 
 def test_refresh_job_marks_failed_summary_as_failed(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(
         refresh_jobs.ALLOWLIST,
         "unit_refresh",
@@ -141,7 +141,7 @@ def test_refresh_job_marks_failed_summary_as_failed(tmp_path, monkeypatch) -> No
 
 
 def test_refresh_job_failure_message_includes_source_errors(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(
         refresh_jobs.ALLOWLIST,
         "unit_refresh",
@@ -164,7 +164,7 @@ def test_refresh_job_failure_message_includes_source_errors(tmp_path, monkeypatc
 
 
 def test_refresh_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     monkeypatch.setattr(
         refresh_jobs.refresh_options_radar,
@@ -205,7 +205,7 @@ def test_signal_only_radar_skips_a_concurrent_catalog_writer(monkeypatch) -> Non
 
 
 def test_options_radar_hard_refresh_updates_source_then_rebuilds_radar(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     calls: list[tuple[str, str | None]] = []
 
     def fake_update(config_path):
@@ -229,7 +229,7 @@ def test_options_radar_hard_refresh_updates_source_then_rebuilds_radar(tmp_path,
 
 
 def test_options_radar_hard_refresh_retries_provider_capacity_before_pulling_source(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     attempts: list[int] = []
     waits: list[float] = []
     released: list[int] = []
@@ -266,7 +266,7 @@ def test_options_radar_hard_refresh_retries_provider_capacity_before_pulling_sou
 
 
 def test_options_radar_hard_refresh_fails_after_capacity_retry_budget(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     waits: list[float] = []
 
     class AlwaysDeferredPolicy:
@@ -292,7 +292,7 @@ def test_options_radar_hard_refresh_fails_after_capacity_retry_budget(tmp_path, 
 
 
 def test_options_radar_hard_refresh_skips_radar_when_no_incremental_symbols(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     calls: list[str] = []
     monkeypatch.setattr(refresh_jobs.update_robinhood_options, "run", lambda _config_path: {"status": "ok", "chain_rows": 0, "symbols": []})
     monkeypatch.setattr(refresh_jobs.refresh_options_radar, "run_signal_only", lambda *_args, **_kwargs: calls.append("radar") or {})
@@ -309,7 +309,7 @@ def test_options_radar_hard_refresh_timeout_covers_source_and_radar_steps() -> N
 
 
 def test_options_radar_hard_refresh_fails_when_source_unusable(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -327,7 +327,7 @@ def test_options_radar_hard_refresh_fails_when_source_unusable(tmp_path, monkeyp
 
 
 def test_refresh_job_subprocess_timeout_marks_job_failed(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
     monkeypatch.setitem(refresh_jobs.JOB_TIMEOUT_SECONDS, "unit_refresh", 1)
     job = refresh_jobs.start_refresh_job("unit_refresh", db_path)
@@ -373,7 +373,7 @@ def test_refresh_subprocess_keeps_database_credentials_out_of_arguments(monkeypa
 
 
 def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     monkeypatch.setattr(
         refresh_jobs.refresh_options_radar,
@@ -387,18 +387,8 @@ def test_refresh_options_radar_learning_marks_job_is_allowlisted(tmp_path, monke
     assert result["summary"] == {"job": "refresh_options_radar_learning_marks", "config_path": "config.yaml"}
 
 
-def test_market_environment_contract_is_routed_to_postgresql_valuation_refresh(monkeypatch) -> None:
-    monkeypatch.setattr(
-        refresh_jobs.update_market_environment,
-        "run",
-        lambda config_path: {"status": "ok", "database": "postgresql", "config_path": config_path},
-    )
-    result = refresh_jobs.ALLOWLIST["update_market_environment"]("config.yaml")
-    assert result == {"status": "ok", "database": "postgresql", "config_path": "config.yaml"}
-
-
 def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     monkeypatch.setattr(
         refresh_jobs.refresh_options_radar,
@@ -417,7 +407,7 @@ def test_hourly_options_radar_job_is_allowlisted(tmp_path, monkeypatch) -> None:
 
 
 def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     monkeypatch.setattr(
         refresh_jobs.run_option_agents,
@@ -432,7 +422,7 @@ def test_run_option_agents_job_is_allowlisted(tmp_path, monkeypatch) -> None:
 
 
 def test_run_thesis_monitor_jobs_are_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     calls: list[dict[str, object]] = []
 
     def fake_run(config_path, **kwargs):
@@ -453,7 +443,7 @@ def test_run_thesis_monitor_jobs_are_allowlisted(tmp_path, monkeypatch) -> None:
 
 
 def test_premarket_options_intelligence_job_is_allowlisted(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
 
     monkeypatch.setattr(
         refresh_jobs.postgres_refresh,
@@ -472,7 +462,7 @@ def test_premarket_options_intelligence_job_is_allowlisted(tmp_path, monkeypatch
 
 
 def test_start_refresh_job_returns_existing_running_job(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: {"ok": True})
 
     first = refresh_jobs.start_refresh_job("unit_refresh", db_path)
@@ -486,7 +476,7 @@ def test_start_refresh_job_returns_existing_running_job(tmp_path, monkeypatch) -
 
 
 def test_run_refresh_job_does_not_execute_existing_running_job(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     calls = []
     monkeypatch.setitem(refresh_jobs.ALLOWLIST, "unit_refresh", lambda _config_path: calls.append("run") or {"ok": True})
 
@@ -518,7 +508,7 @@ def test_job_heartbeat_runs_while_handler_is_active() -> None:
 
 
 def test_stale_running_jobs_are_marked_failed(tmp_path, migrated_postgres_dsn: str) -> None:
-    db_path = tmp_path / "jobs.duckdb"
+    db_path = os.environ["MARKET_DATABASE_URL"]
     stale_started = datetime.now(UTC) - timedelta(hours=4)
     job = refresh_jobs.start_refresh_job("full_market_refresh", db_path)
     with psycopg.connect(migrated_postgres_dsn) as con:

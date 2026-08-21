@@ -75,7 +75,6 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("update_market_data", freshness_seconds=86400),
         _job("update_free_sources", freshness_seconds=86400),
         _job("update_free_sources_radar", initial_delay="one_interval"),
-        _job("update_market_environment"),
         _job("update_research_sources", freshness_seconds=3600),
         _job("update_social_sources", freshness_seconds=1800),
         _job("update_event_calendar", freshness_seconds=86400),
@@ -232,7 +231,6 @@ def scheduler_intervals(config: Any | None = None) -> dict[str, int]:
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),
-        ("update_market_environment", "MARKET_ENVIRONMENT_REFRESH_SECONDS", 3600),
         ("update_preopen_daily_brief_scheduled", "MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0),
     ):
         seconds = _env_int(env_name, default, allow_zero=True)
@@ -259,7 +257,7 @@ def scheduler_status(config: Any | None = None) -> dict[str, Any]:
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
         "arco_refresh_seconds": str(intervals.get("update_arco_data", 0)),
         "market_data_refresh_seconds": str(intervals.get("update_market_data", 0)),
-        "market_environment_refresh_seconds": str(intervals.get("update_market_environment", 0)),
+        "market_environment_refresh_seconds": "0",
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
         "options_paper_execution_seconds": str(intervals.get("process_options_paper_orders", 0)),
@@ -292,8 +290,7 @@ def source_refresh_job_names() -> set[str]:
 
 def source_refresh_jobs_sql() -> str:
     return """CASE
-        WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
-          OR source.id LIKE 'legacy-%' THEN ARRAY[]::text[]
+        WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN ARRAY[]::text[]
         WHEN source.id = 'ibkr' THEN ARRAY['update_broker_sources', 'update_ibkr_options']::text[]
         WHEN source.id = 'moomoo' THEN ARRAY['update_broker_sources']::text[]
         WHEN source.id = 'robinhood' THEN ARRAY['options_radar_hard_refresh']::text[]
@@ -312,8 +309,7 @@ def source_refresh_jobs_sql() -> str:
 
 def source_primary_refresh_job_sql() -> str:
     return """CASE
-        WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
-          OR source.id LIKE 'legacy-%' THEN NULL
+        WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN NULL
         WHEN source.id = 'robinhood' THEN 'options_radar_hard_refresh'
         WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
         WHEN source.id IN ('ibkr', 'moomoo') THEN 'update_broker_sources'

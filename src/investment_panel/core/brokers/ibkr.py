@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import importlib.util
 import threading
 import time
@@ -12,7 +12,7 @@ from investment_panel.core.instruments import infer_asset_class, normalize_symbo
 
 from investment_panel.core.brokers.constants import IBKR_ACCOUNT_TAGS, IBKR_GENERIC_TICKS, IBKR_TICK_GENERIC_FIELDS, IBKR_TICK_PRICE_FIELDS, IBKR_TICK_SIZE_FIELDS
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
-from investment_panel.core.brokers.coerce import parse_dt, tcp_open
+from investment_panel.core.brokers.coerce import tcp_open
 
 
 
@@ -656,35 +656,6 @@ def ibkr_missing_quote_symbols(symbols: list[str], market_snapshots: list[dict[s
 def ibkr_entitlement_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entitlement_codes = {354, 10089, 10090, 10167, 10168}
     return [error for error in errors if int(error.get("code") or 0) in entitlement_codes]
-
-
-
-
-def ibkr_health(con: Any) -> dict[str, Any]:
-    from investment_panel.core.db import query_rows
-
-    rows = query_rows(con, "SELECT * FROM broker_provider_status WHERE provider = 'ibkr' LIMIT 1")
-    if not rows:
-        return {"provider": "ibkr", "status": "missing", "usable": False, "detail": "IBKR has not synced yet."}
-    row = rows[0]
-    status = str(row.get("status") or "missing")
-    last_data = parse_dt(row.get("last_data_at") or row.get("checked_at"))
-    stale = bool(last_data and datetime.now(UTC) - last_data > timedelta(minutes=15))
-    if stale and status == "ok":
-        status = "stale_data"
-    return {
-        "provider": "ibkr",
-        "status": status,
-        "usable": status == "ok" and not stale,
-        "detail": row.get("detail"),
-        "account_id": row.get("account_id"),
-        "account_mode": row.get("account_mode"),
-        "checked_at": row.get("checked_at"),
-        "last_data_at": row.get("last_data_at"),
-    }
-
-
-
 
 def ibkr_capabilities() -> list[str]:
     return ["positions", "cash", "buying_power", "margin_risk", "pnl", "orders", "fills", "account_mode", "market_snapshots", "options", "scanner"]

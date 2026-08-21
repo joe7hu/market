@@ -1,17 +1,9 @@
-import os
-import subprocess
-import sys
-from contextlib import contextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
-import duckdb
 import pytest
 
 from app import data_access
-from investment_panel.core.panel import market_freshness
-from investment_panel.core.db import db, init_db
-from investment_panel.core.panel import read_session
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -296,35 +288,6 @@ def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
     assert [row["decision_id"] for row in opportunities["rows"]] == ["decision-0", "decision-1", "decision-2"]
 
 
-def test_market_freshness_distinguishes_off_market_hours_from_stale() -> None:
-    tables = {
-        "market_valuation_reference_charts": [{"metric": "sp500_forward_pe", "latest_date": "2026-06-12"}],
-        "market_environment_assets": [{"symbol": "SPY", "as_of": "2026-06-12"}],
-    }
-
-    freshness = market_freshness(tables, now=datetime(2026, 6, 15, 12, 0, tzinfo=UTC))
-
-    assert freshness["status"] == "off_market_hours"
-    assert freshness["market_phase"] == "premarket"
-    assert freshness["expected_date"] == "2026-06-12"
-    assert freshness["checks"]["valuation_reference"]["series"]["sp500_forward_pe"]["status"] == "off_market_hours"
-
-
-def test_market_freshness_marks_missed_completed_session_stale() -> None:
-    tables = {
-        "market_valuation_reference_charts": [{"metric": "equity_risk_premium", "latest_date": "2026-06-12"}],
-        "market_environment_assets": [{"symbol": "SPY", "as_of": "2026-06-14"}],
-    }
-
-    freshness = market_freshness(tables, now=datetime(2026, 6, 16, 12, 0, tzinfo=UTC))
-
-    assert freshness["status"] == "stale"
-    assert freshness["market_phase"] == "premarket"
-    assert freshness["expected_date"] == "2026-06-15"
-    assert freshness["checks"]["valuation_reference"]["series"]["equity_risk_premium"]["status"] == "stale"
-    assert freshness["checks"]["asset_matrix"]["status"] == "stale"
-
-
 def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
 
@@ -436,15 +399,12 @@ def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
     assert "option_radar_opportunity" in calls[0]
 
 
-def test_empty_settings_scope_does_not_touch_missing_database(tmp_path) -> None:
-    db_path = tmp_path / "missing-settings.duckdb"
-
-    panel_data = data_access.load_panel_scope_data({"database": {"duckdb_path": str(db_path)}}, "settings")
+def test_empty_settings_scope_does_not_touch_missing_database() -> None:
+    panel_data = data_access.load_panel_scope_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}}, "settings")
 
     assert panel_data.status.ready is True
     assert panel_data.status.source == "postgresql"
     assert panel_data.tables == {}
-    assert not db_path.exists()
 
 
 def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str) -> None:
@@ -463,56 +423,6 @@ def test_pure_scoped_postgresql_read_is_empty_when_unpublished(migrated_postgres
 
     assert panel_data.status.source == "postgresql"
     assert panel_data.rows("source_health") == []
-
-
-def test_scheduler_compatible_panel_read_does_not_poison_later_writer(tmp_path) -> None:
-    db_path = tmp_path / "scheduler-compatible.duckdb"
-    init_db(db_path)
-    script = f"""
-from pathlib import Path
-from investment_panel.core.db import init_db
-from investment_panel.core.panel.read_session import panel_read_session
-
-db_path = Path({str(db_path)!r})
-with panel_read_session(db_path, needs_write=False) as con:
-    assert con is not None
-    con.execute("SELECT 1").fetchone()
-init_db(db_path)
-"""
-    env = {**os.environ, "MARKET_SCHEDULER_ENABLED": "1"}
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=Path(__file__).resolve().parents[1],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_panel_read_session_uses_read_only_fail_fast_by_default(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "read-only.duckdb"
-    db_path.write_bytes(b"placeholder")
-    calls: list[tuple[bool, int, float]] = []
-
-    @contextmanager
-    def fake_db(_path, read_only: bool = False, *, retries: int = 30, delay_seconds: float = 1.0):
-        calls.append((read_only, retries, delay_seconds))
-        yield object()
-
-    monkeypatch.setenv("MARKET_SCHEDULER_ENABLED", "1")
-    monkeypatch.delenv("MARKET_PANEL_READ_ONLY", raising=False)
-    monkeypatch.delenv("MARKET_PANEL_READ_LOCK_RETRIES", raising=False)
-    monkeypatch.setattr(read_session, "_schema_needs_migration", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(read_session, "db", fake_db)
-
-    with read_session.panel_read_session(db_path, needs_write=False) as con:
-        assert con is not None
-
-    assert calls == [(True, 0, 0.1)]
 
 
 def test_scoped_panel_status_is_ready_when_publication_has_rows(migrated_postgres_dsn: str) -> None:
@@ -1036,10 +946,8 @@ def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
     assert "provider failed" in result["error"]
 
 
-def test_save_watchlist_symbol_rejects_malformed_ticker(tmp_path) -> None:
-    config = {"database": {"duckdb_path": str(tmp_path / "bad-watchlist.duckdb")}}
-
-    import pytest
+def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: str) -> None:
+    config = {"database": {"url": migrated_postgres_dsn}}
 
     with pytest.raises(ValueError, match="valid ticker"):
         data_access.save_watchlist_symbol(config, {"symbol": "ABC!"})

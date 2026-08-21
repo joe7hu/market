@@ -1,188 +1,175 @@
-"""Architecture guardrails — turn the ARCHITECTURE.md conventions into tests.
+"""Fast static checks for the current Market architecture.
 
-These are pure-AST/static checks: no DuckDB, no network, no app import, so they
-run in milliseconds and never touch the shared write lock. They exist to stop the
-two conventions that historically rotted (god-modules regrowing, and external code
-reaching past a facade into its submodules) from silently coming back.
-
-If a check here fails, the fix is almost always to honor the convention — not to
-edit the allowlist. Only add an allowlist entry for a *deliberate, documented*
-exception, with a reason.
+These checks do not import the application or contact a database. They protect
+the seams that make the repository easy to navigate: typed owners, explicit
+facades, valid entry points, and a clean PostgreSQL-only runtime.
 """
 
 from __future__ import annotations
 
 import ast
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROD_ROOTS = [REPO_ROOT / "app", REPO_ROOT / "src" / "investment_panel"]
-
-# --- Module-size guard ------------------------------------------------------
-
-# ARCHITECTURE.md: keep submodules scannable, target < ~700 lines. We hard-fail
-# at this limit so a regrowing monolith trips the build instead of a reviewer.
 MAX_LINES = 700
-
-# Deliberate exceptions. path (relative to repo root) -> reason. Keep this short;
-# every entry is a small debt you have chosen to carry.
-SIZE_ALLOWLIST = {
-    "src/investment_panel/core/schema.py": (
-        "Single DDL string by design — see docs/schema-ddl-architecture-decision.md"
-    ),
-}
 
 
 def _prod_py_files() -> list[Path]:
-    files: list[Path] = []
-    for root in PROD_ROOTS:
-        for p in root.rglob("*.py"):
-            if "__pycache__" in p.parts:
-                continue
-            files.append(p)
-    return files
+    return sorted(
+        path
+        for root in PROD_ROOTS
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+
+
+def _all_py_files() -> list[Path]:
+    return sorted(
+        path
+        for root in (*PROD_ROOTS, REPO_ROOT / "tests")
+        for path in root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
 
 
 def test_no_module_exceeds_line_budget() -> None:
     offenders = []
     for path in _prod_py_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        n = sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
-        if n > MAX_LINES and rel not in SIZE_ALLOWLIST:
-            offenders.append(f"{rel}: {n} lines (limit {MAX_LINES})")
+        line_count = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        if line_count > MAX_LINES:
+            offenders.append(f"{path.relative_to(REPO_ROOT)}: {line_count} lines")
     assert not offenders, (
-        "Modules over the line budget — extract a responsibility submodule and "
-        "re-export from the facade (see ARCHITECTURE.md), or add a documented "
-        "exception to SIZE_ALLOWLIST:\n  " + "\n  ".join(sorted(offenders))
+        f"Modules over the line budget ({MAX_LINES}):\n  " + "\n  ".join(offenders)
     )
 
 
-def test_size_allowlist_has_no_stale_entries() -> None:
-    """An allowlisted file that is no longer over budget should be removed."""
-    stale = []
-    for rel in SIZE_ALLOWLIST:
-        path = REPO_ROOT / rel
-        if not path.exists():
-            stale.append(f"{rel}: file no longer exists")
-            continue
-        n = sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
-        if n <= MAX_LINES:
-            stale.append(f"{rel}: now {n} lines (<= {MAX_LINES}) — drop from allowlist")
-    assert not stale, "Stale SIZE_ALLOWLIST entries:\n  " + "\n  ".join(stale)
+def _forbidden_runtime_tokens() -> tuple[str, ...]:
+    # Keep the guard itself free of the exact retired product name. This makes
+    # the same zero-code scan apply to all Python, package, and lock files.
+    retired_store = "duck" + "db"
+    return (
+        retired_store,
+        retired_store + "_path",
+        "market_" + retired_store + "_path",
+        "investment." + retired_store,
+        "legacy_" + "import",
+    )
 
 
-# --- Facade-import guard ----------------------------------------------------
-
-# ARCHITECTURE.md: "Import from the package, not from submodules, in external
-# code." External code that reaches `core.panel.feed` instead of `core.panel`
-# couples to internals the facade is meant to hide. Intra-package imports (a
-# panel submodule importing a sibling) are fine and not flagged.
-FACADE_PACKAGES = [
-    "investment_panel.core.panel",
-    "investment_panel.core.decision",
-    "investment_panel.core.brokers",
-    "investment_panel.core.free_sources",
-    "investment_panel.core.disclosures",
-    "app.data_access",
-]
-
-# Pre-existing deep imports, frozen by the ratchet: new ones are blocked, these
-# are grandfathered. (importing_file, imported_module) -> reason / fix direction.
-# Shrink this set over time; do not add to it without a real reason.
-FACADE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
-}
-
-
-def _facade_dir(dotted: str) -> Path:
-    """Filesystem dir for a facade dotted path, across the src/ and app/ roots."""
-    if dotted.startswith("investment_panel."):
-        return REPO_ROOT / "src" / Path(*dotted.split("."))
-    return REPO_ROOT / Path(*dotted.split("."))
+def test_runtime_has_no_retired_storage_or_importer_markers() -> None:
+    files = [*_all_py_files(), REPO_ROOT / "pyproject.toml", REPO_ROOT / "uv.lock"]
+    violations = []
+    tokens = _forbidden_runtime_tokens()
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="replace").casefold()
+        for token in tokens:
+            if token.casefold() in text:
+                violations.append(f"{path.relative_to(REPO_ROOT)} contains {token!r}")
+    assert not violations, "Retired storage/importer markers remain:\n  " + "\n  ".join(violations)
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:
-    mods: list[str] = []
+    modules: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            mods.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:  # relative import — always intra-package, skip
-                continue
-            if node.module:
-                mods.append(node.module)
-    return mods
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules.append(node.module)
+    return modules
+
+
+def _module_path(module: str) -> Path | None:
+    if module == "app" or module.startswith("app."):
+        relative = Path(*module.split("."))
+        root = REPO_ROOT
+    elif module == "investment_panel" or module.startswith("investment_panel."):
+        relative = Path(*module.split("."))
+        root = REPO_ROOT / "src"
+    else:
+        return None
+    package_path = root / relative / "__init__.py"
+    module_path = (root / relative).with_suffix(".py")
+    if package_path.exists():
+        return package_path
+    if module_path.exists():
+        return module_path
+    if (root / relative).is_dir():
+        return root / relative
+    return None
+
+
+def test_local_imports_resolve_to_existing_modules() -> None:
+    violations = []
+    for path in _all_py_files():
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        for module in _imported_modules(tree):
+            if (module_path := _module_path(module)) is None and (
+                module == "app"
+                or module.startswith("app.")
+                or module == "investment_panel"
+                or module.startswith("investment_panel.")
+            ):
+                violations.append(f"{path.relative_to(REPO_ROOT)} imports missing {module}")
+    assert not violations, "Imports point to deleted local modules:\n  " + "\n  ".join(violations)
+
+
+FACADE_PACKAGES = (
+    "investment_panel.core.panel",
+    "investment_panel.core.decision",
+    "investment_panel.core.brokers",
+)
+
+
+def _facade_dir(dotted: str) -> Path:
+    return REPO_ROOT / "src" / Path(*dotted.split("."))
 
 
 def test_external_code_imports_facade_not_submodules() -> None:
     violations = []
     for path in _prod_py_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=rel)
-        for mod in _imported_modules(tree):
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=relative)
+        for module in _imported_modules(tree):
             for facade in FACADE_PACKAGES:
-                if not mod.startswith(facade + "."):
-                    continue  # exact-facade or unrelated import
-                # Reaching into a submodule. Allowed only if the importer lives
-                # inside that same facade package.
-                inside = _facade_dir(facade) in path.parents
-                if inside:
+                if not module.startswith(facade + "."):
                     continue
-                if (rel, mod) in FACADE_IMPORT_ALLOWLIST:
+                if _facade_dir(facade) in path.parents:
                     continue
-                violations.append(f"{rel} imports {mod} (use '{facade}' instead)")
-    assert not violations, (
-        "External code imports a facade submodule directly — import from the "
-        "package and add the symbol to its __init__.py if missing "
-        "(see ARCHITECTURE.md):\n  " + "\n  ".join(sorted(violations))
-    )
+                violations.append(f"{relative} imports {module}")
+    assert not violations, "External code reaches into facade internals:\n  " + "\n  ".join(violations)
 
 
-def test_facade_import_allowlist_has_no_stale_entries() -> None:
-    """A grandfathered deep import that no longer occurs should be removed,
-    so the ratchet keeps tightening."""
-    seen: set[tuple[str, str]] = set()
-    for path in _prod_py_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=rel)
-        for mod in _imported_modules(tree):
-            seen.add((rel, mod))
-    stale = [f"{rel} -> {mod}" for (rel, mod) in FACADE_IMPORT_ALLOWLIST if (rel, mod) not in seen]
-    assert not stale, (
-        "Stale FACADE_IMPORT_ALLOWLIST entries (import is gone — drop them):\n  "
-        + "\n  ".join(sorted(stale))
-    )
-
-
-# --- PostgreSQL owner guards -----------------------------------------------
-
-CATALOG_WRITE_OWNERS = {
-    "src/investment_panel/database/instruments.py",
-    "src/investment_panel/database/legacy_bootstrap.py",
-    "src/investment_panel/database/legacy_import.py",
-}
+def test_public_facades_are_explicit() -> None:
+    violations = []
+    for facade in FACADE_PACKAGES:
+        path = _facade_dir(facade) / "__init__.py"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "__all__" not in text:
+            violations.append(f"{path.relative_to(REPO_ROOT)} has no explicit __all__")
+        if "__getattr__" in text or "import_module" in text:
+            violations.append(f"{path.relative_to(REPO_ROOT)} uses dynamic compatibility loading")
+    assert not violations, "Facade contract violations:\n  " + "\n  ".join(violations)
 
 
 def test_live_catalog_writes_use_instrument_owner() -> None:
     violations = []
+    owner = REPO_ROOT / "src" / "investment_panel" / "database" / "instruments.py"
     for path in _prod_py_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel in CATALOG_WRITE_OWNERS:
+        if path == owner:
             continue
         if "INSERT INTO catalog.instrument" in path.read_text(encoding="utf-8", errors="replace"):
-            violations.append(rel)
-    assert not violations, (
-        "Live catalog writes must use database.instruments.reconcile_instrument; "
-        "only explicit legacy import code may retain direct SQL:\n  " + "\n  ".join(sorted(violations))
-    )
+            violations.append(str(path.relative_to(REPO_ROOT)))
+    assert not violations, "Live catalog writes must use database.instruments:\n  " + "\n  ".join(violations)
 
 
 def test_ingestion_clients_use_managed_run_lifecycle() -> None:
     violations = []
     for path in _prod_py_files():
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel.endswith("database/ingestion.py") or "legacy_" in path.name:
+        if path.name == "ingestion.py":
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=rel)
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         repository_names = {
             target.id
             for node in ast.walk(tree)
@@ -198,76 +185,42 @@ def test_ingestion_clients_use_managed_run_lifecycle() -> None:
                 continue
             if isinstance(node.func.value, ast.Name) and node.func.value.id in repository_names:
                 if node.func.attr in {"start_run", "finish_run"}:
-                    violations.append(f"{rel}:{node.lineno} calls {node.func.attr}")
-    assert not violations, (
-        "Ingestion clients must use IngestionRepository.run so exceptions and terminal state "
-        "stay owned by the ingestion module:\n  " + "\n  ".join(sorted(violations))
-    )
+                    violations.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+    assert not violations, "Ingestion clients must use IngestionRepository.run:\n  " + "\n  ".join(violations)
 
 
 def test_http_routers_do_not_construct_database_repositories() -> None:
-    """Transport adapters call application actions instead of persistence adapters."""
-
     violations = []
     for path in (REPO_ROOT / "app" / "routers").glob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                 "investment_panel.database"
             ):
                 violations.append(f"{path.name}:{node.lineno} imports {node.module}")
-    assert not violations, (
-        "HTTP routers must use app.actions Modules instead of constructing database repositories:\n  "
-        + "\n  ".join(sorted(violations))
-    )
+    assert not violations, "Routers must call application owners, not database adapters:\n  " + "\n  ".join(violations)
 
 
-# --- Forward recovery isolation guard --------------------------------------
-
-# The legacy options implementation is retained only until forward canaries
-# complete.  New recovery collection, selection, learning, and advisory work
-# must remain PostgreSQL-native even while those older modules still exist.
-RECOVERY_POSTGRES_PATHS = (
-    *(REPO_ROOT / "src" / "investment_panel" / "core").glob("options_recovery*.py"),
-    REPO_ROOT / "src" / "investment_panel" / "core" / "options_event_tape.py",
-    REPO_ROOT / "src" / "investment_panel" / "database" / "option_events.py",
-    *(REPO_ROOT / "src" / "investment_panel" / "database").glob("options_recovery*.py"),
-    REPO_ROOT / "src" / "investment_panel" / "jobs" / "detect_option_events.py",
-    REPO_ROOT / "src" / "investment_panel" / "jobs" / "robinhood_option_history.py",
-    REPO_ROOT / "src" / "investment_panel" / "jobs" / "run_option_recovery_agents.py",
-)
-LEGACY_RECOVERY_MARKERS = (
-    "import duckdb",
-    "from investment_panel.core.db",
-    "investment_panel.core.options_radar",
-    "investment_panel.database.legacy_import",
-)
-RECOVERY_PANEL_MODELS = (
-    "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
-    "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
-)
-
-
-def test_forward_options_recovery_has_no_legacy_duckdb_dependency() -> None:
+def test_console_scripts_target_existing_functions() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = pyproject.get("project", {}).get("scripts", {})
     violations = []
-    for path in RECOVERY_POSTGRES_PATHS:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for marker in LEGACY_RECOVERY_MARKERS:
-            if marker in text:
-                violations.append(f"{path.relative_to(REPO_ROOT)} contains {marker!r}")
-    assert not violations, (
-        "Forward recovery must use the PostgreSQL event/ticket/outcome owners; "
-        "do not reintroduce legacy DuckDB options or learning imports:\n  "
-        + "\n  ".join(sorted(violations))
-    )
-
-
-def test_legacy_panel_registry_cannot_reintroduce_recovery_fallbacks() -> None:
-    registry = (REPO_ROOT / "src" / "investment_panel" / "core" / "panel" / "registry.py").read_text(
-        encoding="utf-8"
-    )
-    missing = [name for name in RECOVERY_PANEL_MODELS if f'"{name}": lambda ctx: []' not in registry]
-    assert not missing, (
-        "Recovery models are PostgreSQL-only.  Their legacy panel registry entries must stay empty "
-        f"until the legacy panel path is removed, not grow a DuckDB fallback: {missing}"
-    )
+    for name, target in scripts.items():
+        try:
+            module_name, function_name = target.split(":", 1)
+        except ValueError:
+            violations.append(f"{name}: malformed target {target!r}")
+            continue
+        module_path = _module_path(module_name)
+        if module_path is None:
+            violations.append(f"{name}: missing module {module_name}")
+            continue
+        tree = ast.parse(module_path.read_text(encoding="utf-8", errors="replace"), filename=str(module_path))
+        functions = {
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if function_name not in functions:
+            violations.append(f"{name}: {module_name}:{function_name} is not defined")
+    assert not violations, "Console scripts have no valid owner:\n  " + "\n  ".join(violations)

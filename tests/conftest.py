@@ -2,12 +2,7 @@
 
 Two things make the suite painful to iterate on:
 
-1. The yfinance options-chain throttle
-   (``free_sources.YFINANCE_OPTION_THROTTLE_SECONDS = 0.4``) runs as real
-   ``time.sleep`` per symbol/expiry. It protects the live rate limit but has no
-   place slowing tests, so we zero it for every test.
-
-2. A couple of end-to-end integration tests (building candidates from a local
+1. A couple of end-to-end integration tests (building candidates from a local
    Arco fixture, the free-source round-trip) do ~90s of real computation each.
    They are marked ``@pytest.mark.slow`` and skipped by default. Run the full
    suite with ``uv run pytest --run-slow``.
@@ -47,15 +42,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "slow" in item.keywords:
             item.add_marker(skip_slow)
-
-
-@pytest.fixture(autouse=True)
-def _zero_yfinance_option_throttle(monkeypatch: pytest.MonkeyPatch) -> None:
-    try:
-        import investment_panel.core.free_sources as free_sources_core
-    except Exception:  # pragma: no cover - core import optional in some envs
-        return
-    monkeypatch.setattr(free_sources_core.yfinance_sources, "YFINANCE_OPTION_THROTTLE_SECONDS", 0, raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -1,37 +1,132 @@
-"""Decision constants with lazy access to legacy DuckDB read models."""
+"""Explicit exports for decision calendar, freshness, and brief rules."""
 
-from __future__ import annotations
-
-from importlib import import_module
-from typing import Any
-
+from investment_panel.core.decision.brief import (
+    GATE_LABELS,
+    _brief_summary,
+    _is_no_trade_action,
+    ticker_decision_brief,
+)
+from investment_panel.core.decision.brief_options import _is_option_expired
+from investment_panel.core.decision.calendar import (
+    classify_freshness,
+    easter_date,
+    is_market_open,
+    is_us_equity_early_close,
+    is_us_market_day,
+    last_weekday,
+    latest_completed_market_day,
+    market_session_bounds,
+    market_session_elapsed,
+    normalized_utc,
+    nth_weekday,
+    observed_fixed_holiday,
+    trading_day_lag,
+    us_market_holidays,
+)
+from investment_panel.core.decision.coerce import (
+    decode,
+    dedupe_freshness,
+    latest_by_symbol,
+    recency_points,
+    related_symbols,
+)
 from investment_panel.core.decision.constants import (
-    ARCO_STALE_DAYS, DAILY_ANALYSIS_SOURCES, DAILY_STALE_DAYS,
-    FILING_STALE_DAYS, FRESHNESS_ORDER, INTRADAY_STALE_HOURS,
-    MARKET_CLOSE, MARKET_OPEN, MARKET_TZ, PRIMARY_EVIDENCE_SOURCES,
-    STATIC_SOURCES, SYMBOL_RE,
+    ARCO_STALE_DAYS,
+    DAILY_ANALYSIS_SOURCES,
+    DAILY_STALE_DAYS,
+    FILING_STALE_DAYS,
+    FRESHNESS_ORDER,
+    INTRADAY_STALE_HOURS,
+    MARKET_CLOSE,
+    MARKET_OPEN,
+    MARKET_TZ,
+    PRIMARY_EVIDENCE_SOURCES,
+    STATIC_SOURCES,
+    SYMBOL_RE,
 )
-
-_MODULES = (
-    "coerce", "calendar", "freshness", "grading", "readiness", "brief_coerce",
-    "brief_options", "brief", "watchlist", "portfolio", "quotes", "builders",
-    "persistence", "read_models", "service",
+from investment_panel.core.decision.freshness import (
+    best_freshness,
+    default_freshness_detail,
+    eligibility_detail,
+    overall_decision_freshness,
+    stale_after_label,
+    symbol_freshness_detail,
+    top_source_cluster,
+    worst_freshness,
 )
-
-
-def __getattr__(name: str) -> Any:
-    for module_name in _MODULES:
-        module = import_module(f"investment_panel.core.decision.{module_name}")
-        if hasattr(module, name):
-            value = getattr(module, name)
-            globals()[name] = value
-            return value
-    raise AttributeError(name)
-
+from investment_panel.core.decision.grading import (
+    action_grade_for,
+    apply_blocking_penalties,
+    catalyst_window,
+    decision_basis,
+    gate_reasons,
+    invalidation_for,
+    portfolio_impact,
+)
+from investment_panel.core.decision.readiness import (
+    has_required_valuation_context,
+    readiness_blockers,
+    readiness_missing_inputs,
+    readiness_next_action,
+    readiness_portfolio_fit,
+    readiness_status,
+)
 
 __all__ = [
-    "ARCO_STALE_DAYS", "DAILY_ANALYSIS_SOURCES", "DAILY_STALE_DAYS",
-    "FILING_STALE_DAYS", "FRESHNESS_ORDER", "INTRADAY_STALE_HOURS",
-    "MARKET_CLOSE", "MARKET_OPEN", "MARKET_TZ", "PRIMARY_EVIDENCE_SOURCES",
-    "STATIC_SOURCES", "SYMBOL_RE", "is_us_market_day",
+    "ARCO_STALE_DAYS",
+    "DAILY_ANALYSIS_SOURCES",
+    "DAILY_STALE_DAYS",
+    "FILING_STALE_DAYS",
+    "FRESHNESS_ORDER",
+    "GATE_LABELS",
+    "INTRADAY_STALE_HOURS",
+    "MARKET_CLOSE",
+    "MARKET_OPEN",
+    "MARKET_TZ",
+    "PRIMARY_EVIDENCE_SOURCES",
+    "STATIC_SOURCES",
+    "SYMBOL_RE",
+    "_brief_summary",
+    "_is_no_trade_action",
+    "_is_option_expired",
+    "action_grade_for",
+    "apply_blocking_penalties",
+    "best_freshness",
+    "catalyst_window",
+    "classify_freshness",
+    "decode",
+    "dedupe_freshness",
+    "default_freshness_detail",
+    "easter_date",
+    "eligibility_detail",
+    "gate_reasons",
+    "has_required_valuation_context",
+    "invalidation_for",
+    "is_market_open",
+    "is_us_equity_early_close",
+    "is_us_market_day",
+    "last_weekday",
+    "latest_by_symbol",
+    "latest_completed_market_day",
+    "market_session_bounds",
+    "market_session_elapsed",
+    "normalized_utc",
+    "nth_weekday",
+    "observed_fixed_holiday",
+    "overall_decision_freshness",
+    "portfolio_impact",
+    "readiness_blockers",
+    "readiness_missing_inputs",
+    "readiness_next_action",
+    "readiness_portfolio_fit",
+    "readiness_status",
+    "recency_points",
+    "related_symbols",
+    "stale_after_label",
+    "symbol_freshness_detail",
+    "ticker_decision_brief",
+    "top_source_cluster",
+    "trading_day_lag",
+    "us_market_holidays",
+    "worst_freshness",
 ]

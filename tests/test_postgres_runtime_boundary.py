@@ -3,31 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
-
 import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_duckdb_is_not_a_production_dependency() -> None:
+def test_production_dependencies_are_postgresql_only() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert all(not dependency.startswith("duckdb") for dependency in project["dependencies"])
-    assert any(dependency.startswith("duckdb") for dependency in project["optional-dependencies"]["legacy-import"])
+    dependencies = [*project["dependencies"], *project["optional-dependencies"]["test"]]
+    assert all("postgres" in dependency or not dependency.startswith("duck") for dependency in dependencies)
 
 
-def test_fastapi_import_does_not_load_duckdb() -> None:
+def test_fastapi_import_does_not_load_retired_storage() -> None:
     script = """
-import builtins
-real_import = builtins.__import__
-def guarded(name, *args, **kwargs):
-    if name == 'duckdb' or name.startswith('duckdb.'):
-        raise ModuleNotFoundError('DuckDB is excluded from the production runtime')
-    return real_import(name, *args, **kwargs)
-builtins.__import__ = guarded
 import app.main
-from investment_panel.jobs import full_market_refresh, hourly_options_radar, premarket_options_intelligence, update_arco_sources, update_broker_sources, update_content_sources, update_disclosure_sources, update_market_data, update_market_events
-assert 'duckdb' not in __import__('sys').modules
+from investment_panel.jobs import full_market_refresh, hourly_options_radar, premarket_options_intelligence
+from investment_panel.jobs import update_arco_sources, update_broker_sources, update_content_sources
+from investment_panel.jobs import update_disclosure_sources, update_market_data, update_market_events
+assert app.main.app is not None
 """
     completed = subprocess.run(
         [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, check=False

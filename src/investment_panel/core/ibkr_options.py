@@ -584,24 +584,3 @@ def _collect_symbol(app, Contract, symbol, observed_at, rid, min_dte, max_dte, m
     if rows:
         result["rows"][symbol] = rows
     return rid
-
-
-def refresh_ibkr_options(con: Any, config: Any, symbols: list[str], **kwargs: Any) -> dict[str, Any]:
-    """Collect IBKR option chains and persist them with source='ibkr'."""
-
-    from investment_panel.core.free_sources import store_options_chain
-
-    ibkr_cfg = config.data_sources.brokers.ibkr
-    collected = collect_ibkr_option_chains(ibkr_cfg, symbols, **kwargs)
-    observed_at = collected["observed_at"]
-    stored = 0
-    for symbol, rows in collected["rows"].items():
-        stored += store_options_chain(con, symbol, observed_at, rows, source="ibkr")
-    return {
-        "provider": "ibkr",
-        "market_data": collected["market_data"],
-        "symbols_with_chains": len(collected["rows"]),
-        "chain_rows": stored,
-        "observed_at": observed_at,
-        "errors": collected["errors"][:25],
-    }

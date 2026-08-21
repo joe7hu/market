@@ -24,7 +24,6 @@ class NasConfig:
     source_root: Path = Path("/Volumes/agent/data-sources")
     status_dir: Path = Path("/Volumes/agent/data-sources/status")
     market_dir: Path = Path("/Volumes/agent/data-sources/market-mini")
-    duckdb_snapshot_dir: Path = Path("/Volumes/agent/data-sources/market-mini/duckdb-snapshots")
     postgres_backup_dir: Path = Path("/Volumes/agent/data-sources/market-mini/postgres-backups")
     storage_archive_dir: Path = Path("/Volumes/agent/data-sources/market-mini/storage-archive/v1")
 @dataclass(frozen=True)
@@ -290,10 +289,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         source_root=resolve_path(nas_raw.get("source_root", "/Volumes/agent/data-sources"), base),
         status_dir=resolve_path(nas_raw.get("status_dir", "/Volumes/agent/data-sources/status"), base),
         market_dir=resolve_path(nas_raw.get("market_dir", "/Volumes/agent/data-sources/market-mini"), base),
-        duckdb_snapshot_dir=resolve_path(
-            nas_raw.get("duckdb_snapshot_dir", "/Volumes/agent/data-sources/market-mini/duckdb-snapshots"),
-            base,
-        ),
         postgres_backup_dir=resolve_path(
             nas_raw.get("postgres_backup_dir", "/Volumes/agent/data-sources/market-mini/postgres-backups"),
             base,

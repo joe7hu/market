@@ -113,7 +113,6 @@ def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
         "MARKET_RADAR_REFRESH_SECONDS",
         "MARKET_SOURCE_REFRESH_SECONDS",
         "MARKET_LEARNING_REFRESH_SECONDS",
-        "MARKET_ENVIRONMENT_REFRESH_SECONDS",
         "MARKET_PREOPEN_BRIEF_REFRESH_SECONDS",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -121,7 +120,7 @@ def test_radar_freshness_loop_defaults_to_premarket_only(monkeypatch) -> None:
     assert "options_radar_hard_refresh" not in intervals
     assert "refresh_options_radar_learning_marks" not in intervals
     assert "refresh_options_radar_deterministic" not in intervals
-    assert intervals["update_market_environment"] == 3600
+    assert "update_market_environment" not in intervals
     assert "update_preopen_daily_brief_scheduled" not in intervals
 
 
@@ -137,13 +136,6 @@ def test_heavy_refresh_loops_can_be_enabled_for_app_process(monkeypatch) -> None
     assert intervals["refresh_options_radar_deterministic"] == 21600
 
 
-def test_market_environment_refresh_can_be_disabled(monkeypatch) -> None:
-    monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
-    monkeypatch.setenv("MARKET_ENVIRONMENT_REFRESH_SECONDS", "0")
-    intervals = scheduler.job_intervals()
-    assert "update_market_environment" not in intervals
-
-
 def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_RADAR_OPTION_SOURCE", raising=False)
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "0")
@@ -152,10 +144,9 @@ def test_preopen_brief_refresh_can_be_disabled(monkeypatch) -> None:
 
 
 def test_postgresql_market_and_preopen_refreshes_are_scheduled(monkeypatch) -> None:
-    monkeypatch.setenv("MARKET_ENVIRONMENT_REFRESH_SECONDS", "3600")
     monkeypatch.setenv("MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", "300")
     intervals = scheduler.job_intervals()
-    assert intervals["update_market_environment"] == 3600
+    assert "update_market_environment" not in intervals
     assert intervals["update_preopen_daily_brief_scheduled"] == 300
 
 
@@ -188,7 +179,7 @@ def test_scheduler_status_reports_actual_intervals(monkeypatch) -> None:
     assert status["options_hard_refresh_seconds"] == "0"
     assert status["learning_mark_refresh_seconds"] == "0"
     assert status["learning_refresh_seconds"] == "21600"
-    assert status["market_environment_refresh_seconds"] == "3600"
+    assert status["market_environment_refresh_seconds"] == "0"
     assert status["preopen_brief_refresh_seconds"] == "0"
     assert status["external_jobs"]["premarket_options_intelligence"]["owner"] == "launchd"
     assert status["external_jobs"]["premarket_options_intelligence"]["market_calendar_gated"] is True
@@ -369,7 +360,7 @@ def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) 
             await asyncio.sleep(0.1)
 
     monkeypatch.setattr(scheduler, "load_config", lambda _path: object())
-    monkeypatch.setattr(scheduler, "job_intervals", lambda _config: {"slow_job": 60, "update_market_environment": 60})
+    monkeypatch.setattr(scheduler, "job_intervals", lambda _config: {"slow_job": 60, "critical_market_job": 60})
     monkeypatch.setattr(scheduler, "_dispatch", fake_dispatch)
     monkeypatch.setattr(scheduler, "TICK_SECONDS", 0.01)
     monkeypatch.setattr(scheduler, "STAGGER_SECONDS", 0)
@@ -387,7 +378,7 @@ def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) 
     asyncio.run(run_briefly())
 
     assert "slow_job" in calls
-    assert "update_market_environment" in calls
+    assert "critical_market_job" in calls
 
 
 def test_deterministic_radar_job_is_allowlisted() -> None:

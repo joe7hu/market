@@ -1,25 +1,32 @@
-"""Lazy broker facade for the PostgreSQL runtime and legacy tests."""
+"""Explicit broker provider and PostgreSQL synchronization exports."""
 
-from __future__ import annotations
-
-from importlib import import_module
-from typing import Any
-
-_MODULES = (
-    "constants", "types", "coerce", "ibkr", "moomoo", "policy",
-    "recommendation_decisions", "persistence", "read_models",
-    "recommendations", "service",
+from investment_panel.core.brokers.constants import (
+    ADVISORY_AUTHORITY,
+    IBKR_ACCOUNT_TAGS,
+    IBKR_GENERIC_TICKS,
+    IBKR_TICK_GENERIC_FIELDS,
+    IBKR_TICK_PRICE_FIELDS,
+    IBKR_TICK_SIZE_FIELDS,
 )
+from investment_panel.core.brokers.coerce import parse_json, stable_id, tcp_open
+from investment_panel.core.brokers.ibkr import IBKRProvider
+from investment_panel.core.brokers.moomoo import MoomooProvider
+from investment_panel.core.brokers.service import run
+from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus
 
-
-def __getattr__(name: str) -> Any:
-    for module_name in _MODULES:
-        module = import_module(f"investment_panel.core.brokers.{module_name}")
-        if hasattr(module, name):
-            value = getattr(module, name)
-            globals()[name] = value
-            return value
-    raise AttributeError(name)
-
-
-__all__: list[str] = []
+__all__ = [
+    "ADVISORY_AUTHORITY",
+    "BrokerSnapshot",
+    "IBKRProvider",
+    "IBKR_ACCOUNT_TAGS",
+    "IBKR_GENERIC_TICKS",
+    "IBKR_TICK_GENERIC_FIELDS",
+    "IBKR_TICK_PRICE_FIELDS",
+    "IBKR_TICK_SIZE_FIELDS",
+    "MoomooProvider",
+    "ProviderStatus",
+    "parse_json",
+    "run",
+    "stable_id",
+    "tcp_open",
+]

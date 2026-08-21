@@ -1,7 +1,7 @@
 from investment_panel.database.superinvestor_portfolios import (
     build_superinvestor_portfolios,
 )
-from investment_panel.core.disclosures import load_13f_trackers_from_config
+from investment_panel.jobs.update_disclosure_sources import configured_13f_trackers
 from investment_panel.core.panel.contracts import PANEL_SCOPE_TABLES
 
 
@@ -226,7 +226,7 @@ def test_ambiguous_usd_rows_infer_thousands_scale_from_implied_price():
 
 
 def test_stanley_druckenmiller_tracker_is_configured_with_history_depth():
-    trackers = load_13f_trackers_from_config("config.yaml")
+    trackers = configured_13f_trackers("config.yaml")
     druckenmiller = next(
         item for item in trackers if item["name"] == "Stanley Druckenmiller / Duquesne"
     )

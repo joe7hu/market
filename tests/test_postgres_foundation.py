@@ -75,9 +75,9 @@ def test_existing_0001_database_upgrades_through_forward_migrations(postgres_dsn
             "WHERE table_schema = 'analysis' AND table_name = 'option_outcome' AND column_name = 'current_return'"
         ).fetchone()[0]
         constraint = connection.execute(
-            "SELECT count(*) FROM information_schema.table_constraints "
-            "WHERE constraint_schema = 'app' AND table_name = 'catalyst' "
-            "AND constraint_name = 'uq_app_catalyst_market_event'"
+            "SELECT count(*) FROM pg_indexes "
+            "WHERE schemaname = 'app' AND tablename = 'catalyst' "
+            "AND indexname = 'uq_app_catalyst_current_event_key'"
         ).fetchone()[0]
         heartbeat = connection.execute(
             "SELECT count(*) FROM information_schema.columns "
@@ -320,7 +320,7 @@ def test_migration_cli_upgrades_configured_database(postgres_dsn: str, monkeypat
 
 def test_runtime_rejects_non_postgresql_authority() -> None:
     with pytest.raises(ValueError, match="PostgreSQL"):
-        DatabaseRuntime("data/investment.duckdb")
+        DatabaseRuntime("sqlite:///data/retired.db")
 
 
 def test_authority_reuses_and_closes_process_runtime(migrated_postgres_dsn: str) -> None:

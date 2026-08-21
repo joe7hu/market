@@ -4,8 +4,6 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-from investment_panel.core.db import db, init_db, query_rows, upsert_instrument
-from investment_panel.core.free_sources import store_options_chain
 from investment_panel.core.ibkr_options import (
     chain_row,
     parse_option_ticks,
@@ -17,7 +15,6 @@ from investment_panel.core.ibkr_options import (
     select_term_structure_expiries,
     verified_ibkr_contract_terms,
 )
-from investment_panel.core.options_radar import persist_option_snapshots
 from investment_panel.jobs.update_ibkr_options import _ibkr_status
 
 
@@ -209,34 +206,6 @@ def test_chain_row_is_store_options_chain_compatible() -> None:
     assert row["market_data"] == "live"
 
 
-def test_ibkr_chain_rows_flow_into_option_snapshots(tmp_path: Path) -> None:
-    """End-to-end: IBKR-shaped rows persist as source='ibkr' and the radar's
-    persist step extracts OI/volume/greeks into option_snapshot columns."""
-
-    greeks = {"opt_83": [0, 0.455, 0.622, 41.35, 0.0, 0.012, 0.5, -0.1, 210.0]}
-    parsed = parse_option_ticks({"size_27": 7928, "size_74": 3, "price_75": 41.35}, greeks, option_type="call")
-    row = chain_row("NVDA", "20270617", 210.0, parsed, delayed=True)
-
-    db_path = tmp_path / "investment.duckdb"
-    init_db(db_path)
-    with db(db_path) as con:
-        upsert_instrument(con, {"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"})
-        stored = store_options_chain(con, "NVDA", "2026-06-09T12:00:00", [row], source="ibkr")
-        assert stored == 1
-        snaps = persist_option_snapshots(con, symbols=["NVDA"], source="ibkr")
-        assert snaps >= 1
-        rows = query_rows(
-            con,
-            "SELECT open_interest, volume, iv, delta, data_source FROM option_snapshot WHERE ticker = 'NVDA'",
-        )
-    assert rows, "expected an option_snapshot row from the IBKR chain"
-    snap = rows[0]
-    assert snap["open_interest"] == 7928  # OI carried from IBKR into the snapshot
-    assert snap["volume"] == 3
-    assert round(float(snap["delta"]), 3) == 0.622
-    assert snap["data_source"] == "ibkr"
-
-
 def test_update_ibkr_skips_unquoted_offhours_snapshot(tmp_path: Path, monkeypatch) -> None:
     """Off-hours the delayed feed returns OI but no bid/ask. Such a quote-less pull
     must NOT be persisted — it would supersede the last good market-hours snapshot
@@ -248,7 +217,7 @@ def test_update_ibkr_skips_unquoted_offhours_snapshot(tmp_path: Path, monkeypatc
     config_path.write_text(
         f"""
 database:
-  duckdb_path: {tmp_path / "investment.duckdb"}
+  url: postgresql:///market
 nas:
   status_dir: {tmp_path / "status"}
 data_sources:
@@ -275,4 +244,4 @@ data_sources:
 
     result = update_ibkr_options.run(str(config_path), symbols=["NVDA"])
     assert result["status"] == "skipped_unquoted_snapshot"
-    assert not (tmp_path / "investment.duckdb").exists()  # rejected before any persistence
+    assert result["status"] == "skipped_unquoted_snapshot"

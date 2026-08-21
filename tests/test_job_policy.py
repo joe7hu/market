@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from investment_panel.core import job_policy
 from investment_panel.core.refresh_jobs import ALLOWLIST
-from investment_panel.core.source_catalog import SOURCE_CATALOG
 
 
 def test_every_refresh_runner_has_canonical_job_definition() -> None:
@@ -15,11 +14,10 @@ def test_source_health_job_routing_uses_allowlisted_job_names() -> None:
     assert routed <= set(ALLOWLIST)
 
 
-def test_option_freshness_policy_is_shared_with_source_catalog() -> None:
-    options = next(category for category in SOURCE_CATALOG if category.id == "options")
+def test_option_freshness_policy_is_owned_by_canonical_job_policy() -> None:
     definition = job_policy.job_definition("options_radar_hard_refresh")
-    assert options.cadence_seconds == definition.freshness_seconds
-    assert options.refresh_job == definition.name
+    assert definition.freshness_seconds == 259200
+    assert definition.name in ALLOWLIST
 
 
 def test_source_writers_wait_one_interval_before_first_run() -> None:

@@ -34,7 +34,7 @@ def run(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     sources = _configured_csvs(config_path)
     traders = _configured_house_traders(config_path)
-    trackers = _configured_13f_trackers(config_path)
+    trackers = configured_13f_trackers(config_path)
     runtime = runtime_for_config(config)
     results = [_ingest_csv(runtime, source) for source in sources]
     results.extend(_ingest_house(runtime, config, trader) for trader in traders)
@@ -558,7 +558,7 @@ def _configured_house_traders(config_path: str | None) -> list[dict[str, Any]]:
     ]
 
 
-def _configured_13f_trackers(config_path: str | None) -> list[dict[str, Any]]:
+def configured_13f_trackers(config_path: str | None) -> list[dict[str, Any]]:
     path = resolve_path(config_path or "config.yaml")
     if not path.is_file():
         return []

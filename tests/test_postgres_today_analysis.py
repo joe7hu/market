@@ -5,7 +5,6 @@ import json
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
-from investment_panel.database.legacy_bootstrap import import_source_signals
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.preopen_context import compact_preopen_context
@@ -65,13 +64,6 @@ def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_post
             }],
         )
         ingestion.finish_run(content_run, "succeeded", item_count=1, instrument_count=1)
-        import_source_signals(runtime, [{
-            "id": "signal-1", "source_item_id": "nvda-news", "source_id": "test-content",
-            "symbol": "NVDA", "observed_at": datetime(2026, 7, 11, 12, tzinfo=UTC),
-            "signal_type": "thesis", "sentiment": "bullish", "confidence": 0.8,
-            "thesis": "Demand remains firm", "evidence_refs": "[]",
-        }])
-
         result = refresh_today_publication(runtime, now=datetime(2026, 7, 11, 13, tzinfo=UTC))
         assert result["daily_brief"] == 3
         assert result["source_changes"] == 1

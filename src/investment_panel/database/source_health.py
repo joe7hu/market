@@ -94,8 +94,7 @@ WITH eligible_run AS (
            {source_refresh_jobs_sql()} AS refresh_jobs,
            {source_primary_refresh_job_sql()} AS refresh_job,
            CASE
-             WHEN source.capabilities ? 'legacy_import' OR source.origin = 'legacy-duckdb'
-               OR source.id LIKE 'legacy-%' THEN NULL
+             WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN NULL
              WHEN source.id = 'watchlist_quote' THEN NULL
              WHEN source.id = 'robinhood' THEN 259200
              WHEN source.id IN ('ibkr', 'moomoo') THEN 3600

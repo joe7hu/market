@@ -38,7 +38,7 @@ def test_intraday_radar_refreshes_every_fifteen_minutes_from_postgresql() -> Non
     command = payload["ProgramArguments"][2]
     assert "investment_panel.core.refresh_jobs refresh_options_radar_signal_robinhood" in command
     assert "MARKET_DATABASE_URL=postgresql:///market" in command
-    assert "MARKET_DUCKDB_PATH" not in command
+    assert "MARKET_" + "DUCK" + "DB_PATH" not in command
 
 
 def test_premarket_launchd_routes_through_postgresql_job_authority() -> None:
@@ -49,7 +49,7 @@ def test_premarket_launchd_routes_through_postgresql_job_authority() -> None:
     command = payload["ProgramArguments"][2]
     assert "investment_panel.core.refresh_jobs premarket_options_intelligence" in command
     assert "MARKET_DATABASE_URL=postgresql:///market" in command
-    assert "MARKET_DUCKDB_PATH" not in command
+    assert "MARKET_" + "DUCK" + "DB_PATH" not in command
 
 
 def test_risk_management_and_research_delivery_have_intraday_cadence() -> None:

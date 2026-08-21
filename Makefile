@@ -8,7 +8,7 @@
 #
 # `check` is intentionally green-or-bust and quick so it can run on every commit.
 # The full backend suite uses ephemeral PostgreSQL fixtures; legacy-import tests
-# open throwaway DuckDB files only to verify the one-time importer.
+# use the ephemeral PostgreSQL fixture for storage-bound verification.
 
 PY := uv run python
 RUFF := uvx ruff
