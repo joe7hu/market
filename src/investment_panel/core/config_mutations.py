@@ -16,11 +16,6 @@ def update_agent_settings_config(config_path: str | Path | None, payload: dict[s
     raw = _read_yaml_config(path)
     agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
     next_agents = dict(agents)
-    for key in ("option_thesis", "option_postmortem"):
-        if key not in payload:
-            continue
-        current = next_agents.get(key) if isinstance(next_agents.get(key), dict) else {}
-        next_agents[key] = {**current, **_sanitize_agent_settings(payload[key])}
     if "option_agent" in payload:
         current = next_agents.get("option_agent") if isinstance(next_agents.get("option_agent"), dict) else {}
         sanitized = _sanitize_option_agent_settings(payload["option_agent"], current=current)
@@ -102,24 +97,6 @@ def _write_yaml_top_level_block(path: Path, key: str, block: dict[str, Any]) -> 
         end += 1
     next_lines = [*lines[:start], *rendered.splitlines(), *lines[end:]]
     path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
-
-
-def _sanitize_agent_settings(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError("agent settings must be an object")
-    clean: dict[str, Any] = {}
-    if "enabled" in value:
-        clean["enabled"] = bool(value["enabled"])
-    if "command" in value:
-        command = str(value["command"] or "").strip()
-        if len(command) > 240:
-            raise ValueError("agent command is too long")
-        clean["command"] = command
-    if "timeout_seconds" in value:
-        clean["timeout_seconds"] = _bounded_int(value["timeout_seconds"], "timeout_seconds", minimum=10, maximum=900)
-    if "limit" in value:
-        clean["limit"] = _bounded_int(value["limit"], "limit", minimum=0, maximum=50)
-    return clean
 
 
 def _sanitize_option_agent_settings(value: Any, *, current: dict[str, Any] | None = None) -> dict[str, Any]:

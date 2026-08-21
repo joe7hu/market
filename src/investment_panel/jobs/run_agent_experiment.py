@@ -26,9 +26,9 @@ from investment_panel.database.agent_experiments import (
 from investment_panel.database.agent_process import validate_result
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.runtime import DatabaseRuntime
-from investment_panel.jobs.openai_option_agent import _postmortem_system_prompt, _thesis_system_prompt
 from investment_panel.jobs.option_agent_contract import POSTMORTEM_SCHEMA, THESIS_SCHEMA
-from investment_panel.jobs.provider_request import StructuredProviderRequest, invoke_structured
+from investment_panel.providers.advisory import StructuredProviderRequest, invoke_structured
+from investment_panel.jobs.option_agent_workflow import postmortem_system_prompt, thesis_system_prompt
 
 
 ROLE_ORDER = ("thesis_survival", "red_team", "postmortem", "mutation_draft")
@@ -174,7 +174,7 @@ def _execute_task(
     meta: dict[str, Any] = {}
     started = perf_counter()
     try:
-        output = invoke_structured(
+        provider_result = invoke_structured(
             StructuredProviderRequest(
                 provider=selection.provider,  # type: ignore[arg-type]
                 model=selection.model,
@@ -194,10 +194,10 @@ def _execute_task(
                     "evidence_fingerprint": task.get("evidence_fingerprint"),
                     "authority": "advisory_only",
                 },
-                compact=False,
             ),
-            meta_sink=meta,
         )
+        output = provider_result.payload
+        meta = provider_result.metadata()
         latency_ms = int((perf_counter() - started) * 1000)
         schema_errors = _schema_errors(output, schema)
         if not schema_errors:
@@ -263,9 +263,9 @@ def _execute_task(
 
 def _contract(task_kind: str) -> tuple[dict[str, Any], str]:
     if task_kind == "option_thesis":
-        return THESIS_SCHEMA, _thesis_system_prompt()
+        return THESIS_SCHEMA, thesis_system_prompt()
     if task_kind == "option_postmortem":
-        return POSTMORTEM_SCHEMA, _postmortem_system_prompt()
+        return POSTMORTEM_SCHEMA, postmortem_system_prompt()
     raise ValueError("experiment task kind is invalid")
 
 

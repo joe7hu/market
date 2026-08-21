@@ -676,11 +676,13 @@ def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
     config = typed_config(
         raw={
             "agents": {
-                "option_thesis": {
+                "option_agent": {
                     "enabled": True,
-                    "command": "market-codex-option-thesis-agent",
-                    "limit": 20,
+                    "command": "market-run-option-agent",
+                    "thesis_limit": 16,
+                    "postmortem_limit": 4,
                     "timeout_seconds": 180,
+                    "provider": "codex",
                 },
             },
         },
@@ -690,26 +692,26 @@ def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
 
     payload = payloads_owner.status_payload(panel_data)
 
-    option_thesis = payload["metadata"]["agents"]["option_thesis"]
-    assert option_thesis["active"] is True
-    assert option_thesis["configured"] is True
-    assert option_thesis["status"] == "active"
-    assert option_thesis["limit"] == 20
-    assert option_thesis["timeout_seconds"] == 180
-    assert option_thesis["request_cap"] == 12
-    assert option_thesis["queue_policy"] == "current_top_ranked_candidates_only"
+    option_agent = payload["metadata"]["agents"]["option_agent"]
+    assert option_agent["active"] is True
+    assert option_agent["configured"] is True
+    assert option_agent["status"] == "active"
+    assert option_agent["limit"] == 20
+    assert option_agent["timeout_seconds"] == 180
+    assert option_agent["request_cap"] == 12
+    assert option_agent["queue_policy"] == "current_ranked_candidates_plus_ondemand"
 
 
-def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
-    config = typed_config(raw={"agents": {"option_thesis": {"enabled": False, "command": ""}}})
+def test_status_payload_reports_disabled_option_agent_paused() -> None:
+    config = typed_config(raw={"agents": {"option_agent": {"enabled": False}}})
     panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
     panel_data.metadata.update(payloads_owner.runtime_metadata(config))
 
-    option_thesis = payloads_owner.status_payload(panel_data)["metadata"]["agents"]["option_thesis"]
+    option_agent = payloads_owner.status_payload(panel_data)["metadata"]["agents"]["option_agent"]
 
-    assert option_thesis["active"] is False
-    assert option_thesis["configured"] is False
-    assert option_thesis["status"] == "paused"
+    assert option_agent["active"] is False
+    assert option_agent["configured"] is True
+    assert option_agent["status"] == "paused"
 
 
 def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch) -> None:

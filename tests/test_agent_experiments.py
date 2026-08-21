@@ -9,6 +9,7 @@ from investment_panel.database.agent_experiments import AgentExperimentRepositor
 from investment_panel.core.agent_providers import provider_cost, resolve_provider_selection
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs import run_agent_experiment
+from investment_panel.providers.advisory import ProviderTokenMetadata, StructuredProviderResult
 
 
 def test_paired_packet_extracts_explicit_refs_from_radar_thesis_payload() -> None:
@@ -126,14 +127,10 @@ def test_paired_worker_dispatches_both_providers_against_the_same_frozen_packet(
     repository = AgentExperimentRepository(runtime)
     invocations: list[tuple[str, str, dict[str, object]]] = []
 
-    def fake_invoke(request, *, meta_sink):
+    def fake_invoke(request):
         invocations.append((request.provider, request.model, request.payload))
-        meta_sink.update({
-            "provider": request.provider,
-            "model": request.model,
-            "usage": {"input_tokens": 120, "output_tokens": 80},
-        })
-        return {
+        return StructuredProviderResult(
+            payload={
             "ticker": "NVDA",
             "direction": "long",
             "bull_target_price": 210,
@@ -149,7 +146,12 @@ def test_paired_worker_dispatches_both_providers_against_the_same_frozen_packet(
             "bear_case": "Demand falls.",
             "confidence": 0.6,
             "evidence_refs": [{"type": "filing", "id": "sec:1"}],
-        }
+            },
+            provider=request.provider,
+            model=request.model,
+            reasoning_effort=request.reasoning_effort,
+            token_metadata=ProviderTokenMetadata(input_tokens=120, output_tokens=80),
+        )
 
     monkeypatch.setattr(run_agent_experiment, "invoke_structured", fake_invoke)
     try:

@@ -47,56 +47,6 @@
         "title": "AgentAnalyzeResponse",
         "type": "object"
       },
-      "AgentCommandSettingsInput": {
-        "properties": {
-          "command": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Command"
-          },
-          "enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Enabled"
-          },
-          "limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Limit"
-          },
-          "timeout_seconds": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Timeout Seconds"
-          }
-        },
-        "title": "AgentCommandSettingsInput",
-        "type": "object"
-      },
       "AgentCostResponse": {
         "additionalProperties": true,
         "properties": {
@@ -611,26 +561,6 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/OptionAgentSettingsInput"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "option_postmortem": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentCommandSettingsInput"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "option_thesis": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentCommandSettingsInput"
               },
               {
                 "type": "null"

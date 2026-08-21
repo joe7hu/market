@@ -56,14 +56,6 @@ KNOWN_PRIVATE_IMPORT_EDGES = frozenset(
         "src/investment_panel/core/robinhood_options/history.py investment_panel.core.robinhood_options.collector",
         "src/investment_panel/database/actions.py investment_panel.database.options_publication",
         "src/investment_panel/database/options_decision_system.py investment_panel.core.robinhood_options.collector",
-        "src/investment_panel/jobs/codex_preopen_brief.py investment_panel.jobs.deepseek_option_agent",
-        "src/investment_panel/jobs/codex_preopen_brief.py investment_panel.jobs.openai_option_agent",
-        "src/investment_panel/jobs/codex_thesis_monitor.py investment_panel.jobs.deepseek_option_agent",
-        "src/investment_panel/jobs/codex_thesis_monitor.py investment_panel.jobs.openai_option_agent",
-        "src/investment_panel/jobs/deepseek_option_agent.py investment_panel.jobs.openai_option_agent",
-        "src/investment_panel/jobs/provider_request.py investment_panel.jobs.deepseek_option_agent",
-        "src/investment_panel/jobs/provider_request.py investment_panel.jobs.openai_option_agent",
-        "src/investment_panel/jobs/run_agent_experiment.py investment_panel.jobs.openai_option_agent",
     }
 )
 
@@ -292,6 +284,43 @@ def test_configuration_has_one_typed_owner_and_no_raw_config_parameters() -> Non
     assert not raw_parameters, "Application owners must accept typed configuration:\n  " + "\n  ".join(raw_parameters)
     assert not (REPO_ROOT / "app" / "data_access" / "config.py").exists()
     assert not (REPO_ROOT / "src" / "investment_panel" / "core" / "retention.py").exists()
+
+
+def test_advisory_provider_and_option_agent_are_single_typed_seams() -> None:
+    old_modules = (
+        REPO_ROOT / "src" / "investment_panel" / "jobs" / "provider_request.py",
+        REPO_ROOT / "src" / "investment_panel" / "jobs" / "openai_option_agent.py",
+        REPO_ROOT / "src" / "investment_panel" / "jobs" / "deepseek_option_agent.py",
+        REPO_ROOT / "src" / "investment_panel" / "jobs" / "openai_option_agent_auth.py",
+    )
+    assert not [path.relative_to(REPO_ROOT) for path in old_modules if path.exists()]
+
+    production_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace") for path in _prod_py_files()
+    )
+    assert "meta_sink" not in production_text
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = pyproject.get("project", {}).get("scripts", {})
+    retired_scripts = {
+        "market-openai-option-thesis-agent",
+        "market-codex-option-thesis-agent",
+        "market-openai-option-postmortem-agent",
+        "market-codex-option-postmortem-agent",
+        "market-openai-option-agent",
+        "market-codex-option-agent",
+        "market-deepseek-option-thesis-agent",
+        "market-deepseek-option-postmortem-agent",
+        "market-deepseek-option-agent",
+    }
+    assert not retired_scripts & set(scripts)
+    assert scripts.get("market-run-option-agent") == "investment_panel.jobs.run_option_agent:main"
+
+    from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection
+
+    catalog = provider_catalog()
+    assert set(catalog) == {"codex", "deepseek"}
+    assert all(resolve_provider_selection(name).command == "market-run-option-agent" for name in catalog)
 
 
 def test_known_compatibility_files_and_routes_are_closed_sets() -> None:

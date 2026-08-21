@@ -1179,17 +1179,6 @@ export interface components {
             /** Ticker */
             ticker: string;
         };
-        /** AgentCommandSettingsInput */
-        AgentCommandSettingsInput: {
-            /** Command */
-            command?: string | null;
-            /** Enabled */
-            enabled?: boolean | null;
-            /** Limit */
-            limit?: number | null;
-            /** Timeout Seconds */
-            timeout_seconds?: number | null;
-        };
         /** AgentCostResponse */
         AgentCostResponse: {
             last_7d?: components["schemas"]["AgentCostWindowResponse"];
@@ -1459,8 +1448,6 @@ export interface components {
         /** AgentSettingsInput */
         AgentSettingsInput: {
             option_agent?: components["schemas"]["OptionAgentSettingsInput"] | null;
-            option_postmortem?: components["schemas"]["AgentCommandSettingsInput"] | null;
-            option_thesis?: components["schemas"]["AgentCommandSettingsInput"] | null;
             thesis_monitor?: components["schemas"]["ThesisMonitorSettingsInput"] | null;
         };
         /** AgentSubmissionResponse */

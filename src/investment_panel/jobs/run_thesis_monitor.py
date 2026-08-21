@@ -12,7 +12,7 @@ from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.thesis import normalize_thesis_v3, save_thesis, thesis_monitor_rows
 from investment_panel.database.thesis_automation import ThesisAutomationRepository, evidence_fingerprint
 from investment_panel.jobs.codex_thesis_monitor import generate_codex_thesis_monitor, generate_deepseek_thesis_monitor
-from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
+from investment_panel.providers.advisory import AgentProviderError
 
 
 class ThesisAutomationValidationError(ValueError):
@@ -191,7 +191,7 @@ def _run_one(
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         usage = _usage(output)
-        if not usage and isinstance(exc, OpenAIOptionAgentError):
+        if not usage and isinstance(exc, AgentProviderError):
             meta = exc.meta if isinstance(exc.meta, dict) else {}
             usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else {}
         repository.finish_run(run_id, status="failed", error=error, usage=usage)

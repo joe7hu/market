@@ -82,7 +82,7 @@ allowlisted `run_option_agents` refresh job. Configure commands under:
 agents:
   option_agent:
     enabled: true
-    command: "market-deepseek-option-agent"
+    command: "market-run-option-agent"
     timeout_seconds: 180
     thesis_limit: 8
     postmortem_limit: 4
@@ -96,23 +96,24 @@ The unified command receives one object with `thesis` and `postmortem` arrays
 plus shared guardrails. It returns matching arrays in the same order. Each
 request includes its published per-ticker context and stable request id.
 `MARKET_OPTION_AGENT_COMMAND` can override the configured command for local
-runs. Use `market-deepseek-option-agent` to run through the DeepSeek API with
-the `deepseek-v4-flash` model (`DEEPSEEK_API_KEY` required). Thesis Monitor and
-the pre-open narrative use the same DeepSeek adapter when their config/provider
-is set to `deepseek`; they fall back to the restricted Codex CLI path when the
-provider is `codex`. The Codex path runs with shell, app, browser, plugin,
+runs. The queue appends `--provider codex|deepseek --task batch`; direct
+operator calls can choose `batch`, `thesis`, or `postmortem` with the same
+`market-run-option-agent` command. DeepSeek uses the `deepseek-v4-flash` model
+(`DEEPSEEK_API_KEY` required). Thesis Monitor and the pre-open narrative use
+the same advisory provider seam when their config/provider is set to
+`deepseek`; they use the restricted Codex CLI path when the provider is
+`codex`. The Codex path runs with shell, app, browser, plugin,
 computer-use, multi-agent, image generation, and web-search tools disabled,
 ignores user config/rules, and passes only an allowlisted environment to the
 child process. The DeepSeek adapter timeout defaults to `90` seconds so it
 exits before the option-agent runner's default `120` second command timeout;
 keep `MARKET_DEEPSEEK_TIMEOUT_SECONDS` (and `MARKET_CODEX_TIMEOUT_SECONDS` for
 the Codex fallback) lower than the configured runner timeout when overriding
-either value. The developer-only `market-openai-*` entry points are direct
-Platform API clients and are not used by the app.
+either value.
 Market defaults its configured workflows to `deepseek-v4-flash` through the
-DeepSeek API, with the Codex OAuth path (`market-codex-*`,
-`gpt-5.6-luna` high) still available by switching the config `provider` back to
-`codex`. `MARKET_DEEPSEEK_MODEL`, `MARKET_CODEX_MODEL`, and
+DeepSeek API, with the restricted Codex path (`gpt-5.6-luna` high) still
+available by switching the config `provider` back to `codex`.
+`MARKET_DEEPSEEK_MODEL`, `MARKET_CODEX_MODEL`, and
 `MARKET_CODEX_REASONING_EFFORT` can override those defaults for a local run.
 The pre-open brief is env-configured: `MARKET_PREOPEN_BRIEF_PROVIDER=deepseek`
 selects the DeepSeek adapter (the launchd webapp and premarket jobs set it),

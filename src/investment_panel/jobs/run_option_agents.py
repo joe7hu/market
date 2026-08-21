@@ -24,67 +24,57 @@ def run(
     option_agent = config.agents.option_agent
     trigger = "ondemand" if ondemand else None
     run_trigger = "ondemand" if ondemand else "manual" if force else "scheduled"
-    if option_agent.command and (option_agent.enabled or force or ondemand):
-        queued = 0
-        queued_postmortems = 0
-        if not ondemand:
-            queued = repository.queue_current_candidates(
-                limit=max(0, int(option_agent.thesis_limit)),
-                trigger="manual" if force else "scheduled",
-                context_sources=getattr(option_agent, "context_sources", None),
-            )
-            queued_postmortems = repository.queue_current_postmortems(
-                limit=max(0, int(option_agent.postmortem_limit)),
-            )
-        result = repository.run_queued(
-            option_agent.command,
-            limit=option_agent.thesis_limit + option_agent.postmortem_limit,
-            timeout_seconds=option_agent.timeout_seconds,
-            trigger=trigger,
-            run_trigger=run_trigger,
-            provider=option_agent.provider,
-            model=option_agent.model,
-            reasoning_effort=option_agent.reasoning_effort,
-            max_runs_per_day=(
-                int(getattr(option_agent, "max_runs_per_day", 1))
-                if run_trigger == "scheduled" else 0
-            ),
-            consolidated=True,
-            kind_limits={
-                "option_thesis": option_agent.thesis_limit,
-                "option_postmortem": option_agent.postmortem_limit,
-            },
-        )
-        runner_status = str(result.get("status") or "failed")
+    if not option_agent.command or not (option_agent.enabled or force or ondemand):
         return {
-            "ok": runner_status in {"ok", "skipped"}, "status": runner_status,
-            "database": "postgresql", "strategy_version": strategy_version,
-            "mode": "consolidated", "queued": queued,
-            "queued_postmortems": queued_postmortems, "option_agent_runner": result,
+            "ok": True,
+            "status": "skipped",
+            "database": "postgresql",
+            "strategy_version": strategy_version,
+            "mode": "consolidated",
+            "reason": "option agent is disabled or command is not configured",
         }
-
-    thesis = repository.run_queued(
-        config.agents.option_thesis.command if config.agents.option_thesis.enabled else "",
-        limit=config.agents.option_thesis.limit,
-        timeout_seconds=config.agents.option_thesis.timeout_seconds,
-        trigger=trigger,
-        task_kinds=("option_thesis",),
-        model="option-thesis",
+    queued = 0
+    queued_postmortems = 0
+    if not ondemand:
+        queued = repository.queue_current_candidates(
+            limit=max(0, int(option_agent.thesis_limit)),
+            trigger="manual" if force else "scheduled",
+            context_sources=option_agent.context_sources,
+        )
+        queued_postmortems = repository.queue_current_postmortems(
+            limit=max(0, int(option_agent.postmortem_limit)),
+        )
+    command = (
+        f"{option_agent.command} --provider {option_agent.provider} --task batch"
     )
-    postmortem = repository.run_queued(
-        config.agents.option_postmortem.command if config.agents.option_postmortem.enabled else "",
-        limit=config.agents.option_postmortem.limit,
-        timeout_seconds=config.agents.option_postmortem.timeout_seconds,
+    result = repository.run_queued(
+        command,
+        limit=option_agent.thesis_limit + option_agent.postmortem_limit,
+        timeout_seconds=option_agent.timeout_seconds,
         trigger=trigger,
-        task_kinds=("option_postmortem",),
-        model="option-postmortem",
+        run_trigger=run_trigger,
+        provider=option_agent.provider,
+        model=option_agent.model,
+        reasoning_effort=option_agent.reasoning_effort,
+        max_runs_per_day=(
+            int(option_agent.max_runs_per_day) if run_trigger == "scheduled" else 0
+        ),
+        consolidated=True,
+        kind_limits={
+            "option_thesis": option_agent.thesis_limit,
+            "option_postmortem": option_agent.postmortem_limit,
+        },
     )
-    statuses = {str(thesis.get("status") or "failed"), str(postmortem.get("status") or "failed")}
-    status = "failed" if statuses == {"failed"} else "partial" if statuses & {"failed", "partial"} else "ok"
+    status = str(result.get("status") or "failed")
     return {
-        "ok": status == "ok", "status": status, "database": "postgresql",
-        "strategy_version": strategy_version, "mode": "separate",
-        "option_thesis": thesis, "option_postmortem": postmortem,
+        "ok": status in {"ok", "skipped"},
+        "status": status,
+        "database": "postgresql",
+        "strategy_version": strategy_version,
+        "mode": "consolidated",
+        "queued": queued,
+        "queued_postmortems": queued_postmortems,
+        "option_agent_runner": result,
     }
 
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from investment_panel.jobs.deepseek_option_agent import _call_deepseek_structured
-from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError, _call_codex_structured
+from investment_panel.core.agent_providers import resolve_provider_selection
+from investment_panel.providers.advisory import StructuredProviderRequest, invoke_structured
 
 
 THESIS_MONITOR_SCHEMA: dict[str, Any] = {
@@ -142,18 +142,9 @@ def generate_codex_thesis_monitor(
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
-    meta: dict[str, Any] = {}
-    result = _call_codex_structured(
-        request_payload,
-        schema_name="thesis_monitor_v3",
-        schema=THESIS_MONITOR_SCHEMA,
-        system_prompt=_system_prompt(),
-        compact=False,
-        meta_sink=meta,
-        model=model,
-        reasoning_effort=reasoning_effort,
+    return _generate_thesis_monitor(
+        request_payload, provider="codex", model=model, reasoning_effort=reasoning_effort,
     )
-    return {**result, "_meta": meta}
 
 
 def generate_deepseek_thesis_monitor(
@@ -164,18 +155,32 @@ def generate_deepseek_thesis_monitor(
 ) -> dict[str, Any]:
     """DeepSeek API variant of the thesis-monitor structured adapter."""
 
-    meta: dict[str, Any] = {}
-    result = _call_deepseek_structured(
-        request_payload,
-        schema_name="thesis_monitor_v3",
-        schema=THESIS_MONITOR_SCHEMA,
-        system_prompt=_system_prompt(),
-        compact=False,
-        meta_sink=meta,
-        model=model,
-        reasoning_effort=reasoning_effort,
+    return _generate_thesis_monitor(
+        request_payload, provider="deepseek", model=model, reasoning_effort=reasoning_effort,
     )
-    return {**result, "_meta": meta}
+
+
+def _generate_thesis_monitor(
+    request_payload: dict[str, Any],
+    *,
+    provider: str,
+    model: str | None,
+    reasoning_effort: str | None,
+) -> dict[str, Any]:
+    selection = resolve_provider_selection(provider, model, reasoning_effort or "high")
+    result = invoke_structured(
+        StructuredProviderRequest(
+            provider=selection.provider,  # type: ignore[arg-type]
+            model=selection.model,
+            timeout_seconds=90,
+            reasoning_effort=selection.reasoning_effort,
+            schema_name="thesis_monitor_v3",
+            schema=THESIS_MONITOR_SCHEMA,
+            system_prompt=_system_prompt(),
+            payload=request_payload,
+        )
+    )
+    return {**result.payload, "_meta": result.metadata()}
 
 
 def _system_prompt() -> str:
@@ -191,7 +196,6 @@ def _system_prompt() -> str:
 
 
 __all__ = [
-    "OpenAIOptionAgentError",
     "THESIS_MONITOR_SCHEMA",
     "generate_codex_thesis_monitor",
     "generate_deepseek_thesis_monitor",

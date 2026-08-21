@@ -11,7 +11,7 @@ from investment_panel.core.agent_providers import resolve_provider_selection
 from investment_panel.core.options_recovery_agents import recovery_agent_schema, recovery_agent_system_prompt
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options_recovery_agents import RecoveryEventAgentRepository
-from investment_panel.jobs.provider_request import StructuredProviderRequest, invoke_structured
+from investment_panel.providers.advisory import StructuredProviderRequest, invoke_structured
 
 
 def run(
@@ -53,7 +53,6 @@ def run(
         claim = repository.claim_next()
         if claim is None:
             break
-        meta: dict[str, Any] = {}
         payload = {
             "batch": {
                 "id": str(claim["batch"]["id"]),
@@ -79,16 +78,15 @@ def run(
                     schema_name="options_recovery_event_batch",
                     schema=recovery_agent_schema(),
                     system_prompt=recovery_agent_system_prompt(),
-                    compact=False,
                     model=batch_selection.model,
                     reasoning_effort=batch_selection.reasoning_effort,
                     timeout_seconds=float(config.agents.option_agent.timeout_seconds),
                 ),
-                meta_sink=meta,
             )
-            results.append(repository.complete(claim, response, meta=meta))
+            results.append(repository.complete(claim, response.payload, meta=response.metadata()))
         except Exception as exc:  # advisory failure is intentionally terminal only for this batch
-            results.append(repository.fail(claim, exc, meta=meta))
+            error_meta = exc.meta if hasattr(exc, "meta") else None
+            results.append(repository.fail(claim, exc, meta=error_meta))
     statuses = {str(result.get("status") or "failed") for result in results}
     status = "failed" if results and statuses == {"failed"} else "partial" if {"failed", "retrying"} & statuses else "ok"
     return {

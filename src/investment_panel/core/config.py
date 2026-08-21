@@ -173,12 +173,6 @@ class AnalysisConfig:
     correlation_lookback_days: int = 180
     max_correlation_peers: int = 8
     options_decision_system: OptionsDecisionSystemConfig = OptionsDecisionSystemConfig()
-@dataclass(frozen=True)
-class AgentCommandConfig:
-    enabled: bool = False
-    command: str = ""
-    timeout_seconds: int = 120
-    limit: int = 20
 DEFAULT_AGENT_CONTEXT_SOURCES: dict[str, bool] = {
     "fundamentals": True,
     "technicals": True,
@@ -220,8 +214,6 @@ class OptionAgentConfig:
 
 @dataclass(frozen=True)
 class AgentsConfig:
-    option_thesis: AgentCommandConfig = AgentCommandConfig()
-    option_postmortem: AgentCommandConfig = AgentCommandConfig()
     option_agent: OptionAgentConfig = OptionAgentConfig()
     thesis_monitor: ThesisMonitorAgentConfig = ThesisMonitorAgentConfig()
     pricing: dict[str, dict[str, float]] = field(default_factory=lambda: {k: dict(v) for k, v in DEFAULT_AGENT_PRICING.items()})
@@ -442,12 +434,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         ),
     )
     agents_raw = raw.get("agents", {})
-    option_thesis_raw = agents_raw.get("option_thesis", {})
-    option_postmortem_raw = agents_raw.get("option_postmortem", {})
-    option_thesis_env_command = os.environ.get("MARKET_OPTION_THESIS_AGENT_COMMAND")
-    option_postmortem_env_command = os.environ.get("MARKET_OPTION_POSTMORTEM_AGENT_COMMAND")
-    option_thesis_command = str(option_thesis_env_command or option_thesis_raw.get("command", ""))
-    option_postmortem_command = str(option_postmortem_env_command or option_postmortem_raw.get("command", ""))
     option_agent_raw = agents_raw.get("option_agent", {}) if isinstance(agents_raw.get("option_agent", {}), dict) else {}
     option_agent_env_command = os.environ.get("MARKET_OPTION_AGENT_COMMAND")
     option_agent_provider = str(option_agent_raw.get("provider", "codex")).strip().lower()
@@ -464,24 +450,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     option_agent_command = option_agent_selection.command
     thesis_monitor_raw = agents_raw.get("thesis_monitor", {}) if isinstance(agents_raw.get("thesis_monitor", {}), dict) else {}
     agents = AgentsConfig(
-        option_thesis=AgentCommandConfig(
-            enabled=bool(option_thesis_env_command) or bool(option_thesis_raw.get("enabled", bool(option_thesis_command))),
-            command=option_thesis_command,
-            timeout_seconds=int(option_thesis_raw.get("timeout_seconds", 120)),
-            limit=int(option_thesis_raw.get("limit", 20)),
-        ),
-        option_postmortem=AgentCommandConfig(
-            enabled=bool(option_postmortem_env_command) or bool(option_postmortem_raw.get("enabled", bool(option_postmortem_command))),
-            command=option_postmortem_command,
-            timeout_seconds=int(option_postmortem_raw.get("timeout_seconds", 120)),
-            limit=int(option_postmortem_raw.get("limit", 20)),
-        ),
         option_agent=OptionAgentConfig(
             enabled=bool(option_agent_raw.get("enabled", bool(option_agent_command))),
             command=option_agent_command,
             timeout_seconds=int(option_agent_raw.get("timeout_seconds", 180)),
-            thesis_limit=int(option_agent_raw.get("thesis_limit", option_thesis_raw.get("limit", 8))),
-            postmortem_limit=int(option_agent_raw.get("postmortem_limit", option_postmortem_raw.get("limit", 4))),
+            thesis_limit=int(option_agent_raw.get("thesis_limit", 8)),
+            postmortem_limit=int(option_agent_raw.get("postmortem_limit", 4)),
             provider=option_agent_selection.provider,
             model=option_agent_selection.model,
             reasoning_effort=option_agent_selection.reasoning_effort,
@@ -645,18 +619,6 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
             ),
         },
         "agents": {
-            "option_thesis": {
-                "enabled": config.agents.option_thesis.enabled,
-                "command": config.agents.option_thesis.command,
-                "timeout_seconds": config.agents.option_thesis.timeout_seconds,
-                "limit": config.agents.option_thesis.limit,
-            },
-            "option_postmortem": {
-                "enabled": config.agents.option_postmortem.enabled,
-                "command": config.agents.option_postmortem.command,
-                "timeout_seconds": config.agents.option_postmortem.timeout_seconds,
-                "limit": config.agents.option_postmortem.limit,
-            },
             "option_agent": option_agent_config_dict(config.agents.option_agent),
             "thesis_monitor": thesis_monitor_agent_dict(config.agents.thesis_monitor),
             "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},

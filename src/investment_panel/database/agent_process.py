@@ -28,8 +28,6 @@ def agent_env(
     if model:
         if selected_provider == "deepseek":
             values["MARKET_DEEPSEEK_MODEL"] = model
-        elif selected_provider == "openai":
-            values["MARKET_OPENAI_MODEL"] = model
         else:
             values["MARKET_CODEX_MODEL"] = model
     if reasoning_effort:

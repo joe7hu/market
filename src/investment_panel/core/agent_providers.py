@@ -48,9 +48,9 @@ class ProviderSelection:
 
 # The price cards are deliberately keyed by provider *and* exact model.  These
 # are the standard API rate cards verified on 2026-08-13, not the historical
-# shared `agents.pricing.default` estimate.  The Codex CLI may still report
+# shared `agents.pricing.default` estimate. The Codex CLI may still report
 # estimated token counts; that fact is persisted separately in telemetry.
-_OPENAI_LUNA_RATE = ProviderRateCard(
+_CODEX_LUNA_RATE = ProviderRateCard(
     input_per_1m=0.10,
     cached_input_per_1m=0.01,
     output_per_1m=0.60,
@@ -68,19 +68,19 @@ _DEEPSEEK_FLASH_RATE = ProviderRateCard(
 _CATALOG: dict[str, AgentProvider] = {
     "codex": AgentProvider(
         name="codex",
-        command="market-codex-option-agent",
+        command="market-run-option-agent",
         default_model="gpt-5.6-luna",
         models={
             "gpt-5.6-luna": ProviderModel(
                 name="gpt-5.6-luna",
                 reasoning_efforts=frozenset({"minimal", "low", "medium", "high"}),
-                rate_card=_OPENAI_LUNA_RATE,
+                rate_card=_CODEX_LUNA_RATE,
             ),
         },
     ),
     "deepseek": AgentProvider(
         name="deepseek",
-        command="market-deepseek-option-agent",
+        command="market-run-option-agent",
         default_model="deepseek-v4-flash",
         models={
             "deepseek-v4-flash": ProviderModel(
@@ -103,8 +103,6 @@ def resolve_provider_selection(
     provider_name = str(provider or "").strip().lower()
     spec = _CATALOG.get(provider_name)
     if spec is None:
-        if provider_name == "openai":
-            raise ValueError("provider openai is unavailable while Market uses ChatGPT OAuth; select codex or deepseek")
         raise ValueError(f"unsupported advisory provider: {provider_name or '<empty>'}")
     model_name = str(model or spec.default_model).strip()
     model_spec = spec.models.get(model_name)

@@ -121,13 +121,6 @@ class StrategyPromotionInput(BaseModel):
     approved_by: str = "joe"
 
 
-class AgentCommandSettingsInput(BaseModel):
-    enabled: bool | None = None
-    command: str | None = None
-    timeout_seconds: int | None = None
-    limit: int | None = None
-
-
 class OptionAgentSettingsInput(BaseModel):
     enabled: bool | None = None
     command: str | None = None
@@ -157,8 +150,6 @@ class ThesisMonitorSettingsInput(BaseModel):
 
 
 class AgentSettingsInput(BaseModel):
-    option_thesis: AgentCommandSettingsInput | None = None
-    option_postmortem: AgentCommandSettingsInput | None = None
     option_agent: OptionAgentSettingsInput | None = None
     thesis_monitor: ThesisMonitorSettingsInput | None = None
 
@@ -209,7 +200,6 @@ class TradeJournalInput(BaseModel):
 
 __all__ = [
     "AgentAnalyzeInput",
-    "AgentCommandSettingsInput",
     "AgentSettingsInput",
     "OptionAgentSettingsInput",
     "OptionPaperEntryInput",

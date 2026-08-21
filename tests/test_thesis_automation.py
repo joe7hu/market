@@ -12,7 +12,7 @@ from investment_panel.database.thesis_automation import ThesisAutomationReposito
 from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
 from investment_panel.database.thesis import save_thesis
 from investment_panel.jobs import run_thesis_monitor
-from investment_panel.jobs.openai_option_agent import OpenAIOptionAgentError
+from investment_panel.providers.advisory import AgentProviderError
 from conftest import typed_config
 
 _TEST_SYMBOLS = {"THIN", "HALL", "PRES", "DBNC"}
@@ -112,7 +112,7 @@ def test_thesis_automation_failure_preserves_previous_revision(migrated_postgres
     monkeypatch.setattr(
         run_thesis_monitor,
         "generate_codex_thesis_monitor",
-        lambda _request, **_kwargs: (_ for _ in ()).throw(OpenAIOptionAgentError("missing authentication")),
+        lambda _request, **_kwargs: (_ for _ in ()).throw(AgentProviderError("missing authentication")),
     )
 
     result = run_thesis_monitor.run(str(cfg), symbols=["PRES"], force=True)

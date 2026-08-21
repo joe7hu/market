@@ -180,19 +180,9 @@ research_sources:
     rss_urls:
     - https://www.ben-evans.com/benedictevans?format=rss
 agents:
-  option_thesis:
-    enabled: false
-    command: market-codex-option-thesis-agent
-    timeout_seconds: 180
-    limit: 8
-  option_postmortem:
-    enabled: false
-    command: market-codex-option-postmortem-agent
-    timeout_seconds: 180
-    limit: 4
   option_agent:
     enabled: true
-    command: market-deepseek-option-agent
+    command: market-run-option-agent
     timeout_seconds: 300
     thesis_limit: 8
     postmortem_limit: 4

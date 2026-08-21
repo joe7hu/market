@@ -150,8 +150,14 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
                 "blogs": {"enabled": True, "substack_urls": ["https://example.substack.com"], "rss_urls": ["https://example.com/feed"]},
             },
             "agents": {
-                "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "timeout_seconds": 180, "limit": 8},
-                "option_postmortem": {"enabled": False, "command": "market-codex-option-postmortem-agent", "timeout_seconds": 120, "limit": 2},
+                "option_agent": {
+                    "enabled": True,
+                    "command": "market-run-option-agent",
+                    "timeout_seconds": 180,
+                    "thesis_limit": 8,
+                    "postmortem_limit": 2,
+                    "provider": "codex",
+                },
             },
             },
         ),
@@ -166,9 +172,9 @@ def test_settings_payload_includes_agent_control_metadata() -> None:
         ),
     )
 
-    assert payload["agents"]["config"]["option_thesis"]["limit"] == 8
-    assert payload["agents"]["runtime"]["option_thesis"]["active"] is True
-    assert payload["agents"]["runtime"]["option_postmortem"]["status"] == "paused"
+    assert payload["agents"]["config"]["option_agent"]["thesis_limit"] == 8
+    assert payload["agents"]["runtime"]["option_agent"]["active"] is True
+    assert payload["agents"]["runtime"]["option_agent"]["postmortem_limit"] == 2
     assert payload["agents"]["scheduler"]["agent_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["radar_refresh_seconds"] == "0"
     assert payload["agents"]["scheduler"]["source_refresh_seconds"] == "0"
@@ -191,16 +197,13 @@ database:
   url: postgresql:///test
 
 agents:
-  option_thesis:
+  option_agent:
     enabled: true
-    command: old-thesis
+    command: market-run-option-agent
     timeout_seconds: 180
-    limit: 8
-  option_postmortem:
-    enabled: true
-    command: old-postmortem
-    timeout_seconds: 180
-    limit: 4
+    thesis_limit: 8
+    postmortem_limit: 4
+    provider: codex
 
 disclosures:
   public_disclosure_csvs: []
@@ -211,17 +214,22 @@ disclosures:
     update_agent_settings_config(
         config_path,
         {
-            "option_thesis": {"enabled": False, "command": "new-thesis", "timeout_seconds": 90, "limit": 3},
-            "option_postmortem": {"enabled": False, "limit": 0},
+            "option_agent": {
+                "enabled": False,
+                "command": "market-run-option-agent",
+                "timeout_seconds": 90,
+                "thesis_limit": 3,
+                "postmortem_limit": 0,
+                "provider": "codex",
+            },
         },
     )
 
     text = config_path.read_text(encoding="utf-8")
     assert "url: postgresql:///test" in text
-    assert "command: new-thesis" in text
-    assert "limit: 3" in text
-    assert "option_postmortem:" in text
-    assert "limit: 0" in text
+    assert "command: market-run-option-agent" in text
+    assert "thesis_limit: 3" in text
+    assert "postmortem_limit: 0" in text
     assert "disclosures:" in text
 
 
@@ -293,12 +301,20 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
     client = TestClient(app)
     response = client.patch(
         "/api/settings/agents",
-        json={"option_thesis": {"enabled": False, "command": "market-codex-option-thesis-agent", "timeout_seconds": 90, "limit": 3}},
+        json={
+            "option_agent": {
+                "enabled": False,
+                "command": "market-run-option-agent",
+                "timeout_seconds": 90,
+                "thesis_limit": 3,
+                "provider": "codex",
+            },
+        },
     )
 
     assert response.status_code == 200
     assert captured["section"] == "agents"
-    assert captured["payload"]["option_thesis"]["enabled"] is False
+    assert captured["payload"]["option_agent"]["enabled"] is False
     assert response.json()["status"]["ready"] is True
 
 

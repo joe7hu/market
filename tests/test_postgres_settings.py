@@ -16,7 +16,7 @@ def test_postgresql_settings_overlay_yaml_without_rewriting_it(
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         f"database:\n  url: {migrated_postgres_dsn}\n"
-        "agents:\n  option_thesis:\n    enabled: true\n    limit: 8\n"
+        "agents:\n  option_agent:\n    enabled: true\n    thesis_limit: 8\n"
         "research_sources:\n  news:\n    enabled: true\n    providers: [reuters]\n",
         encoding="utf-8",
     )
@@ -26,14 +26,14 @@ def test_postgresql_settings_overlay_yaml_without_rewriting_it(
     runtime.open()
     try:
         settings = SettingRepository(runtime)
-        settings.set_section("agents", {"option_thesis": {"enabled": False, "limit": 3}})
+        settings.set_section("agents", {"option_agent": {"enabled": False, "thesis_limit": 3}})
         settings.set_section("research_sources", {"news": {"providers": ["hackernews"]}})
     finally:
         runtime.close()
     try:
         core = load_core_config(config_path)
-        assert core.agents.option_thesis.enabled is False
-        assert core.agents.option_thesis.limit == 3
+        assert core.agents.option_agent.enabled is False
+        assert core.agents.option_agent.thesis_limit == 3
         assert core.research_sources.news.providers == ["hackernews"]
         assert config_path.read_text(encoding="utf-8") == original
     finally:

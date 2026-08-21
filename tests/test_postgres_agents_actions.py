@@ -20,7 +20,7 @@ from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.strategy_learning import StrategyLearningRepository
 from investment_panel.database.strategy_governance import StrategyGovernanceRepository
-from investment_panel.jobs.openai_option_agent import _compact_agent_batch
+from investment_panel.jobs.option_agent_workflow import compact_agent_batch
 
 
 def _option_thesis_result(ticker: str, *, request_id: str | None = None) -> dict[str, object]:
@@ -387,7 +387,7 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
 
         monkeypatch.setattr("investment_panel.database.agents.subprocess.run", fake_run)
         result = repository.run_queued(
-            "market-codex-option-agent", consolidated=True, limit=8,
+            "market-run-option-agent --provider codex --task batch", consolidated=True, limit=8,
             provider="codex", model="gpt-5.6-luna", reasoning_effort="high",
             kind_limits={"option_thesis": 8, "option_postmortem": 4},
         )
@@ -395,7 +395,7 @@ def test_agent_repository_runs_one_configured_batch_and_propagates_model(
         assert result["completed"] == 2
         assert len(calls) == 1
         assert len(calls[0]["payload"]["thesis"]) == 2
-        assert _compact_agent_batch(calls[0]["payload"])["thesis"][0]["request"]["ticker"] in {"NVDA", "MSFT"}
+        assert compact_agent_batch(calls[0]["payload"])["thesis"][0]["request"]["ticker"] in {"NVDA", "MSFT"}
         assert calls[0]["env"]["MARKET_CODEX_MODEL"] == "gpt-5.6-luna"
         assert calls[0]["env"]["MARKET_CODEX_REASONING_EFFORT"] == "high"
         assert calls[0]["env"]["MARKET_CODEX_TIMEOUT_SECONDS"] == "165"
@@ -462,12 +462,12 @@ def test_agent_command_resolves_from_active_virtualenv(tmp_path, monkeypatch: py
     bin_dir = tmp_path / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
     python = bin_dir / "python"
-    command = bin_dir / "market-codex-option-agent"
+    command = bin_dir / "market-run-option-agent"
     python.write_text("")
     command.write_text("")
     monkeypatch.setattr("investment_panel.database.agent_process.shutil.which", lambda _name: None)
     monkeypatch.setattr("investment_panel.database.agent_process.sys.executable", str(python))
-    resolved = _command_args("market-codex-option-agent")
+    resolved = _command_args("market-run-option-agent")
     assert resolved[0] == str(command)
 
 
