@@ -125,6 +125,8 @@ class SourceFactRepository:
                         details["evidence_refs"] = json.loads(evidence_refs)
                     except json.JSONDecodeError:
                         details["evidence_refs"] = []
+                elif evidence_refs is not None:
+                    details["evidence_refs"] = evidence_refs
                 connection.execute(
                     """
                     INSERT INTO analysis.source_signal

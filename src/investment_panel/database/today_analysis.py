@@ -9,6 +9,7 @@ from typing import Any
 from investment_panel.core.event_truth import build_options_decision_truth
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.agent_telemetry import AgentTelemetryRepository
+from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, evaluate_qqq_forecast, qqq_preopen_forecast
@@ -107,25 +108,18 @@ def refresh_today_publication(
                 """
             ).fetchall()
         ]
-        qqq_history = [
-            dict(row)
-            for row in connection.execute(
-                """
-                SELECT date, close FROM (
-                    SELECT DISTINCT ON (bar.trading_date)
-                           bar.trading_date AS date, bar.close, bar.observed_at
-                    FROM raw.price_bar bar
-                    JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
-                    WHERE instrument.symbol = 'QQQ' AND bar.interval = '1d'
-                      AND bar.trading_date < %s AND bar.observed_at <= %s
-                    ORDER BY bar.trading_date DESC, bar.observed_at DESC
-                ) daily
-                ORDER BY date DESC
-                LIMIT 280
-                """,
-                [as_of.date(), as_of],
-            ).fetchall()
-        ]
+        qqq_instrument = connection.execute(
+            "SELECT id FROM catalog.instrument WHERE symbol = 'QQQ'"
+        ).fetchone()
+        qqq_history = []
+        if qqq_instrument is not None:
+            qqq_history = [
+                {"date": row["trading_date"], "close": row["close"]}
+                for row in confirmed_daily_bars(
+                    connection, [int(qqq_instrument["id"])], as_of=as_of, max_bars=280
+                ).get(int(qqq_instrument["id"]), [])
+                if row["trading_date"] < as_of.date()
+            ]
         qqq_actual_row = connection.execute(
             """
             SELECT quote.price, quote.observed_at, source.kind AS source_kind
@@ -135,10 +129,10 @@ def refresh_today_publication(
             ) quote
             JOIN catalog.instrument instrument ON instrument.id = quote.instrument_id
             JOIN ingest.source source ON source.id = quote.source_id
-            WHERE instrument.symbol = 'QQQ'
+            WHERE instrument.symbol = 'QQQ' AND quote.trading_date = %s
             LIMIT 1
             """,
-            [as_of],
+            [as_of, as_of.date()],
         ).fetchone()
         prior_preopen_row = connection.execute(
             """
@@ -203,7 +197,7 @@ def refresh_today_publication(
     option_items = [_option_item(row) for row in option_rows]
     source_items = [_source_change_item(row) for row in source_changes]
     catalyst_rows = [_catalyst_item(row, as_of) for row in catalysts]
-    forecast_history = list(reversed(qqq_history))
+    forecast_history = qqq_history
     qqq_forecast = qqq_preopen_forecast(forecast_history)
     qqq_backtest = backtest_qqq_preopen_model(forecast_history)
     qqq_actual = dict(qqq_actual_row) if qqq_actual_row else None
