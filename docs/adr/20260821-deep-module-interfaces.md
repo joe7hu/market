@@ -49,7 +49,7 @@ The Phase 0 inventory reports the current measurable shape in fewer than 200
 lines. It records subsystem line counts, route categories, owner exports,
 cycles, private imports, router/database violations, re-export-only modules,
 console entry points, generated-contract presence, and compatibility markers.
-After the Phase 6 cleanup, the inventory measures 77,475 non-generated
+After the Phase 6 cleanup, the inventory measures 77,487 non-generated
 production source lines, 268 production Python modules, 67 OpenAPI paths and
 69 operations, zero local import cycles, and zero production private imports.
 
