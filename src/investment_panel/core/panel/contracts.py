@@ -32,7 +32,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "screener",
         "technicals",
         "valuations",
-        "tradingview_watchlists",
         "options_ticker_signals",
     ),
     "sources": (
@@ -62,7 +61,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "earnings_setups",
         "analyst_estimates",
         "fundamentals",
-        "etf_premiums",
         "liquidity",
         "correlations",
         "technicals",
@@ -102,10 +100,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "theses",
         "thesis_monitor",
         "research_packets",
-        "tradingview_symbol_search",
-        "tradingview_watchlists",
-        "tradingview_alerts",
-        "tradingview_chart_state",
         "opportunity_sources",
         "ticker_source_signals",
         "exposure_clusters",
@@ -152,10 +146,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_thesis_request",
         "agent_thesis_validation",
         "screener",
-        "tradingview_symbol_search",
-        "tradingview_watchlists",
-        "tradingview_alerts",
-        "tradingview_chart_state",
         "portfolio",
         "discovered_universe",
         "exposure_clusters",
@@ -211,8 +201,6 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "agent_thesis_validation",
         "agent_postmortem_request",
         "agent_postmortem",
-        "tradingview_alerts",
-        "tradingview_chart_state",
     ),
     "thesis-monitor": (
         "thesis_monitor",
@@ -226,6 +214,11 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     # data.  Keep them off the primary trade-decision payload.
     "health": (
         "source_catalog",
+        "source_freshness",
+        "source_health",
+        "source_runs",
+        "provider_runs",
+        "broker_status",
         "option_recovery_funnel",
         "option_recovery_event",
         "option_recovery_opportunity",
@@ -321,98 +314,6 @@ TICKER_INITIAL_TABLES = (
     "options_expiries",
 )
 
-ENDPOINT_TABLES: dict[str, str] = {
-    "decision-readiness": "decision_readiness",
-    "candidates": "candidates",
-    "opportunities-ranked": "opportunities_ranked",
-    "opportunity-sources": "opportunity_sources",
-    "discovered-universe": "discovered_universe",
-    "decision-queue": "decision_queue",
-    "source-freshness": "source_freshness",
-    "symbol-decision-snapshots": "symbol_decision_snapshots",
-    "portfolio": "portfolio",
-    "theses": "theses",
-    "thesis-monitor": "thesis_monitor",
-    "trader-twins": "trader_twins",
-    "catalysts": "catalysts",
-    "fundamentals": "fundamentals",
-    "disclosures": "disclosures",
-    "source-health": "source_health",
-    "sources": "sources",
-    "source-items": "source_items",
-    "source-ticker-rankings": "source_ticker_rankings",
-    "source-runs": "source_runs",
-    "source-catalog": "source_catalog",
-    "ticker-source-signals": "ticker_source_signals",
-    "quotes": "quotes",
-    "screener": "screener",
-    "options-expiries": "options_expiries",
-    "options-chain": "options_chain",
-    "options-payoff-scenarios": "options_payoff_scenarios",
-    "options-provider-capabilities": "options_provider_capabilities",
-    "options-expiry-signals": "options_expiry_signals",
-    "options-ticker-signals": "options_ticker_signals",
-    "option-strategy-versions": "option_strategy_versions",
-    "option-radar-opportunities": "option_radar_opportunity",
-    "radar-alerts": "radar_alert",
-    "option-snapshot": "option_snapshot",
-    "option-features": "option_features",
-    "stock-features": "stock_features",
-    "agent-thesis": "agent_thesis",
-    "agent-thesis-requests": "agent_thesis_request",
-    "agent-thesis-validations": "agent_thesis_validation",
-    "agent-postmortem-requests": "agent_postmortem_request",
-    "agent-postmortems": "agent_postmortem",
-    "candidate-events": "candidate_event",
-    "candidate-event-marks": "candidate_event_mark",
-    "candidate-event-attributions": "candidate_event_attribution",
-    "shadow-trades": "shadow_trade",
-    "shadow-trade-marks": "shadow_trade_mark",
-    "radar-state-transitions": "radar_state_transition",
-    "option-attributions": "option_attribution",
-    "missed-winner-events": "missed_winner_event",
-    "strategy-mutation-proposals": "strategy_mutation_proposal",
-    "strategy-backtests": "strategy_backtest_result",
-    "strategy-forward-tests": "strategy_forward_test_result",
-    "strategy-cohorts": "strategy_cohort_result",
-    "news": "news",
-    "instrument-market-identity": "instrument_market_identity",
-    "tradingview-symbol-search": "tradingview_symbol_search",
-    "tradingview-watchlists": "tradingview_watchlists",
-    "tradingview-alerts": "tradingview_alerts",
-    "tradingview-chart-state": "tradingview_chart_state",
-    "sepa": "sepa",
-    "liquidity": "liquidity",
-    "correlations": "correlations",
-    "etf-premiums": "etf_premiums",
-    "analyst-estimates": "analyst_estimates",
-    "earnings": "earnings",
-    "earnings-setups": "earnings_setups",
-    "valuations": "valuations",
-    "technicals": "technicals",
-    "research-packets": "research_packets",
-    "memos": "ticker_memos",
-    "provider-runs": "provider_runs",
-    "broker/status": "broker_status",
-    "broker/accounts": "broker_accounts",
-    "broker/positions": "broker_positions",
-    "paper-orders": "paper_orders",
-    "daily-brief": "daily_brief",
-    "decision-truth": "decision_truth",
-    "event-decision-packets": "event_decision_packets",
-    "event-scout-events": "event_scout_events",
-    "feed": "feed_signals",
-    "watchlist-screen": "universe_screen",
-    "watchlist/symbols": "manual_watchlist",
-    "source-consensus": "source_consensus",
-    "ownership-consensus": "ownership_consensus",
-    "market-context": "market_context",
-    "portfolio-risk/exposure-clusters": "exposure_clusters",
-    "portfolio-risk/correlation-edges": "correlation_edges",
-    "portfolio-risk/cards": "portfolio_risk_cards",
-    "portfolio-risk/review-actions": "review_actions",
-}
-
 DECISION_REPAIR_TABLES = {
     "decision_readiness",
     "decision_queue",
@@ -481,10 +382,6 @@ def tables_for_scope(scope: str) -> tuple[str, ...]:
     return PANEL_SCOPE_TABLES.get(scope, PANEL_SCOPE_TABLES["dashboard"])
 
 
-def table_for_endpoint(endpoint_key: str) -> str:
-    return ENDPOINT_TABLES[endpoint_key]
-
-
 def panel_snapshot_table_names() -> frozenset[str]:
     names: set[str] = set()
     for scope, tables in PANEL_SCOPE_TABLES.items():
@@ -498,7 +395,6 @@ def frontend_table_names() -> frozenset[str]:
     """Every backend table name that the frontend PanelData model may expose."""
 
     names = set(panel_snapshot_table_names())
-    names.update(ENDPOINT_TABLES.values())
     names.update(TICKER_TABLES)
     names.update(FRONTEND_ADDITIONAL_TABLES)
     return frozenset(names)
@@ -517,7 +413,6 @@ def panel_contract_payload() -> dict[str, Any]:
         "watchlist_section_tables": list(WATCHLIST_SECTION_TABLES),
         "watchlist_section_output_tables": list(WATCHLIST_SECTION_OUTPUT_TABLES),
         "ticker_tables": list(TICKER_TABLES),
-        "endpoint_tables": dict(ENDPOINT_TABLES),
         "frontend_table_keys": {
             table_name: frontend_key_for_table(table_name)
             for table_name in sorted(frontend_table_names())

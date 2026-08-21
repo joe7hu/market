@@ -130,7 +130,7 @@ def _ticker_tab_summaries(tables: dict[str, list[dict[str, Any]]], setup: dict[s
             {"label": "Status", "value": "Expired" if option_rows and not live_options else "Loaded" if live_options else "Not loaded", "caption": "option chain usability"},
         ],
         "TradingView": [
-            {"label": "Personal Context", "value": "Loaded" if any(tables.get(key) for key in ("tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state")) else "Not loaded", "caption": "watchlists, alerts, search, chart state"},
+            {"label": "Market Identity", "value": "Loaded" if tables.get("instrument_market_identity") else "Not loaded", "caption": "exchange-qualified symbol"},
             {"label": "Chart", "value": "Embedded", "caption": "daily technical chart available on overview"},
         ],
         "News": [

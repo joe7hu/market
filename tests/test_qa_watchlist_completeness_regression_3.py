@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from app import data_access
+from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -94,7 +94,7 @@ def test_current_chain_is_composed_into_complete_watchlist_option_context(
         )
         repository.finish_run(run_id, "succeeded")
 
-        panel = data_access.load_table_panel_data(
+        panel = loaders_owner.load_table_panel_data(
             {"database": {"url": migrated_postgres_dsn}}, "options_ticker_signals"
         )
         row = next(

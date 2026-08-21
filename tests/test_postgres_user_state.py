@@ -9,7 +9,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app import deps
+from app.data_access import config as config_owner, mutations as mutations_owner
+import app.panel_snapshot as panel_owner
 from app.routers.portfolio import router
 from app.routers.panel import router as panel_router
 from app.routers.theses import router as theses_router
@@ -49,9 +50,9 @@ def postgres_dsn(postgresql) -> str:
 @pytest.fixture
 def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     upgrade_database(postgres_dsn)
-    monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": postgres_dsn}})
+    monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": postgres_dsn}})
     monkeypatch.setattr(
-        deps,
+        mutations_owner,
         "populate_watchlist_symbol_data",
         lambda _config, symbol, asset_class: {
             "status": "ok", "symbol": symbol, "asset_class": asset_class, "quote_rows": 1,
@@ -66,76 +67,28 @@ def client(postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     close_cached_runtimes()
 
 
-def test_portfolio_route_round_trip_and_latest_quote_metrics(client: TestClient, postgres_dsn: str) -> None:
-    response = client.post(
-        "/api/portfolio/positions",
-        json={
-            "symbol": "nvda",
-            "quantity": 2,
-            "avg_cost": 100,
-            "purchase_date": "2026-07-01",
-            "notes": "core position",
-        },
-    )
+def _portfolio_table(client: TestClient, table_name: str) -> list[dict[str, object]]:
+    return _scope_table(client, "portfolio", table_name)
+
+
+def _scope_table(client: TestClient, scope: str, table_name: str) -> list[dict[str, object]]:
+    panel_owner.invalidate_context_cache()
+    response = client.get(f"/api/panel-snapshot?scope={scope}")
     assert response.status_code == 200
-    saved_row = response.json()["portfolio"]["rows"][0]
-    assert saved_row | {"updated_at": "ignored"} == {
-        "symbol": "NVDA",
-        "name": "NVDA",
-        "asset_class": "equity",
-        "category": "watchlist",
-        "quantity": 2.0,
-        "average_cost": "100.000000",
-        "purchase_date": "2026-07-01",
-            "notes": "core position",
-            "avg_cost": 100.0,
-            "valuation_price": 100.0,
-            "valuation_status": "cost_basis_fallback",
-            "market_value": 200.0,
-            "unrealized_pnl": 0.0,
-            "unrealized_pnl_pct": 0.0,
-            "portfolio_weight": 100.0,
-            "updated_at": "ignored",
-    }
+    return response.json()["tables"][table_name]["rows"]
 
-    with closing(psycopg.connect(postgres_dsn)) as connection:
-        instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'").fetchone()[0]
-        source_id = connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('test', 'Test', 'test', 'quote') RETURNING id"
-        ).fetchone()[0]
-        run_id = connection.execute(
-            "INSERT INTO ingest.run (source_id, capability, started_at, status) "
-            "VALUES (%s, 'quotes', now(), 'succeeded') RETURNING id",
-            [source_id],
-        ).fetchone()[0]
-        connection.execute(
-            "INSERT INTO raw.quote "
-            "(instrument_id, source_id, ingest_run_id, observed_at, price, change_abs, change_pct) "
-            "VALUES (%s, %s, %s, now(), 125, 5, 4.1667)",
-            [instrument_id, source_id, run_id],
-        )
-        _confirm_price_facts(connection, run_id)
-        connection.commit()
 
-    row = client.get("/api/portfolio").json()["rows"][0]
-    assert row["market_value"] == 250.0
-    assert row["unrealized_pnl"] == 50.0
-    assert row["unrealized_pnl_pct"] == 25.0
-    assert row["portfolio_weight"] == 100.0
-    assert row["quote_source"] == "test"
+def _portfolio_rows(client: TestClient) -> list[dict[str, object]]:
+    return _portfolio_table(client, "portfolio")
 
-    with closing(psycopg.connect(postgres_dsn)) as connection:
-        thesis = connection.execute(
-            "SELECT thesis FROM app.thesis t JOIN catalog.instrument i ON i.id = t.instrument_id "
-            "WHERE i.symbol = 'NVDA' AND t.status = 'current'"
-        ).fetchone()[0]
-    assert thesis["position_status"] == "owned"
 
-    deleted = client.delete("/api/portfolio/positions/NVDA")
-    assert deleted.status_code == 410
-    assert "record a sell" in deleted.json()["detail"]
-    assert client.get("/api/portfolio/transactions").json()["rows"][0]["transaction_type"] == "opening_balance"
-    assert client.get("/api/portfolio/performance").json()["rows"][0]["date"] == "2026-07-01"
+def _portfolio_summary(client: TestClient) -> dict[str, object]:
+    rows = _portfolio_table(client, "portfolio_summary")
+    return rows[0] if rows else {}
+
+
+def _portfolio_performance(client: TestClient) -> list[dict[str, object]]:
+    return _portfolio_table(client, "portfolio_performance")
 
 
 def test_portfolio_transaction_buy_appends_activity_and_updates_position(client: TestClient) -> None:
@@ -277,9 +230,8 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    summary = client.get("/api/portfolio/summary")
-    assert summary.status_code == 200
-    assert summary.json() | {"as_of": "ignored", "oldest_quote_at": "ignored"} == {
+    summary = _portfolio_summary(client)
+    assert summary | {"as_of": "ignored", "oldest_quote_at": "ignored"} == {
         "as_of": "ignored",
         "oldest_quote_at": "ignored",
         "portfolio_value": 1100.0,
@@ -301,9 +253,9 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
         "currency": "USD",
         "performance_method": "daily-close external-flow adjusted",
     }
-    performance = client.get("/api/portfolio/performance").json()
-    assert performance["count"] == 2
-    assert performance["rows"][-1] | {"date": "ignored"} == {
+    performance = _portfolio_performance(client)
+    assert len(performance) == 2
+    assert performance[-1] | {"date": "ignored"} == {
         "date": "ignored",
         "portfolio_value": 1100.0,
         "net_contributions": 1000.0,
@@ -352,9 +304,9 @@ def test_first_trade_uses_same_prior_close_for_holding_summary_and_performance(
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
-    summary = client.get("/api/portfolio/summary").json()
-    performance = client.get("/api/portfolio/performance").json()["rows"][-1]
+    holding = _portfolio_rows(client)[0]
+    summary = _portfolio_summary(client)
+    performance = _portfolio_performance(client)[-1]
 
     assert holding["market_value"] == 900
     assert summary["portfolio_value"] == performance["portfolio_value"] == 900
@@ -462,7 +414,7 @@ def test_position_transaction_notional_is_always_derived(client: TestClient) -> 
     )
     assert response.status_code == 200
     assert response.json()["transaction"]["amount"] == 1000.0
-    assert client.get("/api/portfolio/summary").json()["net_contributions"] == 1000.0
+    assert _portfolio_summary(client)["net_contributions"] == 1000.0
 
 
 def test_portfolio_transactions_reject_future_account_and_duplicate_opening(client: TestClient) -> None:
@@ -537,7 +489,7 @@ def test_session_pnl_includes_full_sale_and_fees(client: TestClient) -> None:
         },
     ).status_code == 200
 
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["portfolio_value"] == 0.0
     assert summary["day_pnl"] == 99.0
     assert summary["day_pnl_pct"] == 9.9
@@ -574,7 +526,7 @@ def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, 
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["total_pnl"] == 20.0
     assert summary["day_pnl"] is None
     assert summary["day_pnl_pct"] is None
@@ -618,7 +570,7 @@ def test_transaction_reversal_replays_position_accounting_and_thesis(
     portfolio = reversed_sell.json()["portfolio"]["rows"]
     assert portfolio[0]["quantity"] == 10.0
     assert portfolio[0]["avg_cost"] == 100.0
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["realized_pnl"] == 0.0
     assert summary["total_pnl"] == 0.0
     activity = client.get("/api/portfolio/transactions").json()["rows"]
@@ -707,7 +659,7 @@ def test_replay_resets_notes_after_full_exit_and_blank_reentry(client: TestClien
         f"/api/portfolio/transactions/{last_id}/reverse",
         json={"idempotency_key": "notes-later-buy-reversal"},
     ).status_code == 200
-    assert client.get("/api/portfolio").json()["rows"][0].get("notes", "") == ""
+    assert _portfolio_rows(client)[0].get("notes", "") == ""
 
 
 @pytest.mark.parametrize(
@@ -752,12 +704,12 @@ def test_unpriced_holdings_use_labeled_cost_basis_fallback(client: TestClient) -
         },
     ).status_code == 200
 
-    position = client.get("/api/portfolio").json()["rows"][0]
+    position = _portfolio_rows(client)[0]
     assert "price" not in position or position["price"] is None
     assert position["valuation_price"] == 100.0
     assert position["valuation_status"] == "cost_basis_fallback"
     assert position["market_value"] == 200.0
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["portfolio_value"] == 200.0
     assert summary["total_pnl"] == 0.0
     assert summary["cost_basis_fallback_count"] == 1
@@ -793,7 +745,7 @@ def test_portfolio_rejects_arbitrarily_stale_quote_for_current_valuation(
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
+    holding = _portfolio_rows(client)[0]
     assert holding["valuation_status"] == "cost_basis_fallback"
     assert holding["market_value"] == 200
 
@@ -839,9 +791,9 @@ def test_summary_holdings_and_performance_share_latest_daily_bar_price(
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
-    summary = client.get("/api/portfolio/summary").json()
-    performance = client.get("/api/portfolio/performance").json()["rows"][-1]
+    holding = _portfolio_rows(client)[0]
+    summary = _portfolio_summary(client)
+    performance = _portfolio_performance(client)[-1]
     assert holding["valuation_status"] == "daily_close"
     assert holding["market_value"] == 220.0
     assert summary["portfolio_value"] == performance["portfolio_value"] == 220.0
@@ -882,11 +834,11 @@ def test_dividend_and_split_fees_reduce_portfolio_pnl(client: TestClient) -> Non
         },
     ).status_code == 200
 
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["income"] == 100.0
     assert summary["fees"] == 15.0
     assert summary["total_pnl"] == 85.0
-    assert client.get("/api/portfolio/performance").json()["rows"][-1]["total_pnl"] == 85.0
+    assert _portfolio_performance(client)[-1]["total_pnl"] == 85.0
 
 
 def test_split_ignores_stale_pre_split_quote_until_price_scale_catches_up(
@@ -933,7 +885,7 @@ def test_split_ignores_stale_pre_split_quote_until_price_scale_catches_up(
         },
     ).status_code == 200
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
+    holding = _portfolio_rows(client)[0]
 
     assert holding["quantity"] == 20
     assert holding["avg_cost"] == 50
@@ -971,7 +923,7 @@ def test_position_purchase_date_uses_market_day_and_survives_replay(client: Test
         json={"idempotency_key": "market-date-reverse-second"},
     ).status_code == 200
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
+    holding = _portfolio_rows(client)[0]
 
     assert holding["quantity"] == 1
     assert holding["purchase_date"] == "2026-07-01"
@@ -997,13 +949,13 @@ def test_portfolio_return_uses_invested_capital_after_full_sale(client: TestClie
     assert client.post("/api/portfolio/transactions", json=buy).status_code == 200
     assert client.post("/api/portfolio/transactions", json=sell).status_code == 200
 
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["portfolio_value"] == 0.0
     assert summary["net_contributions"] == -200.0
     assert summary["invested_capital"] == 1000.0
     assert summary["total_pnl"] == 200.0
     assert summary["total_pnl_pct"] == 20.0
-    performance = client.get("/api/portfolio/performance").json()["rows"]
+    performance = _portfolio_performance(client)
     assert performance[-1]["total_return_pct"] == 20.0
 
 
@@ -1020,7 +972,7 @@ def test_portfolio_summary_aggregates_beyond_activity_limit(client: TestClient, 
         connection.commit()
 
     assert client.get("/api/portfolio/transactions").json()["count"] == 100
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["fees"] == 501.0
     assert summary["total_pnl"] == -501.0
 
@@ -1058,7 +1010,7 @@ def test_portfolio_performance_starts_at_first_transaction(client: TestClient, p
         )
         connection.commit()
 
-    rows = client.get("/api/portfolio/performance").json()["rows"]
+    rows = _portfolio_performance(client)
     assert [row["date"] for row in rows] == ["2026-07-10"]
 
 
@@ -1105,9 +1057,7 @@ def test_portfolio_correlation_explains_window_weight_and_risk(client: TestClien
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    payload = client.get("/api/portfolio-risk/correlation-edges")
-    assert payload.status_code == 200
-    rows = payload.json()["rows"]
+    rows = _portfolio_table(client, "correlation_edges")
     sixty = next(row for row in rows if row["lookback_days"] == 60)
     assert sixty["symbol"] == "LLY"
     assert sixty["peer_symbol"] == "MSFT"
@@ -1117,7 +1067,7 @@ def test_portfolio_correlation_explains_window_weight_and_risk(client: TestClien
     assert sixty["risk_level"] == "critical"
     assert "move together" in sixty["interpretation"]
 
-    cards = client.get("/api/portfolio-risk/cards").json()["rows"]
+    cards = _portfolio_table(client, "portfolio_risk_cards")
     correlation_card = next(row for row in cards if row["risk_type"] == "correlation")
     assert correlation_card["severity"] == "critical"
     assert correlation_card["symbols"] == ["LLY", "MSFT"]
@@ -1277,9 +1227,9 @@ def test_future_prices_cannot_become_current_portfolio_value(client: TestClient,
         _confirm_price_facts(connection, run_id)
         connection.commit()
 
-    summary = client.get("/api/portfolio/summary").json()
+    summary = _portfolio_summary(client)
     assert summary["portfolio_value"] == 110.0
-    performance = client.get("/api/portfolio/performance").json()["rows"]
+    performance = _portfolio_performance(client)
     assert performance[-1]["portfolio_value"] == 110.0
     assert performance[-1]["date"] <= now.date().isoformat()
 
@@ -1318,7 +1268,7 @@ def test_failed_price_correction_falls_back_to_last_confirmed_fact(
     finally:
         runtime.close()
 
-    holding = client.get("/api/portfolio").json()["rows"][0]
+    holding = _portfolio_rows(client)[0]
     assert holding["price"] == 100
     assert holding["market_value"] == 100
 
@@ -1348,16 +1298,12 @@ def test_watchlist_route_round_trip_and_soft_exclusion(client: TestClient, postg
     assert state == "excluded"
 
 
-def test_position_and_thesis_edits_preserve_existing_crypto_asset_class(client: TestClient, postgres_dsn: str) -> None:
+def test_thesis_edits_preserve_existing_crypto_asset_class(client: TestClient, postgres_dsn: str) -> None:
     watched = client.post(
         "/api/watchlist/symbols",
         json={"symbol": "BTC-USD", "name": "Bitcoin", "asset_class": "crypto"},
     )
     assert watched.status_code == 200
-    assert client.post(
-        "/api/portfolio/positions",
-        json={"symbol": "BTC-USD", "quantity": 0.5, "avg_cost": 50000},
-    ).status_code == 200
     assert client.put(
         "/api/theses/BTC-USD",
         json={"thesis": "Institutional adoption continues."},
@@ -1371,43 +1317,14 @@ def test_position_and_thesis_edits_preserve_existing_crypto_asset_class(client: 
 
 
 def test_routes_reject_invalid_user_state(client: TestClient) -> None:
-    invalid_position = client.post(
-        "/api/portfolio/positions",
-        json={"symbol": "NVDA", "quantity": 0, "avg_cost": 100},
-    )
     invalid_watchlist = client.post(
         "/api/watchlist/symbols",
         json={"symbol": "not a ticker!", "asset_class": "equity"},
     )
-    invalid_purchase_date = client.post(
-        "/api/portfolio/positions",
-        json={"symbol": "NVDA", "quantity": 1, "avg_cost": 100, "purchase_date": "2026-02-30"},
-    )
-    assert invalid_position.status_code == 400
     assert invalid_watchlist.status_code == 400
-    assert invalid_purchase_date.status_code == 400
-
-
-def test_position_compatibility_route_accepts_iso_datetime_purchase_date(client: TestClient) -> None:
-    response = client.post(
-        "/api/portfolio/positions",
-        json={
-            "symbol": "MSFT",
-            "quantity": 1,
-            "avg_cost": 100,
-            "purchase_date": "2026-07-01T15:30:00Z",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["portfolio"]["rows"][0]["purchase_date"] == "2026-07-01"
 
 
 def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: TestClient, postgres_dsn: str) -> None:
-    client.post(
-        "/api/portfolio/positions",
-        json={"symbol": "MU", "quantity": 4, "avg_cost": 95},
-    )
     first = client.put(
         "/api/theses/MU",
         json={
@@ -1419,9 +1336,9 @@ def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: Te
         },
     )
     assert first.status_code == 200
-    assert first.json()["thesis"]["revision"] == 2
-    monitor = first.json()["thesis_monitor"]["rows"][0]
-    assert monitor["source"] == "theses"
+    assert first.json()["thesis"]["revision"] == 1
+    monitor = next(row for row in first.json()["thesis_monitor"]["rows"] if row["symbol"] == "MU")
+    assert monitor["symbol"] == "MU"
     assert monitor["stale_thesis"] is False
     assert monitor["needs_review"] is False
     assert monitor["invalidation_price"] == 80.0
@@ -1435,16 +1352,16 @@ def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: Te
         },
     )
     assert second.status_code == 200
-    assert second.json()["thesis"]["revision"] == 3
+    assert second.json()["thesis"]["revision"] == 2
 
     reviewed = client.post("/api/theses/MU/review")
     assert reviewed.status_code == 200
-    assert reviewed.json()["review"]["revision"] == 3
+    assert reviewed.json()["review"]["revision"] == 2
     assert reviewed.json()["review"]["outcome"] == "unchanged"
 
-    theses = client.get("/api/theses").json()["rows"]
+    theses = _scope_table(client, "thesis-monitor", "theses")
     assert len(theses) == 1
-    assert theses[0]["revision"] == 3
+    assert theses[0]["revision"] == 2
     assert theses[0]["thesis_json"]["core_thesis"].startswith("Memory pricing and HBM")
     api_history = client.get("/api/theses/MU/history").json()
     assert api_history["review_events"][0]["outcome"] == "unchanged"
@@ -1454,7 +1371,7 @@ def test_thesis_routes_keep_revision_history_and_monitor_invalidation(client: Te
             "SELECT revision, status FROM app.thesis t JOIN catalog.instrument i ON i.id = t.instrument_id "
             "WHERE i.symbol = 'MU' ORDER BY revision"
         ).fetchall()
-    assert history == [(1, "superseded"), (2, "superseded"), (3, "current")]
+    assert history == [(1, "superseded"), (2, "current")]
 
 
 def test_thesis_route_requires_content(client: TestClient) -> None:

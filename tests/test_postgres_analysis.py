@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from app import deps
+from app.data_access import config as config_owner, loaders as loaders_owner
 from app.routers.options import _encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
@@ -1178,39 +1178,11 @@ def test_incremental_refresh_preserves_older_symbols_in_complete_publication(ana
     assert result["status"] == "ok"
     opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
     assert {row["symbol"] for row in opportunities} == {"AAPL", "NVDA"}
-    from app.data_access import load_table_panel_data
+    from app.data_access.loaders import load_table_panel_data
 
     chain = load_table_panel_data({"database": {"url": postgres_dsn}}, "options_chain").rows("options_chain")
     assert {row["symbol"] for row in chain} == {"AAPL", "NVDA"}
     assert {float(row["strike"]) for row in chain if row["symbol"] == "NVDA"} == {185.0}
-
-
-def test_options_api_reads_only_published_postgresql_generation(
-    analysis_context,
-    postgres_dsn: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime: DatabaseRuntime = analysis_context["runtime"]
-    refresh_options_radar(runtime, source_id="test-options", code_version="api-test")
-    monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": postgres_dsn}})
-    application = FastAPI()
-    application.include_router(options_router)
-
-    with TestClient(application) as client:
-        opportunities = client.get("/api/option-radar-opportunities")
-        snapshots = client.get("/api/option-snapshot")
-        features = client.get("/api/option-features")
-        candidates = client.get("/api/candidate-events")
-
-    assert opportunities.status_code == 200
-    assert opportunities.json()["rows"][0]["symbol"] == "NVDA"
-    assert opportunities.json()["rows"][0]["ticket"]["state"] == "RESEARCH"
-    assert opportunities.json()["rows"][0]["execution_ready"] is False
-    assert opportunities.json()["rows"][0]["paper_ready"] is False
-    assert opportunities.json()["rows"][0]["advisory_action"] == "NO TRADE"
-    assert snapshots.json()["rows"][0]["contract_id"] == str(analysis_context["contract_id"])
-    assert features.json()["rows"][0]["raw"]["feature_version"] == "option-professional-v3-ticket"
-    assert candidates.json()["rows"][0]["state"] == "WATCH"
 
 
 def test_options_learning_api_pages_in_postgresql(
@@ -1246,7 +1218,7 @@ def test_options_learning_api_pages_in_postgresql(
             """,
             [Jsonb({"ticker": "MSFT"})],
         ).fetchone()["id"]
-    monkeypatch.setattr(deps, "load_config", lambda: {"database": {"url": postgres_dsn}})
+    monkeypatch.setattr(config_owner, "load_config", lambda: {"database": {"url": postgres_dsn}})
     application = FastAPI()
     application.include_router(options_router)
     with TestClient(application) as client:

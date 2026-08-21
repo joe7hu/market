@@ -18,12 +18,11 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
-from app.data_access.config import database_url, load_config
-from app.data_access.loaders import load_panel_data, load_table_panel_data
+from app.data_access import config as config_owner
+from app.data_access import loaders as loaders_owner
 from app.data_access.payloads import panel_snapshot_payload, table_payload
 from app.data_access.types import PanelData
-from app.panel_contracts import PANEL_SCOPE_TABLES
-from investment_panel.core.panel import SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
+from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.migrations import HEAD_REVISION
 
 
@@ -64,12 +63,15 @@ def context(
     cache_key: str = "full",
     loader: Callable[[dict[str, Any]], Any] | None = None,
     *,
-    config_loader: Callable[[], dict[str, Any]] = load_config,
-    database_url_loader: Callable[[dict[str, Any]], str] = database_url,
-    panel_loader: Callable[..., Any] = load_panel_data,
+    config_loader: Callable[[], dict[str, Any]] | None = None,
+    database_url_loader: Callable[[dict[str, Any]], str] | None = None,
+    panel_loader: Callable[..., Any] | None = None,
 ) -> tuple[dict[str, Any], Any]:
-    config = config_loader()
-    config_key = database_url_loader(config)
+    active_config_loader = config_loader or config_owner.load_config
+    active_database_url_loader = database_url_loader or config_owner.database_url
+    active_panel_loader = panel_loader or loaders_owner.load_panel_data
+    config = active_config_loader()
+    config_key = active_database_url_loader(config)
     now = time.monotonic()
     with _CONTEXT_LOCK:
         entries = _CONTEXT_CACHE.setdefault("entries", {})
@@ -77,7 +79,7 @@ def context(
         if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
             return cached["value"]
 
-    active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=panel_loader))
+    active_loader = loader or (lambda active_config: _load_panel_data_without_repairs(active_config, panel_loader=active_panel_loader))
     value = (config, active_loader(config))
 
     with _CONTEXT_LOCK:
@@ -88,7 +90,7 @@ def context(
         return value
 
 
-def _load_panel_data_without_repairs(active_config: dict[str, Any], *, panel_loader: Callable[..., Any] = load_panel_data) -> Any:
+def _load_panel_data_without_repairs(active_config: dict[str, Any], *, panel_loader: Callable[..., Any]) -> Any:
     parameters = inspect.signature(panel_loader).parameters
     if "ensure_decision_models" not in parameters:
         return panel_loader(active_config)
@@ -98,13 +100,14 @@ def _load_panel_data_without_repairs(active_config: dict[str, Any], *, panel_loa
 def table_payload_for(
     table_name: str,
     *,
-    config_loader: Callable[[], dict[str, Any]] = load_config,
-    database_url_loader: Callable[[dict[str, Any]], str] = database_url,
-    table_loader: Callable[..., Any] = load_table_panel_data,
+    config_loader: Callable[[], dict[str, Any]] | None = None,
+    database_url_loader: Callable[[dict[str, Any]], str] | None = None,
+    table_loader: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
+    active_table_loader = table_loader or loaders_owner.load_table_panel_data
     _, panel_data = context(
         cache_key=f"table:{table_name}",
-        loader=lambda config: table_loader(config, table_name),
+        loader=lambda config: active_table_loader(config, table_name),
         config_loader=config_loader,
         database_url_loader=database_url_loader,
     )
@@ -271,10 +274,6 @@ __all__ = [
     "CONTEXT_CACHE_TTL_SECONDS",
     "PANEL_SNAPSHOT_CONTRACT_REVISION",
     "SOURCE_FRESHNESS_DEFAULT_LIMIT",
-    "_CONTEXT_LOCK",
-    "_LAST_GOOD_SCOPE_SNAPSHOTS",
-    "_context",
-    "_scope_snapshot_cache_path",
     "capped_table_payload",
     "context",
     "full_market_refresh_status",
@@ -284,8 +283,3 @@ __all__ = [
     "table_payload_for",
     "with_data_freshness",
 ]
-
-
-# Keep the old private spelling local to this module while the application
-# seam moves to explicit names.
-_context = context

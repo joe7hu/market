@@ -77,8 +77,8 @@ pythonpath = ["src", "."]
 postgresql_exec = "/opt/homebrew/opt/postgresql@18/bin/pg_ctl"
 
 [tool.ruff]
-# Module length is enforced by tests/test_architecture_guards.py (the 700-line
-# size guard), so line-length (E501) is intentionally NOT a ruff concern.
+# Module length is inventory information, not a hard architecture failure.
+# Line length (E501) remains intentionally outside this focused Ruff gate.
 target-version = "py311"
 extend-exclude = [".venv", "frontend", "build", "dist"]
 

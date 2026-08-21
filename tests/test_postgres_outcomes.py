@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.data_access import load_table_panel_data
+from app.data_access.loaders import load_table_panel_data
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.options_analysis import refresh_options_radar

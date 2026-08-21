@@ -3,11 +3,13 @@
 from __future__ import annotations
 from typing import Any, Iterable
 
-from app.data_access.user_state import (
+from investment_panel.database.user_state import (
     delete_watchlist_item,
-    save_thesis as save_postgres_thesis,
     save_watchlist_item,
+)
+from investment_panel.database.thesis import (
     mark_thesis_reviewed as mark_postgres_thesis_reviewed,
+    save_thesis as save_postgres_thesis,
 )
 
 

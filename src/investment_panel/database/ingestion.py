@@ -26,6 +26,8 @@ from investment_panel.database.option_ingestion_support import (
 )
 from investment_panel.database.option_snapshot_freshness import latest_option_snapshot_by_symbol
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
+
+__all__ = ["IngestionRepository", "IngestionRun"]
 @dataclass
 class IngestionRun:
     """One ingestion lifecycle with exactly one terminal state."""

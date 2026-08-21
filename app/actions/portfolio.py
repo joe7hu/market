@@ -2,66 +2,47 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
+
+from app.data_access import mutations
+from investment_panel.database.portfolio_ledger import (
+    preview_portfolio_transaction as preview_transaction_owner,
+    record_portfolio_transaction as record_transaction_owner,
+    reverse_portfolio_transaction as reverse_transaction_owner,
+)
+from investment_panel.database.user_state import (
+    portfolio_rows as portfolio_rows_owner,
+    table_payload as table_payload_owner,
+    watchlist_rows as watchlist_rows_owner,
+)
+
+__all__ = ["PortfolioActions"]
 
 class PortfolioActions:
     def __init__(
         self,
         config: dict[str, Any],
         *,
-        portfolio_rows: Callable[..., list[dict[str, Any]]],
-        table_payload: Callable[[list[dict[str, Any]]], dict[str, Any]],
-        preview_transaction: Callable[..., dict[str, Any]],
-        record_transaction: Callable[..., dict[str, Any]],
-        reverse_transaction: Callable[..., dict[str, Any]],
-        watchlist_rows: Callable[..., list[dict[str, Any]]],
-        save_watchlist: Callable[..., dict[str, Any]],
-        populate_watchlist: Callable[..., dict[str, Any]],
-        delete_watchlist: Callable[..., dict[str, Any]],
+        portfolio_rows: Callable[..., list[dict[str, Any]]] | None = None,
+        table_payload: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+        preview_transaction: Callable[..., dict[str, Any]] | None = None,
+        record_transaction: Callable[..., dict[str, Any]] | None = None,
+        reverse_transaction: Callable[..., dict[str, Any]] | None = None,
+        watchlist_rows: Callable[..., list[dict[str, Any]]] | None = None,
+        save_watchlist: Callable[..., dict[str, Any]] | None = None,
+        populate_watchlist: Callable[..., dict[str, Any]] | None = None,
+        delete_watchlist: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.config = config
-        self._portfolio_rows = portfolio_rows
-        self._table_payload = table_payload
-        self._preview_transaction = preview_transaction
-        self._record_transaction = record_transaction
-        self._reverse_transaction = reverse_transaction
-        self._watchlist_rows = watchlist_rows
-        self._save_watchlist = save_watchlist
-        self._populate_watchlist = populate_watchlist
-        self._delete_watchlist = delete_watchlist
-
-    def import_position(self, position: dict[str, Any]) -> dict[str, Any]:
-        symbol = str(position.get("symbol") or "").strip().upper()
-        if any(str(row.get("symbol") or "") == symbol for row in self._portfolio_rows(self.config)):
-            raise ValueError("position already exists; record a buy or sell transaction")
-        purchase_date = str(position.get("purchase_date") or "")
-        executed_at = (
-            datetime.combine(
-                date.fromisoformat(purchase_date.strip()[:10]),
-                time(12),
-                tzinfo=ZoneInfo("America/New_York"),
-            ).isoformat()
-            if purchase_date
-            else datetime.now(UTC).isoformat()
-        )
-        quantity = float(position["quantity"])
-        avg_cost = float(position["avg_cost"])
-        saved = self._record_transaction(
-            self.config,
-            {
-                "symbol": symbol,
-                "transaction_type": "opening_balance",
-                "quantity": quantity,
-                "price": avg_cost,
-                "fees": 0,
-                "executed_at": executed_at,
-                "notes": position.get("notes", ""),
-                "idempotency_key": f"position-import:{symbol}:{executed_at}:{quantity:g}:{avg_cost:g}",
-            },
-        )
-        return self._transaction_payload(saved)
+        self._portfolio_rows = portfolio_rows or portfolio_rows_owner
+        self._table_payload = table_payload or table_payload_owner
+        self._preview_transaction = preview_transaction or preview_transaction_owner
+        self._record_transaction = record_transaction or record_transaction_owner
+        self._reverse_transaction = reverse_transaction or reverse_transaction_owner
+        self._watchlist_rows = watchlist_rows or watchlist_rows_owner
+        self._save_watchlist = save_watchlist or mutations.save_watchlist_symbol
+        self._populate_watchlist = populate_watchlist or mutations.populate_watchlist_symbol_data
+        self._delete_watchlist = delete_watchlist or mutations.delete_watchlist_symbol
 
     def preview_transaction(self, transaction: dict[str, Any]) -> dict[str, Any]:
         return self._preview_transaction(self.config, transaction)

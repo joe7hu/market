@@ -7,24 +7,6 @@ from typing import Any
 from investment_panel.core.options_intelligence import build_expiry_signal, build_ticker_signal
 
 
-RETIRED_EMPTY_MODELS = {
-    "etf_premiums",
-    "tradingview_symbol_search",
-    "tradingview_watchlists",
-    "tradingview_alerts",
-    "tradingview_chart_state",
-}
-
-WATCHLIST_COMPAT_MODELS = {
-    f"watchlist_{state}{suffix}"
-    for state in ("watched", "unwatched")
-    for suffix in (
-        "", "_decision_queue", "_fundamentals", "_memos", "_options", "_portfolio",
-        "_quotes", "_research_packets", "_screener", "_technicals", "_thesis_monitor", "_valuations",
-    )
-}
-
-
 TECHNICALS_QUERY = """
     WITH daily AS (
         SELECT DISTINCT ON (bar.instrument_id, bar.trading_date)

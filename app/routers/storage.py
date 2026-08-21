@@ -5,16 +5,17 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from app import deps
+from app.data_access import config as config_owner
+from app.actions.storage import storage_health as storage_health_owner
 
 router = APIRouter()
 
 
 @router.get("/api/health/storage")
 def storage_health() -> dict[str, Any]:
-    config = deps.load_config()
+    config = config_owner.load_config()
     try:
-        return deps.storage_health(config)
+        return storage_health_owner(config)
     except Exception as exc:
         # Health stays observable during a mount or migration outage.
         return {"available": False, "message": f"{type(exc).__name__}: {exc}"}

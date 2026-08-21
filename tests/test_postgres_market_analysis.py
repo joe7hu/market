@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.data_access import load_panel_scope_data
+from app.data_access.loaders import load_panel_scope_data
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.market_analysis import refresh_market_publication

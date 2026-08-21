@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from app.scheduler import scheduler_status
 from app.data_access.coerce import jsonable
 from app.data_access.coerce import _deep_merge
-from app.data_access.payloads import _runtime_metadata, status_payload
+from app.data_access.payloads import runtime_metadata, status_payload
 from investment_panel.core.config import update_agent_settings_config, update_research_sources_config
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.configuration import SettingRepository
@@ -271,7 +271,7 @@ def agent_control_payload(config: dict[str, Any]) -> dict[str, Any]:
     agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
     return {
         "config": jsonable(agents),
-        "runtime": _runtime_metadata(config).get("agents", {}),
+        "runtime": runtime_metadata(config).get("agents", {}),
         "scheduler": scheduler_status(config),
         "model_overrides": {
             "codex_model": os.environ.get("MARKET_CODEX_MODEL", ""),

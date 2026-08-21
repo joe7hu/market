@@ -26,7 +26,6 @@ from investment_panel.core.coercion import (
     string_list,
 )
 from investment_panel.core.panel.coerce import _normalize_symbol_token
-from investment_panel.core.tradingview_identity import best_tradingview_symbol
 
 # Single source of truth for which read-model tables feed each dossier section.
 # Used to compute per-section coverage instead of two divergent family maps.
@@ -480,13 +479,6 @@ def _tradingview_symbol(symbol: str, tables: dict[str, list[dict[str, Any]]]) ->
         explicit = _text(row.get("tradingview_symbol"))
         if ":" in explicit:
             return explicit.upper()
-    for row in tables.get("tradingview_chart_state") or []:
-        explicit = _text(row.get("symbol"))
-        if ":" in explicit:
-            return explicit.upper()
-    search_symbol = best_tradingview_symbol(normalized, tables.get("tradingview_symbol_search") or [])
-    if search_symbol:
-        return search_symbol
     for row in tables.get("quotes") or []:
         raw_symbol = _text(parse_json_dict(row.get("raw")).get("symbol"))
         if ":" in raw_symbol:

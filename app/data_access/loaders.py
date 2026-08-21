@@ -7,8 +7,7 @@ from typing import Any, Iterable
 
 from app.data_access.config import load_config, tables_for_scope
 from app.data_access.types import DataStatus, PanelData
-from app.panel_contracts import TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
-from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS
+from investment_panel.core.panel import SCOPED_TABLE_ROW_LIMITS, TICKER_INITIAL_TABLES, panel_contract_payload as contract_panel_payload
 from investment_panel.database.panel_models import load_postgres_tables
 
 

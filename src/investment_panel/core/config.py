@@ -51,11 +51,6 @@ class OpenCliConfig:
 class TradingViewConfig:
     enabled: bool = True
     options_symbols: list[str] = field(default_factory=list)
-    search_symbols: list[str] = field(default_factory=list)
-    watchlist_colors: list[str] = field(default_factory=lambda: ["red", "orange", "yellow", "green", "blue", "purple"])
-    alert_types: list[str] = field(default_factory=lambda: ["active", "triggered", "offline"])
-    personal_surfaces_enabled: bool = True
-    chart_state_enabled: bool = True
     screener_limit: int = 50
     news_limit: int = 50
     strikes_around_spot: int = 6
@@ -334,13 +329,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         tradingview=TradingViewConfig(
             enabled=bool(tradingview_raw.get("enabled", True)),
             options_symbols=list(tradingview_raw.get("options_symbols", [])),
-            search_symbols=list(tradingview_raw.get("search_symbols", [])),
-            watchlist_colors=list(
-                tradingview_raw.get("watchlist_colors", ["red", "orange", "yellow", "green", "blue", "purple"])
-            ),
-            alert_types=list(tradingview_raw.get("alert_types", ["active", "triggered", "offline"])),
-            personal_surfaces_enabled=bool(tradingview_raw.get("personal_surfaces_enabled", True)),
-            chart_state_enabled=bool(tradingview_raw.get("chart_state_enabled", True)),
             screener_limit=int(tradingview_raw.get("screener_limit", 50)),
             news_limit=int(tradingview_raw.get("news_limit", 50)),
             strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
@@ -565,11 +553,6 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
             "tradingview": {
                 "enabled": config.data_sources.tradingview.enabled,
                 "options_symbols": config.data_sources.tradingview.options_symbols,
-                "search_symbols": config.data_sources.tradingview.search_symbols,
-                "watchlist_colors": config.data_sources.tradingview.watchlist_colors,
-                "alert_types": config.data_sources.tradingview.alert_types,
-                "personal_surfaces_enabled": config.data_sources.tradingview.personal_surfaces_enabled,
-                "chart_state_enabled": config.data_sources.tradingview.chart_state_enabled,
                 "screener_limit": config.data_sources.tradingview.screener_limit,
                 "news_limit": config.data_sources.tradingview.news_limit,
                 "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,

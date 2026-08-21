@@ -1,128 +1,67 @@
-"""Panel / dashboard / decision read-model routes."""
+"""Canonical panel read-model and health routes."""
+
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import APIRouter
 
-from app import deps
+from app import panel_snapshot as panel_owner
 from app.actions.options import OptionsActions
+from app.data_access import config as config_owner
+from app.data_access import loaders, payloads
 
 router = APIRouter()
 
 
 @router.get("/api/status")
 def status() -> dict[str, Any]:
-    config = deps.load_config()
-    panel_data = deps.load_panel_data(
+    config = config_owner.load_config()
+    panel_data = loaders.load_panel_data(
         config,
         table_names=("source_health",),
         ensure_decision_models=False,
         ensure_source_models=False,
     )
-    payload = deps.status_payload(panel_data)
+    response = payloads.status_payload(panel_data)
     try:
-        payload["options_history"] = OptionsActions(config).history_health()
+        response["options_history"] = OptionsActions(config).history_health()
     except Exception as exc:  # status must stay available during a migration outage
-        payload["options_history"] = {"available": False, "message": f"{type(exc).__name__}: {exc}"}
-    return payload
+        response["options_history"] = {"available": False, "message": f"{type(exc).__name__}: {exc}"}
+    return response
 
 
 @router.get("/api/panel-contract")
 def panel_contract() -> dict[str, Any]:
-    return deps.panel_contract_payload()
-
-
-@router.get("/api/dashboard")
-def dashboard() -> dict[str, Any]:
-    _, panel_data = deps._context()
-    return deps.dashboard_payload(panel_data)
+    return loaders.panel_contract_payload()
 
 
 @router.get("/api/panel-snapshot")
 def panel_snapshot(scope: str = "dashboard", offset: int = 0, limit: int | None = None) -> dict[str, Any]:
     if scope == "market":
-        config = deps.load_config()
-        panel_data = deps.load_market_panel_data(config)
-        return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        config = config_owner.load_config()
+        panel_data = loaders.load_market_panel_data(config)
+        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "dashboard":
-        _, panel_data = deps._context()
-        return deps.panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
+        _, panel_data = panel_owner.context()
+        return payloads.panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
     if scope in {"watchlist-watched", "watchlist-unwatched"}:
-        config, panel_data = deps._context(
+        config, panel_data = panel_owner.context(
             cache_key=f"scope:{scope}:{offset}:{limit}",
-            loader=lambda config: deps.load_watchlist_scope_data(config, scope, offset=offset, limit=limit),
+            loader=lambda active_config: loaders.load_watchlist_scope_data(active_config, scope, offset=offset, limit=limit),
         )
-        return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
     if scope == "research":
-        # The legacy research route is a redirect in the UI, but its API powers
-        # integrations. Reuse the bounded daily-research owner so it cannot
-        # rebuild every global model and time out under ingestion pressure.
-        config, panel_data = deps._context(cache_key="scope:research", loader=deps.load_daily_research_panel_data)
-        return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
-    config, panel_data = deps._context(cache_key=f"scope:{scope}", loader=lambda config: deps.load_panel_scope_data(config, scope))
-    return deps.scope_panel_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
-
-
-@router.get("/api/decision-readiness")
-def decision_readiness() -> dict[str, Any]:
-    return deps._table_payload("decision_readiness")
-
-
-@router.get("/api/candidates")
-def candidates() -> dict[str, Any]:
-    return deps._table_payload("candidates")
-
-
-@router.get("/api/signals")
-def signals() -> dict[str, Any]:
-    _, panel_data = deps._context(
-        cache_key="table:signals",
-        loader=lambda config: deps.load_panel_data(config, table_names=("signals", "candidates")),
+        config, panel_data = panel_owner.context(
+            cache_key="scope:research",
+            loader=loaders.load_daily_research_panel_data,
+        )
+        return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
+    config, panel_data = panel_owner.context(
+        cache_key=f"scope:{scope}",
+        loader=lambda active_config: loaders.load_panel_scope_data(active_config, scope),
     )
-    return deps.signals_payload(panel_data)
+    return panel_owner.scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
 
 
-@router.get("/api/opportunities-ranked")
-def opportunities_ranked() -> dict[str, Any]:
-    return deps._table_payload("opportunities_ranked")
-
-
-@router.get("/api/opportunity-sources")
-def opportunity_sources() -> dict[str, Any]:
-    return deps._table_payload("opportunity_sources")
-
-
-@router.get("/api/discovered-universe")
-def discovered_universe() -> dict[str, Any]:
-    return deps._table_payload("discovered_universe")
-
-
-@router.get("/api/decision-queue")
-def decision_queue() -> dict[str, Any]:
-    return deps._table_payload("decision_queue")
-
-
-@router.get("/api/source-freshness")
-def source_freshness(limit: int = deps.SOURCE_FRESHNESS_DEFAULT_LIMIT) -> dict[str, Any]:
-    return deps._capped_table_payload("source_freshness", limit=limit)
-
-
-@router.get("/api/symbol-decision-snapshots")
-def symbol_decision_snapshots() -> dict[str, Any]:
-    return deps._table_payload("symbol_decision_snapshots")
-
-
-@router.get("/api/market-context")
-def market_context() -> dict[str, Any]:
-    return deps._table_payload("market_context")
-
-
-@router.get("/api/daily-brief")
-def daily_brief() -> dict[str, Any]:
-    return deps._table_payload("daily_brief")
-
-
-@router.get("/api/feed")
-def feed() -> dict[str, Any]:
-    return deps._table_payload("feed_signals")
+__all__ = ["router"]

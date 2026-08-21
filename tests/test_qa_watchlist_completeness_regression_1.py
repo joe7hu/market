@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
-from app import data_access
+from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.jobs.update_market_data import _market_metrics_row
@@ -62,7 +62,7 @@ def test_market_metrics_are_composed_into_watchlist_screen(migrated_postgres_dsn
                 [instrument_id],
             )
 
-        panel = data_access.load_table_panel_data(
+        panel = loaders_owner.load_table_panel_data(
             {"database": {"url": migrated_postgres_dsn}}, "universe_screen"
         )
         row = panel.rows("universe_screen")[0]

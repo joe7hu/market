@@ -10,7 +10,7 @@ from investment_panel.database.source_facts import SourceFactRepository
 from investment_panel.database.preopen_context import compact_preopen_context
 from investment_panel.database.today_analysis import _option_item, refresh_today_publication
 from investment_panel.jobs import codex_preopen_brief
-from app.data_access.portfolio_ledger import record_portfolio_transaction
+from investment_panel.database.portfolio_ledger import record_portfolio_transaction
 
 
 def test_today_publication_separates_raw_quotes_from_decision_rows(migrated_postgres_dsn: str) -> None:

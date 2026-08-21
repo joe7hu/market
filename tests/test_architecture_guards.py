@@ -14,8 +14,8 @@ import tomllib
 from pathlib import Path
 
 from scripts.architecture_inventory import (
-    KNOWN_COMPATIBILITY_FILES,
     KNOWN_COMPATIBILITY_ROUTES,
+    compatibility_references,
     console_script_violations,
     local_import_cycles,
     production_private_imports,
@@ -38,14 +38,10 @@ KNOWN_CYCLE_COMPONENTS = {
 }
 KNOWN_PRIVATE_IMPORT_EDGES = frozenset(
     {
-        "app/data_access/__init__.py app.data_access.payloads",
         "app/data_access/config.py app.data_access.coerce",
-        "app/data_access/decision_brief.py investment_panel.core.decision",
         "app/data_access/payloads.py app.data_access.coerce",
         "app/data_access/settings.py app.data_access.coerce",
         "app/data_access/settings.py app.data_access.payloads",
-        "app/deps.py app.panel_snapshot",
-        "app/main.py app.deps",
         "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief",
         "src/investment_panel/core/decision/__init__.py investment_panel.core.decision.brief_options",
         "src/investment_panel/core/decision/brief.py investment_panel.core.decision.brief_coerce",
@@ -267,10 +263,8 @@ def test_application_seams_are_static_and_split() -> None:
     }
     seam_dir = REPO_ROOT / "app"
     assert {path.name for path in seam_dir.glob("*.py")} >= expected
-    deps_text = (seam_dir / "deps.py").read_text(encoding="utf-8")
-    assert "__getattr__" not in deps_text
-    assert "import_module" not in deps_text
-    assert "__all__" in deps_text
+    assert not (seam_dir / "deps.py").exists()
+    assert not (seam_dir / "panel_contracts.py").exists()
 
 
 def test_known_compatibility_files_and_routes_are_closed_sets() -> None:
@@ -280,7 +274,7 @@ def test_known_compatibility_files_and_routes_are_closed_sets() -> None:
         if path.name in {"deps.py", "panel_contracts.py"}
         or any(token in path.name.casefold() for token in ("legacy", "compat", "deprecated"))
     }
-    assert observed_files <= KNOWN_COMPATIBILITY_FILES
+    assert not observed_files
 
     openapi = REPO_ROOT / "frontend" / "src" / "generated" / "openapi.json"
     routes = set(__import__("json").loads(openapi.read_text(encoding="utf-8"))["paths"])
@@ -289,7 +283,46 @@ def test_known_compatibility_files_and_routes_are_closed_sets() -> None:
         for route in routes
         if any(token in route.casefold() for token in ("legacy", "compat", "deprecated", "watchlist-screen", "etf-premiums", "tradingview-chart-state", "decision-truth"))
     }
-    assert observed_routes <= KNOWN_COMPATIBILITY_ROUTES
+    assert not observed_routes
+    assert not {marker: count for marker, count in compatibility_references().items() if count}
+
+
+def test_route_manifest_matches_generated_openapi() -> None:
+    import json
+
+    manifest = json.loads((REPO_ROOT / "docs" / "api-route-manifest.json").read_text(encoding="utf-8"))
+    openapi = json.loads(
+        (REPO_ROOT / "frontend" / "src" / "generated" / "openapi.json").read_text(encoding="utf-8")
+    )
+    actual = {
+        path: sorted(method.upper() for method in operations if method in {"get", "post", "put", "patch", "delete"})
+        for path, operations in openapi["paths"].items()
+    }
+    assert actual == manifest
+
+
+def test_retained_routes_have_explicit_router_owners() -> None:
+    import json
+
+    from fastapi.routing import APIRoute
+    from app.main import app
+
+    manifest = json.loads((REPO_ROOT / "docs" / "api-route-manifest.json").read_text(encoding="utf-8"))
+    manifest_routes = {
+        (path, method)
+        for path, methods in manifest.items()
+        for method in methods
+    }
+    observed: dict[tuple[str, str], str] = {}
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+            continue
+        for method in route.methods or ():
+            if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+                observed[(route.path, method)] = route.endpoint.__module__
+
+    assert set(observed) == manifest_routes
+    assert all(module.startswith("app.routers.") for module in observed.values())
 
 
 def test_generated_contracts_are_current() -> None:

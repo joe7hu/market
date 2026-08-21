@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from app import data_access
+from app.data_access import loaders as loaders_owner
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 
@@ -45,7 +45,7 @@ def test_daily_bars_are_composed_into_complete_watchlist_technicals(
         ) == len(rows)
         repository.finish_run(run_id, "succeeded")
 
-        panel = data_access.load_table_panel_data(
+        panel = loaders_owner.load_table_panel_data(
             {"database": {"url": migrated_postgres_dsn}}, "technicals"
         )
         row = next(item for item in panel.rows("technicals") if item["symbol"] == "HIST")

@@ -8,8 +8,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app import deps
 from app.actions.event_scout import persist_mrna_replay, process_signal
+from app.data_access import config as config_owner
+from app.data_access import loaders
+from app.request_security import require_local_request
 from investment_panel.core.event_scout import replay_mrna
 
 
@@ -27,15 +29,10 @@ class EventScoutSignalInput(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.get("/api/decision-truth")
-def decision_truth() -> dict[str, Any]:
-    return deps._table_payload("decision_truth")
-
-
 @router.get("/api/event-scout")
 def event_scout_events(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
-    config = deps.load_config()
-    panel = deps.load_panel_data(
+    config = config_owner.load_config()
+    panel = loaders.load_panel_data(
         config,
         table_names=("event_scout_events", "decision_truth"),
         query_symbol_filter={symbol.upper()} if symbol else None,
@@ -52,8 +49,8 @@ def event_scout_events(symbol: str | None = Query(None, min_length=1, max_length
 
 @router.get("/api/event-scout/packets")
 def event_scout_packets(symbol: str | None = Query(None, min_length=1, max_length=16)) -> dict[str, Any]:
-    config = deps.load_config()
-    panel = deps.load_panel_data(
+    config = config_owner.load_config()
+    panel = loaders.load_panel_data(
         config,
         table_names=("event_decision_packets",),
         query_symbol_filter={symbol.upper()} if symbol else None,
@@ -72,18 +69,18 @@ def event_scout_replay(symbol: str = Query("MRNA", min_length=1, max_length=16))
 
 @router.post("/api/event-scout/replay")
 def persist_event_scout_replay(request: Request, symbol: str = Query("MRNA", min_length=1, max_length=16)) -> dict[str, Any]:
-    deps._require_local_request(request)
+    require_local_request(request)
     if symbol.strip().upper() != "MRNA":
         raise HTTPException(status_code=404, detail="Only the MRNA acceptance replay is available")
-    config = deps.load_config()
+    config = config_owner.load_config()
     packet = persist_mrna_replay(config, symbol=symbol)
     return {"status": "persisted", "packet": packet}
 
 
 @router.post("/api/event-scout/signals")
 def event_scout_signal(payload: EventScoutSignalInput, request: Request) -> dict[str, Any]:
-    deps._require_local_request(request)
-    config = deps.load_config()
+    require_local_request(request)
+    config = config_owner.load_config()
     signal = payload.model_dump(mode="json")
     signal["payload"] = signal.pop("data")
     try:

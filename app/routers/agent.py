@@ -7,8 +7,13 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
-from app import deps
 from app.actions.agents import AgentActions
+from app import job_control, panel_snapshot
+from app.contracts import AgentAnalyzeInput
+from app.data_access import config as config_owner
+from app.data_access import loaders
+from app.request_security import require_local_request
+from investment_panel.core.daily_research_prompt import build_daily_research_prompt
 
 router = APIRouter()
 
@@ -16,7 +21,7 @@ router = APIRouter()
 def _actions() -> AgentActions:
     # Route actions must share the app's request-config seam so test and
     # alternate-runtime callers never fall through to the host's live database.
-    return AgentActions(deps.load_config(), deps.start_refresh_job)
+    return AgentActions(config_owner.load_config(), job_control.start_refresh_job)
 
 
 @router.get("/api/agent")
@@ -33,11 +38,11 @@ def current_agent_experiment() -> dict[str, Any]:
 
 @router.get("/api/agent/research-prompt")
 def agent_research_prompt() -> dict[str, Any]:
-    _, research_data = deps._context(
+    _, research_data = panel_snapshot.context(
         cache_key="agent:daily-research",
-        loader=deps.load_daily_research_panel_data,
+        loader=loaders.load_daily_research_panel_data,
     )
-    research_prompt = deps.build_daily_research_prompt(
+    research_prompt = build_daily_research_prompt(
         research_data.tables,
         status={
             "ready": research_data.status.ready,
@@ -50,8 +55,8 @@ def agent_research_prompt() -> dict[str, Any]:
 
 
 @router.post("/api/agent/analyze")
-def analyze_ticker(payload: deps.AgentAnalyzeInput, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    deps._require_local_request(request)
+def analyze_ticker(payload: AgentAnalyzeInput, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    require_local_request(request)
     actions = _actions()
     try:
         result = actions.queue_analysis(payload.ticker, prompt=payload.prompt or "")
@@ -60,10 +65,10 @@ def analyze_ticker(payload: deps.AgentAnalyzeInput, request: Request, background
     job = result["job"]
     if job.get("created"):
         background_tasks.add_task(
-            deps._execute_background_refresh_job,
+            job_control.execute_background_refresh_job,
             job["id"],
             "run_option_agents_ondemand",
             actions.config.database.url,
         )
-    deps._invalidate_context_cache()
+    panel_snapshot.invalidate_context_cache()
     return result

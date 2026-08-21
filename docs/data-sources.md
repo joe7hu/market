@@ -75,8 +75,8 @@ Sources:
   commands.
 - The TradingView adapter in `himself65/finance-skills` is read-only and
   attaches to the logged-in TradingView desktop app over CDP.
-- Useful data surfaces: quotes, screeners, news, watchlists, alerts, chart
-  state/screenshots, options expiries, and options chains with bid/ask/mid,
+- Useful data surfaces: quotes, screeners, news, options expiries, and options
+  chains with bid/ask/mid,
   IV, Greeks, rho, theoretical price, bid IV, ask IV, and OPRA contract
   symbols.
 - TradingView's current OpenCLI options-chain output does not include contract
@@ -85,11 +85,8 @@ Sources:
   until an IBKR or dedicated options-data provider supplies those fields.
 - Caveat: availability follows the logged-in TradingView account/session and
   desktop app state.
-- Market stores TradingView personal surfaces as read-only metadata:
-  `tradingview_symbol_search`, `tradingview_watchlists`,
-  `tradingview_alerts`, and `tradingview_chart_state`. Failures on these
-  personal surfaces are non-blocking and should be recorded through
-  `provider_runs` / `source_health`.
+- Market stores exchange-qualified TradingView identity with the instrument
+  read model. Personal TradingView state is outside the application contract.
 
 Sources:
 - https://github.com/jackwener/opencli
@@ -156,15 +153,14 @@ skill prompt where deterministic code is enough.
 Codified in backend code:
 
 - TradingView reader: provider adapter plus normalized tables for quotes,
-  screeners, options, news, symbol search, watchlists, alerts, and chart state.
+  screeners, options, news, and exchange-qualified instrument identity.
 - Options payoff: Black-Scholes/theoretical and expiry payoff scenarios from
   stored option-chain rows.
 - Earnings/estimate analysis: revision momentum, surprise quality, estimate
   spread, and analyst-target setup scores from stored yfinance rows.
 - Valuation: DCF base case, relative revenue multiple, and blended valuation
   rows from stored fundamentals, quotes, and market caps.
-- SEPA, liquidity, correlation, and ETF premium analyses remain deterministic
-  read models.
+- SEPA, liquidity, and correlation analyses remain deterministic read models.
 
 LLM use is reserved for unstructured inputs: transcript/filing/news synthesis,
 memo prose, qualitative assumption selection when structured data is absent, or

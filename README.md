@@ -71,51 +71,24 @@ This workflow should run from the canonical `mini1.local` checkout at
 ## API
 
 - `GET /api/status`
-- `GET /api/dashboard`
+- `GET /api/panel-contract`
 - `GET /api/panel-snapshot?scope=today`
-- `GET /api/candidates`
 - `GET /api/tickers/{symbol}`
-- `GET /api/portfolio`
-- `GET /api/theses`
-- `GET /api/thesis-monitor`
-- `GET /api/trader-twins`
-- `GET /api/catalysts`
-- `GET /api/fundamentals`
-- `GET /api/disclosures`
-- `GET /api/quotes`
-- `GET /api/screener`
-- `GET /api/options-expiries`
-- `GET /api/options-chain`
-- `GET /api/options-payoff-scenarios`
-- `GET /api/options-provider-capabilities`
-- `GET /api/options-expiry-signals`
-- `GET /api/options-ticker-signals`
+- `GET /api/quotes?symbols=QQQ`
+- `GET /api/options/decision-brief`
+- `GET /api/options/workspace`
+- `GET /api/options/tickets/{decision_id}`
+- `GET /api/options/history/snapshots`
+- `GET /api/decision-inbox`
+- `GET /api/agent`
 - `POST /api/agent-thesis`
 - `POST /api/agent-postmortems`
-- `GET /api/news`
-- `GET /api/tradingview-symbol-search`
-- `GET /api/tradingview-watchlists`
-- `GET /api/tradingview-alerts`
-- `GET /api/tradingview-chart-state`
-- `GET /api/sepa`
-- `GET /api/liquidity`
-- `GET /api/correlations`
-- `GET /api/etf-premiums`
-- `GET /api/analyst-estimates`
-- `GET /api/earnings`
-- `GET /api/earnings-setups`
-- `GET /api/valuations`
-- `GET /api/provider-runs`
-- `GET /api/source-health`
-- `GET /api/sources`
-- `GET /api/sources/{source_id}`
-- `GET /api/source-runs`
-- `GET /api/source-items`
-- `GET /api/ticker-source-signals`
+- `GET /api/source-catalog`
 - `GET /api/source-ingestion-audit`
-- `GET /api/discovered-universe`
-- `GET /api/decision-queue`
-- `GET /api/source-freshness`
+- `GET /api/sources/{source_id}`
+- `GET /api/portfolio/transactions`
+- `POST /api/portfolio/transactions`
+- `PUT /api/theses/{symbol}`
 - `GET /api/tickers/{symbol}/decision-snapshot`
 - `GET /api/settings`
 
@@ -140,12 +113,13 @@ sharing.
 Market prices are normalized into compact daily bars and one latest quote per
 symbol. OpenCLI news/X and configured RSS/Substack sources retain one compressed
 provider payload manifest plus query-critical content facts. TradingView
-personal-state replication and ETF-premium enrichment are intentionally retired;
-those compatibility endpoints remain empty instead of becoming database owners.
+personal-state replication and ETF-premium enrichment are outside the current
+read-model contract.
 
 Market codifies high-value finance-skills workflows as deterministic backend
 read models where possible: options payoff scenarios, earnings setup scoring,
-estimate revision analysis, TradingView metadata, liquidity/correlation/SEPA,
+estimate revision analysis, exchange-qualified TradingView identity,
+liquidity/correlation/SEPA,
 and DCF/relative/blended valuation rows. LLMs should only be used for
 unstructured interpretation, memo prose, or parsing a user-submitted options
 screenshot/free-form strategy into structured legs.

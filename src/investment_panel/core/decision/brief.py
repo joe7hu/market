@@ -549,7 +549,7 @@ def _source_health_by_family(tables: dict[str, list[dict[str, Any]]]) -> dict[st
         "news": ["news"],
         "filings": ["disclosures"],
         "portfolio": ["portfolio"],
-        "tradingview": ["tradingview_symbol_search", "tradingview_watchlists", "tradingview_alerts", "tradingview_chart_state"],
+        "tradingview": ["instrument_market_identity"],
     }
     health = {}
     for family, keys in families.items():

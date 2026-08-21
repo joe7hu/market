@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+__all__ = ["OWNED_CORRELATIONS_QUERY", "QueryPolicy", "build_query_policies"]
+
 
 @dataclass(frozen=True)
 class QueryPolicy:

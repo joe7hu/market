@@ -2,9 +2,7 @@
 
 Thin app factory: it builds the FastAPI app, includes the routers under
 `app/routers/`, and mounts the built frontend. Route logic lives in the routers;
-shared service helpers/loaders/models live in `app/deps.py`. Add a new route by
-adding a router under `app/routers/` and registering it in `app.routers.ALL_ROUTERS`
-— do not grow this file back into a god-module.
+domain owners live in their owning modules.
 """
 from __future__ import annotations
 
@@ -18,24 +16,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import deps
+from app import dependencies
 from app.routers import ALL_ROUTERS
 from app.scheduler import run_scheduler, scheduler_enabled
 from investment_panel.core.refresh_jobs import mark_stale_running_jobs
-from investment_panel.database.authority import close_cached_runtimes
+from investment_panel.database.authority import close_cached_runtimes, database_url
 
-# Re-exported for tests and any caller importing from app.main.
-from app.deps import _invalidate_context_cache, _require_local_request  # noqa: F401
+APP_TITLE = "Personal Investment Panel"
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    config = deps.load_config()
-    database_url = deps.database_url(config)
-    mark_stale_running_jobs(database_url)
+    config = dependencies.get_config()
+    dsn = database_url(config)
+    mark_stale_running_jobs(dsn)
     scheduler_task: asyncio.Task | None = None
     if scheduler_enabled():
-        scheduler_task = asyncio.create_task(run_scheduler(database_url))
+        scheduler_task = asyncio.create_task(run_scheduler(dsn))
     else:
         logging.getLogger("market.scheduler").info("market scheduler disabled via MARKET_SCHEDULER_ENABLED")
     try:
@@ -51,7 +48,7 @@ async def lifespan(_app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=deps.APP_TITLE, lifespan=lifespan)
+    app = FastAPI(title=APP_TITLE, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

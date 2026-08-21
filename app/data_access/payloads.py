@@ -3,16 +3,16 @@
 from __future__ import annotations
 from typing import Any
 from app.scheduler import scheduler_status
-from app.panel_contracts import panel_contract_payload as contract_panel_payload
 from investment_panel.core.panel import (
     build_ticker_dossier,
     dashboard_payload as core_dashboard_payload,
+    panel_contract_payload as contract_panel_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
 )
 
 from app.data_access.types import PanelData
 from app.data_access.coerce import _int_value, jsonable
-from app.data_access.decision_brief import ticker_decision_brief
+from investment_panel.core.decision import ticker_decision_brief
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
@@ -29,7 +29,7 @@ def status_payload(panel_data: PanelData) -> dict[str, Any]:
 
 
 
-def _runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
+def runtime_metadata(config: dict[str, Any]) -> dict[str, Any]:
     agents = config.get("agents", {}) if isinstance(config.get("agents"), dict) else {}
     option_thesis = agents.get("option_thesis", {}) if isinstance(agents.get("option_thesis"), dict) else {}
     option_postmortem = agents.get("option_postmortem", {}) if isinstance(agents.get("option_postmortem"), dict) else {}

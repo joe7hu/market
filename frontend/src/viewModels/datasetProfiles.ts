@@ -38,15 +38,13 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
   watchlist: {
     title: "Watchlist",
     eyebrow: "Market data",
-    subtitle: "Prices, watchlists, and ranked universe context.",
+    subtitle: "Prices and ranked universe context.",
     sections: [
       { title: "Quotes", getRows: (data) => rows(data.quotes) },
-      { title: "TradingView Watchlists", getRows: (data) => rows(data.tradingviewWatchlists) },
       { title: "Universe Screen", getRows: (data) => rows(data.universeScreen) },
     ],
     metricLabels: [
       ["Quote Coverage", "Quotes", "priced names available", "good"],
-      ["Watchlists", "TradingView Watchlists", "TradingView lists loaded", "info"],
       ["Universe", "Universe Screen", "rankable names", "info"],
     ],
   },
@@ -77,12 +75,10 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
     subtitle: "Investor disclosures, ownership consensus, and tracked investor context.",
     sections: [
       { title: "Disclosures", getRows: (data) => rows(data.disclosures) },
-      { title: "Trader Twins", getRows: (data) => rows(data.traderTwins) },
       { title: "Ownership Consensus", getRows: (data) => rows(data.ownershipConsensus) },
     ],
     metricLabels: [
       ["Disclosures", "Disclosures", "filings available", "info"],
-      ["Investor Models", "Trader Twins", "tracked investor profiles", "info"],
       ["Consensus", "Ownership Consensus", "shared ownership signals", "good"],
     ],
   },
@@ -91,13 +87,13 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
     eyebrow: "Macro context",
     subtitle: "Market context, valuation, technicals, liquidity, and earnings setup.",
     sections: [
-      { title: "Market Context", getRows: (data) => rows(data.marketContext) },
+      { title: "Market Environment", getRows: (data) => rows(data.marketEnvironmentModel) },
       { title: "Valuations", getRows: (data) => rows(data.valuations) },
       { title: "Technicals", getRows: (data) => rows(data.technicals) },
       { title: "Earnings Setups", getRows: (data) => rows(data.earningsSetups) },
     ],
     metricLabels: [
-      ["Context", "Market Context", "macro and valuation backdrop", "info"],
+      ["Environment", "Market Environment", "macro backdrop", "info"],
       ["Technicals", "Technicals", "trend features loaded", "good"],
       ["Earnings Setups", "Earnings Setups", "event timing", "info"],
     ],
@@ -108,11 +104,9 @@ const profileSpecs: Record<DatasetProfileId, ProfileSpec> = {
     subtitle: "Disclosure and tracked-investor context.",
     sections: [
       { title: "Disclosures", getRows: (data) => rows(data.disclosures) },
-      { title: "Trader Twins", getRows: (data) => rows(data.traderTwins) },
     ],
     metricLabels: [
       ["Disclosures", "Disclosures", "filings available", "info"],
-      ["Trader Twins", "Trader Twins", "investor profiles", "info"],
     ],
   },
   calendar: {

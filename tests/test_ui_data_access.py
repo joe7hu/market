@@ -3,13 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from app import data_access
+from app.data_access import config as config_owner
+from app.data_access import loaders as loaders_owner
+from app.data_access import mutations as mutations_owner
+from app.data_access import payloads as payloads_owner
+from app.data_access import settings as settings_owner
+from app.data_access.types import DataStatus, PanelData
 from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.portfolio_ledger import record_portfolio_transaction
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.thesis import thesis_history, thesis_monitor_rows
+from investment_panel.database.user_state import portfolio_rows, watchlist_rows
+from investment_panel.core.panel import panel_contract_payload
 
 
 def test_unavailable_postgresql_returns_explicit_status() -> None:
-    panel_data = data_access.load_panel_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}})
+    panel_data = loaders_owner.load_panel_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}})
 
     assert panel_data.status.ready is False
     assert panel_data.status.source == "postgresql-error"
@@ -18,7 +27,7 @@ def test_unavailable_postgresql_returns_explicit_status() -> None:
 
 
 def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_dsn: str) -> None:
-    panel_data = data_access.load_table_panel_data(
+    panel_data = loaders_owner.load_table_panel_data(
         {"database": {"url": migrated_postgres_dsn}}, "technicals"
     )
 
@@ -29,7 +38,7 @@ def test_postgresql_technicals_model_is_supported_when_empty(migrated_postgres_d
 
 
 def test_complete_contract_has_no_unavailable_postgresql_models(migrated_postgres_dsn: str) -> None:
-    panel_data = data_access.load_panel_data({"database": {"url": migrated_postgres_dsn}})
+    panel_data = loaders_owner.load_panel_data({"database": {"url": migrated_postgres_dsn}})
 
     assert panel_data.status.ready is True
     assert panel_data.metadata["unavailable_models"] == []
@@ -39,26 +48,26 @@ def test_load_config_honors_market_database_url_override(tmp_path, monkeypatch) 
     url = "postgresql://localhost/market-test"
     monkeypatch.setenv("MARKET_DATABASE_URL", url)
 
-    config = data_access.load_config(tmp_path / "missing-config.yaml")
+    config = config_owner.load_config(tmp_path / "missing-config.yaml")
 
     assert config["database"]["url"] == url
 
 
 def test_table_payload_normalizes_rows() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={"candidates": [{"symbol": "ABC"}]},
     )
 
-    payload = data_access.table_payload(panel_data, "candidates")
+    payload = payloads_owner.table_payload(panel_data, "candidates")
 
     assert payload["count"] == 1
     assert payload["rows"][0]["symbol"] == "ABC"
 
 
 def test_ticker_payload_matches_symbol() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "candidates": [{"symbol": "ABC", "name": "Alpha"}],
             "portfolio": [],
@@ -72,7 +81,7 @@ def test_ticker_payload_matches_symbol() -> None:
         },
     )
 
-    payload = data_access.ticker_payload(panel_data, "abc")
+    payload = payloads_owner.ticker_payload(panel_data, "abc")
     dossier = payload["dossier"]
 
     assert payload["symbol"] == "ABC"
@@ -85,56 +94,35 @@ def test_ticker_payload_matches_symbol() -> None:
     assert dossier["thesis"]["coverage"]["status"] == "live"
 
 
-def test_ticker_payload_resolves_tradingview_exchange_from_search_rows() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
-        tables={
-            "universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}],
-            "tradingview_symbol_search": [
-                {"query": "BFLY", "symbol": "BFLY", "description": "Butterfly Network", "instrument_type": "stock", "exchange": "BOATS"},
-                {"query": "BFLY", "symbol": "BFLY", "description": "CBOE S&P 500 Iron Butterfly Index", "instrument_type": "index", "exchange": "CBOE"},
-                {"query": "BFLY", "symbol": "BFLY", "description": "Butterfly Network", "instrument_type": "stock", "exchange": "NYSE"},
-            ],
-        },
-    )
-
-    payload = data_access.ticker_payload(panel_data, "bfly")
-
-    assert payload["dossier"]["identity"]["tradingview_symbol"] == "NYSE:BFLY"
-
-
 def test_ticker_payload_prefers_persisted_market_identity() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}],
             "instrument_market_identity": [{"symbol": "BFLY", "primary_exchange": "NYSE", "tradingview_symbol": "NYSE:BFLY"}],
-            "tradingview_symbol_search": [
-                {"query": "BFLY", "symbol": "BFLY", "instrument_type": "stock", "exchange": "BOATS"},
-            ],
         },
     )
 
-    payload = data_access.ticker_payload(panel_data, "bfly")
+    payload = payloads_owner.ticker_payload(panel_data, "bfly")
 
     assert payload["dossier"]["identity"]["exchange"] == "NYSE"
     assert payload["dossier"]["identity"]["tradingview_symbol"] == "NYSE:BFLY"
 
 
 def test_ticker_payload_does_not_guess_nasdaq_without_exchange_data() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={"universe_screen": [{"symbol": "BFLY", "name": "Butterfly Network", "asset_class": "equity"}]},
     )
 
-    payload = data_access.ticker_payload(panel_data, "bfly")
+    payload = payloads_owner.ticker_payload(panel_data, "bfly")
 
     assert payload["dossier"]["identity"]["tradingview_symbol"] == "BFLY"
 
 
 def test_ticker_payload_organizes_sections_for_deep_links() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "decision_queue": [{"symbol": "NVDA", "score": 91, "action_grade": "research"}],
             "quotes": [{"symbol": "NVDA", "price": 135.25, "change_pct": 1.4, "observed_at": "2026-06-12T20:00:00"}],
@@ -144,7 +132,7 @@ def test_ticker_payload_organizes_sections_for_deep_links() -> None:
         },
     )
 
-    payload = data_access.ticker_payload(panel_data, "nvda")
+    payload = payloads_owner.ticker_payload(panel_data, "nvda")
     dossier = payload["dossier"]
 
     assert payload["found"] is True
@@ -157,8 +145,8 @@ def test_ticker_payload_organizes_sections_for_deep_links() -> None:
 
 
 def test_ticker_payload_reports_missing_coverage_without_fabricating_rows() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "discovered_universe": [{"symbol": "CRWV", "name": "CoreWeave", "source_counts": {"filing": 1}}],
             "universe_screen": [{"symbol": "CRWV", "name": "CoreWeave", "watch_state": "candidate", "market_cap": 10_000_000_000, "forward_pe": 55, "roic": 9, "quality_score": 42, "value_signal": "expensive"}],
@@ -166,7 +154,7 @@ def test_ticker_payload_reports_missing_coverage_without_fabricating_rows() -> N
         },
     )
 
-    payload = data_access.ticker_payload(panel_data, "crwv")
+    payload = payloads_owner.ticker_payload(panel_data, "crwv")
     dossier = payload["dossier"]
     coverage = dossier["coverage"]
 
@@ -188,8 +176,8 @@ def test_ticker_payload_reports_missing_coverage_without_fabricating_rows() -> N
 
 
 def test_new_ia_panel_scopes_are_backend_owned() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "feed_signals": [{"id": "f1", "title": "Portfolio signal"}],
             "universe_screen": [{"symbol": "NVDA", "watch_state": "watched"}],
@@ -207,7 +195,7 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         },
     )
 
-    feed_payload = data_access.panel_snapshot_payload(panel_data, "feed")
+    feed_payload = payloads_owner.panel_snapshot_payload(panel_data, "feed")
     assert feed_payload["tables"]["feed_signals"]["count"] == 1
     assert list(feed_payload["tables"]) == ["feed_signals"]
     assert feed_payload["dashboard"] is None
@@ -222,11 +210,11 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
         "decision_readiness",
     }
     for scope in ["feed", "today", "watchlist", "sources", "superinvestors", "market", "portfolio", "research", "filings", "calendar"]:
-        payload = data_access.panel_snapshot_payload(panel_data, scope)
+        payload = payloads_owner.panel_snapshot_payload(panel_data, scope)
         assert operational_tables.isdisjoint(payload["tables"])
         assert payload["dashboard"] is None
-    assert data_access.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
-    source_tables = data_access.panel_snapshot_payload(panel_data, "sources")["tables"]
+    assert payloads_owner.panel_snapshot_payload(panel_data, "watchlist")["tables"]["universe_screen"]["count"] == 1
+    source_tables = payloads_owner.panel_snapshot_payload(panel_data, "sources")["tables"]
     assert list(source_tables) == [
         "source_ticker_rankings",
         "ticker_source_signals",
@@ -243,8 +231,8 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert source_tables["source_items"]["count"] == 1
     assert source_tables["source_consensus"]["count"] == 1
     assert source_tables["sources"]["count"] == 1
-    assert data_access.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
-    market_tables = data_access.panel_snapshot_payload(panel_data, "market")["tables"]
+    assert payloads_owner.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
+    market_tables = payloads_owner.panel_snapshot_payload(panel_data, "market")["tables"]
     assert set(market_tables) == {
         "market_valuation_reference_charts",
         "market_environment_assets",
@@ -256,8 +244,8 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
 
 
 def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "preopen_daily_brief": [{"summary": "Macro veto: none"}],
             "daily_brief": [{"category": "catalysts", "symbol": "TSLA"}],
@@ -273,7 +261,7 @@ def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
         },
     )
 
-    tables = data_access.panel_snapshot_payload(panel_data, "today")["tables"]
+    tables = payloads_owner.panel_snapshot_payload(panel_data, "today")["tables"]
 
     assert list(tables) == [
         "preopen_daily_brief",
@@ -291,7 +279,7 @@ def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
 def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
 
-    panel_data = data_access.load_panel_scope_data(config, "feed")
+    panel_data = loaders_owner.load_panel_scope_data(config, "feed")
 
     assert set(panel_data.tables) == {"feed_signals"}
     assert panel_data.rows("source_freshness") == []
@@ -304,9 +292,9 @@ def test_source_table_loader_uses_requested_postgresql_model(monkeypatch) -> Non
         calls.append(table_names)
         return {"source_items": []}, {"database": "postgresql"}
 
-    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    data_access.load_table_panel_data({"database": {"url": "postgresql:///test"}}, "source_items")
+    loaders_owner.load_table_panel_data({"database": {"url": "postgresql:///test"}}, "source_items")
 
     assert calls == [("source_items",)]
 
@@ -328,9 +316,9 @@ def test_daily_research_loader_bounds_detail_to_active_seed_symbols(monkeypatch)
             }, {"database": "postgresql", "available_model_count": 4, "unavailable_models": []}
         return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
 
-    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel = data_access.load_daily_research_panel_data({"database": {"url": "postgresql:///test"}})
+    panel = loaders_owner.load_daily_research_panel_data({"database": {"url": "postgresql:///test"}})
 
     assert panel.status.ready is True
     assert {"AAOI", "ETH-USD", "MSFT", "NVDA", "SPY", "QQQ", "TLT", "BTC-USD"} <= calls[1]["query_symbol_filter"]
@@ -351,9 +339,9 @@ def test_portfolio_scope_bounds_quotes_to_current_positions(monkeypatch) -> None
             }, {"database": "postgresql", "available_model_count": 1, "unavailable_models": []}
         return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
 
-    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel = data_access.load_panel_scope_data({"database": {"url": "postgresql:///test"}}, "portfolio")
+    panel = loaders_owner.load_panel_scope_data({"database": {"url": "postgresql:///test"}}, "portfolio")
 
     assert panel.status.ready is True
     assert panel.metadata["portfolio_bounded"] is True
@@ -371,9 +359,9 @@ def test_panel_loader_preserves_explicit_empty_symbol_filter(monkeypatch) -> Non
         received.update(kwargs)
         return {name: [] for name in table_names}, {"database": "postgresql", "available_model_count": len(table_names), "unavailable_models": []}
 
-    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    data_access.load_panel_data(
+    loaders_owner.load_panel_data(
         {"database": {"url": "postgresql:///test"}},
         table_names=("fundamentals",),
         query_symbol_filter=set(),
@@ -389,9 +377,9 @@ def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
         calls.append(table_names)
         return {name: [] for name in table_names}, {"database": "postgresql"}
 
-    monkeypatch.setattr(data_access.loaders, "load_postgres_tables", fake_helper)
+    monkeypatch.setattr(loaders_owner, "load_postgres_tables", fake_helper)
 
-    panel_data = data_access.load_panel_data({"database": {"url": "postgresql:///test"}})
+    panel_data = loaders_owner.load_panel_data({"database": {"url": "postgresql:///test"}})
 
     assert panel_data.status.ready is True
     assert len(calls) == 1
@@ -400,7 +388,7 @@ def test_default_panel_loader_requests_complete_contract(monkeypatch) -> None:
 
 
 def test_empty_settings_scope_does_not_touch_missing_database() -> None:
-    panel_data = data_access.load_panel_scope_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}}, "settings")
+    panel_data = loaders_owner.load_panel_scope_data({"database": {"url": "postgresql://127.0.0.1:1/missing"}}, "settings")
 
     assert panel_data.status.ready is True
     assert panel_data.status.source == "postgresql"
@@ -408,7 +396,7 @@ def test_empty_settings_scope_does_not_touch_missing_database() -> None:
 
 
 def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str) -> None:
-    panel_data = data_access.load_market_panel_data({"database": {"url": migrated_postgres_dsn}})
+    panel_data = loaders_owner.load_market_panel_data({"database": {"url": migrated_postgres_dsn}})
 
     assert panel_data.status.ready is True
     assert panel_data.status.source == "postgresql"
@@ -419,7 +407,7 @@ def test_market_panel_loader_handles_empty_postgresql(migrated_postgres_dsn: str
 
 
 def test_pure_scoped_postgresql_read_is_empty_when_unpublished(migrated_postgres_dsn: str) -> None:
-    panel_data = data_access.load_table_panel_data({"database": {"url": migrated_postgres_dsn}}, "source_health")
+    panel_data = loaders_owner.load_table_panel_data({"database": {"url": migrated_postgres_dsn}}, "source_health")
 
     assert panel_data.status.source == "postgresql"
     assert panel_data.rows("source_health") == []
@@ -436,19 +424,24 @@ def test_scoped_panel_status_is_ready_when_publication_has_rows(migrated_postgre
     repository.finish_run(run_id, "succeeded")
     repository.publish(run_id, "feed", {"feed_signals": [{"symbol": "NVDA", "summary": "NVDA thesis"}]})
     runtime.close()
-    panel_data = data_access.load_panel_scope_data(config, "feed")
+    panel_data = loaders_owner.load_panel_scope_data(config, "feed")
 
     assert panel_data.status.ready is True
     assert panel_data.rows("feed_signals")
 
 
 def test_panel_contract_lists_scope_and_ticker_tables() -> None:
-    contract = data_access.panel_contract_payload()
+    contract = panel_contract_payload()
 
     assert contract["scopes"]["feed"] == ["feed_signals"]
     assert "source_freshness" not in contract["scopes"]["watchlist"]
     assert contract["scopes"]["health"] == [
         "source_catalog",
+        "source_freshness",
+        "source_health",
+        "source_runs",
+        "provider_runs",
+        "broker_status",
         "option_recovery_funnel",
         "option_recovery_event",
         "option_recovery_opportunity",
@@ -459,14 +452,11 @@ def test_panel_contract_lists_scope_and_ticker_tables() -> None:
     assert "universe_screen" in contract["watchlist_section_tables"]
     assert "decision_queue" in contract["ticker_tables"]
     assert "ticker_data_sources" not in contract["ticker_tables"]
-    assert contract["endpoint_tables"]["feed"] == "feed_signals"
-    assert contract["endpoint_tables"]["instrument-market-identity"] == "instrument_market_identity"
-    assert contract["endpoint_tables"]["watchlist/symbols"] == "manual_watchlist"
 
 
 def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "option_radar_summary": [{"strategy_version": "v1"}],
             "option_radar_opportunity": [{"opportunity_id": "opp-1"}],
@@ -500,7 +490,7 @@ def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
         },
     )
 
-    payload = data_access.panel_snapshot_payload(panel_data, "options-radar")
+    payload = payloads_owner.panel_snapshot_payload(panel_data, "options-radar")
     tables = payload["tables"]
 
     assert "missed_winner_event" not in tables
@@ -508,7 +498,7 @@ def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
     assert "strategy_forward_test_result" not in tables
     assert "candidate_event" not in tables
 
-    research_payload = data_access.panel_snapshot_payload(panel_data, "research")
+    research_payload = payloads_owner.panel_snapshot_payload(panel_data, "research")
 
     assert "raw" in research_payload["tables"]["missed_winner_event"]["rows"][0]
     assert "metrics" in research_payload["tables"]["strategy_backtest_result"]["rows"][0]
@@ -516,8 +506,8 @@ def test_options_radar_scope_compacts_heavy_learning_tables() -> None:
 
 
 def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [
                 {"symbol": "NVDA", "watch_state": "watched"},
@@ -530,8 +520,8 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
         },
     )
 
-    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
-    unwatched = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched")
+    watched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-watched")
+    unwatched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-unwatched")
 
     assert watched["tables"]["watchlist_watched"]["rows"] == [{"symbol": "NVDA", "watch_state": "watched"}]
     assert unwatched["tables"]["watchlist_unwatched"]["rows"] == [{"symbol": "AMD", "watch_state": "candidate"}]
@@ -542,8 +532,8 @@ def test_watchlist_section_scopes_split_rows_and_support_tables() -> None:
 
 
 def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [
                 {"symbol": "NVDA", "watch_state": "watched"},
@@ -556,7 +546,7 @@ def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
         },
     )
 
-    page = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched", offset=1, limit=1)
+    page = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-unwatched", offset=1, limit=1)
 
     assert page["tables"]["watchlist_unwatched"]["count"] == 3
     assert page["tables"]["watchlist_unwatched"]["offset"] == 1
@@ -566,8 +556,8 @@ def test_watchlist_unwatched_scope_pages_rows_and_keeps_total_count() -> None:
 
 
 def test_watchlist_watched_scope_includes_unwatched_count_without_rows() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [
                 {"symbol": "NVDA", "watch_state": "watched"},
@@ -576,7 +566,7 @@ def test_watchlist_watched_scope_includes_unwatched_count_without_rows() -> None
         },
     )
 
-    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+    watched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-watched")
 
     assert watched["tables"]["watchlist_watched"]["count"] == 1
     assert watched["tables"]["watchlist_unwatched"]["count"] == 1
@@ -584,15 +574,15 @@ def test_watchlist_watched_scope_includes_unwatched_count_without_rows() -> None
 
 
 def test_watchlist_section_includes_manual_symbol_before_read_model_refresh() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [],
             "manual_watchlist": [{"symbol": "IBM", "name": "IBM", "asset_class": "equity", "watch_state": "watched"}],
         },
     )
 
-    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
+    watched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-watched")
 
     assert watched["tables"]["watchlist_watched"]["count"] == 1
     assert watched["tables"]["watchlist_watched"]["rows"][0]["symbol"] == "IBM"
@@ -600,16 +590,16 @@ def test_watchlist_section_includes_manual_symbol_before_read_model_refresh() ->
 
 
 def test_watchlist_section_manual_exclusion_removes_symbol_from_sections() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "universe_screen": [{"symbol": "AAPL", "watch_state": "watched"}],
             "manual_watchlist": [{"symbol": "AAPL", "name": "Apple", "asset_class": "equity", "watch_state": "excluded"}],
         },
     )
 
-    watched = data_access.panel_snapshot_payload(panel_data, "watchlist-watched")
-    unwatched = data_access.panel_snapshot_payload(panel_data, "watchlist-unwatched")
+    watched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-watched")
+    unwatched = payloads_owner.panel_snapshot_payload(panel_data, "watchlist-unwatched")
 
     assert watched["tables"]["watchlist_watched"]["rows"] == []
     assert watched["tables"]["watchlist_unwatched"]["count"] == 0
@@ -617,8 +607,8 @@ def test_watchlist_section_manual_exclusion_removes_symbol_from_sections() -> No
 
 
 def test_ticker_payload_excludes_health_only_operational_tables() -> None:
-    panel_data = data_access.PanelData(
-        status=data_access.DataStatus(True, "ok", "test"),
+    panel_data = PanelData(
+        status=DataStatus(True, "ok", "test"),
         tables={
             "decision_queue": [{"symbol": "NVDA", "score": 91}],
             "decision_readiness": [{"symbol": "NVDA", "status": "blocked"}],
@@ -628,7 +618,7 @@ def test_ticker_payload_excludes_health_only_operational_tables() -> None:
         },
     )
 
-    payload = data_access.ticker_payload(panel_data, "nvda")
+    payload = payloads_owner.ticker_payload(panel_data, "nvda")
 
     # The dossier is section-organized; there is no raw table bag to leak
     # operational/health tables into.
@@ -659,9 +649,9 @@ def test_settings_payload_exposes_config_and_integration_metadata() -> None:
         "arco": {"raw_dir": "/Volumes/agent/brain/raw/sources/arco"},
         "birdclaw": {"command": "birdclaw export"},
     }
-    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+    panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
 
-    payload = data_access.settings_payload(config, panel_data)
+    payload = settings_owner.settings_payload(config, panel_data)
 
     assert payload["status"]["ready"] is True
     assert payload["config"]["database"]["url"] == "postgresql:///market"
@@ -676,9 +666,9 @@ def test_settings_payload_redacts_database_credentials() -> None:
         "runtime_overrides": {"MARKET_DATABASE_URL": "postgresql://market:secret@db.internal:5433/market"},
         "provider": {"api_key": "provider-secret"},
     }
-    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
+    panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
 
-    payload = data_access.settings_payload(config, panel_data)
+    payload = settings_owner.settings_payload(config, panel_data)
 
     assert payload["config"]["database"]["url"] == "postgresql://db.internal:5433/market"
     assert payload["integration"]["database_url"] == "postgresql://db.internal:5433/market"
@@ -693,10 +683,10 @@ def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
             "option_thesis": {"enabled": True, "command": "market-codex-option-thesis-agent", "limit": 20, "timeout_seconds": 180},
         },
     }
-    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
-    panel_data.metadata.update(data_access._runtime_metadata(config))
+    panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
+    panel_data.metadata.update(payloads_owner.runtime_metadata(config))
 
-    payload = data_access.status_payload(panel_data)
+    payload = payloads_owner.status_payload(panel_data)
 
     option_thesis = payload["metadata"]["agents"]["option_thesis"]
     assert option_thesis["active"] is True
@@ -710,10 +700,10 @@ def test_status_payload_exposes_option_agent_runtime_metadata() -> None:
 
 def test_status_payload_reports_unconfigured_option_agent_paused() -> None:
     config = {"agents": {"option_thesis": {"enabled": False, "command": ""}}}
-    panel_data = data_access.PanelData(status=data_access.DataStatus(True, "ok", "test"), tables={})
-    panel_data.metadata.update(data_access._runtime_metadata(config))
+    panel_data = PanelData(status=DataStatus(True, "ok", "test"), tables={})
+    panel_data.metadata.update(payloads_owner.runtime_metadata(config))
 
-    option_thesis = data_access.status_payload(panel_data)["metadata"]["agents"]["option_thesis"]
+    option_thesis = payloads_owner.status_payload(panel_data)["metadata"]["agents"]["option_thesis"]
 
     assert option_thesis["active"] is False
     assert option_thesis["configured"] is False
@@ -724,7 +714,7 @@ def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch)
     runtime_url = "postgresql://localhost/runtime"
     monkeypatch.setenv("MARKET_DATABASE_URL", runtime_url)
 
-    config = data_access.load_config(tmp_path / "missing.yaml")
+    config = config_owner.load_config(tmp_path / "missing.yaml")
 
     assert config["database"]["url"] == runtime_url
     assert config["runtime_overrides"]["MARKET_DATABASE_URL"] == runtime_url
@@ -733,7 +723,7 @@ def test_fastapi_config_reports_runtime_database_override(tmp_path, monkeypatch)
 def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
 
-    saved = data_access.record_portfolio_transaction(
+    saved = record_portfolio_transaction(
         config,
         {
             "symbol": "nvda",
@@ -745,7 +735,7 @@ def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_p
             "notes": "core",
         },
     )
-    rows = data_access.portfolio_rows(config)
+    rows = portfolio_rows(config)
 
     assert saved["symbol"] == "NVDA"
     assert saved["transaction_type"] == "opening_balance"
@@ -757,7 +747,7 @@ def test_portfolio_position_projection_is_owned_by_transaction_ledger(migrated_p
 def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "NVDA"}]}
 
-    saved = data_access.save_thesis(
+    saved = mutations_owner.save_thesis(
         config,
         "nvda",
         {
@@ -773,7 +763,7 @@ def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str
     assert saved["thesis"]["core_thesis"].startswith("AI accelerator")
     assert saved["thesis"]["last_reviewed"]
 
-    rows = data_access.thesis_monitor_rows(config)
+    rows = thesis_monitor_rows(config)
     nvda = next(row for row in rows if row["symbol"] == "NVDA")
     assert nvda["source"] == "theses"
     assert nvda["stale_thesis"] is False
@@ -784,14 +774,14 @@ def test_save_thesis_records_content_and_clears_stale(migrated_postgres_dsn: str
 def test_save_thesis_requires_thesis_text(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
     with pytest.raises(ValueError):
-        data_access.save_thesis(config, "ZZZT", {"thesis": "   "})
+        mutations_owner.save_thesis(config, "ZZZT", {"thesis": "   "})
 
 
 def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "MU"}]}
 
-    data_access.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
-    reviewed = data_access.mark_thesis_reviewed(config, "mu")
+    mutations_owner.save_thesis(config, "MU", {"thesis": "Memory upcycle.", "invalidation": "below $80"})
+    reviewed = mutations_owner.mark_thesis_reviewed(config, "mu")
 
     assert reviewed["symbol"] == "MU"
     assert reviewed["last_reviewed"]
@@ -800,7 +790,7 @@ def test_mark_thesis_reviewed_stamps_review_date(migrated_postgres_dsn: str) -> 
 def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}, "watchlist": [{"symbol": "TSLA"}]}
 
-    first = data_access.save_thesis(
+    first = mutations_owner.save_thesis(
         config,
         "TSLA",
         {
@@ -813,7 +803,7 @@ def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) ->
             "change_rationale": "Initial bearish monitor.",
         },
     )
-    second = data_access.save_thesis(
+    second = mutations_owner.save_thesis(
         config,
         "TSLA",
         {
@@ -826,8 +816,8 @@ def test_thesis_v3_bearish_price_rule_and_history(migrated_postgres_dsn: str) ->
             "change_rationale": "Updated delivery pillar.",
         },
     )
-    history = data_access.thesis_history(config, "tsla")
-    row = next(row for row in data_access.thesis_monitor_rows(config) if row["symbol"] == "TSLA")
+    history = thesis_history(config, "tsla")
+    row = next(row for row in thesis_monitor_rows(config) if row["symbol"] == "TSLA")
 
     assert first["revision"] == 1
     assert second["revision"] == 2
@@ -852,7 +842,7 @@ def test_thesis_review_rejects_empty_legacy_acknowledgement(migrated_postgres_ds
         )
 
     with pytest.raises(ValueError, match="empty-thesis"):
-        data_access.mark_thesis_reviewed(config, "BLNK")
+        mutations_owner.mark_thesis_reviewed(config, "BLNK")
 
 
 def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
@@ -860,31 +850,31 @@ def test_delete_config_watchlist_symbol_persists_unwatch_override(migrated_postg
         "database": {"url": migrated_postgres_dsn},
         "watchlist": [{"symbol": "NVDA", "name": "NVIDIA", "asset_class": "equity"}],
     }
-    data_access.save_watchlist_symbol(config, config["watchlist"][0])
+    mutations_owner.save_watchlist_symbol(config, config["watchlist"][0])
 
-    deleted = data_access.delete_watchlist_symbol(config, "NVDA")
+    deleted = mutations_owner.delete_watchlist_symbol(config, "NVDA")
     assert deleted == {"symbol": "NVDA", "deleted": True}
-    assert data_access.watchlist_rows(config) == []
-    assert data_access.watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
+    assert watchlist_rows(config) == []
+    assert watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
 
 
 def test_delete_source_watchlist_symbol_persists_unwatch_override(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}, "watchlist": []}
-    data_access.save_watchlist_symbol(config, {"symbol": "PLTR", "name": "Palantir"})
+    mutations_owner.save_watchlist_symbol(config, {"symbol": "PLTR", "name": "Palantir"})
 
-    deleted = data_access.delete_watchlist_symbol(config, "PLTR")
+    deleted = mutations_owner.delete_watchlist_symbol(config, "PLTR")
     assert deleted == {"symbol": "PLTR", "deleted": True}
-    assert data_access.watchlist_rows(config) == []
-    assert data_access.watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
+    assert watchlist_rows(config) == []
+    assert watchlist_rows(config, include_excluded=True)[0]["watch_state"] == "excluded"
 
 
 def test_save_watchlist_crypto_alias_uses_crypto_asset_class(migrated_postgres_dsn: str) -> None:
     config = {"database": {"url": migrated_postgres_dsn}}
 
-    saved = data_access.save_watchlist_symbol(config, {"symbol": "btc", "asset_class": "equity"})
+    saved = mutations_owner.save_watchlist_symbol(config, {"symbol": "btc", "asset_class": "equity"})
     assert saved["symbol"] == "BTC-USD"
     assert saved["asset_class"] == "crypto"
-    assert data_access.watchlist_rows(config)[0]["asset_class"] == "crypto"
+    assert watchlist_rows(config)[0]["asset_class"] == "crypto"
 
 
 def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypatch, migrated_postgres_dsn: str) -> None:
@@ -902,7 +892,7 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         "scoring": {"weights": {"technical": 1.0}},
         "watchlist": [],
     }
-    data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
+    mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
 
     def fetch_prices(symbol: str, lookback_days: int, mode: str) -> pd.DataFrame:
         assert symbol == "XYZ"
@@ -916,13 +906,13 @@ def test_populate_watchlist_symbol_data_runs_targeted_refresh(tmp_path, monkeypa
         )
 
     monkeypatch.setattr(update_market_data, "fetch_prices", fetch_prices)
-    result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
+    result = mutations_owner.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "ok"
     assert result["quote_rows"] == 2
     assert result["provider_rows_received"] == 2
     assert result["history_policy"] == "full_refresh"
-    rows = data_access.load_table_panel_data(config, "quotes").rows("quotes")
+    rows = loaders_owner.load_table_panel_data(config, "quotes").rows("quotes")
     assert rows[0]["symbol"] == "XYZ"
     assert float(rows[0]["price"]) == 12
 
@@ -937,10 +927,10 @@ def test_populate_watchlist_symbol_data_marks_failed_ingest_run(
         "market_data": {"mode": "online"},
         "data_sources": {"yfinance": {"enabled": False}},
     }
-    data_access.save_watchlist_symbol(config, {"symbol": "XYZ"})
+    mutations_owner.save_watchlist_symbol(config, {"symbol": "XYZ"})
     monkeypatch.setattr(update_market_data, "fetch_prices", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider failed")))
 
-    result = data_access.populate_watchlist_symbol_data(config, "XYZ", "equity")
+    result = mutations_owner.populate_watchlist_symbol_data(config, "XYZ", "equity")
 
     assert result["status"] == "error"
     assert "provider failed" in result["error"]
@@ -950,4 +940,4 @@ def test_save_watchlist_symbol_rejects_malformed_ticker(migrated_postgres_dsn: s
     config = {"database": {"url": migrated_postgres_dsn}}
 
     with pytest.raises(ValueError, match="valid ticker"):
-        data_access.save_watchlist_symbol(config, {"symbol": "ABC!"})
+        mutations_owner.save_watchlist_symbol(config, {"symbol": "ABC!"})

@@ -101,8 +101,6 @@ def has_required_valuation_context(row: dict[str, Any], source_counts: dict[str,
         return True
     basis = row.get("decision_basis") if isinstance(row.get("decision_basis"), dict) else {}
     asset_class = str(row.get("asset_class") or basis.get("asset_class") or "").lower()
-    if asset_class == "etf":
-        return bool(int(source_counts.get("etf_premium") or 0))
     if asset_class == "crypto":
         return bool(int(source_counts.get("crypto_fundamental") or 0))
     return False

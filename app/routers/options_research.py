@@ -7,15 +7,15 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
-from app import deps
 from app.actions.options import OptionsActions
+from app.data_access import config as config_owner
 from app.options_history_contracts import DistributionShiftResponse, EventStudyResponse
 
 router = APIRouter()
 
 
 def _actions() -> OptionsActions:
-    return OptionsActions(deps.load_config())
+    return OptionsActions(config_owner.load_config())
 
 
 @router.get("/api/options/event-study", response_model=EventStudyResponse)

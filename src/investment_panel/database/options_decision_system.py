@@ -20,6 +20,8 @@ from investment_panel.database.options_history_canary import canary_health
 from investment_panel.database.options_decision_workspace import latest_run, workspace_payload
 from investment_panel.database.options_decision_verification import candidate_finding, same_finding_identity
 
+__all__ = ["OptionsDecisionSystemRepository"]
+
 
 class OptionsDecisionSystemRepository:
     def __init__(self, runtime: DatabaseRuntime, *, mode: str = "shadow") -> None:

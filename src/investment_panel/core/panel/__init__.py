@@ -2,7 +2,6 @@
 
 from investment_panel.core.panel.contracts import (
     DECISION_REPAIR_TABLES,
-    ENDPOINT_TABLES,
     FRONTEND_ADDITIONAL_TABLES,
     FRONTEND_TABLE_KEY_OVERRIDES,
     PANEL_SCOPE_TABLES,
@@ -15,7 +14,6 @@ from investment_panel.core.panel.contracts import (
     frontend_table_names,
     panel_contract_payload,
     panel_snapshot_table_names,
-    table_for_endpoint,
     tables_for_scope,
 )
 from investment_panel.core.panel.payloads import (
@@ -31,7 +29,6 @@ from investment_panel.core.panel.ticker_sections import build_ticker_dossier
 
 __all__ = [
     "DECISION_REPAIR_TABLES",
-    "ENDPOINT_TABLES",
     "FRONTEND_ADDITIONAL_TABLES",
     "FRONTEND_TABLE_KEY_OVERRIDES",
     "PANEL_SCOPE_TABLES",
@@ -50,7 +47,6 @@ __all__ = [
     "panel_snapshot_payload",
     "panel_snapshot_table_names",
     "row_symbols",
-    "table_for_endpoint",
     "tables_for_scope",
     "watchlist_section_payload",
     "watchlist_universe_rows",

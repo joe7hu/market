@@ -27,6 +27,8 @@ from investment_panel.database.opportunity_scorecards import OpportunityScorecar
 from investment_panel.database.event_studies import event_study_rows
 from investment_panel.database.options_distribution_shift import surface_shift_rows
 
+__all__ = ["OptionsActions"]
+
 
 def _decision_mode(config: Any) -> str:
     """Read the mode from either the web dict config or typed job config."""

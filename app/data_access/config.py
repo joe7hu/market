@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Iterable
-from app.panel_contracts import (
+from investment_panel.core.panel import (
     DECISION_REPAIR_TABLES,
     SOURCE_REPAIR_TABLES,
     TICKER_TABLES,

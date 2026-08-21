@@ -17,11 +17,13 @@ from investment_panel.database.brokers import broker_status_rows
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
-from investment_panel.database.panel_watchlist import RETIRED_EMPTY_MODELS, TECHNICALS_QUERY, WATCHLIST_COMPAT_MODELS, options_ticker_signal_rows, technical_rows
+from investment_panel.database.panel_watchlist import TECHNICALS_QUERY, options_ticker_signal_rows, technical_rows
 from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
+
+__all__ = ["load_postgres_tables"]
 RESEARCH_PACKETS_BASE_QUERY = """
     SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
            item.published_at,
@@ -684,17 +686,16 @@ def load_postgres_tables(
                 tables[name] = []
     supported = (
         set(QUERY_POLICIES) | PUBLICATION_MODELS | SPECIAL_MODELS | AGENT_MODELS
-        | set(MODEL_ALIASES) | RETIRED_EMPTY_MODELS | WATCHLIST_COMPAT_MODELS
+        | set(MODEL_ALIASES)
     )
     unavailable = sorted(name for name in requested if name not in supported)
-    retired = sorted(name for name in requested if name in RETIRED_EMPTY_MODELS or name in WATCHLIST_COMPAT_MODELS)
     metadata = {
         "database": "postgresql",
         "schema_revision": HEAD_REVISION,
         "loaded_at": datetime.now(UTC).isoformat(),
         "table_count": len(requested),
         "unavailable_models": unavailable,
-        "retired_models": retired,
+        "retired_models": [],
         "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata

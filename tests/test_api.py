@@ -16,17 +16,22 @@ from investment_panel.database.authority import close_cached_runtimes
 from investment_panel.database.agents import AgentRepository
 from investment_panel.database.authority import runtime_for_url
 from investment_panel.database.migrations import upgrade_database
-from app.data_access import DataStatus, PanelData, settings_payload, ticker_decision_brief, update_agent_settings_config, update_research_sources_config
+from app.data_access.settings import settings_payload, update_agent_settings_config, update_research_sources_config
+from app.data_access.types import DataStatus, PanelData
+from app.data_access import config as config_owner, loaders as loaders_owner, settings as settings_owner
+from app import job_control
+import app.panel_snapshot as panel_owner
 import app.main as app_main
-import app.deps as app_deps
-from app import panel_contracts
-from app.main import app, _require_local_request
+from app.main import app
+from app.request_security import require_local_request
+from investment_panel.core.panel import PANEL_SCOPE_TABLES
+from investment_panel.core.decision import ticker_decision_brief
 
 
 def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
-    app_main._invalidate_context_cache()
+    panel_owner.invalidate_context_cache()
     monkeypatch.setattr(
-        app_deps,
+        config_owner,
         "load_config",
         lambda _path=None: {
             "database": {"url": "postgresql:///market"},
@@ -36,8 +41,8 @@ def _use_temp_api_db(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
 
 
 def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
-    app_main._invalidate_context_cache()
-    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": dsn}})
+    panel_owner.invalidate_context_cache()
+    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": dsn}})
 
 
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -46,7 +51,7 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     postgres_dsn = f"postgresql://{credentials}@{info.host}:{info.port}/{info.dbname}"
     upgrade_database(postgres_dsn)
     monkeypatch.setattr(
-        app_deps,
+        config_owner,
         "load_config",
         lambda _path=None: {
             "database": {"url": postgres_dsn},
@@ -56,137 +61,87 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
     client = TestClient(app)
     try:
         paths = [
-        "/api/status",
-        "/api/agent",
-        "/api/agent/research-prompt",
-        "/api/panel-contract",
-        "/api/dashboard",
-        "/api/panel-snapshot?scope=feed",
-        "/api/panel-snapshot?scope=watchlist",
-        "/api/panel-snapshot?scope=sources",
-        "/api/panel-snapshot?scope=superinvestors",
-        "/api/panel-snapshot?scope=market",
-        "/api/panel-snapshot?scope=options-radar",
-        "/api/panel-snapshot?scope=today",
-        "/api/panel-snapshot?scope=dashboard",
-        "/api/decision-readiness",
-        "/api/signals",
-        "/api/opportunities-ranked",
-        "/api/opportunity-sources",
-        "/api/candidates",
-        "/api/portfolio",
-        "/api/theses",
-        "/api/thesis-monitor",
-        "/api/trader-twins",
-        "/api/catalysts",
-        "/api/fundamentals",
-        "/api/disclosures",
-        "/api/quotes",
-        "/api/screener",
-        "/api/options-expiries",
-        "/api/options-chain",
-        "/api/options/history/snapshots",
-        "/api/options/history/chain",
-        "/api/options/history/surface?expiration=2026-08-21&option_type=call",
-        "/api/options/history/surface-groups",
-        "/api/options/history/surface-grid?option_type=call",
-        "/api/options/history/surface/legacy",
-        "/api/options/history/curves",
-        "/api/options/history/anomalies",
-        "/api/options/decision-brief",
-        "/api/options/candidates",
-        "/api/options/history/relative-values",
-        "/api/options/paper-journal",
-        "/api/options/shadow-observations",
-        "/api/options-payoff-scenarios",
-        "/api/options-provider-capabilities",
-        "/api/options-expiry-signals",
-        "/api/options-ticker-signals",
-        "/api/option-strategy-versions",
-        "/api/option-radar-opportunities",
-        "/api/option-snapshot",
-        "/api/option-features",
-        "/api/stock-features",
-        "/api/agent-thesis",
-        "/api/agent-thesis-requests",
-        "/api/agent-thesis-validations",
-        "/api/agent-postmortem-requests",
-        "/api/agent-postmortems",
-        "/api/candidate-events",
-        "/api/candidate-event-marks",
-        "/api/candidate-event-attributions",
-        "/api/shadow-trades",
-        "/api/shadow-trade-marks",
-        "/api/radar-state-transitions",
-        "/api/option-attributions",
-        "/api/missed-winner-events",
-        "/api/strategy-mutation-proposals",
-        "/api/strategy-backtests",
-        "/api/strategy-forward-tests",
-        "/api/strategy-cohorts",
-        "/api/news",
-        "/api/tradingview-symbol-search",
-        "/api/tradingview-watchlists",
-        "/api/tradingview-alerts",
-        "/api/tradingview-chart-state",
-        "/api/sepa",
-        "/api/liquidity",
-        "/api/correlations",
-        "/api/etf-premiums",
-        "/api/analyst-estimates",
-        "/api/earnings",
-        "/api/earnings-setups",
-        "/api/valuations",
-        "/api/technicals",
-        "/api/research-packets",
-        "/api/provider-runs",
-        "/api/broker/status",
-        "/api/broker/accounts",
-        "/api/broker/positions",
-        "/api/paper-orders",
-        "/api/decision-inbox",
-        "/api/opportunity-scorecard?lane=radar&window=120",
-        "/api/agent/experiments/current",
-        "/api/daily-brief",
-        "/api/feed",
-        "/api/watchlist-screen",
-        "/api/watchlist/symbols",
-        "/api/source-consensus",
-        "/api/source-ticker-rankings",
-        "/api/ownership-consensus",
-        "/api/market-context",
-        "/api/portfolio-risk/exposure-clusters",
-        "/api/portfolio-risk/correlation-edges",
-        "/api/portfolio-risk/cards",
-        "/api/portfolio-risk/review-actions",
-        "/api/source-health",
-        "/api/sources",
-        "/api/source-items",
-        "/api/source-runs",
-        "/api/ticker-source-signals",
-        "/api/sources/sec_edgar",
-        "/api/source-ingestion-audit",
-        "/api/refresh-jobs",
-        "/api/settings",
-        "/api/tickers/TSLA",
+            "/api/status",
+            "/api/agent",
+            "/api/agent/experiments/current",
+            "/api/agent/research-prompt",
+            "/api/panel-contract",
+            "/api/panel-snapshot?scope=feed",
+            "/api/panel-snapshot?scope=watchlist",
+            "/api/panel-snapshot?scope=sources",
+            "/api/panel-snapshot?scope=superinvestors",
+            "/api/panel-snapshot?scope=market",
+            "/api/panel-snapshot?scope=options-radar",
+            "/api/panel-snapshot?scope=today",
+            "/api/panel-snapshot?scope=dashboard",
+            "/api/quotes?symbols=TSLA",
+            "/api/options/history/snapshots",
+            "/api/options/history/symbols",
+            "/api/options/history/chain",
+            "/api/options/history/surface?expiration=2026-08-21&option_type=call",
+            "/api/options/history/surface-groups",
+            "/api/options/history/surface-grid?option_type=call",
+            "/api/options/history/curves",
+            "/api/options/history/anomalies",
+            "/api/options/history/health",
+            "/api/options/history/relative-values",
+            "/api/options/decision-brief",
+            "/api/options/candidates",
+            "/api/options/paper-journal",
+            "/api/options/shadow-observations",
+            "/api/options/event-study?ticker=TSLA&event_kind=earnings&as_of=2026-08-21T00:00:00Z",
+            "/api/options/history/distribution-shift?ticker=TSLA&as_of=2026-08-21T00:00:00Z",
+            "/api/options/workspace",
+            "/api/decision-inbox",
+            "/api/opportunity-scorecard?lane=radar&window=120",
+            "/api/health/options-recovery",
+            "/api/health/storage",
+            "/api/event-scout",
+            "/api/event-scout/packets",
+            "/api/event-scout/replay",
+            "/api/source-catalog",
+            "/api/source-ingestion-audit",
+            "/api/sources/sec_edgar",
+            "/api/refresh-jobs",
+            "/api/settings",
+            "/api/tickers/TSLA",
+            "/api/tickers/TSLA/decision-snapshot",
+            "/api/portfolio/transactions",
+            "/api/theses/TSLA/history",
         ]
         for path in paths:
             response = client.get(path)
-            assert response.status_code == 200
+            assert response.status_code == 200, path
             assert response.headers["content-type"].startswith("application/json")
         agent_overview = client.get("/api/agent").json()
         assert agent_overview["materialization"]["historical_unmaterialized"] == 0
-        retired = client.get("/api/agent/recommendations")
-        assert retired.status_code == 410
-        assert "not agent-authored" in retired.json()["detail"]
-        retired_stage = client.post(
-            "/api/paper-orders",
-            json={"recommendation_id": "00000000-0000-0000-0000-000000000000"},
-        )
-        assert retired_stage.status_code == 410
-        assert "immutable READY option ticket" in retired_stage.json()["detail"]
+        assert client.get("/api/agent/recommendations").status_code == 404
+        assert client.get("/api/paper-orders").status_code == 404
     finally:
         close_cached_runtimes()
+
+
+def test_removed_compatibility_routes_return_404() -> None:
+    client = TestClient(app)
+    removed = [
+        ("GET", "/api/dashboard"),
+        ("GET", "/api/decision-truth"),
+        ("GET", "/api/options/history/surface/legacy"),
+        ("GET", "/api/options-chain"),
+        ("GET", "/api/options-expiries"),
+        ("GET", "/api/portfolio"),
+        ("GET", "/api/portfolio/summary"),
+        ("GET", "/api/portfolio/performance"),
+        ("POST", "/api/portfolio/positions"),
+        ("GET", "/api/paper-orders"),
+        ("GET", "/api/broker/status"),
+        ("GET", "/api/etf-premiums"),
+        ("GET", "/api/tradingview-chart-state"),
+        ("GET", "/api/watchlist-screen"),
+    ]
+    for method, path in removed:
+        response = client.request(method, path)
+        assert response.status_code == 404, f"{method} {path} returned {response.status_code}"
 
 
 def test_settings_payload_includes_agent_control_metadata() -> None:
@@ -331,11 +286,11 @@ def test_update_agent_settings_endpoint_is_local_and_scoped(tmp_path, monkeypatc
         captured["section"] = section
         captured["payload"] = payload
 
-    monkeypatch.setattr(app_deps, "persist_setting_section", fake_update)
+    monkeypatch.setattr(settings_owner, "persist_setting_section", fake_update)
     monkeypatch.setattr(
-        app_deps,
+        loaders_owner,
         "load_panel_data",
-        lambda _config: PanelData(status=DataStatus(True, "loaded settings", "test"), tables={}),
+        lambda _config, **_kwargs: PanelData(status=DataStatus(True, "loaded settings", "test"), tables={}),
     )
 
     client = TestClient(app)
@@ -365,7 +320,7 @@ def test_market_snapshot_only_returns_market_tables() -> None:
 
 
 def test_ticker_route_reuses_cached_snapshot(monkeypatch) -> None:
-    app_main._invalidate_context_cache()
+    panel_owner.invalidate_context_cache()
     calls = 0
 
     def loader(_config, _ticker):
@@ -376,8 +331,8 @@ def test_ticker_route_reuses_cached_snapshot(monkeypatch) -> None:
             tables={"quotes": [{"symbol": "NVDA", "price": 175}]},
         )
 
-    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": "postgresql:///cached"}})
-    monkeypatch.setattr(app_deps, "load_ticker_panel_data", loader)
+    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": "postgresql:///cached"}})
+    monkeypatch.setattr(loaders_owner, "load_ticker_panel_data", loader)
     client = TestClient(app)
     assert client.get("/api/tickers/NVDA").status_code == 200
     assert client.get("/api/tickers/NVDA").status_code == 200
@@ -403,13 +358,13 @@ def test_options_radar_snapshot_returns_radar_tables() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload["tables"]) == set(panel_contracts.PANEL_SCOPE_TABLES["options-radar"])
+    assert set(payload["tables"]) == set(PANEL_SCOPE_TABLES["options-radar"])
 
 
 def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "fallback-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     calls = 0
 
     def fake_scope_loader(_config: dict[str, object], scope: str) -> PanelData:
@@ -426,15 +381,15 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
             )
         return PanelData(status=DataStatus(False, "PostgreSQL unavailable", "postgresql-error"), tables={})
 
-    monkeypatch.setattr(app_deps, "load_panel_scope_data", fake_scope_loader)
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", fake_scope_loader)
 
     client = TestClient(app)
     first = client.get("/api/panel-snapshot?scope=options-radar")
     assert first.status_code == 200
     assert first.json()["tables"]["option_radar_opportunity"]["rows"] == [{"decision_id": "event-1"}]
 
-    app_main._invalidate_context_cache()
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    panel_owner.invalidate_context_cache()
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
     second = client.get("/api/panel-snapshot?scope=options-radar")
 
     assert second.status_code == 200
@@ -446,10 +401,10 @@ def test_options_radar_snapshot_falls_back_to_last_good_payload(tmp_path, monkey
 def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "unavailable-watchlist-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    app_deps._scope_snapshot_cache_path({}, "watchlist").unlink(missing_ok=True)
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    panel_owner._scope_snapshot_cache_path({}, "watchlist").unlink(missing_ok=True)
     monkeypatch.setattr(
-        app_deps,
+        loaders_owner,
         "load_panel_scope_data",
         lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
     )
@@ -463,14 +418,14 @@ def test_watchlist_snapshot_returns_error_when_no_current_or_last_good_payload(t
 def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailable(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "ready-empty-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["options-radar"] = {
         "status": {"ready": True, "source": "old"},
         "tables": {"option_radar_opportunity": {"rows": [{"decision_id": "stale"}], "count": 1}},
     }
 
     monkeypatch.setattr(
-        app_deps,
+        loaders_owner,
         "load_panel_scope_data",
         lambda _config, _scope: PanelData(
             status=DataStatus(True, "PostgreSQL loaded; no current candidates", "postgresql"),
@@ -490,9 +445,9 @@ def test_options_radar_ready_empty_snapshot_does_not_claim_postgres_is_unavailab
 def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "stale-schema-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    monkeypatch.setattr(app_deps, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    monkeypatch.setattr(panel_owner, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
         "status": {
             "ready": True,
             "source": "old",
@@ -501,7 +456,7 @@ def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) 
         "tables": {"portfolio": {"rows": [{"symbol": "TSLA"}], "count": 1}},
     }
     monkeypatch.setattr(
-        app_deps,
+        loaders_owner,
         "load_panel_scope_data",
         lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
     )
@@ -515,21 +470,21 @@ def test_scope_snapshot_rejects_known_stale_schema_cache(tmp_path, monkeypatch) 
 def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "stale-contract-api.json"
     _use_temp_api_db(monkeypatch, db_path)
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
-    monkeypatch.setattr(app_deps, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
-    app_deps._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS.clear()
+    monkeypatch.setattr(panel_owner, "_scope_snapshot_cache_path", lambda *_args: tmp_path / "missing-cache.json")
+    panel_owner._LAST_GOOD_SCOPE_SNAPSHOTS["today"] = {
         "status": {
             "ready": True,
             "source": "old",
             "metadata": {
-                "schema_revision": app_deps.HEAD_REVISION,
+                "schema_revision": panel_owner.HEAD_REVISION,
                 "panel_contract_revision": "obsolete-contract",
             },
         },
         "tables": {"portfolio": {"rows": [{"symbol": "TSLA"}], "count": 1}},
     }
     monkeypatch.setattr(
-        app_deps,
+        loaders_owner,
         "load_panel_scope_data",
         lambda _config, _scope: PanelData(status=DataStatus(False, "PostgreSQL timed out", "postgresql-error"), tables={}),
     )
@@ -538,28 +493,6 @@ def test_scope_snapshot_rejects_known_schema_cache_with_old_panel_contract(tmp_p
 
     assert response.status_code == 503
     assert response.json()["detail"] == "PostgreSQL timed out"
-
-
-def test_table_endpoint_uses_scoped_loader(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "scoped-api.json"
-    _use_temp_api_db(monkeypatch, db_path)
-    calls: list[str] = []
-
-    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
-        calls.append(table_name)
-        return PanelData(
-            status=DataStatus(True, "loaded scoped table", "test"),
-            tables={table_name: [{"id": "feed-1", "title": "Scoped feed"}]},
-        )
-
-    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
-
-    client = TestClient(app)
-    response = client.get("/api/feed")
-
-    assert response.status_code == 200
-    assert calls == ["feed_signals"]
-    assert response.json()["rows"] == [{"id": "feed-1", "title": "Scoped feed"}]
 
 
 def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -> None:
@@ -571,7 +504,7 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
     cached_returned = threading.Event()
     errors: list[BaseException] = []
 
-    app_deps._context(loader=lambda _config: cached)
+    panel_owner.context(loader=lambda _config: cached)
 
     def slow_loader(_config: dict[str, object]) -> PanelData:
         slow_started.set()
@@ -580,7 +513,7 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
 
     def run_slow_context() -> None:
         try:
-            app_deps._context(cache_key="slow", loader=slow_loader)
+            panel_owner.context(cache_key="slow", loader=slow_loader)
         except BaseException as exc:  # pragma: no cover - threaded assertion capture
             errors.append(exc)
 
@@ -590,7 +523,7 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
 
     def read_cached_context() -> None:
         try:
-            _, panel_data = app_deps._context()
+            _, panel_data = panel_owner.context()
             assert panel_data is cached
             cached_returned.set()
         except BaseException as exc:  # pragma: no cover - threaded assertion capture
@@ -604,39 +537,6 @@ def test_context_cache_does_not_hold_lock_while_loading(tmp_path, monkeypatch) -
     slow_thread.join(timeout=1)
     cached_thread.join(timeout=1)
     assert not errors
-
-
-def test_source_ticker_rankings_route_registered_once_and_uses_scoped_loader(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "source-rankings-api.json"
-    _use_temp_api_db(monkeypatch, db_path)
-    calls: list[str] = []
-
-    routes = [
-        route
-        for route in app.routes
-        if getattr(route, "path", None) == "/api/source-ticker-rankings" and "GET" in getattr(route, "methods", set())
-    ]
-
-    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
-        calls.append(table_name)
-        return PanelData(
-            status=DataStatus(True, "loaded scoped source rankings", "test"),
-            tables={table_name: [{"symbol": "NVDA", "signal_count": 3, "rank_score": 42}]},
-        )
-
-    def fail_full_loader(config: dict[str, object]) -> PanelData:
-        raise AssertionError("source ticker rankings should use the scoped table loader")
-
-    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
-    monkeypatch.setattr(app_deps, "load_panel_data", fail_full_loader)
-
-    client = TestClient(app)
-    response = client.get("/api/source-ticker-rankings")
-
-    assert len(routes) == 1
-    assert response.status_code == 200
-    assert calls == ["source_ticker_rankings"]
-    assert response.json()["rows"] == [{"symbol": "NVDA", "signal_count": 3, "rank_score": 42}]
 
 
 def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(
@@ -662,41 +562,6 @@ def test_source_ingestion_audit_get_is_read_only_and_does_not_sync(
     assert response.json()["database"] == "postgresql"
 
 
-def test_source_freshness_defaults_to_capped_browser_payload(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "source-freshness-api.json"
-    _use_temp_api_db(monkeypatch, db_path)
-    rows = [
-        {
-            "source_key": f"source-{index:03d}",
-            "freshness_status": "fresh",
-            "status": "ok",
-            "checked_at": "2026-06-11T12:00:00Z",
-        }
-        for index in range(125)
-    ]
-
-    def fake_table_loader(config: dict[str, object], table_name: str) -> PanelData:
-        assert table_name == "source_freshness"
-        return PanelData(
-            status=DataStatus(True, "loaded source freshness", "test"),
-            tables={table_name: rows},
-        )
-
-    monkeypatch.setattr(app_deps, "load_table_panel_data", fake_table_loader)
-
-    client = TestClient(app)
-    response = client.get("/api/source-freshness")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["count"] == 125
-    assert payload["returned_count"] == 100
-    assert payload["limit"] == 100
-    assert len(payload["rows"]) == 100
-    assert payload["rows"][0]["source_key"] == "source-000"
-    assert payload["rows"][-1]["source_key"] == "source-099"
-
-
 def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
     client = TestClient(app)
     response = client.post("/api/refresh-jobs/not-a-real-job")
@@ -706,7 +571,7 @@ def test_refresh_job_launcher_rejects_unallowlisted_job() -> None:
 
 def test_refresh_jobs_exposes_options_radar_job(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        app_deps,
+        config_owner,
         "load_config",
         lambda _path=None: {"database": {"url": migrated_postgres_dsn}},
     )
@@ -990,21 +855,21 @@ def test_strategy_mutation_promote_endpoint_requires_gates_and_approval(migrated
 
 
 def test_local_write_guard_allows_private_lan_clients() -> None:
-    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
-    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
-    _require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
+    require_local_request(SimpleNamespace(client=SimpleNamespace(host="100.120.95.8")))
+    require_local_request(SimpleNamespace(client=SimpleNamespace(host="192.168.50.197")))
+    require_local_request(SimpleNamespace(client=SimpleNamespace(host="127.0.0.1")))
 
     with pytest.raises(HTTPException):
-        _require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
+        require_local_request(SimpleNamespace(client=SimpleNamespace(host="8.8.8.8")))
 
 
 def test_thesis_monitor_automation_accepts_symbol_scoped_background_run(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
-    monkeypatch.setattr(app_deps, "load_config", lambda _path=None: {"database": {"url": "postgresql://test/market"}})
-    monkeypatch.setattr(app_deps, "_invalidate_context_cache", lambda: None)
+    monkeypatch.setattr(config_owner, "load_config", lambda _path=None: {"database": {"url": "postgresql://test/market"}})
+    monkeypatch.setattr(panel_owner, "invalidate_context_cache", lambda: None)
     monkeypatch.setattr(
-        app_deps,
-        "_execute_thesis_monitor_automation",
+        job_control,
+        "execute_thesis_monitor_automation",
         lambda symbols, *, dry_run, force: calls.append({"symbols": symbols, "dry_run": dry_run, "force": force}),
     )
 
