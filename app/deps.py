@@ -1,32 +1,36 @@
-"""Shared app service layer for the FastAPI routers.
+"""Explicit application compatibility surface for existing routers.
 
-Routers import this module as `deps` and reference every app-service name as
-`deps.X` (helpers, loaders, db, domain functions, models, constants). This keeps
-a single seam: tests patch `app.deps.<name>` and every route reader resolves
-through this namespace. Import from here; do not re-grow `app/main.py` with route
-logic — add a router under `app/routers/` instead.
+New code should import from the owning module directly:
+``app.dependencies``, ``app.panel_snapshot``, ``app.job_control``,
+``app.request_security``, or the domain data/action owner. This module remains
+small and static so existing route names can migrate without another dynamic
+facade.
 """
+
 from __future__ import annotations
 
-import json
-import inspect
-import time
-from datetime import datetime
-from copy import deepcopy
-from hashlib import sha256
-from ipaddress import ip_address, ip_network
 from pathlib import Path
-from threading import RLock
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
-from fastapi import HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
-
+from app.contracts import (
+    AgentAnalyzeInput,
+    AgentSettingsInput,
+    OptionPaperEntryInput,
+    OptionsHistoryToggleInput,
+    PortfolioPositionInput,
+    PortfolioTransactionInput,
+    PortfolioTransactionReversalInput,
+    ResearchSourcesInput,
+    StrategyPromotionInput,
+    ThesisAutomationInput,
+    ThesisInput,
+    ThesisReviewInput,
+    TradeJournalInput,
+    WatchlistSymbolInput,
+)
 from app.data_access import (
-    database_path,
-    database_url,
     dashboard_payload,
-    load_config,
+    delete_watchlist_symbol,
     load_daily_research_panel_data,
     load_market_panel_data,
     load_panel_data,
@@ -35,34 +39,33 @@ from app.data_access import (
     load_table_panel_page,
     load_ticker_panel_data,
     load_watchlist_scope_data,
-    panel_snapshot_payload,
+    mark_thesis_reviewed,
+    options_radar_rows,
     panel_contract_payload,
-    portfolio_rows,
+    panel_snapshot_payload,
+    persist_setting_section,
+    populate_watchlist_symbol_data,
     portfolio_correlation_rows,
     portfolio_exposure_rows,
     portfolio_performance_rows,
     portfolio_review_action_rows,
     portfolio_risk_rows,
+    portfolio_rows,
     portfolio_summary,
     portfolio_transaction_rows,
     preview_portfolio_transaction,
-    options_radar_rows,
-    populate_watchlist_symbol_data,
-    delete_watchlist_symbol,
-    mark_thesis_reviewed,
-    record_thesis_review,
     record_portfolio_transaction,
+    record_thesis_review,
     reverse_portfolio_transaction,
     save_thesis,
     save_watchlist_symbol,
     settings_payload,
-    persist_setting_section,
     signals_payload,
     status_payload,
     table_payload,
-    thesis_monitor_rows,
-    thesis_monitor_payload,
     thesis_history,
+    thesis_monitor_payload,
+    thesis_monitor_rows,
     thesis_rows,
     ticker_payload,
     update_agent_settings_config,
@@ -70,46 +73,41 @@ from app.data_access import (
     user_state_table_payload,
     watchlist_rows,
 )
-from investment_panel.core.refresh_jobs import (
+from app.data_access.config import load_config
+from app.dependencies import database_url, runtime_for_config
+from app.job_control import (
     ALLOWLIST,
+    execute_background_refresh_job,
     execute_refresh_job,
     execute_refresh_job_subprocess,
+    execute_thesis_monitor_automation,
     refresh_job_rows,
     run_refresh_job,
     start_refresh_job,
 )
-from investment_panel.core.config import config_to_dict, load_config as load_core_config
-from investment_panel.core.daily_research_prompt import DAILY_RESEARCH_TABLES, build_daily_research_prompt
-from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
+from app.panel_snapshot import (
+    CONTEXT_CACHE_TTL_SECONDS,
+    PANEL_SNAPSHOT_CONTRACT_REVISION,
+    SOURCE_FRESHNESS_DEFAULT_LIMIT,
+    _CONTEXT_LOCK,
+    _LAST_GOOD_SCOPE_SNAPSHOTS,
+    _scope_snapshot_cache_path,
+    context as _panel_context,
+    full_market_refresh_status,
+    invalidate_context_cache,
+    scope_snapshot_payload,
+    table_payload_for,
+    with_data_freshness,
+)
+from app.request_security import TAILSCALE_CGNAT, require_local_request
+from fastapi import Request
+from investment_panel.core.daily_research_prompt import build_daily_research_prompt
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.options_constants import DEFAULT_STRATEGY_VERSION
-from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.storage_archive import StorageArchiveService
-from investment_panel.jobs import run_thesis_monitor
 
 
 APP_TITLE = "Personal Investment Panel"
-CONTEXT_CACHE_TTL_SECONDS = 3.0
-SOURCE_FRESHNESS_DEFAULT_LIMIT = 100
-TAILSCALE_CGNAT = ip_network("100.64.0.0/10")
-_CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key": None, "value": None}
-_CONTEXT_LOCK = RLock()
-_LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
-_SCOPE_SNAPSHOT_FALLBACK_TABLES = {
-    "today": {"daily_brief", "preopen_daily_brief", "portfolio", "decision_queue", "decision_truth", "event_decision_packets", "event_scout_events"},
-    "watchlist": {"universe_screen", "manual_watchlist", "portfolio"},
-    "watchlist-watched": {"universe_screen", "manual_watchlist", "portfolio"},
-    "watchlist-unwatched": {"universe_screen", "manual_watchlist", "portfolio"},
-    "portfolio": {"portfolio", "portfolio_summary", "portfolio_performance"},
-    "research": {"research_packets", "theses", "thesis_monitor", "news"},
-    "options-radar": {
-        "option_radar_summary",
-        "option_radar_opportunity",
-        "decision_truth",
-        "event_decision_packets",
-        "event_scout_events",
-    },
-}
 
 
 def storage_health(config: Any) -> dict[str, Any]:
@@ -122,260 +120,66 @@ def storage_health(config: Any) -> dict[str, Any]:
         else getattr(nas, "storage_archive_dir", None)
     )
     return StorageArchiveService(
-        runtime_for_config(config), Path(archive_dir or "/Volumes/agent/data-sources/market-mini/storage-archive/v1"),
+        runtime_for_config(config),
+        Path(archive_dir or "/Volumes/agent/data-sources/market-mini/storage-archive/v1"),
     ).health()
 
 
 def _panel_snapshot_contract_revision() -> str:
-    """Return a stable fingerprint for persisted scope-payload compatibility."""
-
-    contract = {
-        "scopes": {scope: list(tables) for scope, tables in sorted(PANEL_SCOPE_TABLES.items())},
-        "limits": {
-            scope: dict(sorted(limits.items()))
-            for scope, limits in sorted(SCOPED_TABLE_ROW_LIMITS.items())
-        },
-        "compact_fields": {
-            scope: {table: sorted(fields) for table, fields in sorted(tables.items())}
-            for scope, tables in sorted(SCOPED_TABLE_COMPACT_FIELDS.items())
-        },
-    }
-    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":"))
-    return sha256(encoded.encode("utf-8")).hexdigest()[:16]
-
-
-PANEL_SNAPSHOT_CONTRACT_REVISION = _panel_snapshot_contract_revision()
-
-
-class PortfolioPositionInput(BaseModel):
-    symbol: str
-    quantity: float
-    avg_cost: float
-    purchase_date: str | None = None
-    notes: str = ""
-
-
-class PortfolioTransactionInput(BaseModel):
-    symbol: str | None = None
-    transaction_type: Literal[
-        "opening_balance",
-        "buy",
-        "sell",
-        "dividend",
-        "fee",
-        "split",
-        "transfer_in",
-        "transfer_out",
-    ]
-    quantity: float | None = None
-    price: float | None = None
-    amount: float | None = None
-    fees: float = 0
-    currency: str = "USD"
-    account: str = "manual"
-    executed_at: str
-    notes: str = ""
-    idempotency_key: str
-    expected_position_version: str | None = None
-
-
-class PortfolioTransactionReversalInput(BaseModel):
-    idempotency_key: str
-    notes: str = ""
-
-
-class WatchlistSymbolInput(BaseModel):
-    symbol: str
-    name: str | None = None
-    asset_class: str = "equity"
-    notes: str = ""
-
-
-class OptionsHistoryToggleInput(BaseModel):
-    requested_state: Literal["on", "off"]
-    lock_version: int
-
-
-class ThesisInput(BaseModel):
-    thesis: str
-    why: str = ""
-    invalidation: str = ""
-    invalidation_price: float | None = None
-    schema_version: Literal[1, 2, 3] = 3
-    direction: Literal["bullish", "bearish"] | None = None
-    horizon_date: str | None = None
-    max_loss: float | None = None
-    catalyst: str | None = None
-    status: str | None = None
-    evidence_links: list[str] | None = None
-    timeframe: str | None = None
-    conviction: str | None = None
-    confidence: str | None = None
-    pillars: list[dict[str, Any]] | None = None
-    scenarios: dict[str, Any] | None = None
-    catalysts: list[dict[str, Any]] | None = None
-    invalidation_rules: list[dict[str, Any]] | None = None
-    review_cadence_days: int | None = None
-    next_review_date: str | None = None
-    lifecycle_status: str | None = None
-    evidence_coverage_status: str | None = None
-    automation_policy: Literal["auto", "manual_lock"] | None = None
-    change_rationale: str | None = None
-
-    @model_validator(mode="after")
-    def validate_options_v2(self) -> "ThesisInput":
-        if self.schema_version == 2:
-            if not self.direction or not self.horizon_date or not self.invalidation.strip():
-                raise ValueError("schema_version 2 requires direction, horizon_date, and invalidation")
-            if self.max_loss is None or self.max_loss <= 0:
-                raise ValueError("schema_version 2 requires positive max_loss")
-        return self
-
-
-class ThesisReviewInput(BaseModel):
-    outcome: Literal["unchanged", "updated", "invalidated", "closed"] = "unchanged"
-    notes: str = ""
-    reviewed_evidence_cutoff: str | None = None
-
-
-class ThesisAutomationInput(BaseModel):
-    symbols: list[str] | None = None
-    dry_run: bool = False
-    force: bool = False
-
-
-class OptionPaperEntryInput(BaseModel):
-    idempotency_key: str
-    ticket_version: int = 1
-    quantity: int = Field(gt=0)
-    limit_price: float = Field(gt=0, allow_inf_nan=False)
-
-
-class StrategyPromotionInput(BaseModel):
-    approved_by: str = "joe"
-
-
-class AgentCommandSettingsInput(BaseModel):
-    enabled: bool | None = None
-    command: str | None = None
-    timeout_seconds: int | None = None
-    limit: int | None = None
-
-
-class OptionAgentSettingsInput(BaseModel):
-    enabled: bool | None = None
-    command: str | None = None
-    timeout_seconds: int | None = None
-    thesis_limit: int | None = None
-    postmortem_limit: int | None = None
-    provider: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
-    auto_run_seconds: int | None = None
-    max_runs_per_day: int | None = None
-    context_sources: dict[str, bool] | None = None
-
-
-class ThesisMonitorSettingsInput(BaseModel):
-    enabled: bool | None = None
-    provider: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
-    prompt_version: str | None = None
-    concurrency: int | None = None
-    evidence_items_per_symbol: int | None = None
-    preopen_enabled: bool | None = None
-    material_event_enabled: bool | None = None
-    debounce_minutes: int | None = None
-    max_material_runs_per_symbol_per_day: int | None = None
-
-
-class AgentSettingsInput(BaseModel):
-    option_thesis: AgentCommandSettingsInput | None = None
-    option_postmortem: AgentCommandSettingsInput | None = None
-    option_agent: OptionAgentSettingsInput | None = None
-    thesis_monitor: ThesisMonitorSettingsInput | None = None
-
-
-class ResearchXSettingsInput(BaseModel):
-    enabled: bool | None = None
-    list_id: str | None = None
-    priority_handles: list[str] | str | None = None
-    limit: int | None = None
-    account_fetch_cap: int | None = None
-
-
-class ResearchNewsSettingsInput(BaseModel):
-    enabled: bool | None = None
-    providers: list[str] | str | None = None
-    limit: int | None = None
-
-
-class ResearchBlogsSettingsInput(BaseModel):
-    enabled: bool | None = None
-    substack_urls: list[str] | str | None = None
-    rss_urls: list[str] | str | None = None
-
-
-class ResearchSourcesInput(BaseModel):
-    x: ResearchXSettingsInput | None = None
-    news: ResearchNewsSettingsInput | None = None
-    blogs: ResearchBlogsSettingsInput | None = None
-
-
-class AgentAnalyzeInput(BaseModel):
-    ticker: str
-    prompt: str | None = None
-
-
-class TradeJournalInput(BaseModel):
-    ticker: str
-    contract_id: str
-    event_id: str | None = None
-    strategy_version: str = DEFAULT_STRATEGY_VERSION
-    opportunity: dict[str, Any] = {}
-    notes: str = ""
-    action: Literal["accepted", "skipped", "entered", "resized", "exited", "invalidated"] = "accepted"
-    idempotency_key: str | None = None
-    publication_id: str | None = None
-    expected_contract_version: int | None = None
+    return PANEL_SNAPSHOT_CONTRACT_REVISION
 
 
 def _context(cache_key: str = "full", loader: Callable[[dict[str, Any]], Any] | None = None) -> tuple[dict[str, Any], Any]:
-    config = load_config()
-    config_key = database_url(config)
-    now = time.monotonic()
-    with _CONTEXT_LOCK:
-        entries = _CONTEXT_CACHE.setdefault("entries", {})
-        cached = entries.get(cache_key)
-        if cached is not None and cached.get("config_key") == config_key and now < float(cached.get("expires_at") or 0):
-            return cached["value"]
+    """Compatibility entry point with dependencies injected from this seam."""
 
-    active_loader = loader or _load_panel_data_without_repairs
-    value = (config, active_loader(config))
-
-    with _CONTEXT_LOCK:
-        entries = _CONTEXT_CACHE.setdefault("entries", {})
-        entries[cache_key] = {"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS}
-        if cache_key == "full":
-            _CONTEXT_CACHE.update({"value": value, "config_key": config_key, "expires_at": now + CONTEXT_CACHE_TTL_SECONDS})
-        return value
-
-
-def _load_panel_data_without_repairs(active_config: dict[str, Any]) -> Any:
-    parameters = inspect.signature(load_panel_data).parameters
-    if "ensure_decision_models" not in parameters:
-        return load_panel_data(active_config)
-    return load_panel_data(
-        active_config,
-        ensure_decision_models=False,
-        ensure_source_models=False,
+    return _panel_context(
+        cache_key,
+        loader,
+        config_loader=load_config,
+        database_url_loader=database_url,
+        panel_loader=load_panel_data,
     )
 
 
 def _table_payload(table_name: str) -> dict[str, Any]:
-    _, panel_data = _context(cache_key=f"table:{table_name}", loader=lambda config: load_table_panel_data(config, table_name))
-    return table_payload(panel_data, table_name)
+    return table_payload_for(
+        table_name,
+        config_loader=load_config,
+        database_url_loader=database_url,
+        table_loader=load_table_panel_data,
+    )
+
+
+def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:
+    payload = _table_payload(table_name)
+    rows = payload["rows"]
+    safe_limit = max(1, min(int(limit or SOURCE_FRESHNESS_DEFAULT_LIMIT), 500))
+    capped_rows = rows[:safe_limit]
+    return {**payload, "rows": capped_rows, "count": len(rows), "returned_count": len(capped_rows), "limit": safe_limit}
+
+
+def _execute_background_refresh_job(job_id: str, job_name: str, database_url_value: str) -> None:
+    execute_background_refresh_job(job_id, job_name, database_url_value)
+
+
+def _execute_thesis_monitor_automation(symbols: list[str], *, dry_run: bool, force: bool) -> None:
+    execute_thesis_monitor_automation(symbols, dry_run=dry_run, force=force)
+
+
+def _invalidate_context_cache() -> None:
+    invalidate_context_cache()
+
+
+def _full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None:
+    return full_market_refresh_status(config)
+
+
+def _with_data_freshness(payload: dict[str, Any]) -> dict[str, Any]:
+    return with_data_freshness(payload)
+
+
+def _require_local_request(request: Request) -> None:
+    require_local_request(request)
 
 
 def scope_panel_snapshot_payload(
@@ -386,201 +190,95 @@ def scope_panel_snapshot_payload(
     offset: int = 0,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    payload = panel_snapshot_payload(panel_data, scope, offset=offset, limit=limit)
-    if scope not in _SCOPE_SNAPSHOT_FALLBACK_TABLES:
-        return payload
-    status = payload.get("status")
-    if isinstance(status, dict) and status.get("ready") is True:
-        _mark_snapshot_state(payload, "current")
-        _store_last_good_scope_snapshot(config, scope, payload, offset=offset, limit=limit)
-        return payload
-    fallback = _load_last_good_scope_snapshot(config, scope, offset=offset, limit=limit)
-    if fallback is None:
-        message = str(status.get("message") if isinstance(status, dict) else "") or "No current or last-good snapshot is available."
-        raise HTTPException(status_code=503, detail=message)
-    status = dict(fallback.get("status") or {})
-    captured_at = str(status.get("metadata", {}).get("last_good_at") or "") if isinstance(status.get("metadata"), dict) else ""
-    status.update(
-        {
-            "ready": True,
-            "source": "panel-snapshot-cache",
-            "message": f"Serving last-good {scope} data while PostgreSQL is unavailable.",
-        }
-    )
-    fallback["status"] = status
-    _mark_snapshot_state(fallback, "stale", error=str(payload.get("status", {}).get("message") or "PostgreSQL read models unavailable."), last_good_at=captured_at)
-    return fallback
+    return scope_snapshot_payload(config, panel_data, scope, offset=offset, limit=limit)
 
 
-def _scope_snapshot_has_rows(scope: str, payload: dict[str, Any]) -> bool:
-    tables = payload.get("tables")
-    if not isinstance(tables, dict):
-        return False
-    for table_name in _SCOPE_SNAPSHOT_FALLBACK_TABLES.get(scope, set()):
-        table = tables.get(table_name)
-        rows = table.get("rows") if isinstance(table, dict) else None
-        if isinstance(rows, list) and rows:
-            return True
-    return False
-
-
-def _store_last_good_scope_snapshot(
-    config: dict[str, Any], scope: str, payload: dict[str, Any], *, offset: int = 0, limit: int | None = None
-) -> None:
-    snapshot = deepcopy(payload)
-    _mark_snapshot_state(snapshot, "current", last_good_at=datetime.now().astimezone().isoformat())
-    key = _scope_snapshot_cache_key(scope, offset, limit)
-    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = snapshot
-    path = _scope_snapshot_cache_path(config, key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(f"{path.suffix}.tmp")
-        temp_path.write_text(json.dumps(snapshot, ensure_ascii=False, default=str), encoding="utf-8")
-        temp_path.replace(path)
-    except Exception:
-        return
-
-
-def _load_last_good_scope_snapshot(
-    config: dict[str, Any], scope: str, *, offset: int = 0, limit: int | None = None
-) -> dict[str, Any] | None:
-    key = _scope_snapshot_cache_key(scope, offset, limit)
-    cached = _LAST_GOOD_SCOPE_SNAPSHOTS.get(key)
-    if cached is not None:
-        return deepcopy(cached) if _snapshot_schema_is_compatible(cached) else None
-    path = _scope_snapshot_cache_path(config, key)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if not _snapshot_schema_is_compatible(payload):
-        return None
-    _LAST_GOOD_SCOPE_SNAPSHOTS[key] = payload
-    return deepcopy(payload)
-
-
-def _snapshot_schema_is_compatible(payload: dict[str, Any]) -> bool:
-    metadata = ((payload.get("status") or {}).get("metadata") or {})
-    schema_revision = str(metadata.get("schema_revision") or "") if isinstance(metadata, dict) else ""
-    contract_revision = str(metadata.get("panel_contract_revision") or "") if isinstance(metadata, dict) else ""
-    # A persisted payload from an older read-model contract can be worse than a
-    # hard failure: it can look healthy while showing a superseded publication
-    # or stale price semantics. Schema-less test/legacy cache entries remain
-    # readable, but a known schema must also match the current scope contract.
-    return not schema_revision or (
-        schema_revision == HEAD_REVISION
-        and contract_revision == PANEL_SNAPSHOT_CONTRACT_REVISION
-    )
-
-
-def _scope_snapshot_cache_key(scope: str, offset: int, limit: int | None) -> str:
-    suffix = f"-{offset}-{limit}" if offset or limit is not None else ""
-    return f"{scope}{suffix}"
-
-
-def _scope_snapshot_cache_path(config: dict[str, Any], cache_key: str) -> Path:
-    return Path(__file__).resolve().parents[1] / "data" / "api-cache" / f"panel-snapshot-{cache_key}.json"
-
-
-def _mark_snapshot_state(
-    payload: dict[str, Any], state: str, *, error: str | None = None, last_good_at: str | None = None
-) -> None:
-    status = dict(payload.get("status") or {})
-    metadata = dict(status.get("metadata") or {})
-    metadata["snapshot_state"] = state
-    metadata["panel_contract_revision"] = PANEL_SNAPSHOT_CONTRACT_REVISION
-    if last_good_at:
-        metadata["last_good_at"] = last_good_at
-    if error:
-        metadata["snapshot_error"] = error
-    status["metadata"] = metadata
-    payload["status"] = status
-
-
-def _capped_table_payload(table_name: str, limit: int) -> dict[str, Any]:
-    payload = _table_payload(table_name)
-    rows = payload["rows"]
-    safe_limit = max(1, min(int(limit or SOURCE_FRESHNESS_DEFAULT_LIMIT), 500))
-    capped_rows = rows[:safe_limit]
-    return {
-        **payload,
-        "rows": capped_rows,
-        "count": len(rows),
-        "returned_count": len(capped_rows),
-        "limit": safe_limit,
-    }
-
-
-def _invalidate_context_cache() -> None:
-    _CONTEXT_CACHE.update({"entries": {}, "expires_at": 0.0, "config_key": None, "value": None})
-
-
-def _execute_background_refresh_job(job_id: str, job_name: str, database_url: str) -> None:
-    try:
-        execute_refresh_job_subprocess(job_id, job_name, database_url, "config.yaml")
-    finally:
-        _invalidate_context_cache()
-
-
-def _execute_thesis_monitor_automation(symbols: list[str], *, dry_run: bool, force: bool) -> None:
-    try:
-        run_thesis_monitor.run("config.yaml", symbols=symbols, trigger="ondemand", force=force, dry_run=dry_run)
-    finally:
-        _invalidate_context_cache()
-
-
-def _payload_strategy_version(payload: dict[str, Any]) -> str:
-    request = payload.get("request")
-    request_strategy = request.get("strategy_version") if isinstance(request, dict) else None
-    return str(payload.get("strategy_version") or request_strategy or DEFAULT_STRATEGY_VERSION)
-
-
-def _full_market_refresh_status(config: dict[str, Any]) -> dict[str, Any] | None:
-    status_dir = Path(config.get("nas", {}).get("status_dir", "/Volumes/agent/data-sources/status"))
-    status_path = status_dir / "mini-market-full-refresh.json"
-    if not status_path.exists():
-        return None
-    try:
-        payload = json.loads(status_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return _with_data_freshness(payload)
-
-
-# Housekeeping steps run after data ingestion and don't affect data freshness;
-# mirror the orchestrator so a snapshot/prune failure never hides fresh data.
-_HOUSEKEEPING_REFRESH_STEPS = frozenset({"retention_prune", "database_snapshot"})
-
-
-def _with_data_freshness(payload: dict[str, Any]) -> dict[str, Any]:
-    """Backfill dataOk/dataFinishedAt for status files written before the split."""
-
-    if not isinstance(payload, dict):
-        return payload
-    if payload.get("dataOk") is not None:
-        return payload
-    steps = payload.get("steps")
-    if not isinstance(steps, list) or not steps:
-        return payload
-    data_ok = all(
-        step.get("ok")
-        for step in steps
-        if isinstance(step, dict) and step.get("name") not in _HOUSEKEEPING_REFRESH_STEPS
-    )
-    payload["dataOk"] = data_ok
-    payload["dataFinishedAt"] = payload.get("finishedAt") if data_ok else None
-    return payload
-
-
-def _require_local_request(request: Request) -> None:
-    host = request.client.host if request.client else ""
-    if host in {"localhost", "testclient"}:
-        return
-    try:
-        address = ip_address(host)
-    except ValueError as exc:
-        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.") from exc
-    if not (address.is_loopback or address.is_private or address.is_link_local or address in TAILSCALE_CGNAT):
-        raise HTTPException(status_code=403, detail="Write actions are available only from the local network.")
+__all__ = [
+    "ALLOWLIST",
+    "APP_TITLE",
+    "AgentAnalyzeInput",
+    "AgentSettingsInput",
+    "CONTEXT_CACHE_TTL_SECONDS",
+    "DEFAULT_STRATEGY_VERSION",
+    "HEAD_REVISION",
+    "OptionPaperEntryInput",
+    "OptionsHistoryToggleInput",
+    "PANEL_SNAPSHOT_CONTRACT_REVISION",
+    "PortfolioPositionInput",
+    "PortfolioTransactionInput",
+    "PortfolioTransactionReversalInput",
+    "ResearchSourcesInput",
+    "SOURCE_FRESHNESS_DEFAULT_LIMIT",
+    "StrategyPromotionInput",
+    "TAILSCALE_CGNAT",
+    "ThesisAutomationInput",
+    "ThesisInput",
+    "ThesisReviewInput",
+    "TradeJournalInput",
+    "WatchlistSymbolInput",
+    "_CONTEXT_LOCK",
+    "_LAST_GOOD_SCOPE_SNAPSHOTS",
+    "_capped_table_payload",
+    "_context",
+    "_execute_background_refresh_job",
+    "_execute_thesis_monitor_automation",
+    "_full_market_refresh_status",
+    "_invalidate_context_cache",
+    "_panel_snapshot_contract_revision",
+    "_require_local_request",
+    "_scope_snapshot_cache_path",
+    "_table_payload",
+    "_with_data_freshness",
+    "build_daily_research_prompt",
+    "dashboard_payload",
+    "database_url",
+    "delete_watchlist_symbol",
+    "execute_refresh_job",
+    "execute_refresh_job_subprocess",
+    "load_config",
+    "load_daily_research_panel_data",
+    "load_market_panel_data",
+    "load_panel_data",
+    "load_panel_scope_data",
+    "load_table_panel_page",
+    "load_ticker_panel_data",
+    "load_watchlist_scope_data",
+    "mark_thesis_reviewed",
+    "options_radar_rows",
+    "panel_contract_payload",
+    "panel_snapshot_payload",
+    "persist_setting_section",
+    "populate_watchlist_symbol_data",
+    "portfolio_correlation_rows",
+    "portfolio_exposure_rows",
+    "portfolio_performance_rows",
+    "portfolio_review_action_rows",
+    "portfolio_risk_rows",
+    "portfolio_rows",
+    "portfolio_summary",
+    "portfolio_transaction_rows",
+    "preview_portfolio_transaction",
+    "record_portfolio_transaction",
+    "record_thesis_review",
+    "refresh_job_rows",
+    "reverse_portfolio_transaction",
+    "run_refresh_job",
+    "save_thesis",
+    "save_watchlist_symbol",
+    "scope_panel_snapshot_payload",
+    "settings_payload",
+    "signals_payload",
+    "start_refresh_job",
+    "status_payload",
+    "storage_health",
+    "table_payload",
+    "thesis_history",
+    "thesis_monitor_payload",
+    "thesis_monitor_rows",
+    "thesis_rows",
+    "ticker_payload",
+    "update_agent_settings_config",
+    "update_research_sources_config",
+    "user_state_table_payload",
+    "watchlist_rows",
+]
