@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from investment_panel.core.event_truth import build_options_decision_truth
@@ -24,6 +24,7 @@ def refresh_today_publication(
     as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
         raise ValueError("today publication timestamp must be timezone-aware")
+    brief_date = as_of.astimezone(MARKET_TZ).date()
     with runtime.read() as connection:
         holdings = [
             dict(row)
@@ -114,7 +115,7 @@ def refresh_today_publication(
         ).fetchone()
         qqq_history = []
         if qqq_instrument is not None:
-            qqq_market_date = as_of.astimezone(MARKET_TZ).date()
+            qqq_market_date = brief_date
             qqq_history = [
                 {"date": row["trading_date"], "close": row["close"]}
                 for row in confirmed_daily_bars(
@@ -134,7 +135,7 @@ def refresh_today_publication(
             WHERE instrument.symbol = 'QQQ' AND quote.trading_date = %s
             LIMIT 1
             """,
-            [as_of, as_of.astimezone(MARKET_TZ).date()],
+            [as_of, brief_date],
         ).fetchone()
         prior_preopen_row = connection.execute(
             """
@@ -146,7 +147,7 @@ def refresh_today_publication(
               AND item.payload->>'brief_date' = %s
             ORDER BY publication.published_at DESC NULLS LAST LIMIT 1
             """,
-            [as_of.date().isoformat()],
+            [brief_date.isoformat()],
         ).fetchone()
         source_changes = [
             dict(row)
@@ -231,8 +232,7 @@ def refresh_today_publication(
     ]
     prior_preopen = dict(prior_preopen_row["payload"] or {}) if prior_preopen_row else {}
     narrative, narrative_error, narrative_run_id = _agent_preopen_narrative(
-        runtime=runtime,
-        as_of=as_of, qqq_history=list(reversed(qqq_history)), catalysts=catalysts,
+        runtime=runtime, as_of=as_of, brief_date=brief_date, qqq_history=qqq_history, catalysts=catalysts,
         source_changes=source_changes, option_rows=option_rows,
         enabled=use_agent_narrative and prior_preopen.get("status") != "agent_generated",
         model=agent_model, reasoning_effort=reasoning_effort,
@@ -249,8 +249,8 @@ def refresh_today_publication(
     narrative_model = str(prior_preopen.get("model_name") or agent_model) if preserved_agent_narrative else agent_model
     narrative_effort = str(prior_preopen.get("reasoning_effort") or reasoning_effort) if preserved_agent_narrative else reasoning_effort
     preopen = [{
-        "stable_key": as_of.date().isoformat(),
-        "brief_date": as_of.date().isoformat(),
+        "stable_key": brief_date.isoformat(),
+        "brief_date": brief_date.isoformat(),
         "generated_at": as_of,
         "session": "premarket",
         "status": narrative_status,
@@ -314,7 +314,8 @@ def refresh_today_publication(
 
 
 def _agent_preopen_narrative(
-    *, runtime: DatabaseRuntime, as_of: datetime, qqq_history: list[dict[str, Any]], catalysts: list[dict[str, Any]],
+    *, runtime: DatabaseRuntime, as_of: datetime, brief_date: date,
+    qqq_history: list[dict[str, Any]], catalysts: list[dict[str, Any]],
     source_changes: list[dict[str, Any]], option_rows: list[dict[str, Any]], enabled: bool,
     model: str, reasoning_effort: str,
 ) -> tuple[dict[str, Any] | None, str, str | None]:
@@ -326,7 +327,7 @@ def _agent_preopen_narrative(
         from investment_panel.analysis.preopen_forecast import backtest_qqq_preopen_model, qqq_preopen_forecast
         from investment_panel.jobs.codex_preopen_brief import generate
         context = compact_preopen_context(
-            brief_date=as_of.date().isoformat(),
+            brief_date=brief_date.isoformat(),
             qqq_forecast=qqq_preopen_forecast(qqq_history),
             backtest=backtest_qqq_preopen_model(qqq_history),
             catalysts=catalysts, option_rows=option_rows, source_changes=source_changes,
