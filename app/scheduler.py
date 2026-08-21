@@ -34,6 +34,14 @@ TICK_SECONDS = 15
 SLOT_ALIGNED_JOBS = frozenset({"robinhood_option_history", "detect_option_events"})
 SLOT_ALIGNMENT_TOLERANCE_SECONDS = 30.0
 
+__all__ = [
+    "STAGGER_SECONDS",
+    "job_intervals",
+    "run_scheduler",
+    "scheduler_enabled",
+    "scheduler_status",
+]
+
 
 def _initial_delay_seconds(
     job: str,

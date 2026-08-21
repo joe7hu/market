@@ -7,7 +7,7 @@ import sys
 import tomllib
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_production_dependencies_are_postgresql_only() -> None:

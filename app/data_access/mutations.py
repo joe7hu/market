@@ -1,7 +1,7 @@
 """Portfolio and watchlist write operations."""
 
 from __future__ import annotations
-from typing import Any, Iterable
+from typing import Any
 
 from investment_panel.core.config import AppConfig
 from investment_panel.database.user_state import (

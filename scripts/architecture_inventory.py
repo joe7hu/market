@@ -8,9 +8,11 @@ the application or contact PostgreSQL.
 from __future__ import annotations
 
 import ast
+import argparse
 from collections import Counter
 import json
 from pathlib import Path
+import sys
 import tomllib
 
 
@@ -38,6 +40,7 @@ OWNER_MODULES = (
     "src/investment_panel/database/ingestion.py",
     "frontend/src/generated/apiSchema.ts",
 )
+AREAS = ("api", "config", "options", "providers", "frontend")
 KNOWN_COMPATIBILITY_FILES = frozenset({"app/deps.py", "app/panel_contracts.py"})
 KNOWN_COMPATIBILITY_ROUTES = frozenset({
     "/api/decision-truth",
@@ -214,10 +217,78 @@ def _literal_all(path: Path) -> tuple[str, int]:
     return "missing", 0
 
 
-def owner_exports() -> list[tuple[str, str, int]]:
+def _relative_source_paths() -> list[Path]:
+    return [
+        *_prod_py_files(),
+        *(
+            path
+            for path in FRONTEND_SRC.rglob("*")
+            if path.is_file()
+            and path.suffix in {".ts", ".tsx"}
+            and "generated" not in path.parts
+            and ".test." not in path.name
+            and ".spec." not in path.name
+        ),
+    ]
+
+
+def _area_matches(path: Path, area: str | None) -> bool:
+    if area is None:
+        return True
+    relative = path.relative_to(ROOT).as_posix()
+    if area == "api":
+        return relative.startswith((
+            "app/",
+            "src/investment_panel/core/panel/",
+            "src/investment_panel/database/panel",
+            "src/investment_panel/database/current_quotes.py",
+            "src/investment_panel/database/sources.py",
+            "src/investment_panel/database/superinvestor_portfolios.py",
+            "frontend/src/api/",
+            "frontend/src/apiTransport.ts",
+        ))
+    if area == "config":
+        return relative.startswith((
+            "app/dependencies.py",
+            "app/response_contracts.py",
+            "app/routers/settings.py",
+            "app/data_access/settings.py",
+            "src/investment_panel/core/config",
+            "src/investment_panel/core/agent_config.py",
+            "src/investment_panel/core/options_recovery_config.py",
+            "src/investment_panel/database/configuration.py",
+        ))
+    if area == "options":
+        return (
+            relative.startswith(("app/actions/options.py", "app/routers/options"))
+            or "/options" in relative
+            or "/option_" in relative
+            or relative.startswith(("frontend/src/api/options.ts", "frontend/src/views/options"))
+        )
+    if area == "providers":
+        return relative.startswith((
+            "src/investment_panel/providers/",
+            "src/investment_panel/core/agent_providers.py",
+            "src/investment_panel/jobs/run_option_agent.py",
+            "src/investment_panel/jobs/option_agent_workflow.py",
+            "src/investment_panel/jobs/run_option_recovery_agents.py",
+            "frontend/src/api/agent.ts",
+        ))
+    if area == "frontend":
+        return relative.startswith("frontend/src/") and "generated" not in relative and ".test." not in relative and ".spec." not in relative
+    raise ValueError(f"unknown architecture area: {area}")
+
+
+def _area_source_paths(area: str | None) -> list[Path]:
+    return [path for path in _relative_source_paths() if _area_matches(path, area)]
+
+
+def owner_exports(area: str | None = None) -> list[tuple[str, str, int]]:
     result: list[tuple[str, str, int]] = []
     for relative in OWNER_MODULES:
         path = ROOT / relative
+        if area is not None and not _area_matches(path, area):
+            continue
         kind, count = _literal_all(path) if path.exists() else ("missing-file", 0)
         result.append((relative, kind, count))
     return result
@@ -348,20 +419,9 @@ def compatibility_references() -> dict[str, int]:
     return counts
 
 
-def production_lines_by_subsystem() -> dict[str, int]:
+def production_lines_by_subsystem(area: str | None = None) -> dict[str, int]:
     totals: Counter[str] = Counter()
-    paths = [
-        *_prod_py_files(),
-        *(
-            path
-            for path in FRONTEND_SRC.rglob("*")
-            if path.is_file()
-            and path.suffix in {".ts", ".tsx"}
-            and "generated" not in path.parts
-            and ".test." not in path.name
-            and ".spec." not in path.name
-        ),
-    ]
+    paths = _area_source_paths(area)
     for path in paths:
         relative = path.relative_to(ROOT).as_posix()
         if relative.startswith("frontend/"):
@@ -411,7 +471,47 @@ def _missing_local_imports() -> list[str]:
     return sorted(set(missing))
 
 
-def main() -> int:
+def _print_area_inventory(area: str) -> int:
+    print(f"area: {area}")
+    print("production_lines:")
+    for subsystem, count in production_lines_by_subsystem(area).items():
+        print(f"  {subsystem}: {count}")
+    print("owner_exports:")
+    for relative, kind, count in owner_exports(area):
+        print(f"  {relative}: {kind} ({count})")
+    print("local_import_cycles:")
+    cycles = local_import_cycles()
+    for cycle in cycles:
+        print("  " + " -> ".join(cycle))
+    if not cycles:
+        print("  none")
+    print("private_cross_module_imports:")
+    private = production_private_imports()
+    for finding in private:
+        print(f"  {finding}")
+    if not private:
+        print("  none")
+    print("router_database_violations:")
+    router_violations = router_database_imports()
+    for finding in router_violations:
+        print(f"  {finding}")
+    if not router_violations:
+        print("  none")
+    failures = _missing_local_imports()
+    failures.extend(console_script_violations())
+    print("static_failures:")
+    print("  PASS" if not failures else "  FAIL")
+    for failure in failures:
+        print(f"  {failure}")
+    return 1 if failures else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--area", choices=AREAS, help="print a compact inventory for one architecture area")
+    args = parser.parse_args([] if argv is None else argv)
+    if args.area:
+        return _print_area_inventory(args.area)
     paths, operations, categories = route_inventory()
     print("production_lines:")
     for subsystem, count in production_lines_by_subsystem().items():
@@ -472,4 +572,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

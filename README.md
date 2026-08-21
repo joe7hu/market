@@ -160,3 +160,29 @@ The broad refresh and snapshot jobs write `mini-market-full-refresh.json` and
 PostgreSQL `ingest.run`; application job history lives in `ops.job_run`. The
 snapshot job streams `pg_dump --format=custom`, verifies all six application
 schemas, and records a checksum manifest beside the dump.
+
+## Architecture and verification
+
+Start navigation with the compact owner map:
+
+```bash
+uv run python scripts/architecture_inventory.py --area api
+uv run python scripts/architecture_inventory.py --area options
+```
+
+Focused backend gates are available through Make:
+
+```bash
+make test-unit
+make test-api
+make test-options
+make test-postgres
+make test-all
+make check
+```
+
+The retained HTTP paths and methods are checked against
+[docs/api-route-manifest.json](docs/api-route-manifest.json). Generated
+schemas, frontend bundles, and full logs are verification outputs. Do not use
+them as normal navigation material; inspect the owning interface and run the
+focused check instead.

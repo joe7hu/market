@@ -23,7 +23,6 @@ from investment_panel.core.options_recovery_paper import (
 from investment_panel.core.options_recovery_registry import (
     EventSpot,
     RankedRecoveryCandidate,
-    RecoveryContractQuote,
     RecoveryEventState,
     contract_gate,
     rank_candidate,
@@ -40,10 +39,8 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.options_recovery_execution_support import (
     contract_quote as _contract_quote,
     decision_key as _decision_key,
-    invalidated as _invalidated,
     journal as _journal,
     midpoint as _mid,
-    number as _number,
     one_unit_ticket as _one_unit_ticket,
     publication_models as _publication_models,
     select_published as _select_published,

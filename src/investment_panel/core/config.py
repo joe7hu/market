@@ -10,7 +10,6 @@ from investment_panel.core.config_views import option_agent_config_dict, options
 from investment_panel.core.agent_providers import resolve_provider_selection, validate_registry_command
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
-from investment_panel.core.config_mutations import update_agent_settings_config, update_research_sources_config
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
 from investment_panel.database.configuration import DatabaseConfig, load_database_config, merge_persisted_setting_sections
 def project_root() -> Path:

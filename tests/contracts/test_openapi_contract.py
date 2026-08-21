@@ -8,7 +8,7 @@ from pathlib import Path
 from scripts.generate_openapi import rendered_schema
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = ROOT / "frontend" / "src" / "generated" / "openapi.json"
 TYPESCRIPT_PATH = ROOT / "frontend" / "src" / "generated" / "apiSchema.ts"
 

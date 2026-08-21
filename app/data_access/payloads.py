@@ -6,7 +6,6 @@ from app.scheduler import scheduler_status
 from investment_panel.core.panel import (
     build_ticker_dossier,
     dashboard_payload as core_dashboard_payload,
-    panel_contract_payload as contract_panel_payload,
     panel_snapshot_payload as core_panel_snapshot_payload,
 )
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from uuid import UUID
 
 from investment_panel.core.options_event_tape import (
     DELTA_LADDER,

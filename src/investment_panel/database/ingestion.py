@@ -24,10 +24,35 @@ from investment_panel.database.option_ingestion_support import (
     option_universe as _option_universe,
     stage_option_rows as _stage_option_rows,
 )
-from investment_panel.database.option_snapshot_freshness import latest_option_snapshot_by_symbol
 from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
 
 __all__ = ["IngestionRepository", "IngestionRun"]
+
+
+def latest_option_snapshot_by_symbol(
+    runtime: DatabaseRuntime,
+    source_id: str,
+    symbols: Sequence[str],
+) -> dict[str, datetime]:
+    normalized = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
+    if not normalized:
+        return {}
+    with runtime.read() as connection:
+        rows = connection.execute(
+            """
+            SELECT requested.symbol, max(snapshot.observed_at) AS observed_at
+            FROM raw.option_snapshot snapshot
+            JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+                COALESCE(ingest_run.summary->'symbols_requested', '[]'::jsonb)
+            ) requested(symbol)
+            WHERE snapshot.source_id = %s
+              AND requested.symbol = ANY(%s)
+            GROUP BY requested.symbol
+            """,
+            [source_id, normalized],
+        ).fetchall()
+    return {str(row["symbol"]): row["observed_at"] for row in rows}
 @dataclass
 class IngestionRun:
     """One ingestion lifecycle with exactly one terminal state."""

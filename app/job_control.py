@@ -7,7 +7,6 @@ background-task adapter and cache invalidation after a job completes.
 
 from __future__ import annotations
 
-from typing import Any
 
 from app.panel_snapshot import invalidate_context_cache
 from investment_panel.core.refresh_jobs import (

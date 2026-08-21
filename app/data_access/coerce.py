@@ -1,7 +1,7 @@
 """Generic row, JSON, numeric, and text coercion helpers."""
 
 from __future__ import annotations
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
 import json

@@ -14,7 +14,6 @@ from investment_panel.database.options_expressions import (
 )
 from investment_panel.database.options_calibration import calibration_profiles
 from investment_panel.core.option_trade_ticket import calibrated_cohort_ready
-from investment_panel.database.options_retention import retain_reject_sample
 from investment_panel.database.options_discovery import materialize_discovery_foundation
 from investment_panel.database.options_cash_secured_put import (
     DEFAULT_PARAMETERS as DEFAULT_CASH_SECURED_PUT_PARAMETERS,
@@ -35,6 +34,33 @@ DEFAULT_PARAMETERS = {
     "gates": {"max_spread_pct": 0.25, "min_open_interest": 50, "min_dte": 2, "max_dte": 900},
     "cash_secured_put": DEFAULT_CASH_SECURED_PUT_PARAMETERS,
 }
+
+
+def retain_reject_sample(connection: Any, run_id: Any) -> None:
+    """Keep every one-blocker near miss and a stable 5% sample of other rejects."""
+    sampled = "cardinality(decision.blockers) = 1 OR " \
+        "mod(('x' || substr(md5(decision.decision_key), 1, 8))::bit(32)::bigint, 20) = 0"
+    connection.execute(
+        f"""
+        INSERT INTO analysis.reject_summary
+            (run_id, strategy_revision_id, instrument_id, gate_code, reject_count, sampled_decision_keys)
+        SELECT decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker, count(*),
+               COALESCE(array_agg(decision.decision_key ORDER BY decision.decision_key)
+                   FILTER (WHERE {sampled}), '{{}}')
+        FROM analysis.decision decision CROSS JOIN unnest(decision.blockers) blocker
+        WHERE decision.run_id = %s AND decision.state = 'REJECTED'
+        GROUP BY decision.run_id, decision.strategy_revision_id, decision.instrument_id, blocker
+        """, [run_id],
+    )
+    connection.execute(
+        f"""DELETE FROM analysis.option_decision option_decision USING analysis.decision decision
+            WHERE option_decision.decision_id = decision.id AND decision.run_id = %s
+              AND decision.state = 'REJECTED' AND NOT ({sampled})""", [run_id],
+    )
+    connection.execute(
+        f"""DELETE FROM analysis.decision decision
+            WHERE run_id = %s AND state = 'REJECTED' AND NOT ({sampled})""", [run_id],
+    )
 
 
 def refresh_options_radar(

@@ -1,6 +1,6 @@
 """PostgreSQL-owned full-chain option history, analytics, and query contracts."""
 from __future__ import annotations
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 import math
 from statistics import fmean, pstdev
 from typing import Any, Sequence
@@ -12,7 +12,6 @@ from investment_panel.database.options_history_terminal import defer_capture as 
 from investment_panel.database.options_history_terminal import fail_capture as _fail_capture
 from investment_panel.database.options_history_v3 import OptionHistoryV3Materializer
 from investment_panel.database.options_history_health import history_health
-from investment_panel.database.options_history_surface import surface_groups as _surface_groups
 from investment_panel.database.options_history_capture import store_capture as _store_capture
 from investment_panel.database.options_history_policy import OptionHistoryPolicyRepository, PolicyConflict
 from investment_panel.database.options_surface_grid import surface_grid_payload
@@ -25,6 +24,23 @@ MIN_RESIDUAL_POINTS = 10
 MIN_RESIDUAL_ABS_DELTA = 0.05
 MAX_RESIDUAL_ABS_DELTA = 0.95
 MAX_RESIDUAL_SPREAD_PCT = 0.50
+
+
+def _surface_groups(runtime: DatabaseRuntime, snapshot_id: int) -> list[dict[str, Any]]:
+    with runtime.read() as connection:
+        rows = connection.execute(
+            """
+            SELECT contract.expiration, contract.option_type,
+                   greatest(contract.expiration - snapshot.trading_date, 0) AS dte, count(*) AS contract_count
+            FROM raw.option_quote quote
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            WHERE quote.snapshot_id = %s AND quote.capture_generation_id = snapshot.latest_complete_generation_id
+            GROUP BY contract.expiration, contract.option_type, snapshot.trading_date
+            ORDER BY contract.expiration, contract.option_type
+            """, [snapshot_id],
+        ).fetchall()
+    return [dict(row) for row in rows]
 class OptionHistoryRepository:
     """The single read/write owner for complete historical option snapshots."""
     def __init__(self, runtime: DatabaseRuntime, *, options_risk_sleeve_capital: float | None = None) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.price_confirmation_retention import PriceConfirmationRetentionRepository

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
-from typing import Any
 
 from investment_panel.core.config import AppConfig
 

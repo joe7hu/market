@@ -16,14 +16,13 @@ import tomllib
 from pathlib import Path
 
 from scripts.architecture_inventory import (
-    KNOWN_COMPATIBILITY_ROUTES,
     compatibility_references,
     console_script_violations,
     local_import_cycles,
     production_private_imports,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PROD_ROOTS = [REPO_ROOT / "app", REPO_ROOT / "src" / "investment_panel"]
 
 KNOWN_CYCLE_COMPONENTS = frozenset()
@@ -69,6 +68,18 @@ def test_compact_inventory_is_complete() -> None:
         "compatibility_references:",
     }
     assert required_sections <= set(lines)
+
+
+def test_area_inventory_is_compact_and_available() -> None:
+    from scripts import architecture_inventory
+
+    for area in ("api", "config", "options", "providers", "frontend"):
+        output = StringIO()
+        with redirect_stdout(output):
+            assert architecture_inventory.main(["--area", area]) == 0
+        lines = output.getvalue().splitlines()
+        assert len(lines) < 120, f"{area} inventory is too large: {len(lines)} lines"
+        assert lines[0] == f"area: {area}"
 
 
 def _private_import_edge(finding: str) -> str:

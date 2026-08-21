@@ -23,7 +23,6 @@ from investment_panel.jobs.option_agent_workflow import (
     ensure_request_ref,
     normalize_postmortem,
     postmortem_system_prompt,
-    read_stdin_json,
     run_cli,
     thesis_system_prompt,
 )

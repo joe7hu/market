@@ -28,13 +28,9 @@ from investment_panel.database.options_history_v3_candidates import (
     non_overlapping_returns,
     spread_short_leg,
 )
-from investment_panel.database.options_history_v3_shadows import cohort_legs, latest_available_at
-from investment_panel.database.options_history_v3_evidence import quote_package
-from investment_panel.database.options_history_v3_outcomes import upsert_observing_shadow_outcome
 from investment_panel.database.confirmed_daily_prices import confirmed_daily_bars
 from investment_panel.database.options_history_policy import apply_publication_cap
 from investment_panel.database.options_history_ticket import published_candidates
-from investment_panel.database.options_history_research import surface_shift_run_summary
 from investment_panel.database.options_history_v3_surface import surface_shape_metrics
 from investment_panel.database.options_history_v3_materialization import (
     capture_group_quality as _capture_group_quality,
@@ -45,6 +41,119 @@ from investment_panel.database.options_history_v3_materialization import (
     policy_for_instrument as _policy_for_instrument,
     surface_summary as _summary,
 )
+
+
+def cohort_legs(connection: Any, generation_id: int, shadows: list[dict[str, Any]]) -> dict[Any, list[dict[str, Any]]]:
+    contract_ids = sorted({int(leg["contract_id"]) for shadow in shadows for leg in shadow.get("synthetic_legs", [])})
+    if not contract_ids:
+        return {}
+    quotes = {int(row["contract_id"]): dict(row) for row in connection.execute(
+        """SELECT contract_id, bid, ask, bid_size, ask_size, provider_observed_at, available_at
+           FROM raw.option_quote WHERE capture_generation_id = %s AND contract_id = ANY(%s)""",
+        [generation_id, contract_ids],
+    ).fetchall()}
+    result: dict[Any, list[dict[str, Any]]] = {}
+    for shadow in shadows:
+        legs = []
+        for stored in shadow.get("synthetic_legs", []):
+            if (quote := quotes.get(int(stored["contract_id"]))) is not None:
+                legs.append({
+                    **dict(stored),
+                    "bid": quote["bid"],
+                    "ask": quote["ask"],
+                    "observed_at": quote["provider_observed_at"],
+                    "size_available": quote["bid_size"] is not None and quote["bid_size"] >= 1
+                    and quote["ask_size"] is not None and quote["ask_size"] >= 1,
+                    "available_at": quote["available_at"],
+                })
+        result[shadow["id"]] = legs
+    return result
+
+
+def latest_available_at(legs: list[dict[str, Any]]) -> datetime | None:
+    values = [leg["available_at"] for leg in legs if leg.get("available_at") is not None]
+    return max(values) if values else None
+
+
+def quote_package(legs: list[dict[str, Any]], as_of: datetime) -> dict[str, Any]:
+    observed = [_quote_datetime(leg.get("observed_at")) for leg in legs]
+    timestamps = [value for value in observed if value is not None]
+    ages = [(as_of - value).total_seconds() for value in timestamps]
+    skew = (max(timestamps) - min(timestamps)).total_seconds() if len(timestamps) > 1 else 0.0
+    return {
+        "max_quote_age_seconds": max(ages) if ages else None,
+        "interleg_skew_seconds": skew,
+        "liquidity": {
+            "minimum_open_interest": min((int(leg["open_interest"]) for leg in legs if leg.get("open_interest") is not None), default=None),
+            "minimum_volume": min((int(leg["volume"]) for leg in legs if leg.get("volume") is not None), default=None),
+            "displayed_sizes": [
+                {"contract_id": leg["contract_id"], "bid_size": leg.get("bid_size"), "ask_size": leg.get("ask_size")}
+                for leg in legs
+            ],
+        },
+    }
+
+
+def _quote_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def upsert_observing_shadow_outcome(
+    connection: Any,
+    *,
+    decision_id: str,
+    shadow_trade_id: str,
+    observed_through: datetime,
+    current_return: float | None,
+) -> None:
+    """Keep an incomplete shadow mark visible but out of scorecard cohorts."""
+    connection.execute(
+        """
+        INSERT INTO analysis.option_outcome
+            (decision_id, maturity_state, observed_through, current_return, outcome_source, shadow_trade_id,
+             lane, episode_key, sample_eligible, quarantine_reason, calibration_cohort)
+        SELECT decision.id, 'observing', %s, %s, 'options_history_v3', %s,
+               decision.lane, decision.episode_key, false,
+               coalesce(decision.quarantine_reason, 'outcome_not_resolved_execution_grade'),
+               decision.calibration_cohort
+        FROM analysis.decision decision
+        WHERE decision.id = %s
+        ON CONFLICT (decision_id) DO UPDATE
+        SET maturity_state = EXCLUDED.maturity_state, observed_through = EXCLUDED.observed_through,
+            current_return = EXCLUDED.current_return, outcome_source = EXCLUDED.outcome_source,
+            shadow_trade_id = EXCLUDED.shadow_trade_id, lane = EXCLUDED.lane,
+            episode_key = EXCLUDED.episode_key, sample_eligible = false,
+            quarantine_reason = EXCLUDED.quarantine_reason,
+            calibration_cohort = EXCLUDED.calibration_cohort, updated_at = now()
+        """,
+        [observed_through, current_return, shadow_trade_id, decision_id],
+    )
+
+
+def surface_shift_run_summary(
+    runtime: DatabaseRuntime, symbol: str, *, snapshot_id: int,
+    capture_generation_id: int, analysis_run_id: Any, model_revision: str,
+    mode: str, as_of: Any,
+) -> dict[str, Any]:
+    """Keep a research failure from invalidating the authoritative publication."""
+    from investment_panel.database.options_distribution_shift import materialize_surface_shift
+
+    try:
+        result = materialize_surface_shift(
+            runtime, symbol=symbol, as_of=as_of, snapshot_id=snapshot_id,
+            capture_generation_id=capture_generation_id,
+            current_analysis_run_id=analysis_run_id, model_revision=model_revision, mode=mode,
+        )
+        return {"surface_shift_state": result["evidence_state"]}
+    except Exception as error:
+        return {"surface_shift_state": "unavailable", "surface_shift_error": type(error).__name__}
 class OptionHistoryV3Materializer:
     """Bulk materialize an immutable capture generation into a separate analysis run."""
 

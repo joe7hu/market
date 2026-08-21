@@ -49,20 +49,23 @@ The Phase 0 inventory reports the current measurable shape in fewer than 200
 lines. It records subsystem line counts, route categories, owner exports,
 cycles, private imports, router/database violations, re-export-only modules,
 console entry points, generated-contract presence, and compatibility markers.
+After the Phase 6 cleanup, the inventory measures 77,475 non-generated
+production source lines, 268 production Python modules, 67 OpenAPI paths and
+69 operations, zero local import cycles, and zero production private imports.
 
 ## Guard policy
 
-Architecture guards fail on new import cycles, new private cross-module imports,
-router imports from `investment_panel.database`, implicit or dynamic facade
-exports, unregistered compatibility files or routes, stale generated contracts,
-and console scripts without a registered callable owner. The starting Event
-Scout cycle and private-import edges are grandfathered only as a Phase 0
-ratchet; Phase 5 must reduce both sets to zero.
+Architecture guards fail on import cycles, private cross-module imports, router
+imports from `investment_panel.database`, implicit or dynamic facade exports,
+compatibility files or routes, stale generated contracts, console scripts
+without a registered callable owner, and Ruff F401/F811 findings. The cycle
+and private-import inventories are now required to be empty.
 
 The inventory is descriptive. It does not make the 700-line threshold a hard
 failure. Ruff, OpenAPI generation, TypeScript, Vitest, and pytest remain the
 verification tools; no dependency-analysis or code-generation dependency is
-added.
+added. Area filters for `api`, `config`, `options`, `providers`, and `frontend`
+keep agent navigation compact.
 
 ## Consequences
 

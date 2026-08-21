@@ -75,17 +75,14 @@ extend-exclude = [".venv", "frontend", "build", "dist"]
 
 [tool.ruff.lint]
 # High-signal, zero-false-positive rules that are GREEN today, so `make check`
-# stays a real gate rather than a wall of pre-existing noise. Deliberately NOT
-# enforced yet (each needs a small cleanup first):
-#   F401 unused-import  - this codebase relies on implicit re-exports that lack
-#                         `__all__`, so F401 has many false positives (and its
-#                         autofix breaks imports). Add `__all__` to re-exporting
-#                         modules, then enable F401.
-#   F811 redefinition   - a few broker modules shadow `dataclasses.field`.
-#   B    flake8-bugbear - 4 pre-existing findings to triage.
-# Widen this list as the codebase is cleaned.
+# stays a real gate rather than a wall of pre-existing noise. F401 and F811
+# are enabled after compatibility facades were removed and package exports
+# were made explicit. B remains outside this focused gate until its findings
+# receive a separate cleanup.
 select = [
   "E9",                              # syntax / IO / runtime errors
+  "F401",                            # unused imports
+  "F811",                            # redefined names
   "F63", "F7",                       # logic errors (assert tuple, break outside loop, ...)
   "F501", "F502", "F503", "F506", "F509",  # %-format string bugs
   "F601", "F602",                    # `is` / `is not` against a literal

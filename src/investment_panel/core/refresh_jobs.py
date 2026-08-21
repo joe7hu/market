@@ -6,7 +6,6 @@ import argparse
 from contextlib import contextmanager
 from datetime import timedelta
 import json
-import os
 import subprocess
 import sys
 from threading import Event, Thread
@@ -16,8 +15,8 @@ from typing import Any, Callable, Iterator
 from investment_panel.core.config import load_config
 from investment_panel.core.job_execution import (
     PROJECT_ROOT,
-    SOURCE_ROOT,
     RefreshProcessSpec,
+    SOURCE_ROOT,
     execute_sync,
 )
 from investment_panel.core.job_policy import default_job_timeouts, job_timeout_seconds
@@ -54,6 +53,15 @@ JobRunner = Callable[[str | None], dict[str, Any]]
 JOB_TIMEOUT_SECONDS: dict[str, int] = default_job_timeouts()
 JOB_HEARTBEAT_SECONDS = 30.0
 RADAR_PROVIDER_LEASE_RETRY_DELAYS_SECONDS = (15.0, 30.0, 60.0)
+
+__all__ = [
+    "PROJECT_ROOT",
+    "SOURCE_ROOT",
+    "finish_refresh_job_failed",
+    "mark_stale_running_jobs",
+    "run_refresh_job",
+    "start_refresh_job",
+]
 
 
 def _job_timeout_seconds(job_name: str) -> int | None:

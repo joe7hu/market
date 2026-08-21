@@ -9,14 +9,8 @@ from typing import Any
 # leaf). Re-exported here under their legacy `_`-names so existing
 # `core.panel.coerce` consumers keep working; new code should import them from
 # core.coercion directly.
-from investment_panel.core.coercion import average as _average
 from investment_panel.core.coercion import decode_json_value
-from investment_panel.core.coercion import format_metric as _format_metric
-from investment_panel.core.coercion import iso_or_none as _iso_or_none
-from investment_panel.core.coercion import median as _median
 from investment_panel.core.coercion import number_from_any as _number_from_any
-from investment_panel.core.coercion import optional_number as _optional_number
-from investment_panel.core.coercion import share as _share
 from investment_panel.core.coercion import string_list as _string_list
 
 

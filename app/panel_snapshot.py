@@ -20,7 +20,6 @@ from fastapi import HTTPException
 
 from app.data_access import loaders as loaders_owner
 from app.data_access.payloads import panel_snapshot_payload, table_payload
-from app.data_access.types import PanelData
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.panel import PANEL_SCOPE_TABLES, SCOPED_TABLE_COMPACT_FIELDS, SCOPED_TABLE_ROW_LIMITS
 from investment_panel.database.authority import database_url

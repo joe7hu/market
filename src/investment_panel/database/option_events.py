@@ -29,7 +29,6 @@ from investment_panel.database.options_history_policy import OptionHistoryPolicy
 from investment_panel.database.confirmed_daily_prices import completed_trading_dates
 from investment_panel.database.option_event_feed import OptionEventFeed
 from investment_panel.database.option_event_support import as_datetime as _as_datetime
-from investment_panel.database.option_event_support import fraction as _fraction
 from investment_panel.database.option_event_support import p95 as _p95
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 

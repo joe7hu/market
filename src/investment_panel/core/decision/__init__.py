@@ -95,6 +95,7 @@ __all__ = [
     "catalyst_window",
     "classify_freshness",
     "decode",
+    "decision_basis",
     "dedupe_freshness",
     "default_freshness_detail",
     "easter_date",

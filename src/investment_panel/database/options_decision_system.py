@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import UTC, date, datetime
 from typing import Any
-from uuid import UUID
 
 from psycopg.types.json import Jsonb
 

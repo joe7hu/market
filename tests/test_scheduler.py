@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from app import scheduler

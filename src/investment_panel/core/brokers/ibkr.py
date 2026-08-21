@@ -1,15 +1,14 @@
 """IBKR provider and snapshot collection/normalization."""
 
 from __future__ import annotations
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import importlib.util
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 from investment_panel.core.config import IBKRConfig
-from investment_panel.core.instruments import infer_asset_class, normalize_symbol
+from investment_panel.core.instruments import normalize_symbol
 
 from investment_panel.core.brokers.constants import IBKR_ACCOUNT_TAGS, IBKR_GENERIC_TICKS, IBKR_TICK_GENERIC_FIELDS, IBKR_TICK_PRICE_FIELDS, IBKR_TICK_SIZE_FIELDS
 from investment_panel.core.brokers.types import BrokerSnapshot, ProviderStatus

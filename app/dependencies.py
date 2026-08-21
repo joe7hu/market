@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +11,14 @@ from fastapi import Depends, Request
 from app.actions.agents import AgentActions
 from app.actions.options import OptionsActions
 from app.actions.portfolio import PortfolioActions
-from app.actions.sources import SourceActions
-from app.actions.superinvestors import SuperinvestorActions
 from app.actions.theses import ThesisActions
 from app import job_control
 from app.request_security import require_local_request
 from investment_panel.core.config import AppConfig, load_config, public_config_payload as _public_config_payload
 from investment_panel.database.authority import database_url, runtime_for_config
+from investment_panel.database.sources import SourceRepository
+from investment_panel.database.storage_archive import StorageArchiveService
+from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 
 
 def get_config() -> AppConfig:
@@ -63,12 +65,29 @@ def get_portfolio_actions(config: AppConfig = Depends(get_config)) -> PortfolioA
     )
 
 
-def get_source_actions(config: AppConfig = Depends(get_config)) -> SourceActions:
-    return SourceActions(config)
+def get_source_repository(config: AppConfig = Depends(get_config)) -> SourceRepository:
+    return SourceRepository(runtime_for_config(config))
 
 
-def get_superinvestor_actions(config: AppConfig = Depends(get_config)) -> SuperinvestorActions:
-    return SuperinvestorActions(config)
+def get_storage_archive_service(config: AppConfig = Depends(get_config)) -> StorageArchiveService:
+    return StorageArchiveService(runtime_for_config(config), Path(config.nas.storage_archive_dir))
+
+
+def get_superinvestor_query(
+    config: AppConfig = Depends(get_config),
+) -> Callable[[str], dict[str, Any] | None]:
+    runtime = runtime_for_config(config)
+
+    def query(investor_key: str) -> dict[str, Any] | None:
+        with runtime.read() as connection:
+            rows = superinvestor_portfolios(
+                connection,
+                investor_key=investor_key,
+                include_holdings=True,
+            )
+        return rows[0] if rows else None
+
+    return query
 
 
 def get_thesis_actions(config: AppConfig = Depends(get_config)) -> ThesisActions:
@@ -90,8 +109,9 @@ __all__ = [
     "get_agent_actions",
     "get_options_actions",
     "get_portfolio_actions",
-    "get_source_actions",
-    "get_superinvestor_actions",
+    "get_source_repository",
+    "get_storage_archive_service",
+    "get_superinvestor_query",
     "get_thesis_actions",
     "load_config",
     "public_config",

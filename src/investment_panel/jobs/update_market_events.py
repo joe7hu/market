@@ -98,7 +98,6 @@ def _bls_events(user_agent: str) -> tuple[list[dict[str, Any]], list[dict[str, s
 
 
 def _archive_payload(config: AppConfig, run_id: Any, payloads: list[dict[str, str]]) -> Any:
-    from pathlib import Path
 
     path = provider_archive_path(
         config, SOURCE_ID, datetime.now(UTC).strftime("%Y/%m/%d"), f"{run_id}.json.gz"

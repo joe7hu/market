@@ -1,8 +1,8 @@
 """Panel data containers and status types."""
 
 from __future__ import annotations
-from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any, Iterable
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.data_access.coerce import normalize_rows
 

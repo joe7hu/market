@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from app import dependencies
-from app.data_access import loaders as loaders_owner
 from app.routers.options import encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository

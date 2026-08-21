@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 import threading
 from types import SimpleNamespace
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 from psycopg.types.json import Jsonb

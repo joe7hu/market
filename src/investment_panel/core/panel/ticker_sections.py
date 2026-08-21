@@ -25,7 +25,6 @@ from investment_panel.core.coercion import (
     parse_json_list,
     string_list,
 )
-from investment_panel.core.panel.coerce import normalize_symbol_token as _normalize_symbol_token
 
 # Single source of truth for which read-model tables feed each dossier section.
 # Used to compute per-section coverage instead of two divergent family maps.
