@@ -50,7 +50,7 @@ def overdue_source_refresh_jobs(
                   AND source.health_owner IS NOT NULL
                   AND source.freshness_seconds IS NOT NULL
                   AND (
-                      source.health_owner LIKE 'update_%'
+                      source.health_owner LIKE 'update_%%'
                       OR source.health_owner = 'options_radar_hard_refresh'
                   )
                   AND (
