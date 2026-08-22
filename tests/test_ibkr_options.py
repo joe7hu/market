@@ -241,6 +241,7 @@ data_sources:
         "collect_ibkr_option_chains",
         lambda cfg, symbols, **kw: {"rows": {"NVDA": unquoted}, "market_data": "delayed", "observed_at": "2026-06-10T02:00:00", "errors": []},
     )
+    monkeypatch.setattr(update_ibkr_options, "set_source_operational_state", lambda *_args, **_kwargs: None)
 
     result = update_ibkr_options.run(str(config_path), symbols=["NVDA"])
     assert result["status"] == "skipped_unquoted_snapshot"

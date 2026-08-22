@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from investment_panel.core.arco import flatten_arco_items, load_arco_context
+from investment_panel.core.arco import arco_readability_preflight, flatten_arco_items, load_arco_context
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
@@ -31,6 +31,21 @@ def run(config_path: str | None = None) -> dict[str, Any]:
         origin=str(config.arco.raw_dir),
         capabilities={"beliefs": True, "bookmarks": True, "source_evidence": True},
     )
+    preflight = arco_readability_preflight(config.arco)
+    if not preflight["ok"]:
+        with repository.run(SOURCE_ID, "content") as ingestion_run:
+            ingestion_run.finish(
+                "failed",
+                failure_detail=str(preflight["error"]),
+                summary={"preflight": preflight},
+            )
+        return {
+            "status": "failed",
+            "database": "postgresql",
+            "items": 0,
+            "preflight": preflight,
+            "error": str(preflight["error"]),
+        }
     try:
         with repository.run(SOURCE_ID, "content") as ingestion_run:
             run_id = ingestion_run.id

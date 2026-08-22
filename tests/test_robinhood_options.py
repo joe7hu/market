@@ -448,6 +448,7 @@ def test_authorization_server_metadata_falls_back_to_origin_well_known(monkeypat
 
 def test_update_robinhood_options_reports_auth_required(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ROBINHOOD_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(update_robinhood_options, "set_source_operational_state", lambda *_args, **_kwargs: None)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         f"""
@@ -473,7 +474,8 @@ data_sources:
     assert result["auth_command"] == "market-update-robinhood-options --auth"
 
 
-def test_update_robinhood_options_reports_provider_error(tmp_path: Path) -> None:
+def test_update_robinhood_options_reports_provider_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(update_robinhood_options, "set_source_operational_state", lambda *_args, **_kwargs: None)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         f"""

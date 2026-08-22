@@ -46,6 +46,24 @@ def test_material_thesis_monitor_skips_when_source_reports_no_changes(monkeypatc
     assert result["material_thesis_monitor"]["reason"] == "no_changed_symbols"
 
 
+def test_material_thesis_monitor_failure_does_not_hide_source_success(monkeypatch) -> None:
+    monkeypatch.setattr(
+        refresh_jobs.run_thesis_monitor,
+        "run",
+        lambda *_args, **_kwargs: {"status": "failed", "error": "monitor unavailable"},
+    )
+
+    result = refresh_jobs.run_source_with_material_thesis(
+        "config.yaml",
+        lambda _path: {"status": "ok", "affected_symbols": ["QQQ"]},
+    )
+
+    assert result["status"] == "partial"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "failed"
+    assert result["source_result"]["status"] == "ok"
+
+
 @pytest.fixture(autouse=True)
 def _postgresql_job_authority(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MARKET_DATABASE_URL", migrated_postgres_dsn)
@@ -65,6 +83,36 @@ def test_refresh_job_can_be_started_and_completed(tmp_path, monkeypatch) -> None
     assert rows[0]["id"] == job["id"]
     assert rows[0]["status"] == "succeeded"
     assert rows[0]["summary"] == {"ok": True, "rows": 3}
+
+
+def test_refresh_job_records_due_dispatch_source_and_downstream_status(tmp_path, monkeypatch) -> None:
+    db_path = os.environ["MARKET_DATABASE_URL"]
+    due_at = datetime.now(UTC) - timedelta(seconds=5)
+    monkeypatch.setitem(
+        refresh_jobs.ALLOWLIST,
+        "unit_refresh",
+        lambda _config_path: {
+            "status": "partial",
+            "source_status": "ok",
+            "downstream_status": "failed",
+            "source_result": {"status": "ok"},
+        },
+    )
+
+    job = refresh_jobs.start_refresh_job(
+        "unit_refresh",
+        db_path,
+        scheduled_due_at=due_at,
+        dispatched_at=datetime.now(UTC),
+    )
+    result = refresh_jobs.execute_refresh_job(job["id"], "unit_refresh", db_path, "config.yaml")
+    row = refresh_jobs.refresh_job_rows(db_path)[0]
+
+    assert result["status"] == "partial"
+    assert row["scheduled_due_at"] == due_at
+    assert row["dispatched_at"] is not None
+    assert row["source_status"] == "ok"
+    assert row["downstream_status"] == "failed"
 
 
 def test_refresh_job_preserves_partial_result_status(tmp_path, monkeypatch) -> None:

@@ -18,14 +18,53 @@ def test_sec_get_bytes_declares_headers_and_retries_transient_403(monkeypatch) -
 
     sleeps: list[float] = []
     monkeypatch.setattr(sec.httpx, "get", fake_get)
+    monkeypatch.setattr(sec, "_wait_for_host", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(sec.time, "sleep", sleeps.append)
 
     assert sec.sec_get_bytes("https://www.sec.gov/Archives/test.json", "Market App owner@example.com") == b"ok"
     assert requests == [
-        {"User-Agent": "Market App owner@example.com", "Accept-Encoding": "gzip, deflate", "Host": "www.sec.gov"},
-        {"User-Agent": "Market App owner@example.com", "Accept-Encoding": "gzip, deflate", "Host": "www.sec.gov"},
+        {
+            "User-Agent": "Market App owner@example.com",
+            "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+            "Accept-Encoding": "gzip, deflate",
+            "Host": "www.sec.gov",
+        },
+        {
+            "User-Agent": "Market App owner@example.com",
+            "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+            "Accept-Encoding": "gzip, deflate",
+            "Host": "www.sec.gov",
+        },
     ]
     assert sleeps == [0.25]
+
+
+def test_official_source_honors_retry_after_and_reports_terminal_status(monkeypatch) -> None:
+    responses = iter(
+        [
+            httpx.Response(429, headers={"Retry-After": "2"}, request=httpx.Request("GET", "https://data.sec.gov")),
+            httpx.Response(503, content=b"temporarily unavailable", request=httpx.Request("GET", "https://data.sec.gov")),
+        ]
+    )
+    waits: list[float] = []
+    monkeypatch.setattr(sec.httpx, "get", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(sec, "_wait_for_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sec.time, "sleep", waits.append)
+
+    try:
+        sec.official_get_bytes(
+            "https://data.sec.gov/submissions.json",
+            "Market App owner@example.com",
+            provider="SEC",
+            max_retries=1,
+            min_interval_seconds=0,
+        )
+    except sec.OfficialSourceHTTPError as exc:
+        assert str(exc) == "SEC data.sec.gov HTTP 503 after 2 attempt(s): temporarily unavailable"
+    else:
+        raise AssertionError("expected terminal official-source error")
+
+    assert waits == [2.0]
 
 
 def test_regulatory_user_agents_are_loaded_from_deployment_environment(monkeypatch) -> None:

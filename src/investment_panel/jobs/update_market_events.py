@@ -11,10 +11,9 @@ import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.core.provider_identity import provider_user_agent
+from investment_panel.core import sec
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.payload_archive import provider_archive_path
@@ -88,10 +87,14 @@ def _bls_events(user_agent: str) -> tuple[list[dict[str, Any]], list[dict[str, s
     payloads: list[dict[str, str]] = []
     for url, release, kind in BLS_SCHEDULES:
         try:
-            response = httpx.get(url, headers={"User-Agent": user_agent}, timeout=15, follow_redirects=True)
-            response.raise_for_status()
-            payloads.append({"url": url, "body": response.text})
-            events.extend(_parse_bls(response.text, release, kind, url))
+            body = sec.official_get_bytes(
+                url,
+                user_agent,
+                provider="BLS",
+                timeout_seconds=15,
+            ).decode("utf-8", errors="replace")
+            payloads.append({"url": url, "body": body})
+            events.extend(_parse_bls(body, release, kind, url))
         except Exception as exc:
             errors.append({"source": url, "error": f"{type(exc).__name__}: {exc}"})
     return events, errors, payloads

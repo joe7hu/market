@@ -47,6 +47,16 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
     assert intervals["update_market_data"] == 3600
 
 
+def test_event_and_disclosure_refreshes_default_to_daily(monkeypatch) -> None:
+    monkeypatch.delenv("MARKET_EVENT_CALENDAR_REFRESH_SECONDS", raising=False)
+    monkeypatch.delenv("MARKET_DISCLOSURE_REFRESH_SECONDS", raising=False)
+
+    intervals = scheduler.job_intervals()
+
+    assert intervals["update_event_calendar"] == 86400
+    assert intervals["update_disclosures"] == 86400
+
+
 def test_generic_paper_manager_runs_with_entry_switches_off_for_safe_exits(monkeypatch) -> None:
     monkeypatch.delenv("MARKET_OPTIONS_PAPER_EXECUTION_SECONDS", raising=False)
     intervals = scheduler.job_intervals()
@@ -189,6 +199,18 @@ def test_source_writers_wait_one_interval_before_first_run() -> None:
     assert scheduler._initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
     assert scheduler._initial_delay_seconds("update_robinhood_options", 120, 1) == 120
     assert scheduler._initial_delay_seconds("refresh_options_radar_signal_robinhood", 60, 2) == 2 * scheduler.STAGGER_SECONDS
+
+
+def test_overdue_source_writers_start_immediately_but_staggered() -> None:
+    assert scheduler._startup_delay_seconds(
+        "update_event_calendar", 86400, 0, overdue_jobs={"update_event_calendar"}
+    ) == 0
+    assert scheduler._startup_delay_seconds(
+        "update_disclosures", 86400, 1, overdue_jobs={"update_disclosures"}
+    ) == scheduler.STAGGER_SECONDS
+    assert scheduler._startup_delay_seconds(
+        "options_radar_hard_refresh", 900, 0, overdue_jobs=set()
+    ) == 900
 
 
 def test_option_history_starts_on_the_next_quarter_hour() -> None:
@@ -353,7 +375,7 @@ def test_execute_started_job_passes_database_url_only_in_process_environment(mon
 def test_scheduler_does_not_let_slow_job_starve_market_environment(monkeypatch) -> None:
     calls: list[str] = []
 
-    async def fake_dispatch(job, _db_path, _config_path):
+    async def fake_dispatch(job, _db_path, _config_path, **_kwargs):
         calls.append(job)
         if job == "slow_job":
             await asyncio.sleep(0.1)

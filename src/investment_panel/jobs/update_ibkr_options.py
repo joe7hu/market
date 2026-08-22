@@ -15,7 +15,9 @@ from typing import Any
 from investment_panel.core.config import load_config
 from investment_panel.core.ibkr_options import collect_ibkr_option_chains
 from investment_panel.core.status import write_source_status
+from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options import option_universe, persist_collected_option_chains
+from investment_panel.database.source_registry import set_source_operational_state
 
 # Minimum fraction of collected contracts that must carry a live bid/ask for the
 # snapshot to be worth persisting. Off-hours the delayed feed returns ~0% quoted, so
@@ -52,6 +54,16 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
     config = load_config(config_path)
     if not config.data_sources.brokers.enabled or not config.data_sources.brokers.ibkr.enabled:
         return {"status": "disabled", "provider": "ibkr"}
+    # A standby provider cannot satisfy current readiness. It becomes active
+    # only after this run passes the Gateway/connectivity preflight and stores
+    # a usable snapshot below.
+    set_source_operational_state(
+        runtime_for_config(config),
+        "ibkr",
+        "standby",
+        health_owner="update_ibkr_options",
+        freshness_seconds=3600,
+    )
     target = symbols or option_universe(config, limit=_max_symbols())
     # Collect over the network WITHOUT holding the DB lock — the IBKR scan takes
     # minutes, and holding a write connection that whole time would block the radar.
@@ -87,6 +99,14 @@ def run(config_path: str | None = None, symbols: list[str] | None = None) -> dic
         return {**result, "status_path": str(status_path) if status_path else None}
     collected["symbols_requested"] = list(target)
     persisted = persist_collected_option_chains(config, "ibkr", collected)
+    if os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower() == "ibkr":
+        set_source_operational_state(
+            runtime_for_config(config),
+            "ibkr",
+            "active",
+            health_owner="update_ibkr_options",
+            freshness_seconds=3600,
+        )
     stored = int(persisted["contract_count"])
     result = {
         "provider": "ibkr",

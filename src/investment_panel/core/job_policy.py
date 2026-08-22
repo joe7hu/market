@@ -227,6 +227,8 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),
+        ("update_event_calendar", "MARKET_EVENT_CALENDAR_REFRESH_SECONDS", 86400),
+        ("update_disclosures", "MARKET_DISCLOSURE_REFRESH_SECONDS", 86400),
         ("update_preopen_daily_brief_scheduled", "MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0),
     ):
         seconds = _env_int(env_name, default, allow_zero=True)
@@ -253,6 +255,8 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
         "arco_refresh_seconds": str(intervals.get("update_arco_data", 0)),
         "market_data_refresh_seconds": str(intervals.get("update_market_data", 0)),
+        "event_calendar_refresh_seconds": str(intervals.get("update_event_calendar", 0)),
+        "disclosures_refresh_seconds": str(intervals.get("update_disclosures", 0)),
         "market_environment_refresh_seconds": "0",
         "preopen_brief_refresh_seconds": str(intervals.get("update_preopen_daily_brief_scheduled", 0)),
         "decision_inbox_refresh_seconds": str(intervals.get("sync_decision_inbox", 0)),
@@ -286,38 +290,28 @@ def source_refresh_job_names() -> set[str]:
 
 def source_refresh_jobs_sql() -> str:
     return """CASE
-        WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN ARRAY[]::text[]
+        WHEN source.operational_state = 'archived' THEN ARRAY[]::text[]
         WHEN source.id = 'ibkr' THEN ARRAY['update_broker_sources', 'update_ibkr_options']::text[]
         WHEN source.id = 'moomoo' THEN ARRAY['update_broker_sources']::text[]
-        WHEN source.id = 'robinhood' THEN ARRAY['options_radar_hard_refresh']::text[]
-        WHEN source.id = 'birdclaw_primary_tweets' THEN ARRAY['update_social_sources']::text[]
-        WHEN source.id = 'arco' THEN ARRAY['update_arco_data']::text[]
-        WHEN source.id LIKE 'news_%' OR source.id LIKE 'blog_%' THEN ARRAY['update_research_sources']::text[]
-        WHEN source.id = 'official-event-calendar' THEN ARRAY['update_event_calendar']::text[]
-        WHEN source.id LIKE 'house_%' OR source.id LIKE 'sec_13f_%'
-          OR source.id LIKE 'disclosure_csv_%' OR source.id = 'sec_disclosures'
-          THEN ARRAY['update_disclosures']::text[]
-        WHEN source.id IN ('watchlist_quote', 'daily-market-prices', 'tradingview',
-                           'yfinance_info', 'coingecko', 'yfinance')
-          THEN ARRAY['update_market_data']::text[]
+        WHEN source.health_owner = 'options_radar_hard_refresh' THEN ARRAY['options_radar_hard_refresh']::text[]
+        WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
+                                     'update_social_sources', 'update_arco_data',
+                                     'update_research_sources', 'update_event_calendar',
+                                     'update_disclosures', 'update_market_data')
+          THEN ARRAY[source.health_owner]::text[]
         ELSE ARRAY[]::text[] END"""
 
 
 def source_primary_refresh_job_sql() -> str:
     return """CASE
-        WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN NULL
-        WHEN source.id = 'robinhood' THEN 'options_radar_hard_refresh'
+        WHEN source.operational_state = 'archived' THEN NULL
         WHEN source.id = 'ibkr' AND worst.capability = 'option_quotes' THEN 'update_ibkr_options'
-        WHEN source.id IN ('ibkr', 'moomoo') THEN 'update_broker_sources'
-        WHEN source.id = 'birdclaw_primary_tweets' THEN 'update_social_sources'
-        WHEN source.id = 'arco' THEN 'update_arco_data'
-        WHEN source.id LIKE 'news_%' OR source.id LIKE 'blog_%' THEN 'update_research_sources'
-        WHEN source.id = 'official-event-calendar' THEN 'update_event_calendar'
-        WHEN source.id LIKE 'house_%' OR source.id LIKE 'sec_13f_%'
-          OR source.id LIKE 'disclosure_csv_%' OR source.id = 'sec_disclosures'
-          THEN 'update_disclosures'
-        WHEN source.id IN ('watchlist_quote', 'daily-market-prices', 'tradingview',
-                           'yfinance_info', 'coingecko', 'yfinance') THEN 'update_market_data'
+        WHEN source.health_owner = 'options_radar_hard_refresh' THEN 'options_radar_hard_refresh'
+        WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
+                                     'update_social_sources', 'update_arco_data',
+                                     'update_research_sources', 'update_event_calendar',
+                                     'update_disclosures', 'update_market_data')
+          THEN source.health_owner
         ELSE NULL END"""
 
 

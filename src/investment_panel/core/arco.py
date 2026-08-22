@@ -28,6 +28,65 @@ def read_json(path: Path, default: Any) -> Any:
         return json.load(handle)
 
 
+def arco_readability_preflight(config: ArcoConfig) -> dict[str, Any]:
+    """Verify that the mounted Arco authority can be read before ingestion."""
+
+    raw_dir = Path(config.raw_dir)
+    paths = [raw_dir / config.signals_path, raw_dir / config.beliefs_path]
+    rendered = {"raw_dir": str(raw_dir), "files": [str(path) for path in paths]}
+    try:
+        if not raw_dir.exists():
+            mounted = any(part == "Volumes" for part in raw_dir.parts)
+            status = "unmounted" if mounted else "missing"
+            return {
+                **rendered,
+                "ok": False,
+                "status": status,
+                "error": f"Arco raw directory is {status}: {raw_dir}",
+            }
+        if not raw_dir.is_dir():
+            return {
+                **rendered,
+                "ok": False,
+                "status": "missing",
+                "error": f"Arco raw path is not a directory: {raw_dir}",
+            }
+        missing = [path for path in paths if not path.exists()]
+        if missing:
+            return {
+                **rendered,
+                "ok": False,
+                "status": "missing",
+                "error": "Arco required file(s) missing: " + ", ".join(str(path) for path in missing),
+            }
+        for path in paths:
+            with path.open("r", encoding="utf-8") as handle:
+                json.load(handle)
+    except PermissionError as exc:
+        return {
+            **rendered,
+            "ok": False,
+            "status": "permission_denied",
+            "error": f"Arco raw path permission denied: {exc}",
+        }
+    except json.JSONDecodeError as exc:
+        return {
+            **rendered,
+            "ok": False,
+            "status": "invalid",
+            "error": f"Arco JSON is invalid: {exc}",
+        }
+    except OSError as exc:
+        status = "unmounted" if getattr(exc, "errno", None) in {6, 19} else "unreadable"
+        return {
+            **rendered,
+            "ok": False,
+            "status": status,
+            "error": f"Arco raw path {status}: {exc}",
+        }
+    return {**rendered, "ok": True, "status": "readable"}
+
+
 def latest_file(directory: Path, pattern: str) -> Path | None:
     files = sorted(directory.glob(pattern))
     return files[-1] if files else None

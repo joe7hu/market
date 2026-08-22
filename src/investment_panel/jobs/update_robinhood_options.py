@@ -22,7 +22,9 @@ from investment_panel.core.robinhood_options import (
     load_robinhood_access_token,
 )
 from investment_panel.core.status import write_source_status
+from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.options import incremental_option_symbols, option_universe, persist_collected_option_chains
+from investment_panel.database.source_registry import set_source_operational_state
 
 
 MIN_QUOTED_FRACTION = 0.2
@@ -69,6 +71,14 @@ def run(
     full: bool = False,
 ) -> dict[str, Any]:
     config = load_config(config_path)
+    if os.environ.get("MARKET_RADAR_OPTION_SOURCE", "robinhood").strip().lower() != "ibkr":
+        set_source_operational_state(
+            runtime_for_config(config),
+            "ibkr",
+            "standby",
+            health_owner="update_ibkr_options",
+            freshness_seconds=3600,
+        )
     provider = config.data_sources.brokers.robinhood
     if not config.data_sources.brokers.enabled or not provider.enabled:
         return {"status": "disabled", "provider": "robinhood"}

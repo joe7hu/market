@@ -124,6 +124,9 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
             "failedStep": "update_robinhood_options",
             "error": f"Robinhood option refresh returned {source_status or 'unknown'}",
             "source": source,
+            "source_result": source,
+            "source_status": source_status or "failed",
+            "downstream_status": "not_run",
         }
     source_symbols = source.get("symbols")
     radar_symbols = [str(symbol).upper() for symbol in source_symbols if symbol] if isinstance(source_symbols, list) else None
@@ -131,11 +134,16 @@ def run_options_radar_hard_refresh(config_path: str | None = "config.yaml") -> d
         radar = {"status": "skipped", "reason": "no_incremental_symbols", "source": "robinhood"}
     else:
         radar = refresh_options_radar.run_signal_only(config_path, symbols=radar_symbols, source="robinhood")
+    radar_status = str(radar.get("status") or "succeeded").strip().lower()
+    composite_status = "partial" if source_status == "partial" or radar_status in {"partial", "failed"} else "succeeded"
     return {
         "ok": True,
-        "status": "succeeded",
+        "status": composite_status,
         "provider_lease_attempts": lease_attempts,
         "source": source,
+        "source_result": source,
+        "source_status": source_status,
+        "downstream_status": radar_status,
         "options_radar": radar,
     }
 
@@ -148,7 +156,12 @@ def run_source_with_material_thesis(
     source = source_runner(config_path)
     source_status = str(source.get("status") or "ok").lower()
     if source_status not in {"ok", "partial"}:
-        return source
+        return {
+            **source,
+            "source_result": source,
+            "source_status": source_status,
+            "downstream_status": "not_run",
+        }
     affected_symbols = sorted({str(symbol).upper() for symbol in source.get("affected_symbols") or [] if symbol})
     if "affected_symbols" in source and not affected_symbols:
         monitor = {
@@ -165,7 +178,11 @@ def run_source_with_material_thesis(
     composite_status = "partial" if monitor_status in {"partial", "failed"} else source_status
     return {
         **source, "status": composite_status, "ok": composite_status == "ok",
-        "source_status": source_status, "material_thesis_monitor": monitor,
+        "source_result": source,
+        "source_status": source_status,
+        "downstream_status": monitor_status,
+        "material_thesis_monitor": monitor,
+        "downstream_thesis_monitor": monitor,
     }
 
 
@@ -250,12 +267,22 @@ def mark_stale_running_jobs(
     return _job_repository(db_path).mark_stale(stale_after=stale_after)
 
 
-def start_refresh_job(job_name: str, db_path: Any) -> dict[str, Any]:
+def start_refresh_job(
+    job_name: str,
+    db_path: Any,
+    *,
+    scheduled_due_at: Any | None = None,
+    dispatched_at: Any | None = None,
+) -> dict[str, Any]:
     if job_name not in ALLOWLIST:
         allowed = ", ".join(sorted(ALLOWLIST))
         raise ValueError(f"refresh job is not allowlisted: {job_name}. Allowed jobs: {allowed}")
 
-    return _job_repository(db_path).start(job_name)
+    return _job_repository(db_path).start(
+        job_name,
+        scheduled_due_at=scheduled_due_at,
+        dispatched_at=dispatched_at,
+    )
 
 
 def execute_refresh_job(
@@ -282,11 +309,28 @@ def execute_refresh_job(
 
     failure = summary_failure_message(summary)
     if failure:
-        repository.finish(job_id, "failed", error=failure, summary=summary)
+        source_status = summary.get("source_status") if isinstance(summary, dict) else None
+        downstream = summary.get("downstream_status") if isinstance(summary, dict) else None
+        repository.finish(
+            job_id,
+            "failed",
+            error=failure,
+            summary=summary,
+            source_status=str(source_status) if source_status else None,
+            downstream_status=str(downstream) if downstream else None,
+        )
         return {"id": job_id, "job_name": job_name, "status": "failed", "error": failure, "summary": summary}
 
     status = summary_terminal_status(summary)
-    repository.finish(job_id, status, summary=summary)
+    source_status = summary.get("source_status") if isinstance(summary, dict) else None
+    downstream = summary.get("downstream_status") if isinstance(summary, dict) else None
+    repository.finish(
+        job_id,
+        status,
+        summary=summary,
+        source_status=str(source_status) if source_status else None,
+        downstream_status=str(downstream) if downstream else None,
+    )
     return {"id": job_id, "job_name": job_name, "status": status, "summary": summary}
 
 

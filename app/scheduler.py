@@ -7,7 +7,7 @@ the async scheduling loop; process execution is delegated separately.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 import os
 import time
@@ -29,6 +29,7 @@ from investment_panel.core.refresh_jobs import (
     start_refresh_job,
 )
 from investment_panel.core.decision import MARKET_TZ
+from investment_panel.database.source_health import overdue_source_refresh_jobs
 
 logger = logging.getLogger("market.scheduler")
 
@@ -88,6 +89,21 @@ def _initial_delay_seconds(
     return initial_delay_seconds(job, interval, offset, stagger_seconds=STAGGER_SECONDS)
 
 
+def _startup_delay_seconds(
+    job: str,
+    interval: int,
+    offset: int,
+    *,
+    overdue_jobs: set[str] | frozenset[str] = frozenset(),
+    reference_time: datetime | None = None,
+) -> float:
+    """Stagger overdue source catch-up while preserving normal first-run waits."""
+
+    if job in overdue_jobs:
+        return float(offset * STAGGER_SECONDS)
+    return _initial_delay_seconds(job, interval, offset, reference_time=reference_time)
+
+
 def _is_slot_boundary(job: str, interval: int, reference_time: datetime | None = None) -> bool:
     if job not in SLOT_ALIGNED_JOBS:
         return True
@@ -143,10 +159,33 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
     # releases jobs stranded by a prior process exit without touching a healthy
     # heartbeat.
     await asyncio.to_thread(mark_stale_running_jobs, db_path)
+    try:
+        overdue_jobs = await asyncio.to_thread(overdue_source_refresh_jobs, db_path)
+    except Exception:
+        overdue_jobs = set()
+        logger.exception("could not determine overdue source refresh jobs")
     start = time.monotonic() + warmup
     start_wall_time = datetime.now(MARKET_TZ) + timedelta(seconds=warmup)
     next_due: dict[str, float] = {
-        job: start + _initial_delay_seconds(job, interval, offset, reference_time=start_wall_time)
+        job: start + _startup_delay_seconds(
+            job,
+            interval,
+            offset,
+            overdue_jobs=overdue_jobs,
+            reference_time=start_wall_time,
+        )
+        for offset, (job, interval) in enumerate(intervals.items())
+    }
+    next_due_wall: dict[str, datetime] = {
+        job: start_wall_time + timedelta(
+            seconds=_startup_delay_seconds(
+                job,
+                interval,
+                offset,
+                overdue_jobs=overdue_jobs,
+                reference_time=start_wall_time,
+            )
+        )
         for offset, (job, interval) in enumerate(intervals.items())
     }
     in_flight: dict[str, asyncio.Task] = {}
@@ -163,13 +202,24 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
                 if task.done():
                     in_flight.pop(job, None)
                     interval = intervals[job]
-                    next_due[job] = now + _recurring_delay_seconds(job, interval)
+                    delay = _recurring_delay_seconds(job, interval)
+                    next_due[job] = now + delay
+                    next_due_wall[job] = datetime.now(MARKET_TZ) + timedelta(seconds=delay)
             for job, interval in intervals.items():
                 if now >= next_due.get(job, 0.0) and job not in in_flight:
                     if not _is_slot_boundary(job, interval):
-                        next_due[job] = time.monotonic() + _initial_delay_seconds(job, interval, 0)
+                        delay = _initial_delay_seconds(job, interval, 0)
+                        next_due[job] = time.monotonic() + delay
+                        next_due_wall[job] = datetime.now(MARKET_TZ) + timedelta(seconds=delay)
                         continue
-                    in_flight[job] = asyncio.create_task(_dispatch(job, db_path, config_path))
+                    in_flight[job] = asyncio.create_task(
+                        _dispatch(
+                            job,
+                            db_path,
+                            config_path,
+                            due_at=next_due_wall.get(job),
+                        )
+                    )
             slot_due = [next_due[job] for job in SLOT_ALIGNED_JOBS.intersection(intervals) if job not in in_flight]
             sleep_seconds = min(TICK_SECONDS, max(0.05, min(slot_due) - time.monotonic())) if slot_due else TICK_SECONDS
             await asyncio.sleep(sleep_seconds)
@@ -184,10 +234,16 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
         raise
 
 
-async def _dispatch(job: str, db_path: str, config_path: str) -> None:
+async def _dispatch(
+    job: str,
+    db_path: str,
+    config_path: str,
+    *,
+    due_at: datetime | None = None,
+) -> None:
     semaphore = _scheduler_semaphore
     if semaphore is None:
-        await _dispatch_once(job, db_path, config_path)
+        await _dispatch_once(job, db_path, config_path, due_at=due_at)
         return
     global _deferred_jobs
     was_busy = semaphore.locked()
@@ -204,16 +260,28 @@ async def _dispatch(job: str, db_path: str, config_path: str) -> None:
         _deferred_jobs = max(0, _deferred_jobs - 1)
     _active_jobs[job] = time.monotonic()
     try:
-        await _dispatch_once(job, db_path, config_path)
+        await _dispatch_once(job, db_path, config_path, due_at=due_at)
     finally:
         _active_jobs.pop(job, None)
         semaphore.release()
 
 
-async def _dispatch_once(job: str, db_path: str, config_path: str) -> None:
+async def _dispatch_once(
+    job: str,
+    db_path: str,
+    config_path: str,
+    *,
+    due_at: datetime | None = None,
+) -> None:
     started_job_id: str | None = None
     try:
-        started: Any = await asyncio.to_thread(start_refresh_job, job, db_path)
+        start_kwargs: dict[str, Any] = {}
+        if due_at is not None:
+            start_kwargs = {
+                "scheduled_due_at": due_at.astimezone(UTC),
+                "dispatched_at": datetime.now(UTC),
+            }
+        started: Any = await asyncio.to_thread(start_refresh_job, job, db_path, **start_kwargs)
         if isinstance(started, dict) and started.get("created"):
             started_job_id = str(started["id"])
             if job in FAST_DATABASE_JOBS:
