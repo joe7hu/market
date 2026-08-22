@@ -11,6 +11,7 @@ import httpx
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.market_analysis import refresh_market_publication
 
 
 MUNGER_MARKET_METRICS_URL = "https://mungermode.com/api/v1/market/metrics"
@@ -66,16 +67,37 @@ def run(config_path: str | None = None, *, url: str = MUNGER_MARKET_METRICS_URL)
             "ok": False,
             "database": "postgresql",
             "source": SOURCE_ID,
+            "source_status": "failed",
+            "downstream_status": "not_run",
             "error": f"{type(exc).__name__}: {exc}",
+        }
+    try:
+        publication = refresh_market_publication(runtime)
+    except Exception as exc:
+        return {
+            "status": "partial",
+            "ok": False,
+            "database": "postgresql",
+            "source": SOURCE_ID,
+            "source_status": "ok",
+            "downstream_status": "failed",
+            "market_publication": {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            "error": f"market publication failed after source success: {type(exc).__name__}: {exc}",
         }
     return {
         "status": "ok",
         "ok": True,
         "database": "postgresql",
         "source": SOURCE_ID,
+        "source_status": "ok",
+        "downstream_status": "ok",
         "series": len(rows),
         "rows": stored,
         "skipped_series": skipped,
+        "market_publication": publication,
     }
 
 

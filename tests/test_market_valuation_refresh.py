@@ -54,8 +54,11 @@ def test_mungermode_refresh_persists_series_and_market_publication(
     result = update_market_valuations.run("config.yaml")
 
     assert result["status"] == "ok"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "ok"
     assert result["series"] == 2
     assert result["rows"] == 2
+    assert result["market_publication"]["status"] == "ok"
 
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
@@ -71,6 +74,26 @@ def test_mungermode_refresh_persists_series_and_market_publication(
     assert forward["latest_value"] == 20.2
     assert forward["history"][-1] == {"date": "2026-08-21", "value": 20.2}
     assert forward["source"] == "mungermode-market-valuations"
+
+
+def test_mungermode_publication_failure_does_not_hide_source_success(
+    migrated_postgres_dsn: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(update_market_valuations, "load_config", lambda _path: typed_config(migrated_postgres_dsn))
+    monkeypatch.setattr(update_market_valuations.httpx, "get", lambda *_args, **_kwargs: _Response(_payload()))
+    monkeypatch.setattr(
+        update_market_valuations,
+        "refresh_market_publication",
+        lambda _runtime: (_ for _ in ()).throw(RuntimeError("publication unavailable")),
+    )
+
+    result = update_market_valuations.run("config.yaml")
+
+    assert result["status"] == "partial"
+    assert result["source_status"] == "ok"
+    assert result["downstream_status"] == "failed"
+    assert result["market_publication"]["status"] == "failed"
 
 
 def test_mungermode_refresh_retries_retryable_http_status(
