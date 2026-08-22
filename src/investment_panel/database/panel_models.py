@@ -19,12 +19,16 @@ from investment_panel.database.agents import AgentRepository
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.migrations import HEAD_REVISION
 from investment_panel.database.panel_watchlist import TECHNICALS_QUERY, options_ticker_signal_rows, technical_rows
-from investment_panel.database.panel_recovery import RECOVERY_MODELS, recovery_panel_models
+from investment_panel.database.options_recovery_read import RecoveryReadRepository
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
 
 __all__ = ["load_postgres_tables"]
+RECOVERY_MODELS = frozenset({
+    "option_recovery_funnel", "option_recovery_event", "option_recovery_opportunity",
+    "option_recovery_family_performance", "option_recovery_agent_provenance", "option_recovery_health",
+})
 RESEARCH_PACKETS_BASE_QUERY = """
     SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
            item.published_at,
@@ -622,7 +626,12 @@ def load_postgres_tables(
     requested_recovery = RECOVERY_MODELS.intersection(requested)
     if requested_recovery:
         recovery_settings = config.analysis.options_decision_system
-        tables.update(recovery_panel_models(runtime, requested_recovery, recovery_paper_actions_enabled=recovery_settings.recovery_paper_actions_enabled))
+        tables.update(
+            RecoveryReadRepository(
+                runtime,
+                recovery_paper_actions_enabled=recovery_settings.recovery_paper_actions_enabled,
+            ).panel_models(requested_recovery)
+        )
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}

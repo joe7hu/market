@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
 import re
 from typing import Any
 
@@ -13,7 +14,10 @@ from investment_panel.core.decision import is_us_market_day
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 
 
-OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})$")
+logger = logging.getLogger(__name__)
+
+
+OPTION_PARTITION_RE = re.compile(r"^option_quote_(\d{4})(\d{2})(\d{2})?$")
 ROLLING_PUBLICATION_SCOPES = ("today", "options-radar", "options-decision-system")
 MARKET_PUBLICATION_SUPERSEDED_LIMIT = 48
 ROLLING_PUBLICATION_TRADING_DAYS = 30
@@ -28,7 +32,7 @@ class RetentionRepository:
         *,
         now: datetime | None = None,
         option_days: int = 7,
-        analysis_days: int = 365,
+        analysis_days: int = 30,
         publication_days: int = 90,
         job_days: int = 30,
         publication_batch_size: int = 1_000,
@@ -66,26 +70,125 @@ class RetentionRepository:
             if dry_run:
                 counts["publication_dry_run"] = len(publication_candidates)
                 return counts
+            protection = connection.execute(
+                """
+                SELECT
+                    count(*) FILTER (WHERE NOT EXISTS (
+                        SELECT 1 FROM app.publication publication
+                        WHERE publication.analysis_run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN app.trade_journal journal ON journal.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM analysis.event_study_feature feature
+                        WHERE feature.run_id = run.id
+                    ) AND NOT EXISTS (
+                        SELECT 1
+                        FROM analysis.option_relative_value relative_value
+                        JOIN analysis.option_relative_value_verification verification
+                          ON verification.relative_value_id = relative_value.id
+                        WHERE relative_value.analysis_run_id = run.id
+                    )) AS eligible,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM app.publication publication
+                        WHERE publication.analysis_run_id = run.id
+                    )) AS protected_publication,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    )) AS protected_outcome,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    )) AS protected_shadow_trade,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1
+                        FROM analysis.decision decision
+                        JOIN app.trade_journal journal ON journal.decision_id = decision.id
+                        WHERE decision.run_id = run.id
+                    )) AS protected_trade_journal,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM analysis.event_study_feature feature
+                        WHERE feature.run_id = run.id
+                    )) AS protected_event_study,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1
+                        FROM analysis.option_relative_value relative_value
+                        JOIN analysis.option_relative_value_verification verification
+                          ON verification.relative_value_id = relative_value.id
+                        WHERE relative_value.analysis_run_id = run.id
+                    )) AS protected_verification
+                FROM analysis.run run
+                WHERE run.started_at < %s
+                """,
+                [cutoffs["analysis"]],
+            ).fetchone()
+            logger.info(
+                "analysis retention protection eligible=%s publication=%s outcome=%s "
+                "shadow_trade=%s trade_journal=%s event_study=%s verification=%s",
+                int(protection["eligible"] or 0),
+                int(protection["protected_publication"] or 0),
+                int(protection["protected_outcome"] or 0),
+                int(protection["protected_shadow_trade"] or 0),
+                int(protection["protected_trade_journal"] or 0),
+                int(protection["protected_event_study"] or 0),
+                int(protection["protected_verification"] or 0),
+            )
             counts["analysis_runs"] = connection.execute(
                 """
+                WITH eligible AS (
+                    SELECT run.id
+                    FROM analysis.run run
+                    WHERE run.started_at < %s
+                      AND NOT EXISTS (SELECT 1 FROM app.publication publication WHERE publication.analysis_run_id = run.id)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.decision decision
+                          JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
+                          WHERE decision.run_id = run.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.decision decision
+                          JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
+                          WHERE decision.run_id = run.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.decision decision
+                          JOIN app.trade_journal journal ON journal.decision_id = decision.id
+                          WHERE decision.run_id = run.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM analysis.event_study_feature feature
+                          WHERE feature.run_id = run.id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM analysis.option_relative_value relative_value
+                          JOIN analysis.option_relative_value_verification verification
+                            ON verification.relative_value_id = relative_value.id
+                          WHERE relative_value.analysis_run_id = run.id
+                      )
+                    ORDER BY run.started_at, run.id
+                    LIMIT 1000
+                )
                 DELETE FROM analysis.run run
-                WHERE run.started_at < %s
-                  AND NOT EXISTS (SELECT 1 FROM app.publication publication WHERE publication.analysis_run_id = run.id)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.decision decision
-                      JOIN analysis.option_outcome outcome ON outcome.decision_id = decision.id
-                      WHERE decision.run_id = run.id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.decision decision
-                      JOIN analysis.shadow_trade trade ON trade.decision_id = decision.id
-                      WHERE decision.run_id = run.id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM analysis.decision decision
-                      JOIN app.trade_journal journal ON journal.decision_id = decision.id
-                      WHERE decision.run_id = run.id
-                  )
+                USING eligible
+                WHERE run.id = eligible.id
                 """,
                 [cutoffs["analysis"]],
             ).rowcount
@@ -137,6 +240,14 @@ class RetentionRepository:
                         WHEN snapshot.collection_profile = 'event_strip' THEN %s
                         ELSE %s END
                   AND NOT EXISTS (SELECT 1 FROM raw.option_quote quote WHERE quote.snapshot_id = snapshot.id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM analysis.option_feature feature
+                      WHERE feature.snapshot_id = snapshot.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM analysis.option_decision decision
+                      WHERE decision.snapshot_id = snapshot.id
+                  )
                 """,
                 [cutoffs["history"], cutoffs["event_strip"], cutoffs["option"]],
             ).rowcount
@@ -151,9 +262,16 @@ class RetentionRepository:
             if closed_events:
                 counts["closed_option_events"] = closed_events
             counts["job_runs"] = connection.execute(
-                "DELETE FROM ops.job_run WHERE status <> 'running' AND started_at < %s",
-                [cutoffs["job"]],
+                """
+                DELETE FROM ops.job_run
+                WHERE (status IN ('succeeded', 'skipped') AND started_at < %s)
+                   OR (status IN ('partial', 'failed') AND started_at < %s)
+                """,
+                [reference - timedelta(days=7), reference - timedelta(days=30)],
             ).rowcount
+            failed_staging = _prune_failed_confirmation_staging(connection, reference - timedelta(days=30))
+            if failed_staging:
+                counts["failed_confirmation_staging"] = failed_staging
         counts["option_partitions"] = self.drop_empty_option_partitions(before=cutoffs["option"])
         if vacuum_analyze and counts["publications"]:
             counts["publication_vacuum_tables"] = self.vacuum_analyze_publications()
@@ -234,9 +352,12 @@ class RetentionRepository:
                 match = OPTION_PARTITION_RE.match(name)
                 if match is None:
                     continue
-                year, month = map(int, match.groups())
-                partition_start = datetime(year, month, 1, tzinfo=UTC)
-                if partition_start >= before.replace(day=1, hour=0, minute=0, second=0, microsecond=0):
+                year, month, day = match.groups()
+                partition_start = datetime(
+                    int(year), int(month), int(day or 1), tzinfo=UTC
+                )
+                partition_cutoff = before if day else before.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                if partition_start >= partition_cutoff:
                     continue
                 has_rows = connection.execute(
                     sql.SQL("SELECT EXISTS (SELECT 1 FROM raw.{} LIMIT 1) AS has_rows").format(sql.Identifier(name))
@@ -327,6 +448,22 @@ def _delete_publications_and_orphaned_content(connection: Any, candidates: list[
     if payloads:
         result["publication_payloads"] = payloads
     return result
+
+
+def _prune_failed_confirmation_staging(connection: Any, before: datetime) -> int:
+    deleted = 0
+    for table in ("price_bar", "quote"):
+        deleted += int(connection.execute(
+            f"""
+            DELETE FROM raw.{table}_confirmation confirmation
+            USING ingest.run run
+            WHERE run.id = confirmation.ingest_run_id
+              AND run.status = 'failed'
+              AND coalesce(run.finished_at, run.started_at) < %s
+            """,
+            [before],
+        ).rowcount)
+    return deleted
 
 
 def _trading_day_cutoff(reference: datetime, trading_days: int) -> datetime:

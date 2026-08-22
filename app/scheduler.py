@@ -18,16 +18,26 @@ from investment_panel.core.job_policy import (
     initial_delay_seconds,
     scheduler_enabled,
     scheduler_intervals as job_intervals,
-    scheduler_status,
+    scheduler_status as _configured_scheduler_status,
 )
 from investment_panel.core.job_execution import RefreshProcessSpec, execute_async, terminate_process
-from investment_panel.core.config import load_config
-from investment_panel.core.refresh_jobs import finish_refresh_job_failed, mark_stale_running_jobs, start_refresh_job
+from investment_panel.core.config import AppConfig, load_config
+from investment_panel.core.refresh_jobs import (
+    execute_refresh_job,
+    finish_refresh_job_failed,
+    mark_stale_running_jobs,
+    start_refresh_job,
+)
 from investment_panel.core.decision import MARKET_TZ
 
 logger = logging.getLogger("market.scheduler")
 
 TICK_SECONDS = 15
+SCHEDULER_CAPACITY = 2
+FAST_DATABASE_JOBS = frozenset({"process_options_paper_orders", "sync_decision_inbox"})
+_scheduler_semaphore: asyncio.Semaphore | None = None
+_active_jobs: dict[str, float] = {}
+_deferred_jobs = 0
 # Both recovery inputs are point-in-time tapes.  Keep their dispatches on their
 # logical slots instead of letting ordinary completion-time recurrence drift a
 # five-minute detector into the next observation bucket.
@@ -40,7 +50,27 @@ __all__ = [
     "run_scheduler",
     "scheduler_enabled",
     "scheduler_status",
+    "scheduler_runtime_health",
 ]
+
+
+def scheduler_runtime_health() -> dict[str, Any]:
+    now = time.monotonic()
+    oldest = min((now - started for started in _active_jobs.values()), default=0.0)
+    return {
+        "active_count": len(_active_jobs),
+        "capacity": SCHEDULER_CAPACITY,
+        "job_names": sorted(_active_jobs),
+        "oldest_runtime_seconds": round(oldest, 3),
+        "deferred_job_count": max(0, _deferred_jobs),
+    }
+
+
+def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
+    status = _configured_scheduler_status(config)
+    status["runtime"] = scheduler_runtime_health()
+    status["capacity"] = SCHEDULER_CAPACITY
+    return status
 
 
 def _initial_delay_seconds(
@@ -120,6 +150,11 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
         for offset, (job, interval) in enumerate(intervals.items())
     }
     in_flight: dict[str, asyncio.Task] = {}
+    global _scheduler_semaphore
+    global _deferred_jobs
+    previous_semaphore = _scheduler_semaphore
+    _scheduler_semaphore = asyncio.Semaphore(SCHEDULER_CAPACITY)
+    _deferred_jobs = 0
 
     try:
         while True:
@@ -144,16 +179,54 @@ async def run_scheduler(db_path: str, config_path: str = "config.yaml") -> None:
             task.cancel()
         if in_flight:
             await asyncio.gather(*in_flight.values(), return_exceptions=True)
+        _scheduler_semaphore = previous_semaphore
+        _deferred_jobs = 0
         raise
 
 
 async def _dispatch(job: str, db_path: str, config_path: str) -> None:
+    semaphore = _scheduler_semaphore
+    if semaphore is None:
+        await _dispatch_once(job, db_path, config_path)
+        return
+    global _deferred_jobs
+    was_busy = semaphore.locked()
+    if was_busy:
+        _deferred_jobs += 1
+    acquired = False
+    try:
+        await semaphore.acquire()
+        acquired = True
+    finally:
+        if was_busy and not acquired:
+            _deferred_jobs = max(0, _deferred_jobs - 1)
+    if was_busy:
+        _deferred_jobs = max(0, _deferred_jobs - 1)
+    _active_jobs[job] = time.monotonic()
+    try:
+        await _dispatch_once(job, db_path, config_path)
+    finally:
+        _active_jobs.pop(job, None)
+        semaphore.release()
+
+
+async def _dispatch_once(job: str, db_path: str, config_path: str) -> None:
     started_job_id: str | None = None
     try:
         started: Any = await asyncio.to_thread(start_refresh_job, job, db_path)
         if isinstance(started, dict) and started.get("created"):
             started_job_id = str(started["id"])
-            result: Any = await _execute_started_refresh_job(job, started_job_id, db_path, config_path)
+            if job in FAST_DATABASE_JOBS:
+                result = await asyncio.to_thread(
+                    execute_refresh_job,
+                    started_job_id,
+                    job,
+                    db_path,
+                    config_path,
+                    raise_on_error=False,
+                )
+            else:
+                result = await _execute_started_refresh_job(job, started_job_id, db_path, config_path)
         else:
             result = started
     except Exception as exc:

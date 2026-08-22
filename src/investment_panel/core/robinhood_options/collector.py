@@ -21,7 +21,6 @@ from investment_panel.core.coercion import to_finite_float as as_float
 from investment_panel.core.coercion import to_int_or_none as as_int
 from investment_panel.core.ibkr_options import select_leap_call_strikes, select_leap_put_strikes
 from investment_panel.core.option_scan import RADAR_MAX_DTE, RADAR_MIN_DTE
-from investment_panel.core.robinhood_options.equity_quote_batches import fetch_equity_quotes as _fetch_equity_quotes
 from investment_panel.core.robinhood_options.auth import load_robinhood_access_token
 from investment_panel.core.robinhood_options.contract_terms import (
     attach_chain_metadata,
@@ -31,6 +30,66 @@ from investment_panel.core.robinhood_options.contract_terms import (
 
 DEFAULT_MAX_COLLECTION_SECONDS = 600
 DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _fetch_equity_quotes(
+    client: RobinhoodClient,
+    symbols: list[str],
+    *,
+    deadline: float | None = None,
+    regular_session_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Fetch bounded equity quote batches through the existing client seam."""
+
+    rows: list[dict[str, Any]] = []
+    values = [symbol.upper() for symbol in symbols if symbol]
+    for start in range(0, len(values), 20):
+        if deadline is not None and time.monotonic() > deadline:
+            return rows
+        payload = client.get_equity_quotes(values[start : start + 20])
+        for result in _payload_list(payload, "results"):
+            quote = dict(result.get("quote") or {})
+            symbol = str(quote.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            price = as_float(quote.get("last_trade_price")) if regular_session_only else _latest_equity_price(quote)
+            observed_at = quote.get("venue_last_trade_time") if regular_session_only else (
+                quote.get("venue_last_non_reg_trade_time") or quote.get("venue_last_trade_time")
+            )
+            rows.append({
+                "symbol": symbol,
+                "time": observed_at,
+                "close": price,
+                "option_spot": as_float(quote.get("last_trade_price")) or price,
+                "change": _equity_change_pct(quote, price),
+                "change_abs": _equity_change_abs(quote, price),
+                "currency": "USD",
+                "source": "robinhood",
+                "raw": quote,
+            })
+    return rows
+
+
+def _latest_equity_price(quote: dict[str, Any]) -> float | None:
+    regular = as_float(quote.get("last_trade_price"))
+    extended = as_float(quote.get("last_non_reg_trade_price"))
+    if extended is None:
+        return regular
+    if regular is None:
+        return extended
+    return extended if str(quote.get("venue_last_non_reg_trade_time") or "") > str(quote.get("venue_last_trade_time") or "") else regular
+
+
+def _equity_change_abs(quote: dict[str, Any], current: float | None) -> float | None:
+    previous = as_float(quote.get("adjusted_previous_close") or quote.get("previous_close"))
+    return current - previous if current is not None and previous is not None else None
+
+
+def _equity_change_pct(quote: dict[str, Any], current: float | None) -> float | None:
+    previous = as_float(quote.get("adjusted_previous_close") or quote.get("previous_close"))
+    if current is None or previous is None or previous == 0:
+        return None
+    return (current - previous) / previous * 100
 
 
 class RobinhoodClient(Protocol):

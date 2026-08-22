@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -12,7 +14,6 @@ from investment_panel.core.config import AppConfig
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.instruments import canonical_symbol, reconcile_instrument
 from investment_panel.database.thesis_evidence import assessments_by_revision, thesis_source_evidence
-from investment_panel.database.thesis_history import with_revision_diffs
 from investment_panel.database.thesis_monitor_universe import monitored_thesis_rows
 
 
@@ -253,11 +254,33 @@ def thesis_history(config: AppConfig, symbol: str) -> dict[str, Any]:
         ).fetchall()]
     return {
         "symbol": normalized,
-        "revisions": with_revision_diffs(revisions),
+        "revisions": _with_revision_diffs(revisions),
         "review_events": events,
         "automation_runs": runs,
         "assessments": assessments,
     }
+
+
+def _with_revision_diffs(revisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    previous: dict[str, Any] | None = None
+    output: list[dict[str, Any]] = []
+    for row in reversed(revisions):
+        current = dict(row.get("thesis_json") or {})
+        diff = {
+            "from_revision": previous.get("revision") if previous else None,
+            "changed_keys": sorted(
+                key for key in set(current) | set(previous or {})
+                if current.get(key) != (previous or {}).get(key)
+            ),
+            "hash": hashlib.sha256(
+                json.dumps(current, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16],
+        }
+        next_row = dict(row)
+        next_row["diff"] = diff
+        output.append(next_row)
+        previous = current | {"revision": row.get("revision")}
+    return list(reversed(output))
 
 
 def thesis_monitor_payload(config: AppConfig) -> dict[str, Any]:

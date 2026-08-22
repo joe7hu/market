@@ -8,11 +8,19 @@ lookup while preserving the externally visible function contract.
 from __future__ import annotations
 
 
-def current_price_selector_sql(*, use_availability_projection: bool) -> str:
+def current_price_selector_sql(
+    *,
+    use_availability_projection: bool,
+    include_legacy_fallback: bool = True,
+) -> str:
     """Return the bounded selector SQL for the requested confirmation source."""
 
-    quote_lookup = _confirmation_lookup("quote", use_availability_projection)
-    bar_lookup = _confirmation_lookup("price_bar", use_availability_projection)
+    quote_lookup = _confirmation_lookup(
+        "quote", use_availability_projection, include_legacy_fallback
+    )
+    bar_lookup = _confirmation_lookup(
+        "price_bar", use_availability_projection, include_legacy_fallback
+    )
     return f"""
         CREATE OR REPLACE FUNCTION raw.current_price_for_instruments(
             p_as_of TIMESTAMPTZ,
@@ -147,7 +155,11 @@ def current_price_selector_sql(*, use_availability_projection: bool) -> str:
     """
 
 
-def optimized_current_price_selector_sql(*, use_availability_projection: bool) -> str:
+def optimized_current_price_selector_sql(
+    *,
+    use_availability_projection: bool,
+    include_legacy_fallback: bool = True,
+) -> str:
     """Return the selector after reducing daily-bar work to selected rows.
 
     ``current_price_for_instruments`` is called by interactive APIs.  Its
@@ -158,8 +170,12 @@ def optimized_current_price_selector_sql(*, use_availability_projection: bool) -
     daily-bar candidate for each instrument.
     """
 
-    quote_lookup = _confirmation_lookup("quote", use_availability_projection)
-    bar_lookup = _confirmation_lookup("price_bar", use_availability_projection)
+    quote_lookup = _confirmation_lookup(
+        "quote", use_availability_projection, include_legacy_fallback
+    )
+    bar_lookup = _confirmation_lookup(
+        "price_bar", use_availability_projection, include_legacy_fallback
+    )
     return f"""
         CREATE OR REPLACE FUNCTION raw.current_price_for_instruments(
             p_as_of TIMESTAMPTZ,
@@ -318,7 +334,11 @@ def optimized_current_price_selector_sql(*, use_availability_projection: bool) -
     """
 
 
-def _confirmation_lookup(kind: str, use_availability_projection: bool) -> str:
+def _confirmation_lookup(
+    kind: str,
+    use_availability_projection: bool,
+    include_legacy_fallback: bool = True,
+) -> str:
     if not use_availability_projection:
         return f"""
             CROSS JOIN LATERAL (
@@ -335,20 +355,8 @@ def _confirmation_lookup(kind: str, use_availability_projection: bool) -> str:
                 LIMIT 1
             ) confirmation
         """
-    return f"""
-        CROSS JOIN LATERAL (
-            SELECT price_run.finished_at AS confirmed_at
-            FROM raw.{kind}_fact_availability availability
-            JOIN ingest.run price_run
-              ON price_run.id = availability.ingest_run_id
-             AND price_run.status IN ('succeeded', 'partial')
-             AND price_run.finished_at IS NOT NULL
-             AND price_run.finished_at <= p_as_of
-            WHERE availability.fact_id = fact.id
-              AND availability.fact_available_at = fact.available_at
-
+    legacy_fallback = "" if not include_legacy_fallback else f"""
             UNION ALL
-
             SELECT price_run.finished_at AS confirmed_at
             FROM raw.{kind}_confirmation legacy
             JOIN ingest.run price_run ON price_run.id = legacy.ingest_run_id
@@ -363,6 +371,20 @@ def _confirmation_lookup(kind: str, use_availability_projection: bool) -> str:
                   WHERE availability.fact_id = fact.id
                     AND availability.fact_available_at = fact.available_at
               )
+"""
+    return f"""
+        CROSS JOIN LATERAL (
+            SELECT price_run.finished_at AS confirmed_at
+            FROM raw.{kind}_fact_availability availability
+            JOIN ingest.run price_run
+              ON price_run.id = availability.ingest_run_id
+             AND price_run.status IN ('succeeded', 'partial')
+             AND price_run.finished_at IS NOT NULL
+             AND price_run.finished_at <= p_as_of
+            WHERE availability.fact_id = fact.id
+              AND availability.fact_available_at = fact.available_at
+
+{legacy_fallback}
             ORDER BY confirmed_at
             LIMIT 1
         ) confirmation

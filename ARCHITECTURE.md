@@ -4,6 +4,18 @@ Market has one runtime data authority: PostgreSQL 18. Alembic owns schema
 changes. The NAS keeps historical migration evidence only. It is not a live
 database, fallback store, restore path, or dual-write target.
 
+Availability projections are the sole point-in-time price selector authority.
+Confirmation relations are short-lived staging and are never queried by
+current-price functions after the verified cutover.
+
+Raw option quotes keep seven complete trading days hot in PostgreSQL. Daily
+partitions older than that are verified as native custom-format NAS archives
+before detach and drop. The legacy monthly partition is not rewritten; daily
+partitioning begins at its next boundary. Derived analytical detail is
+recomputable and is retained through the `analysis.run` lifecycle for 30 days
+unless publication, outcome, paper evidence, journal, or pinned research
+evidence protects it.
+
 ## Request flow
 
 ```text
@@ -117,6 +129,18 @@ cycles, private imports, router boundaries, re-export-only modules, console
 entry points, generated-contract presence, and compatibility markers. It does
 not print the complete import graph.
 
+The final architecture invariants are also checked by the inventory: compact
+availability authority, implemented storage phases, seven-day/seven-hundred-
+and-thirty-day option lifecycle, fixed scheduler capacity two, no current-price
+confirmation fallback, and no retired backend TradingView provider or
+configuration markers. The frontend TradingView chart embed remains a
+presentation feature.
+
+Scheduled work has one fixed in-process capacity of two. Fast deterministic
+database ticks use worker threads inside the scheduler; long collectors and
+provider or agent work use isolated subprocesses. No external queue is part of
+the runtime contract.
+
 ## Verification
 
 ```sh
@@ -134,6 +158,12 @@ npm run build
 The storage archive tests require at least the configured free-space reserve.
 If the host cannot satisfy that precondition, report the environment failure;
 do not weaken the storage safety gate.
+
+Storage recovery procedures and destructive-command gates are recorded in
+[`docs/storage-operations.md`](docs/storage-operations.md) and
+[`docs/adr/20260821-final-architecture-scale.md`](docs/adr/20260821-final-architecture-scale.md).
+Keep architecture changes frozen for 90 days unless a measured threshold in
+the ADR fails.
 
 For live checks, bind API and Vite to `0.0.0.0`, probe `/api/status` and the
 changed routes, and compare the served frontend asset between `:5173` and

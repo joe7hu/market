@@ -119,7 +119,7 @@ class OptionHistoryPolicyRepository:
                      publication_cap, provider, normalized_retention_days, derived_retention_days,
                      provider_payload_retention_days, policy_revision, reason)
                 VALUES (%s, %s, 'off', 'pending_gate', 'standard', 60, 'WATCH', 'robinhood',
-                        730, 730, 90, %s, 'watchlist enrollment pending admission')
+                        730, 30, 90, %s, 'watchlist enrollment pending admission')
                 ON CONFLICT (instrument_id, profile) DO NOTHING
                 RETURNING lock_version
                 """,
@@ -209,11 +209,11 @@ class OptionHistoryPolicyRepository:
                      derived_retention_days, provider_payload_retention_days, policy_revision,
                      activation_reason, event_id, expires_at, reason, activated_at)
                 VALUES (%s, %s, 'on', 'active', 'event', 15, 'WATCH', 'robinhood',
-                        365, 730, 30, %s, %s, %s, %s, %s, now())
+                        365, 30, 30, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (instrument_id, profile) DO UPDATE
                 SET requested_state = 'on', effective_state = 'active', cadence_minutes = 15,
                     publication_cap = 'WATCH', normalized_retention_days = 365,
-                    derived_retention_days = 730, provider_payload_retention_days = 30,
+                    derived_retention_days = 30, provider_payload_retention_days = 30,
                     policy_revision = EXCLUDED.policy_revision,
                     activation_reason = EXCLUDED.activation_reason, event_id = EXCLUDED.event_id,
                     expires_at = EXCLUDED.expires_at, reason = EXCLUDED.reason,
@@ -403,7 +403,7 @@ def _seed_policy(
             (instrument_id, profile, requested_state, effective_state, collection_tier, cadence_minutes,
              publication_cap, provider, normalized_retention_days, derived_retention_days,
              provider_payload_retention_days, policy_revision, reason, activated_at)
-        VALUES (%s, %s, 'on', %s, %s, %s, %s, 'robinhood', 730, 730, 90, %s, %s,
+        VALUES (%s, %s, 'on', %s, %s, %s, %s, 'robinhood', 730, 30, 90, %s, %s,
                 CASE WHEN %s IN ('active', 'shadow') THEN now() ELSE NULL END)
         ON CONFLICT (instrument_id, profile) DO NOTHING
         """,

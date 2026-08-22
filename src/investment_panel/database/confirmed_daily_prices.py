@@ -50,11 +50,12 @@ def confirmed_daily_bars(
             FROM facts fact
             JOIN LATERAL (
                 SELECT price_run.finished_at
-                FROM raw.price_bar_confirmation confirmation
-                JOIN ingest.run price_run ON price_run.id = confirmation.ingest_run_id
-                WHERE confirmation.fact_id = fact.id
-                  AND confirmation.fact_available_at = fact.available_at
+                FROM raw.price_bar_fact_availability availability
+                JOIN ingest.run price_run ON price_run.id = availability.ingest_run_id
+                WHERE availability.fact_id = fact.id
+                  AND availability.fact_available_at = fact.available_at
                   AND price_run.status IN ('succeeded', 'partial')
+                  AND price_run.finished_at IS NOT NULL
                   AND price_run.finished_at <= %s
                 ORDER BY price_run.finished_at, price_run.id
                 LIMIT 1

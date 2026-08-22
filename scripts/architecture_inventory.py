@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import sys
 import tomllib
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,20 @@ COMPATIBILITY_MARKERS = (
     "watchlist-screen",
     "panel_contracts",
     "app.deps",
+)
+FINAL_ARCHITECTURE_INVARIANTS = {
+    "availability_authority": "raw.price_bar_fact_availability + raw.quote_fact_availability",
+    "implemented_storage_phases": "plan,archive fundamental-history|options,verify,restore,compact price-confirmations",
+    "scheduler_concurrency": "2",
+    "option_hot_retention_days": "7",
+    "option_archive_retention_days": "730",
+    "derived_retention_days": "30",
+    "forbidden_retired_markers": "TradingViewProvider, data_sources.tradingview, current-price legacy fallback",
+}
+RETIRED_MARKERS = (
+    "TradingViewProvider",
+    "data_sources.tradingview",
+    "config.data_sources.tradingview",
 )
 FORBIDDEN_TOKENS = ("duck" + "db", "duck" + "db_path", "pandas-" + "datareader")
 
@@ -424,6 +439,29 @@ def compatibility_references() -> dict[str, int]:
     return counts
 
 
+def final_architecture_inventory() -> dict[str, Any]:
+    """Return the final lifecycle contracts for human and CI inspection."""
+
+    counts = {marker: 0 for marker in RETIRED_MARKERS}
+    for root in (ROOT / "app", ROOT / "src", ROOT / "config.yaml"):
+        paths = [root] if root.is_file() else root.rglob("*")
+        for path in paths:
+            if not path.is_file() or path.suffix not in {".py", ".yaml", ".yml", ".ts", ".tsx"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for marker in counts:
+                counts[marker] += int(marker.casefold() in text.casefold())
+    current_selector = (ROOT / "migrations" / "versions" / "20260821_0043_final_architecture_scale.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    return {
+        **FINAL_ARCHITECTURE_INVARIANTS,
+        "availability_cutover_migration": "20260821_0043" in current_selector,
+        "current_price_projection_only": "include_legacy_fallback=False" in current_selector,
+        "retired_marker_counts": counts,
+    }
+
+
 def production_lines_by_subsystem(area: str | None = None) -> dict[str, int]:
     totals: Counter[str] = Counter()
     paths = _area_source_paths(area)
@@ -566,6 +604,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  known_routes: {sum(route in KNOWN_COMPATIBILITY_ROUTES for route in contract_paths)}")
     for marker, count in compatibility_references().items():
         print(f"  marker.{marker}: {count}")
+    print("final_architecture:")
+    for key, value in final_architecture_inventory().items():
+        print(f"  {key}: {value}")
 
     failures = _missing_local_imports()
     failures.extend(console_script_violations())

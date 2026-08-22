@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from investment_panel.core.config_views import option_agent_config_dict, options_decision_system_dict
-from investment_panel.core.agent_providers import resolve_provider_selection, validate_registry_command
+from investment_panel.core.agent_providers import provider_catalog, resolve_provider_selection, validate_registry_command
 import yaml
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig, thesis_monitor_agent_config, thesis_monitor_agent_dict
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig, options_decision_system_config
@@ -47,14 +46,6 @@ class OpenCliConfig:
     enabled: bool = True
     command: str = "opencli"
     timeout_seconds: int = 25
-@dataclass(frozen=True)
-class TradingViewConfig:
-    enabled: bool = True
-    options_symbols: list[str] = field(default_factory=list)
-    screener_limit: int = 50
-    news_limit: int = 50
-    strikes_around_spot: int = 6
-    option_scan_limit: int = 80
 @dataclass(frozen=True)
 class YFinanceConfig:
     enabled: bool = True
@@ -125,7 +116,6 @@ class BrokerSourcesConfig:
 @dataclass(frozen=True)
 class DataSourcesConfig:
     opencli: OpenCliConfig = OpenCliConfig()
-    tradingview: TradingViewConfig = TradingViewConfig()
     yfinance: YFinanceConfig = YFinanceConfig()
     brokers: BrokerSourcesConfig = BrokerSourcesConfig()
 @dataclass(frozen=True)
@@ -305,7 +295,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     )
     data_sources_raw = raw.get("data_sources", {})
     opencli_raw = data_sources_raw.get("opencli", {})
-    tradingview_raw = data_sources_raw.get("tradingview", {})
     yfinance_raw = data_sources_raw.get("yfinance", {})
     brokers_raw = data_sources_raw.get("brokers", {})
     ibkr_raw = brokers_raw.get("ibkr", {})
@@ -317,14 +306,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             enabled=bool(opencli_raw.get("enabled", True)),
             command=str(opencli_raw.get("command", "opencli")),
             timeout_seconds=int(opencli_raw.get("timeout_seconds", 25)),
-        ),
-        tradingview=TradingViewConfig(
-            enabled=bool(tradingview_raw.get("enabled", True)),
-            options_symbols=list(tradingview_raw.get("options_symbols", [])),
-            screener_limit=int(tradingview_raw.get("screener_limit", 50)),
-            news_limit=int(tradingview_raw.get("news_limit", 50)),
-            strikes_around_spot=int(tradingview_raw.get("strikes_around_spot", 6)),
-            option_scan_limit=int(tradingview_raw.get("option_scan_limit", 80)),
         ),
         yfinance=YFinanceConfig(enabled=bool(yfinance_raw.get("enabled", True))),
         brokers=BrokerSourcesConfig(
@@ -534,14 +515,6 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
                 "command": config.data_sources.opencli.command,
                 "timeout_seconds": config.data_sources.opencli.timeout_seconds,
             },
-            "tradingview": {
-                "enabled": config.data_sources.tradingview.enabled,
-                "options_symbols": config.data_sources.tradingview.options_symbols,
-                "screener_limit": config.data_sources.tradingview.screener_limit,
-                "news_limit": config.data_sources.tradingview.news_limit,
-                "strikes_around_spot": config.data_sources.tradingview.strikes_around_spot,
-                "option_scan_limit": config.data_sources.tradingview.option_scan_limit,
-            },
             "yfinance": {"enabled": config.data_sources.yfinance.enabled},
             "brokers": {
                 "enabled": config.data_sources.brokers.enabled,
@@ -613,12 +586,45 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
             "enabled": config.analysis.enabled,
             "correlation_lookback_days": config.analysis.correlation_lookback_days,
             "max_correlation_peers": config.analysis.max_correlation_peers,
-            "options_decision_system": options_decision_system_dict(
-                config.analysis.options_decision_system
-            ),
+            "options_decision_system": {
+                "mode": config.analysis.options_decision_system.mode,
+                "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
+                "radar_paper_actions_enabled": config.analysis.options_decision_system.radar_paper_actions_enabled,
+                "qqq_paper_actions_enabled": config.analysis.options_decision_system.qqq_paper_actions_enabled,
+                "recovery_paper_actions_enabled": config.analysis.options_decision_system.recovery_paper_actions_enabled,
+                "decision_inbox_enabled": config.analysis.options_decision_system.decision_inbox_enabled,
+                "telegram_notifications_enabled": config.analysis.options_decision_system.telegram_notifications_enabled,
+                "telegram_notifications_dry_run": config.analysis.options_decision_system.telegram_notifications_dry_run,
+                "options_risk_sleeve_capital": config.analysis.options_decision_system.options_risk_sleeve_capital,
+                "max_risk_per_trade_pct": config.analysis.options_decision_system.max_risk_per_trade_pct,
+                "max_open_risk_pct": config.analysis.options_decision_system.max_open_risk_pct,
+                "max_symbol_risk_pct": config.analysis.options_decision_system.max_symbol_risk_pct,
+                "daily_loss_halt_pct": config.analysis.options_decision_system.daily_loss_halt_pct,
+                "max_recovery_open_positions": config.analysis.options_decision_system.max_recovery_open_positions,
+                "strategy_auto_promotion_enabled": config.analysis.options_decision_system.strategy_auto_promotion_enabled,
+                "event_agent_debounce_minutes": config.analysis.options_decision_system.event_agent_debounce_minutes,
+                "event_agent_max_batches_per_symbol_per_day": config.analysis.options_decision_system.event_agent_max_batches_per_symbol_per_day,
+                "event_agent_max_tasks_per_batch": config.analysis.options_decision_system.event_agent_max_tasks_per_batch,
+            },
         },
         "agents": {
-            "option_agent": option_agent_config_dict(config.agents.option_agent),
+            "option_agent": {
+                "enabled": config.agents.option_agent.enabled,
+                "command": config.agents.option_agent.command,
+                "timeout_seconds": config.agents.option_agent.timeout_seconds,
+                "thesis_limit": config.agents.option_agent.thesis_limit,
+                "postmortem_limit": config.agents.option_agent.postmortem_limit,
+                "provider": config.agents.option_agent.provider,
+                "model": config.agents.option_agent.model,
+                "reasoning_effort": config.agents.option_agent.reasoning_effort,
+                "auto_run_seconds": config.agents.option_agent.auto_run_seconds,
+                "max_runs_per_day": config.agents.option_agent.max_runs_per_day,
+                "experiment_enabled": config.agents.option_agent.experiment_enabled,
+                "experiment_auto_run_seconds": config.agents.option_agent.experiment_auto_run_seconds,
+                "context_sources": dict(config.agents.option_agent.context_sources),
+                "command_managed_by_provider": True,
+                "provider_catalog": provider_catalog(),
+            },
             "thesis_monitor": thesis_monitor_agent_dict(config.agents.thesis_monitor),
             "pricing": {k: dict(v) for k, v in config.agents.pricing.items()},
         },

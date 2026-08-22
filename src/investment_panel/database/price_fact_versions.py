@@ -22,44 +22,66 @@ def confirm_price_fact(
     run_id: UUID,
 ) -> None:
     table = "raw.price_bar_confirmation" if kind == "price_bar" else "raw.quote_confirmation"
-    connection.execute(
-        f"""
-        INSERT INTO {table} (fact_id, fact_available_at, ingest_run_id)
-        SELECT %s, %s, %s
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM {table} existing
-            JOIN ingest.run existing_run ON existing_run.id = existing.ingest_run_id
-            WHERE existing.fact_id = %s
-              AND existing.fact_available_at = %s
-              AND existing_run.status IN ('succeeded', 'partial')
-        )
-        ON CONFLICT DO NOTHING
-        """,
-        [fact_id, available_at, run_id, fact_id, available_at],
-    )
     projection = f"raw.{kind}_fact_availability"
-    # Allow the same ingestion code to run while a rolling deployment is still
-    # at the immediately preceding schema revision.  The migration backfills
-    # those legacy confirmations before it makes the projection authoritative.
-    if connection.execute(
+    projection_available = connection.execute(
         "SELECT to_regclass(%s) IS NOT NULL AS available", [projection]
-    ).fetchone()["available"] is not True:
+    ).fetchone()["available"] is True
+    if projection_available:
+        # Confirmation rows are staging only.  A terminal projection row is
+        # the duplicate guard, so repeated successful runs do not recreate
+        # historical staging noise after cutover.
+        connection.execute(
+            f"""
+            INSERT INTO {table} (fact_id, fact_available_at, ingest_run_id)
+            SELECT %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {projection} existing
+                JOIN ingest.run existing_run ON existing_run.id = existing.ingest_run_id
+                WHERE existing.fact_id = %s
+                  AND existing.fact_available_at = %s
+                  AND existing_run.status IN ('succeeded', 'partial')
+                  AND existing_run.finished_at IS NOT NULL
+            )
+            ON CONFLICT DO NOTHING
+            """,
+            [fact_id, available_at, run_id, fact_id, available_at],
+        )
+    else:
+        # Keep pre-projection migrations usable during a rolling deployment.
+        connection.execute(
+            f"""
+            INSERT INTO {table} (fact_id, fact_available_at, ingest_run_id)
+            SELECT %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {table} existing
+                JOIN ingest.run existing_run ON existing_run.id = existing.ingest_run_id
+                WHERE existing.fact_id = %s
+                  AND existing.fact_available_at = %s
+                  AND existing_run.status IN ('succeeded', 'partial')
+            )
+            ON CONFLICT DO NOTHING
+            """,
+            [fact_id, available_at, run_id, fact_id, available_at],
+        )
         return
     connection.execute(
         f"""
         INSERT INTO {projection} (fact_id, fact_available_at, ingest_run_id)
-        SELECT %s, %s, COALESCE(
+        SELECT %s, %s, coalesce(
             (
-                SELECT legacy.ingest_run_id
-                FROM {table} legacy
-                JOIN ingest.run legacy_run ON legacy_run.id = legacy.ingest_run_id
-                WHERE legacy.fact_id = %s
-                  AND legacy.fact_available_at = %s
-                  AND legacy_run.status IN ('succeeded', 'partial')
-                  AND legacy_run.finished_at IS NOT NULL
-                ORDER BY legacy_run.finished_at, legacy.confirmed_at,
-                         legacy.ingest_run_id
+                SELECT confirmation.ingest_run_id
+                FROM {table} confirmation
+                JOIN ingest.run confirmation_run
+                  ON confirmation_run.id = confirmation.ingest_run_id
+                WHERE confirmation.fact_id = %s
+                  AND confirmation.fact_available_at = %s
+                  AND confirmation_run.status IN ('succeeded', 'partial')
+                  AND confirmation_run.finished_at IS NOT NULL
+                ORDER BY confirmation_run.finished_at,
+                         confirmation.confirmed_at,
+                         confirmation.ingest_run_id
                 LIMIT 1
             ),
             %s

@@ -8,7 +8,6 @@ from investment_panel.providers.advisory import (
     invoke_structured,
 )
 from investment_panel.providers.opencli import OpenCliError, OpenCliRateLimitError, OpenCliRunner
-from investment_panel.providers.tradingview import TradingViewProvider
 
 __all__ = [
     "AgentProviderError",
@@ -18,6 +17,5 @@ __all__ = [
     "ProviderTokenMetadata",
     "StructuredProviderRequest",
     "StructuredProviderResult",
-    "TradingViewProvider",
     "invoke_structured",
 ]

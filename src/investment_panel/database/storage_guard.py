@@ -19,6 +19,7 @@ GIB = 1024**3
 DEFAULT_MIN_FREE_GIB = 30
 DEFAULT_STORAGE_PATH = "/Users/joehu/proj/market"
 DEFAULT_OPTION_HISTORY_GROWTH_GIB_PER_TRADING_DAY = 0.7
+HOT_OPTION_RETENTION_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,9 @@ class StorageCapacity:
     option_history_growth_gib_per_trading_day: float
     projected_free_bytes_after_30_trading_days: int | None
     projected_reserve_breach_within_30_trading_days: bool
+    hot_option_retention_days: int
+    steady_state_hot_storage_bytes: int | None
+    projected_free_bytes_after_hot_retention: int | None
 
     def payload(self) -> dict[str, object]:
         return asdict(self)
@@ -65,9 +69,13 @@ def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | 
             option_history_growth_gib_per_trading_day=growth_gib,
             projected_free_bytes_after_30_trading_days=None,
             projected_reserve_breach_within_30_trading_days=True,
+            hot_option_retention_days=HOT_OPTION_RETENTION_DAYS,
+            steady_state_hot_storage_bytes=None,
+            projected_free_bytes_after_hot_retention=None,
         )
     allowed = available > minimum
     projected = max(0, available - int(growth_gib * 30 * GIB))
+    steady_state = int(growth_gib * HOT_OPTION_RETENTION_DAYS * GIB)
     return StorageCapacity(
         path=str(target),
         available_bytes=available,
@@ -77,6 +85,9 @@ def storage_capacity(*, path: str | Path | None = None, minimum_free_gib: int | 
         option_history_growth_gib_per_trading_day=growth_gib,
         projected_free_bytes_after_30_trading_days=projected,
         projected_reserve_breach_within_30_trading_days=projected <= minimum,
+        hot_option_retention_days=HOT_OPTION_RETENTION_DAYS,
+        steady_state_hot_storage_bytes=steady_state,
+        projected_free_bytes_after_hot_retention=max(0, available - steady_state),
     )
 
 

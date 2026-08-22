@@ -124,7 +124,7 @@ class OptionEventFeed:
             reference.date(), reference.date(), reference, one_session_start,
             reference.date(), reference.date(), reference, five_session_start,
             reference.date(), reference.date(), reference, reference,
-            reference, reference, reference, provider_run_id, provider_run_id,
+            reference, reference, reference,
         ])
         with self.runtime.read(JOB_PROFILE) as connection:
             rows = [dict(row) for row in connection.execute(
@@ -171,14 +171,6 @@ class OptionEventFeed:
                     FROM raw.confirmed_quote quote
                     WHERE quote.instrument_id = instrument.id AND quote.source_id = 'robinhood'
                       AND quote.observed_at <= %s AND quote.available_at <= %s
-                      AND (
-                        %s::uuid IS NULL OR EXISTS (
-                          SELECT 1 FROM raw.quote_confirmation confirmation
-                          WHERE confirmation.fact_id = quote.id
-                            AND confirmation.fact_available_at = quote.available_at
-                            AND confirmation.ingest_run_id = %s::uuid
-                        )
-                      )
                     ORDER BY observed_at DESC, available_at DESC LIMIT 1
                 ) quote ON true
                 """,

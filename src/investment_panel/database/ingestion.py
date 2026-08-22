@@ -333,6 +333,21 @@ class IngestionRepository:
             )
             if result.rowcount != 1:
                 raise ValueError(f"ingestion run is not running: {run_id}")
+        if status in {"succeeded", "partial"} and self._price_confirmation_cutover_enabled():
+            # Confirmation rows are ingestion staging after the projection
+            # cutover.  Keep the projection row and remove only the finalized
+            # staging rows for this run.  Failed rows remain for the audit
+            # retention window.
+            from investment_panel.database.price_confirmation_retention import PriceConfirmationRetentionRepository
+
+            PriceConfirmationRetentionRepository(self.runtime).cleanup_terminal_staging(run_id=run_id)
+
+    def _price_confirmation_cutover_enabled(self) -> bool:
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                "SELECT value->>'enabled' AS enabled FROM app.setting WHERE key = 'storage.price-confirmations.authoritative'"
+            ).fetchone()
+        return bool(row and str(row["enabled"]).lower() == "true")
 
     def record_payload(
         self,
@@ -414,14 +429,22 @@ class IngestionRepository:
         if capture_state not in {"running", "complete", "partial", "failed"}:
             raise ValueError("capture_state is invalid")
         normalized = [_normalize_option_row(row) for row in rows]
-        partition = _partition_name(observed_at.date())
         with self.runtime.transaction(JOB_PROFILE) as connection:
             connection.execute("SELECT pg_advisory_xact_lock(hashtextextended('raw.option_quote.partition', 0))")
+            daily_start = None
+            if connection.execute(
+                "SELECT to_regclass('ops.option_quote_partition_policy') IS NOT NULL AS available"
+            ).fetchone()["available"]:
+                policy = connection.execute(
+                    "SELECT daily_start FROM ops.option_quote_partition_policy WHERE policy_key = 'default'"
+                ).fetchone()
+                daily_start = policy["daily_start"] if policy else None
+            partition, partition_start, partition_end = _partition_bounds(observed_at.date(), daily_start)
             connection.execute(
                 sql.SQL("CREATE TABLE IF NOT EXISTS raw.{} PARTITION OF raw.option_quote FOR VALUES FROM ({}) TO ({})").format(
                     sql.Identifier(partition),
-                    sql.Literal(_month_start(observed_at.date())),
-                    sql.Literal(_next_month(observed_at.date())),
+                    sql.Literal(partition_start),
+                    sql.Literal(partition_end),
                 )
             )
             snapshot = connection.execute(
@@ -669,6 +692,16 @@ class IngestionRepository:
 
 def _partition_name(day: date) -> str:
     return f"option_quote_{day.year:04d}{day.month:02d}"
+
+
+def _daily_partition_name(day: date) -> str:
+    return f"option_quote_{day.year:04d}{day.month:02d}{day.day:02d}"
+
+
+def _partition_bounds(day: date, daily_start: date | None) -> tuple[str, date, date]:
+    if daily_start is not None and day >= daily_start:
+        return _daily_partition_name(day), day, day.fromordinal(day.toordinal() + 1)
+    return _partition_name(day), _month_start(day), _next_month(day)
 
 
 def _month_start(day: date) -> date:

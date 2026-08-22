@@ -111,7 +111,7 @@ class OptionsActions:
         return self.recovery.event_detail(event_id, **filters)
 
     def recovery_health(self) -> dict[str, Any]:
-        from investment_panel.core.job_policy import scheduler_status
+        from app.scheduler import scheduler_status
 
         return {**self.recovery.health(), "scheduler": scheduler_status(self.config)}
 

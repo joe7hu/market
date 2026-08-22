@@ -224,6 +224,130 @@ class PriceConfirmationRetentionRepository:
             "next_after_available_at": values[-1][1] if values else None,
         }
 
+    def coverage(self) -> dict[str, Any]:
+        """Return projection coverage without scanning confirmation history twice.
+
+        ``facts`` is the complete current plus history tape.  ``eligible`` is
+        the subset with a successful or partial ingestion run.  The latter is
+        the cutover gate: a failed ingestion cannot make a fact selectable.
+        """
+
+        result: dict[str, Any] = {}
+        with self.runtime.read(JOB_PROFILE) as connection:
+            for table in ("price_bar", "quote"):
+                relation = f"raw.{table}"
+                projection = f"raw.{table}_fact_availability"
+                row = connection.execute(
+                    f"""
+                    WITH facts AS (
+                        SELECT id AS fact_id, available_at AS fact_available_at
+                        FROM {relation}
+                        UNION
+                        SELECT id AS fact_id, available_at AS fact_available_at
+                        FROM raw.{table}_history
+                    ), eligible AS (
+                        SELECT facts.fact_id, facts.fact_available_at
+                        FROM facts
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM {relation}_confirmation confirmation
+                            JOIN ingest.run run ON run.id = confirmation.ingest_run_id
+                            WHERE confirmation.fact_id = facts.fact_id
+                              AND confirmation.fact_available_at = facts.fact_available_at
+                              AND run.status IN ('succeeded', 'partial')
+                              AND run.finished_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM {projection} availability
+                            JOIN ingest.run run ON run.id = availability.ingest_run_id
+                            WHERE availability.fact_id = facts.fact_id
+                              AND availability.fact_available_at = facts.fact_available_at
+                              AND run.status IN ('succeeded', 'partial')
+                              AND run.finished_at IS NOT NULL
+                        )
+                    )
+                    SELECT
+                        (SELECT count(*) FROM facts) AS fact_count,
+                        (SELECT count(*) FROM eligible) AS eligible_count,
+                        (SELECT count(*) FROM {projection}) AS projected_count,
+                        (SELECT count(*)
+                         FROM eligible
+                         JOIN {projection} projected
+                           ON projected.fact_id = eligible.fact_id
+                          AND projected.fact_available_at = eligible.fact_available_at
+                        ) AS eligible_projected_count
+                    """
+                ).fetchone()
+                facts = int(row["fact_count"] or 0)
+                eligible = int(row["eligible_count"] or 0)
+                projected = int(row["projected_count"] or 0)
+                eligible_projected = int(row["eligible_projected_count"] or 0)
+                result[table] = {
+                    "facts": facts,
+                    "eligible": eligible,
+                    "projected": projected,
+                    "eligible_projected": eligible_projected,
+                    "all_coverage_pct": round(projected * 100 / facts, 4) if facts else 100.0,
+                    "eligible_coverage_pct": round(eligible_projected * 100 / eligible, 4) if eligible else 100.0,
+                    "complete": eligible == eligible_projected,
+                }
+        result["complete"] = all(result[table]["complete"] for table in ("price_bar", "quote"))
+        return result
+
+    def cleanup_terminal_staging(self, *, run_id: Any) -> int:
+        """Remove finalized staging rows after projection cutover is enabled."""
+
+        deleted = 0
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            for table in ("price_bar", "quote"):
+                deleted += int(connection.execute(
+                    f"""
+                    DELETE FROM raw.{table}_confirmation confirmation
+                    WHERE confirmation.ingest_run_id = %s
+                      AND EXISTS (
+                          SELECT 1 FROM ingest.run run
+                          WHERE run.id = confirmation.ingest_run_id
+                            AND run.status IN ('succeeded', 'partial')
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM raw.{table}_fact_availability availability
+                          WHERE availability.fact_id = confirmation.fact_id
+                            AND availability.fact_available_at = confirmation.fact_available_at
+                      )
+                    """,
+                    [run_id],
+                ).rowcount)
+        return deleted
+
+    def prune_failed_staging(self, *, before: Any, dry_run: bool = False) -> int:
+        """Keep failed confirmation evidence for the configured audit window."""
+
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            total = 0
+            for table in ("price_bar", "quote"):
+                query = f"""
+                    DELETE FROM raw.{table}_confirmation confirmation
+                    USING ingest.run run
+                    WHERE run.id = confirmation.ingest_run_id
+                      AND run.status = 'failed'
+                      AND coalesce(run.finished_at, run.started_at) < %s
+                """
+                if dry_run:
+                    total += int(connection.execute(
+                        f"""
+                        SELECT count(*) AS count
+                        FROM raw.{table}_confirmation confirmation
+                        JOIN ingest.run run ON run.id = confirmation.ingest_run_id
+                        WHERE run.status = 'failed'
+                          AND coalesce(run.finished_at, run.started_at) < %s
+                        """,
+                        [before],
+                    ).fetchone()["count"])
+                else:
+                    total += int(connection.execute(query, [before]).rowcount)
+        return total
+
     @staticmethod
     def _compact_pairs(
         connection: Any,

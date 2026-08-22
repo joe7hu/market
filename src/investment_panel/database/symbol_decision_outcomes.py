@@ -217,10 +217,10 @@ def _daily_marks(connection: Any, instrument_id: int, after_date: date, referenc
             AND ((bar.trading_date::timestamp + time '16:00') AT TIME ZONE 'America/New_York') <= %s
             AND EXISTS (
               SELECT 1
-              FROM raw.price_bar_confirmation confirmation
-              JOIN ingest.run run ON run.id = confirmation.ingest_run_id
-              WHERE confirmation.fact_id = bar.id
-                AND confirmation.fact_available_at = bar.available_at
+              FROM raw.price_bar_fact_availability availability
+              JOIN ingest.run run ON run.id = availability.ingest_run_id
+              WHERE availability.fact_id = bar.id
+                AND availability.fact_available_at = bar.available_at
                 AND run.status IN ('succeeded', 'partial')
                 AND run.finished_at IS NOT NULL AND run.finished_at <= %s
             )
