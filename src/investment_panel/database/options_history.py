@@ -541,6 +541,12 @@ class OptionHistoryRepository:
             ) evidence ON true
             WHERE {where}
         """
+        count_base = f"""
+            FROM raw.option_quote quote
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            WHERE {where}
+        """
         select = f"""
             SELECT quote.snapshot_id, snapshot.history_symbol AS symbol, snapshot.slot_at, contract.id AS contract_id,
                    contract.expiration, contract.strike::double precision AS strike, contract.option_type,
@@ -557,7 +563,7 @@ class OptionHistoryRepository:
                    quote.underlying_observed_at, quote.underlying_available_at
         """
         with self.runtime.read() as connection:
-            count = connection.execute(f"SELECT count(*) AS count {base}", parameters).fetchone()["count"]
+            count = connection.execute(f"SELECT count(*) AS count {count_base}", parameters).fetchone()["count"]
             rows = connection.execute(
                 f"{select} {base} ORDER BY contract.expiration, contract.option_type, contract.strike LIMIT %s OFFSET %s",
                 [*parameters, limit, offset],
