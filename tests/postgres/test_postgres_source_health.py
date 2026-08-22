@@ -105,6 +105,59 @@ def test_source_health_separates_run_outcome_freshness_and_disabled_state(
     assert rows["health_stale"]["effective_status"] == "stale"
 
 
+def test_overdue_external_source_is_an_explicit_failure_with_remediation(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        _register(repository, "health_external")
+        run_id = _finish(repository, "health_external", "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.source SET health_owner = 'external:test' WHERE id = 'health_external'"
+            )
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [datetime.now(UTC) - timedelta(hours=2), datetime.now(UTC) - timedelta(hours=2), run_id],
+            )
+        rows = _source_rows(migrated_postgres_dsn)
+    finally:
+        runtime.close()
+
+    assert rows["health_external"]["freshness_status"] == "stale"
+    assert rows["health_external"]["effective_status"] == "failed"
+    assert rows["health_external"]["remediation"] == (
+        "The external producer owns this refresh; verify its run and source timestamp."
+    )
+
+
+def test_arco_permission_failure_has_runtime_access_remediation(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        _register(repository, "arco", family="research", kind="private_evidence")
+        _finish(
+            repository,
+            "arco",
+            "failed",
+            capability="content",
+            failure_detail="Arco raw path permission denied: Operation not permitted",
+        )
+        rows = _source_rows(migrated_postgres_dsn)
+    finally:
+        runtime.close()
+
+    assert rows["arco"]["effective_status"] == "failed"
+    assert rows["arco"]["remediation"] == (
+        "Grant the Market launchd runtime access to /Volumes/agent, then rerun update_arco_data."
+    )
+
+
 def test_source_health_ignores_runs_for_removed_capabilities(migrated_postgres_dsn: str) -> None:
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()

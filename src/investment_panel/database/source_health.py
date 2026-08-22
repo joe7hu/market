@@ -282,6 +282,10 @@ SELECT classified.*,
          WHEN operational_state = 'standby' THEN 'standby'
          WHEN freshness_status = 'uncontracted' THEN 'uncontracted'
          WHEN lower(COALESCE(run_status, '')) = 'failed' THEN 'failed'
+         WHEN refresh_job IS NULL
+           AND health_owner LIKE 'external:%'
+           AND freshness_status IN ('missing', 'stale')
+           THEN 'failed'
          WHEN lower(COALESCE(run_status, '')) IN ('partial', 'rate_limited', 'skipped') THEN 'degraded'
          WHEN lower(COALESCE(run_status, '')) = 'running'
            AND status_at < now() - make_interval(secs => GREATEST(COALESCE(stale_after_seconds, 0), 10800))
@@ -298,6 +302,10 @@ SELECT classified.*,
            THEN 'Standby provider is not selected; select it and pass its connection preflight before refreshing.'
          WHEN freshness_status = 'uncontracted'
            THEN 'Register an explicit health owner and freshness cadence before activating this source.'
+         WHEN source_id = 'arco'
+           AND (failure_detail ILIKE '%Operation not permitted%'
+                OR failure_detail ILIKE '%permission denied%')
+           THEN 'Grant the Market launchd runtime access to /Volumes/agent, then rerun update_arco_data.'
          WHEN failure_detail ILIKE '%BROWSER_CONNECT%'
            OR failure_detail ILIKE '%profile%not connected%'
            THEN 'Reconnect the configured OpenCLI browser profile, then rerun this source.'
@@ -336,6 +344,9 @@ ORDER BY
     WHEN operational_state = 'archived' THEN 8
     WHEN operational_state = 'standby' THEN 7
     WHEN lower(COALESCE(run_status, '')) = 'failed' THEN 0
+    WHEN refresh_job IS NULL
+      AND health_owner LIKE 'external:%'
+      AND freshness_status IN ('missing', 'stale') THEN 0
     WHEN lower(COALESCE(run_status, '')) IN ('partial', 'rate_limited', 'skipped') THEN 1
     WHEN lower(COALESCE(run_status, '')) = 'running' THEN 2
     WHEN freshness_status = 'missing' THEN 3
