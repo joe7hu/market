@@ -17,23 +17,35 @@ class JobRepository:
     def __init__(self, runtime: DatabaseRuntime) -> None:
         self.runtime = runtime
 
-    def start(self, job_name: str, *, stale_after: timedelta = timedelta(hours=3)) -> dict[str, Any]:
+    def start(
+        self,
+        job_name: str,
+        *,
+        stale_after: timedelta = timedelta(hours=3),
+        scheduled_due_at: datetime | None = None,
+        dispatched_at: datetime | None = None,
+    ) -> dict[str, Any]:
         self.mark_stale(stale_after=stale_after)
         with self.runtime.transaction() as connection:
             try:
                 with connection.transaction():
                     row = connection.execute(
                         """
-                        INSERT INTO ops.job_run (job_name, status, started_at, heartbeat_at)
-                        VALUES (%s, 'running', now(), now())
-                        RETURNING id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
+                        INSERT INTO ops.job_run
+                            (job_name, status, started_at, heartbeat_at, scheduled_due_at, dispatched_at)
+                        VALUES (%s, 'running', now(), now(), %s, COALESCE(%s, now()))
+                        RETURNING id, job_name, status, started_at, heartbeat_at, finished_at,
+                                  scheduled_due_at, dispatched_at, source_status, downstream_status,
+                                  error, summary
                         """,
-                        [job_name],
+                        [job_name, scheduled_due_at, dispatched_at],
                     ).fetchone()
             except errors.UniqueViolation:
                 row = connection.execute(
                     """
-                    SELECT id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
+                    SELECT id, job_name, status, started_at, heartbeat_at, finished_at,
+                           scheduled_due_at, dispatched_at, source_status, downstream_status,
+                           error, summary
                     FROM ops.job_run WHERE job_name = %s AND status = 'running'
                     ORDER BY started_at DESC LIMIT 1
                     """,
@@ -49,6 +61,8 @@ class JobRepository:
         *,
         summary: Any | None = None,
         error: str | None = None,
+        source_status: str | None = None,
+        downstream_status: str | None = None,
     ) -> dict[str, Any]:
         if status not in {"succeeded", "partial", "failed", "skipped"}:
             raise ValueError("job status is invalid")
@@ -57,14 +71,19 @@ class JobRepository:
             row = connection.execute(
                 """
                 UPDATE ops.job_run
-                SET status = %s, finished_at = now(), error = %s, summary = %s
+                SET status = %s, finished_at = now(), error = %s, summary = %s,
+                    source_status = %s, downstream_status = %s
                 WHERE id = %s AND status = 'running'
-                RETURNING id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
+                RETURNING id, job_name, status, started_at, heartbeat_at, finished_at,
+                          scheduled_due_at, dispatched_at, source_status, downstream_status,
+                          error, summary
                 """,
                 [
                     status,
                     error,
                     Jsonb(_jsonable(stored_summary)),
+                    source_status,
+                    downstream_status,
                     job_id,
                 ],
             ).fetchone()
@@ -76,7 +95,9 @@ class JobRepository:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT id, job_name, status, started_at, heartbeat_at, finished_at, error, summary
+                SELECT id, job_name, status, started_at, heartbeat_at, finished_at,
+                       scheduled_due_at, dispatched_at, source_status, downstream_status,
+                       error, summary
                 FROM ops.job_run ORDER BY started_at DESC LIMIT %s
                 """,
                 [limit],

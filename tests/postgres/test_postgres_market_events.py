@@ -130,17 +130,13 @@ def test_market_event_refresh_preserves_upstream_degradation_when_bls_is_blocked
         market_data=SimpleNamespace(user_agent="test"),
     )
 
-    class BlockedResponse:
-        text = "blocked"
-
-        def raise_for_status(self) -> None:
-            request = update_market_events.httpx.Request("GET", "https://www.bls.gov")
-            response = update_market_events.httpx.Response(403, request=request)
-            raise update_market_events.httpx.HTTPStatusError("blocked", request=request, response=response)
-
     monkeypatch.setattr(update_market_events, "load_config", lambda _path=None: config)
     monkeypatch.setattr(update_market_events, "runtime_for_config", lambda _config: runtime)
-    monkeypatch.setattr(update_market_events.httpx, "get", lambda *_args, **_kwargs: BlockedResponse())
+    monkeypatch.setattr(
+        update_market_events.sec,
+        "official_get_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("blocked")),
+    )
     try:
         result = update_market_events.run()
         with runtime.read() as connection:
