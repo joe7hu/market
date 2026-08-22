@@ -32,7 +32,7 @@ SOURCE_UNIVERSE_CTES = f"""
         JOIN raw.content_item item ON item.id = link.content_item_id
         JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
         JOIN ingest.source source ON source.id = item.source_id
-        WHERE source.enabled
+        WHERE source.enabled AND source.operational_state = 'active'
           AND item.kind NOT IN ({FEED_EXCLUDED_KINDS})
           AND item.observed_at <= now()
           AND COALESCE(item.published_at, item.observed_at) <= now()
@@ -44,7 +44,7 @@ SOURCE_UNIVERSE_CTES = f"""
         FROM raw.disclosure disclosure
         JOIN catalog.instrument instrument ON instrument.id = disclosure.instrument_id
         JOIN ingest.source source ON source.id = disclosure.source_id
-        WHERE source.enabled
+        WHERE source.enabled AND source.operational_state = 'active'
           AND COALESCE(disclosure.filed_date, disclosure.event_date) <= current_date
           AND COALESCE(disclosure.filed_date, disclosure.event_date) >= current_date - 180
         UNION ALL
@@ -53,7 +53,7 @@ SOURCE_UNIVERSE_CTES = f"""
         FROM raw.market_event event
         JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
         JOIN ingest.source source ON source.id = event.source_id
-        WHERE source.enabled
+        WHERE source.enabled AND source.operational_state = 'active'
           AND event.starts_at >= now() AND event.starts_at < now() + interval '90 days'
     ), source_counts_by_root AS (
         SELECT symbol, source_root, max(source_name) AS source_name,
@@ -237,7 +237,7 @@ SOURCE_QUERIES: dict[str, str] = {
             WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
             ORDER BY signal.observed_at DESC LIMIT 1
         ) signal ON true
-        WHERE source.enabled
+        WHERE source.enabled AND source.operational_state = 'active'
           AND item.observed_at <= now()
           AND COALESCE(item.published_at, item.observed_at) <= now()
         GROUP BY source.id, source.name, source.family
@@ -272,7 +272,7 @@ SOURCE_QUERIES: dict[str, str] = {
                 WHERE signal.content_item_id = item.id
                 ORDER BY signal.observed_at DESC, signal.confidence DESC NULLS LAST LIMIT 1
             ) signal ON true
-            WHERE source.enabled
+            WHERE source.enabled AND source.operational_state = 'active'
               AND item.kind NOT IN ({FEED_EXCLUDED_KINDS})
               AND item.observed_at <= now()
               AND COALESCE(item.published_at, item.observed_at) <= now()
@@ -299,7 +299,7 @@ SOURCE_QUERIES: dict[str, str] = {
             FROM raw.disclosure disclosure
             JOIN catalog.instrument instrument ON instrument.id = disclosure.instrument_id
             JOIN ingest.source source ON source.id = disclosure.source_id
-            WHERE source.enabled
+            WHERE source.enabled AND source.operational_state = 'active'
               AND COALESCE(disclosure.filed_date, disclosure.event_date) <= current_date
         ), ranked AS (
             SELECT event.*,
@@ -318,13 +318,18 @@ SOURCE_QUERIES: dict[str, str] = {
         SELECT source.id AS source_id, source.name AS source_name,
                source.family AS source_family, source.kind AS source_kind,
                source.origin, source.enabled, source.ingestion_mode, source.source_url,
+               source.operational_state, source.health_owner, source.freshness_seconds,
                source.capabilities, source.config, source.updated_at,
                COALESCE(content.items_count, 0) AS items_count,
                COALESCE(content.tickers_count, 0) AS tickers_count,
                COALESCE(content.signals_count, 0) AS signals_count,
                latest.status AS latest_run_status, latest.finished_at AS latest_run_at,
-               CASE WHEN latest.finished_at IS NULL THEN 'not_loaded'
-                    WHEN latest.finished_at < now() - interval '2 days' THEN 'stale'
+               CASE WHEN NOT source.enabled THEN 'disabled'
+                    WHEN source.operational_state = 'archived' THEN 'archived'
+                    WHEN source.operational_state = 'standby' THEN 'standby'
+                    WHEN source.freshness_seconds IS NULL THEN 'uncontracted'
+                    WHEN latest.finished_at IS NULL THEN 'not_loaded'
+                    WHEN latest.finished_at < now() - make_interval(secs => source.freshness_seconds) THEN 'stale'
                     ELSE 'fresh' END AS freshness
         FROM ingest.source source
         LEFT JOIN LATERAL (
@@ -370,7 +375,7 @@ SOURCE_QUERIES: dict[str, str] = {
                 WHERE signal.content_item_id = item.id AND signal.instrument_id = instrument.id
                 ORDER BY signal.observed_at DESC LIMIT 1
             ) signal ON true
-            WHERE source.enabled
+            WHERE source.enabled AND source.operational_state = 'active'
               AND item.observed_at <= now()
               AND COALESCE(item.published_at, item.observed_at) <= now()
         )

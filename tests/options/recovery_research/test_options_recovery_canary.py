@@ -244,9 +244,10 @@ def test_detector_excludes_stale_and_missing_production_shape_without_creating_e
             reconcile_instrument(connection, "SNDK", asset_class="equity", category="test")
             connection.execute(
                 """
-                INSERT INTO ingest.source (id, name, family, kind)
-                VALUES ('polygon', 'Polygon', 'market_data', 'daily_bars'),
-                       ('robinhood', 'Robinhood', 'broker', 'quote')
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES ('polygon', 'Polygon', 'market_data', 'daily_bars', 'active', 'test', 3600),
+                       ('robinhood', 'Robinhood', 'broker', 'quote', 'active', 'test', 3600)
                 """
             )
             daily_run = connection.execute(
@@ -330,9 +331,10 @@ def test_detector_accepts_an_unchanged_quote_confirmed_by_its_current_run(
             instrument_id = reconcile_instrument(connection, "NVDA", asset_class="equity", category="test")
             connection.execute(
                 """
-                INSERT INTO ingest.source (id, name, family, kind)
-                VALUES ('polygon', 'Polygon', 'market_data', 'daily_bars'),
-                       ('robinhood', 'Robinhood', 'broker', 'quote')
+                INSERT INTO ingest.source
+                    (id, name, family, kind, operational_state, health_owner, freshness_seconds)
+                VALUES ('polygon', 'Polygon', 'market_data', 'daily_bars', 'active', 'test', 3600),
+                       ('robinhood', 'Robinhood', 'broker', 'quote', 'active', 'test', 3600)
                 """
             )
             bar_run = connection.execute(

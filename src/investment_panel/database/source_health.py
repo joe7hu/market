@@ -3,15 +3,139 @@
 The Health page and source catalog endpoint consume this query. Compatibility
 health/freshness routes retain their established wire shapes. Run outcome and
 freshness deliberately remain separate: a source can still have usable recent
-data while its latest attempt failed, and disabled sources are never incidents.
+data while its latest attempt failed. Lifecycle state is also separate from
+``enabled`` so archived evidence remains queryable without becoming current.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from collections.abc import Sequence
 from typing import Any
 
 from investment_panel.core.job_policy import source_primary_refresh_job_sql, source_refresh_jobs_sql
+from investment_panel.database.runtime import DatabaseRuntime
+
+
+def overdue_source_refresh_jobs(
+    database: str,
+    *,
+    now: datetime | None = None,
+) -> set[str]:
+    """Return direct refresh owners whose active sources need catch-up.
+
+    The scheduler uses this at process start.  A source with no successful
+    check is overdue by definition.  External producers are excluded because
+    Market cannot dispatch their work.
+    """
+
+    reference = now or datetime.now(UTC)
+    runtime = DatabaseRuntime(database)
+    runtime.open()
+    try:
+        with runtime.read() as connection:
+            rows = connection.execute(
+                """
+                SELECT source.health_owner
+                FROM ingest.source AS source
+                LEFT JOIN LATERAL (
+                    SELECT max(run.finished_at) AS last_success_at
+                    FROM ingest.run AS run
+                    WHERE run.source_id = source.id
+                      AND run.status = 'succeeded'
+                ) AS latest ON true
+                WHERE source.operational_state = 'active'
+                  AND source.enabled
+                  AND source.health_owner IS NOT NULL
+                  AND source.freshness_seconds IS NOT NULL
+                  AND (
+                      source.health_owner LIKE 'update_%'
+                      OR source.health_owner = 'options_radar_hard_refresh'
+                  )
+                  AND (
+                      latest.last_success_at IS NULL
+                      OR latest.last_success_at < %s - make_interval(secs => source.freshness_seconds)
+                  )
+                GROUP BY source.health_owner
+                """,
+                [reference],
+            ).fetchall()
+        return {str(row["health_owner"]) for row in rows if row.get("health_owner")}
+    finally:
+        runtime.close()
+
+
+def source_health_blockers(
+    runtime: DatabaseRuntime,
+    source_ids: Sequence[str],
+    *,
+    evaluated_at: datetime | None = None,
+) -> dict[str, list[str]]:
+    """Return fail-closed blockers for the source identities used by a decision.
+
+    This is deliberately narrower than the catalog projection.  Readiness
+    checks need the source that produced the evidence, not a global health
+    count, and must re-evaluate it at the point of publication or paper entry.
+    """
+
+    normalized = sorted({str(source_id).strip() for source_id in source_ids if str(source_id).strip()})
+    if not normalized:
+        return {}
+    reference = evaluated_at or datetime.now(UTC)
+    with runtime.read() as connection:
+        rows = connection.execute(
+            """
+            SELECT source.id, source.enabled, source.operational_state,
+                   source.health_owner, source.freshness_seconds,
+                   latest.status AS latest_status,
+                   success.last_success_at
+            FROM ingest.source AS source
+            LEFT JOIN LATERAL (
+                SELECT run.status
+                FROM ingest.run AS run
+                WHERE run.source_id = source.id
+                ORDER BY run.started_at DESC, run.id DESC
+                LIMIT 1
+            ) AS latest ON true
+            LEFT JOIN LATERAL (
+                SELECT max(run.finished_at) AS last_success_at
+                FROM ingest.run AS run
+                WHERE run.source_id = source.id
+                  AND run.status = 'succeeded'
+            ) AS success ON true
+            WHERE source.id = ANY(%s::text[])
+            """,
+            [normalized],
+        ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+    blockers: dict[str, list[str]] = {}
+    for source_id in normalized:
+        row = by_id.get(source_id)
+        if row is None:
+            blockers[source_id] = ["source_identity_missing"]
+            continue
+        current: list[str] = []
+        if not bool(row["enabled"]):
+            current.append("source_disabled")
+        state = str(row["operational_state"] or "archived")
+        if state != "active":
+            current.append(f"source_not_active:{state}")
+        owner = row["health_owner"]
+        cadence = row["freshness_seconds"]
+        if not owner or cadence is None or int(cadence) <= 0:
+            current.append("source_health_contract_missing")
+        status = str(row["latest_status"] or "").lower()
+        if status in {"failed", "partial", "rate_limited", "skipped", "running"}:
+            current.append(f"source_run_{status}")
+        last_success = row["last_success_at"]
+        if last_success is None:
+            current.append("source_health_missing")
+        elif cadence is not None and last_success < reference - timedelta(seconds=int(cadence)):
+            current.append("source_health_stale")
+        if current:
+            blockers[source_id] = sorted(set(current))
+    return blockers
 
 
 SOURCE_HEALTH_QUERY = f"""
@@ -89,24 +213,12 @@ WITH eligible_run AS (
     SELECT source.id AS source_id, source.name AS source_name,
            source.family AS source_family, source.kind AS source_kind,
            source.origin, source.enabled, source.ingestion_mode,
-           source.source_url, source.capabilities,
+           source.source_url, source.capabilities, source.operational_state,
+           source.health_owner, source.freshness_seconds,
            COALESCE(capability_health.rows, '[]'::jsonb) AS capability_health,
            {source_refresh_jobs_sql()} AS refresh_jobs,
            {source_primary_refresh_job_sql()} AS refresh_job,
-           CASE
-             WHEN source.family = 'legacy' OR source.id LIKE 'legacy-%' THEN NULL
-             WHEN source.id = 'watchlist_quote' THEN NULL
-             WHEN source.id = 'robinhood' THEN 259200
-             WHEN source.id IN ('ibkr', 'moomoo') THEN 3600
-             WHEN source.id = 'arco' THEN 14400
-             WHEN source.family = 'research' THEN 3600
-             WHEN source.family = 'social' THEN 1800
-             WHEN source.family IN ('events', 'disclosures', 'filing') THEN 86400
-             WHEN source.family IN ('market_data', 'estimates') THEN 86400
-             WHEN source.family IN ('calendar', 'fundamentals', 'migration', 'legacy', 'news',
-                                    'private_graph', 'blog', 'podcast', 'transcript') THEN NULL
-             ELSE 172800
-           END AS stale_after_seconds,
+           source.freshness_seconds AS stale_after_seconds,
            CASE
              WHEN source.family = 'broker' THEN 'broker'
              WHEN source.family IN ('calendar', 'events') THEN 'events'
@@ -147,17 +259,28 @@ WITH eligible_run AS (
     SELECT base.*,
            CASE
              WHEN NOT enabled THEN 'disabled'
+             WHEN operational_state = 'archived' THEN 'archived'
+             WHEN operational_state = 'standby' THEN 'standby'
+             WHEN stale_after_seconds IS NULL THEN 'uncontracted'
              WHEN last_success_at IS NULL THEN 'missing'
              WHEN stale_after_seconds IS NOT NULL
                AND last_success_at < now() - make_interval(secs => stale_after_seconds)
                THEN 'stale'
              ELSE 'fresh'
-           END AS freshness_status
+           END AS freshness_status,
+           CASE
+             WHEN operational_state = 'active' AND enabled AND stale_after_seconds IS NOT NULL
+               THEN COALESCE(last_success_at, now()) + make_interval(secs => stale_after_seconds)
+             ELSE NULL
+           END AS next_due_at
     FROM base
 )
 SELECT classified.*,
        CASE
          WHEN NOT enabled THEN 'disabled'
+         WHEN operational_state = 'archived' THEN 'archived'
+         WHEN operational_state = 'standby' THEN 'standby'
+         WHEN freshness_status = 'uncontracted' THEN 'uncontracted'
          WHEN lower(COALESCE(run_status, '')) = 'failed' THEN 'failed'
          WHEN lower(COALESCE(run_status, '')) IN ('partial', 'rate_limited', 'skipped') THEN 'degraded'
          WHEN lower(COALESCE(run_status, '')) = 'running'
@@ -169,6 +292,12 @@ SELECT classified.*,
          ELSE 'healthy'
        END AS effective_status,
        CASE
+         WHEN operational_state = 'archived'
+           THEN 'Historical evidence is retained but excluded from current freshness and readiness.'
+         WHEN operational_state = 'standby'
+           THEN 'Standby provider is not selected; select it and pass its connection preflight before refreshing.'
+         WHEN freshness_status = 'uncontracted'
+           THEN 'Register an explicit health owner and freshness cadence before activating this source.'
          WHEN failure_detail ILIKE '%BROWSER_CONNECT%'
            OR failure_detail ILIKE '%profile%not connected%'
            THEN 'Reconnect the configured OpenCLI browser profile, then rerun this source.'
@@ -182,6 +311,9 @@ SELECT classified.*,
          WHEN lower(COALESCE(run_status, '')) = 'running'
            THEN 'Refresh is currently in progress.'
          WHEN refresh_job IS NULL AND freshness_status IN ('missing', 'stale')
+           AND health_owner LIKE 'external:%'
+           THEN 'The external producer owns this refresh; verify its run and source timestamp.'
+         WHEN refresh_job IS NULL AND freshness_status IN ('missing', 'stale')
            THEN 'No direct refresh job is currently wired for this source.'
          WHEN freshness_status = 'missing'
            THEN 'Run the owning refresh job to establish a successful check.'
@@ -190,7 +322,9 @@ SELECT classified.*,
          ELSE ''
        END AS remediation,
        CASE
-         WHEN stale_after_seconds IS NULL THEN 'event driven'
+         WHEN operational_state = 'archived' THEN 'archived'
+         WHEN operational_state = 'standby' THEN 'standby'
+         WHEN stale_after_seconds IS NULL THEN 'uncontracted'
          WHEN stale_after_seconds < 3600 THEN (stale_after_seconds / 60)::text || ' min'
          WHEN stale_after_seconds < 86400 THEN (stale_after_seconds / 3600)::text || ' hr'
          ELSE (stale_after_seconds / 86400)::text || ' day'
@@ -199,6 +333,8 @@ FROM classified
 ORDER BY
   CASE
     WHEN NOT enabled THEN 6
+    WHEN operational_state = 'archived' THEN 8
+    WHEN operational_state = 'standby' THEN 7
     WHEN lower(COALESCE(run_status, '')) = 'failed' THEN 0
     WHEN lower(COALESCE(run_status, '')) IN ('partial', 'rate_limited', 'skipped') THEN 1
     WHEN lower(COALESCE(run_status, '')) = 'running' THEN 2
@@ -217,8 +353,12 @@ def source_health_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {
         "total": len(rows),
         "enabled": 0,
+        "active": 0,
+        "standby": 0,
+        "archived": 0,
         "healthy": 0,
         "attention": 0,
+        "active_attention": 0,
         "failed": 0,
         "disabled": 0,
     }
@@ -226,16 +366,26 @@ def source_health_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         groups[str(row.get("operational_group") or "other")].append(str(row.get("source_id") or ""))
         status = str(row.get("effective_status") or "missing")
+        operational_state = str(row.get("operational_state") or "archived")
+        if operational_state == "active":
+            counts["active"] += 1
+        elif operational_state == "standby":
+            counts["standby"] += 1
+        else:
+            counts["archived"] += 1
         if status == "disabled":
             counts["disabled"] += 1
-        else:
+        elif operational_state == "active" and bool(row.get("enabled")):
             counts["enabled"] += 1
             if status == "healthy":
                 counts["healthy"] += 1
             else:
                 counts["attention"] += 1
+                counts["active_attention"] += 1
             if status == "failed":
                 counts["failed"] += 1
+        elif bool(row.get("enabled")):
+            counts["enabled"] += 1
         observed = row.get("last_success_at")
         if observed is not None and (last_success_at is None or observed > last_success_at):
             last_success_at = observed

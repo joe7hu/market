@@ -21,8 +21,9 @@ def _source(
     kind: str = "article",
 ) -> str:
     connection.execute(
-        "INSERT INTO ingest.source (id, name, family, kind, origin) "
-        "VALUES (%s, %s, %s, %s, 'test')",
+        "INSERT INTO ingest.source "
+        "(id, name, family, kind, origin, operational_state, health_owner, freshness_seconds) "
+        "VALUES (%s, %s, %s, %s, 'test', 'active', 'test', 3600)",
         [source_id, name or source_id.replace("-", " ").title(), family, kind],
     )
     return str(

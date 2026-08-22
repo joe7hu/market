@@ -37,6 +37,8 @@ RESEARCH_PACKETS_BASE_QUERY = """
     FROM raw.content_item_instrument link
     JOIN raw.content_item item ON item.id = link.content_item_id
     JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
+    JOIN ingest.source source ON source.id = item.source_id
+       AND source.enabled AND source.operational_state = 'active'
     ORDER BY item.observed_at DESC
 """
 
@@ -94,6 +96,8 @@ DIRECT_QUERIES: dict[str, str] = {
                observation.observed_at, observation.values, observation.source_id AS source
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        JOIN ingest.source source ON source.id = observation.source_id
+          AND source.enabled AND source.operational_state = 'active'
         ORDER BY instrument.id, observation.metric_set, observation.observed_at DESC
     """,
     "liquidity": """
@@ -119,6 +123,8 @@ DIRECT_QUERIES: dict[str, str] = {
                event.importance, event.verification_status, event.source_url, event.details
         FROM raw.market_event event
         LEFT JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
+        JOIN ingest.source source ON source.id = event.source_id
+          AND source.enabled AND source.operational_state = 'active'
         WHERE event.event_kind = 'earnings' ORDER BY event.starts_at
     """,
     "analyst_estimates": """
@@ -126,6 +132,8 @@ DIRECT_QUERIES: dict[str, str] = {
                observation.values, observation.source_id AS source
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        JOIN ingest.source source ON source.id = observation.source_id
+          AND source.enabled AND source.operational_state = 'active'
         WHERE observation.metric_set IN ('analyst_estimates', 'consensus')
         ORDER BY observation.observed_at DESC
     """,
@@ -133,10 +141,15 @@ DIRECT_QUERIES: dict[str, str] = {
     "source_freshness": """
         SELECT source.id AS source_id, source.name AS source_name,
                source.family AS source_family, source.kind AS source_kind,
+               source.operational_state, source.health_owner, source.freshness_seconds,
                run.status, run.finished_at AS refreshed_at, run.failure_detail,
                run.item_count, run.instrument_count AS ticker_count,
-               CASE WHEN run.finished_at IS NULL THEN 'missing'
-                    WHEN run.finished_at < now() - interval '2 days' THEN 'stale'
+               CASE WHEN NOT source.enabled THEN 'disabled'
+                    WHEN source.operational_state = 'archived' THEN 'archived'
+                    WHEN source.operational_state = 'standby' THEN 'standby'
+                    WHEN source.freshness_seconds IS NULL THEN 'uncontracted'
+                    WHEN run.finished_at IS NULL THEN 'missing'
+                    WHEN run.finished_at < now() - make_interval(secs => source.freshness_seconds) THEN 'stale'
                     ELSE 'fresh' END AS freshness_status
         FROM ingest.source source
         LEFT JOIN LATERAL (
@@ -268,6 +281,8 @@ DIRECT_QUERIES: dict[str, str] = {
                observation.source_id AS source
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+        JOIN ingest.source source ON source.id = observation.source_id
+          AND source.enabled AND source.operational_state = 'active'
         ORDER BY observation.observed_at DESC
     """,
     "catalysts": """
@@ -286,12 +301,17 @@ DIRECT_QUERIES: dict[str, str] = {
                disclosure.source_url, disclosure.details, disclosure.source_id AS source
         FROM raw.disclosure disclosure
         LEFT JOIN catalog.instrument instrument ON instrument.id = disclosure.instrument_id
+        JOIN ingest.source source ON source.id = disclosure.source_id
+          AND source.enabled AND source.operational_state = 'active'
         ORDER BY COALESCE(disclosure.event_date, disclosure.filed_date) DESC
     """,
     "news": """
         SELECT item.id::text, item.title, item.url, item.author, item.published_at,
                item.observed_at, item.summary, item.source_id AS source, item.metadata
-        FROM raw.content_item item WHERE item.kind IN ('news', 'article', 'blog', 'social')
+        FROM raw.content_item item
+        JOIN ingest.source source ON source.id = item.source_id
+          AND source.enabled AND source.operational_state = 'active'
+        WHERE item.kind IN ('news', 'article', 'blog', 'social')
         ORDER BY COALESCE(item.published_at, item.observed_at) DESC LIMIT 500
     """,
     "source_items": """

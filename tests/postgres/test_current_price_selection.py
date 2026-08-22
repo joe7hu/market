@@ -25,7 +25,10 @@ def test_current_price_prefers_latest_available_intraday_quote_over_daily_nomina
     runtime.open()
     repository = IngestionRepository(runtime)
     try:
-        repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        repository.register_source(
+            "daily", name="Daily", family="market", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         repository.register_source("robinhood", name="Robinhood", family="broker", kind="quote")
         daily_run = repository.start_run("daily", "price_bars", started_at=datetime(2026, 8, 12, 15, tzinfo=UTC))
         repository.store_price_bars(
@@ -80,7 +83,10 @@ def test_current_price_orders_by_information_time_not_daily_nominal_close(
     robinhood_available = datetime(2026, 8, 12, 19, 59, tzinfo=UTC)
     as_of = datetime(2026, 8, 12, 20, 0, tzinfo=UTC)
     try:
-        repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        repository.register_source(
+            "daily", name="Daily", family="market", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         repository.register_source("robinhood", name="Robinhood", family="broker", kind="quote")
         daily_run = repository.start_run("daily", "price_bars", started_at=daily_available)
         repository.store_price_bars(
@@ -153,7 +159,10 @@ def test_confirmation_is_idempotent_per_price_fact_version(migrated_postgres_dsn
     runtime.open()
     repository = IngestionRepository(runtime)
     try:
-        repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        repository.register_source(
+            "daily", name="Daily", family="market", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         run = repository.start_run("daily", "price_bars")
         repository.store_price_bars(
             run,
@@ -197,12 +206,21 @@ def test_current_price_projection_backfills_existing_successful_confirmations(po
     runtime.open()
     repository = IngestionRepository(runtime)
     try:
-        repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
-        repository.register_source("robinhood", name="Robinhood", family="broker", kind="quote")
-        daily_run = repository.start_run("daily", "price_bars", started_at=datetime(2026, 8, 12, 15, tzinfo=UTC))
+        # This test intentionally stops before the lifecycle migration, so use
+        # the legacy source shape for the pre-migration fixture. The head
+        # migration must then backfill the current production identities.
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO ingest.source (id, name, family, kind) VALUES "
+                "('daily-market-prices', 'Daily', 'market', 'daily_bars'), "
+                "('robinhood', 'Robinhood', 'broker', 'quote')"
+            )
+        daily_run = repository.start_run(
+            "daily-market-prices", "price_bars", started_at=datetime(2026, 8, 12, 15, tzinfo=UTC)
+        )
         repository.store_price_bars(
             daily_run,
-            "daily",
+            "daily-market-prices",
             [{"symbol": "NVDA", "date": "2026-08-12", "close": 180}],
             asset_classes={"NVDA": "equity"},
         )
@@ -272,7 +290,10 @@ def test_new_retry_preserves_earliest_legacy_confirmation_when_projection_is_mis
     runtime.open()
     repository = IngestionRepository(runtime)
     try:
-        repository.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        repository.register_source(
+            "daily", name="Daily", family="market", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         first_run = repository.start_run("daily", "price_bars")
         repository.store_price_bars(
             first_run,

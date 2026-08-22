@@ -206,7 +206,8 @@ def test_portfolio_summary_and_performance_reconcile_to_one_price_set(client: Te
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'MSFT'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('performance-test', 'Performance Test', 'test', 'price')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('performance-test', 'Performance Test', 'test', 'price', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -291,8 +292,8 @@ def test_first_trade_uses_same_prior_close_for_holding_summary_and_performance(
             "SELECT id FROM catalog.instrument WHERE symbol = 'MSFT'"
         ).fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) "
-            "VALUES ('prior-close-test', 'Prior Close Test', 'test', 'price')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('prior-close-test', 'Prior Close Test', 'test', 'price', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -515,7 +516,8 @@ def test_sparse_history_does_not_claim_a_single_session_pnl(client: TestClient, 
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'MSFT'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('sparse-test', 'Sparse Test', 'test', 'quote')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('sparse-test', 'Sparse Test', 'test', 'quote', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -733,8 +735,8 @@ def test_portfolio_rejects_arbitrarily_stale_quote_for_current_valuation(
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) "
-            "VALUES ('stale-valuation-test', 'Stale Valuation Test', 'test', 'quote')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('stale-valuation-test', 'Stale Valuation Test', 'test', 'quote', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -772,7 +774,8 @@ def test_summary_holdings_and_performance_share_latest_daily_bar_price(
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('bar-price-test', 'Bar Price Test', 'test', 'price')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('bar-price-test', 'Bar Price Test', 'test', 'price', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -864,8 +867,8 @@ def test_split_ignores_stale_pre_split_quote_until_price_scale_catches_up(
             "SELECT id FROM catalog.instrument WHERE symbol = 'NVDA'"
         ).fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) "
-            "VALUES ('split-scale-test', 'Split Scale Test', 'test', 'quote')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('split-scale-test', 'Split Scale Test', 'test', 'quote', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -995,7 +998,8 @@ def test_portfolio_performance_starts_at_first_transaction(client: TestClient, p
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'LLY'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('inception-test', 'Inception Test', 'test', 'price')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('inception-test', 'Inception Test', 'test', 'price', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -1032,7 +1036,8 @@ def test_portfolio_correlation_explains_window_weight_and_risk(client: TestClien
         ).status_code == 200
     with closing(psycopg.connect(postgres_dsn)) as connection:
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('correlation-test', 'Correlation Test', 'test', 'price')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('correlation-test', 'Correlation Test', 'test', 'price', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -1203,7 +1208,8 @@ def test_future_prices_cannot_become_current_portfolio_value(client: TestClient,
     with closing(psycopg.connect(postgres_dsn)) as connection:
         instrument_id = connection.execute("SELECT id FROM catalog.instrument WHERE symbol = 'MSFT'").fetchone()[0]
         connection.execute(
-            "INSERT INTO ingest.source (id, name, family, kind) VALUES ('future-price-test', 'Future Price Test', 'test', 'quote')"
+            "INSERT INTO ingest.source (id, name, family, kind, operational_state, health_owner, freshness_seconds) "
+            "VALUES ('future-price-test', 'Future Price Test', 'test', 'quote', 'active', 'test', 3600)"
         )
         run_id = connection.execute(
             "INSERT INTO ingest.run (source_id, capability, started_at, status) "
@@ -1254,7 +1260,10 @@ def test_failed_price_correction_falls_back_to_last_confirmed_fact(
     runtime.open()
     try:
         repository = IngestionRepository(runtime)
-        repository.register_source("correction", name="Correction", family="market_data", kind="quote")
+        repository.register_source(
+            "correction", name="Correction", family="market_data", kind="quote",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         observed_at = now - timedelta(hours=1)
         successful_run = repository.start_run("correction", "quotes")
         repository.store_quotes(

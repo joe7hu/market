@@ -23,6 +23,7 @@ from investment_panel.database.options_paper_ledger import (
     active_paper_exposure,
     shared_sleeve_blockers,
 )
+from investment_panel.database.source_health import source_health_blockers
 
 
 def _v3_paper_readiness(payload: dict[str, Any], evaluated_at: datetime) -> str:
@@ -238,6 +239,25 @@ class ActionRepository:
                 raise ValueError("option trade ticket decision mismatch")
             if str(ticket.get("state") or "") != "READY" or ticket.get("blockers"):
                 raise ValueError("option trade ticket is not READY")
+            source_ids = {
+                str(value).strip()
+                for value in (
+                    publication_payload.get("data_source"),
+                    publication_payload.get("source_id"),
+                    publication_payload.get("quote_source"),
+                    (ticket.get("provenance") or {}).get("quote_source"),
+                )
+                if str(value or "").strip()
+            }
+            if not source_ids:
+                raise ValueError("paper action blocked: publication source identity is missing")
+            health_blockers = source_health_blockers(self.runtime, sorted(source_ids), evaluated_at=now)
+            if health_blockers:
+                details = "; ".join(
+                    f"{source_id}={','.join(reasons)}"
+                    for source_id, reasons in sorted(health_blockers.items())
+                )
+                raise ValueError(f"paper action blocked by active source health: {details}")
             execution_ready_at = _ticket_timestamp(ticket.get("execution_ready_at"))
             expires_at = _ticket_timestamp(
                 ticket.get("expires_at") or (ticket.get("entry") or {}).get("valid_until")

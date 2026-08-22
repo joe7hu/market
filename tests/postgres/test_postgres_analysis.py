@@ -504,6 +504,27 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     ]
 
 
+def test_options_publication_fails_closed_when_its_active_source_is_stale(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE ingest.run
+            SET started_at = now() - interval '2 days', finished_at = now() - interval '2 days'
+            WHERE source_id = 'test-options' AND status = 'succeeded'
+            """
+        )
+
+    result = refresh_options_radar(runtime, source_id="test-options", code_version="stale-source-test")
+
+    assert result["status"] == "ok"
+    opportunity = published_options_radar_rows(runtime, "option_radar_opportunity")[0]
+    assert opportunity["data_readiness"] == "D"
+    assert "active_source_health_blocked" in opportunity["blockers"]
+    assert opportunity["source_health_blockers"] == ["source_health_stale"]
+    assert opportunity["execution_ready"] is False
+
+
 def test_options_radar_captures_cash_secured_put_with_collateral_context(
     analysis_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -685,6 +706,30 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
                 }),
                 csp["decision_id"],
             ],
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE ingest.run
+            SET started_at = now() - interval '2 days', finished_at = now() - interval '2 days'
+            WHERE source_id = 'test-options' AND status = 'succeeded'
+            """
+        )
+    with pytest.raises(ValueError, match="active source health"):
+        stage(
+            decision_id=csp["decision_id"],
+            idempotency_key="csp-stale-source",
+            ticket_version=1,
+            quantity=1,
+            limit_price=3.1,
+        )
+    with runtime.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE ingest.run
+            SET started_at = now(), finished_at = now()
+            WHERE source_id = 'test-options' AND status = 'succeeded'
+            """
         )
     with pytest.raises(ValueError, match="current options risk sleeve"):
         actions.stage_option_paper_entry(

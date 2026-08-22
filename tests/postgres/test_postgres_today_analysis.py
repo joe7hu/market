@@ -201,7 +201,10 @@ def test_today_uses_available_same_day_daily_close_before_synthetic_session_mark
             },
         )
         ingestion = IngestionRepository(runtime)
-        ingestion.register_source("daily-close", name="Daily close", family="market_data", kind="daily_bars")
+        ingestion.register_source(
+            "daily-close", name="Daily close", family="market_data", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         run_id = ingestion.start_run("daily-close", "price_bars")
         ingestion.store_price_bars(
             run_id,
@@ -250,7 +253,10 @@ def test_today_source_changes_exclude_future_rows_and_preserve_source_diversity(
         facts = SourceFactRepository(runtime)
 
         def add_source(source_id: str, count: int, observed_at: datetime) -> None:
-            ingestion.register_source(source_id, name=source_id.title(), family="news", kind="article")
+            ingestion.register_source(
+                source_id, name=source_id.title(), family="news", kind="article",
+                origin="test", operational_state="active", health_owner="test", freshness_seconds=3600,
+            )
             run_id = ingestion.start_run(source_id, "content")
             rows = [
                 {

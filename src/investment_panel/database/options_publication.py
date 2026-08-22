@@ -9,6 +9,7 @@ from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready, ticket_recommendation_fields
 from investment_panel.core.event_scout import build_options_decision_truth
 from investment_panel.database.options_risk_context import option_risk_contexts
+from investment_panel.database.source_health import source_health_blockers
 
 __all__ = [
     "add_contract_fields",
@@ -274,6 +275,16 @@ def publication_models(
         {str(row.get("ticker") or "") for row in all_rows},
         evaluated_at=readiness_evaluated_at,
     )
+    source_ids = {
+        str(row.get("data_source") or "").strip()
+        for row in all_rows
+        if str(row.get("data_source") or "").strip()
+    }
+    health_blockers = source_health_blockers(
+        runtime,
+        sorted(source_ids),
+        evaluated_at=readiness_evaluated_at,
+    )
     for row in all_rows:
         discovery = discovery_by_ticker.get(str(row.get("ticker"))) or {}
         for key in (
@@ -283,6 +294,16 @@ def publication_models(
         ):
             row[key] = discovery.get(key)
         row["data_readiness"] = _contract_readiness(row, readiness_evaluated_at)
+        data_source = str(row.get("data_source") or "").strip()
+        row["source_health_blockers"] = list(health_blockers.get(data_source, []))
+        if not data_source:
+            row["source_health_blockers"] = ["source_identity_missing"]
+        if row["source_health_blockers"]:
+            row["data_readiness"] = "D"
+            row["blockers"] = sorted({
+                *list(row.get("blockers") or []),
+                "active_source_health_blocked",
+            })
         if row["data_readiness"] != "A":
             row["blockers"] = sorted({
                 *list(row.get("blockers") or []),

@@ -42,6 +42,7 @@ def thesis_source_evidence(
             ) signal ON true
             WHERE regexp_replace(upper(instrument.symbol), '[.]+$', '') = ANY(%s)
               AND source.enabled
+              AND source.operational_state = 'active'
               AND item.observed_at <= now()
               AND COALESCE(item.published_at, item.observed_at) <= now()
         ), balanced AS (

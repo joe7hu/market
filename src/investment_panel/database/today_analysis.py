@@ -169,6 +169,7 @@ def refresh_today_publication(
                     JOIN catalog.instrument instrument ON instrument.id = signal.instrument_id
                     JOIN ingest.source source ON source.id = item.source_id
                     WHERE source.enabled
+                      AND source.operational_state = 'active'
                       AND signal.observed_at <= %s
                       AND item.observed_at <= %s
                       AND COALESCE(item.published_at, item.observed_at) <= %s

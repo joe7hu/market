@@ -24,7 +24,11 @@ from investment_panel.database.option_ingestion_support import (
     option_universe as _option_universe,
     stage_option_rows as _stage_option_rows,
 )
-from investment_panel.database.source_registry import set_source_enabled, sync_research_source_enablement
+from investment_panel.database.source_registry import (
+    set_source_enabled,
+    source_health_contract,
+    sync_research_source_enablement,
+)
 
 __all__ = ["IngestionRepository", "IngestionRun"]
 
@@ -93,20 +97,52 @@ class IngestionRepository:
         kind: str,
         origin: str | None = None,
         capabilities: dict[str, Any] | None = None,
+        operational_state: str | None = None,
+        health_owner: str | None = None,
+        freshness_seconds: int | None = None,
     ) -> None:
+        contract = source_health_contract(
+            source_id,
+            family=family,
+            kind=kind,
+            origin=origin,
+            capabilities=capabilities,
+            requested_state=operational_state,
+        )
+        state = operational_state or contract.operational_state
+        owner = health_owner if health_owner is not None else contract.health_owner
+        freshness = freshness_seconds if freshness_seconds is not None else contract.freshness_seconds
+        if state == "active" and (not owner or freshness is None or int(freshness) <= 0):
+            raise ValueError(
+                f"active source {source_id!r} requires an explicit health owner and positive cadence"
+            )
         with self.runtime.transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO ingest.source (id, name, family, kind, origin, capabilities, enabled)
-                VALUES (%s, %s, %s, %s, %s, %s, true)
+                INSERT INTO ingest.source
+                    (id, name, family, kind, origin, capabilities, enabled,
+                     operational_state, health_owner, freshness_seconds)
+                VALUES (%s, %s, %s, %s, %s, %s, true, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE
                 SET name = EXCLUDED.name, family = EXCLUDED.family, kind = EXCLUDED.kind,
                     origin = EXCLUDED.origin,
                     capabilities = EXCLUDED.capabilities,
-                    enabled = true,
+                    operational_state = EXCLUDED.operational_state,
+                    health_owner = EXCLUDED.health_owner,
+                    freshness_seconds = EXCLUDED.freshness_seconds,
                     updated_at = now()
                 """,
-                [source_id, name, family, kind, origin, Jsonb(capabilities or {})],
+                [
+                    source_id,
+                    name,
+                    family,
+                    kind,
+                    origin,
+                    Jsonb(capabilities or {}),
+                    state,
+                    owner,
+                    freshness,
+                ],
             )
 
     def set_source_enabled(self, source_id: str, enabled: bool) -> None:

@@ -48,6 +48,10 @@ def confirmed_daily_bars(
         ), confirmed AS (
             SELECT fact.*, confirmation_run.finished_at AS confirmed_at
             FROM facts fact
+            JOIN ingest.source source
+              ON source.id = fact.source_id
+             AND source.enabled
+             AND source.operational_state = 'active'
             JOIN LATERAL (
                 SELECT price_run.finished_at
                 FROM raw.price_bar_fact_availability availability

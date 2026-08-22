@@ -19,7 +19,10 @@ def test_stock_outcome_uses_only_price_facts_available_at_each_point_in_time(
     decision_at = datetime(2026, 6, 1, 21, 30, tzinfo=UTC)
     days = _trading_days(date(2026, 6, 1), 21)
     try:
-        ingestion.register_source("daily", name="Daily", family="market", kind="daily_bars")
+        ingestion.register_source(
+            "daily", name="Daily", family="market", kind="daily_bars",
+            operational_state="active", health_owner="test", freshness_seconds=3600,
+        )
         for index, day in enumerate(days):
             available_at = datetime.combine(day, time(21), tzinfo=UTC)
             run = ingestion.start_run("daily", "price_bars", started_at=available_at)

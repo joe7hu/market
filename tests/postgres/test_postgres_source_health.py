@@ -10,6 +10,7 @@ import app.panel_snapshot as panel_owner
 from app.main import app
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.source_health import source_health_blockers
 from conftest import typed_config
 
 
@@ -225,7 +226,7 @@ def test_source_health_cadences_match_operational_schedulers(migrated_postgres_d
     finally:
         runtime.close()
 
-    assert rows["watchlist_quote"]["cadence_label"] == "event driven"
+    assert rows["watchlist_quote"]["cadence_label"] == "archived"
     assert rows["arco"]["cadence_label"] == "4 hr"
     assert rows["robinhood"]["cadence_label"] == "3 day"
 
@@ -271,8 +272,9 @@ def test_historical_snapshots_are_event_driven_and_non_actionable(migrated_postg
 
     for source_id in ("legacy-market-snapshot", "legacy-capability-snapshot"):
         snapshot = rows[source_id]
-        assert snapshot["freshness_status"] == "fresh"
-        assert snapshot["cadence_label"] == "event driven"
+        assert snapshot["freshness_status"] == "archived"
+        assert snapshot["effective_status"] == "archived"
+        assert snapshot["cadence_label"] == "archived"
         assert snapshot["refresh_job"] is None
         assert snapshot["refresh_jobs"] == []
 
@@ -322,7 +324,8 @@ def test_source_health_degrades_abandoned_running_attempts_and_ignores_legacy_ag
 
     assert rows["health_abandoned"]["effective_status"] == "degraded"
     assert rows["health_abandoned"]["remediation"] == "The previous refresh appears abandoned; retry the owning job."
-    assert rows["health_legacy"]["freshness_status"] == "fresh"
+    assert rows["health_legacy"]["freshness_status"] == "archived"
+    assert rows["health_legacy"]["effective_status"] == "archived"
     assert rows["health_legacy"]["operational_group"] == "legacy"
 
 
@@ -385,7 +388,7 @@ def test_source_health_uses_worst_latest_capability_and_exposes_each_owning_job(
     ibkr = rows["ibkr"]
     assert ibkr["run_status"] == "failed"
     assert ibkr["latest_capability"] == "option_quotes"
-    assert ibkr["effective_status"] == "failed"
+    assert ibkr["effective_status"] == "standby"
     assert ibkr["refresh_job"] == "update_ibkr_options"
     assert set(ibkr["refresh_jobs"]) == {"update_broker_sources", "update_ibkr_options"}
 
@@ -421,3 +424,52 @@ def test_source_catalog_endpoint_matches_health_snapshot_contract(
     assert catalog_payload["summary"]["enabled"] == 1
     assert catalog_payload["summary"]["healthy"] == 1
     assert catalog_payload["summary"]["disabled"] == 1
+
+
+def test_source_lifecycle_contracts_and_active_attention_counts(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    repository = IngestionRepository(runtime)
+    try:
+        _register(repository, "lifecycle_ready")
+        _finish(repository, "lifecycle_ready", "succeeded")
+        _register(repository, "lifecycle_standby")
+        _register(repository, "lifecycle_archived")
+        _register(repository, "lifecycle_disabled", enabled=False)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.source SET operational_state = 'standby' WHERE id = 'lifecycle_standby'"
+            )
+            connection.execute(
+                "UPDATE ingest.source SET operational_state = 'archived', health_owner = NULL, freshness_seconds = NULL "
+                "WHERE id = 'lifecycle_archived'"
+            )
+        rows = _source_rows(migrated_postgres_dsn)
+        blockers = source_health_blockers(
+            runtime,
+            [
+                "lifecycle_ready",
+                "lifecycle_standby",
+                "lifecycle_archived",
+                "lifecycle_disabled",
+            ],
+        )
+    finally:
+        runtime.close()
+
+    assert rows["lifecycle_ready"]["operational_state"] == "active"
+    assert rows["lifecycle_ready"]["health_owner"] == "test"
+    assert rows["lifecycle_ready"]["freshness_seconds"] == 3600
+    assert rows["lifecycle_ready"]["next_due_at"] is not None
+    assert rows["lifecycle_ready"]["effective_status"] == "healthy"
+    assert rows["lifecycle_standby"]["effective_status"] == "standby"
+    assert rows["lifecycle_archived"]["effective_status"] == "archived"
+    assert rows["lifecycle_disabled"]["effective_status"] == "disabled"
+    assert "lifecycle_standby" in blockers
+    assert "source_not_active:standby" in blockers["lifecycle_standby"]
+    assert "lifecycle_archived" in blockers
+    assert "source_not_active:archived" in blockers["lifecycle_archived"]
+    assert "lifecycle_disabled" in blockers
+    assert "source_disabled" in blockers["lifecycle_disabled"]
