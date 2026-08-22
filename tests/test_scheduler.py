@@ -36,6 +36,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
         "MARKET_RESEARCH_REFRESH_SECONDS",
         "MARKET_ARCO_REFRESH_SECONDS",
         "MARKET_MARKET_DATA_REFRESH_SECONDS",
+        "MARKET_MUNGERMODE_REFRESH_SECONDS",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -45,6 +46,7 @@ def test_operational_source_refreshes_default_on(monkeypatch) -> None:
     assert intervals["update_research_sources"] == 3600
     assert intervals["update_arco_data"] == 14400
     assert intervals["update_market_data"] == 3600
+    assert intervals["update_market_valuations"] == 86400
 
 
 def test_event_and_disclosure_refreshes_default_to_daily(monkeypatch) -> None:

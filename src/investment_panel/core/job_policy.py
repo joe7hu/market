@@ -75,6 +75,7 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         _job("run_thesis_monitor_preflight", timeout_seconds=1800),
         _job("update_broker_sources", freshness_seconds=3600),
         _job("update_market_data", freshness_seconds=86400),
+        _job("update_market_valuations", timeout_seconds=120, freshness_seconds=86400),
         _job("update_free_sources", freshness_seconds=86400),
         _job("update_free_sources_radar", initial_delay="one_interval"),
         _job("update_research_sources", freshness_seconds=3600),
@@ -227,6 +228,7 @@ def scheduler_intervals(config: AppConfig | None = None) -> dict[str, int]:
         ("update_research_sources", "MARKET_RESEARCH_REFRESH_SECONDS", 3600),
         ("update_arco_data", "MARKET_ARCO_REFRESH_SECONDS", 14400),
         ("update_market_data", "MARKET_MARKET_DATA_REFRESH_SECONDS", 3600),
+        ("update_market_valuations", "MARKET_MUNGERMODE_REFRESH_SECONDS", 86400),
         ("update_event_calendar", "MARKET_EVENT_CALENDAR_REFRESH_SECONDS", 86400),
         ("update_disclosures", "MARKET_DISCLOSURE_REFRESH_SECONDS", 86400),
         ("update_preopen_daily_brief_scheduled", "MARKET_PREOPEN_BRIEF_REFRESH_SECONDS", 0),
@@ -255,6 +257,7 @@ def scheduler_status(config: AppConfig | None = None) -> dict[str, Any]:
         "research_refresh_seconds": str(intervals.get("update_research_sources", 0)),
         "arco_refresh_seconds": str(intervals.get("update_arco_data", 0)),
         "market_data_refresh_seconds": str(intervals.get("update_market_data", 0)),
+        "mungermode_refresh_seconds": str(intervals.get("update_market_valuations", 0)),
         "event_calendar_refresh_seconds": str(intervals.get("update_event_calendar", 0)),
         "disclosures_refresh_seconds": str(intervals.get("update_disclosures", 0)),
         "market_environment_refresh_seconds": "0",
@@ -285,6 +288,7 @@ def source_refresh_job_names() -> set[str]:
         "update_event_calendar",
         "update_disclosures",
         "update_market_data",
+        "update_market_valuations",
     }
 
 
@@ -297,7 +301,8 @@ def source_refresh_jobs_sql() -> str:
         WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
                                      'update_social_sources', 'update_arco_data',
                                      'update_research_sources', 'update_event_calendar',
-                                     'update_disclosures', 'update_market_data')
+                                     'update_disclosures', 'update_market_data',
+                                     'update_market_valuations')
           THEN ARRAY[source.health_owner]::text[]
         ELSE ARRAY[]::text[] END"""
 
@@ -310,7 +315,8 @@ def source_primary_refresh_job_sql() -> str:
         WHEN source.health_owner IN ('update_broker_sources', 'update_ibkr_options',
                                      'update_social_sources', 'update_arco_data',
                                      'update_research_sources', 'update_event_calendar',
-                                     'update_disclosures', 'update_market_data')
+                                     'update_disclosures', 'update_market_data',
+                                     'update_market_valuations')
           THEN source.health_owner
         ELSE NULL END"""
 

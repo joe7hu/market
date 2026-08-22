@@ -256,6 +256,7 @@ def test_source_health_refresh_jobs_are_exact_and_allowlisted(migrated_postgres_
         _register(repository, "news_reuters", family="research", kind="news")
         _register(repository, "robinhood", family="broker", kind="option_chain")
         _register(repository, "disclosure_csv_house", family="disclosures", kind="house_financial_disclosure")
+        _register(repository, "mungermode-market-valuations", family="market_data", kind="market_valuation")
         rows = _source_rows(migrated_postgres_dsn)
     finally:
         runtime.close()
@@ -265,6 +266,7 @@ def test_source_health_refresh_jobs_are_exact_and_allowlisted(migrated_postgres_
     assert rows["robinhood"]["refresh_job"] == "options_radar_hard_refresh"
     assert rows["robinhood"]["refresh_jobs"] == ["options_radar_hard_refresh"]
     assert rows["disclosure_csv_house"]["refresh_job"] == "update_disclosures"
+    assert rows["mungermode-market-valuations"]["refresh_job"] == "update_market_valuations"
 
 
 def test_source_health_cadences_match_operational_schedulers(migrated_postgres_dsn: str) -> None:

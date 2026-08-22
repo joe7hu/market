@@ -47,6 +47,34 @@ def test_migration_creates_layered_postgresql_authority(postgres_dsn: str) -> No
     assert tables >= 35
 
 
+def test_mungermode_migration_backfills_local_refresh_owner(postgres_dsn: str) -> None:
+    upgrade_database(postgres_dsn, "20260821_0047")
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        connection.execute(
+            """
+            INSERT INTO ingest.source (id, name, family, kind, origin, enabled,
+                                       operational_state, health_owner, freshness_seconds)
+            VALUES ('mungermode-market-valuations', 'Munger Mode', 'market_data',
+                    'market_valuation', 'https://mungermode.com/api/v1/market/metrics',
+                    FALSE, 'active', 'external:mungermode', 86400)
+            """
+        )
+        connection.commit()
+
+    upgrade_database(postgres_dsn)
+
+    with closing(psycopg.connect(postgres_dsn)) as connection:
+        row = connection.execute(
+            """
+            SELECT operational_state, enabled, health_owner, freshness_seconds
+            FROM ingest.source
+            WHERE id = 'mungermode-market-valuations'
+            """
+        ).fetchone()
+
+    assert tuple(row) == ("active", True, "update_market_valuations", 86400)
+
+
 def test_migration_round_trip_removes_only_market_schemas(postgres_dsn: str) -> None:
     upgrade_database(postgres_dsn)
     downgrade_database(postgres_dsn)

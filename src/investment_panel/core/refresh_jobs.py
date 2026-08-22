@@ -37,6 +37,7 @@ from investment_panel.jobs import (
     update_content_sources,
     update_disclosure_sources,
     update_market_data,
+    update_market_valuations,
     update_market_events,
     update_robinhood_options,
     robinhood_option_history,
@@ -232,6 +233,7 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_thesis_monitor_preflight": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True, dry_run=True),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
     "update_market_data": lambda config_path: update_market_data.run(config_path),
+    "update_market_valuations": lambda config_path: update_market_valuations.run(config_path),
     # Preserve the established UI/automation job names while routing them to
     # PostgreSQL-native implementations.
     "update_free_sources": lambda config_path: update_market_data.run(config_path),

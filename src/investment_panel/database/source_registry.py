@@ -35,7 +35,7 @@ _EXACT_CONTRACTS: dict[str, SourceHealthContract] = {
     "birdclaw_primary_tweets": SourceHealthContract(ACTIVE, "update_social_sources", 1800),
     "arco": SourceHealthContract(ACTIVE, "update_arco_data", 14400),
     "official-event-calendar": SourceHealthContract(ACTIVE, "update_event_calendar", 86400),
-    "mungermode-market-valuations": SourceHealthContract("active", "external:mungermode", 86400),
+    "mungermode-market-valuations": SourceHealthContract(ACTIVE, "update_market_valuations", 86400),
 }
 
 _PREFIX_CONTRACTS: tuple[tuple[str, SourceHealthContract], ...] = (

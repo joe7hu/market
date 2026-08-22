@@ -20,6 +20,12 @@ def test_option_freshness_policy_is_owned_by_canonical_job_policy() -> None:
     assert definition.name in ALLOWLIST
 
 
+def test_mungermode_freshness_policy_is_owned_by_canonical_job_policy() -> None:
+    definition = job_policy.job_definition("update_market_valuations")
+    assert definition.freshness_seconds == 86400
+    assert definition.name in ALLOWLIST
+
+
 def test_source_writers_wait_one_interval_before_first_run() -> None:
     assert job_policy.initial_delay_seconds("options_radar_hard_refresh", 900, 0) == 900
     assert job_policy.initial_delay_seconds("update_robinhood_options", 120, 1) == 120
