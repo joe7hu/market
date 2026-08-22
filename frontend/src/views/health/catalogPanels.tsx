@@ -24,6 +24,8 @@ const FILTERS: Array<{ id: SourceHealthFilter; label: string }> = [
   { id: "missing", label: "Missing" },
   { id: "stale", label: "Stale" },
   { id: "healthy", label: "Healthy" },
+  { id: "standby", label: "Standby" },
+  { id: "archived", label: "Archived" },
 ];
 
 export function SourceHealthControlPlane({
@@ -96,8 +98,8 @@ export function SourceHealthControlPlane({
                   {isExpanded ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
                   <Database className="size-4 shrink-0 text-muted-foreground" />
                   <span className="truncate text-sm font-semibold">{group.label}</span>
-                  <StatusBadge tone={group.tone}>{group.attention ? `${group.attention} attention` : "healthy"}</StatusBadge>
-                  <span className="text-xs tabular-nums text-muted-foreground">{group.healthy}/{group.rows.length} healthy</span>
+                  <StatusBadge tone={group.tone}>{groupBadgeLabel(group)}</StatusBadge>
+                  <span className="text-xs tabular-nums text-muted-foreground">{groupLifecycleCount(group)}</span>
                 </button>
                 <GroupActions group={group} jobs={jobs} />
               </div>
@@ -121,7 +123,7 @@ export function SourceHealthControlPlane({
 
         {!groups.length ? (
           <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
-            No enabled sources match this filter.
+            No sources match this filter.
           </div>
         ) : null}
 
@@ -281,6 +283,9 @@ function DetailBody({ row }: { row: SourceCatalogRow }) {
     <div className="mt-3 grid gap-3 rounded-lg border border-border bg-background p-3 text-xs md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
       <div className="space-y-1 text-muted-foreground">
         <div><span className="text-foreground">ID:</span> {row.source_id}</div>
+        <div><span className="text-foreground">Lifecycle:</span> {row.operational_state}{row.enabled ? " · enabled" : " · disabled"}</div>
+        <div><span className="text-foreground">Health owner:</span> {row.health_owner || "not assigned"}</div>
+        <div><span className="text-foreground">Next due:</span> {formatDateTime(row.next_due_at)}</div>
         <div><span className="text-foreground">Mode:</span> {row.ingestion_mode || "not declared"}</div>
         <div><span className="text-foreground">Capability:</span> {row.latest_capability || "not checked"}</div>
         <div><span className="text-foreground">Run outcome:</span> {row.run_status}</div>
@@ -318,7 +323,20 @@ function matchesQuery(row: SourceCatalogRow, query: string): boolean {
 }
 
 function collapsedRows(rows: SourceCatalogRow[]): SourceCatalogRow[] {
-  const attention = rows.filter((row) => row.effective_status !== "healthy");
-  const healthy = rows.filter((row) => row.effective_status === "healthy").slice(0, Math.max(0, 6 - attention.length));
+  const attention = rows.filter((row) => row.operational_state === "active" && row.effective_status !== "healthy");
+  const healthy = rows.filter((row) => row.operational_state !== "active" || row.effective_status === "healthy").slice(0, Math.max(0, 6 - attention.length));
   return [...attention, ...healthy];
+}
+
+function groupBadgeLabel(group: SourceHealthGroup): string {
+  if (group.attention) return `${group.attention} attention`;
+  if (group.rows.every((row) => row.operational_state === "standby")) return "standby";
+  if (group.rows.every((row) => row.operational_state === "archived")) return "archived";
+  return "healthy";
+}
+
+function groupLifecycleCount(group: SourceHealthGroup): string {
+  if (group.rows.every((row) => row.operational_state === "standby")) return `${group.rows.length} standby`;
+  if (group.rows.every((row) => row.operational_state === "archived")) return `${group.rows.length} archived`;
+  return `${group.healthy}/${group.rows.length} healthy`;
 }

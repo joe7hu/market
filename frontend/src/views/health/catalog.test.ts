@@ -18,6 +18,7 @@ function source(overrides: Partial<SourceCatalogRow>): SourceCatalogRow {
     source_family: "research",
     source_kind: "news",
     operational_group: "research",
+    operational_state: "active",
     enabled: true,
     ingestion_mode: "direct",
     refresh_job: "update_research_sources",
@@ -38,6 +39,9 @@ function source(overrides: Partial<SourceCatalogRow>): SourceCatalogRow {
     remediation: "",
     inherited_check: false,
     source_url: "",
+    health_owner: "update_research_sources",
+    freshness_seconds: 3600,
+    next_due_at: "2026-07-12T21:00:00Z",
     ...overrides,
   };
 }
@@ -50,7 +54,7 @@ describe("source health catalog", () => {
       source({ source_id: "disabled", enabled: false, effective_status: "disabled", freshness_status: "disabled" }),
     ];
 
-    expect(summarizeSourceHealth(rows)).toMatchObject({ total: 3, enabled: 2, healthy: 1, attention: 1, failed: 1, disabled: 1 });
+    expect(summarizeSourceHealth(rows)).toMatchObject({ total: 3, enabled: 2, active: 3, healthy: 1, attention: 1, activeAttention: 1, failed: 1, disabled: 1 });
     expect(filterSourceHealth(rows, "", "all").map((row) => row.source_id)).toEqual(["healthy", "failed"]);
     expect(filterSourceHealth(rows, "reuters", "attention").map((row) => row.source_id)).toEqual(["failed"]);
   });
@@ -82,6 +86,22 @@ describe("source health catalog", () => {
       source({ source_id: "arco", refresh_job: "update_arco_data", refresh_jobs: ["update_arco_data"] }),
     ]);
     expect(families[0].jobs).toEqual(["update_arco_data", "update_research_sources"]);
+  });
+
+  it("keeps standby and archived sources out of active attention", () => {
+    const rows = [
+      source({ source_id: "standby", operational_state: "standby", effective_status: "standby", last_success_at: null }),
+      source({ source_id: "archived", operational_state: "archived", effective_status: "archived", remediation: "Historical evidence only" }),
+      source({ source_id: "active-failed", effective_status: "failed" }),
+    ];
+
+    expect(summarizeSourceHealth(rows)).toMatchObject({ active: 1, standby: 1, archived: 1, attention: 1, activeAttention: 1 });
+    expect(filterSourceHealth(rows, "", "attention").map((row) => row.source_id)).toEqual(["active-failed"]);
+    expect(filterSourceHealth(rows, "", "standby").map((row) => row.source_id)).toEqual(["standby"]);
+    expect(filterSourceHealth(rows, "", "archived").map((row) => row.source_id)).toEqual(["archived"]);
+    const errors = collectSourceErrors(rows, []);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].sources).toEqual(["Source"]);
   });
 
   it("deduplicates remediation messages across affected sources", () => {

@@ -39,6 +39,7 @@ export type SourceCatalogRow = {
   source_family: string;
   source_kind: string;
   operational_group: string;
+  operational_state: "active" | "standby" | "archived" | string;
   enabled: boolean;
   ingestion_mode: string;
   effective_status: string;
@@ -48,6 +49,9 @@ export type SourceCatalogRow = {
   freshness_status: string;
   latest_capability: string;
   source_url: string;
+  health_owner: string;
+  freshness_seconds: number | null;
+  next_due_at: string | null;
   last_attempt_at: string | null;
   status_at: string | null;
   last_success_at: string | null;

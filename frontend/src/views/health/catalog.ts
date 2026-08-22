@@ -6,7 +6,7 @@ import { dateMs, truncate } from "@/views/health/format";
 import type { ErrorAgg } from "@/views/health/types";
 import type { FamilyHealth, SourceFamilyId } from "@/views/health/dataFlow";
 
-export type SourceHealthFilter = "all" | "attention" | "failed" | "degraded" | "missing" | "stale" | "healthy";
+export type SourceHealthFilter = "all" | "attention" | "failed" | "degraded" | "missing" | "stale" | "healthy" | "standby" | "archived";
 
 export type SourceHealthGroup = {
   id: string;
@@ -23,6 +23,10 @@ export type SourceHealthSummary = {
   enabled: number;
   healthy: number;
   attention: number;
+  active: number;
+  standby: number;
+  archived: number;
+  activeAttention: number;
   failed: number;
   disabled: number;
   lastSuccessAt: string;
@@ -40,14 +44,26 @@ const GROUP_LABELS: Record<string, string> = {
 };
 
 const GROUP_ORDER = ["market_data", "research", "filings", "social", "events", "broker", "legacy", "other"];
-const STATUS_RANK: Record<string, number> = { failed: 0, degraded: 1, running: 2, missing: 3, stale: 4, healthy: 5, disabled: 6 };
+const STATUS_RANK: Record<string, number> = {
+  failed: 0,
+  degraded: 1,
+  uncontracted: 2,
+  running: 3,
+  missing: 4,
+  stale: 5,
+  healthy: 6,
+  standby: 7,
+  archived: 8,
+  disabled: 9,
+};
 const TONE_RANK: Record<Tone, number> = { bad: 0, warn: 1, info: 2, good: 3, muted: 4 };
 
 export function sourceHealthTone(status: string): Tone {
   if (status === "failed") return "bad";
-  if (status === "degraded" || status === "missing" || status === "stale") return "warn";
+  if (status === "degraded" || status === "uncontracted" || status === "missing" || status === "stale") return "warn";
   if (status === "running") return "info";
   if (status === "healthy") return "good";
+  if (status === "standby") return "info";
   return "muted";
 }
 
@@ -59,6 +75,7 @@ export function parseSourceCatalog(data: PanelData): SourceCatalogRow[] {
       source_family: text(row.source_family, "other"),
       source_kind: text(row.source_kind),
       operational_group: text(row.operational_group, "other"),
+      operational_state: text(row.operational_state, bool(row.enabled) ? "active" : "archived"),
       enabled: bool(row.enabled),
       ingestion_mode: text(row.ingestion_mode),
       refresh_job: text(row.refresh_job),
@@ -79,6 +96,9 @@ export function parseSourceCatalog(data: PanelData): SourceCatalogRow[] {
       remediation: text(row.remediation),
       inherited_check: bool(row.inherited_check),
       source_url: text(row.source_url),
+      health_owner: text(row.health_owner),
+      freshness_seconds: nullableNumber(row.freshness_seconds),
+      next_due_at: nullableText(row.next_due_at),
     }))
     .filter((row) => row.source_id)
     .sort(compareRows);
@@ -86,13 +106,19 @@ export function parseSourceCatalog(data: PanelData): SourceCatalogRow[] {
 
 export function summarizeSourceHealth(sourceRows: SourceCatalogRow[]): SourceHealthSummary {
   const enabledRows = sourceRows.filter((row) => row.enabled);
-  const successes = enabledRows.map((row) => row.last_success_at ?? "").filter(Boolean).sort((a, b) => dateMs(b) - dateMs(a));
+  const activeRows = enabledRows.filter((row) => row.operational_state === "active");
+  const successes = activeRows.map((row) => row.last_success_at ?? "").filter(Boolean).sort((a, b) => dateMs(b) - dateMs(a));
+  const activeAttention = activeRows.filter((row) => row.effective_status !== "healthy").length;
   return {
     total: sourceRows.length,
     enabled: enabledRows.length,
-    healthy: enabledRows.filter((row) => row.effective_status === "healthy").length,
-    attention: enabledRows.filter((row) => row.effective_status !== "healthy").length,
-    failed: enabledRows.filter((row) => row.effective_status === "failed").length,
+    active: sourceRows.filter((row) => row.operational_state === "active").length,
+    standby: sourceRows.filter((row) => row.operational_state === "standby").length,
+    archived: sourceRows.filter((row) => row.operational_state === "archived").length,
+    healthy: activeRows.filter((row) => row.effective_status === "healthy").length,
+    attention: activeAttention,
+    activeAttention,
+    failed: activeRows.filter((row) => row.effective_status === "failed").length,
     disabled: sourceRows.filter((row) => !row.enabled).length,
     lastSuccessAt: successes[0] ?? "",
   };
@@ -105,9 +131,13 @@ export function filterSourceHealth(
 ): SourceCatalogRow[] {
   const needle = query.trim().toLowerCase();
   return sourceRows.filter((row) => {
-    if (!row.enabled) return false;
-    if (filter === "attention" && row.effective_status === "healthy") return false;
-    if (filter !== "all" && filter !== "attention" && row.effective_status !== filter) return false;
+    if (filter === "standby" || filter === "archived") {
+      if (row.operational_state !== filter) return false;
+    } else {
+      if (!row.enabled || row.operational_state !== "active") return false;
+      if (filter === "attention" && row.effective_status === "healthy") return false;
+      if (filter !== "all" && filter !== "attention" && row.effective_status !== filter) return false;
+    }
     if (!needle) return true;
     return [row.source_name, row.source_id, row.source_family, row.source_kind, row.latest_capability]
       .some((value) => value.toLowerCase().includes(needle));
@@ -124,7 +154,8 @@ export function groupSourceHealth(sourceRows: SourceCatalogRow[]): SourceHealthG
   return [...groups.entries()]
     .map(([id, groupRows]) => {
       const sorted = groupRows.sort(compareRows);
-      const attention = sorted.filter((row) => row.effective_status !== "healthy").length;
+      const activeRows = sorted.filter((row) => row.enabled && row.operational_state === "active");
+      const attention = activeRows.filter((row) => row.effective_status !== "healthy").length;
       const tone = sorted
         .map((row) => sourceHealthTone(row.effective_status))
         .sort((a, b) => TONE_RANK[a] - TONE_RANK[b])[0] ?? "muted";
@@ -133,7 +164,7 @@ export function groupSourceHealth(sourceRows: SourceCatalogRow[]): SourceHealthG
         label: GROUP_LABELS[id] ?? id.replaceAll("_", " "),
         rows: sorted,
         tone,
-        healthy: sorted.length - attention,
+        healthy: activeRows.filter((row) => row.effective_status === "healthy").length,
         attention,
         jobs: [...new Set(sorted.flatMap((row) => row.refresh_jobs.length ? row.refresh_jobs : [row.refresh_job]).filter(Boolean))].sort(),
       };
@@ -142,7 +173,7 @@ export function groupSourceHealth(sourceRows: SourceCatalogRow[]): SourceHealthG
 }
 
 export function sourceFamilyHealth(sourceRows: SourceCatalogRow[]): FamilyHealth[] {
-  return groupSourceHealth(sourceRows.filter((row) => row.enabled)).map((group) => ({
+  return groupSourceHealth(sourceRows.filter((row) => row.enabled && row.operational_state === "active")).map((group) => ({
     id: familyId(group.id),
     label: group.label,
     tone: group.tone,
@@ -169,7 +200,7 @@ export function collectSourceErrors(sourceRows: SourceCatalogRow[], jobRows: Ref
   };
   for (const row of sourceRows) {
     const tone = sourceHealthTone(row.effective_status);
-    if (!row.enabled || (tone !== "bad" && tone !== "warn")) continue;
+    if (!row.enabled || row.operational_state !== "active" || (tone !== "bad" && tone !== "warn")) continue;
     const message = row.remediation || truncate(row.failure_detail) || `${row.source_name} is ${row.effective_status}.`;
     add(message, tone, row.status_at ?? row.last_attempt_at ?? row.last_success_at ?? "", row.source_name);
   }
@@ -226,6 +257,12 @@ function bool(value: unknown): boolean {
 function number(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseCapabilityHealth(value: unknown): SourceCatalogRow["capability_health"] {

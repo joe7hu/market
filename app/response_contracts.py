@@ -82,6 +82,10 @@ class RefreshJobResponse(FlexibleResponse):
     status: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    scheduled_due_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    source_status: str | None = None
+    downstream_status: str | None = None
     error: str | None = None
     summary: Any = None
 
@@ -379,8 +383,12 @@ class SourceCatalogRowResponse(FlexibleResponse):
     source_family: str = ""
     source_kind: str = ""
     operational_group: str = "other"
+    operational_state: str = "archived"
     enabled: bool = False
     ingestion_mode: str | None = None
+    health_owner: str | None = None
+    freshness_seconds: int | None = None
+    next_due_at: datetime | None = None
     refresh_job: str | None = None
     refresh_jobs: list[str] = Field(default_factory=list)
     cadence_label: str = "event driven"
@@ -404,8 +412,12 @@ class SourceCatalogRowResponse(FlexibleResponse):
 class SourceCatalogSummaryResponse(FlexibleResponse):
     total: int = 0
     enabled: int = 0
+    active: int = 0
+    standby: int = 0
+    archived: int = 0
     healthy: int = 0
     attention: int = 0
+    active_attention: int = 0
     failed: int = 0
     disabled: int = 0
     last_success_at: datetime | None = None

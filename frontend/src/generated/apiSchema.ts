@@ -3168,6 +3168,10 @@ export interface components {
         };
         /** RefreshJobResponse */
         RefreshJobResponse: {
+            /** Dispatched At */
+            dispatched_at?: string | null;
+            /** Downstream Status */
+            downstream_status?: string | null;
             /** Error */
             error?: string | null;
             /** Finished At */
@@ -3176,6 +3180,10 @@ export interface components {
             id?: string | null;
             /** Job Name */
             job_name?: string | null;
+            /** Scheduled Due At */
+            scheduled_due_at?: string | null;
+            /** Source Status */
+            source_status?: string | null;
             /** Started At */
             started_at?: string | null;
             /** Status */
@@ -3404,8 +3412,12 @@ export interface components {
              * @default
              */
             failure_detail: string;
+            /** Freshness Seconds */
+            freshness_seconds?: number | null;
             /** Freshness Status */
             freshness_status?: string | null;
+            /** Health Owner */
+            health_owner?: string | null;
             /** Ingestion Mode */
             ingestion_mode?: string | null;
             /**
@@ -3426,11 +3438,18 @@ export interface components {
             last_success_at?: string | null;
             /** Latest Capability */
             latest_capability?: string | null;
+            /** Next Due At */
+            next_due_at?: string | null;
             /**
              * Operational Group
              * @default other
              */
             operational_group: string;
+            /**
+             * Operational State
+             * @default archived
+             */
+            operational_state: string;
             /** Refresh Job */
             refresh_job?: string | null;
             /** Refresh Jobs */
@@ -3477,6 +3496,21 @@ export interface components {
         /** SourceCatalogSummaryResponse */
         SourceCatalogSummaryResponse: {
             /**
+             * Active
+             * @default 0
+             */
+            active: number;
+            /**
+             * Active Attention
+             * @default 0
+             */
+            active_attention: number;
+            /**
+             * Archived
+             * @default 0
+             */
+            archived: number;
+            /**
              * Attention
              * @default 0
              */
@@ -3503,6 +3537,11 @@ export interface components {
             healthy: number;
             /** Last Success At */
             last_success_at?: string | null;
+            /**
+             * Standby
+             * @default 0
+             */
+            standby: number;
             /**
              * Total
              * @default 0

@@ -51,10 +51,12 @@ export function HealthRoute() {
   const recoveryP95 = numberFromRecord(recoveryCapture, "capture_p95_minutes");
 
   const metrics: MetricSpec[] = [
-    ["Enabled", summary.enabled.toLocaleString(), `${summary.total.toLocaleString()} registered sources`, summary.enabled ? "info" : "muted"],
-    ["Healthy", summary.healthy.toLocaleString(), "current and reporting", summary.healthy === summary.enabled ? "good" : "info"],
-    ["Needs Attention", summary.attention.toLocaleString(), "degraded, missing, or stale", summary.attention ? "warn" : "good"],
+    ["Active", summary.active.toLocaleString(), `${summary.enabled.toLocaleString()} enabled across ${summary.total.toLocaleString()} sources`, summary.active ? "info" : "muted"],
+    ["Healthy", summary.healthy.toLocaleString(), "active and reporting", summary.activeAttention ? "info" : "good"],
+    ["Needs Attention", summary.activeAttention.toLocaleString(), "active degraded, missing, or stale", summary.activeAttention ? "warn" : "good"],
     ["Failed", summary.failed.toLocaleString(), "latest attempt failed", summary.failed ? "bad" : "good"],
+    ["Standby", summary.standby.toLocaleString(), "available but not selected", "info"],
+    ["Archived", summary.archived.toLocaleString(), "historical evidence only", "muted"],
     ["Disabled", summary.disabled.toLocaleString(), "excluded from health alerts", "muted"],
     ["Last Success", formatDateTime(summary.lastSuccessAt), "freshest successful source check", summary.lastSuccessAt ? "info" : "muted"],
     ["Option history", optionHistory ? `${optionHistory.complete_captures.toLocaleString()} complete captures · ${optionHistory.observed_regular_session_dates.toLocaleString()} observed dates` : "Unavailable", optionHistory ? `${formatBytes(optionHistory.storage_bytes)} retained for ${optionHistory.retention_days} days` : "Waiting for database status", optionHistory ? "info" : "muted"],

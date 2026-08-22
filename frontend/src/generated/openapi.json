@@ -5837,6 +5837,29 @@
       "RefreshJobResponse": {
         "additionalProperties": true,
         "properties": {
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "downstream_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downstream Status"
+          },
           "error": {
             "anyOf": [
               {
@@ -5881,6 +5904,29 @@
               }
             ],
             "title": "Job Name"
+          },
+          "scheduled_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Due At"
+          },
+          "source_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Status"
           },
           "started_at": {
             "anyOf": [
@@ -6585,6 +6631,17 @@
             "title": "Failure Detail",
             "type": "string"
           },
+          "freshness_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Seconds"
+          },
           "freshness_status": {
             "anyOf": [
               {
@@ -6595,6 +6652,17 @@
               }
             ],
             "title": "Freshness Status"
+          },
+          "health_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health Owner"
           },
           "ingestion_mode": {
             "anyOf": [
@@ -6664,9 +6732,26 @@
             ],
             "title": "Latest Capability"
           },
+          "next_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due At"
+          },
           "operational_group": {
             "default": "other",
             "title": "Operational Group",
+            "type": "string"
+          },
+          "operational_state": {
+            "default": "archived",
+            "title": "Operational State",
             "type": "string"
           },
           "refresh_job": {
@@ -6758,6 +6843,21 @@
       "SourceCatalogSummaryResponse": {
         "additionalProperties": true,
         "properties": {
+          "active": {
+            "default": 0,
+            "title": "Active",
+            "type": "integer"
+          },
+          "active_attention": {
+            "default": 0,
+            "title": "Active Attention",
+            "type": "integer"
+          },
+          "archived": {
+            "default": 0,
+            "title": "Archived",
+            "type": "integer"
+          },
           "attention": {
             "default": 0,
             "title": "Attention",
@@ -6794,6 +6894,11 @@
               }
             ],
             "title": "Last Success At"
+          },
+          "standby": {
+            "default": 0,
+            "title": "Standby",
+            "type": "integer"
           },
           "total": {
             "default": 0,
