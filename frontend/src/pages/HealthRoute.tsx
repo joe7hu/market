@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { usePanelScope } from "../hooks";
 import { useMarketData } from "../marketData";
+import { ScopeStatusNotice } from "@/components/market/scopeStatus";
 import { Button } from "@/components/ui/button";
 import { buildFlowStages, DataFlowDiagram } from "@/views/health/dataFlow";
 import { WorkspacePage, type MetricSpec } from "@/views/workspacePage";
@@ -19,8 +20,8 @@ import { loadOptionHistoryHealth, type OptionHistoryHealth } from "@/api/options
 import {numberFromRecord, recordField } from "@/views/optionsRadarData";
 
 export function HealthRoute() {
-  const { data, loadScope } = useMarketData();
-  usePanelScope("health");
+  const { data, loadScope, scopeStatus } = useMarketData();
+  usePanelScope("health", { retries: 3 });
 
   const jobs = useRefreshJobs();
   const [reloading, setReloading] = useState(false);
@@ -91,6 +92,12 @@ export function HealthRoute() {
         </Button>
       }
     >
+      {scopeStatus.health?.state === "loading" && sourceRows.length === 0 ? (
+        <div role="status" className="rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+          Loading source health…
+        </div>
+      ) : null}
+      <ScopeStatusNotice status={scopeStatus.health} onRetry={() => void reload()} />
       <DataFlowDiagram stages={flowStages} />
 
       <SourceHealthControlPlane sourceRows={sourceRows} jobs={jobs} />
