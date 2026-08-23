@@ -32,7 +32,7 @@ def today(
     # The published ticker row already contains the deterministic capital
     # action. Do not reload a full dossier for every symbol: that makes this
     # summary route depend on deep evidence and option-surface queries.
-    for row in panel_data.rows("ticker_decisions")[:100]:
+    for row in panel_data.rows("ticker_decisions"):
         symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
         capital_value = row.get("capital_action")
         if not symbol or not isinstance(capital_value, dict) or not capital_value.get("action"):
@@ -48,6 +48,7 @@ def today(
         })
     priority = {"EXIT": 0, "TRIM": 1, "HEDGE": 2, "BUY": 3, "ADD": 4, "WAIT_FOR_PRICE": 5, "HOLD": 6, "AVOID": 7}
     actions.sort(key=lambda row: (priority.get(str(row.get("action")), 99), str(row.get("ticker"))))
+    actions = actions[:100]
     timestamps = [
         timestamp
         for name in ("ticker_decisions",)
