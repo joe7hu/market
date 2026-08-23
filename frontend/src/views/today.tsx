@@ -27,6 +27,16 @@ type TodayPageProps = {
 type JsonObject = { [key: string]: JsonValue };
 
 const SECTION_BY_KEY: Record<string, TodayCategory> = Object.fromEntries(todayCategories.map((category) => [category.key, category]));
+const CAPITAL_ACTION_PRIORITY: Record<string, number> = {
+  EXIT: 0,
+  TRIM: 1,
+  HEDGE: 2,
+  BUY: 3,
+  ADD: 4,
+  WAIT_FOR_PRICE: 5,
+  HOLD: 6,
+  AVOID: 7,
+};
 
 export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRefresh, onOpenTicker }: TodayPageProps) {
   const vm = useMemo(() => buildTodayViewModel(data, model), [data, model]);
@@ -104,7 +114,7 @@ function CapitalActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicke
       const ticker = textField(row, ["ticker", "symbol"]);
       return {
         ticker,
-        action: textField(capital, ["action"], textField(row, ["action"], "WAIT")),
+        action: textField(capital, ["action"], textField(row, ["action"], "WAIT")).toUpperCase(),
         owned: capital.owned === true,
         rationale: textField(capital, ["rationale"]),
         expression: textField(expression, ["kind", "instrument"]),
@@ -112,7 +122,11 @@ function CapitalActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicke
         expires: displayField(capital, ["expires_at"], "No expiry"),
       };
     })
-    .filter((item) => item.ticker);
+    .filter((item) => item.ticker)
+    .sort((left, right) => (
+      (CAPITAL_ACTION_PRIORITY[left.action] ?? 99) - (CAPITAL_ACTION_PRIORITY[right.action] ?? 99)
+      || left.ticker.localeCompare(right.ticker)
+    ));
 
   if (!actions.length) return null;
 
