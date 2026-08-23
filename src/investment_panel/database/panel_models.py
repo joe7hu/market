@@ -782,6 +782,24 @@ def load_postgres_tables(
                             symbols=query_symbol_filter if symbol_scoped else None,
                         )
                         query_cache[cache_key] = rows[:limit] if limit else rows
+                    elif policy.custom_loader == "liquidity":
+                        query_cache[cache_key] = _liquidity_rows(
+                            connection,
+                            symbols=query_symbol_filter if symbol_scoped else None,
+                            limit=limit,
+                        )
+                    elif policy.custom_loader == "options_payoff_scenarios":
+                        query_cache[cache_key] = _options_payoff_scenario_rows(
+                            connection,
+                            symbols=query_symbol_filter if symbol_scoped else None,
+                            limit=limit,
+                        )
+                    elif policy.custom_loader == "options_expiries":
+                        query_cache[cache_key] = _options_expiry_rows(
+                            connection,
+                            symbols=query_symbol_filter if symbol_scoped else None,
+                            limit=limit,
+                        )
                     else:
                         selected_query = RESEARCH_PACKETS_BASE_QUERY if symbol_scoped and (alias or name) == "research_packets" else policy.query
                         bounded_query = f"SELECT * FROM ({selected_query}) AS daily_research_rows"
@@ -827,3 +845,142 @@ def load_postgres_tables(
         "available_model_count": len(requested) - len(unavailable),
     }
     return tables, metadata
+
+
+def _normalized_symbols(symbols: set[str] | None) -> list[str] | None:
+    if symbols is None:
+        return None
+    return sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+
+
+def _liquidity_rows(
+    connection: Any,
+    *,
+    symbols: set[str] | None,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    normalized = _normalized_symbols(symbols)
+    if normalized == []:
+        return []
+    filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
+    params: list[Any] = [normalized] if normalized is not None else []
+    query = f"""
+        WITH latest AS (
+            SELECT instrument.id AS instrument_id, max(snapshot.observed_at) AS observed_at
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            {filter_sql}
+            GROUP BY instrument.id
+        )
+        SELECT instrument.symbol,
+               max(quote.observed_at) AS as_of,
+               max(ingest_run.finished_at) AS available_at,
+               avg((quote.ask - quote.bid) / NULLIF(quote.mid, 0)) AS average_option_spread_pct,
+               sum(COALESCE(quote.open_interest, 0)) AS total_open_interest,
+               sum(COALESCE(quote.volume, 0)) AS total_option_volume,
+               count(*) AS contracts
+        FROM raw.option_quote quote
+        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+        JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+        JOIN latest ON latest.instrument_id = instrument.id
+                    AND latest.observed_at = snapshot.observed_at
+        GROUP BY instrument.symbol
+        ORDER BY instrument.symbol
+    """
+    if limit:
+        query += " LIMIT %s"
+        params.append(limit)
+    result = connection.execute(query, params)
+    return [dict(row) for row in result.fetchall()]
+
+
+def _options_payoff_scenario_rows(
+    connection: Any,
+    *,
+    symbols: set[str] | None,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    normalized = _normalized_symbols(symbols)
+    if normalized == []:
+        return []
+    filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
+    params: list[Any] = [normalized] if normalized is not None else []
+    query = f"""
+        SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
+               contract.id::text AS contract_id, contract.expiration, contract.strike, contract.option_type,
+               option_quote.bid, option_quote.ask, option_quote.bid_size, option_quote.ask_size,
+               option_quote.observed_at AS quote_observed_at,
+               option_decision.premium_mid, option_decision.entry_price,
+               option_decision.buy_under, option_decision.structure,
+               option_decision.synthetic_legs AS legs, option_decision.max_loss,
+               option_decision.expected_value, option_decision.probability_profit,
+               option_decision.details,
+               feature.required_2x_price, feature.required_5x_price,
+               feature.required_10x_price, feature.required_move_pct,
+               COALESCE(option_quote.available_at, decision.as_of) AS available_at,
+               option_quote.id::text AS source_version, option_quote.id::text AS revision
+        FROM analysis.option_decision option_decision
+        JOIN analysis.decision decision ON decision.id = option_decision.decision_id
+        JOIN analysis.option_feature feature
+          ON feature.run_id = decision.run_id AND feature.contract_id = option_decision.contract_id
+        JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+        JOIN raw.option_quote option_quote
+          ON option_quote.snapshot_id = option_decision.snapshot_id
+         AND option_quote.contract_id = option_decision.contract_id
+         AND option_quote.observed_at = option_decision.quote_observed_at
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        {filter_sql}
+        ORDER BY decision.as_of DESC, decision.rank
+    """
+    if limit:
+        query += " LIMIT %s"
+        params.append(limit)
+    result = connection.execute(query, params)
+    return [dict(row) for row in result.fetchall()]
+
+
+def _options_expiry_rows(
+    connection: Any,
+    *,
+    symbols: set[str] | None,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    normalized = _normalized_symbols(symbols)
+    if normalized == []:
+        return []
+    filter_sql = "WHERE instrument.symbol = ANY(%s)" if normalized is not None else ""
+    params: list[Any] = [normalized] if normalized is not None else []
+    query = f"""
+        WITH latest_symbol_snapshot AS (
+            SELECT DISTINCT ON (instrument.id)
+                   instrument.id AS instrument_id, snapshot.id AS snapshot_id
+            FROM raw.option_quote quote
+            JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+            JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+            JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+            {filter_sql}
+            ORDER BY instrument.id, snapshot.observed_at DESC,
+                     CASE snapshot.source_id WHEN 'robinhood' THEN 0 WHEN 'ibkr' THEN 1 ELSE 2 END,
+                     snapshot.id DESC
+        )
+        SELECT instrument.symbol, contract.expiration AS expiry,
+               max(quote.observed_at) AS observed_at, snapshot.source_id AS source
+        FROM raw.option_quote quote
+        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+        JOIN catalog.option_contract contract ON contract.id = quote.contract_id
+        JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
+        JOIN latest_symbol_snapshot latest
+          ON latest.snapshot_id = snapshot.id AND latest.instrument_id = instrument.id
+        GROUP BY instrument.symbol, contract.expiration, snapshot.source_id
+        ORDER BY instrument.symbol, contract.expiration
+    """
+    if limit:
+        query += " LIMIT %s"
+        params.append(limit)
+    result = connection.execute(query, params)
+    return [dict(row) for row in result.fetchall()]
