@@ -340,6 +340,7 @@ def _compatibility_option_candidate(
             strike = float(raw_leg.get("strike"))
         except (TypeError, ValueError):
             continue
+        quote_time = raw_leg.get("quote_time") or raw_leg.get("observed_at")
         legs.append({
             "contract_id": contract_id,
             "option_type": str(raw_leg.get("option_type") or "").lower(),
@@ -347,9 +348,14 @@ def _compatibility_option_candidate(
             "strike": strike,
             "bid": _finite_float(raw_leg.get("bid")),
             "ask": _finite_float(raw_leg.get("ask")),
-            "observed_at": raw_leg.get("quote_time"),
+            "observed_at": quote_time,
             "bid_size": raw_leg.get("bid_size"),
             "ask_size": raw_leg.get("ask_size"),
+            "quote_age_seconds": _finite_float(raw_leg.get("quote_age_seconds")),
+            "open_interest": raw_leg.get("open_interest"),
+            "volume": raw_leg.get("volume"),
+            "provider_iv": _finite_float(raw_leg.get("provider_iv") or raw_leg.get("iv")),
+            "provider_delta": _finite_float(raw_leg.get("provider_delta") or raw_leg.get("delta")),
         })
     if not legs:
         return {}
@@ -358,14 +364,18 @@ def _compatibility_option_candidate(
         return {}
     blockers = [str(request.get("field")) for request in ticker_decision.get("data_requests") or []]
     status = str(expression.get("status") or "unavailable")
-    ready = status == "eligible" and not blockers and expression.get("quantity") is not None
+    quantity = expression.get("quantity")
+    try:
+        quantity_int = int(quantity) if quantity is not None else None
+    except (TypeError, ValueError):
+        quantity_int = None
+    ready = status == "eligible" and not blockers and quantity_int is not None and quantity_int > 0
     entry = expression.get("entry_range") if isinstance(expression.get("entry_range"), dict) else {}
     lower_expectancy = _finite_float(expression.get("lower_confidence_expectancy"))
     net_expectancy = _finite_float(expression.get("net_expected_value_per_loss_dollar"))
     decision_id = str(ticker_decision.get("decision_revision") or ticker_decision.get("ticker") or "ticker-decision")
     symbol = str(ticker_decision.get("ticker") or "")
     structure = str(expression.get("kind") or "option").lower()
-    quantity = expression.get("quantity")
     max_loss = _finite_float(expression.get("max_loss_per_unit"))
     invalidation = (
         (ticker_decision.get("fundamental") or {}).get("invalidation")
@@ -423,8 +433,8 @@ def _compatibility_option_candidate(
             },
             "risk": {
                 "one_unit_max_loss": max_loss,
-                "recommended_quantity": int(quantity) if quantity is not None else 0,
-                "total_risk": (max_loss * int(quantity)) if max_loss is not None and quantity is not None else 0,
+                "recommended_quantity": quantity_int or 0,
+                "total_risk": (max_loss * quantity_int) if max_loss is not None and quantity_int is not None else 0,
                 "blockers": blockers,
             },
             "thesis": {
