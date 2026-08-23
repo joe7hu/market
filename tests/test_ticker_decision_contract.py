@@ -241,7 +241,7 @@ def test_options_compatibility_adapter_cannot_reintroduce_a_legacy_thesis() -> N
     assert candidate["legs"][0]["contract_id"] == 1
     assert candidate["thesis"]["capital_action"]["action"] == "BUY"
     assert candidate["forecast"]["scenarios"][0]["name"] == "bull"
-    assert candidate["ticket"]["legs"][0]["contract_id"] == 1
+    assert candidate["ticket"]["legs"][0]["contract_id"] == "1"
     assert candidate["ticket"]["decision_revision"] == ticker_decision["decision_revision"]
     assert result["state"] == "PAPER_READY"
     assert result["decision_truth"]["route_version"] == "ticker-decision.v1"

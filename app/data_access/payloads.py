@@ -362,12 +362,30 @@ def _compatibility_option_candidate(
     entry = expression.get("entry_range") if isinstance(expression.get("entry_range"), dict) else {}
     lower_expectancy = _finite_float(expression.get("lower_confidence_expectancy"))
     net_expectancy = _finite_float(expression.get("net_expected_value_per_loss_dollar"))
+    decision_id = str(ticker_decision.get("decision_revision") or ticker_decision.get("ticker") or "ticker-decision")
+    symbol = str(ticker_decision.get("ticker") or "")
+    structure = str(expression.get("kind") or "option").lower()
+    quantity = expression.get("quantity")
+    max_loss = _finite_float(expression.get("max_loss_per_unit"))
+    invalidation = (
+        (ticker_decision.get("fundamental") or {}).get("invalidation")
+        or (ticker_decision.get("tactical") or {}).get("invalidation")
+        or {}
+    )
+    ticket_legs = [
+        {
+            **leg,
+            "contract_id": str(leg["contract_id"]),
+            "quote_time": leg.get("observed_at"),
+        }
+        for leg in legs
+    ]
     return {
-        "decision_id": str(ticker_decision.get("decision_revision") or ticker_decision.get("ticker") or "ticker-decision"),
+        "decision_id": decision_id,
         "relative_value_id": 0,
         "paper_state": "PAPER_READY" if ready else "WATCH",
         "discovery_lane": "ticker",
-        "structure": str(expression.get("kind") or "option").lower(),
+        "structure": structure,
         "expiration": expiration,
         "strike": legs[0]["strike"],
         "option_type": legs[0]["option_type"],
@@ -390,13 +408,43 @@ def _compatibility_option_candidate(
         "strategy_route": {"route_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"), "selected_structure": expression.get("kind"), "ai_can_override": False},
         "market_regime": {},
         "ticket": {
+            "ticket_version": 1,
+            "decision_id": decision_id,
             "decision_revision": ticker_decision.get("decision_revision"),
-            "structure": str(expression.get("kind") or "option").lower(),
-            "legs": legs,
-            "quantity": expression.get("quantity"),
+            "lane": "ticker",
+            "symbol": symbol,
+            "state": "PAPER_READY" if ready else "WATCH",
+            "structure": structure,
+            "expiration": expiration,
+            "legs": ticket_legs,
+            "entry": {
+                "limit_price": _finite_float(entry.get("low")),
+                "maximum_chase_price": _finite_float(entry.get("high")),
+            },
+            "risk": {
+                "one_unit_max_loss": max_loss,
+                "recommended_quantity": int(quantity) if quantity is not None else 0,
+                "total_risk": (max_loss * int(quantity)) if max_loss is not None and quantity is not None else 0,
+                "blockers": blockers,
+            },
+            "thesis": {
+                "summary": capital.get("rationale"),
+                "invalidation": invalidation.get("statement") or invalidation.get("value"),
+            },
+            "forecast": {
+                "interval": expression.get("scenarios") or [],
+                "expected_value": net_expectancy,
+                "lower_confidence_expected_value": lower_expectancy,
+            },
             "entry_price": _finite_float(entry.get("low")),
-            "max_loss": _finite_float(expression.get("max_loss_per_unit")),
+            "quantity": quantity,
+            "max_loss": max_loss,
             "blockers": blockers,
+            "required_next_action": "stage_paper_entry" if ready else "collect_data",
+            "provenance": {
+                "decision_contract_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"),
+                "decision_revision": ticker_decision.get("decision_revision"),
+            },
             "paper_only": True,
         },
         "paper_only": True,
