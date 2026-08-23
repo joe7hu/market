@@ -124,11 +124,11 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
 
 
 def _refresh_option_outcomes(runtime: Any, config: AppConfig) -> dict[str, Any]:
-    """Keep automatic promotion explicitly disabled unless configuration opts in."""
+    """Allow deterministic paper-policy promotion when the configured switch is on."""
 
     enabled = bool(config.analysis.options_decision_system.strategy_auto_promotion_enabled)
     repository = OutcomeRepository(runtime)
-    return repository.refresh(strategy_auto_promotion_enabled=True) if enabled else repository.refresh()
+    return repository.refresh(strategy_auto_promotion_enabled=enabled)
 
 
 def full(config_path: str | None = None, *, continue_on_error: bool = True) -> dict[str, Any]:
