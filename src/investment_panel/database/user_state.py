@@ -65,6 +65,7 @@ def portfolio_rows(config: AppConfig, *, connection: Any | None = None) -> list[
         SELECT p.symbol, p.name, p.asset_class, p.sector, p.industry, p.category,
                p.quantity, p.average_cost, p.purchase_date, p.notes, p.updated_at,
                q.price, q.change_pct, q.change_abs, q.observed_at AS quote_observed_at,
+               q.available_at AS quote_available_at,
                q.source_id AS quote_source, q.valuation_status
         FROM positions p
         LEFT JOIN current_prices q ON q.instrument_id = p.instrument_id
@@ -83,6 +84,11 @@ def portfolio_rows(config: AppConfig, *, connection: Any | None = None) -> list[
         row["quantity"] = float(row["quantity"])
         price = float(row["price"]) if row.get("price") is not None else None
         row["price"] = price
+        available_values = [
+            value for value in (row.get("updated_at"), row.get("quote_available_at"))
+            if isinstance(value, datetime)
+        ]
+        row["available_at"] = max(available_values) if available_values else None
         valuation_price = price if price is not None else row["avg_cost"]
         if valuation_price is not None and row["avg_cost"] is not None:
             row["valuation_price"] = valuation_price
@@ -148,7 +154,7 @@ def watchlist_rows(config: AppConfig, *, include_excluded: bool = False) -> list
             ORDER BY i.symbol
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+    return [{**dict(row), "available_at": row.get("updated_at")} for row in rows]
 
 
 def table_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:

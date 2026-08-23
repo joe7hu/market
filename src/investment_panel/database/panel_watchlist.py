@@ -132,7 +132,8 @@ def options_ticker_signal_rows(connection: Any, *, symbols: set[str] | None = No
                    contract.strike::double precision AS strike,
                    contract.option_type, quote.bid, quote.ask, quote.mid, quote.last,
                    quote.provider_iv AS iv, quote.provider_delta AS delta,
-                   quote.underlying_price AS spot, quote.observed_at
+                   quote.underlying_price AS spot, quote.observed_at,
+                   quote.available_at
             FROM raw.option_quote quote
             JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
             JOIN latest_snapshot latest ON latest.id = quote.snapshot_id

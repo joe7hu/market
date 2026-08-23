@@ -81,6 +81,8 @@ export type TickerDossier = {
 
 export type TickerLearning = {
   independent_episode_count?: number;
+  independent_horizon_episode_count?: number;
+  effective_sample_count?: number;
   disagreement?: {
     strongest_bull_case?: string | null;
     strongest_bear_case?: string | null;
@@ -88,6 +90,14 @@ export type TickerLearning = {
   };
   expression_tournament?: Array<Record<string, JsonValue | undefined>>;
   mistake_cards?: Array<Record<string, JsonValue | undefined>>;
+  strategy_learning?: {
+    status?: string;
+    paper_only?: boolean;
+    automatic_promotion?: boolean;
+    active_policy_change?: string;
+    blockers?: JsonValue[];
+    metrics?: Record<string, JsonValue | undefined>;
+  };
 };
 
 export type TickerPayload = components["schemas"]["TickerDetailResponse"] & {

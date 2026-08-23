@@ -1,4 +1,4 @@
-"""Refresh point-in-time stock decision outcomes; never stage stock orders."""
+"""Refresh point-in-time stock and ticker-first outcomes; never stage orders."""
 
 from __future__ import annotations
 
@@ -9,11 +9,21 @@ from typing import Any
 from investment_panel.core.config import load_config
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.symbol_decision_outcomes import SymbolDecisionOutcomeRepository
+from investment_panel.database.ticker_decisions import TickerDecisionRepository
 
 
 def run(config_path: str | None = "config.yaml") -> dict[str, Any]:
     config = load_config(config_path)
-    return SymbolDecisionOutcomeRepository(runtime_for_config(config)).refresh()
+    runtime = runtime_for_config(config)
+    symbol_outcomes = SymbolDecisionOutcomeRepository(runtime).refresh()
+    ticker_outcomes = TickerDecisionRepository(runtime).refresh_outcomes()
+    return {
+        **symbol_outcomes,
+        "symbol_outcomes": symbol_outcomes,
+        "ticker_outcomes": ticker_outcomes,
+        "database": "postgresql",
+        "paper_orders": 0,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:

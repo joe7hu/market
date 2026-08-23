@@ -415,11 +415,18 @@ class AnalysisRepository:
                     raise ValueError("atomic publication requires a running analysis run")
         return publication_id
 
-    def publication_rows(self, scope: str, model_name: str) -> list[dict[str, Any]]:
+    def publication_rows(
+        self,
+        scope: str,
+        model_name: str,
+        *,
+        include_lineage: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.runtime.read() as connection:
             rows = connection.execute(
                 """
-                SELECT payload.payload
+                SELECT payload.payload, publication.id::text AS publication_id,
+                       publication.published_at
                 FROM app.current_publication_item item
                 JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
                 JOIN app.publication publication ON publication.id = item.publication_id
@@ -442,6 +449,8 @@ class AnalysisRepository:
                 rows = connection.execute(
                     """
                     SELECT item.payload
+                           , publication.id::text AS publication_id,
+                           publication.published_at
                     FROM app.publication publication
                     JOIN app.publication_item item ON item.publication_id = publication.id
                     WHERE publication.scope = %s AND publication.status = 'published'
@@ -450,7 +459,15 @@ class AnalysisRepository:
                     """,
                     [scope, model_name],
                 ).fetchall()
-        return [dict(row["payload"]) for row in rows]
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row["payload"] or {})
+            if include_lineage:
+                payload.setdefault("publication_id", str(row["publication_id"]))
+                if row["published_at"] is not None:
+                    payload.setdefault("publication_published_at", row["published_at"].isoformat())
+            output.append(payload)
+        return output
 
     def publication_rows_before(
         self, scope: str, model_name: str, *, cutoff: datetime, source_id: str | None

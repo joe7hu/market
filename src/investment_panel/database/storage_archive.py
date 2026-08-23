@@ -130,7 +130,8 @@ class StorageArchiveService:
                 rows = connection.execute(
                     """
                     SELECT observation.id, observation.instrument_id, observation.source_id,
-                           observation.ingest_run_id, observation.metric_set, observation.period_end,
+                           observation.ingest_run_id, observation.metric_set,
+                           observation.period_start, observation.period_end,
                            observation.observed_at, observation.values -> 'history' AS history,
                            reference.manifest_id AS reference_manifest_id,
                            reference.source_ingest_run_id
@@ -183,6 +184,7 @@ class StorageArchiveService:
                         "instrument_id": int(row["instrument_id"]),
                         "source_id": str(row["source_id"]),
                         "metric_set": str(row["metric_set"]),
+                        "period_start": str(row["period_start"] or ""),
                         "period_end": str(row["period_end"] or ""),
                         "observed_at": row["observed_at"].isoformat(),
                         "archive_phase": "export_only",

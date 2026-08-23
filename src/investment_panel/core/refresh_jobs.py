@@ -45,6 +45,9 @@ from investment_panel.jobs import (
     options_paper_execution,
     decision_inbox,
     refresh_symbol_decision_outcomes,
+    ticker_decisions,
+    ticker_data_requests,
+    update_company_financials,
 )
 from investment_panel.database.retention import RetentionRepository
 
@@ -232,8 +235,24 @@ ALLOWLIST: dict[str, JobRunner] = {
     "run_thesis_monitor_force": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True),
     "run_thesis_monitor_preflight": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual", force=True, dry_run=True),
     "update_broker_sources": lambda config_path: update_broker_sources.run(config_path),
+    # Ticker data requests use stable, user-visible operation names. Each
+    # request points to a source-specific collector or to an explicit
+    # missing-source report; no unrelated collector is presented as proof that
+    # the requested field was collected.
+    "update_broker_account": lambda config_path: update_broker_sources.run(config_path),
     "update_market_data": lambda config_path: update_market_data.run(config_path),
     "update_market_valuations": lambda config_path: update_market_valuations.run(config_path),
+    "update_company_financials": lambda config_path: update_company_financials.run(config_path),
+    "update_earnings_and_estimates": lambda config_path: ticker_data_requests.update_earnings_and_estimates(config_path),
+    "update_macro_series": lambda config_path: ticker_data_requests.update_macro_series(config_path),
+    "update_short_interest_and_borrow": lambda config_path: ticker_data_requests.update_short_interest_and_borrow(config_path),
+    "publish_ticker_benchmark": lambda config_path: ticker_decisions.publish_benchmark(config_path),
+    "update_theses": lambda config_path: run_thesis_monitor.run(config_path, trigger="manual"),
+    "update_decision_models": lambda config_path: postgres_refresh.publish_decisions(config_path),
+    "market-refresh-decision-models": lambda config_path: postgres_refresh.publish_decisions(config_path),
+    "market-update-event-calendar": lambda config_path: update_market_events.run(config_path),
+    "market-publish-ticker-decisions": lambda config_path: ticker_decisions.publish(config_path),
+    "market-update-disclosures": lambda config_path: run_source_with_material_thesis(config_path, update_disclosure_sources.run),
     # Preserve the established UI/automation job names while routing them to
     # PostgreSQL-native implementations.
     "update_free_sources": lambda config_path: update_market_data.run(config_path),

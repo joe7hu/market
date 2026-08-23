@@ -213,7 +213,8 @@ def thesis_rows(config: AppConfig) -> list[dict[str, Any]]:
             SELECT instrument.symbol, thesis.id AS revision_id, thesis.revision,
                    thesis.thesis AS thesis_json, thesis.author_kind,
                    thesis.change_rationale, thesis.last_assessed_at,
-                   thesis.last_human_reviewed_at, thesis.created_at, thesis.updated_at
+                   thesis.last_human_reviewed_at, thesis.created_at, thesis.updated_at,
+                   thesis.updated_at AS available_at
             FROM app.thesis thesis
             JOIN catalog.instrument instrument ON instrument.id = thesis.instrument_id
             WHERE thesis.status = 'current'
@@ -318,6 +319,14 @@ def thesis_monitor_rows(
             symbols=symbols,
             include_current_prices=include_current_prices,
         )
+        for row in rows:
+            available_values = [
+                value for value in (
+                    _parse_datetime(row.get("updated_at")),
+                    _parse_datetime(row.get("latest_quote_available_at")),
+                ) if value is not None
+            ]
+            row["available_at"] = max(available_values) if available_values else None
         evidence_by_symbol = thesis_source_evidence(connection, [str(row["symbol"]) for row in rows])
         assessments_by_revision_map = assessments_by_revision(connection, [row.get("revision_id") for row in rows])
     total_market_value = 0.0

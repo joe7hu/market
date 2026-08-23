@@ -96,6 +96,31 @@ def publish(
     }
 
 
+def publish_benchmark(
+    config_path: str | None = None,
+    *,
+    as_of: datetime | None = None,
+    limit: int = 10_000,
+) -> dict[str, Any]:
+    """Freeze the equity denominator without publishing decisions or orders."""
+
+    config = load_config(config_path)
+    runtime = runtime_for_config(config)
+    reference = _utc(as_of or datetime.now(UTC))
+    symbols = _catalog_symbols(runtime, limit=limit)
+    benchmark = _freeze_benchmark(runtime, symbols, reference)
+    return {
+        "status": "ok",
+        "database": "postgresql",
+        "as_of": reference,
+        "universe_count": len(symbols),
+        "benchmark": benchmark,
+        "published_count": 0,
+        "paper_orders": 0,
+        "side_effects": ["analysis.ticker_benchmark_snapshot"],
+    }
+
+
 def _catalog_symbols(runtime: Any, *, limit: int) -> list[str]:
     with runtime.read() as connection:
         rows = connection.execute(
@@ -146,7 +171,7 @@ def _freeze_benchmark(runtime: Any, symbols: Iterable[str], as_of: datetime) -> 
         "membership_hash": membership_hash,
         "member_count": len(members),
         "source_id": "catalog.instrument",
-        "source_version": "20260822_0049",
+        "source_version": "20260823_0050",
         "exact_membership": members,
         "coverage": {
             "catalog_membership_complete": True,

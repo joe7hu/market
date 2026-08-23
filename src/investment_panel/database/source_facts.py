@@ -127,14 +127,50 @@ class SourceFactRepository:
                         details["evidence_refs"] = []
                 elif evidence_refs is not None:
                     details["evidence_refs"] = evidence_refs
+                observed_at = _aware_datetime(signal.get("observed_at")) or datetime.now(UTC)
+                event_at = _aware_datetime(signal.get("event_at") or details.get("event_at"))
+                published_at = _aware_datetime(signal.get("published_at") or details.get("published_at"))
+                available_at = _aware_datetime(signal.get("available_at") or details.get("available_at")) or observed_at
+                received_at = _aware_datetime(signal.get("received_at") or details.get("received_at")) or observed_at
+                revision = str(signal.get("revision") or details.get("revision") or "").strip() or None
+                license_status = str(signal.get("license") or details.get("license") or "").strip() or None
+                evidence_state = str(signal.get("evidence_state") or details.get("evidence_state") or "").strip() or None
+                transformation = str(signal.get("transformation") or details.get("transformation") or "").strip() or None
+                content_hash = str(details.get("content_hash") or "").strip()
+                if content_hash:
+                    prior = connection.execute(
+                        """
+                        SELECT details
+                        FROM analysis.source_signal
+                        WHERE content_item_id = %s AND instrument_id = %s AND signal_type = %s
+                        ORDER BY observed_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        [item["id"], instrument_id, str(signal.get("signal_type") or "thesis")],
+                    ).fetchone()
+                    if prior and str((prior["details"] or {}).get("content_hash") or "") == content_hash:
+                        # A source refresh can see the same item again. Keep one
+                        # normalized signal version for unchanged content while
+                        # allowing a changed content hash to create a new run.
+                        continue
                 connection.execute(
                     """
                     INSERT INTO analysis.source_signal
-                        (run_id, content_item_id, instrument_id, observed_at, signal_type,
+                        (run_id, content_item_id, instrument_id, observed_at,
+                         event_at, published_at, available_at, received_at, revision,
+                         license, evidence_state, transformation, signal_type,
                          sentiment, direction, confidence, thesis, antithesis, invalidation, details)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (run_id, content_item_id, instrument_id, signal_type)
                     DO UPDATE SET observed_at = EXCLUDED.observed_at,
+                                  event_at = EXCLUDED.event_at,
+                                  published_at = EXCLUDED.published_at,
+                                  available_at = EXCLUDED.available_at,
+                                  received_at = EXCLUDED.received_at,
+                                  revision = EXCLUDED.revision,
+                                  license = EXCLUDED.license,
+                                  evidence_state = EXCLUDED.evidence_state,
+                                  transformation = EXCLUDED.transformation,
                                   sentiment = EXCLUDED.sentiment,
                                   direction = EXCLUDED.direction,
                                   confidence = EXCLUDED.confidence,
@@ -145,7 +181,8 @@ class SourceFactRepository:
                     """,
                     [
                         analysis_run_id, item["id"], instrument_id,
-                        _aware_datetime(signal.get("observed_at")) or datetime.now(UTC),
+                        observed_at, event_at, published_at, available_at, received_at,
+                        revision, license_status, evidence_state, transformation,
                         str(signal.get("signal_type") or "thesis"), signal.get("sentiment"),
                         signal.get("direction"), _number(signal.get("confidence")),
                         signal.get("thesis"), signal.get("antithesis"), signal.get("invalidation"),

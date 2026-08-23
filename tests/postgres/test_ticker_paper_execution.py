@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.core.decision.ticker import build_ticker_decision
+from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
@@ -26,6 +27,7 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
                     "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
                     "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
                     "conviction_tier": "STANDARD",
+                    "available_at": "2026-08-22T13:55:00Z",
                 }],
             },
             as_of=datetime(2026, 8, 22, 14, tzinfo=UTC),
@@ -119,6 +121,7 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                     "symbol": "LIFE", "stance": "BULLISH", "action": "BUY",
                     "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
                     "conviction_tier": "STANDARD",
+                    "available_at": "2026-08-22T13:55:00Z",
                 }],
             },
             as_of=datetime(2026, 8, 22, 14, tzinfo=UTC),
@@ -279,12 +282,14 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                     "symbol": "SPRD", "stance": "BULLISH", "action": "BUY",
                     "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
                     "conviction_tier": "STANDARD",
+                    "available_at": "2026-08-22T13:55:00Z",
                 }],
                 "options_payoff_scenarios": [{
                     "symbol": "SPRD", "structure": "debit_spread", "entry_price": 2.2,
                     "max_loss": 220, "lower_confidence_expectancy": 0.8,
                     "liquidity_score": 0.9, "fill_probability": 0.9,
                     "expiration": "2026-09-18", "legs": legs,
+                    "available_at": "2026-08-22T13:55:00Z",
                 }],
             },
             as_of=observed,
@@ -412,5 +417,89 @@ def test_ticker_publisher_persists_immutable_revision_and_pit_manifest(
         assert "PITX" in benchmark["exact_membership"]
         assert len(benchmark["membership_hash"]) == 64
         assert benchmark["coverage"]["options_availability_affects_breadth"] is False
+    finally:
+        runtime.close()
+
+
+def test_ticker_outcome_refresh_persists_costs_and_learning_metadata(
+    migrated_postgres_dsn: str,
+) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        ticker = "OUTC"
+        as_of = datetime(2026, 7, 1, 21, tzinfo=UTC)
+        available_at = datetime(2026, 7, 1, 20, 30, tzinfo=UTC)
+        reference = datetime(2026, 8, 20, 21, tzinfo=UTC)
+        ingestion = IngestionRepository(runtime)
+        with runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES (%s, %s, 'equity')",
+                [ticker, "Outcome Test"],
+            )
+        source_id = "ticker-outcome-bars"
+        ingestion.register_source(source_id, name="Ticker outcome bars", family="test", kind="daily_bars")
+        run_id = ingestion.start_run(source_id, "price_bars", started_at=available_at)
+        rows = [{"symbol": ticker, "date": as_of.date().isoformat(), "close": 100}]
+        cursor = as_of.date() + timedelta(days=1)
+        while len(rows) < 30:
+            if cursor.weekday() < 5:
+                rows.append({"symbol": ticker, "date": cursor.isoformat(), "close": 100 + len(rows)})
+            cursor += timedelta(days=1)
+        ingestion.store_price_bars(run_id, source_id, rows, asset_classes={ticker: "equity"})
+        ingestion.finish_run(run_id, "succeeded")
+        with runtime.transaction() as connection:
+            connection.execute(
+                "UPDATE ingest.run SET started_at = %s, finished_at = %s WHERE id = %s",
+                [available_at, available_at, run_id],
+            )
+            connection.execute(
+                "UPDATE raw.price_bar SET available_at = %s WHERE ingest_run_id = %s",
+                [available_at, run_id],
+            )
+            connection.execute(
+                "UPDATE raw.price_bar_confirmation SET fact_available_at = %s WHERE ingest_run_id = %s",
+                [available_at, run_id],
+            )
+            connection.execute(
+                "UPDATE raw.price_bar_fact_availability SET fact_available_at = %s WHERE ingest_run_id = %s",
+                [available_at, run_id],
+            )
+
+        decision = build_ticker_decision(
+            ticker,
+            {
+                "quotes": [{"symbol": ticker, "price": 100, "available_at": available_at, "confirmed": True}],
+                "portfolio_summary": [{"net_liquidation": 100_000, "available_at": available_at}],
+                "decision_queue": [{
+                    "symbol": ticker, "stance": "BULLISH", "action": "BUY",
+                    "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
+                    "conviction_tier": "STANDARD", "available_at": available_at,
+                }],
+            },
+            as_of=as_of,
+        )
+        repository = TickerDecisionRepository(runtime)
+        published = repository.publish(decision)
+        outcome_result = repository.refresh_outcomes(now=reference)
+
+        assert outcome_result["resolved"] == 3
+        with runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT state, stock_counterfactual_return, metadata
+                FROM analysis.ticker_outcome
+                WHERE ticker_decision_id = %s::uuid
+                  AND horizon = 'TACTICAL' AND horizon_sessions = 20
+                """,
+                [published["ticker_decision_id"]],
+            ).fetchone()
+        assert row["state"] == "resolved"
+        assert row["stock_counterfactual_return"] is not None
+        assert row["metadata"]["cost_adjusted_stock_counterfactual_return"] is not None
+        assert row["metadata"]["sample"] in {"historical", "forward", "canary"}
+        assert row["metadata"]["purge_embargo_verified"] is True
+        assert row["metadata"]["multiple_trial_correction"] == "single-policy-no-trial-selection-v1"
+        assert row["metadata"]["expression_marks"]["STOCK"]["evidence_state"] == "ESTIMATED"
     finally:
         runtime.close()

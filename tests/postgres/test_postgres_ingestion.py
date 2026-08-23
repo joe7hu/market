@@ -160,6 +160,106 @@ def test_daily_price_bars_are_idempotent_and_materialize_latest_quote(repository
     )
 
 
+def test_fundamental_observations_preserve_filing_acceptance_timestamp(
+    repository: IngestionRepository,
+) -> None:
+    repository.register_source(
+        "sec_companyfacts",
+        name="SEC company facts",
+        family="fundamentals",
+        kind="sec_companyfacts",
+    )
+    accepted_at = datetime(2026, 2, 3, 17, 10, tzinfo=UTC)
+    run_id = repository.start_run("sec_companyfacts", "company_financials")
+    stored = repository.store_fundamental_observations(
+        run_id,
+        "sec_companyfacts",
+        "sec_companyfacts",
+        [{
+            "symbol": "ACME",
+            "asset_class": "equity",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "filed_at": accepted_at,
+            "observed_at": accepted_at,
+            "values": {"accession_number": "0000123456-26-000002", "metrics": {"revenue": 110}},
+        }],
+    )
+    repository.finish_run(run_id, "succeeded")
+
+    with repository.runtime.read() as connection:
+        row = connection.execute(
+            """
+            SELECT instrument.symbol, observation.period_start, observation.filed_at, observation.values
+            FROM raw.fundamental_observation observation
+            JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+            WHERE observation.source_id = 'sec_companyfacts'
+            """
+        ).fetchone()
+
+    assert stored == 1
+    assert row["symbol"] == "ACME"
+    assert row["period_start"] == date(2025, 1, 1)
+    assert row["filed_at"] == accepted_at
+    assert row["values"]["accession_number"] == "0000123456-26-000002"
+
+
+def test_fundamental_observations_keep_quarter_and_year_to_date_rows(
+    repository: IngestionRepository,
+) -> None:
+    repository.register_source(
+        "sec_companyfacts",
+        name="SEC company facts",
+        family="fundamentals",
+        kind="sec_companyfacts",
+    )
+    observed_at = datetime(2026, 5, 2, 16, 5, tzinfo=UTC)
+    run_id = repository.start_run("sec_companyfacts", "company_financials")
+    stored = repository.store_fundamental_observations(
+        run_id,
+        "sec_companyfacts",
+        "sec_companyfacts",
+        [
+            {
+                "symbol": "ACME",
+                "asset_class": "equity",
+                "period_start": "2026-01-01",
+                "period_end": "2026-03-31",
+                "filed_at": observed_at,
+                "observed_at": observed_at,
+                "values": {"metrics": {"revenue": 25}},
+            },
+            {
+                "symbol": "ACME",
+                "asset_class": "equity",
+                "period_start": "2025-07-01",
+                "period_end": "2026-03-31",
+                "filed_at": observed_at,
+                "observed_at": observed_at,
+                "values": {"metrics": {"revenue": 75}},
+            },
+        ],
+    )
+    repository.finish_run(run_id, "succeeded")
+
+    with repository.runtime.read() as connection:
+        rows = connection.execute(
+            """
+            SELECT observation.period_start, observation.values->'metrics'->>'revenue' AS revenue
+            FROM raw.fundamental_observation observation
+            JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
+            WHERE instrument.symbol = 'ACME' AND observation.source_id = 'sec_companyfacts'
+            ORDER BY observation.period_start
+            """
+        ).fetchall()
+
+    assert stored == 2
+    assert [(row["period_start"], float(row["revenue"])) for row in rows] == [
+        (date(2025, 7, 1), 75.0),
+        (date(2026, 1, 1), 25.0),
+    ]
+
+
 def test_current_provider_bar_preserves_effective_time_and_rejects_future_date(
     repository: IngestionRepository,
 ) -> None:

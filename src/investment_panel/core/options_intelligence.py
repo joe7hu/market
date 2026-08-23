@@ -91,10 +91,12 @@ def build_expiry_signal(
         [row for row in calls if spot is None or (_number(row.get("strike")) or 0) >= spot], 0.30,
     ) or call_25
     as_of = max(str(row.get("observed_at") or "") for row in rows if row.get("observed_at")) or datetime.utcnow().isoformat()
+    availability_values = [row.get("available_at") for row in rows if row.get("available_at") is not None]
     return {
         "symbol": symbol,
         "expiry": expiry,
         "as_of": as_of,
+        "available_at": max(availability_values) if availability_values else None,
         "source": source,
         "dte": dte,
         "spot": spot,
@@ -139,6 +141,7 @@ def build_ticker_signal(symbol: str, source: str, expiry_signals: list[dict[str,
     return {
         "symbol": symbol,
         "as_of": selected.get("as_of") or datetime.utcnow().isoformat(),
+        "available_at": selected.get("available_at"),
         "source": source,
         "status": "loaded" if usable else "limited",
         "nearest_expiry": expiry,

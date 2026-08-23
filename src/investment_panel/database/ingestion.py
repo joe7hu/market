@@ -266,6 +266,8 @@ class IngestionRepository:
                 except ValueError:
                     continue
                 observed_at = _aware_datetime(source.get("observed_at"))
+                filed_at = _aware_datetime(source.get("filed_at"))
+                period_start = _date(source.get("period_start"))
                 period_end = _date(source.get("period_end") or observed_at)
                 values = source.get("values")
                 if not symbol or observed_at is None or period_end is None or not isinstance(values, dict):
@@ -283,13 +285,14 @@ class IngestionRepository:
                     """
                     INSERT INTO raw.fundamental_observation
                         (instrument_id, source_id, ingest_run_id, metric_set,
-                         period_end, observed_at, values)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (instrument_id, source_id, metric_set, period_end, observed_at)
+                         period_start, period_end, filed_at, observed_at, values)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, source_id, metric_set, period_end, observed_at,
+                                 (coalesce(period_start, DATE '0001-01-01')))
                     DO UPDATE SET ingest_run_id = EXCLUDED.ingest_run_id,
-                        values = EXCLUDED.values
+                        filed_at = EXCLUDED.filed_at, values = EXCLUDED.values
                     """,
-                    [instrument_id, source_id, run_id, metric_set, period_end, observed_at, Jsonb(values)],
+                    [instrument_id, source_id, run_id, metric_set, period_start, period_end, filed_at, observed_at, Jsonb(values)],
                 )
                 stored += 1
         return stored

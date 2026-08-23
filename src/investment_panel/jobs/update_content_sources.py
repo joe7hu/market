@@ -17,6 +17,7 @@ import httpx
 
 from investment_panel.core.config import AppConfig, load_config
 from investment_panel.database.authority import runtime_for_config
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.payload_archive import provider_archive_path
 from investment_panel.database.source_facts import SourceFactRepository
@@ -30,6 +31,17 @@ NEWS_COMMANDS = {
     "hackernews": ["hackernews", "top"],
 }
 TOKEN_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9.]{0,9})|\b([A-Z][A-Z0-9.]{0,9})\b")
+SOURCE_SIGNAL_VERSION = "content-hypothesis-v1"
+BULLISH_MARKERS = (
+    "beats estimates", "beat estimates", "raises guidance", "raised guidance",
+    "strong demand", "record revenue", "record profit", "buyback", "repurchase",
+    "approved", "approval", "upgrade", "upgraded", "profit growth",
+)
+BEARISH_MARKERS = (
+    "misses estimates", "missed estimates", "cuts guidance", "cut guidance",
+    "weak demand", "revenue decline", "profit warning", "downgrade", "downgraded",
+    "recall", "fraud", "default", "dilution", "layoffs", "investigation",
+)
 
 
 def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dict[str, Any]:
@@ -95,6 +107,7 @@ def run(config_path: str | None = None, *, kinds: set[str] | None = None) -> dic
         "database": "postgresql",
         "items": sum(int(row.get("items") or 0) for row in results),
         "instrument_links": sum(int(row.get("instrument_links") or 0) for row in results),
+        "signals": sum(int(row.get("signals") or 0) for row in results),
         "affected_symbols": sorted({
             str(symbol)
             for row in results
@@ -136,6 +149,8 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
                 return {
                     "source_id": source_id,
                     "status": "rate_limited",
+                    "source_status": "partial",
+                    "downstream_status": "not_run",
                     "items": 0,
                     "instrument_links": 0,
                     "error": str(exc),
@@ -145,17 +160,98 @@ def _run_source(config: AppConfig, runtime: Any, known: set[str], spec: dict[str
             payload_id = repository.record_payload_file(ingestion_run.id, archive, source_key=str(spec["key"]))
             rows = [_content_row(source_id, spec["kind"], row, known) for row in raw_rows]
             rows = [row for row in rows if row is not None]
-            counts = SourceFactRepository(runtime).store_content_items(
+            facts = SourceFactRepository(runtime)
+            counts = facts.store_content_items(
                 ingestion_run.id, source_id, rows, payload_id=payload_id
             )
             ingestion_run.finish(
                 item_count=counts["items"],
                 instrument_count=counts["instrument_links"],
-                summary={"archive_uri": archive.resolve().as_uri()},
+                summary={
+                    "archive_uri": archive.resolve().as_uri(),
+                    "signals_pending": True,
+                    "signal_version": SOURCE_SIGNAL_VERSION,
+                },
             )
-        return {"source_id": source_id, "status": "ok", **counts}
     except Exception as exc:  # every configured source remains independently observable
-        return {"source_id": source_id, "status": "failed", "items": 0, "instrument_links": 0, "error": str(exc)}
+        return {
+            "source_id": source_id,
+            "status": "failed",
+            "source_status": "failed",
+            "downstream_status": "not_run",
+            "items": 0,
+            "instrument_links": 0,
+            "signals": 0,
+            "error": str(exc),
+        }
+
+    analysis = AnalysisRepository(runtime)
+    analysis_run_id = None
+    signal_count = 0
+    try:
+        analysis_run_id = analysis.start_run(
+            "source-signals",
+            input_cutoff=datetime.now(UTC),
+            code_version=SOURCE_SIGNAL_VERSION,
+            inputs={
+                "source_id": source_id,
+                "ingestion_run_id": str(ingestion_run.id),
+                "rows": [
+                    {
+                        "source_key": row["source_key"],
+                        "content_hash": _content_hash(row),
+                        "symbols": row.get("symbols") or [],
+                        "published_at": row.get("published_at"),
+                        "observed_at": row.get("observed_at"),
+                    }
+                    for row in rows
+                ],
+            },
+        )
+        signal_count = facts.store_signals(
+            analysis_run_id,
+            source_id,
+            _content_signal_rows(source_id, rows),
+        )
+        analysis.finish_run(
+            analysis_run_id,
+            "succeeded",
+            summary={
+                "source_id": source_id,
+                "ingestion_run_id": str(ingestion_run.id),
+                "signals": signal_count,
+                "signal_version": SOURCE_SIGNAL_VERSION,
+            },
+        )
+    except Exception as exc:
+        if analysis_run_id is not None:
+            try:
+                analysis.finish_run(
+                    analysis_run_id,
+                    "failed",
+                    {"source_id": source_id, "ingestion_run_id": str(ingestion_run.id)},
+                )
+            except Exception:
+                pass
+        return {
+            "source_id": source_id,
+            "status": "partial",
+            "source_status": "ok",
+            "downstream_status": "failed",
+            "analysis_run_id": str(analysis_run_id) if analysis_run_id else None,
+            "signals": 0,
+            "error": str(exc),
+            **counts,
+        }
+    return {
+        "source_id": source_id,
+        "status": "ok",
+        "source_status": "ok",
+        "downstream_status": "ok",
+        "analysis_run_id": str(analysis_run_id),
+        "signals": signal_count,
+        **counts,
+    }
 
 
 def _content_row(source_id: str, kind: str, row: dict[str, Any], known: set[str]) -> dict[str, Any] | None:
@@ -179,6 +275,84 @@ def _content_row(source_id: str, kind: str, row: dict[str, Any], known: set[str]
         "license_status": "provider_link_only",
         "metadata": {"provider": source_id},
     }
+
+
+def _content_signal_rows(source_id: str, rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Create conservative, provenance-first signals from normalized content.
+
+    This is a deterministic observation layer.  It records directional language
+    as a hypothesis and keeps the source text, URL, timestamps, license, and
+    transformation visible.  It does not claim that a keyword is a verified
+    issuer fact or a trade signal.
+    """
+
+    signals: list[dict[str, Any]] = []
+    for row in rows:
+        text = " ".join((str(row.get("title") or ""), str(row.get("summary") or ""))).strip()
+        sentiment, confidence, matched = _content_sentiment(text)
+        published_at = _timestamp(row.get("published_at"))
+        observed_at = _timestamp(row.get("observed_at")) or datetime.now(UTC)
+        content_hash = _content_hash(row)
+        for symbol in row.get("symbols") or []:
+            url = str(row.get("url") or "").strip() or None
+            signals.append({
+                "source_item_id": row.get("source_key"),
+                "symbol": symbol,
+                "observed_at": observed_at,
+                "signal_type": SOURCE_SIGNAL_VERSION,
+                "sentiment": sentiment,
+                "direction": sentiment.upper(),
+                "confidence": confidence,
+                "thesis": f"Deterministic source-language observation for {symbol}: {str(row.get('title') or text)[:900]}",
+                "antithesis": (
+                    "This is a keyword-derived hypothesis, not a verified cash-flow, filing, or price fact."
+                    if sentiment != "neutral"
+                    else "No directional source-language marker was detected; verify the issuer and market facts."
+                ),
+                "details": {
+                    "source_id": source_id,
+                    "source_key": row.get("source_key"),
+                    "source_url": url,
+                    "content_hash": content_hash,
+                    "event_at": published_at.isoformat() if published_at else None,
+                    "published_at": published_at.isoformat() if published_at else None,
+                    "available_at": observed_at.isoformat(),
+                    "received_at": observed_at.isoformat(),
+                    "revision": content_hash[:16] if content_hash else None,
+                    "license": row.get("license_status") or "unknown",
+                    "evidence_state": "HYPOTHESIS",
+                    "transformation": SOURCE_SIGNAL_VERSION,
+                    "matched_markers": matched,
+                    "evidence_refs": [url] if url else [],
+                },
+            })
+    return signals
+
+
+def _content_sentiment(text: str) -> tuple[str, float, list[str]]:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip()
+    bullish = [marker for marker in BULLISH_MARKERS if marker in normalized]
+    bearish = [marker for marker in BEARISH_MARKERS if marker in normalized]
+    if len(bullish) > len(bearish):
+        sentiment = "bullish"
+        matched = bullish
+    elif len(bearish) > len(bullish):
+        sentiment = "bearish"
+        matched = bearish
+    else:
+        sentiment = "neutral"
+        matched = sorted(set(bullish + bearish))
+    confidence = min(0.75, 0.35 + 0.10 * abs(len(bullish) - len(bearish))) if matched else 0.20
+    return sentiment, confidence, matched
+
+
+def _content_hash(row: dict[str, Any]) -> str:
+    digest_value = "\n".join(filter(None, (
+        str(row.get("title") or "").strip(),
+        str(row.get("summary") or "").strip(),
+        str(row.get("url") or ""),
+    )))
+    return hashlib.sha256(digest_value.encode()).hexdigest() if digest_value else ""
 
 
 def _known_symbols(runtime: Any) -> set[str]:

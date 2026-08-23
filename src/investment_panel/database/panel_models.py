@@ -95,7 +95,8 @@ DIRECT_QUERIES: dict[str, str] = {
     **SOURCE_UNIVERSE_QUERIES,
     "technicals": TECHNICALS_QUERY,
     "valuations": """
-        SELECT instrument.symbol, observation.metric_set, observation.period_end,
+        SELECT instrument.symbol, observation.metric_set, observation.period_start,
+               observation.period_end,
                observation.filed_at, observation.observed_at, observation.values,
                observation.source_id AS source, ingest_run.finished_at AS available_at,
                ingest_run.id::text AS source_version, observation.id::text AS revision
@@ -145,7 +146,8 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY event.starts_at, ingest_run.finished_at
     """,
     "analyst_estimates": """
-        SELECT instrument.symbol, observation.period_end, observation.observed_at,
+        SELECT instrument.symbol, observation.period_start, observation.period_end,
+               observation.observed_at,
                observation.values, observation.source_id AS source,
                ingest_run.finished_at AS available_at,
                ingest_run.id::text AS source_version, observation.id::text AS revision
@@ -239,7 +241,8 @@ DIRECT_QUERIES: dict[str, str] = {
         SELECT decision.id::text AS ticker_decision_id,
                instrument.symbol AS ticker, instrument.symbol,
                decision.decision_revision, decision.contract_version,
-               decision.as_of, decision.published_at, decision.input_hash,
+               decision.as_of, decision.published_at, decision.published_at AS available_at,
+               decision.input_hash,
                decision.code_version, decision.experiment_id,
                decision.tactical, decision.fundamental, decision.capital_action,
                decision.risk_policy, decision.expressions,
@@ -253,17 +256,57 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "ticker_outcomes": """
         SELECT outcome.ticker_decision_id::text, instrument.symbol AS ticker,
+               instrument.symbol,
                outcome.horizon, outcome.horizon_sessions, outcome.state,
                outcome.measured_through, outcome.selected_expression,
                outcome.selected_return, outcome.stock_counterfactual_return,
                outcome.alternate_counterfactual_return, outcome.cash_return,
                outcome.sector_return, outcome.market_return, outcome.error_type,
                outcome.mistake_card, outcome.available_at, outcome.metadata,
+               decision.fundamental->'scenarios' AS scenarios,
                outcome.updated_at
         FROM analysis.ticker_outcome outcome
         JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         ORDER BY outcome.measured_through DESC NULLS LAST, outcome.updated_at DESC
+    """,
+    "ticker_policy_learning": """
+        WITH ranked_outcomes AS (
+            SELECT outcome.*,
+                   row_number() OVER (
+                       PARTITION BY outcome.ticker_decision_id, outcome.horizon
+                       ORDER BY outcome.horizon_sessions DESC, outcome.updated_at DESC, outcome.id DESC
+                   ) AS horizon_rank
+            FROM analysis.ticker_outcome outcome
+            WHERE outcome.state = 'resolved'
+        ), bounded_episodes AS (
+            SELECT outcome.*, decision.id AS decision_id, decision.as_of,
+                   instrument.symbol AS ticker, decision.fundamental->'scenarios' AS scenarios
+            FROM ranked_outcomes outcome
+            JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+            JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+            WHERE outcome.horizon_rank = 1
+            ORDER BY decision.as_of DESC, decision.id DESC, outcome.horizon
+            LIMIT 10000
+        )
+        SELECT COALESCE(
+            jsonb_agg(
+                jsonb_build_object(
+                    'ticker_decision_id', decision_id::text,
+                    'ticker', ticker,
+                    'as_of', as_of,
+                    'horizon', outcome.horizon,
+                    'horizon_sessions', outcome.horizon_sessions,
+                    'state', outcome.state,
+                    'selected_return', outcome.selected_return,
+                    'stock_counterfactual_return', outcome.stock_counterfactual_return,
+                    'metadata', outcome.metadata,
+                    'scenarios', scenarios
+                )
+                ORDER BY as_of, decision_id, outcome.horizon
+            ), '[]'::jsonb
+        ) AS episodes
+        FROM bounded_episodes outcome
     """,
     "ticker_benchmark_snapshot": """
         SELECT benchmark_key, as_of, available_at, membership_hash,
@@ -351,7 +394,7 @@ DIRECT_QUERIES: dict[str, str] = {
         ORDER BY instrument.symbol, contract.expiration
     """,
     "fundamentals": """
-        SELECT instrument.symbol, observation.period_end, observation.filed_at,
+        SELECT instrument.symbol, observation.period_start, observation.period_end, observation.filed_at,
                observation.observed_at, observation.metric_set, observation.values,
                observation.source_id AS source, ingest_run.finished_at AS available_at,
                ingest_run.id::text AS source_version, observation.id::text AS revision
@@ -825,7 +868,9 @@ def load_postgres_tables(
                         query_cache[cache_key] = [dict(row) for row in result.fetchall()]
                 tables[name] = query_cache[cache_key]
             elif alias in PUBLICATION_MODELS:
-                tables[name] = AnalysisRepository(runtime).publication_rows("today", alias)
+                tables[name] = AnalysisRepository(runtime).publication_rows(
+                    "today", alias, include_lineage=True,
+                )
             elif name in PUBLICATION_MODELS:
                 tables[name] = []
             else:

@@ -254,12 +254,27 @@ def load_ticker_panel_data(config: AppConfig | None, ticker: str) -> PanelData:
     normalized = ticker.strip().upper()
     if not normalized:
         return PanelData(status=DataStatus(False, "Ticker is required.", "invalid-request"), tables={})
+    active_config = config if config is not None else load_config()
     panel = load_panel_data(
-        config,
+        active_config,
         table_names=TICKER_INITIAL_TABLES,
         query_symbol_filter={normalized},
         query_row_limits={name: 24 for name in TICKER_INITIAL_TABLES},
     )
+    try:
+        policy_tables, policy_metadata = load_postgres_tables(
+            active_config,
+            ("ticker_policy_learning",),
+            query_row_limits={"ticker_policy_learning": 1},
+        )
+        panel.tables["ticker_policy_learning"] = policy_tables.get("ticker_policy_learning", [])
+        panel.metadata["ticker_policy_learning"] = {
+            "database": policy_metadata.get("database"),
+            "schema_revision": policy_metadata.get("schema_revision"),
+        }
+    except Exception as exc:
+        panel.tables["ticker_policy_learning"] = []
+        panel.metadata["ticker_policy_learning_error"] = str(exc)
     panel.tables = {
         name: [row for row in rows if _row_symbol(row) in {"", normalized}]
         for name, rows in panel.tables.items()

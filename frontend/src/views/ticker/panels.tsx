@@ -4,7 +4,7 @@ import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradin
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
 import type { components } from "@/generated/apiSchema";
-import type { RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
+import type { JsonValue, RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
 import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import type { OpenTicker } from "@/views/workspacePage";
 
@@ -91,6 +91,7 @@ export function TickerDecisionPanel({
       </DataTableFrame>
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
+      {learning ? <LearningLoopPanel learning={learning} /> : null}
     </>
   );
 }
@@ -190,6 +191,86 @@ function DisagreementPanel({ learning }: { learning?: TickerLearning }) {
       </div>
     </DataTableFrame>
   );
+}
+
+function LearningLoopPanel({ learning }: { learning: TickerLearning }) {
+  const policy = learning.strategy_learning;
+  const metrics = policy?.metrics ?? {};
+  const expressionRows = (learning.expression_tournament ?? []).map((row) => {
+    const outcomes = arrayValue(row.outcomes);
+    const latest = outcomes.length ? objectValue(outcomes[0]) : undefined;
+    return {
+      expression: textValue(row.expression_kind),
+      state: textValue(row.selected) === "true" ? "SELECTED" : textValue(row.status).toUpperCase(),
+      horizon: latest ? `${textValue(latest.horizon)} · ${textValue(latest.horizon_sessions)} sessions` : "—",
+      result: latest ? percentValue(latest.expression_return) : "—",
+    };
+  });
+  const mistakeRows = (learning.mistake_cards ?? []).slice(0, 6).map((row) => {
+    const card = objectValue(row.card);
+    return {
+      error: titleLabel(textValue(row.error_type, "unclassified")),
+      horizon: `${textValue(row.horizon)} · ${textValue(row.horizon_sessions)} sessions`,
+      lesson: textValue(card?.proposed_rule_change, "No deterministic rule change recorded."),
+    };
+  });
+  const status = textValue(policy?.status, "collecting").toUpperCase();
+  const promotionLabel = policy?.automatic_promotion ? "AUTO-PROMOTION READY" : "PROMOTION GATED";
+  return (
+    <DataTableFrame
+      title="Signal learning loop"
+      action={<div className="flex flex-wrap items-center gap-2"><StatusBadge tone={toneFromText(status)}>{status}</StatusBadge><span className="text-xs text-muted-foreground">{promotionLabel} · paper only</span></div>}
+    >
+      <div className="grid gap-0 border-b border-border sm:grid-cols-2 xl:grid-cols-5">
+        <LearningMetric label="Effective episodes" value={String(learning.effective_sample_count ?? learning.independent_episode_count ?? 0)} detail="one decision-horizon unit" />
+        <LearningMetric label="Trading days" value={numberText(metrics.trading_day_count)} detail="independent span" />
+        <LearningMetric label="Lower 95%" value={percentValue(metrics.selected_lower_95_net_expectancy)} detail="net expectancy after costs" />
+        <LearningMetric label="Brier" value={numberText(metrics.brier_score)} detail="probability calibration" />
+        <LearningMetric label="Policy" value={policy?.paper_only === false ? "LIVE" : "PAPER"} detail={policy?.active_policy_change ?? "paper signal policy"} />
+      </div>
+      <div className="grid gap-0 xl:grid-cols-2">
+        <div className="border-b border-border p-4 xl:border-b-0 xl:border-r">
+          <div className="mb-2 flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Expression tournament outcomes</h3><span className="text-xs text-muted-foreground">same ticker thesis</span></div>
+          <SimpleTable rows={expressionRows} empty="No executable expression outcome is measured yet." columns={[["expression", "Expression"], ["state", "State"], ["horizon", "Horizon"], ["result", "Return"]]} />
+        </div>
+        <div className="p-4">
+          <div className="mb-2 flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">Mistake cards</h3><span className="text-xs text-muted-foreground">deterministic lessons</span></div>
+          <SimpleTable rows={mistakeRows} empty="No resolved mistake card yet." columns={[["error", "Error"], ["horizon", "Horizon"], ["lesson", "Proposed rule change"]]} />
+        </div>
+      </div>
+      {policy?.blockers?.length ? <div className="border-t border-border bg-muted/20 px-4 py-3 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-foreground">Promotion blockers:</span> {policy.blockers.map((blocker) => textValue(blocker)).join(" · ")}</div> : null}
+    </DataTableFrame>
+  );
+}
+
+function LearningMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="border-b border-border px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-r xl:last:border-r-0"><p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{value}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{detail}</p></div>;
+}
+
+function objectValue(value: JsonValue | undefined): Record<string, JsonValue | undefined> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue | undefined> : undefined;
+}
+
+function arrayValue(value: JsonValue | undefined): JsonValue[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function textValue(value: JsonValue | undefined, fallback = "—"): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function numberText(value: JsonValue | undefined): string {
+  if (typeof value === "number" && Number.isFinite(value)) return value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 });
+  return "—";
+}
+
+function percentValue(value: JsonValue | undefined): string {
+  if (typeof value === "number" && Number.isFinite(value)) return `${(value * 100).toFixed(1)}%`;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return `${(Number(value) * 100).toFixed(1)}%`;
+  return "—";
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {

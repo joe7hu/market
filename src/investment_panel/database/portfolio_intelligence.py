@@ -46,6 +46,8 @@ def portfolio_summary(
     fees = accounting["fees"]
     quote_times = [_as_datetime(row.get("quote_observed_at")) for row in positions]
     quote_times = [value for value in quote_times if value is not None]
+    availability_times = [_as_datetime(row.get("available_at")) for row in positions]
+    availability_times = [value for value in availability_times if value is not None]
     fallback_count = sum(row.get("valuation_status") == "cost_basis_fallback" for row in positions)
     total_pnl = portfolio_value - net_contributions
     invested_capital = accounting["invested_capital"]
@@ -63,6 +65,7 @@ def portfolio_summary(
     previous_value = float(prior_performance.get("portfolio_value") or 0)
     return {
         "as_of": max(quote_times).isoformat() if quote_times else None,
+        "available_at": max(availability_times or quote_times).isoformat() if availability_times or quote_times else None,
         "oldest_quote_at": min(quote_times).isoformat() if quote_times else None,
         "portfolio_value": round(portfolio_value, 6),
         "cost_basis": round(cost_basis, 6),

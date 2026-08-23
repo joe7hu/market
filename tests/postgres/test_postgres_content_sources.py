@@ -46,9 +46,11 @@ def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
         assert result["items"] == 1
         assert result["instrument_links"] == 1
         assert result["affected_symbols"] == ["NVDA"]
+        assert result["signals"] == 1
 
         unchanged = update_content_sources.run("config.yaml", kinds={"news"})
         assert unchanged["affected_symbols"] == []
+        assert unchanged["signals"] == 0
         with runtime.read() as connection:
             row = connection.execute(
                 """
@@ -61,10 +63,28 @@ def test_content_refresh_archives_payload_and_stores_compact_linked_facts(
                 JOIN ingest.run run ON run.id = item.ingest_run_id
                 """
             ).fetchone()
+            signal = connection.execute(
+                """
+                SELECT signal.signal_type, signal.sentiment, signal.direction,
+                       signal.details, run.status AS analysis_status
+                FROM analysis.source_signal signal
+                JOIN analysis.run run ON run.id = signal.run_id
+                JOIN raw.content_item item ON item.id = signal.content_item_id
+                WHERE item.source_id = 'news_hackernews'
+                ORDER BY signal.id DESC
+                LIMIT 1
+                """
+            ).fetchone()
         assert row["title"] == "$NVDA launches a new platform"
         assert row["metadata"] == {"provider": "news_hackernews"}
         assert row["symbol"] == "NVDA"
         assert row["status"] == "succeeded"
         assert Path(str(row["archive_uri"]).removeprefix("file://")).is_file()
+        assert signal["signal_type"] == "content-hypothesis-v1"
+        assert signal["sentiment"] == "neutral"
+        assert signal["direction"] == "NEUTRAL"
+        assert signal["details"]["evidence_state"] == "HYPOTHESIS"
+        assert signal["details"]["transformation"] == "content-hypothesis-v1"
+        assert signal["analysis_status"] == "succeeded"
     finally:
         runtime.close()

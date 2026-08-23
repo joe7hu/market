@@ -64,6 +64,65 @@ def test_material_thesis_monitor_failure_does_not_hide_source_success(monkeypatc
     assert result["source_result"]["status"] == "ok"
 
 
+def test_outcome_refresh_includes_ticker_learning_without_staging_orders(monkeypatch) -> None:
+    runtime = object()
+    config = object()
+
+    class FakeSymbolRepository:
+        def __init__(self, received_runtime):
+            assert received_runtime is runtime
+
+        def refresh(self):
+            return {"evaluated": 2, "resolved": 1}
+
+    class FakeTickerRepository:
+        def __init__(self, received_runtime):
+            assert received_runtime is runtime
+
+        def refresh_outcomes(self):
+            return {"evaluated": 3, "updated": 18, "resolved": 2}
+
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "load_config", lambda _path: config)
+    monkeypatch.setattr(refresh_jobs.refresh_symbol_decision_outcomes, "runtime_for_config", lambda _config: runtime)
+    monkeypatch.setattr(
+        refresh_jobs.refresh_symbol_decision_outcomes,
+        "SymbolDecisionOutcomeRepository",
+        FakeSymbolRepository,
+    )
+    monkeypatch.setattr(
+        refresh_jobs.refresh_symbol_decision_outcomes,
+        "TickerDecisionRepository",
+        FakeTickerRepository,
+    )
+
+    result = refresh_jobs.refresh_symbol_decision_outcomes.run("config.yaml")
+
+    assert result["database"] == "postgresql"
+    assert result["paper_orders"] == 0
+    assert result["evaluated"] == 2
+    assert result["symbol_outcomes"] == {"evaluated": 2, "resolved": 1}
+    assert result["ticker_outcomes"] == {"evaluated": 3, "updated": 18, "resolved": 2}
+
+
+def test_benchmark_refresh_only_freezes_the_equity_denominator(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        refresh_jobs.ticker_decisions,
+        "publish_benchmark",
+        lambda path: observed.update({"path": path}) or {
+            "status": "ok",
+            "published_count": 0,
+            "paper_orders": 0,
+        },
+    )
+
+    result = refresh_jobs.ALLOWLIST["publish_ticker_benchmark"]("config.yaml")
+
+    assert result["published_count"] == 0
+    assert result["paper_orders"] == 0
+    assert observed == {"path": "config.yaml"}
+
+
 @pytest.fixture(autouse=True)
 def _postgresql_job_authority(migrated_postgres_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MARKET_DATABASE_URL", migrated_postgres_dsn)

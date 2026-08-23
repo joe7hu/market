@@ -94,6 +94,10 @@ from investment_panel.core.decision.ticker import (
     TickerDecision,
     build_ticker_decision,
 )
+from investment_panel.core.decision.ticker_learning import (
+    TICKER_LEARNING_VERSION,
+    evaluate_ticker_policy,
+)
 
 __all__ = [
     "ARCO_STALE_DAYS",
@@ -174,4 +178,6 @@ __all__ = [
     "Stance",
     "TickerDecision",
     "build_ticker_decision",
+    "TICKER_LEARNING_VERSION",
+    "evaluate_ticker_policy",
 ]

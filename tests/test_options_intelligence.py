@@ -76,6 +76,22 @@ def test_ticker_signal_selects_nearest_expiry_and_exposes_provider_limitations()
     assert {row["signal"] for row in ticker["unavailable_signals"]} >= {"open_interest", "volume"}
 
 
+def test_option_signal_preserves_quote_availability_for_historical_selection() -> None:
+    observed = "2026-06-02T15:30:00Z"
+    expiry = build_expiry_signal(
+        "NVDA",
+        "2026-06-05",
+        "robinhood",
+        [{**row, "available_at": observed} for row in _chain()],
+        {"dte": 3, "contracts_count": 6},
+        {"price": 100},
+    )
+
+    assert expiry is not None
+    assert expiry["available_at"] == observed
+    assert build_ticker_signal("NVDA", "robinhood", [expiry])["available_at"] == observed
+
+
 def test_unavailable_positioning_signals_are_source_scoped() -> None:
     tradingview = unavailable_signals_for_source("tradingview")
     other = unavailable_signals_for_source("robinhood")

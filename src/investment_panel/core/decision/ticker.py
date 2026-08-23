@@ -357,7 +357,7 @@ def build_ticker_decision(
         risk_policy, symbol, manifest.input_hash, reference,
     )
     requests.extend(_view_requests(symbol, tactical, fundamental, usable))
-    requests.extend(_signal_requests(symbol, usable))
+    requests.extend(_signal_requests(symbol, usable, reference))
     requests = _dedupe_requests(requests)
 
     expressions = _build_expressions(
@@ -798,16 +798,25 @@ def _view_requests(symbol: str, tactical: HorizonDecision, fundamental: HorizonD
     return requests
 
 
-def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) -> list[DataRequest]:
+def _signal_requests(
+    symbol: str,
+    tables: Mapping[str, list[dict[str, Any]]],
+    reference: datetime,
+) -> list[DataRequest]:
     """Create runnable requests for absent signal families without hiding direction."""
 
     requests: list[DataRequest] = []
-    if not (tables.get("fundamentals") or tables.get("valuations")):
+    sec_financial_rows = [
+        row for row in tables.get("fundamentals") or []
+        if str(_pick(row, "source", "source_id") or "").strip().lower() == "sec_companyfacts"
+        and _fresh_at(row, reference, 86_400)
+    ]
+    if not sec_financial_rows:
         requests.append(_request(
             field="company_financials", ticker=symbol,
             why="Point-in-time financials are required to test cash flow, margins, return on capital, and valuation assumptions.",
             source="SEC EDGAR accepted filing and company-facts selectors", max_age="1d", max_age_seconds=86400,
-            owner="update_company_financials", collect_now="market-refresh-decision-models",
+            owner="update_company_financials", collect_now="update_company_financials",
             expected="A filing-vintage financial observation with acceptance, publication, and availability timestamps.",
             impact="The fundamental stance, target range, or fact that flips it may change.",
         ))
@@ -816,7 +825,7 @@ def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) ->
             field="earnings_revisions", ticker=symbol,
             why="Actuals, guidance, and estimate revisions define the event and expectation-change risk.",
             source="issuer earnings release, SEC filing, and approved estimate vintage", max_age="1d", max_age_seconds=86400,
-            owner="update_earnings_and_estimates", collect_now="market-update-event-calendar",
+            owner="update_earnings_and_estimates", collect_now="update_earnings_and_estimates",
             expected="A point-in-time earnings event plus actual, guidance, and estimate-vintage fields.",
             impact="The tactical catalyst and scenario probabilities may change.",
         ))
@@ -825,7 +834,7 @@ def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) ->
             field="market_breadth", ticker=symbol,
             why="A frozen equity denominator is required to distinguish market breadth from the option candidate set.",
             source="frozen point-in-time equity and ETF benchmark membership", max_age="1d", max_age_seconds=86400,
-            owner="publish_ticker_benchmark", collect_now="market-publish-ticker-decisions",
+            owner="publish_ticker_benchmark", collect_now="publish_ticker_benchmark",
             expected="Exact benchmark membership, membership hash, price coverage, and availability timestamp.",
             impact="Breadth context may change the tactical stance but cannot change ticker identity or option availability.",
         ))
@@ -834,7 +843,7 @@ def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) ->
             field="macro_regime", ticker=symbol,
             why="Rates, inflation, growth, credit, dollar, and commodity vintages set the discount-rate and risk-appetite context.",
             source="FRED real-time vintage, Treasury, and official release calendar", max_age="1d", max_age_seconds=86400,
-            owner="update_macro_series", collect_now="market-update-event-calendar",
+            owner="update_macro_series", collect_now="update_macro_series",
             expected="A macro regime row with release vintage, prior vintage, surprise, and availability timestamps.",
             impact="The scenario weights or expression horizon may change.",
         ))
@@ -843,7 +852,7 @@ def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) ->
             field="corporate_actions_and_flows", ticker=symbol,
             why="Buybacks, issuance, insider activity, index changes, and delayed 13F ownership context affect supply and expectations.",
             source="SEC disclosures, issuer reports, index notices, and ETF shares outstanding", max_age="1d", max_age_seconds=86400,
-            owner="update_disclosures", collect_now="market-update-disclosures",
+            owner="update_disclosures", collect_now="update_disclosures",
             expected="A dated issuer or ownership event with source, publication, receipt, and revision fields.",
             impact="The fundamental evidence and opportunity-cost comparison may change; 13F remains delayed context.",
         ))
@@ -852,7 +861,7 @@ def _signal_requests(symbol: str, tables: Mapping[str, list[dict[str, Any]]]) ->
             field="short_interest_and_borrow", ticker=symbol,
             why="Short interest and borrow cost are needed before treating squeeze, financing, or bearish-expression claims as observed.",
             source="official short-interest report and approved licensed borrow source", max_age="2d", max_age_seconds=172800,
-            owner="update_short_interest_and_borrow", collect_now="market-refresh-decision-models",
+            owner="update_short_interest_and_borrow", collect_now="update_short_interest_and_borrow",
             expected="A dated short-interest or borrow observation with coverage and license metadata.",
             impact="The bearish expression choice or risk range may change; daily short volume is not net shorting.",
         ))
@@ -1020,8 +1029,18 @@ def _usable_rows(rows: Iterable[Mapping[str, Any]], symbol: str, as_of: datetime
         row_symbol = str(_pick(row, "symbol", "ticker", "underlying") or "").strip().upper()
         if row_symbol and row_symbol != symbol:
             continue
-        available = _parse_datetime(_pick(row, "available_at", "received_at", "availableAt"))
-        if available is not None and available > as_of:
+        available = _parse_datetime(_pick(
+            row,
+            "available_at",
+            "received_at",
+            "availableAt",
+            "publication_published_at",
+        ))
+        # A historical decision cannot use a row whose information-time is
+        # unknown.  Production read models carry available_at from the
+        # successful ingestion/publication run; fixtures and adapters must do
+        # the same instead of silently treating receipt time as as_of.
+        if available is None or available > as_of:
             continue
         if row.get("confirmed") is False or row.get("is_confirmed") is False:
             continue
@@ -1388,6 +1407,13 @@ def _age_seconds(row: Mapping[str, Any], as_of: datetime) -> float | None:
     if timestamp is None:
         return None
     return max(0.0, (as_of - timestamp).total_seconds())
+
+
+def _fresh_at(row: Mapping[str, Any], as_of: datetime, max_age_seconds: int) -> bool:
+    timestamp = _parse_datetime(_pick(row, "available_at", "published_at", "received_at"))
+    if timestamp is None or timestamp > as_of:
+        return False
+    return (as_of - timestamp).total_seconds() <= max_age_seconds
 
 
 def _catalyst(row: Mapping[str, Any], tables: Mapping[str, list[dict[str, Any]]]) -> str | None:

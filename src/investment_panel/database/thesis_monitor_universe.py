@@ -65,6 +65,7 @@ def monitored_thesis_rows(
         ), {price_cte}
         SELECT monitored.*, quote.price AS latest_price,
                quote.observed_at AS latest_quote_at,
+               quote.available_at AS latest_quote_available_at,
                catalyst.starts_at AS next_catalyst_at, catalyst.title AS next_catalyst,
                run.status AS latest_automation_status, run.error AS latest_automation_error,
                run.started_at AS latest_automation_started_at

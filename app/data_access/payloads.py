@@ -14,7 +14,7 @@ from app.data_access.types import PanelData
 from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
-from investment_panel.core.decision import build_ticker_decision, ticker_decision_brief
+from investment_panel.core.decision import build_ticker_decision, evaluate_ticker_policy, ticker_decision_brief
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
@@ -165,7 +165,11 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         as_of=_ticker_as_of(panel_data, tables),
     )
     ticker_decision_payload = ticker_decision.model_dump(mode="json")
-    learning = ticker_learning_payload(ticker_decision_payload, tables.get("ticker_outcomes") or [])
+    learning = ticker_learning_payload(
+        ticker_decision_payload,
+        tables.get("ticker_outcomes") or [],
+        tables,
+    )
     # Keep the established dossier sections readable by existing clients while
     # making the typed ticker decision the authoritative new surface.
     dossier["decision"] = ticker_decision_summary(ticker_decision_payload)
@@ -239,32 +243,37 @@ def option_decision_adapter(
     payload = dict(legacy_payload)
     capital = dict(ticker_decision.get("capital_action") or {})
     expressions = dict(ticker_decision.get("expressions") or {})
-    option_expression = next(
-        (
-            value for key, value in expressions.items()
-            if key in {"CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT"}
-            and isinstance(value, dict)
-            and value.get("status") in {"eligible", "blocked"}
-        ),
-        None,
-    )
-    if option_expression is not None:
-        candidate = dict(payload.get("strongest_candidate") or {})
-        if not candidate:
-            candidate = _compatibility_option_candidate(ticker_decision, option_expression, capital)
-        if candidate:
-            candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
-            candidate["ticker_expression"] = option_expression
-            candidate["ticker_thesis"] = {
-                "tactical": ticker_decision.get("tactical"),
-                "fundamental": ticker_decision.get("fundamental"),
-                "capital_action": capital,
-            }
-            candidate["blockers"] = list(dict.fromkeys([
-                *list(candidate.get("blockers") or []),
-                *[request.get("field") for request in ticker_decision.get("data_requests") or []],
-            ]))
-            payload["strongest_candidate"] = candidate
+    selected_kind = str((ticker_decision.get("selected_expression") or {}).get("kind") or "")
+    option_expression = expressions.get(selected_kind) if selected_kind in {
+        "CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT",
+    } else None
+    if not isinstance(option_expression, dict) or option_expression.get("status") not in {"eligible", "blocked"}:
+        option_expression = None
+    candidate = _compatibility_option_candidate(ticker_decision, option_expression, capital) if option_expression else {}
+    if candidate:
+        # The legacy payload is intentionally not merged. The ticker
+        # expression owns the contracts, quote package, thesis, and readiness;
+        # this route only preserves the old envelope shape.
+        candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
+        candidate["ticker_expression"] = option_expression
+        candidate["ticker_thesis"] = {
+            "tactical": ticker_decision.get("tactical"),
+            "fundamental": ticker_decision.get("fundamental"),
+            "capital_action": capital,
+        }
+        candidate["thesis"] = {"ticker": ticker_decision.get("ticker"), "capital_action": capital}
+        candidate["forecast"] = {"scenarios": option_expression.get("scenarios") or []}
+        candidate["paper_state"] = "PAPER_READY" if candidate.get("execution_ready") else "WATCH"
+        candidate["blockers"] = list(dict.fromkeys([
+            *list(candidate.get("blockers") or []),
+            *[request.get("field") for request in ticker_decision.get("data_requests") or []],
+        ]))
+        candidate["state_reasons"] = candidate["blockers"]
+        payload["strongest_candidate"] = candidate
+    else:
+        # A legacy candidate without a current ticker expression is not a
+        # valid compatibility result.
+        payload.pop("strongest_candidate", None)
     payload["ticker_decision_revision"] = ticker_decision.get("decision_revision")
     payload["summary"] = {
         **dict(payload.get("summary") or {}),
@@ -272,15 +281,21 @@ def option_decision_adapter(
         "ticker_rationale": capital.get("rationale"),
         "ticker_selected_expression": (ticker_decision.get("selected_expression") or {}).get("kind"),
     }
+    existing_truth = dict(payload.get("decision_truth") or {})
+    ticker_blockers = [request.get("field") for request in ticker_decision.get("data_requests") or []]
     payload["decision_truth"] = {
-        **dict(payload.get("decision_truth") or {}),
+        **existing_truth,
         "symbol": ticker_decision.get("ticker") or payload.get("symbol"),
         "as_of": ticker_decision.get("as_of"),
         "candidate_state": capital.get("action"),
         "route_verdict": capital.get("action"),
-        "readiness_state": "READY" if option_expression and option_expression.get("status") == "eligible" else "WAITING",
+        "readiness_state": "PAPER_READY" if candidate and candidate.get("execution_ready") else "WATCH",
         "execution_state": "PAPER_ONLY",
-        "blockers": [request.get("field") for request in ticker_decision.get("data_requests") or []],
+        "blockers": list(dict.fromkeys([
+            *list(existing_truth.get("blockers") or []),
+            *(list(candidate.get("blockers") or []) if candidate else []),
+            *ticker_blockers,
+        ])),
         "next_action": capital.get("rationale"),
         "route_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"),
         "evidence_refs": [
@@ -288,6 +303,21 @@ def option_decision_adapter(
             for item in (ticker_decision.get("fundamental", {}).get("evidence_for") or [])
         ],
     }
+    readiness = dict(payload.get("readiness") or {})
+    tactical = dict(ticker_decision.get("tactical") or {})
+    fundamental = dict(ticker_decision.get("fundamental") or {})
+    invalidation = fundamental.get("invalidation") or tactical.get("invalidation") or {}
+    readiness["thesis"] = {
+        "eligible": bool(option_expression and option_expression.get("status") == "eligible"),
+        "present": bool(option_expression),
+        "revision": ticker_decision.get("decision_revision"),
+        "invalidation": invalidation.get("statement") or invalidation.get("value"),
+        "blocker": (ticker_decision.get("data_requests") or [{}])[0].get("field") if ticker_decision.get("data_requests") else None,
+        "direction": fundamental.get("stance") or tactical.get("stance"),
+    }
+    readiness["next_required_action"] = capital.get("rationale") or "Use the ticker capital action."
+    payload["readiness"] = readiness
+    payload["state"] = "PAPER_READY" if candidate and candidate.get("execution_ready") else "WATCH"
     return payload
 
 
@@ -359,7 +389,16 @@ def _compatibility_option_candidate(
         "execution_ready": ready,
         "strategy_route": {"route_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"), "selected_structure": expression.get("kind"), "ai_can_override": False},
         "market_regime": {},
-        "ticket": None,
+        "ticket": {
+            "decision_revision": ticker_decision.get("decision_revision"),
+            "structure": str(expression.get("kind") or "option").lower(),
+            "legs": legs,
+            "quantity": expression.get("quantity"),
+            "entry_price": _finite_float(entry.get("low")),
+            "max_loss": _finite_float(expression.get("max_loss_per_unit")),
+            "blockers": blockers,
+            "paper_only": True,
+        },
         "paper_only": True,
     }
 
@@ -375,9 +414,11 @@ def _finite_float(value: Any) -> float | None:
 def ticker_learning_payload(
     ticker_decision: dict[str, Any],
     outcomes: list[dict[str, Any]],
+    tables: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Compose disagreement, expression tournament, and mistake cards."""
+    """Compose disagreement, expression tournament, mistakes, and policy gates."""
 
+    tables = tables or {}
     fundamental = dict(ticker_decision.get("fundamental") or {})
     expressions = dict(ticker_decision.get("expressions") or {})
     episode_ids = {
@@ -385,8 +426,28 @@ def ticker_learning_payload(
         for row in outcomes
         if row.get("ticker_decision_id") or row.get("decision_id")
     }
+    horizon_episode_ids = {
+        (str(row.get("ticker_decision_id") or row.get("decision_id") or ""), str(row.get("horizon") or ""))
+        for row in outcomes
+        if (row.get("ticker_decision_id") or row.get("decision_id")) and row.get("horizon")
+    }
+    scenarios = fundamental.get("scenarios") or []
+    global_policy_row = next(iter(tables.get("ticker_policy_learning") or []), {})
+    global_policy_rows = global_policy_row.get("episodes")
+    policy_rows = (
+        list(global_policy_rows)
+        if isinstance(global_policy_rows, list)
+        else [{**row, "scenarios": row.get("scenarios") or scenarios} for row in outcomes]
+    )
+    strategy_learning = evaluate_ticker_policy(policy_rows)
     return {
         "independent_episode_count": len(episode_ids) or (1 if outcomes else 0),
+        "independent_horizon_episode_count": len({
+            (str(row.get("ticker_decision_id") or row.get("decision_id") or ""), str(row.get("horizon") or ""))
+            for row in outcomes
+            if row.get("ticker_decision_id") or row.get("decision_id")
+        }),
+        "effective_sample_count": len(horizon_episode_ids) or (1 if outcomes else 0),
         "disagreement": {
             "strongest_bull_case": _first_statement(fundamental.get("evidence_for")),
             "strongest_bear_case": _first_statement(fundamental.get("evidence_against")),
@@ -399,7 +460,15 @@ def ticker_learning_payload(
                 "status": value.get("status"),
                 "planned_loss": value.get("planned_loss"),
                 "lower_confidence_expectancy": value.get("lower_confidence_expectancy"),
-                "outcomes": outcomes,
+                "outcomes": [
+                    {
+                        **row,
+                        "expression_return": (
+                            dict(row.get("metadata") or {}).get("expression_returns") or {}
+                        ).get(kind),
+                    }
+                    for row in outcomes
+                ],
             }
             for kind, value in expressions.items()
             if isinstance(value, dict)
@@ -413,6 +482,7 @@ def ticker_learning_payload(
             }
             for row in outcomes if row.get("error_type") or row.get("mistake_card")
         ],
+        "strategy_learning": strategy_learning,
     }
 
 
