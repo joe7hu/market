@@ -1,0 +1,12 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Market sends only message text. The fixed recipient and Telegram credentials
+# remain on miniTs inside GBrain's owner-only environment.
+exec /usr/bin/ssh \
+  -o BatchMode=yes \
+  -o ConnectTimeout=10 \
+  -o ServerAliveInterval=10 \
+  -o ServerAliveCountMax=1 \
+  miniTs \
+  /Users/minit/.local/bin/market-gbrain-telegram-owner-relay

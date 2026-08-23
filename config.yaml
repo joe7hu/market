@@ -130,8 +130,8 @@ analysis:
     decision_inbox_enabled: true
     # The recipient is fixed by shared GBrain.  Market stores no chat ID,
     # recipient, bot token, or other Telegram credential.
-    telegram_notifications_enabled: false
-    telegram_notifications_dry_run: true
+    telegram_notifications_enabled: true
+    telegram_notifications_dry_run: false
     options_risk_sleeve_capital: 25000
     max_risk_per_trade_pct: 0.02
     max_open_risk_pct: 0.10

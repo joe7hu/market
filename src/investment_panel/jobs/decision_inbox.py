@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import subprocess
 from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -38,22 +40,45 @@ def _fixed_owner_sender() -> Callable[[str], None]:
     """
 
     endpoint = os.environ.get("MARKET_GBRAIN_TELEGRAM_OWNER_RELAY_URL", "").strip()
-    parsed = urlparse(endpoint)
-    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise RuntimeError("shared GBrain fixed-owner relay URL is not configured as a local relay")
+    if endpoint:
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            raise RuntimeError("shared GBrain fixed-owner relay URL is not configured as a local relay")
 
-    def send(message: str) -> None:
-        request = Request(
-            endpoint,
-            data=json.dumps({"message": message}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(request, timeout=10) as response:  # nosec B310 - local relay is validated above
-            if not 200 <= response.status < 300:
-                raise RuntimeError(f"shared GBrain owner relay returned {response.status}")
+        def send(message: str) -> None:
+            request = Request(
+                endpoint,
+                data=json.dumps({"message": message}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=10) as response:  # nosec B310 - local relay is validated above
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(f"shared GBrain owner relay returned {response.status}")
 
-    return send
+        return send
+
+    command_text = os.environ.get("MARKET_GBRAIN_TELEGRAM_OWNER_RELAY_COMMAND", "").strip()
+    command = shlex.split(command_text)
+    if command and not os.path.isabs(command[0]):
+        raise RuntimeError("shared GBrain owner relay command must use an absolute path")
+    if command:
+        def send(message: str) -> None:
+            result = subprocess.run(
+                command,
+                input=message,
+                text=True,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode:
+                detail = (result.stderr or result.stdout).strip()
+                raise RuntimeError(f"shared GBrain owner relay command failed: {detail[:500]}")
+
+        return send
+
+    raise RuntimeError("shared GBrain fixed-owner relay is not configured")
 
 
 def main(argv: list[str] | None = None) -> None:

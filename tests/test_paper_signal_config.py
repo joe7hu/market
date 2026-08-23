@@ -16,7 +16,8 @@ def test_deployed_config_enables_paper_signal_learning_without_live_brokerage() 
     assert settings.radar_paper_actions_enabled is True
     assert settings.qqq_paper_actions_enabled is True
     assert settings.strategy_auto_promotion_enabled is True
-    assert settings.telegram_notifications_enabled is False
+    assert settings.telegram_notifications_enabled is True
+    assert settings.telegram_notifications_dry_run is False
     assert config.data_sources.brokers.advisory_only is True
     assert config.data_sources.brokers.ibkr.paper_only is True
     assert config.data_sources.brokers.moomoo.paper_only is True

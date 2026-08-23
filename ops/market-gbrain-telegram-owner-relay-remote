@@ -1,0 +1,8 @@
+#!/bin/zsh
+set -euo pipefail
+
+set -a
+. /Users/minit/.gbrain/http.env
+set +a
+
+exec /Users/minit/.bun/bin/bun -e "import { resolveTelegramOwnerConfig, sendTelegramMessageToOwner } from \"/Users/minit/.bun/install/global/node_modules/gbrain/src/core/telegram-owner.ts\"; const text = await new Response(Bun.stdin).text(); const result = await sendTelegramMessageToOwner(resolveTelegramOwnerConfig(undefined, process.env), text); console.log(JSON.stringify(result));"
