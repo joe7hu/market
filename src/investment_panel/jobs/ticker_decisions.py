@@ -57,6 +57,7 @@ def publish(
                 PUBLISH_INPUT_TABLES,
                 query_row_limits={name: 64 for name in PUBLISH_INPUT_TABLES},
                 query_symbol_filter={symbol},
+                runtime_profile=JOB_PROFILE,
             )
             if not metadata.get("available_model_count"):
                 raise RuntimeError("ticker input read models are unavailable")

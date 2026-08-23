@@ -23,6 +23,7 @@ from investment_panel.database.options_recovery_read import RecoveryReadReposito
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.current_quotes import current_quote_rows
 from investment_panel.database.superinvestor_portfolios import superinvestor_portfolios
+from investment_panel.database.runtime import API_PROFILE, RuntimeProfile
 
 __all__ = ["load_postgres_tables"]
 RECOVERY_MODELS = frozenset({
@@ -693,6 +694,7 @@ def load_postgres_tables(
     *,
     query_row_limits: Mapping[str, int] | None = None,
     query_symbol_filter: set[str] | None = None,
+    runtime_profile: RuntimeProfile = API_PROFILE,
     portfolio_summary_include_performance: bool = True,
     thesis_monitor_include_current_prices: bool = True,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
@@ -751,7 +753,7 @@ def load_postgres_tables(
     for name in AGENT_MODELS.intersection(requested):
         tables[name] = AgentRepository(runtime).rows(name)
     query_cache: dict[tuple[str, int | None, bool], list[dict[str, Any]]] = {}
-    with runtime.read() as connection:
+    with runtime.read(runtime_profile) as connection:
         for name in requested:
             if name in tables:
                 continue
