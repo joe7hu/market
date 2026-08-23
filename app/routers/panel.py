@@ -28,29 +28,29 @@ def today(
         loader=lambda active_config: loaders.load_panel_scope_data(active_config, "today"),
         config_loader=lambda: config,
     )
-    symbols: list[str] = []
-    for name in ("ticker_decisions", "portfolio"):
-        for row in panel_data.rows(name):
-            symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
-            if symbol and symbol not in symbols:
-                symbols.append(symbol)
     actions: list[dict[str, Any]] = []
-    for symbol in symbols[:100]:
-        ticker_panel = loaders.load_ticker_panel_data(config, symbol)
-        decision = payloads.ticker_payload(ticker_panel, symbol)["ticker_decision"]
-        capital = dict(decision["capital_action"])
-        selected = decision.get("selected_expression") or {}
+    # The published ticker row already contains the deterministic capital
+    # action. Do not reload a full dossier for every symbol: that makes this
+    # summary route depend on deep evidence and option-surface queries.
+    for row in panel_data.rows("ticker_decisions")[:100]:
+        symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+        capital_value = row.get("capital_action")
+        if not symbol or not isinstance(capital_value, dict) or not capital_value.get("action"):
+            continue
+        capital = dict(capital_value)
+        selected = row.get("selected_expression")
+        selected = selected if isinstance(selected, dict) else {}
         actions.append({
             **capital,
             "ticker": symbol,
-            "decision_revision": decision["decision_revision"],
+            "decision_revision": row.get("decision_revision") or "",
             "selected_expression": selected.get("kind"),
         })
     priority = {"EXIT": 0, "TRIM": 1, "HEDGE": 2, "BUY": 3, "ADD": 4, "WAIT_FOR_PRICE": 5, "HOLD": 6, "AVOID": 7}
     actions.sort(key=lambda row: (priority.get(str(row.get("action")), 99), str(row.get("ticker"))))
     timestamps = [
         timestamp
-        for name in ("ticker_decisions", "portfolio")
+        for name in ("ticker_decisions",)
         if (timestamp := _latest_timestamp(panel_data.rows(name))) is not None
     ]
     as_of = max(timestamps, default=None)

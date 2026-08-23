@@ -45,6 +45,45 @@ def _use_postgres_api(monkeypatch: pytest.MonkeyPatch, dsn: str) -> None:
     monkeypatch.setattr(panel_owner, "load_config", lambda: config)
 
 
+def test_today_uses_published_capital_actions_without_reloading_ticker_dossiers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_temp_api_db(monkeypatch, tmp_path / "status.json")
+    capital = {
+        "ticker": "ACME",
+        "action": "BUY",
+        "owned": False,
+        "rationale": "Aligned views.",
+        "price_condition": "100-105",
+        "catalyst": "earnings",
+        "expires_at": "2026-09-18",
+    }
+    panel = PanelData(
+        status=DataStatus(True, "loaded", "test"),
+        tables={
+            "ticker_decisions": [{
+                "ticker": "ACME",
+                "decision_revision": "ticker-decision.v1:test",
+                "capital_action": capital,
+                "selected_expression": {"kind": "STOCK"},
+                "as_of": "2026-08-23T13:00:00Z",
+            }],
+            "portfolio": [],
+        },
+    )
+    monkeypatch.setattr(loaders_owner, "load_panel_scope_data", lambda _config, _scope: panel)
+    monkeypatch.setattr(
+        loaders_owner,
+        "load_ticker_panel_data",
+        lambda *_args, **_kwargs: pytest.fail("Today must not reload ticker dossiers"),
+    )
+
+    response = TestClient(app).get("/api/today")
+
+    assert response.status_code == 200
+    assert response.json()["actions"] == [{**capital, "decision_revision": "ticker-decision.v1:test", "selected_expression": "STOCK"}]
+
+
 def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     info = postgresql.info
     credentials = info.user if not info.password else f"{info.user}:{info.password}"
