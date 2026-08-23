@@ -250,18 +250,21 @@ def option_decision_adapter(
     )
     if option_expression is not None:
         candidate = dict(payload.get("strongest_candidate") or {})
-        candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
-        candidate["ticker_expression"] = option_expression
-        candidate["ticker_thesis"] = {
-            "tactical": ticker_decision.get("tactical"),
-            "fundamental": ticker_decision.get("fundamental"),
-            "capital_action": capital,
-        }
-        candidate["blockers"] = list(dict.fromkeys([
-            *list(candidate.get("blockers") or []),
-            *[request.get("field") for request in ticker_decision.get("data_requests") or []],
-        ]))
-        payload["strongest_candidate"] = candidate
+        if not candidate:
+            candidate = _compatibility_option_candidate(ticker_decision, option_expression, capital)
+        if candidate:
+            candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
+            candidate["ticker_expression"] = option_expression
+            candidate["ticker_thesis"] = {
+                "tactical": ticker_decision.get("tactical"),
+                "fundamental": ticker_decision.get("fundamental"),
+                "capital_action": capital,
+            }
+            candidate["blockers"] = list(dict.fromkeys([
+                *list(candidate.get("blockers") or []),
+                *[request.get("field") for request in ticker_decision.get("data_requests") or []],
+            ]))
+            payload["strongest_candidate"] = candidate
     payload["ticker_decision_revision"] = ticker_decision.get("decision_revision")
     payload["summary"] = {
         **dict(payload.get("summary") or {}),
@@ -286,6 +289,87 @@ def option_decision_adapter(
         ],
     }
     return payload
+
+
+def _compatibility_option_candidate(
+    ticker_decision: dict[str, Any],
+    expression: dict[str, Any],
+    capital: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the old candidate envelope without creating a second thesis."""
+
+    raw_legs = expression.get("legs")
+    if not isinstance(raw_legs, list):
+        return {}
+    legs: list[dict[str, Any]] = []
+    for raw_leg in raw_legs:
+        if not isinstance(raw_leg, dict):
+            continue
+        try:
+            contract_id = int(raw_leg.get("contract_id"))
+            strike = float(raw_leg.get("strike"))
+        except (TypeError, ValueError):
+            continue
+        legs.append({
+            "contract_id": contract_id,
+            "option_type": str(raw_leg.get("option_type") or "").lower(),
+            "side": str(raw_leg.get("side") or "long").lower(),
+            "strike": strike,
+            "bid": _finite_float(raw_leg.get("bid")),
+            "ask": _finite_float(raw_leg.get("ask")),
+            "observed_at": raw_leg.get("quote_time"),
+            "bid_size": raw_leg.get("bid_size"),
+            "ask_size": raw_leg.get("ask_size"),
+        })
+    if not legs:
+        return {}
+    expiration = raw_legs[0].get("expiration") if isinstance(raw_legs[0], dict) else None
+    if not expiration:
+        return {}
+    blockers = [str(request.get("field")) for request in ticker_decision.get("data_requests") or []]
+    status = str(expression.get("status") or "unavailable")
+    ready = status == "eligible" and not blockers and expression.get("quantity") is not None
+    entry = expression.get("entry_range") if isinstance(expression.get("entry_range"), dict) else {}
+    lower_expectancy = _finite_float(expression.get("lower_confidence_expectancy"))
+    net_expectancy = _finite_float(expression.get("net_expected_value_per_loss_dollar"))
+    return {
+        "decision_id": str(ticker_decision.get("decision_revision") or ticker_decision.get("ticker") or "ticker-decision"),
+        "relative_value_id": 0,
+        "paper_state": "PAPER_READY" if ready else "WATCH",
+        "discovery_lane": "ticker",
+        "structure": str(expression.get("kind") or "option").lower(),
+        "expiration": expiration,
+        "strike": legs[0]["strike"],
+        "option_type": legs[0]["option_type"],
+        "legs": legs,
+        "conservative_entry": {"price": _finite_float(entry.get("low")), "fill_basis": "worst_side_quote"},
+        "one_unit_max_loss": _finite_float(expression.get("max_loss_per_unit")),
+        "fair_value_interval": {"low": None, "high": None},
+        "expected_value_interval": {"low": lower_expectancy, "high": net_expectancy},
+        "uncertainty": {},
+        "modeled_net_edge": net_expectancy,
+        "quote_quality": {"spread_pct": expression.get("spread_pct"), "fill_probability": expression.get("fill_probability")},
+        "liquidity": {"liquidity_score": expression.get("liquidity_score")},
+        "thesis": {"ticker": ticker_decision.get("ticker"), "capital_action": capital},
+        "state_reasons": blockers,
+        "blockers": blockers,
+        "reassessment_date": (ticker_decision.get("fundamental") or {}).get("expiry_date"),
+        "comparable_exact_structure_outcomes": {},
+        "forecast": {"scenarios": expression.get("scenarios") or []},
+        "execution_ready": ready,
+        "strategy_route": {"route_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"), "selected_structure": expression.get("kind"), "ai_can_override": False},
+        "market_regime": {},
+        "ticket": None,
+        "paper_only": True,
+    }
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed == parsed and abs(parsed) != float("inf") else None
 
 
 def ticker_learning_payload(
