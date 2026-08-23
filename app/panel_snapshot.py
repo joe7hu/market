@@ -32,7 +32,7 @@ _CONTEXT_CACHE: dict[str, Any] = {"entries": {}, "expires_at": 0.0, "config_key"
 _CONTEXT_LOCK = RLock()
 _LAST_GOOD_SCOPE_SNAPSHOTS: dict[str, dict[str, Any]] = {}
 _SCOPE_SNAPSHOT_FALLBACK_TABLES = {
-    "today": {"daily_brief", "preopen_daily_brief", "portfolio", "decision_queue", "decision_truth", "event_decision_packets", "event_scout_events"},
+    "today": {"ticker_decisions", "portfolio", "preopen_daily_brief", "daily_brief", "portfolio_risk_cards"},
     "watchlist": {"universe_screen", "manual_watchlist", "portfolio"},
     "watchlist-watched": {"universe_screen", "manual_watchlist", "portfolio"},
     "watchlist-unwatched": {"universe_screen", "manual_watchlist", "portfolio"},

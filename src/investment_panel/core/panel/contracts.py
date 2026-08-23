@@ -7,17 +7,15 @@ from typing import Any
 
 PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     "feed": ("feed_signals",),
+    # Today is the capital-action surface. Keep canonical ticker decisions
+    # first and allow only bounded context for the existing page shell. The
+    # legacy option Radar and broad decision queue remain separate routes.
     "today": (
+        "ticker_decisions",
+        "portfolio",
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
-        "portfolio",
-        "ticker_decisions",
-        # Today reads canonical published ticker decisions and legacy Radar
-        # rows for symbol discovery. It must never show a separately copied
-        # option action queue from an older daily-brief publication. Thesis
-        # work, feed rows, and broad decision queues remain lazy routes.
-        "option_radar_opportunity",
     ),
     "watchlist": (
         "universe_screen",

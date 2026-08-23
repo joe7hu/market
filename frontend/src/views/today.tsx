@@ -68,6 +68,7 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
         />
       </div>
 
+      <CapitalActions rows={data.tickerDecisions?.rows ?? []} onOpenTicker={onOpenTicker} />
       <PreopenBrief row={vm.preopenBrief} />
       <EventScoutPanel truths={data.decisionTruth?.rows ?? []} packets={data.eventDecisionPackets?.rows ?? []} onOpenTicker={onOpenTicker} />
       <OptionActions rows={optionActions} onOpenTicker={onOpenTicker} onOpenDecision={setSelectedDecisionId} />
@@ -91,6 +92,59 @@ export function TodayPage({ data, model, lastRefresh, loading, scopeStatus, onRe
         <EmptyState title="No daily brief loaded" detail="Refresh /today to load decisions, source changes, catalysts, and portfolio moves." />
       )}
       <OptionTicketDetailSheet decisionId={selectedDecisionId} onClose={() => setSelectedDecisionId(null)} onOpenTicker={onOpenTicker} />
+    </section>
+  );
+}
+
+function CapitalActions({ rows, onOpenTicker }: { rows: RowRecord[]; onOpenTicker: (symbol: string) => void }) {
+  const actions = rows
+    .map((row) => {
+      const capital = recordField(row, "capital_action");
+      const expression = recordField(row, "selected_expression");
+      const ticker = textField(row, ["ticker", "symbol"]);
+      return {
+        ticker,
+        action: textField(capital, ["action"], textField(row, ["action"], "WAIT")),
+        owned: capital.owned === true,
+        rationale: textField(capital, ["rationale"]),
+        expression: textField(expression, ["kind", "instrument"]),
+        price: displayField(capital, ["price_condition"], "No price condition"),
+        expires: displayField(capital, ["expires_at"], "No expiry"),
+      };
+    })
+    .filter((item) => item.ticker);
+
+  if (!actions.length) return null;
+
+  return (
+    <section className="mb-6">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Capital actions</h2>
+          <p className="text-xs text-muted-foreground">One deterministic action per published ticker thesis. Open a ticker for sizing and expression details.</p>
+        </div>
+        <StatusBadge tone="info">{actions.length} current</StatusBadge>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        {actions.slice(0, 12).map((item) => (
+          <Card key={item.ticker} className={cn("min-w-0", toneBorder(toneFromText(item.action)))}>
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <button type="button" className="font-semibold hover:underline" onClick={() => onOpenTicker(item.ticker)}>{item.ticker}</button>
+                <StatusBadge tone={toneFromText(item.action)}>{item.action}</StatusBadge>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <OptionMetric label="Ownership" value={item.owned ? "Owned" : "Unowned"} />
+                <OptionMetric label="Expression" value={item.expression || "Pending"} />
+                <OptionMetric label="Price" value={item.price} />
+                <OptionMetric label="Expiry" value={item.expires} />
+              </div>
+              {item.rationale ? <p className="line-clamp-2 text-sm text-muted-foreground">{item.rationale}</p> : null}
+              <Button type="button" variant="outline" size="sm" onClick={() => onOpenTicker(item.ticker)}>Open {item.ticker}</Button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </section>
   );
 }

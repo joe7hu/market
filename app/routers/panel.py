@@ -29,7 +29,7 @@ def today(
         config_loader=lambda: config,
     )
     symbols: list[str] = []
-    for name in ("option_radar_opportunity", "decision_queue", "portfolio", "ticker_decisions"):
+    for name in ("ticker_decisions", "portfolio"):
         for row in panel_data.rows(name):
             symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
             if symbol and symbol not in symbols:
@@ -50,7 +50,7 @@ def today(
     actions.sort(key=lambda row: (priority.get(str(row.get("action")), 99), str(row.get("ticker"))))
     timestamps = [
         timestamp
-        for name in ("ticker_decisions", "option_radar_opportunity", "decision_queue", "portfolio")
+        for name in ("ticker_decisions", "portfolio")
         if (timestamp := _latest_timestamp(panel_data.rows(name))) is not None
     ]
     as_of = max(timestamps, default=None)

@@ -244,38 +244,28 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert market_tables["market_environment_model"]["count"] == 1
 
 
-def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
+def test_today_scope_contains_only_canonical_ticker_actions_and_ownership() -> None:
     panel_data = PanelData(
         status=DataStatus(True, "ok", "test"),
         tables={
-            "preopen_daily_brief": [{"summary": "Macro veto: none"}],
-            "daily_brief": [{"category": "catalysts", "symbol": "TSLA"}],
-            "portfolio_risk_cards": [{"symbol": "TSLA", "severity": "critical"}],
             "portfolio": [{"symbol": "TSLA", "market_value": 100}],
-            "option_radar_opportunity": [
-                {"decision_id": f"decision-{index}", "symbol": "TSLA"}
-                for index in range(4)
-            ],
-            "thesis_monitor": [{"symbol": "TSLA", "needs_review": True}],
-            "decision_queue": [{"symbol": "TSLA", "action": "review"}],
-            "feed_signals": [{"symbol": "TSLA", "summary": "unused on Today"}],
+            "ticker_decisions": [{"ticker": "TSLA", "capital_action": {"action": "HOLD"}}],
+            "daily_brief": [{"category": "catalysts", "symbol": "TSLA"}],
+            "option_radar_opportunity": [{"decision_id": "legacy", "symbol": "TSLA"}],
         },
     )
 
     tables = payloads_owner.panel_snapshot_payload(panel_data, "today")["tables"]
 
     assert list(tables) == [
+        "ticker_decisions",
+        "portfolio",
         "preopen_daily_brief",
         "daily_brief",
         "portfolio_risk_cards",
-        "portfolio",
-        "ticker_decisions",
-        "option_radar_opportunity",
     ]
-    opportunities = tables["option_radar_opportunity"]
-    assert opportunities["count"] == 4
-    assert opportunities["limit"] == 3
-    assert [row["decision_id"] for row in opportunities["rows"]] == ["decision-0", "decision-1", "decision-2"]
+    assert tables["ticker_decisions"]["count"] == 1
+    assert tables["portfolio"]["count"] == 1
 
 
 def test_scope_loader_materializes_only_requested_tables(migrated_postgres_dsn: str) -> None:
