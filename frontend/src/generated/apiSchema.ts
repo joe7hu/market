@@ -232,6 +232,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/market/breadth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Market Breadth
+         * @description Return the frozen equity denominator used by ticker decisions.
+         */
+        get: operations["market_breadth_api_market_breadth_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/opportunity-scorecard": {
         parameters: {
             query?: never;
@@ -1109,6 +1129,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tickers/{ticker}/paper-entry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ticker Paper Entry */
+        post: operations["ticker_paper_entry_api_tickers__ticker__paper_entry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/today": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Today
+         * @description Return exact ticker capital actions, ordered by action priority.
+         */
+        get: operations["today_api_today_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/watchlist/symbols": {
         parameters: {
             query?: never;
@@ -1497,6 +1554,27 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** CapitalAction */
+        CapitalAction: {
+            action: components["schemas"]["CapitalActionType"];
+            /** Catalyst */
+            catalyst?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Price Condition */
+            price_condition?: string | null;
+            /** Rationale */
+            rationale: string;
+            /** Ticker */
+            ticker: string;
+        };
+        /**
+         * CapitalActionType
+         * @enum {string}
+         */
+        CapitalActionType: "BUY" | "ADD" | "HOLD" | "TRIM" | "EXIT" | "HEDGE" | "AVOID" | "WAIT_FOR_PRICE";
         /** DashboardResponse */
         DashboardResponse: {
             /** Metrics */
@@ -1510,6 +1588,32 @@ export interface components {
             status?: components["schemas"]["ApiStatusResponse"] | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * DataRequest
+         * @description A missing value that can change the current recommendation.
+         */
+        DataRequest: {
+            /** Collect Now */
+            collect_now: string;
+            /** Decision Impact */
+            decision_impact: string;
+            /** Expected Completion */
+            expected_completion: string;
+            /** Field */
+            field: string;
+            /** Max Age */
+            max_age: string;
+            /** Max Age Seconds */
+            max_age_seconds?: number | null;
+            /** Owner */
+            owner: string;
+            /** Required Source */
+            required_source: string;
+            /** Ticker */
+            ticker: string;
+            /** Why It Matters */
+            why_it_matters: string;
         };
         /** DecisionInboxResponse */
         DecisionInboxResponse: {
@@ -1696,10 +1800,131 @@ export interface components {
             /** Win Rate */
             win_rate?: number | null;
         };
+        /** EvidenceItem */
+        EvidenceItem: {
+            /** Available At */
+            available_at?: string | null;
+            /** Event At */
+            event_at?: string | null;
+            /** License */
+            license?: string | null;
+            /** @default FOR */
+            polarity: components["schemas"]["EvidencePolarity"];
+            /** Published At */
+            published_at?: string | null;
+            /** Reference */
+            reference?: string | null;
+            /** Revision */
+            revision?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Statement */
+            statement: string;
+        };
+        /**
+         * EvidencePolarity
+         * @enum {string}
+         */
+        EvidencePolarity: "FOR" | "AGAINST" | "FLIP";
+        /**
+         * ExpressionDecision
+         * @description One way to express the same ticker thesis.
+         */
+        ExpressionDecision: {
+            /** Data Requests */
+            data_requests?: components["schemas"]["DataRequest"][];
+            entry_range?: components["schemas"]["PriceRange"] | null;
+            /** Fill Probability */
+            fill_probability?: number | null;
+            horizon: components["schemas"]["Horizon"];
+            /** Horizon Fit */
+            horizon_fit?: number | null;
+            invalidation?: components["schemas"]["Invalidation"] | null;
+            kind: components["schemas"]["ExpressionKind"];
+            /** Legs */
+            legs?: {
+                [key: string]: unknown;
+            }[];
+            /** Liquidity Score */
+            liquidity_score?: number | null;
+            /** Loss Budget */
+            loss_budget?: number | null;
+            /** Lower Confidence Expectancy */
+            lower_confidence_expectancy?: number | null;
+            /** Max Loss Per Unit */
+            max_loss_per_unit?: number | null;
+            /** Net Expected Value Per Loss Dollar */
+            net_expected_value_per_loss_dollar?: number | null;
+            /** Planned Loss */
+            planned_loss?: number | null;
+            /** Quantity */
+            quantity?: number | null;
+            /** Rationale */
+            rationale: string;
+            /** Scenarios */
+            scenarios?: components["schemas"]["ScenarioOutcome"][];
+            /**
+             * Selected
+             * @default false
+             */
+            selected: boolean;
+            /** Spread Pct */
+            spread_pct?: number | null;
+            stance: components["schemas"]["Stance"];
+            /** Status */
+            status: string;
+            target_range?: components["schemas"]["PriceRange"] | null;
+            /** Thesis Revision */
+            thesis_revision: string;
+            /** Ticker */
+            ticker: string;
+        };
+        /**
+         * ExpressionKind
+         * @enum {string}
+         */
+        ExpressionKind: "STOCK" | "CALL" | "PUT" | "DEBIT_SPREAD" | "CASH_SECURED_PUT" | "CASH";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * Horizon
+         * @enum {string}
+         */
+        Horizon: "TACTICAL" | "FUNDAMENTAL";
+        /** HorizonDecision */
+        HorizonDecision: {
+            action: components["schemas"]["CapitalActionType"];
+            alternate_expression: components["schemas"]["ExpressionKind"];
+            /** Confidence */
+            confidence?: number | null;
+            /** Confidence Basis */
+            confidence_basis?: string[];
+            /** Conviction Tier */
+            conviction_tier: string;
+            /** Current Price */
+            current_price?: number | null;
+            entry_range?: components["schemas"]["PriceRange"] | null;
+            /** Evidence Against */
+            evidence_against?: components["schemas"]["EvidenceItem"][];
+            /** Evidence For */
+            evidence_for?: components["schemas"]["EvidenceItem"][];
+            expected_return_range?: components["schemas"]["NumericRange"] | null;
+            /**
+             * Expiry Date
+             * Format: date
+             */
+            expiry_date: string;
+            fact_that_would_flip: components["schemas"]["EvidenceItem"];
+            horizon: components["schemas"]["Horizon"];
+            invalidation?: components["schemas"]["Invalidation"] | null;
+            /** Scenarios */
+            scenarios: components["schemas"]["ScenarioOutcome"][];
+            selected_instrument: components["schemas"]["ExpressionKind"];
+            stance: components["schemas"]["Stance"];
+            target_range?: components["schemas"]["PriceRange"] | null;
         };
         /** IVCurveSet */
         IVCurveSet: {
@@ -1739,6 +1964,39 @@ export interface components {
             /** Y */
             y: number[];
         };
+        /** InputManifest */
+        InputManifest: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Code Version */
+            code_version: string;
+            /** Experiment Id */
+            experiment_id: string;
+            /** Input Hash */
+            input_hash: string;
+            /** Inputs */
+            inputs?: {
+                [key: string]: unknown;
+            };
+            /** Signal Declarations */
+            signal_declarations?: components["schemas"]["SignalDeclaration"][];
+            /** Source Versions */
+            source_versions?: {
+                [key: string]: string;
+            };
+        };
+        /** Invalidation */
+        Invalidation: {
+            /** Kind */
+            kind: string;
+            /** Statement */
+            statement: string;
+            /** Value */
+            value: string | number;
+        };
         /** MarketRegime */
         MarketRegime: {
             /** As Of */
@@ -1765,6 +2023,13 @@ export interface components {
             volatility_state?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** NumericRange */
+        NumericRange: {
+            /** High */
+            high: number;
+            /** Low */
+            low: number;
         };
         /** OpportunityScorecardResponse */
         OpportunityScorecardResponse: {
@@ -3114,6 +3379,13 @@ export interface components {
              */
             notes: string;
         };
+        /** PriceRange */
+        PriceRange: {
+            /** High */
+            high: number;
+            /** Low */
+            low: number;
+        };
         /** QuotesResponse */
         QuotesResponse: {
             /**
@@ -3323,6 +3595,41 @@ export interface components {
             /** Priority Handles */
             priority_handles?: string[] | string | null;
         };
+        /** RiskPolicy */
+        RiskPolicy: {
+            /** Conviction Tier */
+            conviction_tier: string;
+            /** Loss Budget */
+            loss_budget?: number | null;
+            /** Loss Budget Pct */
+            loss_budget_pct: number;
+            /**
+             * Max Ticker Loss Pct
+             * @default 0.04
+             */
+            max_ticker_loss_pct: number;
+            /**
+             * Max Total Open Planned Loss Pct
+             * @default 0.1
+             */
+            max_total_open_planned_loss_pct: number;
+            /**
+             * Position Limit Pct
+             * @default 0.1
+             */
+            position_limit_pct: number;
+        };
+        /** ScenarioOutcome */
+        ScenarioOutcome: {
+            /** Description */
+            description: string;
+            /** Name */
+            name: string;
+            price_range?: components["schemas"]["PriceRange"] | null;
+            /** Probability */
+            probability: number;
+            return_range?: components["schemas"]["NumericRange"] | null;
+        };
         /** SettingsResponse */
         SettingsResponse: {
             /** Agents */
@@ -3340,6 +3647,36 @@ export interface components {
             sources?: components["schemas"]["SourceAuditResponse"] | null;
             status: components["schemas"]["ApiStatusResponse"];
         };
+        /**
+         * SignalDeclaration
+         * @description Provenance and behavior contract for one signal family.
+         */
+        SignalDeclaration: {
+            /** Applicable Horizon */
+            applicable_horizon: string;
+            /** Coverage */
+            coverage: string;
+            /** Economic Mechanism */
+            economic_mechanism: string;
+            evidence_state: components["schemas"]["SignalEvidenceState"];
+            /** Freshness */
+            freshness: string;
+            /** Incremental Predictive Value */
+            incremental_predictive_value: string;
+            /** Missing Data Behavior */
+            missing_data_behavior: string;
+            /** Name */
+            name: string;
+            /** Source */
+            source: string;
+            /** Transformation */
+            transformation: string;
+        };
+        /**
+         * SignalEvidenceState
+         * @enum {string}
+         */
+        SignalEvidenceState: "OBSERVED" | "DERIVED" | "ESTIMATED" | "HYPOTHESIS";
         /** SourceAuditResponse */
         SourceAuditResponse: {
             /**
@@ -3557,6 +3894,11 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * Stance
+         * @enum {string}
+         */
+        Stance: "BULLISH" | "BEARISH" | "NEUTRAL";
         /** StaticArbitrageVerificationResponse */
         StaticArbitrageVerificationResponse: {
             /** Candidate Id */
@@ -3868,38 +4210,226 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** TickerDecisionSnapshotResponse */
-        TickerDecisionSnapshotResponse: {
+        /** TickerBenchmarkResponse */
+        TickerBenchmarkResponse: {
+            /** As Of */
+            as_of?: string | null;
+            /** Available At */
+            available_at?: string | null;
+            /** Benchmark Key */
+            benchmark_key?: string | null;
+            /** Coverage */
+            coverage?: {
+                [key: string]: unknown;
+            };
+            /** Exact Membership */
+            exact_membership?: string[];
             /**
-             * Found
-             * @default true
+             * Member Count
+             * @default 0
              */
-            found: boolean;
-            /** Symbol */
-            symbol: string;
+            member_count: number;
+            /** Membership Hash */
+            membership_hash?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Version */
+            source_version?: string | null;
+            status: components["schemas"]["ApiStatusResponse"];
         } & {
             [key: string]: unknown;
+        };
+        /** TickerDecision */
+        TickerDecision: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            capital_action: components["schemas"]["CapitalAction"];
+            /** Data Requests */
+            data_requests?: components["schemas"]["DataRequest"][];
+            /**
+             * Decision Contract Version
+             * @default ticker-decision.v1
+             */
+            decision_contract_version: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Expressions */
+            expressions: {
+                [key: string]: components["schemas"]["ExpressionDecision"];
+            };
+            fundamental: components["schemas"]["HorizonDecision"];
+            input_manifest: components["schemas"]["InputManifest"];
+            /** Learning History */
+            learning_history?: {
+                [key: string]: unknown;
+            }[];
+            risk_policy: components["schemas"]["RiskPolicy"];
+            selected_expression?: components["schemas"]["ExpressionDecision"] | null;
+            tactical: components["schemas"]["HorizonDecision"];
+            /** Ticker */
+            ticker: string;
+        };
+        /**
+         * TickerDecisionSnapshotResponse
+         * @description The typed ticker decision; no flexible legacy snapshot fields remain.
+         */
+        TickerDecisionSnapshotResponse: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            capital_action: components["schemas"]["CapitalAction"];
+            /** Data Requests */
+            data_requests?: components["schemas"]["DataRequest"][];
+            /**
+             * Decision Contract Version
+             * @default ticker-decision.v1
+             */
+            decision_contract_version: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Expressions */
+            expressions: {
+                [key: string]: components["schemas"]["ExpressionDecision"];
+            };
+            fundamental: components["schemas"]["HorizonDecision"];
+            input_manifest: components["schemas"]["InputManifest"];
+            /** Learning History */
+            learning_history?: {
+                [key: string]: unknown;
+            }[];
+            risk_policy: components["schemas"]["RiskPolicy"];
+            selected_expression?: components["schemas"]["ExpressionDecision"] | null;
+            tactical: components["schemas"]["HorizonDecision"];
+            /** Ticker */
+            ticker: string;
         };
         /** TickerDetailResponse */
         TickerDetailResponse: {
             /** As Of */
             as_of?: string | null;
+            capital_action: components["schemas"]["CapitalAction"];
+            /** Data Requests */
+            data_requests?: components["schemas"]["DataRequest"][];
+            /** Decision Revision */
+            decision_revision: string;
             /** Dossier */
             dossier?: {
                 [key: string]: unknown;
+            };
+            /** Expressions */
+            expressions?: {
+                [key: string]: components["schemas"]["ExpressionDecision"];
             };
             /**
              * Found
              * @default false
              */
             found: boolean;
+            /** Learning */
+            learning?: {
+                [key: string]: unknown;
+            };
+            /** Learning History */
+            learning_history?: {
+                [key: string]: unknown;
+            }[];
             status: components["schemas"]["ApiStatusResponse"];
             /** Symbol */
             symbol: string;
             /** Ticker */
             ticker: string;
+            ticker_decision: components["schemas"]["TickerDecision"];
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * TickerPaperEntryInput
+         * @description Unified stock/option paper-entry request for one ticker thesis.
+         */
+        TickerPaperEntryInput: {
+            /** Decision Revision */
+            decision_revision: string;
+            /**
+             * Expression Kind
+             * @enum {string}
+             */
+            expression_kind: "STOCK" | "CALL" | "PUT" | "DEBIT_SPREAD" | "CASH_SECURED_PUT";
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Limit Price */
+            limit_price?: number | null;
+            /** Quantity */
+            quantity?: number | null;
+        };
+        /** TickerPaperEntryResponse */
+        TickerPaperEntryResponse: {
+            /** Decision Revision */
+            decision_revision: string;
+            /** Expression Kind */
+            expression_kind: string;
+            /**
+             * Live Order Submission
+             * @default false
+             */
+            live_order_submission: boolean;
+            /**
+             * Paper Only
+             * @default true
+             */
+            paper_only: boolean;
+            /** Paper Order Id */
+            paper_order_id: string;
+            /** Planned Loss */
+            planned_loss: number;
+            /** Quantity */
+            quantity: number;
+            /** Status */
+            status: string;
+            /** Ticker */
+            ticker: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TodayCapitalAction */
+        TodayCapitalAction: {
+            /** Action */
+            action: string;
+            /** Catalyst */
+            catalyst?: string | null;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Price Condition */
+            price_condition?: string | null;
+            /** Rationale */
+            rationale: string;
+            /** Selected Expression */
+            selected_expression?: string | null;
+            /** Ticker */
+            ticker: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TodayResponse */
+        TodayResponse: {
+            /** Actions */
+            actions?: components["schemas"]["TodayCapitalAction"][];
+            /** As Of */
+            as_of?: string | null;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            status: components["schemas"]["ApiStatusResponse"];
         };
         /** ValidationError */
         ValidationError: {
@@ -4340,6 +4870,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StorageHealthResponse"];
+                };
+            };
+        };
+    };
+    market_breadth_api_market_breadth_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TickerBenchmarkResponse"];
                 };
             };
         };
@@ -5964,6 +6514,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ticker_paper_entry_api_tickers__ticker__paper_entry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticker: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TickerPaperEntryInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TickerPaperEntryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    today_api_today_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayResponse"];
                 };
             };
         };

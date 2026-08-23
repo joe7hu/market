@@ -117,6 +117,18 @@ class OptionPaperEntryInput(BaseModel):
     limit_price: float = Field(gt=0, allow_inf_nan=False)
 
 
+class TickerPaperEntryInput(BaseModel):
+    """Unified stock/option paper-entry request for one ticker thesis."""
+
+    idempotency_key: str = Field(min_length=1, max_length=160)
+    decision_revision: str = Field(min_length=1, max_length=160)
+    expression_kind: Literal[
+        "STOCK", "CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT"
+    ]
+    quantity: int | None = Field(default=None, gt=0)
+    limit_price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
 class StrategyPromotionInput(BaseModel):
     approved_by: str = "joe"
 
@@ -203,6 +215,7 @@ __all__ = [
     "AgentSettingsInput",
     "OptionAgentSettingsInput",
     "OptionPaperEntryInput",
+    "TickerPaperEntryInput",
     "OptionsHistoryToggleInput",
     "PortfolioPositionInput",
     "PortfolioTransactionInput",

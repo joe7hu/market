@@ -12,6 +12,7 @@
   "/api/event-scout/signals": ["POST"],
   "/api/health/options-recovery": ["GET"],
   "/api/health/storage": ["GET"],
+  "/api/market/breadth": ["GET"],
   "/api/opportunity-scorecard": ["GET"],
   "/api/options-radar/learning/{collection}": ["GET"],
   "/api/options-radar/signals/{decision_id}": ["GET"],
@@ -63,6 +64,8 @@
   "/api/thesis-monitor/automation": ["POST"],
   "/api/tickers/{ticker}": ["GET"],
   "/api/tickers/{ticker}/decision-snapshot": ["GET"],
+  "/api/tickers/{ticker}/paper-entry": ["POST"],
+  "/api/today": ["GET"],
   "/api/watchlist/symbols": ["POST"],
   "/api/watchlist/symbols/{symbol}": ["DELETE"],
   "/api/watchlist/symbols/{symbol}/options-history": ["PATCH"]

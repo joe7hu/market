@@ -12,6 +12,7 @@ from app.actions.agents import AgentActions
 from app.actions.options import OptionsActions
 from app.actions.portfolio import PortfolioActions
 from app.actions.theses import ThesisActions
+from app.actions.tickers import TickerActions
 from app import job_control
 from app.request_security import require_local_request
 from investment_panel.core.config import AppConfig, load_config, public_config_payload as _public_config_payload
@@ -52,6 +53,10 @@ def get_agent_actions(config: AppConfig = Depends(get_config)) -> AgentActions:
 
 def get_options_actions(config: AppConfig = Depends(get_config)) -> OptionsActions:
     return OptionsActions(config)
+
+
+def get_ticker_actions(config: AppConfig = Depends(get_config)) -> TickerActions:
+    return TickerActions(config)
 
 
 def get_portfolio_actions(config: AppConfig = Depends(get_config)) -> PortfolioActions:
@@ -108,6 +113,7 @@ __all__ = [
     "get_authorized_request",
     "get_agent_actions",
     "get_options_actions",
+    "get_ticker_actions",
     "get_portfolio_actions",
     "get_source_repository",
     "get_storage_archive_service",

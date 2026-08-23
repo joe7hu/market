@@ -13,8 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app import panel_snapshot
 from app import dependencies
 from app.actions.options import OptionsActions
-from app.contracts import OptionPaperEntryInput, StrategyPromotionInput
-from app.data_access import loaders
+from app.actions.tickers import TickerActions
+from app.contracts import OptionPaperEntryInput, StrategyPromotionInput, TickerPaperEntryInput
+from app.data_access import loaders, payloads
 from app.response_contracts import (
     AgentSubmissionResponse,
     DecisionInboxResponse,
@@ -49,6 +50,7 @@ from app.options_history_contracts import (
 )
 from app.routers.options_research import router as research_router
 from investment_panel.core.config import AppConfig
+from investment_panel.core.decision import ExpressionKind, TickerDecision
 
 router = APIRouter()
 router.include_router(research_router)
@@ -261,9 +263,18 @@ def recovery_event(
 def options_decision_brief(
     symbol: str = Query("QQQ", min_length=1, max_length=16),
     lane: Literal["thesis", "anomaly"] = "thesis",
+    config: AppConfig = Depends(dependencies.get_config),
     actions: OptionsActions = Depends(dependencies.get_options_actions),
 ) -> dict[str, Any]:
-    return actions.decision_brief(symbol=symbol, lane=lane)
+    legacy_payload = actions.decision_brief(symbol=symbol, lane=lane)
+    normalized = symbol.strip().upper()
+    _, panel_data = panel_snapshot.context(
+        cache_key=f"ticker:{normalized}",
+        loader=lambda active_config: loaders.load_ticker_panel_data(active_config, normalized),
+        config_loader=lambda: config,
+    )
+    ticker_decision = payloads.ticker_payload(panel_data, normalized)["ticker_decision"]
+    return payloads.option_decision_adapter(ticker_decision, legacy_payload)
 
 
 @router.get("/api/options/workspace", response_model=OptionsWorkspaceResponse, response_model_exclude_unset=True)
@@ -475,14 +486,54 @@ def stage_option_radar_paper_entry(
     decision_id: UUID,
     payload: OptionPaperEntryInput,
     actions: OptionsActions = Depends(dependencies.get_options_actions),
+    ticker_actions: TickerActions = Depends(dependencies.get_ticker_actions),
+    config: AppConfig = Depends(dependencies.get_config),
     _request=Depends(dependencies.get_authorized_request),
 ) -> dict[str, Any]:
+    detail = actions.signal_detail(decision_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Option decision not found")
+    ticker = str(detail.get("symbol") or detail.get("ticker") or "").strip().upper()
+    structure = str(detail.get("structure") or (detail.get("ticket") or {}).get("structure") or "").lower()
+    expression_kind = _ticker_expression_for_legacy_structure(structure)
+    if not ticker or expression_kind is None:
+        raise HTTPException(status_code=409, detail="Option paper entry has no ticker expression adapter")
+    _, panel_data = panel_snapshot.context(
+        cache_key=f"ticker:{ticker}",
+        loader=lambda active_config: loaders.load_ticker_panel_data(active_config, ticker),
+        config_loader=lambda: config,
+    )
+    decision_payload = payloads.ticker_payload(panel_data, ticker)["ticker_decision"]
+    decision = TickerDecision.model_validate(decision_payload)
+    ticker_payload = TickerPaperEntryInput(
+        idempotency_key=payload.idempotency_key,
+        decision_revision=decision.decision_revision,
+        expression_kind=expression_kind.value,
+        quantity=payload.quantity,
+        limit_price=payload.limit_price,
+    )
     try:
-        result = actions.stage_paper_entry(decision_id, payload.model_dump())
+        result = ticker_actions.stage_paper_entry(
+            ticker=ticker,
+            decision=decision,
+            payload=ticker_payload.model_dump(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     panel_snapshot.invalidate_context_cache()
     return result
+
+
+def _ticker_expression_for_legacy_structure(structure: str) -> ExpressionKind | None:
+    if structure in {"long_call", "call"}:
+        return ExpressionKind.CALL
+    if structure in {"long_put", "put"}:
+        return ExpressionKind.PUT
+    if structure in {"call_debit_spread", "put_debit_spread", "debit_spread"}:
+        return ExpressionKind.DEBIT_SPREAD
+    if structure == "cash_secured_put":
+        return ExpressionKind.CASH_SECURED_PUT
+    return None
 
 
 @router.post("/api/agent-thesis", response_model=AgentSubmissionResponse, response_model_exclude_unset=True)

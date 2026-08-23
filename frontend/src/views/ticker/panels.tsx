@@ -3,7 +3,8 @@ import { ExternalLink } from "lucide-react";
 import { resolveTradingViewSymbol, tradingViewEmbedUrl } from "@/adapters/tradingView";
 import { DataTableFrame, StatusBadge } from "@/components/market/workstation";
 import { Button } from "@/components/ui/button";
-import type { RowRecord, TickerDossier, TickerPayload } from "@/types";
+import type { components } from "@/generated/apiSchema";
+import type { RowRecord, TickerDossier, TickerLearning, TickerPayload } from "@/types";
 import { displayField, listField, symbolList, textField, titleLabel, toneFromText } from "@/views/rowFormat";
 import type { OpenTicker } from "@/views/workspacePage";
 
@@ -27,12 +28,204 @@ import {
   targetRange,
 } from "./data";
 
+type TickerDecisionContract = components["schemas"]["TickerDecision"];
+type HorizonDecisionContract = components["schemas"]["HorizonDecision"];
+type DataRequestContract = components["schemas"]["DataRequest"];
+
+export function TickerDecisionPanel({
+  decision,
+  dataRequests,
+  learning,
+  collecting,
+  onCollect,
+}: {
+  decision: TickerDecisionContract;
+  dataRequests: DataRequestContract[];
+  learning?: TickerLearning;
+  collecting: string | null;
+  onCollect: (job: string) => Promise<void>;
+}) {
+  const action = decision.capital_action;
+  const expressions = Object.values(decision.expressions ?? {});
+  const disagreement = learning?.disagreement;
+  return (
+    <>
+      <DataTableFrame
+        title={<span className="flex items-center gap-2"><span className="size-2 rounded-full bg-[var(--primary)]" />Capital action</span>}
+        action={<StatusBadge tone={toneFromText(action.action)}>{action.action}</StatusBadge>}
+      >
+        <div className="grid gap-0 xl:grid-cols-[minmax(0,0.78fr)_minmax(420px,1fr)]">
+          <div className="border-b border-border bg-[linear-gradient(135deg,rgba(15,61,46,0.08),transparent_60%)] p-5 xl:border-b-0 xl:border-r">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <span>{decision.ticker}</span>
+              <span className="text-border">/</span>
+              <span>revision {decision.decision_revision.slice(-16)}</span>
+            </div>
+            <div className="mt-4 flex flex-wrap items-end gap-x-5 gap-y-2">
+              <div>
+                <p className="text-xs uppercase tracking-[0.12em] text-muted-foreground">Do this now</p>
+                <p className="mt-1 text-3xl font-semibold tracking-tight">{action.action}</p>
+              </div>
+              <div className="pb-1 text-sm text-muted-foreground">
+                {action.owned ? "Owned ticker" : "Unowned ticker"} · {decision.selected_expression?.kind ?? "No expression"}
+              </div>
+            </div>
+            <p className="mt-4 max-w-2xl text-base leading-7">{action.rationale}</p>
+            {action.action === "WAIT_FOR_PRICE" ? (
+              <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
+                <KeyValue label="Price" value={action.price_condition ?? "-"} />
+                <KeyValue label="Catalyst" value={action.catalyst ?? "-"} />
+                <KeyValue label="Expires" value={action.expires_at ?? "-"} />
+              </div>
+            ) : null}
+            <p className="mt-5 text-xs text-muted-foreground">Point-in-time inputs: {decision.input_manifest.input_hash.slice(0, 16)}… · {decision.input_manifest.experiment_id}</p>
+          </div>
+          <div className="grid gap-4 p-4 sm:p-5">
+            <div className="grid gap-3 md:grid-cols-2">
+              <HorizonCard view={decision.tactical} label="TACTICAL · 1–20 sessions" />
+              <HorizonCard view={decision.fundamental} label="FUNDAMENTAL · 3–18 months" />
+            </div>
+            <ExpressionTable expressions={expressions} />
+          </div>
+        </div>
+      </DataTableFrame>
+      {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
+      {disagreement ? <DisagreementPanel learning={learning} /> : null}
+    </>
+  );
+}
+
+function HorizonCard({ view, label }: { view: HorizonDecisionContract; label: string }) {
+  return (
+    <article className="rounded-md border border-border/80 bg-background/60 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
+          <p className="mt-1 text-lg font-semibold">{view.stance} <span className="text-sm font-normal text-muted-foreground">· {view.action}</span></p>
+        </div>
+        <StatusBadge tone={toneFromText(view.stance)}>{view.conviction_tier}</StatusBadge>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+        <KeyValue label="Current" value={money(view.current_price)} />
+        <KeyValue label="Review" value={view.expiry_date} />
+        <KeyValue label="Entry" value={priceRange(view.entry_range)} />
+        <KeyValue label="Target" value={priceRange(view.target_range)} />
+        <KeyValue label="Invalidation" value={invalidation(view.invalidation)} />
+        <KeyValue label="Confidence" value={percent(view.confidence)} />
+      </div>
+      <ScenarioRail scenarios={view.scenarios} />
+    </article>
+  );
+}
+
+function ScenarioRail({ scenarios }: { scenarios: TickerDecisionContract["tactical"]["scenarios"] }) {
+  return (
+    <div className="mt-4">
+      <div className="flex h-2 overflow-hidden rounded-full bg-muted" aria-label="Scenario probabilities">
+        {scenarios.map((scenario) => (
+          <span
+            key={scenario.name}
+            className={scenario.name === "bull" ? "bg-[var(--success)]" : scenario.name === "bear" ? "bg-[var(--destructive)]" : "bg-[var(--warning)]"}
+            style={{ width: `${scenario.probability * 100}%` }}
+            title={`${scenario.name} ${percent(scenario.probability)}`}
+          />
+        ))}
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-muted-foreground">
+        {scenarios.map((scenario) => <span key={scenario.name}><strong className="text-foreground">{scenario.name}</strong> {percent(scenario.probability)}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function ExpressionTable({ expressions }: { expressions: components["schemas"]["ExpressionDecision"][] }) {
+  const rows = expressions.map((expression) => ({
+    expression: expression.kind,
+    state: expression.selected ? "SELECTED" : expression.status.toUpperCase(),
+    quantity: expression.quantity == null ? "—" : expression.quantity.toLocaleString(),
+    loss: money(expression.planned_loss),
+    fit: expression.horizon_fit == null ? "—" : percent(expression.horizon_fit),
+  }));
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Expression tournament</h3>
+        <span className="text-xs text-muted-foreground">same thesis · same invalidation</span>
+      </div>
+      <SimpleTable rows={rows} empty="No expression comparison is available." columns={[["expression", "Expression"], ["state", "State"], ["quantity", "Qty"], ["loss", "Planned loss"], ["fit", "Horizon"]]} />
+    </div>
+  );
+}
+
+function DataRequestPanel({ requests, collecting, onCollect }: { requests: DataRequestContract[]; collecting: string | null; onCollect: (job: string) => Promise<void> }) {
+  return (
+    <DataTableFrame title="Missing facts with an owner" action={<StatusBadge tone="warn">{requests.length} open</StatusBadge>}>
+      <div className="divide-y divide-border">
+        {requests.map((request) => (
+          <div key={`${request.ticker}:${request.field}`} className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+            <div>
+              <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{request.field}</span><span className="text-xs text-muted-foreground">{request.ticker} · max age {request.max_age} · owner {request.owner}</span></div>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">{request.why_it_matters}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Result: {request.expected_completion} Change: {request.decision_impact}</p>
+            </div>
+            <Button type="button" variant="outline" size="sm" disabled={collecting !== null} onClick={() => void onCollect(request.collect_now)}>
+              {collecting === request.collect_now ? "Running…" : `Collect now · ${request.collect_now}`}
+            </Button>
+          </div>
+        ))}
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function DisagreementPanel({ learning }: { learning?: TickerLearning }) {
+  const disagreement = learning?.disagreement;
+  if (!disagreement) return null;
+  return (
+    <DataTableFrame title="Disagreement engine" action={<span className="text-xs text-muted-foreground">{learning?.independent_episode_count ?? 0} independent episodes</span>}>
+      <div className="grid gap-0 md:grid-cols-3">
+        <KeyValueBlock title="Strongest bull case" value={disagreement.strongest_bull_case} />
+        <KeyValueBlock title="Strongest bear case" value={disagreement.strongest_bear_case} />
+        <KeyValueBlock title="Fact that resolves it" value={disagreement.resolving_fact} />
+      </div>
+    </DataTableFrame>
+  );
+}
+
+function KeyValue({ label, value }: { label: string; value: string }) {
+  return <div><span className="block uppercase tracking-[0.08em] text-muted-foreground">{label}</span><strong className="mt-0.5 block break-words font-medium text-foreground">{value}</strong></div>;
+}
+
+function KeyValueBlock({ title, value }: { title: string; value?: string | null }) {
+  return <div className="border-b border-border p-4 last:border-b-0 md:border-b-0 md:border-r md:last:border-r-0"><p className="text-xs font-semibold uppercase tracking-[0.1em] text-muted-foreground">{title}</p><p className="mt-2 text-sm leading-6">{value || "Not loaded"}</p></div>;
+}
+
+function money(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: value >= 100 ? 0 : 2 });
+}
+
+function percent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function priceRange(value: components["schemas"]["PriceRange"] | null | undefined): string {
+  if (!value) return "—";
+  return value.low === value.high ? money(value.low) : `${money(value.low)}–${money(value.high)}`;
+}
+
+function invalidation(value: components["schemas"]["Invalidation"] | null | undefined): string {
+  if (!value) return "—";
+  return value.statement || String(value.value);
+}
+
 export function DecisionPanel({ brief }: { brief: RowRecord }) {
   const verdict = objectField(brief, "verdict");
   const setup = objectField(brief, "setup");
   const riskPlan = objectField(brief, "risk_plan");
   const quote = objectField(brief, "canonical_quote");
-  const action = displayField(verdict, ["action"], "Watch");
+  const action = displayField(verdict, ["action"], "WAIT_FOR_PRICE");
   const supports = listField(brief, ["evidence_for"]).slice(0, 4);
   const concerns = listField(brief, ["evidence_against"]).slice(0, 4);
   const unknowns = listField(brief, ["unknowns"]).slice(0, 3);

@@ -661,6 +661,81 @@
         "title": "ApiStatusResponse",
         "type": "object"
       },
+      "CapitalAction": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/CapitalActionType"
+          },
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "price_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Condition"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "action",
+          "owned",
+          "rationale"
+        ],
+        "title": "CapitalAction",
+        "type": "object"
+      },
+      "CapitalActionType": {
+        "enum": [
+          "BUY",
+          "ADD",
+          "HOLD",
+          "TRIM",
+          "EXIT",
+          "HEDGE",
+          "AVOID",
+          "WAIT_FOR_PRICE"
+        ],
+        "title": "CapitalActionType",
+        "type": "string"
+      },
       "DashboardResponse": {
         "additionalProperties": true,
         "properties": {
@@ -691,6 +766,72 @@
           }
         },
         "title": "DashboardResponse",
+        "type": "object"
+      },
+      "DataRequest": {
+        "description": "A missing value that can change the current recommendation.",
+        "properties": {
+          "collect_now": {
+            "title": "Collect Now",
+            "type": "string"
+          },
+          "decision_impact": {
+            "title": "Decision Impact",
+            "type": "string"
+          },
+          "expected_completion": {
+            "title": "Expected Completion",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "max_age": {
+            "title": "Max Age",
+            "type": "string"
+          },
+          "max_age_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Age Seconds"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "required_source": {
+            "title": "Required Source",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "why_it_matters": {
+            "title": "Why It Matters",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "ticker",
+          "why_it_matters",
+          "required_source",
+          "max_age",
+          "owner",
+          "collect_now",
+          "expected_completion",
+          "decision_impact"
+        ],
+        "title": "DataRequest",
         "type": "object"
       },
       "DecisionInboxResponse": {
@@ -1179,6 +1320,356 @@
         "title": "EventStudyRow",
         "type": "object"
       },
+      "EvidenceItem": {
+        "properties": {
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event At"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "polarity": {
+            "$ref": "#/components/schemas/EvidencePolarity",
+            "default": "FOR"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement"
+        ],
+        "title": "EvidenceItem",
+        "type": "object"
+      },
+      "EvidencePolarity": {
+        "enum": [
+          "FOR",
+          "AGAINST",
+          "FLIP"
+        ],
+        "title": "EvidencePolarity",
+        "type": "string"
+      },
+      "ExpressionDecision": {
+        "description": "One way to express the same ticker thesis.",
+        "properties": {
+          "data_requests": {
+            "items": {
+              "$ref": "#/components/schemas/DataRequest"
+            },
+            "title": "Data Requests",
+            "type": "array"
+          },
+          "entry_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fill_probability": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Probability"
+          },
+          "horizon": {
+            "$ref": "#/components/schemas/Horizon"
+          },
+          "horizon_fit": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon Fit"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Invalidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "legs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Legs",
+            "type": "array"
+          },
+          "liquidity_score": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidity Score"
+          },
+          "loss_budget": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loss Budget"
+          },
+          "lower_confidence_expectancy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower Confidence Expectancy"
+          },
+          "max_loss_per_unit": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Loss Per Unit"
+          },
+          "net_expected_value_per_loss_dollar": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Expected Value Per Loss Dollar"
+          },
+          "planned_loss": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Loss"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioOutcome"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          },
+          "selected": {
+            "default": false,
+            "title": "Selected",
+            "type": "boolean"
+          },
+          "spread_pct": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread Pct"
+          },
+          "stance": {
+            "$ref": "#/components/schemas/Stance"
+          },
+          "status": {
+            "pattern": "^(eligible|blocked|unavailable|not_selected)$",
+            "title": "Status",
+            "type": "string"
+          },
+          "target_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thesis_revision": {
+            "title": "Thesis Revision",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ticker",
+          "horizon",
+          "thesis_revision",
+          "stance",
+          "status",
+          "rationale"
+        ],
+        "title": "ExpressionDecision",
+        "type": "object"
+      },
+      "ExpressionKind": {
+        "enum": [
+          "STOCK",
+          "CALL",
+          "PUT",
+          "DEBIT_SPREAD",
+          "CASH_SECURED_PUT",
+          "CASH"
+        ],
+        "title": "ExpressionKind",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1190,6 +1681,152 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Horizon": {
+        "enum": [
+          "TACTICAL",
+          "FUNDAMENTAL"
+        ],
+        "title": "Horizon",
+        "type": "string"
+      },
+      "HorizonDecision": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/CapitalActionType"
+          },
+          "alternate_expression": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "confidence_basis": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Confidence Basis",
+            "type": "array"
+          },
+          "conviction_tier": {
+            "pattern": "^(EXPLORATORY|STANDARD|HIGH)$",
+            "title": "Conviction Tier",
+            "type": "string"
+          },
+          "current_price": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price"
+          },
+          "entry_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence_against": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceItem"
+            },
+            "title": "Evidence Against",
+            "type": "array"
+          },
+          "evidence_for": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceItem"
+            },
+            "title": "Evidence For",
+            "type": "array"
+          },
+          "expected_return_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NumericRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiry_date": {
+            "format": "date",
+            "title": "Expiry Date",
+            "type": "string"
+          },
+          "fact_that_would_flip": {
+            "$ref": "#/components/schemas/EvidenceItem"
+          },
+          "horizon": {
+            "$ref": "#/components/schemas/Horizon"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Invalidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioOutcome"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          },
+          "selected_instrument": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "stance": {
+            "$ref": "#/components/schemas/Stance"
+          },
+          "target_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "horizon",
+          "stance",
+          "action",
+          "expiry_date",
+          "scenarios",
+          "conviction_tier",
+          "fact_that_would_flip",
+          "selected_instrument",
+          "alternate_expression"
+        ],
+        "title": "HorizonDecision",
         "type": "object"
       },
       "IVCurveSet": {
@@ -1313,6 +1950,90 @@
         "title": "IVSurfaceGrid",
         "type": "object"
       },
+      "InputManifest": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "code_version": {
+            "title": "Code Version",
+            "type": "string"
+          },
+          "experiment_id": {
+            "title": "Experiment Id",
+            "type": "string"
+          },
+          "input_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Hash",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "signal_declarations": {
+            "items": {
+              "$ref": "#/components/schemas/SignalDeclaration"
+            },
+            "title": "Signal Declarations",
+            "type": "array"
+          },
+          "source_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Source Versions",
+            "type": "object"
+          }
+        },
+        "required": [
+          "as_of",
+          "input_hash",
+          "code_version",
+          "experiment_id"
+        ],
+        "title": "InputManifest",
+        "type": "object"
+      },
+      "Invalidation": {
+        "properties": {
+          "kind": {
+            "pattern": "^(price|event|date)$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "format": "date",
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "kind",
+          "value",
+          "statement"
+        ],
+        "title": "Invalidation",
+        "type": "object"
+      },
       "MarketRegime": {
         "additionalProperties": true,
         "properties": {
@@ -1391,6 +2112,24 @@
           }
         },
         "title": "MarketRegime",
+        "type": "object"
+      },
+      "NumericRange": {
+        "properties": {
+          "high": {
+            "title": "High",
+            "type": "number"
+          },
+          "low": {
+            "title": "Low",
+            "type": "number"
+          }
+        },
+        "required": [
+          "low",
+          "high"
+        ],
+        "title": "NumericRange",
         "type": "object"
       },
       "OpportunityScorecardResponse": {
@@ -5716,6 +6455,26 @@
         "title": "PortfolioTransactionReversalInput",
         "type": "object"
       },
+      "PriceRange": {
+        "properties": {
+          "high": {
+            "minimum": 0.0,
+            "title": "High",
+            "type": "number"
+          },
+          "low": {
+            "minimum": 0.0,
+            "title": "Low",
+            "type": "number"
+          }
+        },
+        "required": [
+          "low",
+          "high"
+        ],
+        "title": "PriceRange",
+        "type": "object"
+      },
       "QuotesResponse": {
         "properties": {
           "count": {
@@ -6483,6 +7242,102 @@
         "title": "ResearchXSettingsInput",
         "type": "object"
       },
+      "RiskPolicy": {
+        "properties": {
+          "conviction_tier": {
+            "pattern": "^(EXPLORATORY|STANDARD|HIGH)$",
+            "title": "Conviction Tier",
+            "type": "string"
+          },
+          "loss_budget": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loss Budget"
+          },
+          "loss_budget_pct": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 0.02,
+            "title": "Loss Budget Pct",
+            "type": "number"
+          },
+          "max_ticker_loss_pct": {
+            "default": 0.04,
+            "title": "Max Ticker Loss Pct",
+            "type": "number"
+          },
+          "max_total_open_planned_loss_pct": {
+            "default": 0.1,
+            "title": "Max Total Open Planned Loss Pct",
+            "type": "number"
+          },
+          "position_limit_pct": {
+            "default": 0.1,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Position Limit Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "conviction_tier",
+          "loss_budget_pct"
+        ],
+        "title": "RiskPolicy",
+        "type": "object"
+      },
+      "ScenarioOutcome": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "pattern": "^(bear|base|bull)$",
+            "title": "Name",
+            "type": "string"
+          },
+          "price_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probability": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Probability",
+            "type": "number"
+          },
+          "return_range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NumericRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "probability",
+          "description"
+        ],
+        "title": "ScenarioOutcome",
+        "type": "object"
+      },
       "SettingsResponse": {
         "properties": {
           "agents": {
@@ -6519,6 +7374,74 @@
         ],
         "title": "SettingsResponse",
         "type": "object"
+      },
+      "SignalDeclaration": {
+        "description": "Provenance and behavior contract for one signal family.",
+        "properties": {
+          "applicable_horizon": {
+            "title": "Applicable Horizon",
+            "type": "string"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "economic_mechanism": {
+            "title": "Economic Mechanism",
+            "type": "string"
+          },
+          "evidence_state": {
+            "$ref": "#/components/schemas/SignalEvidenceState"
+          },
+          "freshness": {
+            "title": "Freshness",
+            "type": "string"
+          },
+          "incremental_predictive_value": {
+            "title": "Incremental Predictive Value",
+            "type": "string"
+          },
+          "missing_data_behavior": {
+            "title": "Missing Data Behavior",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "transformation": {
+            "title": "Transformation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "economic_mechanism",
+          "applicable_horizon",
+          "evidence_state",
+          "source",
+          "coverage",
+          "freshness",
+          "transformation",
+          "missing_data_behavior",
+          "incremental_predictive_value"
+        ],
+        "title": "SignalDeclaration",
+        "type": "object"
+      },
+      "SignalEvidenceState": {
+        "enum": [
+          "OBSERVED",
+          "DERIVED",
+          "ESTIMATED",
+          "HYPOTHESIS"
+        ],
+        "title": "SignalEvidenceState",
+        "type": "string"
       },
       "SourceAuditResponse": {
         "additionalProperties": true,
@@ -6926,6 +7849,15 @@
         },
         "title": "SourceDetailResponse",
         "type": "object"
+      },
+      "Stance": {
+        "enum": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "title": "Stance",
+        "type": "string"
       },
       "StaticArbitrageVerificationResponse": {
         "additionalProperties": true,
@@ -7848,21 +8780,271 @@
         "title": "ThesisReviewResponse",
         "type": "object"
       },
-      "TickerDecisionSnapshotResponse": {
+      "TickerBenchmarkResponse": {
         "additionalProperties": true,
         "properties": {
-          "found": {
-            "default": true,
-            "title": "Found",
-            "type": "boolean"
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
           },
-          "symbol": {
-            "title": "Symbol",
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "benchmark_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Benchmark Key"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "title": "Coverage",
+            "type": "object"
+          },
+          "exact_membership": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exact Membership",
+            "type": "array"
+          },
+          "member_count": {
+            "default": 0,
+            "title": "Member Count",
+            "type": "integer"
+          },
+          "membership_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Membership Hash"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TickerBenchmarkResponse",
+        "type": "object"
+      },
+      "TickerDecision": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "capital_action": {
+            "$ref": "#/components/schemas/CapitalAction"
+          },
+          "data_requests": {
+            "items": {
+              "$ref": "#/components/schemas/DataRequest"
+            },
+            "title": "Data Requests",
+            "type": "array"
+          },
+          "decision_contract_version": {
+            "default": "ticker-decision.v1",
+            "title": "Decision Contract Version",
+            "type": "string"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "expressions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExpressionDecision"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Expressions",
+            "type": "object"
+          },
+          "fundamental": {
+            "$ref": "#/components/schemas/HorizonDecision"
+          },
+          "input_manifest": {
+            "$ref": "#/components/schemas/InputManifest"
+          },
+          "learning_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Learning History",
+            "type": "array"
+          },
+          "risk_policy": {
+            "$ref": "#/components/schemas/RiskPolicy"
+          },
+          "selected_expression": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpressionDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tactical": {
+            "$ref": "#/components/schemas/HorizonDecision"
+          },
+          "ticker": {
+            "title": "Ticker",
             "type": "string"
           }
         },
         "required": [
-          "symbol"
+          "ticker",
+          "as_of",
+          "decision_revision",
+          "tactical",
+          "fundamental",
+          "capital_action",
+          "risk_policy",
+          "expressions",
+          "input_manifest"
+        ],
+        "title": "TickerDecision",
+        "type": "object"
+      },
+      "TickerDecisionSnapshotResponse": {
+        "description": "The typed ticker decision; no flexible legacy snapshot fields remain.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "capital_action": {
+            "$ref": "#/components/schemas/CapitalAction"
+          },
+          "data_requests": {
+            "items": {
+              "$ref": "#/components/schemas/DataRequest"
+            },
+            "title": "Data Requests",
+            "type": "array"
+          },
+          "decision_contract_version": {
+            "default": "ticker-decision.v1",
+            "title": "Decision Contract Version",
+            "type": "string"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "expressions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExpressionDecision"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Expressions",
+            "type": "object"
+          },
+          "fundamental": {
+            "$ref": "#/components/schemas/HorizonDecision"
+          },
+          "input_manifest": {
+            "$ref": "#/components/schemas/InputManifest"
+          },
+          "learning_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Learning History",
+            "type": "array"
+          },
+          "risk_policy": {
+            "$ref": "#/components/schemas/RiskPolicy"
+          },
+          "selected_expression": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpressionDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tactical": {
+            "$ref": "#/components/schemas/HorizonDecision"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "as_of",
+          "decision_revision",
+          "tactical",
+          "fundamental",
+          "capital_action",
+          "risk_policy",
+          "expressions",
+          "input_manifest"
         ],
         "title": "TickerDecisionSnapshotResponse",
         "type": "object"
@@ -7882,15 +9064,52 @@
             ],
             "title": "As Of"
           },
+          "capital_action": {
+            "$ref": "#/components/schemas/CapitalAction"
+          },
+          "data_requests": {
+            "items": {
+              "$ref": "#/components/schemas/DataRequest"
+            },
+            "title": "Data Requests",
+            "type": "array"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
           "dossier": {
             "additionalProperties": true,
             "title": "Dossier",
+            "type": "object"
+          },
+          "expressions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExpressionDecision"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Expressions",
             "type": "object"
           },
           "found": {
             "default": false,
             "title": "Found",
             "type": "boolean"
+          },
+          "learning": {
+            "additionalProperties": true,
+            "title": "Learning",
+            "type": "object"
+          },
+          "learning_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Learning History",
+            "type": "array"
           },
           "status": {
             "$ref": "#/components/schemas/ApiStatusResponse"
@@ -7902,14 +9121,248 @@
           "ticker": {
             "title": "Ticker",
             "type": "string"
+          },
+          "ticker_decision": {
+            "$ref": "#/components/schemas/TickerDecision"
           }
         },
         "required": [
           "symbol",
           "ticker",
-          "status"
+          "status",
+          "ticker_decision",
+          "capital_action",
+          "decision_revision"
         ],
         "title": "TickerDetailResponse",
+        "type": "object"
+      },
+      "TickerPaperEntryInput": {
+        "description": "Unified stock/option paper-entry request for one ticker thesis.",
+        "properties": {
+          "decision_revision": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "expression_kind": {
+            "enum": [
+              "STOCK",
+              "CALL",
+              "PUT",
+              "DEBIT_SPREAD",
+              "CASH_SECURED_PUT"
+            ],
+            "title": "Expression Kind",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "limit_price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit Price"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          }
+        },
+        "required": [
+          "idempotency_key",
+          "decision_revision",
+          "expression_kind"
+        ],
+        "title": "TickerPaperEntryInput",
+        "type": "object"
+      },
+      "TickerPaperEntryResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "expression_kind": {
+            "title": "Expression Kind",
+            "type": "string"
+          },
+          "live_order_submission": {
+            "default": false,
+            "title": "Live Order Submission",
+            "type": "boolean"
+          },
+          "paper_only": {
+            "default": true,
+            "title": "Paper Only",
+            "type": "boolean"
+          },
+          "paper_order_id": {
+            "title": "Paper Order Id",
+            "type": "string"
+          },
+          "planned_loss": {
+            "title": "Planned Loss",
+            "type": "number"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "paper_order_id",
+          "ticker",
+          "expression_kind",
+          "quantity",
+          "planned_loss",
+          "decision_revision"
+        ],
+        "title": "TickerPaperEntryResponse",
+        "type": "object"
+      },
+      "TodayCapitalAction": {
+        "additionalProperties": true,
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "price_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Condition"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "selected_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Expression"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "action",
+          "owned",
+          "rationale",
+          "decision_revision"
+        ],
+        "title": "TodayCapitalAction",
+        "type": "object"
+      },
+      "TodayResponse": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/TodayCapitalAction"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApiStatusResponse"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TodayResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -8507,6 +9960,25 @@
           }
         },
         "summary": "Storage Health"
+      }
+    },
+    "/api/market/breadth": {
+      "get": {
+        "description": "Return the frozen equity denominator used by ticker decisions.",
+        "operationId": "market_breadth_api_market_breadth_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TickerBenchmarkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Market Breadth"
       }
     },
     "/api/opportunity-scorecard": {
@@ -11320,6 +12792,74 @@
           }
         },
         "summary": "Ticker Decision Snapshot"
+      }
+    },
+    "/api/tickers/{ticker}/paper-entry": {
+      "post": {
+        "operationId": "ticker_paper_entry_api_tickers__ticker__paper_entry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker",
+            "required": true,
+            "schema": {
+              "title": "Ticker",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TickerPaperEntryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TickerPaperEntryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ticker Paper Entry"
+      }
+    },
+    "/api/today": {
+      "get": {
+        "description": "Return exact ticker capital actions, ordered by action priority.",
+        "operationId": "today_api_today_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Today"
       }
     },
     "/api/watchlist/symbols": {

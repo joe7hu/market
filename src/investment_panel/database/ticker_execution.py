@@ -1,0 +1,811 @@
+"""Fail-closed paper staging for the shared ticker decision."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from math import floor, isfinite
+from typing import Any
+
+from psycopg.types.json import Jsonb
+
+from investment_panel.core.config import AppConfig
+from investment_panel.core.decision import (
+    CapitalActionType,
+    ExpressionKind,
+    TickerDecision,
+)
+from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
+from investment_panel.database.options_paper_quotes import is_credit_structure, latest_option_legs, package_price
+from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
+
+
+OPTION_EXPRESSIONS = frozenset({
+    ExpressionKind.CALL,
+    ExpressionKind.PUT,
+    ExpressionKind.DEBIT_SPREAD,
+    ExpressionKind.CASH_SECURED_PUT,
+})
+ENTRY_ACTIONS = frozenset({
+    CapitalActionType.BUY,
+    CapitalActionType.ADD,
+    CapitalActionType.HEDGE,
+    CapitalActionType.WAIT_FOR_PRICE,
+})
+EXIT_ACTIONS = frozenset({CapitalActionType.TRIM, CapitalActionType.EXIT})
+TERMINAL_STATUSES = frozenset({"exited", "invalidated", "unfilled", "rejected", "unmeasurable"})
+
+
+class TickerPaperExecutionRepository:
+    """Own the paper-only write path for stock and option expressions.
+
+    This repository never imports a broker client and never calls a live order
+    API. Existing option routes can delegate here after they resolve their
+    legacy decision ID, but they cannot bypass the ticker risk budget.
+    """
+
+    def __init__(self, runtime: DatabaseRuntime, config: AppConfig) -> None:
+        self.runtime = runtime
+        self.config = config
+
+    def stage(
+        self,
+        *,
+        ticker: str,
+        decision: TickerDecision,
+        expression_kind: str,
+        idempotency_key: str,
+        quantity: int | None = None,
+        limit_price: float | None = None,
+    ) -> dict[str, Any]:
+        symbol = ticker.strip().upper()
+        if decision.ticker != symbol:
+            raise ValueError("ticker decision does not match the requested ticker")
+        if not idempotency_key.strip():
+            raise ValueError("idempotency key is required")
+        try:
+            kind = ExpressionKind(str(expression_kind).upper())
+        except ValueError as exc:
+            raise ValueError("unsupported ticker expression") from exc
+        if kind is ExpressionKind.CASH:
+            raise ValueError("cash is a competing expression, not a paper order")
+        self._check_switches(kind)
+        expression = decision.expressions.get(kind)
+        if expression is None:
+            raise ValueError("requested expression is not in the current ticker decision")
+        if expression.status != "eligible":
+            raise ValueError("requested expression is not eligible in the current ticker decision")
+        if kind in OPTION_EXPRESSIONS and not _complete_option_legs(expression.legs):
+            raise ValueError("a complete executable option leg package is required before paper staging")
+        if decision.capital_action.action not in ENTRY_ACTIONS | EXIT_ACTIONS:
+            raise ValueError(f"capital action {decision.capital_action.action.value} does not stage an order")
+        requested_revision = decision.decision_revision
+        requested_quantity = quantity if quantity is not None else expression.quantity
+        if requested_quantity is None:
+            raise ValueError("quantity is unavailable; collect the missing price, invalidation, and NAV inputs first")
+        if requested_quantity <= 0 or requested_quantity > int(expression.quantity or 0):
+            raise ValueError("requested quantity exceeds the current ticker expression authorization")
+        if limit_price is None or not isfinite(float(limit_price)) or float(limit_price) <= 0:
+            raise ValueError("an executable paper limit price is required")
+        max_loss = expression.max_loss_per_unit
+        if max_loss is None or max_loss <= 0:
+            raise ValueError("maximum expression loss is unavailable; quantity cannot be staged")
+        requested_loss = float(max_loss) * requested_quantity
+        planned_loss = requested_loss if decision.capital_action.action in ENTRY_ACTIONS else 0.0
+        now = datetime.now(UTC)
+        expires_at = min(decision.tactical.expiry_date, decision.fundamental.expiry_date)
+        nav = decision.risk_policy.loss_budget / decision.risk_policy.loss_budget_pct if decision.risk_policy.loss_budget is not None else None
+        if nav is None or nav <= 0:
+            raise ValueError("fresh broker NAV is required before paper staging")
+        if planned_loss > nav * decision.risk_policy.max_ticker_loss_pct:
+            raise ValueError("ticker paper order exceeds the combined ticker loss budget")
+        side = "sell" if kind is ExpressionKind.CASH_SECURED_PUT else "buy" if decision.capital_action.action in ENTRY_ACTIONS else "sell"
+        structure = _option_structure(kind) if kind in OPTION_EXPRESSIONS else None
+
+        with self.runtime.transaction() as connection:
+            instrument = connection.execute(
+                "SELECT id FROM catalog.instrument WHERE symbol = %s AND asset_class IN ('equity', 'etf') LIMIT 1",
+                [symbol],
+            ).fetchone()
+            if instrument is None:
+                raise ValueError("ticker instrument is not in the catalog")
+            ticker_decision = connection.execute(
+                """
+                SELECT id::text
+                FROM analysis.ticker_decision
+                WHERE instrument_id = %s AND decision_revision = %s
+                LIMIT 1
+                """,
+                [instrument["id"], requested_revision],
+            ).fetchone()
+            if decision.capital_action.action in EXIT_ACTIONS:
+                if not decision.capital_action.owned:
+                    raise ValueError("TRIM and EXIT require an existing paper position")
+                active = connection.execute(
+                    """
+                    SELECT coalesce(sum(
+                        CASE
+                          WHEN status IN ('staged', 'open') THEN quantity
+                          WHEN status IN ('entered', 'partial_exited')
+                            THEN greatest(coalesce(filled_quantity, quantity) - coalesce(exited_quantity, 0), 0)
+                          ELSE 0
+                        END
+                    ), 0) AS quantity
+                    FROM app.paper_order
+                    WHERE instrument_id = %s
+                      AND paper_only = TRUE
+                      AND status IN ('staged', 'open', 'entered', 'partial_exited')
+                      AND side = 'buy'
+                    """,
+                    [instrument["id"]],
+                ).fetchone()
+                if float(active["quantity"] or 0) < requested_quantity:
+                    raise ValueError("TRIM and EXIT quantity exceeds the existing paper position")
+            prior = connection.execute(
+                """
+                SELECT id, status, quantity, limit_price, ticker_decision_revision,
+                       expression_kind, planned_loss
+                FROM app.paper_order
+                WHERE idempotency_key = %s
+                """,
+                [idempotency_key.strip()],
+            ).fetchone()
+            if prior:
+                same = (
+                    str(prior["ticker_decision_revision"] or "") == requested_revision
+                    and str(prior["expression_kind"] or "") == kind.value
+                    and int(prior["quantity"] or 0) == requested_quantity
+                    and abs(float(prior["limit_price"] or 0) - float(limit_price)) <= 1e-6
+                )
+                if not same:
+                    raise ValueError("idempotency key was already used for a different ticker paper request")
+                return {
+                    "status": str(prior["status"]),
+                    "paper_order_id": str(prior["id"]),
+                    "ticker": symbol,
+                    "expression_kind": kind.value,
+                    "quantity": int(prior["quantity"]),
+                    "planned_loss": float(prior["planned_loss"] or planned_loss),
+                    "decision_revision": requested_revision,
+                    "idempotent_replay": True,
+                    "paper_only": True,
+                }
+            open_risk = connection.execute(
+                """
+                SELECT coalesce(sum(planned_loss), 0) AS planned_loss
+                FROM app.paper_order
+                WHERE instrument_id = %s
+                  AND status IN ('staged', 'open', 'entered', 'partial_exited')
+                """,
+                [instrument["id"]],
+            ).fetchone()
+            if float(open_risk["planned_loss"] or 0) + planned_loss > nav * decision.risk_policy.max_ticker_loss_pct + 1e-6:
+                raise ValueError("open paper orders already consume the ticker loss budget")
+            total_risk = connection.execute(
+                """
+                SELECT coalesce(sum(planned_loss), 0) AS planned_loss
+                FROM app.paper_order
+                WHERE status IN ('staged', 'open', 'entered', 'partial_exited')
+                """
+            ).fetchone()
+            if float(total_risk["planned_loss"] or 0) + planned_loss > nav * decision.risk_policy.max_total_open_planned_loss_pct + 1e-6:
+                raise ValueError("open paper orders already consume the total planned-loss limit")
+            policy = {
+                "owner": "ticker-first",
+                "decision_revision": requested_revision,
+                "input_hash": decision.input_manifest.input_hash,
+                "capital_action": decision.capital_action.action.value,
+                "expression_kind": kind.value,
+                "max_loss_per_unit": max_loss,
+                "planned_loss": planned_loss,
+                "nav": nav,
+                "live_order_submission": False,
+            }
+            snapshot = decision.model_dump(mode="json")
+            row = connection.execute(
+                """
+                INSERT INTO app.paper_order (
+                    decision_id, ticker_decision_id, instrument_id, created_at, side, quantity, limit_price,
+                    status, policy_result, lane, idempotency_key, ticker_decision_revision,
+                    expression_kind, max_loss, planned_loss, expires_at, thesis_snapshot,
+                    structure, ticket_snapshot, intended_limit_price, paper_only
+                ) VALUES (
+                    NULL, %s::uuid, %s, %s, %s, %s, %s, 'staged', %s, 'ticker', %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, TRUE
+                )
+                RETURNING id
+                """,
+                [
+                    ticker_decision["id"] if ticker_decision else None,
+                    instrument["id"], now, side, requested_quantity, float(limit_price),
+                    Jsonb(policy), idempotency_key.strip(), requested_revision, kind.value,
+                    float(max_loss), planned_loss, expires_at, Jsonb(snapshot),
+                    structure, Jsonb(snapshot), float(limit_price),
+                ],
+            ).fetchone()
+            if kind in OPTION_EXPRESSIONS:
+                for index, leg in enumerate(expression.legs):
+                    connection.execute(
+                        """
+                        INSERT INTO app.paper_order_leg
+                            (paper_order_id, leg_index, contract_id, option_type, side, strike,
+                             bid, ask, bid_size, ask_size, quote_time, open_interest, volume)
+                        VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            row["id"], index, int(leg["contract_id"]), str(leg.get("option_type") or ""),
+                            str(leg.get("side") or "long"), float(leg.get("strike") or 0),
+                            float(leg["bid"]), float(leg["ask"]), int(leg["bid_size"]), int(leg["ask_size"]),
+                            _timestamp(leg.get("quote_time") or leg.get("observed_at")),
+                            leg.get("open_interest"), leg.get("volume"),
+                        ],
+                    )
+        return {
+            "status": "staged",
+            "paper_order_id": str(row["id"]),
+            "ticker": symbol,
+            "expression_kind": kind.value,
+            "quantity": requested_quantity,
+            "limit_price": float(limit_price),
+            "planned_loss": planned_loss,
+            "decision_revision": requested_revision,
+            "paper_only": True,
+            "live_order_submission": False,
+        }
+
+    def process(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Manage existing ticker paper orders without touching a broker."""
+
+        reference = _utc(now)
+        with self.runtime.read(JOB_PROFILE) as connection:
+            rows = connection.execute(
+                """
+                SELECT id::text
+                FROM app.paper_order
+                WHERE lane = 'ticker'
+                  AND status NOT IN ('exited', 'invalidated', 'unfilled', 'rejected', 'unmeasurable')
+                ORDER BY created_at, id
+                LIMIT %s
+                """,
+                [max(1, min(int(limit), 500))],
+            ).fetchall()
+        managed = [
+            result
+            for row in rows
+            if (result := self._manage_one(str(row["id"]), reference)) is not None
+        ]
+        return {
+            "status": "ok",
+            "paper_only": True,
+            "live_brokerage_submission": False,
+            "managed": managed,
+            "count": len(managed),
+        }
+
+    manage_orders = process
+
+    def _manage_one(self, paper_order_id: str, now: datetime) -> dict[str, Any] | None:
+        with self.runtime.transaction(JOB_PROFILE) as connection:
+            order = connection.execute(
+                """
+                SELECT paper.id::text, paper.instrument_id, paper.status, paper.side,
+                       paper.quantity, paper.limit_price, paper.actual_fill_price,
+                       paper.filled_at, paper.submitted_at, paper.filled_quantity,
+                       paper.exited_quantity, paper.fees, paper.expires_at,
+                       paper.expression_kind, paper.structure, paper.policy_result, paper.thesis_snapshot,
+                       instrument.symbol
+                FROM app.paper_order paper
+                JOIN catalog.instrument instrument ON instrument.id = paper.instrument_id
+                WHERE paper.id = %s::uuid AND paper.lane = 'ticker'
+                FOR UPDATE OF paper
+                """,
+                [paper_order_id],
+            ).fetchone()
+            if order is None:
+                return None
+            item = dict(order)
+            status = str(item.get("status") or "")
+            if status in TERMINAL_STATUSES:
+                return None
+            quantity = _quantity(item.get("quantity"))
+            filled = _quantity(item.get("filled_quantity"))
+            exited = _quantity(item.get("exited_quantity"))
+            remaining_entry = max(0.0, quantity - filled)
+            if remaining_entry > 0:
+                return self._manage_entry(connection, item, now, remaining_entry)
+            return self._manage_open(connection, item, now, filled, exited)
+
+    def _manage_entry(
+        self,
+        connection: Any,
+        order: dict[str, Any],
+        now: datetime,
+        remaining: float,
+    ) -> dict[str, Any]:
+        expires_at = _timestamp(order.get("expires_at"))
+        if expires_at is not None and expires_at <= now:
+            filled = _quantity(order.get("filled_quantity"))
+            if filled <= 0:
+                connection.execute(
+                    """
+                    UPDATE app.paper_order
+                    SET status = 'unfilled', unfilled_reason = %s, updated_at = %s
+                    WHERE id = %s::uuid
+                    """,
+                    ["entry_limit_expired", now, order["id"]],
+                )
+                return {"paper_order_id": str(order["id"]), "status": "unfilled", "reason": "entry_limit_expired"}
+            connection.execute(
+                "UPDATE app.paper_order SET status = 'entered', unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                ["entry_limit_expired_after_partial_fill", now, order["id"]],
+            )
+            return {
+                "paper_order_id": str(order["id"]),
+                "status": "entered",
+                "reason": "entry_limit_expired_after_partial_fill",
+                "filled_quantity": filled,
+            }
+
+        expression_kind = str(order.get("expression_kind") or "").upper()
+        if expression_kind in {kind.value for kind in OPTION_EXPRESSIONS}:
+            return self._manage_option_entry(connection, order, now, remaining)
+        if expression_kind != ExpressionKind.STOCK.value:
+            connection.execute(
+                """
+                UPDATE app.paper_order
+                SET submitted_at = coalesce(submitted_at, %s),
+                    unfilled_reason = %s, updated_at = %s
+                WHERE id = %s::uuid
+                """,
+                [now, "executable_option_quote_required", now, order["id"]],
+            )
+            return {
+                "paper_order_id": str(order["id"]),
+                "status": "submitted",
+                "reason": "executable_option_quote_required",
+            }
+
+        quote = connection.execute(
+            """
+            SELECT price, observed_at, available_at
+            FROM raw.confirmed_quote
+            WHERE instrument_id = %s
+              AND observed_at <= %s
+              AND available_at <= %s
+            ORDER BY observed_at DESC, available_at DESC
+            LIMIT 1
+            """,
+            [order["instrument_id"], now, now],
+        ).fetchone()
+        if quote is None or _number(quote["price"]) is None:
+            connection.execute(
+                """
+                UPDATE app.paper_order
+                SET submitted_at = coalesce(submitted_at, %s),
+                    unfilled_reason = %s, updated_at = %s
+                WHERE id = %s::uuid
+                """,
+                [now, "fresh_confirmed_quote_required", now, order["id"]],
+            )
+            return {
+                "paper_order_id": str(order["id"]),
+                "status": "submitted",
+                "reason": "fresh_confirmed_quote_required",
+            }
+
+        market_price = float(quote["price"])
+        limit_price = _number(order.get("limit_price"))
+        side = str(order.get("side") or "buy").lower()
+        if limit_price is None or not _limit_reached(side, market_price, limit_price):
+            connection.execute(
+                """
+                UPDATE app.paper_order
+                SET submitted_at = coalesce(submitted_at, %s),
+                    unfilled_reason = %s, updated_at = %s
+                WHERE id = %s::uuid
+                """,
+                [now, "limit_not_reached", now, order["id"]],
+            )
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "limit_not_reached"}
+
+        policy = dict(order.get("policy_result") or {})
+        available = _number(policy.get("available_quantity"))
+        fill_quantity = min(remaining, max(0.0, available if available is not None else remaining))
+        if fill_quantity <= 0:
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "displayed_size_unavailable"}
+        prior_filled = _quantity(order.get("filled_quantity"))
+        new_filled = prior_filled + fill_quantity
+        complete = new_filled >= _quantity(order.get("quantity"))
+        fees = fill_quantity * max(0.0, _number(policy.get("fee_per_unit")) or 0.0)
+        slippage = abs(market_price - (limit_price or market_price))
+        new_status = "entered" if complete else "open"
+        connection.execute(
+            """
+            UPDATE app.paper_order
+            SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
+                filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
+                filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
+                updated_at = %s
+            WHERE id = %s::uuid
+            """,
+            [
+                new_status, market_price, now, now, new_filled, fees, slippage,
+                complete, "partial_fill", now, order["id"],
+            ],
+        )
+        return {
+            "paper_order_id": str(order["id"]),
+            "status": "filled" if complete else "partial",
+            "event_status": "entered" if complete else None,
+            "filled_quantity": new_filled,
+            "fill_price": market_price,
+            "fees": fees,
+            "slippage": slippage,
+        }
+
+    def _manage_option_entry(
+        self,
+        connection: Any,
+        order: dict[str, Any],
+        now: datetime,
+        remaining: float,
+    ) -> dict[str, Any]:
+        legs = self._stored_option_legs(connection, order["id"])
+        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now) if legs else []
+        if not quoted:
+            connection.execute(
+                "UPDATE app.paper_order SET submitted_at = coalesce(submitted_at, %s), unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                [now, "fresh_executable_option_quote_required", now, order["id"]],
+            )
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "fresh_executable_option_quote_required"}
+        structure = str(order.get("structure") or "")
+        credit = is_credit_structure(structure)
+        market_price = package_price(quoted, phase="entry")
+        limit_price = _number(order.get("limit_price"))
+        if market_price is None or limit_price is None or (market_price < limit_price if credit else market_price > limit_price):
+            connection.execute(
+                "UPDATE app.paper_order SET submitted_at = coalesce(submitted_at, %s), unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                [now, "limit_not_reached", now, order["id"]],
+            )
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "limit_not_reached"}
+        fill_quantity = min(remaining, _option_available_quantity(quoted, remaining, phase="entry"))
+        if fill_quantity <= 0:
+            return {"paper_order_id": str(order["id"]), "status": "submitted", "reason": "displayed_option_size_unavailable"}
+        prior_filled = _quantity(order.get("filled_quantity"))
+        new_filled = prior_filled + fill_quantity
+        complete = new_filled >= _quantity(order.get("quantity"))
+        fees = FEE_PER_CONTRACT_LEG * len(quoted) * fill_quantity
+        midpoint = _option_midpoint(quoted)
+        slippage = abs(market_price - midpoint) if midpoint is not None else None
+        connection.execute(
+            """
+            UPDATE app.paper_order
+            SET status = %s, actual_fill_price = coalesce(actual_fill_price, %s),
+                filled_at = coalesce(filled_at, %s), submitted_at = coalesce(submitted_at, %s),
+                filled_quantity = %s, fees = coalesce(fees, 0) + %s,
+                entry_slippage = %s, unfilled_reason = CASE WHEN %s THEN NULL ELSE %s END,
+                updated_at = %s
+            WHERE id = %s::uuid
+            """,
+            ["entered" if complete else "open", market_price, now, now, new_filled, fees, slippage,
+             complete, "partial_fill", now, order["id"]],
+        )
+        return {
+            "paper_order_id": str(order["id"]),
+            "status": "filled" if complete else "partial",
+            "event_status": "entered" if complete else None,
+            "filled_quantity": new_filled,
+            "fill_price": market_price,
+            "fees": fees,
+            "slippage": slippage,
+        }
+
+    def _manage_open(
+        self,
+        connection: Any,
+        order: dict[str, Any],
+        now: datetime,
+        filled: float,
+        exited: float,
+    ) -> dict[str, Any]:
+        remaining = max(0.0, filled - exited)
+        if remaining <= 0:
+            return {"paper_order_id": str(order["id"]), "status": "closed", "reason": "no_remaining_quantity"}
+        if str(order.get("expression_kind") or "").upper() in {kind.value for kind in OPTION_EXPRESSIONS}:
+            return self._manage_option_open(connection, order, now, remaining)
+        if str(order.get("side") or "buy").lower() != "buy":
+            return self._close_at_market(connection, order, now, remaining, "exit_order_filled")
+        quote = connection.execute(
+            """
+            SELECT price, observed_at, available_at
+            FROM raw.confirmed_quote
+            WHERE instrument_id = %s
+              AND observed_at <= %s
+              AND available_at <= %s
+            ORDER BY observed_at DESC, available_at DESC
+            LIMIT 1
+            """,
+            [order["instrument_id"], now, now],
+        ).fetchone()
+        if quote is None or _number(quote["price"]) is None:
+            return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "fresh_confirmed_quote_required_for_exit"}
+        price = float(quote["price"])
+        snapshot = dict(order.get("thesis_snapshot") or {})
+        selected = dict(snapshot.get("selected_expression") or {})
+        invalidation = dict(selected.get("invalidation") or {})
+        target = dict(selected.get("target_range") or {})
+        invalidation_price = _number(invalidation.get("value")) if invalidation.get("kind") == "price" else None
+        target_price = _number(target.get("high"))
+        expires_at = _timestamp(order.get("expires_at"))
+        reason = None
+        if invalidation_price is not None and price <= invalidation_price:
+            reason = "invalidation"
+        elif target_price is not None and price >= target_price:
+            reason = "target_reached"
+        elif expires_at is not None and expires_at <= now:
+            reason = "decision_expired"
+        if reason is None:
+            return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
+        return self._close_at_market(connection, order, now, remaining, reason, price=price)
+
+    def _manage_option_open(
+        self,
+        connection: Any,
+        order: dict[str, Any],
+        now: datetime,
+        remaining: float,
+    ) -> dict[str, Any]:
+        snapshot = dict(order.get("thesis_snapshot") or {})
+        selected = dict(snapshot.get("selected_expression") or {})
+        stance = str(selected.get("stance") or "BULLISH").upper()
+        invalidation = dict(selected.get("invalidation") or {})
+        target = dict(selected.get("target_range") or {})
+        quote = connection.execute(
+            """
+            SELECT price FROM raw.confirmed_quote
+            WHERE instrument_id = %s AND observed_at <= %s AND available_at <= %s
+            ORDER BY observed_at DESC, available_at DESC LIMIT 1
+            """,
+            [order["instrument_id"], now, now],
+        ).fetchone()
+        underlying_price = _number(quote["price"]) if quote is not None else None
+        invalidation_price = _number(invalidation.get("value")) if invalidation.get("kind") == "price" else None
+        target_low = _number(target.get("low"))
+        target_high = _number(target.get("high"))
+        reason = None
+        if _timestamp(order.get("expires_at")) is not None and _timestamp(order.get("expires_at")) <= now:
+            reason = "decision_expired"
+        elif stance == "BEARISH" and invalidation_price is not None and underlying_price is not None and underlying_price >= invalidation_price:
+            reason = "invalidation"
+        elif stance != "BEARISH" and invalidation_price is not None and underlying_price is not None and underlying_price <= invalidation_price:
+            reason = "invalidation"
+        elif stance == "BEARISH" and target_low is not None and underlying_price is not None and underlying_price <= target_low:
+            reason = "target_reached"
+        elif stance != "BEARISH" and target_high is not None and underlying_price is not None and underlying_price >= target_high:
+            reason = "target_reached"
+
+        legs = self._stored_option_legs(connection, order["id"])
+        expiration = _option_expiration(selected, legs)
+        structure = str(order.get("structure") or _option_structure(ExpressionKind(str(order.get("expression_kind").upper()))))
+        if expiration is not None and expiration <= now.date():
+            if structure == "cash_secured_put" and underlying_price is not None and legs:
+                strike = _number(legs[0].get("strike"))
+                if strike is not None and underlying_price <= strike:
+                    policy = dict(order.get("policy_result") or {})
+                    policy["assignment"] = {"status": "assigned", "strike": strike, "underlying_price": underlying_price}
+                    connection.execute(
+                        """
+                        UPDATE app.paper_order
+                        SET status = 'exited', exited_quantity = %s, exit_at = %s,
+                            policy_result = %s, unfilled_reason = %s, updated_at = %s
+                        WHERE id = %s::uuid
+                        """,
+                        [order["quantity"], now, Jsonb(policy), "assigned_at_expiration", now, order["id"]],
+                    )
+                    return {"paper_order_id": str(order["id"]), "status": "closed", "event_status": "exited", "reason": "assignment", "assigned_strike": strike}
+            reason = reason or "expiration"
+        if reason is None:
+            return {"paper_order_id": str(order["id"]), "status": "entered", "reason": "exit_not_triggered"}
+        quoted = latest_option_legs(connection, ticket_legs=legs, as_of=now) if legs else []
+        exit_price = package_price(quoted, phase="exit") if quoted else None
+        if exit_price is None:
+            connection.execute(
+                "UPDATE app.paper_order SET unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                [f"{reason}: fresh_executable_exit_quote_required", now, order["id"]],
+            )
+            return {"paper_order_id": str(order["id"]), "status": "entered", "reason": f"{reason}_pending_executable_quote"}
+        exit_quantity = min(remaining, _option_available_quantity(quoted, remaining, phase="exit"))
+        if exit_quantity <= 0:
+            connection.execute(
+                "UPDATE app.paper_order SET unfilled_reason = %s, updated_at = %s WHERE id = %s::uuid",
+                [f"{reason}: displayed_size_unavailable", now, order["id"]],
+            )
+            return {"paper_order_id": str(order["id"]), "status": "entered", "reason": f"{reason}_pending_size"}
+        new_exited = _quantity(order.get("exited_quantity")) + exit_quantity
+        terminal = new_exited >= _quantity(order.get("filled_quantity") or order.get("quantity"))
+        fees = FEE_PER_CONTRACT_LEG * len(quoted) * exit_quantity
+        midpoint = _option_midpoint(quoted)
+        slippage = abs(exit_price - midpoint) if midpoint is not None else None
+        connection.execute(
+            """
+            UPDATE app.paper_order
+            SET status = %s, exited_quantity = %s, exit_price = %s, exit_at = %s,
+                fees = coalesce(fees, 0) + %s, exit_slippage = %s,
+                unfilled_reason = NULL, updated_at = %s
+            WHERE id = %s::uuid
+            """,
+            ["exited" if terminal else "partial_exited", new_exited, exit_price, now, fees, slippage, now, order["id"]],
+        )
+        return {
+            "paper_order_id": str(order["id"]),
+            "status": "closed" if terminal else "partial",
+            "event_status": "exited" if terminal else None,
+            "reason": reason,
+            "exit_quantity": exit_quantity,
+            "exit_price": exit_price,
+            "fees": fees,
+            "slippage": slippage,
+        }
+
+    def _stored_option_legs(self, connection: Any, paper_order_id: str) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """
+            SELECT leg.contract_id, leg.option_type, leg.side, leg.strike, leg.bid, leg.ask,
+                   leg.bid_size, leg.ask_size, leg.quote_time, leg.open_interest, leg.volume,
+                   contract.expiration
+            FROM app.paper_order_leg leg
+            JOIN catalog.option_contract contract ON contract.id = leg.contract_id
+            WHERE leg.paper_order_id = %s::uuid
+            ORDER BY leg.leg_index
+            """,
+            [paper_order_id],
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _close_at_market(
+        self,
+        connection: Any,
+        order: dict[str, Any],
+        now: datetime,
+        quantity: float,
+        reason: str,
+        *,
+        price: float | None = None,
+    ) -> dict[str, Any]:
+        policy = dict(order.get("policy_result") or {})
+        fee_per_unit = max(0.0, _number(policy.get("fee_per_unit")) or 0.0)
+        fees = quantity * fee_per_unit
+        new_exited = _quantity(order.get("exited_quantity")) + quantity
+        connection.execute(
+            """
+            UPDATE app.paper_order
+            SET status = 'exited', exited_quantity = %s, exit_price = %s,
+                exit_at = %s, fees = coalesce(fees, 0) + %s,
+                updated_at = %s, unfilled_reason = NULL
+            WHERE id = %s::uuid
+            """,
+            [new_exited, price, now, fees, now, order["id"]],
+        )
+        return {
+            "paper_order_id": str(order["id"]),
+            "status": "closed",
+            "event_status": "exited",
+            "reason": reason,
+            "exit_quantity": quantity,
+            "exit_price": price,
+            "fees": fees,
+        }
+
+    def _check_switches(self, kind: ExpressionKind) -> None:
+        settings = self.config.analysis.options_decision_system
+        if settings.mode != "paper":
+            raise ValueError("ticker paper execution requires analysis mode=paper")
+        if not settings.ticker_paper_actions_enabled:
+            raise ValueError("ticker paper actions kill switch is disabled")
+        if kind is ExpressionKind.STOCK and not settings.stock_paper_actions_enabled:
+            raise ValueError("stock paper actions kill switch is disabled")
+        if kind in OPTION_EXPRESSIONS and not settings.options_paper_actions_enabled:
+            raise ValueError("options paper actions kill switch is disabled")
+
+
+def _utc(value: datetime | None) -> datetime:
+    current = value or datetime.now(UTC)
+    return current.astimezone(UTC) if current.tzinfo is not None else current.replace(tzinfo=UTC)
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value)
+    try:
+        return _utc(datetime.fromisoformat(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _number(value: Any) -> float | None:
+    try:
+        result = float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    return result if result is not None and isfinite(result) else None
+
+
+def _quantity(value: Any) -> float:
+    return max(0.0, _number(value) or 0.0)
+
+
+def _limit_reached(side: str, market_price: float, limit_price: float) -> bool:
+    return market_price <= limit_price if side == "buy" else market_price >= limit_price
+
+
+def _complete_option_legs(legs: list[dict[str, Any]]) -> bool:
+    return bool(legs) and all(
+        leg.get("contract_id")
+        and leg.get("option_type")
+        and leg.get("side")
+        and leg.get("strike") is not None
+        and _number(leg.get("bid")) is not None
+        and _number(leg.get("ask")) is not None
+        and _number(leg.get("bid_size")) is not None
+        and _number(leg.get("ask_size")) is not None
+        and _timestamp(leg.get("quote_time") or leg.get("observed_at")) is not None
+        for leg in legs
+    )
+
+
+def _option_structure(kind: ExpressionKind) -> str:
+    return {
+        ExpressionKind.CALL: "long_call",
+        ExpressionKind.PUT: "long_put",
+        ExpressionKind.DEBIT_SPREAD: "debit_spread",
+        ExpressionKind.CASH_SECURED_PUT: "cash_secured_put",
+    }[kind]
+
+
+def _option_available_quantity(legs: list[dict[str, Any]], requested: float, *, phase: str) -> float:
+    sizes: list[int] = []
+    for leg in legs:
+        short = str(leg.get("side") or "").lower() in {"short", "sell"}
+        key = "bid_size" if (phase == "entry" and short) or (phase == "exit" and not short) else "ask_size"
+        size = _number(leg.get(key))
+        if size is None or size <= 0:
+            return 0.0
+        sizes.append(floor(size))
+    return float(min(floor(requested), min(sizes))) if sizes else 0.0
+
+
+def _option_midpoint(legs: list[dict[str, Any]]) -> float | None:
+    signed = 0.0
+    for leg in legs:
+        bid, ask = _number(leg.get("bid")), _number(leg.get("ask"))
+        if bid is None or ask is None or bid < 0 or ask < bid:
+            return None
+        midpoint = (bid + ask) / 2
+        signed += -midpoint if str(leg.get("side") or "").lower() in {"short", "sell"} else midpoint
+    return abs(signed) if legs else None
+
+
+def _option_expiration(selected: dict[str, Any], legs: list[dict[str, Any]]) -> date | None:
+    value = selected.get("expiration")
+    if value is None:
+        selected_legs = selected.get("legs")
+        if isinstance(selected_legs, list) and selected_legs:
+            value = selected_legs[0].get("expiration")
+    if value is None and legs:
+        value = legs[0].get("expiration")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+__all__ = ["TickerPaperExecutionRepository"]

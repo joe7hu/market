@@ -11,7 +11,7 @@ from investment_panel.database.retention import RetentionRepository
 from investment_panel.database.today_analysis import refresh_today_publication
 from investment_panel.database.market_analysis import refresh_market_publication
 from investment_panel.database.outcomes import OutcomeRepository
-from investment_panel.jobs import refresh_options_radar, run_option_agents, run_thesis_monitor
+from investment_panel.jobs import refresh_options_radar, run_option_agents, run_thesis_monitor, ticker_decisions
 
 
 def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
@@ -20,14 +20,19 @@ def publish_decisions(config_path: str | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     runtime = runtime_for_config(config)
     options = refresh_options_radar.run_deterministic_only(config_path)
+    tickers = ticker_decisions.publish(config_path)
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(runtime)
     market = refresh_market_publication(runtime)
-    status = "ok" if all(str(row.get("status")) == "ok" for row in (today, market)) else "partial"
+    status = "ok" if all(
+        str(row.get("status")) == "ok"
+        for row in (tickers, today, market)
+    ) else "partial"
     return {
         "status": status,
         "database": "postgresql",
         "options_radar": options,
+        "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
         "market": market,
@@ -90,6 +95,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     agents = run_option_agents.run(config_path)
     thesis_monitor = run_thesis_monitor.run(config_path, trigger="preopen")
     after_agents = refresh_options_radar.run_deterministic_only(config_path)
+    tickers = ticker_decisions.publish(config_path)
     outcomes = _refresh_option_outcomes(runtime, config)
     today = refresh_today_publication(
         runtime, use_agent_narrative=True,
@@ -99,7 +105,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
     market = refresh_market_publication(runtime)
     option_ready = any(str(result.get("status") or "").lower() == "ok" for result in (before_agents, after_agents))
     thesis_status = str(thesis_monitor.get("status") or "failed").lower()
-    publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (today, market))
+    publication_ready = all(str(result.get("status") or "").lower() == "ok" for result in (tickers, today, market))
     status = "ok" if option_ready and publication_ready and thesis_status in {"ok", "skipped"} else "partial"
     return {
         "ok": status == "ok",
@@ -110,6 +116,7 @@ def premarket(config_path: str | None = None, *, now: datetime | None = None) ->
         "agents": agents,
         "thesis_monitor": thesis_monitor,
         "after_agents": after_agents,
+        "ticker_decisions": tickers,
         "outcomes": outcomes,
         "today": today,
         "market": market,
@@ -155,6 +162,7 @@ def full(config_path: str | None = None, *, continue_on_error: bool = True) -> d
         ("ibkr_options", False, lambda: update_ibkr_options.run(config_path)),
         ("broker_sources", False, lambda: update_broker_sources.run(config_path)),
         ("options_radar", True, lambda: refresh_options_radar.run(config_path)),
+        ("ticker_decisions", True, lambda: ticker_decisions.publish(config_path)),
         (
             "option_outcomes",
             False,

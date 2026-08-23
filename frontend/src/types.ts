@@ -79,7 +79,21 @@ export type TickerDossier = {
   };
 };
 
-export type TickerPayload = components["schemas"]["TickerDetailResponse"] & { dossier: TickerDossier };
+export type TickerLearning = {
+  independent_episode_count?: number;
+  disagreement?: {
+    strongest_bull_case?: string | null;
+    strongest_bear_case?: string | null;
+    resolving_fact?: string | null;
+  };
+  expression_tournament?: Array<Record<string, JsonValue | undefined>>;
+  mistake_cards?: Array<Record<string, JsonValue | undefined>>;
+};
+
+export type TickerPayload = components["schemas"]["TickerDetailResponse"] & {
+  dossier: TickerDossier;
+  learning?: TickerLearning;
+};
 export type SettingsPayload = components["schemas"]["SettingsResponse"];
 
 export type KnownPanelTables = Record<PanelTableKey, TablePayload> & {

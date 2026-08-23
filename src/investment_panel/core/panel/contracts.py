@@ -12,11 +12,11 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
         "daily_brief",
         "portfolio_risk_cards",
         "portfolio",
-        # Today reads the canonical published Radar rows directly.  It must
-        # never show a separately copied option action queue from an older
-        # daily-brief publication. Thesis work, feed rows, and broad decision
-        # queues remain lazy routes; they do not belong in the first-screen
-        # decision payload.
+        "ticker_decisions",
+        # Today reads canonical published ticker decisions and legacy Radar
+        # rows for symbol discovery. It must never show a separately copied
+        # option action queue from an older daily-brief publication. Thesis
+        # work, feed rows, and broad decision queues remain lazy routes.
         "option_radar_opportunity",
     ),
     "watchlist": (
@@ -291,6 +291,9 @@ TICKER_TABLES = (
     "decision_truth",
     "event_decision_packets",
     "event_scout_events",
+    "ticker_decisions",
+    "ticker_outcomes",
+    "ticker_benchmark_snapshot",
 )
 
 # The dossier route must not load every evidence model before it can render a
@@ -304,14 +307,28 @@ TICKER_INITIAL_TABLES = (
     "candidates",
     "quotes",
     "portfolio",
+    "broker_accounts",
+    "broker_positions",
+    "source_freshness",
+    "option_strategy_versions",
     "theses",
     "thesis_monitor",
     "catalysts",
     "earnings",
+    "fundamentals",
+    "valuations",
+    "analyst_estimates",
+    "disclosures",
+    "ownership_consensus",
+    "liquidity",
+    "technicals",
     "options_ticker_signals",
     "options_payoff_scenarios",
     "options_expiry_signals",
     "options_expiries",
+    "ticker_decisions",
+    "ticker_outcomes",
+    "ticker_benchmark_snapshot",
 )
 
 DECISION_REPAIR_TABLES = {

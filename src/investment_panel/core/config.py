@@ -588,6 +588,8 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
             "max_correlation_peers": config.analysis.max_correlation_peers,
             "options_decision_system": {
                 "mode": config.analysis.options_decision_system.mode,
+                "ticker_paper_actions_enabled": config.analysis.options_decision_system.ticker_paper_actions_enabled,
+                "stock_paper_actions_enabled": config.analysis.options_decision_system.stock_paper_actions_enabled,
                 "options_paper_actions_enabled": config.analysis.options_decision_system.options_paper_actions_enabled,
                 "radar_paper_actions_enabled": config.analysis.options_decision_system.radar_paper_actions_enabled,
                 "qqq_paper_actions_enabled": config.analysis.options_decision_system.qqq_paper_actions_enabled,

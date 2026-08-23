@@ -67,6 +67,8 @@ def test_api_routes_return_json(postgresql, monkeypatch: pytest.MonkeyPatch, tmp
             "/api/panel-snapshot?scope=options-radar",
             "/api/panel-snapshot?scope=today",
             "/api/panel-snapshot?scope=dashboard",
+            "/api/today",
+            "/api/market/breadth",
             "/api/quotes?symbols=TSLA",
             "/api/options/history/snapshots",
             "/api/options/history/symbols",

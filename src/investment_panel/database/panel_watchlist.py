@@ -11,12 +11,13 @@ TECHNICALS_QUERY = """
     WITH daily AS (
         SELECT DISTINCT ON (bar.instrument_id, bar.trading_date)
                bar.instrument_id, instrument.symbol, bar.trading_date,
-               bar.observed_at, bar.high, bar.low, bar.close, bar.volume
-        FROM raw.price_bar bar
+               bar.observed_at, bar.available_at, bar.high, bar.low, bar.close, bar.volume
+        FROM raw.confirmed_price_bar bar
         JOIN catalog.instrument instrument ON instrument.id = bar.instrument_id
         WHERE bar.interval = '1d' AND bar.close > 0
         ORDER BY bar.instrument_id, bar.trading_date,
-                 (bar.source_id = 'daily-market-prices') DESC, bar.observed_at DESC
+                 (bar.source_id = 'daily-market-prices') DESC,
+                 bar.observed_at DESC, bar.available_at DESC
     ), sequenced AS (
         SELECT daily.*,
                row_number() OVER (
@@ -28,6 +29,7 @@ TECHNICALS_QUERY = """
         FROM daily
     ), aggregated AS (
         SELECT instrument_id, symbol, max(observed_at) AS as_of,
+               max(available_at) AS available_at,
                max(close) FILTER (WHERE rn = 1) AS price,
                avg(close) FILTER (WHERE rn <= 20) AS sma_20,
                avg(close) FILTER (WHERE rn <= 50) AS sma_50,

@@ -2,7 +2,7 @@
 
 import type { components } from "../generated/apiSchema";
 import { emptyPanelData, mergeSnapshot, type PanelSnapshotPayload } from "../apiPanelData";
-import type { DashboardPayload, PanelData, RowRecord, TablePayload, TickerDossier } from "../types";
+import type { DashboardPayload, PanelData, RowRecord, TablePayload, TickerDossier, TickerLearning } from "../types";
 import { getJson, patchJson, sendJson } from "../apiTransport";
 
 type ApiSchema = components["schemas"];
@@ -65,7 +65,7 @@ export type SourceCatalogRow = {
   capability_health: Array<{ capability: string; status: string; finished_at: string | null; failure_detail: string }>;
 };
 export type SettingsPayload = ApiSchema["SettingsResponse"];
-export type TickerPayload = ApiSchema["TickerDetailResponse"] & { dossier: TickerDossier };
+export type TickerPayload = ApiSchema["TickerDetailResponse"] & { dossier: TickerDossier; learning?: TickerLearning };
 export type PanelScopeOptions = {
   offset?: number;
   limit?: number;

@@ -1,9 +1,12 @@
 import type { PanelData, TickerPayload } from "@/types";
+import { startRefreshJob } from "@/api/panel";
+import { useState } from "react";
 import { WorkspacePage, type OpenTicker } from "@/views/workspacePage";
 
 import { tickerHeaderMetrics } from "./data";
 import {
   DecisionPanel,
+  TickerDecisionPanel,
   EstimatesPanel,
   EvidencePanel,
   FundamentalsPanel,
@@ -17,6 +20,7 @@ import {
 } from "./panels";
 
 export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; ticker: TickerPayload | null; data: PanelData; onOpenTicker: OpenTicker }) {
+  const [collecting, setCollecting] = useState<string | null>(null);
   const dossier = ticker?.dossier;
   const metrics = tickerHeaderMetrics(ticker);
   const notFound = ticker?.found === false;
@@ -33,7 +37,22 @@ export function TickerPage({ symbol, ticker, onOpenTicker }: { symbol: string; t
     <WorkspacePage eyebrow="Ticker dossier" title={title} subtitle="Authoritative fundamentals, source-backed evidence, thesis state, and decision context." metrics={metrics}>
       {dossier && !notFound ? (
         <>
-          <DecisionPanel brief={dossier.decision} />
+          {ticker?.ticker_decision ? (
+            <TickerDecisionPanel
+              decision={ticker.ticker_decision}
+              dataRequests={ticker.data_requests ?? []}
+              learning={ticker.learning}
+              collecting={collecting}
+              onCollect={async (job) => {
+                setCollecting(job);
+                try {
+                  await startRefreshJob(job);
+                } finally {
+                  setCollecting(null);
+                }
+              }}
+            />
+          ) : <DecisionPanel brief={dossier.decision} />}
           <FundamentalsPanel fundamentals={dossier.fundamentals} />
           <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.7fr)]">
             <TradingViewChart symbol={symbol} ticker={ticker} />

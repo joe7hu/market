@@ -33,12 +33,15 @@ RESEARCH_PACKETS_BASE_QUERY = """
     SELECT instrument.symbol, item.id::text AS packet_id, item.observed_at AS generated_at,
            item.published_at,
            item.title, item.summary, item.url AS source_url, item.source_id AS source,
-           item.metadata
+           item.metadata, ingest_run.finished_at AS available_at,
+           ingest_run.id::text AS source_version, item.id::text AS revision
     FROM raw.content_item_instrument link
     JOIN raw.content_item item ON item.id = link.content_item_id
     JOIN catalog.instrument instrument ON instrument.id = link.instrument_id
     JOIN ingest.source source ON source.id = item.source_id
        AND source.enabled AND source.operational_state = 'active'
+    JOIN ingest.run ingest_run ON ingest_run.id = item.ingest_run_id
+       AND ingest_run.finished_at IS NOT NULL
     ORDER BY item.observed_at DESC
 """
 
@@ -91,23 +94,30 @@ DIRECT_QUERIES: dict[str, str] = {
     **SOURCE_UNIVERSE_QUERIES,
     "technicals": TECHNICALS_QUERY,
     "valuations": """
-        SELECT DISTINCT ON (instrument.id, observation.metric_set)
-               instrument.symbol, observation.metric_set, observation.period_end,
-               observation.observed_at, observation.values, observation.source_id AS source
+        SELECT instrument.symbol, observation.metric_set, observation.period_end,
+               observation.filed_at, observation.observed_at, observation.values,
+               observation.source_id AS source, ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, observation.id::text AS revision
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
         JOIN ingest.source source ON source.id = observation.source_id
           AND source.enabled AND source.operational_state = 'active'
-        ORDER BY instrument.id, observation.metric_set, observation.observed_at DESC
+        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        ORDER BY instrument.symbol, observation.observed_at DESC, ingest_run.finished_at DESC
     """,
     "liquidity": """
         SELECT instrument.symbol,
                max(quote.observed_at) AS as_of,
+               max(ingest_run.finished_at) AS available_at,
                avg((quote.ask - quote.bid) / NULLIF(quote.mid, 0)) AS average_option_spread_pct,
                sum(COALESCE(quote.open_interest, 0)) AS total_open_interest,
                sum(COALESCE(quote.volume, 0)) AS total_option_volume,
                count(*) AS contracts
         FROM raw.option_quote quote
+        JOIN raw.option_snapshot snapshot ON snapshot.id = quote.snapshot_id
+        JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
         JOIN catalog.option_contract contract ON contract.id = quote.contract_id
         JOIN catalog.instrument instrument ON instrument.id = contract.underlying_instrument_id
         JOIN LATERAL (
@@ -120,29 +130,40 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "earnings": """
         SELECT event.id::text, instrument.symbol, event.starts_at, event.title AS event,
-               event.importance, event.verification_status, event.source_url, event.details
+               event.importance, event.verification_status, event.source_url, event.details,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, event.id::text AS revision
         FROM raw.market_event event
         LEFT JOIN catalog.instrument instrument ON instrument.id = event.instrument_id
         JOIN ingest.source source ON source.id = event.source_id
           AND source.enabled AND source.operational_state = 'active'
-        WHERE event.event_kind = 'earnings' ORDER BY event.starts_at
+        JOIN ingest.run ingest_run ON ingest_run.id = event.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        WHERE event.event_kind = 'earnings'
+          AND ingest_run.finished_at IS NOT NULL
+        ORDER BY event.starts_at, ingest_run.finished_at
     """,
     "analyst_estimates": """
         SELECT instrument.symbol, observation.period_end, observation.observed_at,
-               observation.values, observation.source_id AS source
+               observation.values, observation.source_id AS source,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, observation.id::text AS revision
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
         JOIN ingest.source source ON source.id = observation.source_id
           AND source.enabled AND source.operational_state = 'active'
+        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
         WHERE observation.metric_set IN ('analyst_estimates', 'consensus')
-        ORDER BY observation.observed_at DESC
+        ORDER BY observation.observed_at DESC, ingest_run.finished_at DESC
     """,
     "research_packets": RESEARCH_PACKETS_BASE_QUERY + " LIMIT 500",
     "source_freshness": """
         SELECT source.id AS source_id, source.name AS source_name,
                source.family AS source_family, source.kind AS source_kind,
                source.operational_state, source.health_owner, source.freshness_seconds,
-               run.status, run.finished_at AS refreshed_at, run.failure_detail,
+               run.status, run.finished_at AS refreshed_at, run.finished_at AS available_at,
+               run.id::text AS source_version, source.id AS revision, run.failure_detail,
                run.item_count, run.instrument_count AS ticker_count,
                CASE WHEN NOT source.enabled THEN 'disabled'
                     WHEN source.operational_state = 'archived' THEN 'archived'
@@ -153,7 +174,7 @@ DIRECT_QUERIES: dict[str, str] = {
                     ELSE 'fresh' END AS freshness_status
         FROM ingest.source source
         LEFT JOIN LATERAL (
-            SELECT status, finished_at, failure_detail, item_count, instrument_count
+            SELECT id, status, finished_at, failure_detail, item_count, instrument_count
             FROM ingest.run WHERE source_id = source.id ORDER BY started_at DESC LIMIT 1
         ) run ON true ORDER BY source.family, source.id
     """,
@@ -164,11 +185,15 @@ DIRECT_QUERIES: dict[str, str] = {
                CASE WHEN holding ? 'value_usd' THEN (holding->>'value_usd')::bigint
                     WHEN disclosure.event_date >= DATE '2023-01-03' THEN (holding->>'value_thousands')::bigint
                     ELSE (holding->>'value_thousands')::bigint * 1000 END AS value_usd,
-               disclosure.source_url, disclosure.details->>'accession_number' AS accession_number
+               disclosure.source_url, disclosure.details->>'accession_number' AS accession_number,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, disclosure.id::text AS revision
         FROM raw.disclosure disclosure
         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(disclosure.details->'holdings', '[]'::jsonb)) holding
+        JOIN ingest.run ingest_run ON ingest_run.id = disclosure.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
         WHERE disclosure.source_type = '13f' AND holding->>'symbol' IS NOT NULL
-        ORDER BY disclosure.event_date DESC, value_usd DESC
+        ORDER BY disclosure.event_date DESC, value_usd DESC, ingest_run.finished_at DESC
     """,
     "options_provider_capabilities": """
         SELECT id AS provider, name, enabled, capabilities, updated_at
@@ -185,17 +210,66 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "options_payoff_scenarios": """
         SELECT decision.id::text AS candidate_event_id, instrument.symbol AS ticker,
-               contract.expiration, contract.strike, contract.option_type,
-               option_decision.premium_mid, option_decision.buy_under,
+               contract.id::text AS contract_id, contract.expiration, contract.strike, contract.option_type,
+               option_quote.bid, option_quote.ask, option_quote.bid_size, option_quote.ask_size,
+               option_quote.observed_at AS quote_observed_at,
+               option_decision.premium_mid, option_decision.entry_price,
+               option_decision.buy_under, option_decision.structure,
+               option_decision.synthetic_legs AS legs, option_decision.max_loss,
+               option_decision.expected_value, option_decision.probability_profit,
+               option_decision.details,
                feature.required_2x_price, feature.required_5x_price,
-               feature.required_10x_price, feature.required_move_pct
+               feature.required_10x_price, feature.required_move_pct,
+               COALESCE(option_quote.available_at, decision.as_of) AS available_at,
+               option_quote.id::text AS source_version, option_quote.id::text AS revision
         FROM analysis.option_decision option_decision
         JOIN analysis.decision decision ON decision.id = option_decision.decision_id
         JOIN analysis.option_feature feature
           ON feature.run_id = decision.run_id AND feature.contract_id = option_decision.contract_id
         JOIN catalog.option_contract contract ON contract.id = option_decision.contract_id
+        JOIN raw.option_quote option_quote
+          ON option_quote.snapshot_id = option_decision.snapshot_id
+         AND option_quote.contract_id = option_decision.contract_id
+         AND option_quote.observed_at = option_decision.quote_observed_at
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
         ORDER BY decision.as_of DESC, decision.rank
+    """,
+    "ticker_decisions": """
+        SELECT decision.id::text AS ticker_decision_id,
+               instrument.symbol AS ticker, instrument.symbol,
+               decision.decision_revision, decision.contract_version,
+               decision.as_of, decision.published_at, decision.input_hash,
+               decision.code_version, decision.experiment_id,
+               decision.tactical, decision.fundamental, decision.capital_action,
+               decision.risk_policy, decision.expressions,
+               decision.selected_expression, decision.data_requests,
+               decision.learning_history, decision.input_manifest,
+               decision.status
+        FROM analysis.ticker_decision decision
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        WHERE decision.status = 'published'
+        ORDER BY decision.as_of DESC, decision.created_at DESC
+    """,
+    "ticker_outcomes": """
+        SELECT outcome.ticker_decision_id::text, instrument.symbol AS ticker,
+               outcome.horizon, outcome.horizon_sessions, outcome.state,
+               outcome.measured_through, outcome.selected_expression,
+               outcome.selected_return, outcome.stock_counterfactual_return,
+               outcome.alternate_counterfactual_return, outcome.cash_return,
+               outcome.sector_return, outcome.market_return, outcome.error_type,
+               outcome.mistake_card, outcome.available_at, outcome.metadata,
+               outcome.updated_at
+        FROM analysis.ticker_outcome outcome
+        JOIN analysis.ticker_decision decision ON decision.id = outcome.ticker_decision_id
+        JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
+        ORDER BY outcome.measured_through DESC NULLS LAST, outcome.updated_at DESC
+    """,
+    "ticker_benchmark_snapshot": """
+        SELECT benchmark_key, as_of, available_at, membership_hash,
+               member_count, source_id, source_version, exact_membership,
+               coverage
+        FROM analysis.ticker_benchmark_snapshot
+        ORDER BY as_of DESC
     """,
     "shadow_trade": """
         SELECT trade.id::text, trade.decision_id::text AS candidate_event_id,
@@ -278,17 +352,21 @@ DIRECT_QUERIES: dict[str, str] = {
     "fundamentals": """
         SELECT instrument.symbol, observation.period_end, observation.filed_at,
                observation.observed_at, observation.metric_set, observation.values,
-               observation.source_id AS source
+               observation.source_id AS source, ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, observation.id::text AS revision
         FROM raw.fundamental_observation observation
         JOIN catalog.instrument instrument ON instrument.id = observation.instrument_id
         JOIN ingest.source source ON source.id = observation.source_id
           AND source.enabled AND source.operational_state = 'active'
-        ORDER BY observation.observed_at DESC
+        JOIN ingest.run ingest_run ON ingest_run.id = observation.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        ORDER BY observation.observed_at DESC, ingest_run.finished_at DESC
     """,
     "catalysts": """
         SELECT catalyst.id::text, instrument.symbol, catalyst.starts_at, catalyst.title AS event,
                catalyst.expected_impact, catalyst.notes, catalyst.confidence,
-               catalyst.source_id AS source, catalyst.version
+               catalyst.source_id AS source, catalyst.version,
+               catalyst.created_at AS available_at, catalyst.id::text AS revision
         FROM app.catalyst catalyst
         LEFT JOIN catalog.instrument instrument ON instrument.id = catalyst.instrument_id
         WHERE catalyst.status = 'current'
@@ -298,19 +376,27 @@ DIRECT_QUERIES: dict[str, str] = {
         SELECT disclosure.id::text, instrument.symbol, disclosure.source_type,
                disclosure.trader_name, disclosure.filer_name, disclosure.event_date,
                disclosure.filed_date, disclosure.action, disclosure.amount_text,
-               disclosure.source_url, disclosure.details, disclosure.source_id AS source
+               disclosure.source_url, disclosure.details, disclosure.source_id AS source,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, disclosure.id::text AS revision
         FROM raw.disclosure disclosure
         LEFT JOIN catalog.instrument instrument ON instrument.id = disclosure.instrument_id
         JOIN ingest.source source ON source.id = disclosure.source_id
           AND source.enabled AND source.operational_state = 'active'
-        ORDER BY COALESCE(disclosure.event_date, disclosure.filed_date) DESC
+        JOIN ingest.run ingest_run ON ingest_run.id = disclosure.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        ORDER BY COALESCE(disclosure.event_date, disclosure.filed_date) DESC, ingest_run.finished_at DESC
     """,
     "news": """
         SELECT item.id::text, item.title, item.url, item.author, item.published_at,
-               item.observed_at, item.summary, item.source_id AS source, item.metadata
+               item.observed_at, item.summary, item.source_id AS source, item.metadata,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, item.id::text AS revision
         FROM raw.content_item item
         JOIN ingest.source source ON source.id = item.source_id
           AND source.enabled AND source.operational_state = 'active'
+        JOIN ingest.run ingest_run ON ingest_run.id = item.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
         WHERE item.kind IN ('news', 'article', 'blog', 'social')
         ORDER BY COALESCE(item.published_at, item.observed_at) DESC LIMIT 500
     """,
@@ -344,25 +430,35 @@ DIRECT_QUERIES: dict[str, str] = {
     """,
     "option_strategy_versions": """
         SELECT strategy.id, strategy.strategy_key AS strategy_version, strategy.name AS strategy_name,
-               strategy.revision AS version, strategy.created_at, strategy.status,
+               strategy.revision AS version, strategy.created_at, strategy.created_at AS available_at,
+               strategy.id::text AS source_version, strategy.revision AS revision, strategy.status,
                strategy.parameters, strategy.promoted_at, strategy.supersedes_id
         FROM analysis.strategy_revision strategy ORDER BY strategy.strategy_key, strategy.revision DESC
     """,
     "broker_accounts": """
         SELECT snapshot.id::text, snapshot.source_id AS provider, snapshot.account_key AS account_id,
                snapshot.observed_at AS updated_at, snapshot.currency, snapshot.net_liquidation,
-               snapshot.buying_power, snapshot.cash_balance, snapshot.details
-        FROM raw.broker_account_snapshot snapshot ORDER BY snapshot.observed_at DESC
+               snapshot.buying_power, snapshot.cash_balance, snapshot.details,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, snapshot.id::text AS revision
+        FROM raw.broker_account_snapshot snapshot
+        JOIN ingest.run ingest_run ON ingest_run.id = snapshot.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
+        ORDER BY snapshot.observed_at DESC, ingest_run.finished_at DESC
     """,
     "broker_positions": """
         SELECT account.source_id AS provider, account.account_key AS account_id,
                instrument.symbol, instrument.asset_class, position.quantity,
                position.average_cost, position.market_price, position.market_value,
-               position.unrealized_pnl, account.observed_at AS updated_at, position.details
+               position.unrealized_pnl, account.observed_at AS updated_at, position.details,
+               ingest_run.finished_at AS available_at,
+               ingest_run.id::text AS source_version, position.id::text AS revision
         FROM raw.broker_position_snapshot position
         JOIN raw.broker_account_snapshot account ON account.id = position.account_snapshot_id
+        JOIN ingest.run ingest_run ON ingest_run.id = account.ingest_run_id
+          AND ingest_run.finished_at IS NOT NULL
         JOIN catalog.instrument instrument ON instrument.id = position.instrument_id
-        ORDER BY account.observed_at DESC, instrument.symbol
+        ORDER BY account.observed_at DESC, ingest_run.finished_at DESC, instrument.symbol
     """,
     "paper_orders": """
         SELECT orders.id::text, decision.decision_key AS recommendation_id,

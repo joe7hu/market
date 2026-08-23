@@ -269,6 +269,7 @@ def test_today_scope_is_decision_first_and_bounds_radar_rows() -> None:
         "daily_brief",
         "portfolio_risk_cards",
         "portfolio",
+        "ticker_decisions",
         "option_radar_opportunity",
     ]
     opportunities = tables["option_radar_opportunity"]

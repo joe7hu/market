@@ -9,6 +9,10 @@ from typing import Any, Callable
 @dataclass(frozen=True)
 class OptionsDecisionSystemConfig:
     mode: str = "shadow"
+    # Ticker-first paper execution has its own kill switch. It never shares a
+    # live brokerage submission path with the advisory or option adapters.
+    ticker_paper_actions_enabled: bool = False
+    stock_paper_actions_enabled: bool = False
     options_paper_actions_enabled: bool = False
     radar_paper_actions_enabled: bool = False
     qqq_paper_actions_enabled: bool = False
@@ -37,6 +41,8 @@ def options_decision_system_config(
     sleeve = raw.get("options_risk_sleeve_capital")
     return OptionsDecisionSystemConfig(
         mode=mode_parser(raw),
+        ticker_paper_actions_enabled=bool(raw.get("ticker_paper_actions_enabled", False)),
+        stock_paper_actions_enabled=bool(raw.get("stock_paper_actions_enabled", False)),
         options_paper_actions_enabled=bool(raw.get("options_paper_actions_enabled", False)),
         radar_paper_actions_enabled=bool(raw.get("radar_paper_actions_enabled", False)),
         qqq_paper_actions_enabled=bool(raw.get("qqq_paper_actions_enabled", False)),

@@ -27,6 +27,13 @@ from app.options_history_contracts import (
     IVCurveSet,
     IVSurfaceGrid,
 )
+from investment_panel.core.decision import (
+    CapitalAction,
+    DataRequest,
+    ExpressionDecision,
+    ExpressionKind,
+    TickerDecision,
+)
 
 
 JsonObject = dict[str, Any]
@@ -74,6 +81,38 @@ class PanelSnapshotResponse(BaseModel):
     status: ApiStatusResponse
     dashboard: DashboardResponse | None = None
     tables: dict[str, TablePayloadResponse] = Field(default_factory=dict)
+
+
+class TodayCapitalAction(FlexibleResponse):
+    ticker: str
+    action: str
+    owned: bool
+    rationale: str
+    decision_revision: str
+    selected_expression: str | None = None
+    price_condition: str | None = None
+    catalyst: str | None = None
+    expires_at: date | None = None
+
+
+class TodayResponse(BaseModel):
+    status: ApiStatusResponse
+    as_of: datetime | None = None
+    actions: list[TodayCapitalAction] = Field(default_factory=list)
+    count: int = 0
+
+
+class TickerBenchmarkResponse(FlexibleResponse):
+    status: ApiStatusResponse
+    benchmark_key: str | None = None
+    as_of: datetime | None = None
+    available_at: datetime | None = None
+    membership_hash: str | None = None
+    member_count: int = 0
+    source_id: str | None = None
+    source_version: str | None = None
+    exact_membership: list[str] = Field(default_factory=list)
+    coverage: JsonObject = Field(default_factory=dict)
 
 
 class RefreshJobResponse(FlexibleResponse):
@@ -226,6 +265,18 @@ class OptionTicketDetailResponse(FlexibleResponse):
 class PaperEntryResponse(FlexibleResponse):
     status: str | None = None
     decision_id: str | None = None
+
+
+class TickerPaperEntryResponse(FlexibleResponse):
+    status: str
+    paper_order_id: str
+    ticker: str
+    expression_kind: str
+    quantity: int
+    planned_loss: float
+    decision_revision: str
+    paper_only: bool = True
+    live_order_submission: bool = False
 
 
 class StaticArbitrageVerificationResponse(FlexibleResponse):
@@ -478,12 +529,18 @@ class TickerDetailResponse(FlexibleResponse):
     status: ApiStatusResponse
     as_of: datetime | None = None
     dossier: Row = Field(default_factory=dict)
+    ticker_decision: TickerDecision
+    capital_action: CapitalAction
+    expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
+    data_requests: list[DataRequest] = Field(default_factory=list)
+    learning: JsonObject = Field(default_factory=dict)
+    learning_history: list[Row] = Field(default_factory=list)
+    decision_revision: str
     found: bool = False
 
 
-class TickerDecisionSnapshotResponse(FlexibleResponse):
-    symbol: str
-    found: bool = True
+class TickerDecisionSnapshotResponse(TickerDecision):
+    """The typed ticker decision; no flexible legacy snapshot fields remain."""
 
 
 class ThesisMutationResponse(FlexibleResponse):
@@ -561,6 +618,7 @@ __all__ = [
     "PanelContractResponse",
     "PanelSnapshotResponse",
     "PaperEntryResponse",
+    "TickerPaperEntryResponse",
     "PortfolioTransactionPreviewResponse",
     "PortfolioTransactionResultResponse",
     "QuotesResponse",
@@ -580,11 +638,14 @@ __all__ = [
     "StrategyPromotionResponse",
     "SuperinvestorDetailResponse",
     "TablePayloadResponse",
+    "TodayCapitalAction",
+    "TodayResponse",
     "ThesisAutomationResponse",
     "ThesisHistoryResponse",
     "ThesisMutationResponse",
     "ThesisReviewResponse",
     "TickerDecisionSnapshotResponse",
+    "TickerBenchmarkResponse",
     "TickerDetailResponse",
     "WatchlistMutationResponse",
 ]
