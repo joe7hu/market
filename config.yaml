@@ -115,11 +115,17 @@ analysis:
   # paper-only; it does not submit broker orders.
   options_decision_system:
     mode: paper
-    # Recovery is forward-only.  Paper action creation remains kill-switched
-    # until five qualified event sessions have accumulated.
-    options_paper_actions_enabled: false
-    radar_paper_actions_enabled: false
-    qqq_paper_actions_enabled: false
+    # The signal and paper-learning loop is enabled.  Every entry remains
+    # deterministic, risk-capped, and paper-only.  Live brokerage submission
+    # remains impossible because both broker configurations below are
+    # paper_only and the execution repositories reject live paths.
+    ticker_paper_actions_enabled: true
+    stock_paper_actions_enabled: true
+    options_paper_actions_enabled: true
+    radar_paper_actions_enabled: true
+    qqq_paper_actions_enabled: true
+    # Recovery is a separate forward-only system.  Keep its entry gate closed
+    # until its own qualified event-session evidence exists.
     recovery_paper_actions_enabled: false
     decision_inbox_enabled: true
     # The recipient is fixed by shared GBrain.  Market stores no chat ID,
@@ -132,7 +138,10 @@ analysis:
     max_symbol_risk_pct: 0.04
     daily_loss_halt_pct: 0.04
     max_recovery_open_positions: 5
-    strategy_auto_promotion_enabled: false
+    # Enable automatic promotion only after the stored deterministic
+    # backtest/forward-shadow/canary gates pass.  This changes paper signal
+    # policy, not brokerage behavior.
+    strategy_auto_promotion_enabled: true
     event_agent_debounce_minutes: 30
     event_agent_max_batches_per_symbol_per_day: 2
     event_agent_max_tasks_per_batch: 12
