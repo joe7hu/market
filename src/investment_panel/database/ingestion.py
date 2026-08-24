@@ -602,7 +602,6 @@ class IngestionRepository:
                           ON instrument.id = existing.underlying_instrument_id
                         WHERE stage.provider_symbol IS NULL
                           AND stage.deliverable_key IS NULL
-                          AND existing.deliverable_key LIKE 'legacy-unverified:%%'
                           AND instrument.symbol = stage.underlying_symbol
                           AND existing.expiration = stage.expiration
                           AND existing.strike = stage.strike

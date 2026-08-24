@@ -991,7 +991,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
                 "DELETE FROM app.paper_order WHERE id = %s",
                 [staged["paper_order_id"]],
             )
-    mark_at = observed_at + timedelta(days=1)
+    mark_at = observed_at + timedelta(days=5)
     mark_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         mark_run,
