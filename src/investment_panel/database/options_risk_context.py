@@ -14,7 +14,7 @@ def option_risk_contexts(
     symbols: Iterable[str],
     *,
     evaluated_at: datetime | None,
-) -> dict[str, dict[str, float | None]]:
+) -> dict[str, dict[str, Any]]:
     normalized = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
     with runtime.read() as connection:
         account = connection.execute(
@@ -115,6 +115,17 @@ def option_risk_contexts(
             "open_total_csp_collateral": total_csp,
             "broker_available_capital": broker_available,
             "broker_net_liquidation": broker_nav,
+            "cash_balance": (
+                float(account["cash_balance"])
+                if account is not None and account["cash_balance"] is not None
+                else None
+            ),
+            "buying_power": (
+                float(account["buying_power"])
+                if account is not None and account["buying_power"] is not None
+                else None
+            ),
+            "account_observed_at": account["observed_at"] if account is not None else None,
         }
         for symbol in normalized
     }

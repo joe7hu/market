@@ -8,7 +8,13 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from investment_panel.core.decision import Horizon, TickerDecision, evaluate_ticker_policy
+from investment_panel.core.decision import (
+    Horizon,
+    TickerDecision,
+    capital_action_from_resolution,
+    evaluate_ticker_policy,
+    resolution_from_legacy,
+)
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, package_price
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
@@ -42,12 +48,12 @@ class TickerDecisionRepository:
                 INSERT INTO analysis.ticker_decision (
                     instrument_id, decision_revision, contract_version, as_of,
                     published_at, input_hash, code_version, experiment_id,
-                    tactical, fundamental, capital_action, risk_policy,
+                    tactical, fundamental, capital_action, resolution, policy_version, risk_policy,
                     expressions, selected_expression, data_requests,
                     learning_history, input_manifest, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published'
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published'
                 )
                 ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
@@ -59,7 +65,8 @@ class TickerDecisionRepository:
                     decision.input_manifest.code_version,
                     decision.input_manifest.experiment_id,
                     Jsonb(payload["tactical"]), Jsonb(payload["fundamental"]),
-                    Jsonb(payload["capital_action"]), Jsonb(payload["risk_policy"]),
+                    Jsonb(payload["capital_action"]), Jsonb(payload["resolution"]),
+                    decision.policy_version, Jsonb(payload["risk_policy"]),
                     Jsonb(payload["expressions"]), Jsonb(payload.get("selected_expression")),
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
                     Jsonb(payload["input_manifest"]),
@@ -98,7 +105,7 @@ class TickerDecisionRepository:
                 SELECT instrument.symbol AS ticker, decision.contract_version,
                        decision.as_of, decision.decision_revision,
                        decision.tactical, decision.fundamental, decision.capital_action,
-                       decision.risk_policy, decision.expressions,
+                       decision.resolution, decision.policy_version, decision.risk_policy, decision.expressions,
                        decision.selected_expression, decision.data_requests,
                        decision.learning_history, decision.input_manifest
                 FROM analysis.ticker_decision decision
@@ -783,6 +790,7 @@ class TickerDecisionRepository:
 
 
 def _decision_from_row(row: Any) -> TickerDecision:
+    resolution = resolution_from_legacy(dict(row))
     return TickerDecision.model_validate({
         "decision_contract_version": row["contract_version"],
         "ticker": row["ticker"],
@@ -790,7 +798,10 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "decision_revision": row["decision_revision"],
         "tactical": row["tactical"],
         "fundamental": row["fundamental"],
-        "capital_action": row["capital_action"],
+        "capital_action": capital_action_from_resolution(resolution),
+        "resolution": resolution,
+        "policy_version": (row.get("policy_version") if hasattr(row, "get") else row["policy_version"])
+            or resolution.policy_version,
         "risk_policy": row["risk_policy"],
         "expressions": row["expressions"],
         "selected_expression": row["selected_expression"],

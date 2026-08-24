@@ -1554,6 +1554,11 @@ export interface components {
             /** Source */
             source: string;
         };
+        /**
+         * AuthorizationMode
+         * @enum {string}
+         */
+        AuthorizationMode: "NONE" | "ADVISORY" | "PAPER" | "LIVE";
         /** CapitalAction */
         CapitalAction: {
             action: components["schemas"]["CapitalActionType"];
@@ -1589,6 +1594,11 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * DataQuality
+         * @enum {string}
+         */
+        DataQuality: "UNKNOWN" | "COMPLETE" | "FRESH" | "INCOMPLETE" | "STALE" | "CONFLICTED";
         /**
          * DataRequest
          * @description A missing value that can change the current recommendation.
@@ -1628,6 +1638,78 @@ export interface components {
             }[];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /**
+         * DecisionResolutionV2
+         * @description One calculated resolution; compatibility views must derive from it.
+         */
+        DecisionResolutionV2: {
+            action: components["schemas"]["ResolutionAction"];
+            /** @default ADVISORY */
+            authorization_mode: components["schemas"]["AuthorizationMode"];
+            /** Blockers */
+            blockers?: string[];
+            /** Catalyst */
+            catalyst?: string | null;
+            /**
+             * Contract Version
+             * @default decision-resolution.v2
+             */
+            contract_version: string;
+            /** @default UNKNOWN */
+            data_quality: components["schemas"]["DataQuality"];
+            /** Decision Revision */
+            decision_revision: string;
+            /** @default PENDING */
+            eligibility: components["schemas"]["ResolutionEligibility"];
+            /** Entry */
+            entry?: unknown;
+            /** Exit */
+            exit?: unknown;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Invalidation */
+            invalidation?: unknown;
+            /** @default PUBLISHED */
+            lifecycle: components["schemas"]["ResolutionLifecycle"];
+            /**
+             * Next Action
+             * @default Refresh and recalculate the decision.
+             */
+            next_action: string;
+            /**
+             * Owned
+             * @default false
+             */
+            owned: boolean;
+            /**
+             * Policy Version
+             * @default risk-policy.v2:missing
+             */
+            policy_version: string;
+            /** Portfolio Context */
+            portfolio_context?: unknown;
+            /** Price Condition */
+            price_condition?: string | null;
+            /** Primary Blocker */
+            primary_blocker?: string | null;
+            /** Provenance */
+            provenance?: components["schemas"]["ResolutionProvenance"] | {
+                [key: string]: unknown;
+            };
+            /**
+             * Rationale
+             * @default
+             */
+            rationale: string;
+            /** Size */
+            size?: unknown;
+            /** Ticker */
+            ticker?: string | null;
+            /** Ttl */
+            ttl?: unknown;
+        } & {
+            [key: string]: unknown;
         };
         /** DistributionShiftResponse */
         DistributionShiftResponse: {
@@ -2348,6 +2430,8 @@ export interface components {
             idempotency_key: string;
             /** Limit Price */
             limit_price: number;
+            /** Policy Version */
+            policy_version?: string | null;
             /** Quantity */
             quantity: number;
             /**
@@ -2513,6 +2597,8 @@ export interface components {
             };
             /** Decision Id */
             decision_id: string;
+            /** Decision Revision */
+            decision_revision?: string | null;
             entry?: components["schemas"]["OptionTradeTicketEntry"];
             /** Episode Key */
             episode_key?: string | null;
@@ -2538,6 +2624,8 @@ export interface components {
              * @default true
              */
             paper_only: boolean;
+            /** Policy Version */
+            policy_version?: string | null;
             /** Provenance */
             provenance?: {
                 [key: string]: unknown;
@@ -2551,6 +2639,7 @@ export interface components {
              * @default research_only
              */
             required_next_action: string;
+            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk?: components["schemas"]["OptionTradeTicketRisk"];
             /** Risk Policy Version */
             risk_policy_version?: string | null;
@@ -3595,6 +3684,40 @@ export interface components {
             /** Priority Handles */
             priority_handles?: string[] | string | null;
         };
+        /**
+         * ResolutionAction
+         * @enum {string}
+         */
+        ResolutionAction: "BUY" | "ADD" | "HOLD" | "TRIM" | "EXIT" | "HEDGE" | "AVOID" | "WAIT_FOR_PRICE" | "NO_TRADE";
+        /**
+         * ResolutionEligibility
+         * @enum {string}
+         */
+        ResolutionEligibility: "BLOCKED" | "PENDING" | "ELIGIBLE" | "ACTIONABLE";
+        /**
+         * ResolutionLifecycle
+         * @enum {string}
+         */
+        ResolutionLifecycle: "DRAFT" | "PUBLISHED" | "ACTIVE" | "EXPIRED" | "SUPERSEDED" | "INVALIDATED";
+        /** ResolutionProvenance */
+        ResolutionProvenance: {
+            /** As Of */
+            as_of?: string | null;
+            /** Available At */
+            available_at?: string | null;
+            /** Input Hash */
+            input_hash?: string | null;
+            /** Revisions */
+            revisions?: {
+                [key: string]: unknown;
+            };
+            /** Source Versions */
+            source_versions?: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
         /** RiskPolicy */
         RiskPolicy: {
             /** Conviction Tier */
@@ -3613,6 +3736,11 @@ export interface components {
              * @default 0.1
              */
             max_total_open_planned_loss_pct: number;
+            /**
+             * Policy Version
+             * @default risk-policy.v2:legacy
+             */
+            policy_version: string;
             /**
              * Position Limit Pct
              * @default 0.1
@@ -4266,6 +4394,12 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Policy Version
+             * @default risk-policy.v2:legacy
+             */
+            policy_version: string;
+            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk_policy: components["schemas"]["RiskPolicy"];
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
@@ -4302,6 +4436,12 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Policy Version
+             * @default risk-policy.v2:legacy
+             */
+            policy_version: string;
+            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk_policy: components["schemas"]["RiskPolicy"];
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
@@ -4338,6 +4478,12 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            /**
+             * Policy Version
+             * @default risk-policy.v2:legacy
+             */
+            policy_version: string;
+            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             status: components["schemas"]["ApiStatusResponse"];
             /** Symbol */
             symbol: string;
@@ -4363,6 +4509,8 @@ export interface components {
             idempotency_key: string;
             /** Limit Price */
             limit_price?: number | null;
+            /** Policy Version */
+            policy_version?: string | null;
             /** Quantity */
             quantity?: number | null;
         };
@@ -4386,6 +4534,8 @@ export interface components {
             paper_order_id: string;
             /** Planned Loss */
             planned_loss: number;
+            /** Policy Version */
+            policy_version?: string | null;
             /** Quantity */
             quantity: number;
             /** Status */
@@ -4407,10 +4557,16 @@ export interface components {
             expires_at?: string | null;
             /** Owned */
             owned: boolean;
+            /**
+             * Policy Version
+             * @default risk-policy.v2:legacy
+             */
+            policy_version: string;
             /** Price Condition */
             price_condition?: string | null;
             /** Rationale */
             rationale: string;
+            resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             /** Selected Expression */
             selected_expression?: string | null;
             /** Ticker */

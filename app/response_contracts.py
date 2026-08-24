@@ -30,6 +30,7 @@ from app.options_history_contracts import (
 from investment_panel.core.decision import (
     CapitalAction,
     DataRequest,
+    DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
     TickerDecision,
@@ -89,6 +90,8 @@ class TodayCapitalAction(FlexibleResponse):
     owned: bool
     rationale: str
     decision_revision: str
+    policy_version: str = "risk-policy.v2:legacy"
+    resolution: DecisionResolutionV2 | None = None
     selected_expression: str | None = None
     price_condition: str | None = None
     catalyst: str | None = None
@@ -275,6 +278,7 @@ class TickerPaperEntryResponse(FlexibleResponse):
     quantity: int
     planned_loss: float
     decision_revision: str
+    policy_version: str | None = None
     paper_only: bool = True
     live_order_submission: bool = False
 
@@ -531,6 +535,8 @@ class TickerDetailResponse(FlexibleResponse):
     dossier: Row = Field(default_factory=dict)
     ticker_decision: TickerDecision
     capital_action: CapitalAction
+    resolution: DecisionResolutionV2 | None = None
+    policy_version: str = "risk-policy.v2:legacy"
     expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)

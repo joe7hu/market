@@ -46,6 +46,7 @@ export function TickerDecisionPanel({
   onCollect: (job: string) => Promise<void>;
 }) {
   const action = decision.capital_action;
+  const resolution = decision.resolution;
   const expressions = Object.values(decision.expressions ?? {});
   const disagreement = learning?.disagreement;
   return (
@@ -71,6 +72,15 @@ export function TickerDecisionPanel({
               </div>
             </div>
             <p className="mt-4 max-w-2xl text-base leading-7">{action.rationale}</p>
+            {resolution ? (
+              <div className="mt-5 grid gap-2 rounded-md border border-border/80 bg-background/60 p-3 text-xs sm:grid-cols-2">
+                <KeyValue label="Resolution" value={`${resolution.eligibility} · ${resolution.lifecycle}`} />
+                <KeyValue label="Authorization" value={resolution.authorization_mode} />
+                <KeyValue label="Policy" value={resolution.policy_version} />
+                <KeyValue label="Primary blocker" value={resolution.primary_blocker ?? "None"} />
+                <KeyValue label="Next action" value={resolution.next_action} />
+              </div>
+            ) : null}
             {action.action === "WAIT_FOR_PRICE" ? (
               <div className="mt-5 grid gap-3 rounded-md border border-[var(--warning)]/35 bg-[var(--warning)]/8 p-3 text-sm sm:grid-cols-3">
                 <KeyValue label="Price" value={action.price_condition ?? "-"} />

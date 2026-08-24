@@ -7,6 +7,7 @@ from math import isfinite
 from typing import Any, Iterable
 
 from investment_panel.database.opportunity_episodes import option_episode_key
+from investment_panel.core.decision import build_decision_resolution
 from investment_panel.core.options_recovery import (
     FEE_PER_CONTRACT_LEG,
     OBJECTIVE_VERSION,
@@ -84,6 +85,43 @@ def build_recovery_ticket_v4(
     total_risk = _round_money(one_unit_max_loss * max(quantity, 0))
     state = "READY" if not static_blockers and entry is not None and quantity > 0 else "WATCH"
     expiry_text = expiration.isoformat() if isinstance(expiration, date) else str(expiration)[:10]
+    exit_ladder = {
+        "basis": "bid_side_executable_less_symmetric_slippage_and_fees",
+        "targets": [
+            {"multiple": 2.0, "quantity_fraction": 0.25},
+            {"multiple": 3.0, "quantity_fraction": 0.50},
+            {"multiple": 4.0, "quantity_fraction": 0.25},
+        ],
+        "single_contract": "exit_entire_position_at_3x",
+        "trailing_stop_after_3x": RECOVERY_TRAILING_STOP_PCT,
+        "hard_exit": {
+            "premium_loss_fraction": RECOVERY_HARD_LOSS_PCT,
+            "trading_sessions": RECOVERY_MAX_SESSIONS,
+            "minimum_dte": RECOVERY_MIN_DTE,
+            "invalidation": invalidation,
+        },
+    }
+    policy_version = str(risk_policy.snapshot().get("policy_version") or OBJECTIVE_VERSION)
+    decision_revision = f"recovery-ticket.v4:{decision_id}"
+    resolution = build_decision_resolution(
+        action="BUY" if state == "READY" else "NO_TRADE",
+        decision_revision=decision_revision,
+        policy_version=policy_version,
+        provenance={"as_of": now, "available_at": now, "revisions": {"ticket": RECOVERY_TICKET_VERSION}},
+        ticker=symbol.upper(),
+        blockers=static_blockers if state == "READY" else static_blockers or ["recovery_ticket_not_ready"],
+        entry={"limit_price": entry},
+        size=quantity,
+        invalidation=invalidation,
+        exit=exit_ladder,
+        ttl=expiration,
+        portfolio_context={"status": "complete", "sleeve_capital": risk_policy.sleeve_capital},
+        data_quality="FRESH" if state == "READY" else "INCOMPLETE",
+        authorization_mode="PAPER" if state == "READY" else "NONE",
+        rationale="Recovery paper ticket is ready." if state == "READY" else "Recovery ticket remains research-only.",
+        expires_at=expiration,
+        blocked=state != "READY",
+    )
     resolved_episode_key = episode_key or option_episode_key(
         lane="recovery",
         event_id=event_id,
@@ -101,7 +139,10 @@ def build_recovery_ticket_v4(
         "episode_key": resolved_episode_key,
         "execution_ready_at": now.isoformat() if state == "READY" else None,
         "expires_at": None,
-        "risk_policy_version": str(risk_policy.snapshot().get("policy_version") or OBJECTIVE_VERSION),
+        "risk_policy_version": policy_version,
+        "policy_version": policy_version,
+        "decision_revision": decision_revision,
+        "resolution": resolution.model_dump(mode="json"),
         "publication_lineage": dict(publication_lineage or {}),
         "symbol": symbol.upper(),
         "family": family,
@@ -125,22 +166,7 @@ def build_recovery_ticket_v4(
             "fee_per_contract_leg_per_side": FEE_PER_CONTRACT_LEG,
         },
         "invalidation": invalidation,
-        "exit_ladder": {
-            "basis": "bid_side_executable_less_symmetric_slippage_and_fees",
-            "targets": [
-                {"multiple": 2.0, "quantity_fraction": 0.25},
-                {"multiple": 3.0, "quantity_fraction": 0.50},
-                {"multiple": 4.0, "quantity_fraction": 0.25},
-            ],
-            "single_contract": "exit_entire_position_at_3x",
-            "trailing_stop_after_3x": RECOVERY_TRAILING_STOP_PCT,
-            "hard_exit": {
-                "premium_loss_fraction": RECOVERY_HARD_LOSS_PCT,
-                "trading_sessions": RECOVERY_MAX_SESSIONS,
-                "minimum_dte": RECOVERY_MIN_DTE,
-                "invalidation": invalidation,
-            },
-        },
+        "exit_ladder": exit_ladder,
         "forecast": {
             "lower_confidence_executable_expectancy": _number(lower_confidence_expectancy),
         },

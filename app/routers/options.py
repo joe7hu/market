@@ -508,6 +508,7 @@ def stage_option_radar_paper_entry(
     ticker_payload = TickerPaperEntryInput(
         idempotency_key=payload.idempotency_key,
         decision_revision=decision.decision_revision,
+        policy_version=payload.policy_version or decision.policy_version,
         expression_kind=expression_kind.value,
         quantity=payload.quantity,
         limit_price=payload.limit_price,

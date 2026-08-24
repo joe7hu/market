@@ -13,6 +13,7 @@ from app.actions.options import OptionsActions
 from app.data_access import loaders, payloads
 from app.response_contracts import PanelContractResponse, PanelSnapshotResponse, StatusResponse, TodayResponse
 from investment_panel.core.config import AppConfig
+from investment_panel.core.decision import capital_action_from_resolution, resolution_from_legacy
 
 router = APIRouter()
 
@@ -34,7 +35,8 @@ def today(
     # summary route depend on deep evidence and option-surface queries.
     for row in panel_data.rows("ticker_decisions"):
         symbol = str(row.get("symbol") or row.get("ticker") or "").strip().upper()
-        capital_value = row.get("capital_action")
+        resolution = resolution_from_legacy({**row, "ticker": symbol})
+        capital_value = capital_action_from_resolution(resolution).model_dump(mode="json")
         if not symbol or not isinstance(capital_value, dict) or not capital_value.get("action"):
             continue
         capital = dict(capital_value)
@@ -44,6 +46,8 @@ def today(
             **capital,
             "ticker": symbol,
             "decision_revision": row.get("decision_revision") or "",
+            "policy_version": resolution.policy_version,
+            "resolution": resolution.model_dump(mode="json"),
             "selected_expression": selected.get("kind"),
         })
     priority = {"EXIT": 0, "TRIM": 1, "HEDGE": 2, "BUY": 3, "ADD": 4, "WAIT_FOR_PRICE": 5, "HOLD": 6, "AVOID": 7}

@@ -661,6 +661,16 @@
         "title": "ApiStatusResponse",
         "type": "object"
       },
+      "AuthorizationMode": {
+        "enum": [
+          "NONE",
+          "ADVISORY",
+          "PAPER",
+          "LIVE"
+        ],
+        "title": "AuthorizationMode",
+        "type": "string"
+      },
       "CapitalAction": {
         "properties": {
           "action": {
@@ -768,6 +778,18 @@
         "title": "DashboardResponse",
         "type": "object"
       },
+      "DataQuality": {
+        "enum": [
+          "UNKNOWN",
+          "COMPLETE",
+          "FRESH",
+          "INCOMPLETE",
+          "STALE",
+          "CONFLICTED"
+        ],
+        "title": "DataQuality",
+        "type": "string"
+      },
       "DataRequest": {
         "description": "A missing value that can change the current recommendation.",
         "properties": {
@@ -862,6 +884,163 @@
           }
         },
         "title": "DecisionInboxResponse",
+        "type": "object"
+      },
+      "DecisionResolutionV2": {
+        "additionalProperties": true,
+        "description": "One calculated resolution; compatibility views must derive from it.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ResolutionAction"
+          },
+          "authorization_mode": {
+            "$ref": "#/components/schemas/AuthorizationMode",
+            "default": "ADVISORY"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "catalyst": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst"
+          },
+          "contract_version": {
+            "default": "decision-resolution.v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "data_quality": {
+            "$ref": "#/components/schemas/DataQuality",
+            "default": "UNKNOWN"
+          },
+          "decision_revision": {
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/ResolutionEligibility",
+            "default": "PENDING"
+          },
+          "entry": {
+            "title": "Entry"
+          },
+          "exit": {
+            "title": "Exit"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "invalidation": {
+            "title": "Invalidation"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/ResolutionLifecycle",
+            "default": "PUBLISHED"
+          },
+          "next_action": {
+            "default": "Refresh and recalculate the decision.",
+            "title": "Next Action",
+            "type": "string"
+          },
+          "owned": {
+            "default": false,
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "default": "risk-policy.v2:missing",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "portfolio_context": {
+            "title": "Portfolio Context"
+          },
+          "price_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Condition"
+          },
+          "primary_blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Blocker"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionProvenance"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ],
+            "title": "Provenance"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size"
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker"
+          },
+          "ttl": {
+            "title": "Ttl"
+          }
+        },
+        "required": [
+          "action",
+          "decision_revision"
+        ],
+        "title": "DecisionResolutionV2",
         "type": "object"
       },
       "DistributionShiftResponse": {
@@ -3169,6 +3348,17 @@
             "title": "Limit Price",
             "type": "number"
           },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
           "quantity": {
             "exclusiveMinimum": 0.0,
             "title": "Quantity",
@@ -3567,6 +3757,17 @@
             "title": "Decision Id",
             "type": "string"
           },
+          "decision_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Revision"
+          },
           "entry": {
             "$ref": "#/components/schemas/OptionTradeTicketEntry"
           },
@@ -3650,6 +3851,17 @@
             "title": "Paper Only",
             "type": "boolean"
           },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
           "provenance": {
             "additionalProperties": true,
             "title": "Provenance",
@@ -3664,6 +3876,16 @@
             "default": "research_only",
             "title": "Required Next Action",
             "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionResolutionV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "risk": {
             "$ref": "#/components/schemas/OptionTradeTicketRisk"
@@ -7242,6 +7464,97 @@
         "title": "ResearchXSettingsInput",
         "type": "object"
       },
+      "ResolutionAction": {
+        "enum": [
+          "BUY",
+          "ADD",
+          "HOLD",
+          "TRIM",
+          "EXIT",
+          "HEDGE",
+          "AVOID",
+          "WAIT_FOR_PRICE",
+          "NO_TRADE"
+        ],
+        "title": "ResolutionAction",
+        "type": "string"
+      },
+      "ResolutionEligibility": {
+        "enum": [
+          "BLOCKED",
+          "PENDING",
+          "ELIGIBLE",
+          "ACTIONABLE"
+        ],
+        "title": "ResolutionEligibility",
+        "type": "string"
+      },
+      "ResolutionLifecycle": {
+        "enum": [
+          "DRAFT",
+          "PUBLISHED",
+          "ACTIVE",
+          "EXPIRED",
+          "SUPERSEDED",
+          "INVALIDATED"
+        ],
+        "title": "ResolutionLifecycle",
+        "type": "string"
+      },
+      "ResolutionProvenance": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "available_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available At"
+          },
+          "input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Hash"
+          },
+          "revisions": {
+            "additionalProperties": true,
+            "title": "Revisions",
+            "type": "object"
+          },
+          "source_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Source Versions",
+            "type": "object"
+          }
+        },
+        "title": "ResolutionProvenance",
+        "type": "object"
+      },
       "RiskPolicy": {
         "properties": {
           "conviction_tier": {
@@ -7276,6 +7589,11 @@
             "default": 0.1,
             "title": "Max Total Open Planned Loss Pct",
             "type": "number"
+          },
+          "policy_version": {
+            "default": "risk-policy.v2:legacy",
+            "title": "Policy Version",
+            "type": "string"
           },
           "position_limit_pct": {
             "default": 0.1,
@@ -8928,6 +9246,21 @@
             "title": "Learning History",
             "type": "array"
           },
+          "policy_version": {
+            "default": "risk-policy.v2:legacy",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionResolutionV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "risk_policy": {
             "$ref": "#/components/schemas/RiskPolicy"
           },
@@ -9013,6 +9346,21 @@
             },
             "title": "Learning History",
             "type": "array"
+          },
+          "policy_version": {
+            "default": "risk-policy.v2:legacy",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionResolutionV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "risk_policy": {
             "$ref": "#/components/schemas/RiskPolicy"
@@ -9111,6 +9459,21 @@
             "title": "Learning History",
             "type": "array"
           },
+          "policy_version": {
+            "default": "risk-policy.v2:legacy",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionResolutionV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "$ref": "#/components/schemas/ApiStatusResponse"
           },
@@ -9175,6 +9538,19 @@
             ],
             "title": "Limit Price"
           },
+          "policy_version": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
           "quantity": {
             "anyOf": [
               {
@@ -9224,6 +9600,17 @@
           "planned_loss": {
             "title": "Planned Loss",
             "type": "number"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
           },
           "quantity": {
             "title": "Quantity",
@@ -9288,6 +9675,11 @@
             "title": "Owned",
             "type": "boolean"
           },
+          "policy_version": {
+            "default": "risk-policy.v2:legacy",
+            "title": "Policy Version",
+            "type": "string"
+          },
           "price_condition": {
             "anyOf": [
               {
@@ -9302,6 +9694,16 @@
           "rationale": {
             "title": "Rationale",
             "type": "string"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionResolutionV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "selected_expression": {
             "anyOf": [

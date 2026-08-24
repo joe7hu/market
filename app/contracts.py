@@ -113,6 +113,7 @@ class ThesisAutomationInput(BaseModel):
 class OptionPaperEntryInput(BaseModel):
     idempotency_key: str
     ticket_version: int = 1
+    policy_version: str | None = None
     quantity: int = Field(gt=0)
     limit_price: float = Field(gt=0, allow_inf_nan=False)
 
@@ -122,6 +123,7 @@ class TickerPaperEntryInput(BaseModel):
 
     idempotency_key: str = Field(min_length=1, max_length=160)
     decision_revision: str = Field(min_length=1, max_length=160)
+    policy_version: str | None = Field(default=None, min_length=1, max_length=160)
     expression_kind: Literal[
         "STOCK", "CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT"
     ]

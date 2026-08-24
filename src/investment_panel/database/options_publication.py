@@ -442,7 +442,7 @@ def _add_contract_fields(
     *,
     options_risk_sleeve_capital: float | None = None,
     evaluated_at: datetime | None = None,
-    risk_contexts: dict[str, dict[str, float | None]] | None = None,
+    risk_contexts: dict[str, dict[str, Any]] | None = None,
     calibration: list[dict[str, Any]] | None = None,
 ) -> None:
     calibration_by_structure = {
@@ -513,6 +513,8 @@ def _add_contract_fields(
             market_session=str(row.get("market_session") or ""),
             sleeve_capital=options_risk_sleeve_capital,
             **(risk_contexts or {}).get(str(row.get("ticker") or ""), {}),
+            assignment_policy=(row.get("strategy_route") or {}).get("assignment_policy")
+            or details.get("assignment_policy"),
             thesis={
                 "summary": thesis.get("core_thesis") or thesis.get("thesis") or details.get("thesis"),
                 "catalyst": details.get("catalyst"),
@@ -549,6 +551,8 @@ def _add_contract_fields(
             },
         )
         row["ticket"] = ticket
+        row["policy_version"] = ticket["policy_version"]
+        row["decision_revision"] = ticket["decision_revision"]
         row["risk_budget"] = ticket["risk"]["available_risk_budget"]
         row["advisory_max_contracts"] = ticket["risk"]["recommended_quantity"]
         row["portfolio_context_status"] = (

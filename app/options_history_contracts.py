@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from investment_panel.core.decision import DecisionResolutionV2
+
 
 class OptionSnapshotSummary(BaseModel):
     snapshot_id: int
@@ -439,6 +441,9 @@ class OptionTradeTicket(BaseModel):
     execution_ready_at: datetime | None = None
     expires_at: datetime | None = None
     risk_policy_version: str | None = None
+    policy_version: str | None = None
+    decision_revision: str | None = None
+    resolution: DecisionResolutionV2 | None = None
     publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
     state: str
@@ -470,6 +475,9 @@ class RecoveryOptionTradeTicketV4(BaseModel):
     execution_ready_at: datetime | None = None
     expires_at: datetime | None = None
     risk_policy_version: str | None = None
+    policy_version: str | None = None
+    decision_revision: str | None = None
+    resolution: DecisionResolutionV2 | None = None
     publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
     family: str

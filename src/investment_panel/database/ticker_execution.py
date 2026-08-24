@@ -56,10 +56,22 @@ class TickerPaperExecutionRepository:
         idempotency_key: str,
         quantity: int | None = None,
         limit_price: float | None = None,
+        policy_version: str | None = None,
     ) -> dict[str, Any]:
         symbol = ticker.strip().upper()
         if decision.ticker != symbol:
             raise ValueError("ticker decision does not match the requested ticker")
+        if policy_version and policy_version != decision.policy_version:
+            raise ValueError("ticker decision policy is stale")
+        if decision.resolution is not None:
+            if decision.resolution.decision_revision != decision.decision_revision:
+                raise ValueError("ticker decision resolution revision is inconsistent")
+            if decision.resolution.policy_version != decision.policy_version:
+                raise ValueError("ticker decision resolution policy is inconsistent")
+            if decision.resolution.is_blocked:
+                raise ValueError("ticker decision is blocked")
+            if not decision.resolution.is_actionable:
+                raise ValueError("ticker decision is not actionable")
         if not idempotency_key.strip():
             raise ValueError("idempotency key is required")
         try:
@@ -110,13 +122,24 @@ class TickerPaperExecutionRepository:
                 raise ValueError("ticker instrument is not in the catalog")
             ticker_decision = connection.execute(
                 """
-                SELECT id::text
+                SELECT id::text, decision_revision, policy_version, resolution
                 FROM analysis.ticker_decision
                 WHERE instrument_id = %s AND decision_revision = %s
                 LIMIT 1
                 """,
                 [instrument["id"], requested_revision],
             ).fetchone()
+            if ticker_decision is not None:
+                if str(ticker_decision["decision_revision"]) != requested_revision:
+                    raise ValueError("ticker decision revision is stale in PostgreSQL")
+                if str(ticker_decision["policy_version"] or "") != decision.policy_version:
+                    raise ValueError("ticker decision policy is stale in PostgreSQL")
+                persisted_resolution = dict(ticker_decision["resolution"] or {})
+                if persisted_resolution and (
+                    str(persisted_resolution.get("decision_revision") or "") != requested_revision
+                    or str(persisted_resolution.get("policy_version") or "") != decision.policy_version
+                ):
+                    raise ValueError("ticker decision resolution is stale in PostgreSQL")
             if decision.capital_action.action in EXIT_ACTIONS:
                 if not decision.capital_action.owned:
                     raise ValueError("TRIM and EXIT require an existing paper position")
@@ -166,6 +189,7 @@ class TickerPaperExecutionRepository:
                     "quantity": int(prior["quantity"]),
                     "planned_loss": float(prior["planned_loss"] or planned_loss),
                     "decision_revision": requested_revision,
+                    "policy_version": decision.policy_version,
                     "idempotent_replay": True,
                     "paper_only": True,
                 }
@@ -192,6 +216,7 @@ class TickerPaperExecutionRepository:
             policy = {
                 "owner": "ticker-first",
                 "decision_revision": requested_revision,
+                "policy_version": decision.policy_version,
                 "input_hash": decision.input_manifest.input_hash,
                 "capital_action": decision.capital_action.action.value,
                 "expression_kind": kind.value,
@@ -205,11 +230,11 @@ class TickerPaperExecutionRepository:
                 """
                 INSERT INTO app.paper_order (
                     decision_id, ticker_decision_id, instrument_id, created_at, side, quantity, limit_price,
-                    status, policy_result, lane, idempotency_key, ticker_decision_revision,
+                    status, policy_result, policy_snapshot, lane, idempotency_key, ticker_decision_revision,
                     expression_kind, max_loss, planned_loss, expires_at, thesis_snapshot,
                     structure, ticket_snapshot, intended_limit_price, paper_only
                 ) VALUES (
-                    NULL, %s::uuid, %s, %s, %s, %s, %s, 'staged', %s, 'ticker', %s, %s,
+                    NULL, %s::uuid, %s, %s, %s, %s, %s, 'staged', %s, %s, 'ticker', %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, TRUE
                 )
                 RETURNING id
@@ -217,7 +242,7 @@ class TickerPaperExecutionRepository:
                 [
                     ticker_decision["id"] if ticker_decision else None,
                     instrument["id"], now, side, requested_quantity, float(limit_price),
-                    Jsonb(policy), idempotency_key.strip(), requested_revision, kind.value,
+                    Jsonb(policy), Jsonb(policy), idempotency_key.strip(), requested_revision, kind.value,
                     float(max_loss), planned_loss, expires_at, Jsonb(snapshot),
                     structure, Jsonb(snapshot), float(limit_price),
                 ],
@@ -248,6 +273,7 @@ class TickerPaperExecutionRepository:
             "limit_price": float(limit_price),
             "planned_loss": planned_loss,
             "decision_revision": requested_revision,
+            "policy_version": decision.policy_version,
             "paper_only": True,
             "live_order_submission": False,
         }

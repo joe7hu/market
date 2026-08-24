@@ -17,6 +17,13 @@ from typing import Any, Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investment_panel.core.risk_policy import compile_risk_policy_snapshot
+from investment_panel.core.decision.resolution import (
+    DecisionResolutionV2,
+    build_decision_resolution,
+    resolution_from_legacy,
+)
+
 
 CONTRACT_VERSION = "ticker-decision.v1"
 EXPERIMENT_ID = "ticker-first-v1"
@@ -155,6 +162,7 @@ class RiskPolicy(BaseModel):
     max_ticker_loss_pct: float = 0.04
     max_total_open_planned_loss_pct: float = 0.10
     position_limit_pct: float = Field(default=0.10, gt=0, le=1)
+    policy_version: str = "risk-policy.v2:legacy"
 
 
 class ExpressionDecision(BaseModel):
@@ -241,6 +249,31 @@ class CapitalAction(BaseModel):
         return self
 
 
+def capital_action_from_resolution(resolution: DecisionResolutionV2) -> CapitalAction:
+    """Project the old CapitalAction envelope from the canonical resolution."""
+
+    action_name = "AVOID" if resolution.is_blocked else resolution.action
+    try:
+        action = CapitalActionType(action_name)
+    except ValueError:
+        action = CapitalActionType.AVOID
+    expires_at = resolution.expires_at
+    if isinstance(expires_at, datetime):
+        expires_at = expires_at.date()
+    if action is CapitalActionType.WAIT_FOR_PRICE:
+        return CapitalAction(
+            ticker=str(resolution.ticker or ""), action=action, owned=resolution.owned,
+            rationale=resolution.rationale, price_condition=resolution.price_condition or "collect a confirmed price",
+            catalyst=resolution.catalyst or "next decision catalyst or confirmed price update",
+            expires_at=expires_at or date.today(),
+        )
+    return CapitalAction(
+        ticker=str(resolution.ticker or ""), action=action, owned=resolution.owned,
+        rationale=resolution.rationale, price_condition=resolution.price_condition,
+        catalyst=resolution.catalyst, expires_at=expires_at,
+    )
+
+
 class TickerDecision(BaseModel):
     model_config = ConfigDict(use_enum_values=False)
 
@@ -251,12 +284,48 @@ class TickerDecision(BaseModel):
     tactical: HorizonDecision
     fundamental: HorizonDecision
     capital_action: CapitalAction
+    resolution: DecisionResolutionV2 | None = None
+    policy_version: str = "risk-policy.v2:legacy"
     risk_policy: RiskPolicy
     expressions: dict[ExpressionKind, ExpressionDecision]
     selected_expression: ExpressionDecision | None = None
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning_history: list[dict[str, Any]] = Field(default_factory=list)
     input_manifest: InputManifest
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_policy_version(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping) or "policy_version" in value:
+            return value
+        resolution = value.get("resolution") or {}
+        risk_policy = value.get("risk_policy") or {}
+        result = dict(value)
+        resolution_version = (
+            resolution.get("policy_version")
+            if isinstance(resolution, Mapping)
+            else getattr(resolution, "policy_version", None)
+        )
+        risk_policy_version = (
+            risk_policy.get("policy_version")
+            if isinstance(risk_policy, Mapping)
+            else getattr(risk_policy, "policy_version", None)
+        )
+        result["policy_version"] = (
+            resolution_version or risk_policy_version or "risk-policy.v2:legacy"
+        )
+        return result
+
+    @model_validator(mode="after")
+    def resolution_is_authority(self) -> "TickerDecision":
+        if self.resolution is None:
+            return self
+        if self.resolution.decision_revision != self.decision_revision:
+            raise ValueError("ticker resolution revision must match the ticker decision")
+        if self.resolution.policy_version != self.policy_version:
+            raise ValueError("ticker resolution policy must match the ticker decision")
+        self.capital_action = capital_action_from_resolution(self.resolution)
+        return self
 
 
 def build_ticker_decision(
@@ -283,6 +352,11 @@ def build_ticker_decision(
             # Published revisions are immutable decision truth. The composed
             # fallback below is only for symbols that have not yet been
             # materialized by the ticker decision job.
+            persisted_resolution = resolution_from_legacy({
+                **persisted,
+                "ticker": symbol,
+                "resolution": persisted.get("resolution"),
+            })
             return TickerDecision.model_validate({
                 "decision_contract_version": persisted.get("contract_version") or CONTRACT_VERSION,
                 "ticker": symbol,
@@ -290,7 +364,9 @@ def build_ticker_decision(
                 "decision_revision": persisted.get("decision_revision"),
                 "tactical": persisted.get("tactical"),
                 "fundamental": persisted.get("fundamental"),
-                "capital_action": persisted.get("capital_action"),
+                "capital_action": capital_action_from_resolution(persisted_resolution),
+                "resolution": persisted_resolution,
+                "policy_version": persisted.get("policy_version") or (persisted.get("risk_policy") or {}).get("policy_version") or "risk-policy.v2:legacy",
                 "risk_policy": persisted.get("risk_policy"),
                 "expressions": persisted.get("expressions") or {},
                 "selected_expression": persisted.get("selected_expression"),
@@ -383,6 +459,39 @@ def build_ticker_decision(
         _catalyst(decision_row, usable),
     )
     selected = _selected_expression(expressions, capital.action)
+    decision_revision = f"{CONTRACT_VERSION}:{manifest.input_hash[:16]}"
+    selected_entry = selected.entry_range if selected is not None else None
+    selected_invalidation = selected.invalidation if selected is not None else None
+    selected_exit = selected.target_range if selected is not None else None
+    resolution_blockers = [request.field for request in requests]
+    resolution = build_decision_resolution(
+        action=capital.action.value,
+        decision_revision=decision_revision,
+        policy_version=risk_policy.policy_version,
+        provenance={
+            "as_of": reference,
+            "available_at": reference,
+            "input_hash": manifest.input_hash,
+            "source_versions": manifest.source_versions,
+            "revisions": {"contract": CONTRACT_VERSION, "experiment": experiment_id},
+        },
+        ticker=symbol,
+        blockers=resolution_blockers,
+        entry=selected_entry or tactical.entry_range or fundamental.entry_range,
+        size=selected.quantity if selected is not None else None,
+        invalidation=selected_invalidation or tactical.invalidation or fundamental.invalidation,
+        exit=selected_exit or tactical.target_range or fundamental.target_range,
+        ttl=capital.expires_at or min(tactical.expiry_date, fundamental.expiry_date),
+        portfolio_context={"status": "complete" if nav is not None else "missing", "nav": nav, "owned": owned},
+        data_quality="COMPLETE" if not resolution_blockers else "INCOMPLETE",
+        authorization_mode="ADVISORY",
+        rationale=capital.rationale,
+        owned=capital.owned,
+        price_condition=capital.price_condition,
+        catalyst=capital.catalyst,
+        expires_at=capital.expires_at,
+    )
+    capital = capital_action_from_resolution(resolution)
     learning = [
         dict(row)
         for row in (
@@ -395,10 +504,12 @@ def build_ticker_decision(
     return TickerDecision(
         ticker=symbol,
         as_of=reference,
-        decision_revision=f"{CONTRACT_VERSION}:{manifest.input_hash[:16]}",
+        decision_revision=decision_revision,
         tactical=tactical,
         fundamental=fundamental,
         capital_action=capital,
+        resolution=resolution,
+        policy_version=risk_policy.policy_version,
         risk_policy=risk_policy,
         expressions=expressions,
         selected_expression=selected,
@@ -1389,7 +1500,20 @@ def _risk_policy(row: Mapping[str, Any], tables: Mapping[str, list[dict[str, Any
         confidence /= 100
     tier = _conviction(row, confidence, "EXPLORATORY")
     pct = {"EXPLORATORY": 0.005, "STANDARD": 0.01, "HIGH": 0.02}[tier]
-    return RiskPolicy(conviction_tier=tier, loss_budget_pct=pct, loss_budget=nav * pct if nav is not None else None)
+    snapshot = compile_risk_policy_snapshot(
+        sleeve_capital=nav,
+        conviction_tier=tier,
+        policy_kind="ticker",
+    )
+    return RiskPolicy(
+        conviction_tier=tier,
+        loss_budget_pct=pct,
+        loss_budget=nav * pct if nav is not None else None,
+        max_ticker_loss_pct=snapshot.ticker_max_loss_pct,
+        max_total_open_planned_loss_pct=snapshot.ticker_total_open_loss_pct,
+        position_limit_pct=snapshot.ticker_position_limit_pct,
+        policy_version=snapshot.policy_version,
+    )
 
 
 def _portfolio_nav(row: Mapping[str, Any], as_of: datetime) -> tuple[float | None, float | None]:
@@ -1519,7 +1643,7 @@ def _jsonable(value: Any) -> Any:
 
 
 __all__ = [
-    "CONTRACT_VERSION", "CapitalAction", "CapitalActionType", "DataRequest",
+    "CONTRACT_VERSION", "CapitalAction", "CapitalActionType", "capital_action_from_resolution", "DataRequest",
     "EvidenceItem", "EvidencePolarity", "ExpressionDecision", "ExpressionKind",
     "Horizon", "HorizonDecision", "InputManifest", "Invalidation", "NumericRange",
     "PriceRange", "RiskPolicy", "ScenarioOutcome", "Stance", "TickerDecision",
