@@ -194,6 +194,11 @@ def build_option_trade_ticket(
     limit_price = _positive_number(entry_price)
     maximum_chase = _round_price(limit_price * 1.05) if limit_price is not None and structure != "cash_secured_put" else None
     minimum_credit = limit_price if structure == "cash_secured_put" else None
+    if structure == "cash_secured_put" and len(normalized_legs) == 1:
+        bid = _positive_number(normalized_legs[0].get("bid"))
+        ask = _positive_number(normalized_legs[0].get("ask"))
+        if bid is not None and ask is not None and ask >= bid:
+            minimum_credit = max(minimum_credit or 0.0, _round_price((bid + ask) / 2.0) or 0.0)
     quote_times = [
         quote_time
         for leg in normalized_legs
