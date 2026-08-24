@@ -1002,6 +1002,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         rows=[
             {
                 "symbol": "NVDA", "expiration": expiration, "strike": 160,
+                "option_type": "put",
                 "underlying_price": 180, "bid": 1.4, "ask": 1.5, "mid": 1.45,
                 "volume": 100, "open_interest": 2500, "iv": 0.32, "delta": -0.15,
             }
