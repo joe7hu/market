@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 RISK_POLICY_VERSION = "risk-policy.v2"
+ASSIGNMENT_POLICY_VERSION = "portfolio-assignment-policy.v1"
 
 
 class RiskPolicySnapshot(BaseModel):
@@ -101,14 +102,18 @@ class RiskPolicySnapshot(BaseModel):
         return self.snapshot()
 
 
-class AssignmentPolicy(BaseModel):
+class PortfolioAssignmentPolicy(BaseModel):
     """Explicit, paper-only consent and account facts for CSP assignment."""
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
+    assignment_policy_version: str = ASSIGNMENT_POLICY_VERSION
+    risk_policy_version: str | None = None
+    risk_policy_blockers: tuple[str, ...] = ()
     paper_assignment_allowed: bool = False
     thesis_direction: str | None = None
     thesis_as_of: datetime | None = None
+    thesis_preferred_structures: tuple[str, ...] = ()
     account_as_of: datetime | None = None
     account_source: str | None = None
     cash_balance: float | None = None
@@ -140,6 +145,8 @@ class AssignmentPolicy(BaseModel):
             "required_collateral": "required_cash",
             "symbol_concentration_limit": "symbol_limit",
             "aggregate_concentration_limit": "aggregate_limit",
+            "preferred_structures": "thesis_preferred_structures",
+            "thesis_structures": "thesis_preferred_structures",
         }
         for old, new in aliases.items():
             if new not in result and old in result:
@@ -151,11 +158,17 @@ class AssignmentPolicy(BaseModel):
         """Return deterministic blockers; no blocker means assignment is permitted in paper."""
 
         blockers: list[str] = []
+        blockers.extend(str(item) for item in self.risk_policy_blockers if str(item).strip())
         if not self.paper_assignment_allowed:
             blockers.append("paper_assignment_permission_required")
         direction = str(thesis_direction or self.thesis_direction or "").strip().lower()
         if direction not in {"bullish", "neutral_bullish", "long", "up"}:
             blockers.append("assignment_thesis_direction_must_be_bullish")
+        preferred = {str(item).strip() for item in self.thesis_preferred_structures if str(item).strip()}
+        if not preferred:
+            blockers.append("assignment_thesis_preferred_structures_required")
+        elif "cash_secured_put" not in preferred:
+            blockers.append("assignment_thesis_does_not_permit_cash_secured_put")
         reference = _utc(as_of or self.evaluated_at)
         if reference is None:
             blockers.append("assignment_evaluated_at_required")
@@ -182,13 +195,15 @@ class AssignmentPolicy(BaseModel):
             blockers.append("assignment_collateral_required")
         elif cash is not None and buying_power is not None and min(cash, buying_power) < required:
             blockers.append("insufficient_cash_or_buying_power_for_assignment")
-        if required is not None and self.symbol_limit is None:
+        symbol_limit = _finite_nonnegative(self.symbol_limit)
+        aggregate_limit = _finite_nonnegative(self.aggregate_limit)
+        if required is not None and symbol_limit is None:
             blockers.append("assignment_symbol_concentration_limit_required")
-        elif required is not None and self.symbol_limit is not None and self.open_symbol_collateral + required > self.symbol_limit:
+        elif required is not None and self.open_symbol_collateral + required > symbol_limit:
             blockers.append("assignment_symbol_concentration_limit_exceeded")
-        if required is not None and self.aggregate_limit is None:
+        if required is not None and aggregate_limit is None:
             blockers.append("assignment_aggregate_concentration_limit_required")
-        elif required is not None and self.aggregate_limit is not None and self.open_total_collateral + required > self.aggregate_limit:
+        elif required is not None and self.open_total_collateral + required > aggregate_limit:
             blockers.append("assignment_aggregate_concentration_limit_exceeded")
         return tuple(dict.fromkeys(blockers))
 
@@ -202,6 +217,79 @@ class AssignmentPolicy(BaseModel):
             "eligible": self.eligible,
             "blockers": list(self.blockers()),
         }
+
+
+def compile_portfolio_assignment_policy(
+    config: object | None = None,
+    *,
+    run_cutoff: datetime,
+    thesis: Mapping[str, Any] | None,
+    required_cash: float | None,
+    account_facts: Mapping[str, Any] | None,
+    sleeve_capital: float | None = None,
+    open_symbol_collateral: float = 0.0,
+    open_total_collateral: float = 0.0,
+    risk_policy_snapshot: RiskPolicySnapshot | None = None,
+    paper_assignment_allowed: bool | None = None,
+) -> PortfolioAssignmentPolicy:
+    """Compile the point-in-time CSP assignment policy from PostgreSQL inputs."""
+
+    account = dict(account_facts or {})
+    thesis_values = dict(thesis or {})
+    risk_policy = risk_policy_snapshot or compile_risk_policy_snapshot(
+        config,
+        account,
+        sleeve_capital=(
+            sleeve_capital
+            if sleeve_capital is not None
+            else _number(_value(_settings(config), "options_risk_sleeve_capital"))
+        ),
+        policy_kind="standard",
+    )
+    permission = paper_assignment_allowed
+    if permission is None:
+        permission = _value(_settings(config), "csp_paper_assignment_allowed")
+    preferred = thesis_values.get("thesis_preferred_structures")
+    if preferred is None:
+        preferred = thesis_values.get("preferred_structures")
+    if isinstance(preferred, str):
+        preferred = [preferred]
+    return PortfolioAssignmentPolicy(
+        assignment_policy_version=ASSIGNMENT_POLICY_VERSION,
+        risk_policy_version=risk_policy.policy_version,
+        risk_policy_blockers=risk_policy.blockers,
+        paper_assignment_allowed=bool(permission) if permission is not None else False,
+        thesis_direction=(
+            thesis_values.get("direction")
+            or thesis_values.get("stance")
+            or thesis_values.get("thesis_direction")
+        ),
+        thesis_as_of=_timestamp(
+            thesis_values.get("as_of")
+            or thesis_values.get("updated_at")
+            or thesis_values.get("created_at")
+            or thesis_values.get("thesis_as_of")
+        ),
+        thesis_preferred_structures=tuple(str(item) for item in preferred or [] if str(item).strip()),
+        account_as_of=_timestamp(
+            account.get("account_as_of")
+            or account.get("account_observed_at")
+            or account.get("observed_at")
+        ),
+        account_source=str(
+            account.get("account_source")
+            or account.get("account_facts_source")
+            or "postgresql"
+        ),
+        cash_balance=_number(account.get("cash_balance")),
+        buying_power=_number(account.get("buying_power")),
+        required_cash=required_cash,
+        open_symbol_collateral=max(_number(open_symbol_collateral) or 0.0, 0.0),
+        open_total_collateral=max(_number(open_total_collateral) or 0.0, 0.0),
+        symbol_limit=risk_policy.csp_symbol_limit,
+        aggregate_limit=risk_policy.csp_total_limit,
+        evaluated_at=run_cutoff,
+    )
 
 
 def compile_risk_policy_snapshot(
@@ -289,17 +377,21 @@ def compile_risk_policy_snapshot(
     )
 
 
-def coerce_assignment_policy(value: Any = None, **defaults: Any) -> AssignmentPolicy:
+def coerce_portfolio_assignment_policy(value: Any = None, **defaults: Any) -> PortfolioAssignmentPolicy:
     """Coerce route/ticket input without ever defaulting assignment permission on."""
 
-    if isinstance(value, AssignmentPolicy):
+    if isinstance(value, PortfolioAssignmentPolicy):
         return value
     data = dict(defaults)
     if isinstance(value, Mapping):
         data.update(value)
     elif isinstance(value, bool):
         data["paper_assignment_allowed"] = value
-    return AssignmentPolicy.model_validate(data)
+    return PortfolioAssignmentPolicy.model_validate(data)
+
+
+coerce_assignment_policy = coerce_portfolio_assignment_policy
+AssignmentPolicy = PortfolioAssignmentPolicy
 
 
 def missing_risk_policy_snapshot(*, policy_kind: str = "shared") -> RiskPolicySnapshot:
@@ -311,6 +403,9 @@ def missing_risk_policy_snapshot(*, policy_kind: str = "shared") -> RiskPolicySn
 
 
 def _settings(config: object | None) -> Any:
+    if isinstance(config, Mapping):
+        settings = config.get("analysis", config)
+        return settings.get("options_decision_system", settings) if isinstance(settings, Mapping) else settings
     settings = getattr(config, "analysis", config)
     return getattr(settings, "options_decision_system", settings)
 
@@ -371,11 +466,15 @@ compile_risk_policy = compile_risk_policy_snapshot
 
 
 __all__ = [
+    "ASSIGNMENT_POLICY_VERSION",
     "AssignmentPolicy",
+    "PortfolioAssignmentPolicy",
     "PolicySnapshot",
     "RISK_POLICY_VERSION",
     "RiskPolicySnapshot",
+    "coerce_portfolio_assignment_policy",
     "coerce_assignment_policy",
+    "compile_portfolio_assignment_policy",
     "compile_risk_policy",
     "compile_risk_policy_snapshot",
     "missing_risk_policy_snapshot",

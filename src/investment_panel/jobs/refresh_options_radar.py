@@ -21,6 +21,7 @@ def run(config_path: str | None = None, symbols: list[str] | None = None, strate
         runtime_for_config(config),
         symbols=symbols,
         options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+        config=config,
     )
     return {"database": "postgresql", "strategy_version": strategy_version, **result}
 
@@ -35,6 +36,7 @@ def run_deterministic_only(
         runtime_for_config(config),
         symbols=symbols,
         options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+        config=config,
     )
     return {"database": "postgresql", "strategy_version": strategy_version, "agent_work": "skipped", **result}
 
@@ -56,6 +58,7 @@ def run_signal_only(
             symbols=symbols,
             source_id=source,
             options_risk_sleeve_capital=config.analysis.options_decision_system.options_risk_sleeve_capital,
+            config=config,
         )
     except LockNotAvailable:
         # A concurrent refresh owns the same catalog rows. Do not report an

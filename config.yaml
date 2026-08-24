@@ -122,6 +122,8 @@ analysis:
     ticker_paper_actions_enabled: true
     stock_paper_actions_enabled: true
     options_paper_actions_enabled: true
+    # CSP assignment is a separate explicit paper permission and stays closed by default.
+    csp_paper_assignment_allowed: false
     radar_paper_actions_enabled: true
     qqq_paper_actions_enabled: true
     # Recovery is a separate forward-only system.  Keep its entry gate closed

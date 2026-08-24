@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from math import isfinite
 from typing import Any, Iterable
 
+from investment_panel.core.risk_policy import compile_risk_policy_snapshot
 from investment_panel.database.runtime import DatabaseRuntime
 
 
@@ -14,18 +15,27 @@ def option_risk_contexts(
     symbols: Iterable[str],
     *,
     evaluated_at: datetime | None,
+    config: object | None = None,
+    options_risk_sleeve_capital: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     normalized = sorted({str(symbol).upper() for symbol in symbols if str(symbol).strip()})
     with runtime.read() as connection:
-        account = connection.execute(
-            """
-            SELECT net_liquidation, cash_balance, buying_power, observed_at
+        account_query = """
+            SELECT source_id, net_liquidation, cash_balance, buying_power, observed_at
             FROM raw.broker_account_snapshot
-            ORDER BY observed_at DESC, id DESC LIMIT 1
-            """
-        ).fetchone()
+        """
+        account_params: list[Any] = []
+        if evaluated_at is not None:
+            account_query += " WHERE observed_at <= %s"
+            account_params.append(evaluated_at)
+        account_query += " ORDER BY observed_at DESC, id DESC LIMIT 1"
+        account = connection.execute(account_query, account_params).fetchone()
+        exposure_filter = " AND paper_order.created_at <= %s" if evaluated_at is not None else ""
+        exposure_params: list[Any] = []
+        if evaluated_at is not None:
+            exposure_params.append(evaluated_at)
         rows = connection.execute(
-            """
+            f"""
             SELECT instrument.symbol,
               coalesce(sum(CASE WHEN (
                     paper_order.ticket_version IS NOT NULL
@@ -65,9 +75,10 @@ def option_risk_contexts(
                 END AS amount
               ) candidate
             ) commitment
-            WHERE paper_order.status IN ('staged', 'open', 'entered')
+            WHERE paper_order.status IN ('staged', 'open', 'entered'){exposure_filter}
             GROUP BY instrument.symbol
-            """
+            """,
+            exposure_params,
         ).fetchall()
     by_symbol = {
         str(row["symbol"]): {
@@ -96,6 +107,20 @@ def option_risk_contexts(
         broker_nav = None
     elif broker_available is not None:
         broker_available = max(broker_available - total_committed, 0.0)
+    account_facts = {
+        "account_source": "postgresql",
+        "broker_available_capital": broker_available,
+        "broker_net_liquidation": broker_nav,
+        "cash_balance": float(account["cash_balance"]) if account and account["cash_balance"] is not None else None,
+        "buying_power": float(account["buying_power"]) if account and account["buying_power"] is not None else None,
+        "account_observed_at": account["observed_at"] if account is not None else None,
+    }
+    risk_policy = compile_risk_policy_snapshot(
+        config,
+        account_facts,
+        sleeve_capital=options_risk_sleeve_capital,
+        policy_kind="standard",
+    )
     return {
         symbol: {
             **{
@@ -115,17 +140,12 @@ def option_risk_contexts(
             "open_total_csp_collateral": total_csp,
             "broker_available_capital": broker_available,
             "broker_net_liquidation": broker_nav,
-            "cash_balance": (
-                float(account["cash_balance"])
-                if account is not None and account["cash_balance"] is not None
-                else None
-            ),
-            "buying_power": (
-                float(account["buying_power"])
-                if account is not None and account["buying_power"] is not None
-                else None
-            ),
-            "account_observed_at": account["observed_at"] if account is not None else None,
+            "cash_balance": account_facts["cash_balance"],
+            "buying_power": account_facts["buying_power"],
+            "account_observed_at": account_facts["account_observed_at"],
+            "account_source": account_facts["account_source"],
+            "risk_policy_snapshot": risk_policy,
+            "risk_policy_version": risk_policy.policy_version,
         }
         for symbol in normalized
     }

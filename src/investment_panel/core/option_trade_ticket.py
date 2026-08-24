@@ -17,9 +17,10 @@ from investment_panel.core.decision import (
     build_decision_resolution,
 )
 from investment_panel.core.risk_policy import (
-    AssignmentPolicy,
+    ASSIGNMENT_POLICY_VERSION,
+    PortfolioAssignmentPolicy,
     RiskPolicySnapshot,
-    coerce_assignment_policy,
+    coerce_portfolio_assignment_policy,
     compile_risk_policy_snapshot,
 )
 
@@ -71,6 +72,7 @@ def build_option_trade_ticket(
     cash_balance: float | None = None,
     buying_power: float | None = None,
     account_observed_at: datetime | None = None,
+    account_source: str | None = None,
     thesis: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
@@ -79,7 +81,7 @@ def build_option_trade_ticket(
     risk_policy_version: str | None = None,
     policy_version: str | None = None,
     risk_policy_snapshot: RiskPolicySnapshot | None = None,
-    assignment_policy: AssignmentPolicy | dict[str, Any] | None = None,
+    assignment_policy: PortfolioAssignmentPolicy | dict[str, Any] | None = None,
     decision_resolution: DecisionResolutionV2 | dict[str, Any] | None = None,
     resolution: DecisionResolutionV2 | dict[str, Any] | None = None,
     decision_revision: str | None = None,
@@ -96,17 +98,20 @@ def build_option_trade_ticket(
         market_session=market_session,
         evaluated_at=now,
     )
-    policy_snapshot = risk_policy_snapshot or compile_risk_policy_snapshot(
-        account_facts={
-            "broker_available_capital": broker_available_capital,
-            "broker_net_liquidation": broker_net_liquidation,
-            "cash_balance": cash_balance,
-            "buying_power": buying_power,
-            "account_observed_at": account_observed_at,
-        },
-        sleeve_capital=sleeve_capital,
-        policy_kind="standard",
-    )
+    if isinstance(risk_policy_snapshot, dict):
+        policy_snapshot = RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+    else:
+        policy_snapshot = risk_policy_snapshot or compile_risk_policy_snapshot(
+            account_facts={
+                "broker_available_capital": broker_available_capital,
+                "broker_net_liquidation": broker_net_liquidation,
+                "cash_balance": cash_balance,
+                "buying_power": buying_power,
+                "account_observed_at": account_observed_at,
+            },
+            sleeve_capital=sleeve_capital,
+            policy_kind="standard",
+        )
     risk = sizing_policy(
         structure=structure,
         sleeve_capital=sleeve_capital,
@@ -150,7 +155,7 @@ def build_option_trade_ticket(
             if item
         )
     )
-    assignment = coerce_assignment_policy(
+    assignment = coerce_portfolio_assignment_policy(
         assignment_policy,
         paper_assignment_allowed=False,
         thesis_direction=active_thesis.get("direction"),
@@ -158,11 +163,20 @@ def build_option_trade_ticket(
         cash_balance=policy_snapshot.cash_balance,
         buying_power=policy_snapshot.buying_power,
         account_as_of=policy_snapshot.account_observed_at,
-        account_source="postgresql",
+        account_source=account_source or "postgresql",
         symbol_limit=policy_snapshot.csp_symbol_limit,
         aggregate_limit=policy_snapshot.csp_total_limit,
         evaluated_at=now,
     )
+    requested_policy_version = str(policy_version or risk_policy_version or "")
+    if requested_policy_version and requested_policy_version != policy_snapshot.policy_version:
+        all_blockers.append("risk_policy_version_mismatch")
+    if assignment.risk_policy_version and assignment.risk_policy_version != policy_snapshot.policy_version:
+        all_blockers.append("risk_policy_version_mismatch")
+    if structure == "cash_secured_put" and not assignment.risk_policy_version:
+        all_blockers.append("risk_policy_version_required")
+    if assignment.assignment_policy_version != ASSIGNMENT_POLICY_VERSION:
+        all_blockers.append("assignment_policy_version_mismatch")
     if structure == "cash_secured_put":
         all_blockers = sorted(set([*all_blockers, *assignment.blockers(as_of=now, required_cash=secured_cash, thesis_direction=active_thesis.get("direction"))]))
     requested_ready = str(state).upper() in {"READY", "PAPER_READY"}
@@ -205,7 +219,8 @@ def build_option_trade_ticket(
             for key, value in dict(provenance).items()
             if key in {"publication_id", "publication_scope", "analysis_run_id", "analysis_cutoff"}
         }
-    resolved_policy_version = str(policy_version or risk_policy_version or policy_snapshot.policy_version)
+    resolved_policy_version = str(requested_policy_version or policy_snapshot.policy_version)
+    resolved_assignment_policy_version = assignment.assignment_policy_version
     resolution_input = decision_resolution or resolution
     if resolution_input is None:
         resolution_blockers = all_blockers if ticket_state == "READY" else all_blockers or ["paper_entry_not_requested"]
@@ -213,6 +228,7 @@ def build_option_trade_ticket(
             action="BUY" if ticket_state == "READY" else "NO_TRADE",
             decision_revision=str(decision_revision or decision_id),
             policy_version=resolved_policy_version,
+            assignment_policy_version=resolved_assignment_policy_version,
             provenance={
                 **dict(provenance or {}),
                 "as_of": now,
@@ -242,6 +258,36 @@ def build_option_trade_ticket(
         )
     else:
         resolution_value = DecisionResolutionV2.model_validate(resolution_input)
+    resolution_version_mismatch = resolution_value.policy_version != resolved_policy_version
+    assignment_version_mismatch = (
+        resolution_value.assignment_policy_version != resolved_assignment_policy_version
+    )
+    if resolution_version_mismatch:
+        all_blockers.append("risk_policy_version_mismatch")
+    if assignment_version_mismatch:
+        all_blockers.append("assignment_policy_version_mismatch")
+    if all_blockers and ticket_state == "READY":
+        ticket_state = "RESEARCH"
+    if all_blockers and (
+        resolution_version_mismatch
+        or assignment_version_mismatch
+        or str(resolution_value.action).upper() not in {"NO_TRADE", "AVOID"}
+        or str(resolution_value.eligibility).upper() != "BLOCKED"
+    ):
+        resolution_value = build_decision_resolution(
+            action="NO_TRADE",
+            decision_revision=str(decision_revision or resolution_value.decision_revision),
+            policy_version=resolved_policy_version,
+            assignment_policy_version=resolved_assignment_policy_version,
+            provenance=resolution_value.provenance,
+            ticker=symbol.upper(),
+            blockers=all_blockers,
+            data_quality="INCOMPLETE",
+            authorization_mode="NONE",
+            rationale="Option ticket is blocked by an inconsistent or incomplete policy gate.",
+            expires_at=valid_until,
+            blocked=True,
+        )
     return {
         "ticket_version": TICKET_VERSION,
         "decision_id": str(decision_id),
@@ -251,6 +297,7 @@ def build_option_trade_ticket(
         "expires_at": valid_until.isoformat(),
         "risk_policy_version": resolved_policy_version,
         "policy_version": resolved_policy_version,
+        "assignment_policy_version": resolved_assignment_policy_version,
         "decision_revision": str(decision_revision or resolution_value.decision_revision),
         "resolution": resolution_value.model_dump(mode="json"),
         "assignment_policy": assignment.snapshot(),

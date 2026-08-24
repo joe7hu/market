@@ -543,6 +543,26 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
     monkeypatch.setattr("investment_panel.database.actions.is_market_open", lambda _now: True)
     runtime: DatabaseRuntime = analysis_context["runtime"]
     actions = ActionRepository(runtime)
+    config = typed_config(raw={
+        "analysis": {
+            "options_decision_system": {
+                "mode": "paper",
+                "options_risk_sleeve_capital": 500000,
+                "csp_paper_assignment_allowed": True,
+            },
+        },
+    })
+    monkeypatch.setattr(
+        "investment_panel.database.options_analysis.calibration_profiles",
+        lambda *_args, **_kwargs: [{
+            "structure": "cash_secured_put",
+            "sample_size": 30,
+            "prediction_sample_size": 30,
+            "lower_95_expectancy": 0.01,
+            "brier_score": 0.20,
+            "other_regime_monitoring_count": 5,
+        }],
+    )
 
     def stage(**kwargs):
         return actions.stage_option_paper_entry(
@@ -551,7 +571,8 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         )
 
     ingestion = IngestionRepository(runtime)
-    observed_at = datetime(2026, 7, 12, 15, 0, tzinfo=UTC)
+    observed_at = datetime.now(UTC).replace(microsecond=0)
+    expiration = (observed_at.date() + timedelta(days=40)).isoformat()
     option_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         option_run,
@@ -562,10 +583,9 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         rows=[
             {
                 "symbol": "NVDA",
-                "expiration": "2026-08-21",
+                "expiration": expiration,
                 "strike": 160,
                 "option_type": "put",
-                "contract_symbol": "NVDA260821P00160000",
                 "underlying_price": 175,
                 "bid": 3.0,
                 "ask": 3.2,
@@ -574,6 +594,11 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
                 "open_interest": 2500,
                 "iv": 0.38,
                 "delta": -0.22,
+                "bid_size": 10,
+                "ask_size": 10,
+                "last_trade_at": observed_at,
+                "captured_at": observed_at,
+                "market_data_status": "live",
                 "style": "american",
                 "settlement": "physical",
                 "deliverable_key": "nvda-standard",
@@ -606,6 +631,46 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
             """,
             [instrument_id, option_run, observed_at, Jsonb({"quality_status": "acceptable"})],
         )
+        thesis_as_of = observed_at - timedelta(minutes=1)
+        thesis = connection.execute(
+            """
+            INSERT INTO app.thesis
+                (instrument_id, revision, status, thesis, author_kind, created_at, updated_at)
+            VALUES (%s, 1, 'current', %s, 'human', %s, %s)
+            RETURNING id
+            """,
+            [
+                instrument_id,
+                Jsonb({
+                    "schema_version": 3,
+                    "core_thesis": "NVDA remains a bullish assignment candidate.",
+                    "direction": "bullish",
+                    "invalidation": "NVDA closes below 145.",
+                }),
+                thesis_as_of,
+                thesis_as_of,
+            ],
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO app.thesis_expression
+                (instrument_id, thesis_revision_id, expression_kind, structure,
+                 entry_logic, invalidation_rules, status, created_at, updated_at)
+            VALUES (%s, %s, 'option', %s, %s, %s, 'active', %s, %s)
+            """,
+            [
+                instrument_id,
+                thesis["id"],
+                Jsonb({
+                    "direction": "bullish",
+                    "preferred_structures": ["cash_secured_put"],
+                }),
+                Jsonb({"selector": "deterministic_option_pipeline"}),
+                Jsonb([{"text": "NVDA closes below 145."}]),
+                thesis_as_of,
+                thesis_as_of,
+            ],
+        )
         connection.execute(
             """
             INSERT INTO raw.broker_account_snapshot
@@ -617,20 +682,33 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
         )
     ingestion.finish_run(broker_run, "succeeded")
 
-    result = refresh_options_radar(runtime, source_id="test-options", code_version="csp-test")
+    result = refresh_options_radar(
+        runtime,
+        source_id="test-options",
+        code_version="csp-test",
+        options_risk_sleeve_capital=500000,
+        config=config,
+    )
 
     assert result["cash_secured_puts"] == 1
     opportunities = published_options_radar_rows(runtime, "option_radar_opportunity")
     csp = next(row for row in opportunities if row["structure"] == "cash_secured_put")
-    assert csp["state"] == "SETUP"
+    assert csp["state"] == "READY"
+    assert csp["ticket"]["state"] == "READY"
+    assert csp["ticket"]["resolution"]["eligibility"] == "ACTIONABLE"
+    assert csp["strategy_route"]["selected_structure"] == "cash_secured_put"
+    assert csp["ticket"]["assignment_policy"]["eligible"] is True
+    assert csp["strategy_route"]["assignment_policy_version"] == csp["ticket"]["assignment_policy_version"]
+    assert csp["strategy_route"]["risk_policy_version"] == csp["ticket"]["risk_policy_version"]
+    assert csp["ticket"]["resolution"]["assignment_policy_version"] == csp["ticket"]["assignment_policy_version"]
+    assert csp["ticket"]["resolution"]["policy_version"] == csp["ticket"]["risk_policy_version"]
     assert csp["secured_cash"] == pytest.approx(15700.65)
     assert csp["effective_assignment_price"] == pytest.approx(157.0065)
     assert csp["probability_assignment"] == pytest.approx(0.22)
     assert csp["details"]["max_contracts"] == 1
-    assert "execution_data_not_grade_a" in csp["blockers"]
-    assert "execution_data_not_grade_a" in csp["ticket"]["blockers"]
-    assert "options_risk_sleeve_required" in csp["blockers"]
-    assert csp["ticket"]["risk"]["recommended_quantity"] == 0
+    assert csp["blockers"] == []
+    assert csp["ticket"]["blockers"] == []
+    assert csp["ticket"]["risk"]["recommended_quantity"] == 1
     summary = published_options_radar_rows(runtime, "option_radar_summary")[0]
     assert summary["cash_secured_put_count"] == 1
     assert summary["shortlist_count"] <= 10
@@ -638,14 +716,7 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
     assert detail is not None
     assert detail["structure"] == "cash_secured_put"
     assert detail["no_trade_baseline"]["expected_value"] == 0
-    with pytest.raises(ValueError, match="not execution-ready"):
-        stage(
-            decision_id=csp["decision_id"],
-            idempotency_key="csp-blocked",
-            ticket_version=1,
-            quantity=1,
-            limit_price=3.1,
-        )
+    ticket = dict(csp["ticket"])
     with pytest.raises(ValueError, match="positive"):
         stage(
             decision_id=csp["decision_id"],
@@ -654,70 +725,8 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
             quantity=1,
             limit_price=float("nan"),
         )
-    ticket = dict(csp["ticket"])
-    leg = dict(ticket["legs"][0])
-    leg.update({
-        "bid": 3.0,
-        "ask": 3.2,
-        "bid_size": 10,
-        "ask_size": 10,
-        "quote_time": datetime.now(UTC).isoformat(),
-        "quote_age_seconds": 0,
-        "open_interest": 2500,
-    })
-    fresh_ticket_at = datetime.now(UTC)
-    ticket.update({
-        "state": "READY",
-        "blockers": [],
-        "execution_ready_at": (fresh_ticket_at - timedelta(seconds=1)).isoformat(),
-        "expires_at": (fresh_ticket_at + timedelta(minutes=2)).isoformat(),
-        "legs": [leg],
-        "risk": {
-            **ticket["risk"],
-            "sleeve_capital": 500000,
-            "one_unit_collateral": csp["secured_cash"],
-            "recommended_quantity": 1,
-            "total_risk": csp["secured_cash"],
-        },
-        "entry": {
-            **ticket["entry"],
-            "limit_price": 3.1,
-            "maximum_chase_price": 3.2,
-            "minimum_credit": 3.1,
-        },
-        "forecast": {
-            **ticket["forecast"],
-            "lower_confidence_expected_value": 100,
-        },
-    })
     with runtime.transaction() as connection:
-        connection.execute("UPDATE analysis.decision SET state = 'READY' WHERE id = %s", [csp["decision_id"]])
-        connection.execute(
-            "UPDATE raw.broker_account_snapshot SET observed_at = now() WHERE account_key = 'paper'"
-        )
-        connection.execute(
-            """
-            UPDATE app.publication_payload payload
-            SET payload = payload.payload || %s
-            FROM app.current_publication_item item
-            JOIN app.publication publication ON publication.id = item.publication_id
-            WHERE payload.content_hash = item.content_hash
-              AND item.scope = 'options-radar' AND publication.status = 'published'
-              AND item.model_name = 'option_radar_opportunity'
-              AND payload.payload->>'decision_id' = %s
-            """,
-            [
-                Jsonb({
-                    "execution_ready": True,
-                    "captured_at": datetime.now(UTC).isoformat(),
-                    "last_trade_at": datetime.now(UTC).isoformat(),
-                    "bid_size": 10,
-                    "ask_size": 10,
-                    "ticket": ticket,
-                }),
-                csp["decision_id"],
-            ],
-        )
+        connection.execute("UPDATE raw.broker_account_snapshot SET observed_at = now() WHERE account_key = 'paper'")
     with runtime.transaction() as connection:
         connection.execute(
             """
@@ -982,24 +991,24 @@ def test_options_radar_captures_cash_secured_put_with_collateral_context(
                 "DELETE FROM app.paper_order WHERE id = %s",
                 [staged["paper_order_id"]],
             )
+    mark_at = observed_at + timedelta(days=1)
     mark_run = ingestion.start_run("test-options", "option_quotes")
     ingestion.store_option_snapshot(
         mark_run,
         source_id="test-options",
-        observed_at=datetime(2026, 7, 17, 15, 0, tzinfo=UTC),
+        observed_at=mark_at,
         market_session="regular",
         universe="test",
         rows=[
             {
-                "symbol": "NVDA", "expiration": "2026-08-21", "strike": 160,
-                "option_type": "put", "contract_symbol": "NVDA260821P00160000",
+                "symbol": "NVDA", "expiration": expiration, "strike": 160,
                 "underlying_price": 180, "bid": 1.4, "ask": 1.5, "mid": 1.45,
                 "volume": 100, "open_interest": 2500, "iv": 0.32, "delta": -0.15,
             }
         ],
     )
     ingestion.finish_run(mark_run, "succeeded")
-    OutcomeRepository(runtime).refresh(now=datetime(2026, 7, 18, 15, 0, tzinfo=UTC))
+    OutcomeRepository(runtime).refresh(now=mark_at + timedelta(hours=1))
     with runtime.read() as connection:
         outcome = connection.execute(
             "SELECT current_return, return_5d, strike_touched FROM analysis.option_outcome WHERE decision_id = %s",

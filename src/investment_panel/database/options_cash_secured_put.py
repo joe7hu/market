@@ -27,6 +27,7 @@ def insert_cash_secured_put_decisions(
     strategy_id: int,
     parameters: dict[str, Any],
     calibrated_ready: set[str],
+    evaluated_at: Any | None = None,
 ) -> int:
     """Select, gate, size, score, and persist the cash-secured-put lane."""
 
@@ -37,13 +38,16 @@ def insert_cash_secured_put_decisions(
     delta_max = float(csp.get("delta_max", 0.30))
     max_ticker_nav_pct = float(csp.get("max_ticker_nav_pct", 0.05))
     with runtime.read(JOB_PROFILE) as connection:
-        account = connection.execute(
-            """
+        account_query = """
             SELECT net_liquidation, cash_balance, buying_power, observed_at
             FROM raw.broker_account_snapshot
-            ORDER BY observed_at DESC, id DESC LIMIT 1
-            """
-        ).fetchone()
+        """
+        account_params: list[Any] = []
+        if evaluated_at is not None:
+            account_query += " WHERE observed_at <= %s"
+            account_params.append(evaluated_at)
+        account_query += " ORDER BY observed_at DESC, id DESC LIMIT 1"
+        account = connection.execute(account_query, account_params).fetchone()
         rows = connection.execute(
             """
             SELECT feature.snapshot_id, feature.contract_id, feature.quote_observed_at,

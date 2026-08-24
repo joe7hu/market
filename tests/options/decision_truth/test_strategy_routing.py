@@ -10,6 +10,7 @@ from investment_panel.analysis.strategy_routing import (
     route_promotion_gate,
     route_strategy,
 )
+from investment_panel.core.risk_policy import PortfolioAssignmentPolicy
 
 
 NOW = datetime(2026, 8, 19, 14, tzinfo=UTC)
@@ -105,14 +106,35 @@ def test_unlimited_risk_structures_are_always_rejected() -> None:
 def test_csp_requires_assignment_and_portfolio_consent() -> None:
     without_consent = route_strategy(
         _feature("trend_up"), _market(), option_iv=0.5, realized_vol=0.2,
-        iv_percentile=0.8, thesis_direction="neutral_bullish", portfolio_allows_csp=False,
+        iv_percentile=0.8,
+        assignment_policy=PortfolioAssignmentPolicy(
+            thesis_direction="bullish", thesis_as_of=NOW, evaluated_at=NOW,
+        ),
+        as_of=NOW,
     )
     with_consent = route_strategy(
         _feature("trend_up"), _market(), option_iv=0.5, realized_vol=0.2,
-        iv_percentile=0.8, thesis_direction="neutral_bullish", portfolio_allows_csp=True,
+        iv_percentile=0.8,
+        assignment_policy=PortfolioAssignmentPolicy(
+            paper_assignment_allowed=True,
+            thesis_direction="bullish",
+            thesis_as_of=NOW,
+            thesis_preferred_structures=("cash_secured_put",),
+            account_as_of=NOW,
+            account_source="postgresql",
+            cash_balance=100_000,
+            buying_power=100_000,
+            required_cash=15_000,
+            symbol_limit=25_000,
+            aggregate_limit=75_000,
+            evaluated_at=NOW,
+        ),
+        as_of=NOW,
     )
-    assert without_consent["selected_structure"] == "call_debit_spread"
+    assert without_consent["selected_structure"] == "cash_secured_put"
+    assert "paper_assignment_permission_required" in without_consent["route_blockers"]
     assert with_consent["selected_structure"] == "cash_secured_put"
+    assert with_consent["route_blockers"] == []
 
 
 def test_route_promotion_requires_exact_cohort_calibration_forward_and_human_approval() -> None:

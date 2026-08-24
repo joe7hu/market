@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from investment_panel.core.risk_policy import ASSIGNMENT_POLICY_VERSION
+
 
 RESOLUTION_CONTRACT_VERSION = "decision-resolution.v2"
 
@@ -87,6 +89,7 @@ class DecisionResolutionV2(BaseModel):
     ttl: Any = None
     portfolio_context: Any = None
     policy_version: str = "risk-policy.v2:missing"
+    assignment_policy_version: str = ASSIGNMENT_POLICY_VERSION
     decision_revision: str
     provenance: ResolutionProvenance | dict[str, Any] = Field(default_factory=ResolutionProvenance)
     ticker: str | None = None
@@ -219,6 +222,7 @@ def build_decision_resolution(
     action: str,
     decision_revision: str,
     policy_version: str,
+    assignment_policy_version: str = ASSIGNMENT_POLICY_VERSION,
     provenance: Mapping[str, Any] | ResolutionProvenance,
     ticker: str | None = None,
     blockers: list[str] | tuple[str, ...] = (),
@@ -274,6 +278,7 @@ def build_decision_resolution(
         ttl=ttl,
         portfolio_context=portfolio_context,
         policy_version=policy_version,
+        assignment_policy_version=assignment_policy_version,
         decision_revision=decision_revision,
         provenance=provenance,
         ticker=ticker,

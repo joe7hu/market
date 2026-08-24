@@ -75,6 +75,7 @@ class OptionsResearchRepository:
                 self.runtime,
                 code_version="strategy-promotion",
                 options_risk_sleeve_capital=sleeve_capital,
+                config=self.config,
             )
         except Exception as exc:
             radar_refresh = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}

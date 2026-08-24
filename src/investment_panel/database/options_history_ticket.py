@@ -19,6 +19,7 @@ def published_candidates(
         runtime,
         {str(row["symbol"]) for row in rows},
         evaluated_at=rows[0]["as_of"] if rows else None,
+        options_risk_sleeve_capital=sleeve_capital,
     )
     return [
         published_candidate(

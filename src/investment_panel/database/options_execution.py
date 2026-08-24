@@ -79,6 +79,7 @@ class OptionsExecutionRepository:
             self.runtime,
             [symbol],
             evaluated_at=now,
+            options_risk_sleeve_capital=options_risk_sleeve_capital(self.config),
         ).get(symbol.upper(), {})
         candidate["ticket"] = build_option_trade_ticket(
             decision_id=str(candidate["decision_id"]),

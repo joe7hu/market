@@ -13,6 +13,7 @@ def test_deployed_config_enables_paper_signal_learning_without_live_brokerage() 
     assert settings.ticker_paper_actions_enabled is True
     assert settings.stock_paper_actions_enabled is True
     assert settings.options_paper_actions_enabled is True
+    assert settings.csp_paper_assignment_allowed is False
     assert settings.radar_paper_actions_enabled is True
     assert settings.qqq_paper_actions_enabled is True
     assert settings.strategy_auto_promotion_enabled is True

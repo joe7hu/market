@@ -242,14 +242,31 @@ class ActionRepository:
             ticket_policy_version = str(
                 ticket.get("policy_version") or ticket.get("risk_policy_version") or ""
             )
+            ticket_assignment_policy_version = str(ticket.get("assignment_policy_version") or "")
+            assignment_snapshot = dict(ticket.get("assignment_policy") or {})
             resolution = dict(ticket.get("resolution") or {})
             resolution_policy_version = str(resolution.get("policy_version") or "")
+            resolution_assignment_policy_version = str(
+                resolution.get("assignment_policy_version") or ""
+            )
             resolution_revision = str(resolution.get("decision_revision") or "")
             ticket_revision = str(ticket.get("decision_revision") or "")
             if policy_version and policy_version != ticket_policy_version:
                 raise ValueError("option trade ticket policy is stale")
             if not ticket_policy_version or resolution_policy_version not in {"", ticket_policy_version}:
                 raise ValueError("option trade ticket policy snapshot is inconsistent")
+            if (
+                not ticket_assignment_policy_version
+                or resolution_assignment_policy_version != ticket_assignment_policy_version
+            ):
+                raise ValueError("option trade ticket assignment policy snapshot is inconsistent")
+            if str(assignment_snapshot.get("assignment_policy_version") or "") != ticket_assignment_policy_version:
+                raise ValueError("option trade ticket assignment policy snapshot is inconsistent")
+            assignment_risk_policy_version = str(assignment_snapshot.get("risk_policy_version") or "")
+            if str(signal["structure"]) == "cash_secured_put" and not assignment_risk_policy_version:
+                raise ValueError("option trade ticket assignment risk policy snapshot is inconsistent")
+            if assignment_risk_policy_version and assignment_risk_policy_version != ticket_policy_version:
+                raise ValueError("option trade ticket assignment risk policy snapshot is inconsistent")
             if ticket_revision and resolution_revision and ticket_revision != resolution_revision:
                 raise ValueError("option trade ticket decision revision is inconsistent")
             if str(resolution.get("eligibility") or "").upper() == "BLOCKED":
@@ -299,6 +316,9 @@ class ActionRepository:
                 },
             }
             ticket_risk = dict(ticket.get("risk") or {})
+            risk_snapshot = dict(ticket_risk.get("policy_snapshot") or {})
+            if risk_snapshot.get("policy_version") not in {None, "", ticket_policy_version}:
+                raise ValueError("option trade ticket risk policy snapshot is inconsistent")
             configured_sleeve = (
                 float(current_options_risk_sleeve_capital)
                 if current_options_risk_sleeve_capital is not None
@@ -437,9 +457,13 @@ class ActionRepository:
                 symbol_reserved = float(exposures["symbol_csp_collateral"] or 0)
                 if unit_risk <= 0:
                     raise ValueError("cash-secured-put collateral is unavailable")
-                if symbol_reserved + collateral > sleeve_capital * 0.05:
+                symbol_limit = risk_snapshot.get("csp_symbol_limit")
+                aggregate_limit = risk_snapshot.get("csp_total_limit")
+                symbol_limit = sleeve_capital * 0.05 if symbol_limit is None else float(symbol_limit)
+                aggregate_limit = sleeve_capital * 0.15 if aggregate_limit is None else float(aggregate_limit)
+                if symbol_reserved + collateral > symbol_limit:
                     raise ValueError("paper quantity exceeds the 5% sleeve symbol collateral limit")
-                if reserved + collateral > sleeve_capital * 0.15:
+                if reserved + collateral > aggregate_limit:
                     raise ValueError("aggregate cash-secured-put collateral would exceed 15% of the sleeve")
                 if committed_capital + collateral > available_cash:
                     raise ValueError("insufficient unreserved cash collateral")
@@ -460,6 +484,7 @@ class ActionRepository:
                 "lane": ticket_lane,
                 "structure": structure,
                 "policy_version": ticket_policy_version,
+                "assignment_policy_version": ticket_assignment_policy_version,
                 "decision_revision": ticket_revision or resolution_revision,
                 "resolution": resolution,
                 "risk_policy_snapshot": ticket_risk.get("policy_snapshot") or {},

@@ -8,8 +8,10 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.strategy_routing import ROUTE_VERSION, route_strategy
+from investment_panel.core.risk_policy import compile_portfolio_assignment_policy
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.event_studies import FEATURE_VERSION as EVENT_FEATURE_VERSION
+from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.symbol_trends import FEATURE_SET, feature_row_payload
 
 
@@ -18,6 +20,9 @@ def apply_strategy_routes(
     run_id: Any,
     *,
     market_regime: dict[str, Any],
+    config: object | None = None,
+    options_risk_sleeve_capital: float | None = None,
+    csp_paper_assignment_allowed: bool | None = None,
 ) -> dict[str, Any]:
     with runtime.read(JOB_PROFILE) as connection:
         rows = [
@@ -38,6 +43,13 @@ def apply_strategy_routes(
                        symbol_feature.metrics AS symbol_metrics,
                        feature.modeled_iv, feature.iv_percentile,
                        option_decision.details AS option_details,
+                       option_decision.secured_cash,
+                       thesis_revision.id::text AS thesis_revision_id,
+                       thesis_revision.revision AS thesis_revision,
+                       thesis_revision.thesis AS thesis_payload,
+                       thesis_revision.created_at AS thesis_as_of,
+                       thesis_expression.id::text AS thesis_expression_id,
+                       thesis_expression.structure AS thesis_expression,
                        event_feature.id::text AS event_study_id,
                        event_feature.sample_size, event_feature.actual_move_median,
                        event_feature.actual_move_p75, event_feature.actual_move_p90,
@@ -55,6 +67,23 @@ def apply_strategy_routes(
                 LEFT JOIN analysis.option_feature feature
                   ON feature.run_id = decision.run_id
                  AND feature.contract_id = option_decision.contract_id
+                LEFT JOIN LATERAL (
+                    SELECT thesis.id, thesis.revision, thesis.thesis, thesis.created_at
+                    FROM app.thesis thesis
+                    WHERE thesis.instrument_id = instrument.id
+                      AND thesis.created_at <= run.input_cutoff
+                    ORDER BY thesis.created_at DESC, thesis.id DESC
+                    LIMIT 1
+                ) thesis_revision ON true
+                LEFT JOIN LATERAL (
+                    SELECT expression.id, expression.structure
+                    FROM app.thesis_expression expression
+                    WHERE expression.thesis_revision_id = thesis_revision.id
+                      AND expression.expression_kind = 'option'
+                      AND expression.created_at <= run.input_cutoff
+                    ORDER BY expression.created_at DESC, expression.id DESC
+                    LIMIT 1
+                ) thesis_expression ON true
                 LEFT JOIN LATERAL (
                     SELECT study.*
                     FROM analysis.event_study_feature study
@@ -74,6 +103,17 @@ def apply_strategy_routes(
                 [FEATURE_SET, EVENT_FEATURE_VERSION, run_id],
             ).fetchall()
         ]
+    run_cutoff = next(
+        (row.get("input_cutoff") for row in rows if row.get("input_cutoff") is not None),
+        None,
+    )
+    risk_contexts = option_risk_contexts(
+        runtime,
+        {str(row.get("symbol") or "") for row in rows},
+        evaluated_at=run_cutoff,
+        config=config,
+        options_risk_sleeve_capital=options_risk_sleeve_capital,
+    )
     routes: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
     for row in rows:
         symbol = feature_row_payload({
@@ -114,6 +154,27 @@ def apply_strategy_routes(
                 list(candidate_market.get("reason_codes") or [])
                 + ["decision_cutoff_precedes_market_regime"]
             ))
+        context = (risk_contexts or {}).get(str(row.get("symbol") or ""), {})
+        thesis_payload = dict(row.get("thesis_payload") or {})
+        thesis_expression = dict(row.get("thesis_expression") or {})
+        thesis = {
+            **thesis_payload,
+            "direction": thesis_expression.get("direction") or thesis_payload.get("direction"),
+            "preferred_structures": thesis_expression.get("preferred_structures") or [],
+            "as_of": row.get("thesis_as_of"),
+        }
+        assignment = compile_portfolio_assignment_policy(
+            config,
+            run_cutoff=row.get("input_cutoff") or run_cutoff,
+            thesis=thesis,
+            required_cash=_number(row.get("secured_cash") or metrics.get("secured_cash")),
+            account_facts=context,
+            sleeve_capital=options_risk_sleeve_capital,
+            open_symbol_collateral=_number(context.get("open_symbol_csp_collateral")) or 0.0,
+            open_total_collateral=_number(context.get("open_total_csp_collateral")) or 0.0,
+            risk_policy_snapshot=context.get("risk_policy_snapshot"),
+            paper_assignment_allowed=csp_paper_assignment_allowed,
+        )
         route = route_strategy(
             symbol,
             candidate_market,
@@ -121,9 +182,17 @@ def apply_strategy_routes(
             realized_vol=_number(metrics.get("realized_vol_20d")),
             iv_percentile=_number(row.get("iv_percentile")),
             event_summary=event,
-            portfolio_allows_csp=False,
-            as_of=row.get("as_of"),
+            assignment_policy=assignment,
+            as_of=row.get("input_cutoff") or run_cutoff,
         )
+        risk_policy = context.get("risk_policy_snapshot")
+        route.update({
+            "risk_policy_snapshot": risk_policy.snapshot() if risk_policy is not None else None,
+            "thesis_revision_id": row.get("thesis_revision_id"),
+            "thesis_revision": row.get("thesis_revision"),
+            "thesis_as_of": row.get("thesis_as_of"),
+            "thesis_expression_id": row.get("thesis_expression_id"),
+        })
         routes.append((row["decision_id"], route, candidate_market))
     with runtime.transaction(JOB_PROFILE) as connection:
         for decision_id, route, candidate_market in routes:

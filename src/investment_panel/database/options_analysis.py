@@ -70,6 +70,7 @@ def refresh_options_radar(
     symbols: Sequence[str] | None = None,
     code_version: str = "working-tree",
     options_risk_sleeve_capital: float | None = None,
+    config: object | None = None,
 ) -> dict[str, Any]:
     repository = AnalysisRepository(runtime)
     strategy_id, strategy_parameters = _active_strategy(runtime)
@@ -108,7 +109,8 @@ def refresh_options_radar(
         put_debit_spreads = insert_put_debit_spreads(runtime, repository, run_id, strategy_id, calibrated_ready)
         decision_count += put_debit_spreads
         cash_secured_puts = insert_cash_secured_put_decisions(
-            runtime, repository, run_id, strategy_id, strategy_parameters, calibrated_ready
+            runtime, repository, run_id, strategy_id, strategy_parameters, calibrated_ready,
+            evaluated_at=cutoff,
         )
         decision_count += cash_secured_puts
         try:
@@ -122,6 +124,8 @@ def refresh_options_radar(
             runtime,
             run_id,
             market_regime=dict(trend_features["market_regime"]),
+            config=config,
+            options_risk_sleeve_capital=options_risk_sleeve_capital,
         )
         shadow_trades = _ensure_shadow_trades(runtime, run_id)
         discovery = materialize_discovery_foundation(
@@ -138,6 +142,7 @@ def refresh_options_radar(
             strategy_revision=STRATEGY_REVISION,
             scanned_contracts=feature_count,
             options_risk_sleeve_capital=options_risk_sleeve_capital,
+            config=config,
             calibration=calibration,
             market_regime=dict(trend_features["market_regime"]),
             previous_opportunities=previous_opportunities,

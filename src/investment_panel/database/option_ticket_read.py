@@ -66,6 +66,7 @@ def revalidate_published_tickets(
         runtime,
         {str(row.get("ticker") or row.get("symbol") or "") for row in rows},
         evaluated_at=now,
+        options_risk_sleeve_capital=sleeve_capital,
     )
     return [
         _revalidated_row(

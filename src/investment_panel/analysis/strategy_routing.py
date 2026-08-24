@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from investment_panel.core.risk_policy import AssignmentPolicy, coerce_assignment_policy
+from investment_panel.core.risk_policy import (
+    PortfolioAssignmentPolicy,
+    coerce_portfolio_assignment_policy,
+)
 
 
 ROUTE_VERSION = "daily-strategy-route-v1"
@@ -58,8 +61,7 @@ def route_strategy(
     iv_percentile: float | None,
     event_summary: dict[str, Any] | None = None,
     thesis_direction: str | None = None,
-    portfolio_allows_csp: bool = False,
-    assignment_policy: AssignmentPolicy | dict[str, Any] | None = None,
+    assignment_policy: PortfolioAssignmentPolicy | dict[str, Any] | None = None,
     as_of: datetime | str | None = None,
 ) -> dict[str, Any]:
     """Select a shadow structure without changing ticket or paper state."""
@@ -69,15 +71,15 @@ def route_strategy(
     volatility = str(symbol_feature.get("volatility_state") or "unstable")
     event = dict(event_summary or {})
     event_state = str(event.get("evidence_state") or "insufficient_event_evidence")
-    assignment_input = assignment_policy if assignment_policy is not None else None
-    assignment = coerce_assignment_policy(
-        assignment_input,
+    assignment = coerce_portfolio_assignment_policy(
+        assignment_policy,
         paper_assignment_allowed=False,
         thesis_direction=thesis_direction,
-        evaluated_at=as_of if isinstance(as_of, datetime) else None,
+        evaluated_at=_as_datetime(as_of),
     )
+    reference = _as_datetime(as_of) or assignment.evaluated_at
     assignment_blockers = list(assignment.blockers(
-        as_of=as_of if isinstance(as_of, datetime) else assignment.evaluated_at,
+        as_of=reference,
         thesis_direction=thesis_direction,
     ))
     blockers: list[str] = []
@@ -108,15 +110,12 @@ def route_strategy(
         strong = _number(symbol_feature.get("kaufman_er_20d"), 0.0) >= 0.35 and _number(
             symbol_feature.get("relative_strength_20d"), 0.0
         ) > 0
-        # Compatibility keeps the shadow route stable; the emitted policy still
-        # blocks paper assignment until every explicit account gate is present.
-        legacy_csp_consent = portfolio_allows_csp and assignment_policy is None
-        if thesis_direction == "neutral_bullish" and rich_vol and (
-            assignment.eligible or legacy_csp_consent
-        ):
+        assignment_direction = str(assignment.thesis_direction or thesis_direction or "").strip().lower()
+        if rich_vol and assignment_direction in {"bullish", "long", "up"}:
             selected = "cash_secured_put"
             alternatives = ["call_debit_spread"]
-            reasons.extend(["neutral_bullish_thesis", "option_volatility_rich", "portfolio_accepts_assignment"])
+            reasons.extend(["bullish_thesis", "option_volatility_rich", "portfolio_accepts_assignment"])
+            blockers.extend(assignment_blockers)
         elif cheap_vol and strong:
             selected = "long_call"
             alternatives = ["call_debit_spread"]
@@ -147,14 +146,6 @@ def route_strategy(
         alternatives = []
     elif selected == "NO_TRADE" and event_state != "ready":
         blockers.append("insufficient_event_evidence")
-    if (
-        trend == "trend_up"
-        and thesis_direction == "neutral_bullish"
-        and rich_vol
-        and selected != "cash_secured_put"
-    ):
-        blockers.extend(assignment_blockers)
-
     rejected = []
     for structure in DEFINED_RISK_STRUCTURES:
         if structure != selected and structure not in alternatives:
@@ -183,6 +174,8 @@ def route_strategy(
         "rejected_structures": rejected,
         "route_blockers": sorted(set(blockers)),
         "assignment_policy": assignment.snapshot(),
+        "assignment_policy_version": assignment.assignment_policy_version,
+        "risk_policy_version": assignment.risk_policy_version,
         "as_of": as_of.isoformat() if isinstance(as_of, datetime) else as_of,
         "evidence_refs": evidence_refs,
         "paper_quantity_authorized": False,
@@ -227,3 +220,14 @@ def _number(value: Any, default: float | None = None) -> float | None:
         return float(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None

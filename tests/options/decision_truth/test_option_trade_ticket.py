@@ -10,6 +10,7 @@ from investment_panel.core.option_trade_ticket import (
     sizing_policy,
 )
 from investment_panel.core.decision import is_market_open
+from investment_panel.core.risk_policy import PortfolioAssignmentPolicy, RiskPolicySnapshot
 from investment_panel.database.actions import ordered_ticket_snapshot
 from investment_panel.database.options_history_v3_candidates import (
     history_truth_blockers,
@@ -422,6 +423,57 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
     assert "positive_lower_confidence_expectancy_required" not in rows[0]["ticket"]["blockers"]
     assert "thesis_expression_required" not in rows[0]["ticket"]["blockers"]
     assert rows[0]["ticket"]["provenance"]["thesis"]["option_agent_task_id"] == "task-1"
+
+
+def test_cash_secured_put_ticket_blocks_risk_policy_version_mismatch() -> None:
+    snapshot = RiskPolicySnapshot(
+        policy_version="risk-policy.v2:new",
+        sleeve_capital=500_000,
+        cash_balance=100_000,
+        buying_power=100_000,
+        broker_available_capital=100_000,
+        account_observed_at=NOW,
+    )
+    assignment = PortfolioAssignmentPolicy(
+        paper_assignment_allowed=True,
+        risk_policy_version="risk-policy.v2:old",
+        thesis_direction="bullish",
+        thesis_as_of=NOW,
+        thesis_preferred_structures=("cash_secured_put",),
+        account_as_of=NOW,
+        account_source="postgresql",
+        cash_balance=100_000,
+        buying_power=100_000,
+        required_cash=15_000,
+        symbol_limit=25_000,
+        aggregate_limit=75_000,
+        evaluated_at=NOW,
+    )
+    ticket = build_option_trade_ticket(
+        decision_id="csp-policy-version-mismatch",
+        symbol="NVDA",
+        structure="cash_secured_put",
+        expiration=date(2026, 8, 21),
+        legs=[{**_leg(side="short"), "option_type": "put"}],
+        entry_price=3.1,
+        one_unit_max_loss=None,
+        secured_cash=15_000,
+        state="READY",
+        evaluated_at=NOW,
+        market_session="regular",
+        sleeve_capital=500_000,
+        risk_policy_snapshot=snapshot,
+        policy_version=snapshot.policy_version,
+        assignment_policy=assignment,
+        thesis={"direction": "bullish", "invalidation": "Exit below 145."},
+        forecast={
+            "probability_semantics": "calibrated_exact_cohort",
+            "lower_95_expected_value": 100,
+        },
+    )
+    assert ticket["state"] == "RESEARCH"
+    assert "risk_policy_version_mismatch" in ticket["blockers"]
+    assert ticket["resolution"]["action"] == "NO_TRADE"
 
 
 def _rank_row(

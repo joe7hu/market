@@ -14,6 +14,7 @@ class OptionsDecisionSystemConfig:
     ticker_paper_actions_enabled: bool = False
     stock_paper_actions_enabled: bool = False
     options_paper_actions_enabled: bool = False
+    csp_paper_assignment_allowed: bool = False
     radar_paper_actions_enabled: bool = False
     qqq_paper_actions_enabled: bool = False
     recovery_paper_actions_enabled: bool = False
@@ -44,6 +45,7 @@ def options_decision_system_config(
         ticker_paper_actions_enabled=bool(raw.get("ticker_paper_actions_enabled", False)),
         stock_paper_actions_enabled=bool(raw.get("stock_paper_actions_enabled", False)),
         options_paper_actions_enabled=bool(raw.get("options_paper_actions_enabled", False)),
+        csp_paper_assignment_allowed=bool(raw.get("csp_paper_assignment_allowed", False)),
         radar_paper_actions_enabled=bool(raw.get("radar_paper_actions_enabled", False)),
         qqq_paper_actions_enabled=bool(raw.get("qqq_paper_actions_enabled", False)),
         recovery_paper_actions_enabled=bool(raw.get("recovery_paper_actions_enabled", False)),

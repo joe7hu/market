@@ -281,6 +281,7 @@ def publication_models(
     strategy_revision: int,
     scanned_contracts: int,
     options_risk_sleeve_capital: float | None = None,
+    config: object | None = None,
     calibration: list[dict[str, Any]] | None = None,
     market_regime: dict[str, Any] | None = None,
     previous_opportunities: list[dict[str, Any]] | None = None,
@@ -292,6 +293,7 @@ def publication_models(
                    decision.id::text AS candidate_event_id,
                    decision.id::text AS event_id, instrument.symbol,
                    instrument.symbol AS ticker, decision.state, decision.rank,
+                   run.input_cutoff AS run_input_cutoff,
                    decision.score, option_decision.tier, option_decision.structure,
                    option_decision.entry_price, option_decision.exit_cost_estimate,
                    option_decision.secured_cash, option_decision.max_profit,
@@ -334,6 +336,7 @@ def publication_models(
                    active_thesis.revision_id::text AS thesis_revision_id,
                    active_thesis.revision AS thesis_revision,
                    active_thesis.author_kind AS thesis_author_kind,
+                   active_thesis.created_at AS thesis_as_of,
                    expression.id::text AS thesis_expression_id,
                    expression.structure AS thesis_expression,
                    expression.entry_logic AS thesis_expression_entry_logic,
@@ -344,6 +347,7 @@ def publication_models(
                        'feature_version', feature.feature_version
                    ) AS raw
             FROM analysis.decision decision
+            JOIN analysis.run run ON run.id = decision.run_id
             JOIN analysis.option_decision option_decision
               ON option_decision.decision_id = decision.id
             JOIN analysis.option_feature feature
@@ -362,11 +366,12 @@ def publication_models(
              AND symbol_feature.instrument_id = decision.instrument_id
              AND symbol_feature.feature_set = 'daily_trend'
             LEFT JOIN LATERAL (
-                SELECT thesis.id AS revision_id, thesis.revision, thesis.author_kind, thesis.thesis
+                SELECT thesis.id AS revision_id, thesis.revision, thesis.author_kind,
+                       thesis.thesis, thesis.created_at
                 FROM app.thesis thesis
                 WHERE thesis.instrument_id = instrument.id
-                  AND thesis.status = 'current'
-                ORDER BY thesis.updated_at DESC, thesis.id DESC
+                  AND thesis.created_at <= run.input_cutoff
+                ORDER BY thesis.created_at DESC, thesis.id DESC
                 LIMIT 1
             ) active_thesis ON true
             LEFT JOIN LATERAL (
@@ -374,8 +379,8 @@ def publication_models(
                 FROM app.thesis_expression expression
                 WHERE expression.thesis_revision_id = active_thesis.revision_id
                   AND expression.expression_kind = 'option'
-                  AND expression.status = 'active'
-                ORDER BY expression.updated_at DESC, expression.id DESC
+                  AND expression.created_at <= run.input_cutoff
+                ORDER BY expression.created_at DESC, expression.id DESC
                 LIMIT 1
             ) expression ON true
             LEFT JOIN LATERAL (
@@ -455,11 +460,16 @@ def publication_models(
         row["market_regime_detail"] = dict(row.get("market_regime_detail") or {})
         row.update(research_priority(row))
     discovery_by_ticker = {str(row["ticker"]): row for row in discovery_rows}
-    readiness_evaluated_at = discovery_run["started_at"] if discovery_run else datetime.now(UTC)
+    readiness_evaluated_at = next(
+        (row.get("run_input_cutoff") for row in all_rows if row.get("run_input_cutoff") is not None),
+        discovery_run["started_at"] if discovery_run else datetime.now(UTC),
+    )
     risk_contexts = option_risk_contexts(
         runtime,
         {str(row.get("ticker") or "") for row in all_rows},
         evaluated_at=readiness_evaluated_at,
+        config=config,
+        options_risk_sleeve_capital=options_risk_sleeve_capital,
     )
     source_ids = {
         str(row.get("data_source") or "").strip()
@@ -648,7 +658,7 @@ def _add_contract_fields(
             "contract_version": 3,
             "feature_version": feature_version,
             "strategy_revision": strategy_revision,
-            "analysis_cutoff": row.get("snapshot_time"),
+            "analysis_cutoff": row.get("run_input_cutoff") or row.get("snapshot_time"),
             "quote_observed_at": row.get("snapshot_time"),
             "probability_semantics": (
                 "calibrated_structure_cohort"
@@ -745,6 +755,8 @@ def _add_contract_fields(
         )
         row["ticket"] = ticket
         row["policy_version"] = ticket["policy_version"]
+        row["risk_policy_version"] = ticket["risk_policy_version"]
+        row["assignment_policy_version"] = ticket["assignment_policy_version"]
         row["decision_revision"] = ticket["decision_revision"]
         row["risk_budget"] = ticket["risk"]["available_risk_budget"]
         row["advisory_max_contracts"] = ticket["risk"]["recommended_quantity"]
@@ -764,6 +776,8 @@ def _add_contract_fields(
             "feature_version": feature_version,
             "strategy_revision": strategy_revision,
             "policy_version": ticket["policy_version"],
+            "risk_policy_version": ticket["risk_policy_version"],
+            "assignment_policy_version": ticket["assignment_policy_version"],
             "decision_revision": ticket["decision_revision"],
         }
         ticket["publication_lineage"] = lineage
