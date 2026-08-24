@@ -106,7 +106,8 @@ def refresh_today_publication(
                 FROM app.publication_content_item item
                 JOIN latest ON latest.id = item.publication_id
                 WHERE item.model_name = 'option_radar_opportunity'
-                ORDER BY item.rank LIMIT 10
+                ORDER BY NULLIF(item.payload->>'trade_rank', '')::integer NULLS LAST,
+                         item.rank LIMIT 10
                 """
             ).fetchall()
         ]
@@ -430,6 +431,11 @@ def _option_item(row: dict[str, Any]) -> dict[str, Any]:
         "summary": "; ".join(row.get("top_reasons") or row.get("reasons") or []) or "Fresh option decision is available.",
         "action": row.get("state") or row.get("action") or "review",
         "score": _number(row.get("score")) or 0,
+        "ranking_version": row.get("ranking_version"),
+        "research_rank": row.get("research_rank"),
+        "trade_rank": row.get("trade_rank"),
+        "trade_rank_unavailable_reason": row.get("trade_rank_unavailable_reason"),
+        "execution_quality_score": row.get("execution_quality_score"),
         "decision_id": row.get("decision_id"),
         "opportunity_id": row.get("opportunity_id"),
         "tier": row.get("tier"),

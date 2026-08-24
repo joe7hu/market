@@ -49,24 +49,7 @@ export function thesisFallbackText(row: RowRecord, request: RowRecord | undefine
 }
 
 export function compareGroupedOpportunities(left: RowRecord, right: RowRecord): number {
-  const leftState = stateOf(left);
-  const rightState = stateOf(right);
-  return (
-    stateRank(leftState) - stateRank(rightState) ||
-    compareNumber(
-      numberField(
-        right,
-        ["lower_confidence_expectancy_per_max_risk", "risk_adjusted_expectancy", "score", "rank_score"],
-        Number.NEGATIVE_INFINITY,
-      ),
-      numberField(
-        left,
-        ["lower_confidence_expectancy_per_max_risk", "risk_adjusted_expectancy", "score", "rank_score"],
-        Number.NEGATIVE_INFINITY,
-      ),
-    ) ||
-    compareText(textField(left, ["ticker"]), textField(right, ["ticker"]))
-  );
+  return compareResearchRank(left, right);
 }
 
 export function opportunityActionText(row: RowRecord): string {
@@ -289,8 +272,27 @@ export function candidateOpportunityFields(opportunity: RowRecord | undefined): 
   };
 }
 
-export function candidateConviction(row: RowRecord): number {
-  return numberField(row, ["rank_score", "score", "opportunity_conviction_score", "conviction_score"], Number.NEGATIVE_INFINITY);
+export function researchRank(row: RowRecord | undefined): number {
+  return numberField(row, ["research_rank"], Number.POSITIVE_INFINITY);
+}
+
+export function tradeRank(row: RowRecord | undefined): number {
+  return numberField(row, ["trade_rank"], Number.POSITIVE_INFINITY);
+}
+
+export function executionQualityScore(row: RowRecord | undefined): number {
+  return numberField(row, ["execution_quality_score"], Number.NaN);
+}
+
+export function compareResearchRank(left: RowRecord, right: RowRecord): number {
+  return compareNumber(researchRank(left), researchRank(right))
+    || compareText(textField(left, ["ticker"]), textField(right, ["ticker"]))
+    || compareText(textField(left, ["structure"]), textField(right, ["structure"]))
+    || compareText(textField(left, ["decision_id", "candidate_event_id", "event_id"]), textField(right, ["decision_id", "candidate_event_id", "event_id"]));
+}
+
+export function compareTodayOptionActions(left: RowRecord, right: RowRecord): number {
+  return compareNumber(tradeRank(left), tradeRank(right)) || compareResearchRank(left, right);
 }
 
 // Human-readable contract label (e.g. "$845 Call") for the radar table, replacing
@@ -392,17 +394,17 @@ export function thesisState(row: RowRecord, requestByEvent: Map<string, RowRecor
 
 export function focusCandidateRows(rows: RowRecord[], focus: CandidateFocus): RowRecord[] {
   if (focus === "all") return rows;
-  if (focus === "top25") return [...rows].sort((left, right) => compareCandidates(left, right, "state")).slice(0, 25);
+  if (focus === "top25") return [...rows].sort(compareResearchRank).slice(0, 25);
   const bestByTicker = new Map<string, RowRecord>();
   for (const row of rows) {
     const ticker = textField(row, ["ticker"]);
     const key = ticker || textField(row, ["event_id"]);
     const current = bestByTicker.get(key);
-    if (!current || compareCandidates(row, current, "state") < 0) {
+    if (!current || compareResearchRank(row, current) < 0) {
       bestByTicker.set(key, row);
     }
   }
-  const focused = [...bestByTicker.values()].sort((left, right) => compareCandidates(left, right, "state"));
+  const focused = [...bestByTicker.values()].sort(compareResearchRank);
   return focused;
 }
 
@@ -416,7 +418,7 @@ export function compareCandidates(left: RowRecord, right: RowRecord, sort: Candi
 }
 
 export function compareScore(left: RowRecord, right: RowRecord): number {
-  return compareNumber(candidateConviction(right), candidateConviction(left));
+  return compareResearchRank(left, right);
 }
 
 export function compareNumber(left: number, right: number): number {
