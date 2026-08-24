@@ -893,6 +893,11 @@
           "action": {
             "$ref": "#/components/schemas/ResolutionAction"
           },
+          "assignment_policy_version": {
+            "default": "portfolio-assignment-policy.v1",
+            "title": "Assignment Policy Version",
+            "type": "string"
+          },
           "authorization_mode": {
             "$ref": "#/components/schemas/AuthorizationMode",
             "default": "ADVISORY"

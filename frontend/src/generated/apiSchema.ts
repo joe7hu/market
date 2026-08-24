@@ -1645,6 +1645,11 @@ export interface components {
          */
         DecisionResolutionV2: {
             action: components["schemas"]["ResolutionAction"];
+            /**
+             * Assignment Policy Version
+             * @default portfolio-assignment-policy.v1
+             */
+            assignment_policy_version: string;
             /** @default ADVISORY */
             authorization_mode: components["schemas"]["AuthorizationMode"];
             /** Blockers */

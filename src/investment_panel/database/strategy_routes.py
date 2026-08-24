@@ -8,7 +8,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from investment_panel.analysis.strategy_routing import ROUTE_VERSION, route_strategy
-from investment_panel.core.decision.brief_coerce import jsonable
+from investment_panel.core.decision import jsonable
 from investment_panel.core.risk_policy import compile_portfolio_assignment_policy
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
 from investment_panel.database.event_studies import FEATURE_VERSION as EVENT_FEATURE_VERSION

@@ -30,6 +30,7 @@ from investment_panel.core.decision.coerce import (
     recency_points,
     related_symbols,
 )
+from investment_panel.core.decision.brief_coerce import jsonable
 from investment_panel.core.decision.constants import (
     ARCO_STALE_DAYS,
     DAILY_ANALYSIS_SOURCES,
@@ -130,6 +131,7 @@ __all__ = [
     "brief_summary",
     "is_no_trade_action",
     "is_option_expired",
+    "jsonable",
     "action_grade_for",
     "apply_blocking_penalties",
     "best_freshness",
