@@ -181,6 +181,8 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "dossier": dossier,
         "ticker_decision": ticker_decision_payload,
         "capital_action": ticker_decision_payload["capital_action"],
+        "resolution": ticker_decision_payload["resolution"],
+        "policy_version": ticker_decision_payload["policy_version"],
         "expressions": ticker_decision_payload["expressions"],
         "data_requests": ticker_decision_payload["data_requests"],
         "learning_history": ticker_decision_payload["learning_history"],
@@ -255,6 +257,8 @@ def option_decision_adapter(
         # expression owns the contracts, quote package, thesis, and readiness;
         # this route only preserves the old envelope shape.
         candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
+        candidate["policy_version"] = ticker_decision.get("policy_version")
+        candidate["resolution"] = ticker_decision.get("resolution")
         candidate["ticker_expression"] = option_expression
         candidate["ticker_thesis"] = {
             "tactical": ticker_decision.get("tactical"),
@@ -278,6 +282,8 @@ def option_decision_adapter(
     payload["summary"] = {
         **dict(payload.get("summary") or {}),
         "ticker_action": capital.get("action"),
+        "resolution": ticker_decision.get("resolution"),
+        "policy_version": ticker_decision.get("policy_version"),
         "ticker_rationale": capital.get("rationale"),
         "ticker_selected_expression": (ticker_decision.get("selected_expression") or {}).get("kind"),
     }

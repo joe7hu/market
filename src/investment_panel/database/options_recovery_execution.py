@@ -649,9 +649,17 @@ class RecoveryExecutionRepository(RecoveryOrderLifecycle, RecoveryOrderStaging):
                     Jsonb({
                         "owner": "options_recovery", "live_order_submission": False,
                         "program_eligibility": _json_document(program.as_dict()),
+                        "policy_version": ticket.get("policy_version"),
+                        "decision_revision": ticket.get("decision_revision"),
+                        "resolution": ticket.get("resolution"),
                         "risk_policy": self.risk_policy.snapshot(),
                     }),
-                    Jsonb(self.risk_policy.snapshot()), ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
+                    Jsonb({
+                        **self.risk_policy.snapshot(),
+                        "policy_version": ticket.get("policy_version") or self.risk_policy.version,
+                        "decision_revision": ticket.get("decision_revision"),
+                        "resolution": ticket.get("resolution"),
+                    }), ticket.get("structure"), key, 4, Jsonb(ticket), ticket.get("entry", {}).get("limit_price"),
                     signal["event_id"], signal["id"], signal["strategy_key"], ticket.get("objective_version"),
                     signal["cohort_id"], now,
                 ],

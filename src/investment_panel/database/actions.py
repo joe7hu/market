@@ -131,6 +131,7 @@ class ActionRepository:
         quantity: int,
         limit_price: float,
         current_options_risk_sleeve_capital: float | None,
+        policy_version: str | None = None,
         daily_loss_halt_pct: float | None = None,
         max_open_positions: int | None = None,
     ) -> dict[str, Any]:
@@ -179,6 +180,7 @@ class ActionRepository:
                     "reserved_collateral": float(prior["reserved_collateral"] or 0),
                     "quantity": int(prior["quantity"]),
                     "decision_id": str(prior["decision_id"]),
+                    "policy_version": policy_version or None,
                     "idempotent_replay": True,
                 }
             signal = connection.execute(
@@ -237,6 +239,23 @@ class ActionRepository:
                 raise ValueError("option trade ticket was superseded")
             if str(ticket.get("decision_id") or "") != str(decision_id):
                 raise ValueError("option trade ticket decision mismatch")
+            ticket_policy_version = str(
+                ticket.get("policy_version") or ticket.get("risk_policy_version") or ""
+            )
+            resolution = dict(ticket.get("resolution") or {})
+            resolution_policy_version = str(resolution.get("policy_version") or "")
+            resolution_revision = str(resolution.get("decision_revision") or "")
+            ticket_revision = str(ticket.get("decision_revision") or "")
+            if policy_version and policy_version != ticket_policy_version:
+                raise ValueError("option trade ticket policy is stale")
+            if not ticket_policy_version or resolution_policy_version not in {"", ticket_policy_version}:
+                raise ValueError("option trade ticket policy snapshot is inconsistent")
+            if ticket_revision and resolution_revision and ticket_revision != resolution_revision:
+                raise ValueError("option trade ticket decision revision is inconsistent")
+            if str(resolution.get("eligibility") or "").upper() == "BLOCKED":
+                raise ValueError("option trade ticket resolution is blocked")
+            if str(ticket.get("state") or "") == "READY" and str(resolution.get("eligibility") or "").upper() != "ACTIONABLE":
+                raise ValueError("ready option trade ticket resolution is not actionable")
             if str(ticket.get("state") or "") != "READY" or ticket.get("blockers"):
                 raise ValueError("option trade ticket is not READY")
             source_ids = {
@@ -440,6 +459,10 @@ class ActionRepository:
                 "ticket_version": ticket_version,
                 "lane": ticket_lane,
                 "structure": structure,
+                "policy_version": ticket_policy_version,
+                "decision_revision": ticket_revision or resolution_revision,
+                "resolution": resolution,
+                "risk_policy_snapshot": ticket_risk.get("policy_snapshot") or {},
                 "fully_cash_secured": structure == "cash_secured_put",
                 "live_order_submission": False,
             }
@@ -483,6 +506,7 @@ class ActionRepository:
             "quantity": quantity,
             "total_risk": total_risk,
             "ticket_version": ticket_version,
+            "policy_version": ticket_policy_version,
             "live_order_submission": False,
             "idempotent_replay": False,
         }

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
-import json
 from math import floor, isfinite
 from typing import Any
 
+from investment_panel.core.risk_policy import compile_risk_policy_snapshot
 from investment_panel.core.options_recovery_config import OptionsDecisionSystemConfig
 
 @dataclass(frozen=True)
@@ -82,56 +81,16 @@ class RecoveryRiskDecision:
 
 def recovery_risk_policy(config: OptionsDecisionSystemConfig) -> RecoveryRiskPolicy:
     """Compile typed config into a versioned immutable recovery risk policy."""
-
-    raw = {
-        "sleeve_capital": config.options_risk_sleeve_capital,
-        "max_risk_per_trade_pct": config.max_risk_per_trade_pct,
-        "max_open_risk_pct": config.max_open_risk_pct,
-        "max_symbol_risk_pct": config.max_symbol_risk_pct,
-        "daily_loss_halt_pct": config.daily_loss_halt_pct,
-        "max_open_positions": config.max_recovery_open_positions,
-    }
-    values = {key: _number(value) for key, value in raw.items() if key != "max_open_positions"}
-    try:
-        positions = int(raw["max_open_positions"])
-    except (TypeError, ValueError):
-        positions = 0
-    blockers: list[str] = []
-    sleeve = values["sleeve_capital"]
-    if sleeve is None or sleeve <= 0:
-        blockers.append("positive_recovery_sleeve_capital_required")
-    percentages = (
-        "max_risk_per_trade_pct", "max_open_risk_pct", "max_symbol_risk_pct", "daily_loss_halt_pct",
-    )
-    for key in percentages:
-        value = values[key]
-        if value is None or not 0.0 <= value <= 1.0:
-            blockers.append(f"{key}_must_be_between_zero_and_one")
-    trade = values["max_risk_per_trade_pct"]
-    aggregate = values["max_open_risk_pct"]
-    symbol = values["max_symbol_risk_pct"]
-    if trade is not None and aggregate is not None and trade > aggregate:
-        blockers.append("per_trade_risk_cannot_exceed_aggregate_open_risk")
-    if symbol is not None and aggregate is not None and symbol > aggregate:
-        blockers.append("per_symbol_risk_cannot_exceed_aggregate_open_risk")
-    if trade is not None and symbol is not None and trade > symbol:
-        blockers.append("per_trade_risk_cannot_exceed_per_symbol_risk")
-    if trade is not None and aggregate is not None and positions > 0 and trade * positions < aggregate:
-        blockers.append("open_position_limit_cannot_cover_aggregate_open_risk")
-    if positions <= 0:
-        blockers.append("positive_recovery_open_position_limit_required")
-    canonical = {
-        **{key: values[key] for key in sorted(values)},
-        "max_open_positions": positions,
-    }
-    digest = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+    snapshot = compile_risk_policy_snapshot(config, policy_kind="recovery")
     return RecoveryRiskPolicy(
-        version=f"recovery-risk-v1:{digest}", sleeve_capital=sleeve,
-        max_risk_per_trade_pct=values["max_risk_per_trade_pct"],
-        max_open_risk_pct=values["max_open_risk_pct"],
-        max_symbol_risk_pct=values["max_symbol_risk_pct"],
-        daily_loss_halt_pct=values["daily_loss_halt_pct"], max_open_positions=positions,
-        blockers=tuple(sorted(set(blockers))),
+        version=snapshot.policy_version,
+        sleeve_capital=snapshot.sleeve_capital,
+        max_risk_per_trade_pct=snapshot.max_risk_per_trade_pct,
+        max_open_risk_pct=snapshot.max_open_risk_pct,
+        max_symbol_risk_pct=snapshot.max_symbol_risk_pct,
+        daily_loss_halt_pct=snapshot.daily_loss_halt_pct,
+        max_open_positions=snapshot.max_open_positions,
+        blockers=snapshot.blockers,
     )
 
 
@@ -177,7 +136,7 @@ def missing_recovery_risk_policy() -> RecoveryRiskPolicy:
     """
 
     return RecoveryRiskPolicy(
-        version="recovery-risk-v1:missing",
+        version="risk-policy.v2:missing",
         sleeve_capital=None,
         max_risk_per_trade_pct=None,
         max_open_risk_pct=None,

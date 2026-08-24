@@ -60,6 +60,7 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
   const evidence = records(detail?.evidence);
   const agentProvenance = recordOf(detail?.agent_provenance);
   const blockers = listField(ticket, ["blockers"]);
+  const resolution = recordOf(ticket.resolution);
 
   return (
     <Sheet open={Boolean(decisionId)} onOpenChange={(open) => (open ? undefined : onClose())}>
@@ -95,6 +96,11 @@ export function OptionTicketDetailSheet({ decisionId, onClose, onOpenTicker }: O
                   ["Quote expires", textField(ticket, ["expires_at"], textField(entry, ["valid_until"], "—"))],
                   ["Lower-confidence EV / risk", decimal(numberField(ticket, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))],
                   ["Next action", textField(ticket, ["required_next_action"], ready ? "Revalidate before paper entry" : "Resolve blockers")],
+                  ["Resolution", `${textField(resolution, ["eligibility"], "UNKNOWN")} · ${textField(resolution, ["lifecycle"], "—")}`],
+                  ["Authorization", textField(resolution, ["authorization_mode"], "—")],
+                  ["Policy", textField(ticket, ["policy_version", "risk_policy_version"], "—")],
+                  ["Decision revision", textField(ticket, ["decision_revision"], textField(resolution, ["decision_revision"], "—"))],
+                  ["Primary blocker", textField(resolution, ["primary_blocker"], blockers[0] || "None")],
                 ]} />
               </DetailSection>
 

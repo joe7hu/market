@@ -12,6 +12,16 @@ from math import floor, isfinite
 from typing import Any
 
 from investment_panel.database.opportunity_episodes import option_episode_key
+from investment_panel.core.decision import (
+    DecisionResolutionV2,
+    build_decision_resolution,
+)
+from investment_panel.core.risk_policy import (
+    AssignmentPolicy,
+    RiskPolicySnapshot,
+    coerce_assignment_policy,
+    compile_risk_policy_snapshot,
+)
 
 
 TICKET_VERSION = 1
@@ -58,12 +68,21 @@ def build_option_trade_ticket(
     open_total_csp_collateral: float = 0.0,
     broker_available_capital: float | None = None,
     broker_net_liquidation: float | None = None,
+    cash_balance: float | None = None,
+    buying_power: float | None = None,
+    account_observed_at: datetime | None = None,
     thesis: dict[str, Any] | None = None,
     forecast: dict[str, Any] | None = None,
     provenance: dict[str, Any] | None = None,
     lane: str | None = None,
     episode_key: str | None = None,
     risk_policy_version: str | None = None,
+    policy_version: str | None = None,
+    risk_policy_snapshot: RiskPolicySnapshot | None = None,
+    assignment_policy: AssignmentPolicy | dict[str, Any] | None = None,
+    decision_resolution: DecisionResolutionV2 | dict[str, Any] | None = None,
+    resolution: DecisionResolutionV2 | dict[str, Any] | None = None,
+    decision_revision: str | None = None,
     publication_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the complete ticket; missing authority always produces quantity 0."""
@@ -77,6 +96,17 @@ def build_option_trade_ticket(
         market_session=market_session,
         evaluated_at=now,
     )
+    policy_snapshot = risk_policy_snapshot or compile_risk_policy_snapshot(
+        account_facts={
+            "broker_available_capital": broker_available_capital,
+            "broker_net_liquidation": broker_net_liquidation,
+            "cash_balance": cash_balance,
+            "buying_power": buying_power,
+            "account_observed_at": account_observed_at,
+        },
+        sleeve_capital=sleeve_capital,
+        policy_kind="standard",
+    )
     risk = sizing_policy(
         structure=structure,
         sleeve_capital=sleeve_capital,
@@ -88,6 +118,7 @@ def build_option_trade_ticket(
         open_total_csp_collateral=open_total_csp_collateral,
         broker_available_capital=broker_available_capital,
         broker_net_liquidation=broker_net_liquidation,
+        risk_policy_snapshot=policy_snapshot,
     )
     active_thesis = dict(thesis or {})
     active_forecast = dict(forecast or {})
@@ -119,6 +150,21 @@ def build_option_trade_ticket(
             if item
         )
     )
+    assignment = coerce_assignment_policy(
+        assignment_policy,
+        paper_assignment_allowed=False,
+        thesis_direction=active_thesis.get("direction"),
+        required_cash=secured_cash,
+        cash_balance=policy_snapshot.cash_balance,
+        buying_power=policy_snapshot.buying_power,
+        account_as_of=policy_snapshot.account_observed_at,
+        account_source="postgresql",
+        symbol_limit=policy_snapshot.csp_symbol_limit,
+        aggregate_limit=policy_snapshot.csp_total_limit,
+        evaluated_at=now,
+    )
+    if structure == "cash_secured_put":
+        all_blockers = sorted(set([*all_blockers, *assignment.blockers(as_of=now, required_cash=secured_cash, thesis_direction=active_thesis.get("direction"))]))
     requested_ready = str(state).upper() in {"READY", "PAPER_READY"}
     ticket_state = "READY" if requested_ready and not all_blockers and risk["recommended_quantity"] > 0 else (
         "RESEARCH" if str(state).upper() not in {"REJECT", "REJECTED"} else "AUDIT_ONLY"
@@ -159,6 +205,43 @@ def build_option_trade_ticket(
             for key, value in dict(provenance).items()
             if key in {"publication_id", "publication_scope", "analysis_run_id", "analysis_cutoff"}
         }
+    resolved_policy_version = str(policy_version or risk_policy_version or policy_snapshot.policy_version)
+    resolution_input = decision_resolution or resolution
+    if resolution_input is None:
+        resolution_blockers = all_blockers if ticket_state == "READY" else all_blockers or ["paper_entry_not_requested"]
+        resolution_value = build_decision_resolution(
+            action="BUY" if ticket_state == "READY" else "NO_TRADE",
+            decision_revision=str(decision_revision or decision_id),
+            policy_version=resolved_policy_version,
+            provenance={
+                **dict(provenance or {}),
+                "as_of": now,
+                "available_at": now,
+                "revisions": {
+                    **dict((provenance or {}).get("revisions") or {}),
+                    "ticket": TICKET_VERSION,
+                },
+            },
+            ticker=symbol.upper(),
+            blockers=resolution_blockers,
+            entry={"limit_price": limit_price, "maximum_chase_price": maximum_chase},
+            size=risk["recommended_quantity"],
+            invalidation=_invalidation(active_thesis),
+            exit=exits,
+            ttl=valid_until,
+            portfolio_context={
+                "status": "complete" if risk.get("broker_available_capital") is not None and risk.get("sleeve_capital") is not None else "missing",
+                "broker_available_capital": risk.get("broker_available_capital"),
+                "sleeve_capital": risk.get("sleeve_capital"),
+            },
+            data_quality="COMPLETE" if not all_blockers else "INCOMPLETE",
+            authorization_mode="PAPER" if ticket_state == "READY" else "NONE",
+            rationale="Paper option ticket is ready." if ticket_state == "READY" else "Option ticket remains research-only.",
+            expires_at=valid_until,
+            blocked=ticket_state != "READY",
+        )
+    else:
+        resolution_value = DecisionResolutionV2.model_validate(resolution_input)
     return {
         "ticket_version": TICKET_VERSION,
         "decision_id": str(decision_id),
@@ -166,7 +249,11 @@ def build_option_trade_ticket(
         "episode_key": resolved_episode_key,
         "execution_ready_at": now.isoformat() if ticket_state == "READY" else None,
         "expires_at": valid_until.isoformat(),
-        "risk_policy_version": str(risk_policy_version or risk.get("policy_version") or "option-ticket-v1"),
+        "risk_policy_version": resolved_policy_version,
+        "policy_version": resolved_policy_version,
+        "decision_revision": str(decision_revision or resolution_value.decision_revision),
+        "resolution": resolution_value.model_dump(mode="json"),
+        "assignment_policy": assignment.snapshot(),
         "publication_lineage": lineage,
         "symbol": symbol.upper(),
         "state": ticket_state,
@@ -281,14 +368,25 @@ def sizing_policy(
     open_total_csp_collateral: float = 0.0,
     broker_available_capital: float | None = None,
     broker_net_liquidation: float | None = None,
+    risk_policy_snapshot: RiskPolicySnapshot | None = None,
 ) -> dict[str, Any]:
-    sleeve = _positive_number(sleeve_capital)
+    policy_snapshot = risk_policy_snapshot or compile_risk_policy_snapshot(
+        account_facts={
+            "broker_available_capital": broker_available_capital,
+            "broker_net_liquidation": broker_net_liquidation,
+        },
+        sleeve_capital=sleeve_capital,
+        policy_kind="standard",
+    )
+    sleeve = _positive_number(sleeve_capital if sleeve_capital is not None else policy_snapshot.sleeve_capital)
     unit = _positive_number(secured_cash if structure == "cash_secured_put" else one_unit_max_loss)
-    broker_capital = _positive_number(broker_available_capital)
+    broker_capital = _positive_number(
+        broker_available_capital if broker_available_capital is not None else policy_snapshot.broker_available_capital
+    )
     broker_nav = _positive_number(
         broker_net_liquidation
         if broker_net_liquidation is not None
-        else broker_available_capital
+        else policy_snapshot.broker_net_liquidation or broker_available_capital
     )
     blockers: list[str] = []
     if sleeve is None:
@@ -304,16 +402,16 @@ def sizing_policy(
         available = 0.0
     elif structure == "cash_secured_put":
         available = min(
-            sleeve * 0.05 - max(open_symbol_csp_collateral, 0.0),
-            sleeve * 0.15 - max(open_total_csp_collateral, 0.0),
+            sleeve * policy_snapshot.csp_symbol_fraction - max(open_symbol_csp_collateral, 0.0),
+            sleeve * policy_snapshot.csp_total_fraction - max(open_total_csp_collateral, 0.0),
             broker_capital,
         )
         quantity = max(0, floor(max(available, 0.0) / unit))
     else:
         available = min(
-            sleeve * 0.0025,
-            sleeve * 0.005 - max(open_symbol_risk, 0.0),
-            sleeve * 0.01 - max(open_total_defined_risk, 0.0),
+            sleeve * policy_snapshot.defined_trade_fraction,
+            sleeve * policy_snapshot.defined_symbol_fraction - max(open_symbol_risk, 0.0),
+            sleeve * policy_snapshot.defined_total_fraction - max(open_total_defined_risk, 0.0),
             broker_capital,
         )
         quantity = max(0, floor(max(available, 0.0) / unit))
@@ -336,12 +434,14 @@ def sizing_policy(
             (open_total_csp_collateral if structure == "cash_secured_put" else open_total_defined_risk) + total, 2
         ),
         "fully_cash_secured": structure == "cash_secured_put",
+        "policy_version": policy_snapshot.policy_version,
+        "policy_snapshot": policy_snapshot.snapshot(),
         "policy": {
-            "defined_trade_fraction": 0.0025,
-            "defined_symbol_fraction": 0.005,
-            "defined_total_fraction": 0.01,
-            "csp_symbol_fraction": 0.05,
-            "csp_total_fraction": 0.15,
+            "defined_trade_fraction": policy_snapshot.defined_trade_fraction,
+            "defined_symbol_fraction": policy_snapshot.defined_symbol_fraction,
+            "defined_total_fraction": policy_snapshot.defined_total_fraction,
+            "csp_symbol_fraction": policy_snapshot.csp_symbol_fraction,
+            "csp_total_fraction": policy_snapshot.csp_total_fraction,
         },
         "blockers": blockers,
     }
@@ -490,7 +590,7 @@ def _invalidation(thesis: dict[str, Any]) -> str:
 
 def _thesis_direction_blocker(structure: str, thesis: dict[str, Any]) -> str | None:
     direction = str(thesis.get("direction") or "").strip().lower()
-    bullish = {"long", "bullish", "up"}
+    bullish = {"long", "bullish", "neutral_bullish", "up"}
     bearish = {"short", "bearish", "down"}
     expected = (
         bullish

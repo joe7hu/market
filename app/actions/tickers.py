@@ -24,6 +24,8 @@ class TickerActions:
     ) -> dict[str, Any]:
         if str(payload.get("decision_revision") or "") != decision.decision_revision:
             raise ValueError("ticker decision revision is stale")
+        if payload.get("policy_version") and payload["policy_version"] != decision.policy_version:
+            raise ValueError("ticker decision policy is stale")
         return self.execution.stage(
             ticker=ticker,
             decision=decision,
@@ -31,6 +33,7 @@ class TickerActions:
             idempotency_key=str(payload.get("idempotency_key") or ""),
             quantity=payload.get("quantity"),
             limit_price=payload.get("limit_price"),
+            policy_version=payload.get("policy_version"),
         )
 
 
