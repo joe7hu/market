@@ -44,6 +44,7 @@ def apply_strategy_routes(
                        symbol_feature.metrics AS symbol_metrics,
                        feature.modeled_iv, feature.iv_percentile,
                        option_decision.details AS option_details,
+                       option_decision.structure AS candidate_structure,
                        option_decision.secured_cash,
                        thesis_revision.id::text AS thesis_revision_id,
                        thesis_revision.revision AS thesis_revision,
@@ -183,6 +184,7 @@ def apply_strategy_routes(
             realized_vol=_number(metrics.get("realized_vol_20d")),
             iv_percentile=_number(row.get("iv_percentile")),
             event_summary=event,
+            candidate_structure=row.get("candidate_structure"),
             assignment_policy=assignment,
             as_of=row.get("input_cutoff") or run_cutoff,
         )

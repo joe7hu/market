@@ -137,6 +137,37 @@ def test_csp_requires_assignment_and_portfolio_consent() -> None:
     assert with_consent["route_blockers"] == []
 
 
+def test_policy_authorized_csp_candidate_reaches_route_but_stays_fail_closed() -> None:
+    result = route_strategy(
+        {},
+        {},
+        option_iv=0.5,
+        realized_vol=None,
+        iv_percentile=None,
+        candidate_structure="cash_secured_put",
+        assignment_policy=PortfolioAssignmentPolicy(
+            paper_assignment_allowed=True,
+            thesis_direction="bullish",
+            thesis_as_of=NOW,
+            thesis_preferred_structures=("cash_secured_put",),
+            account_as_of=NOW,
+            account_source="postgresql",
+            cash_balance=100_000,
+            buying_power=100_000,
+            required_cash=15_000,
+            symbol_limit=25_000,
+            aggregate_limit=75_000,
+            evaluated_at=NOW,
+        ),
+        as_of=NOW,
+    )
+
+    assert result["selected_structure"] == "cash_secured_put"
+    assert result["paper_quantity_authorized"] is False
+    assert "symbol_feature_unavailable" in result["route_blockers"]
+    assert "market_state_unavailable" in result["route_blockers"]
+
+
 def test_route_promotion_requires_exact_cohort_calibration_forward_and_human_approval() -> None:
     blocked = route_promotion_gate({})
     assert blocked["eligible"] is False

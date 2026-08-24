@@ -60,6 +60,7 @@ def route_strategy(
     realized_vol: float | None,
     iv_percentile: float | None,
     event_summary: dict[str, Any] | None = None,
+    candidate_structure: str | None = None,
     thesis_direction: str | None = None,
     assignment_policy: PortfolioAssignmentPolicy | dict[str, Any] | None = None,
     as_of: datetime | str | None = None,
@@ -138,6 +139,16 @@ def route_strategy(
             reasons.extend(["confirmed_downtrend", "defined_risk_caps_premium_or_target_cost"])
     elif not blockers and trend in {"range", "transition"}:
         blockers.append("trend_not_directional")
+
+    if (
+        selected == "NO_TRADE"
+        and candidate_structure == "cash_secured_put"
+        and assignment.eligible
+        and (trend == "unavailable" or market_trend == "unavailable")
+    ):
+        selected = "cash_secured_put"
+        alternatives = ["call_debit_spread"]
+        reasons.extend(["policy_authorized_csp_candidate", "portfolio_accepts_assignment"])
 
     if selected == "NO_TRADE" and _event_vol_research_ready(event):
         selected = "EVENT_VOL_RESEARCH"
