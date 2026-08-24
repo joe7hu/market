@@ -524,3 +524,18 @@ def test_daily_research_prompt_blocks_when_protocol_alone_exceeds_budget() -> No
 
     assert result["ready"] is False
     assert "exceeds the 30,000-character budget" in result["message"]
+
+
+def test_daily_research_prompt_orders_options_by_publication_research_rank() -> None:
+    result = build_daily_research_prompt(
+        {
+            "option_radar_opportunity": [
+                {"ticker": "AAA", "research_rank": 2, "score": 99},
+                {"ticker": "BBB", "research_rank": 1, "score": 1},
+            ]
+        },
+        generated_at="2026-07-16T20:00:00+00:00",
+        daily_protocol="daily",
+        discovery_protocol="discovery",
+    )
+    assert result["prompt"].index('"ticker":"BBB"') < result["prompt"].index('"ticker":"AAA"')

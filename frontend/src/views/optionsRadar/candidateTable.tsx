@@ -14,7 +14,7 @@ import {recordField, listFromRecord, stringFromRecord, numberFromRecord } from "
 import {stateTone, thesisStateTone, thesisValidationLabel } from "../optionsRadarTone";
 import {Cell, FullText, Head, MetricPill, SectionTitle } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {candidateActionText, uniqueText, uniqueValues, candidateConviction, candidateFamily, contractLabel, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
+import {candidateActionText, uniqueText, uniqueValues, researchRank, executionQualityScore, candidateFamily, contractLabel, stateOf, qualityOf, thesisState, focusCandidateRows, compareCandidates, readableReasonSummary } from "./helpers";
 import {OptionThesisAgentRuntime, CandidateSort, CandidateStateFilter, CandidateFocus, ThesisFilter, QualityFilter, FamilyFilter, CANDIDATE_PAGE_SIZE } from "./types";
 import {ReadableReasonGroup, InlineMetric, MobileSection, QualityIndicator, HelpLabel, OpportunityOutcome } from "./shared";
 import {OpportunityThesisSummary } from "./signalBrief";
@@ -46,7 +46,7 @@ export function CandidateEventsTable({
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
   const [familyFilter, setFamilyFilter] = useState<FamilyFilter>("all");
   const [focus, setFocus] = useState<CandidateFocus>("top25");
-  const [sort, setSort] = useState<CandidateSort>("state");
+  const [sort, setSort] = useState<CandidateSort>("conviction-desc");
   const [page, setPage] = useState(0);
   const [expandedThesisEvent, setExpandedThesisEvent] = useState<string | null>(null);
 
@@ -150,7 +150,7 @@ export function CandidateEventsTable({
           <Select value={sort} onValueChange={(value) => setSort(value as CandidateSort)}>
             <SelectTrigger aria-label="Sort candidates"><SelectValue placeholder="Sort" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="conviction-desc">Rank score high to low</SelectItem>
+              <SelectItem value="conviction-desc">Research rank (best first)</SelectItem>
               <SelectItem value="move-asc">Required move low to high</SelectItem>
               <SelectItem value="premium-asc">Option mid low to high</SelectItem>
               <SelectItem value="expiry-asc">Expiration soonest</SelectItem>
@@ -254,7 +254,7 @@ export function CandidateEventsTable({
                         <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
                         <QualityIndicator status={qualityStatus} flags={qualityFlags} />
                       </div>
-                        <div className="text-xs text-muted-foreground">score {formatScore(candidateConviction(row))}</div>
+                        <div className="text-xs text-muted-foreground">research #{formatScore(researchRank(row))} · execution {formatScore(executionQualityScore(row))}</div>
                     </div>
                   </Cell>
                   <Cell>
@@ -365,7 +365,7 @@ export function CandidateMobileCard({
             <StatusBadge tone={stateTone(state)}>{titleLabel(state || "pending")}</StatusBadge>
             <QualityIndicator status={qualityStatus} flags={qualityFlags} />
           </div>
-          <div className="text-xs text-muted-foreground">score {formatScore(candidateConviction(row))}</div>
+          <div className="text-xs text-muted-foreground">research #{formatScore(researchRank(row))} · execution {formatScore(executionQualityScore(row))}</div>
         </div>
       </div>
 
@@ -499,7 +499,7 @@ export function CandidateSignalEvidence({ row }: { row: RowRecord }) {
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-3 gap-1.5">
-        <MetricPill label="Score" value={formatScore(candidateConviction(row))} />
+        <MetricPill label="Research rank" value={formatScore(researchRank(row))} />
         <MetricPill label={calibrated ? "Calibrated profit P" : "Model P (not calibrated)"} value={formatRatio(numberField(row, ["probability_profit"], Number.NaN))} />
         <MetricPill label="Net EV" value={moneyField(row, ["expected_value"])} />
       </div>

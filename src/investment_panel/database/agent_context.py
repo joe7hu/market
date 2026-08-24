@@ -99,6 +99,8 @@ def ticker_context(
 def option_opportunity_context(payload: dict[str, Any]) -> dict[str, Any]:
     keys = {
         "ticker", "symbol", "decision_id", "state", "recommendation_state",
+        "ranking_version", "research_rank", "trade_rank",
+        "trade_rank_unavailable_reason", "execution_quality_score",
         "structure", "expiration", "strike", "option_type", "underlying_price",
         "dte", "iv", "delta", "spread_pct", "volume", "open_interest",
         "entry_price", "buy_under", "max_loss", "secured_cash", "max_profit",

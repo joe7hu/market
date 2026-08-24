@@ -17,8 +17,10 @@ from investment_panel.database.options_history_v3_candidates import (
 )
 from investment_panel.database.options_publication import (
     add_contract_fields,
+    assign_ranks,
     shortlist,
     summary_state,
+    trade_rank_fields,
 )
 from investment_panel.database.options_risk_context import broker_available
 
@@ -384,6 +386,7 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
         "secured_cash": 15_000,
         "max_loss": 15_000,
         "state": "READY",
+        "execution_confidence": 0.8,
         "blockers": [],
         "market_session": "regular",
         "details": {},
@@ -415,9 +418,101 @@ def test_calibrated_cash_secured_put_derives_a_conservative_dollar_expectancy() 
         }],
     )
     assert rows[0]["ticket"]["forecast"]["lower_confidence_expected_value"] == 150
+    assert rows[0]["execution_quality_score"] == 80.0
     assert "positive_lower_confidence_expectancy_required" not in rows[0]["ticket"]["blockers"]
     assert "thesis_expression_required" not in rows[0]["ticket"]["blockers"]
     assert rows[0]["ticket"]["provenance"]["thesis"]["option_agent_task_id"] == "task-1"
+
+
+def _rank_row(
+    *,
+    ticker: str = "NVDA",
+    decision_id: str = "decision-1",
+    ticket_state: str = "READY",
+    eligibility: str = "ACTIONABLE",
+    expectancy: float | None = 0.25,
+    semantics: str = "calibrated_exact_cohort",
+    lineage: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "ticker": ticker,
+        "structure": "long_call",
+        "decision_id": decision_id,
+        "ticket": {
+            "state": ticket_state,
+            "resolution": {"eligibility": eligibility},
+            "lower_confidence_expectancy_per_max_risk": expectancy,
+            "forecast": {
+                "lower_confidence_expected_value": expectancy * 100 if expectancy is not None else None,
+                "probability_semantics": semantics,
+            },
+            "risk": {"one_unit_max_loss": 100},
+            "publication_lineage": lineage if lineage is not None else {
+                "publication_scope": "options-radar",
+                "analysis_run_id": "run-1",
+                "analysis_cutoff": NOW.isoformat(),
+                "feature_version": "feature-v1",
+                "strategy_revision": 3,
+                "policy_version": "risk-policy.v2:1",
+                "decision_revision": decision_id,
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("updates", "reason"),
+    [
+        ({"ticket_state": "RESEARCH"}, "ticket_not_ready"),
+        ({"eligibility": "PENDING"}, "decision_resolution_not_actionable"),
+        ({"expectancy": None}, "conservative_expectancy_not_finite"),
+        ({"expectancy": float("nan")}, "conservative_expectancy_not_finite"),
+        ({"expectancy": float("inf")}, "conservative_expectancy_not_finite"),
+        ({"expectancy": 0.0}, "conservative_expectancy_not_positive"),
+        ({"expectancy": -0.1}, "conservative_expectancy_not_positive"),
+        ({"semantics": "provisional_uncalibrated"}, "probability_semantics_not_calibrated"),
+        ({"lineage": {}}, "publication_lineage_incomplete"),
+    ],
+)
+def test_trade_rank_is_fail_closed_with_exactly_one_reason(
+    updates: dict[str, object], reason: str
+) -> None:
+    row = _rank_row(**updates)
+    fields = trade_rank_fields(row)
+    assert fields == {"trade_rank": None, "trade_rank_unavailable_reason": reason}
+
+
+def test_trade_rank_uses_only_positive_calibrated_actionable_ticket_utility() -> None:
+    rows = [
+        _rank_row(ticker="BBB", decision_id="bbb", expectancy=1.0),
+        _rank_row(ticker="AAA", decision_id="aaa", expectancy=1.0),
+        _rank_row(ticker="CCC", decision_id="ccc", expectancy=2.0),
+    ]
+    assign_ranks(rows)
+    assert {row["ranking_version"] for row in rows} == {"options-radar-ranking.v1"}
+    assert {row["research_rank"] for row in rows} == {1, 2, 3}
+    assert [(row["ticker"], row["trade_rank"]) for row in rows] == [
+        ("BBB", 3), ("AAA", 2), ("CCC", 1)
+    ]
+    assert all(row["trade_rank_unavailable_reason"] is None for row in rows)
+
+
+def test_legacy_score_fields_do_not_synthesize_trade_rank() -> None:
+    fields = trade_rank_fields({
+        "score": 99,
+        "rank_score": 99,
+        "risk_adjusted_expectancy": 100,
+        "execution_quality_score": 100,
+    })
+    assert fields == {"trade_rank": None, "trade_rank_unavailable_reason": "ticket_not_ready"}
+
+
+def test_ranking_does_not_change_ticket_sizing_or_paper_state() -> None:
+    row = _rank_row()
+    row["ticket"]["risk"] = {"one_unit_max_loss": 100, "recommended_quantity": 2}
+    assign_ranks([row])
+    assert row["ticket"]["state"] == "READY"
+    assert row["ticket"]["risk"]["recommended_quantity"] == 2
 
 
 def test_historical_ticket_exit_horizon_uses_evaluation_date() -> None:

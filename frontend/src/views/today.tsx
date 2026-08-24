@@ -13,6 +13,7 @@ import { buildTodayViewModel, todayCategories, type TodayCategory } from "@/view
 import { displayField, formatMoney, formatPct, listField, numberField, symbolList, textField, titleLabel, toneFromText, type Tone } from "./rowFormat";
 import { OptionTicketDetailSheet } from "./OptionTicketDetailSheet";
 import { EventScoutPanel } from "./EventScoutPanel";
+import { compareTodayOptionActions } from "./optionsRadar/helpers";
 
 type TodayPageProps = {
   data: PanelData;
@@ -170,7 +171,7 @@ function OptionActions({ rows, onOpenTicker, onOpenDecision }: { rows: RowRecord
       && truth.route_verdict === "PAPER_ONLY"
       && truth.readiness_state === "ready"
       && truth.execution_state === "PAPER_ONLY_READY";
-  });
+  }).sort(compareTodayOptionActions);
   if (!gatedRows.length) return null;
   const decisions = gatedRows.map(adaptOptionDecision);
   return (

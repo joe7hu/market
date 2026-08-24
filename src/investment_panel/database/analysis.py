@@ -563,6 +563,10 @@ class AnalysisRepository:
                 """
                 SELECT candidate.id::text AS decision_id, candidate.state,
                        candidate.score AS rank_score, candidate_option.structure,
+                       candidate_publication.payload->>'ranking_version' AS ranking_version,
+                       NULLIF(candidate_publication.payload->>'research_rank', '')::integer AS research_rank,
+                       NULLIF(candidate_publication.payload->>'trade_rank', '')::integer AS trade_rank,
+                       NULLIF(candidate_publication.payload->>'execution_quality_score', '')::numeric AS execution_quality_score,
                        candidate_option.entry_price, candidate_option.expected_value,
                        candidate_option.risk_adjusted_expectancy,
                        candidate_option.max_loss, candidate_option.secured_cash
@@ -572,8 +576,19 @@ class AnalysisRepository:
                  AND candidate.instrument_id = chosen.instrument_id
                  AND candidate.id <> chosen.id
                 JOIN analysis.option_decision candidate_option ON candidate_option.decision_id = candidate.id
+                LEFT JOIN LATERAL (
+                    SELECT item.payload
+                    FROM app.publication publication
+                    JOIN app.publication_content_item item ON item.publication_id = publication.id
+                    WHERE publication.scope = 'options-radar'
+                      AND publication.status = 'published'
+                      AND item.model_name = 'option_radar_opportunity'
+                      AND item.payload->>'decision_id' = candidate.id::text
+                    ORDER BY publication.published_at DESC NULLS LAST, publication.created_at DESC
+                    LIMIT 1
+                ) candidate_publication ON true
                 WHERE chosen.id = %s
-                ORDER BY candidate.score DESC NULLS LAST LIMIT 3
+                ORDER BY research_rank NULLS LAST, candidate.id LIMIT 3
                 """,
                 [decision_id],
             ).fetchall()

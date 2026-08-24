@@ -6,12 +6,12 @@ import { Button } from "@/components/ui/button";
 import { JsonValue, RowRecord } from "@/types";
 import {Tone } from "@/ui/tone";
 import {displayField, fullField, numberField, textField, titleLabel, toneFromText } from "../rowFormat";
-import {moneyField, formatRatio, formatNumber, formatDate } from "../optionsRadarFormat";
+import {moneyField, formatRatio, formatNumber, formatDate, formatScore } from "../optionsRadarFormat";
 import {recordField, numberFromRecord, stringFromRecord, boolFromRecord } from "../optionsRadarData";
 import {stateTone, tierTone, thesisStateTone, thesisValidationLabel, validationStatusLabel, validationStatusTone } from "../optionsRadarTone";
 import {FullText, TickerButton } from "../optionsRadarPrimitives";
 import {OpenTicker } from "../workspacePage";
-import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, opportunityActionText, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures, stateOf } from "./helpers";
+import {summarizeReasons, impactSummary, thesisFallbackText, compareGroupedOpportunities, researchRank, executionQualityScore, opportunityActionText, tierOf, isServiceRepair, commonBlockers, commonDataContractFailures, stateOf } from "./helpers";
 import {OptionThesisAgentRuntime } from "./types";
 import {BriefCallout, InsightLine, MetricBox } from "./shared";
 
@@ -98,7 +98,9 @@ export function SignalBriefPanel({
                 {strongestDecisionId ? <Button type="button" variant="outline" size="sm" onClick={() => onOpenDecision(strongestDecisionId)}>View ticket</Button> : null}
               </div>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-foreground">{opportunityActionText(strongest)}</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                <MetricBox label="Research rank" value={formatScore(researchRank(strongest))} />
+                <MetricBox label="Execution quality" value={formatScore(executionQualityScore(strongest))} />
                 <MetricBox
                   label="Lower-Confidence EV / Max Risk"
                   value={formatRatio(numberField(strongest, ["lower_confidence_expectancy_per_max_risk"], Number.NaN))}
@@ -247,7 +249,7 @@ export function StrategyExplainer({ strategy }: { strategy: RowRecord | undefine
             <StatusBadge tone="info">{version}</StatusBadge>
           </div>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-muted-foreground">
-            A shadow-only decision system for executable directional options and fully collateralized short puts. Rank score, assignment basis, tail loss, execution quality, and portfolio constraints remain separate; READY stays locked until forward calibration matures.
+            A shadow-only decision system for executable directional options and fully collateralized short puts. Research rank, assignment basis, tail loss, execution quality, and portfolio constraints remain separate; READY stays locked until forward calibration matures.
           </p>
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">

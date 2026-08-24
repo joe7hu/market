@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Any
 
 from investment_panel.database.runtime import DatabaseRuntime, JOB_PROFILE
-from investment_panel.core.option_trade_ticket import build_option_trade_ticket, calibrated_cohort_ready, ticket_recommendation_fields
+from investment_panel.core.option_trade_ticket import (
+    build_option_trade_ticket,
+    calibrated_cohort_ready,
+    expectancy_per_max_risk,
+    ticket_recommendation_fields,
+)
 from investment_panel.core.event_scout import build_options_decision_truth
 from investment_panel.database.options_risk_context import option_risk_contexts
 from investment_panel.database.source_health import source_health_blockers
@@ -15,11 +21,17 @@ __all__ = [
     "add_contract_fields",
     "as_datetime",
     "contract_readiness",
+    "assign_ranks",
     "publication_models",
     "publish_degraded_if_needed",
+    "RANKING_VERSION",
     "shortlist",
     "summary_state",
+    "trade_rank_fields",
 ]
+
+
+RANKING_VERSION = "options-radar-ranking.v1"
 
 
 def candidate_set_changes(
@@ -58,6 +70,177 @@ def research_priority(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def assign_ranks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add the immutable research and fail-closed expression rank fields."""
+
+    _assign_research_ranks(rows)
+    _assign_trade_ranks(rows)
+    return rows
+
+
+def trade_rank_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Return one trade-rank result without changing ticket or gate state."""
+
+    ticket = row.get("ticket")
+    if not isinstance(ticket, dict) or str(ticket.get("state") or "").upper() != "READY":
+        return {"trade_rank": None, "trade_rank_unavailable_reason": "ticket_not_ready"}
+
+    resolution = ticket.get("resolution") or row.get("decision_resolution")
+    if not isinstance(resolution, dict) or str(
+        resolution.get("eligibility") or resolution.get("status") or ""
+    ).upper() != "ACTIONABLE":
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "decision_resolution_not_actionable",
+        }
+
+    stored_expectancy = _number(ticket.get("lower_confidence_expectancy_per_max_risk"))
+    if stored_expectancy is None:
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "conservative_expectancy_not_finite",
+        }
+    forecast = ticket.get("forecast")
+    forecast = forecast if isinstance(forecast, dict) else {}
+    risk = ticket.get("risk")
+    risk = risk if isinstance(risk, dict) else {}
+    calculated_expectancy = expectancy_per_max_risk(
+        forecast.get("lower_confidence_expected_value"),
+        risk.get("one_unit_max_loss") or risk.get("one_unit_collateral"),
+    )
+    has_derived_inputs = (
+        isinstance(forecast, dict)
+        and "lower_confidence_expected_value" in forecast
+        and isinstance(risk, dict)
+        and ("one_unit_max_loss" in risk or "one_unit_collateral" in risk)
+    )
+    if has_derived_inputs and (
+        calculated_expectancy is None
+        or abs(calculated_expectancy - stored_expectancy) > 0.000001
+    ):
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "conservative_expectancy_not_finite",
+        }
+    if stored_expectancy <= 0:
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "conservative_expectancy_not_positive",
+        }
+
+    semantics = str(
+        forecast.get("probability_semantics")
+        or row.get("probability_semantics")
+        or ""
+    ).lower()
+    if not semantics.startswith("calibrated"):
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "probability_semantics_not_calibrated",
+        }
+
+    lineage = dict(row.get("publication_lineage") or {})
+    lineage.update(dict(ticket.get("publication_lineage") or {}))
+    required_lineage = (
+        "publication_scope",
+        "analysis_run_id",
+        "analysis_cutoff",
+        "feature_version",
+        "strategy_revision",
+        "policy_version",
+        "decision_revision",
+    )
+    if any(not _lineage_value(lineage.get(key)) for key in required_lineage):
+        return {
+            "trade_rank": None,
+            "trade_rank_unavailable_reason": "publication_lineage_incomplete",
+        }
+    return {"trade_rank": None, "trade_rank_unavailable_reason": None}
+
+
+def _assign_research_ranks(rows: list[dict[str, Any]]) -> None:
+    best_by_ticker: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ticker = _ticker(row)
+        if not ticker:
+            continue
+        current = best_by_ticker.get(ticker)
+        if current is None or _research_key(row) < _research_key(current):
+            best_by_ticker[ticker] = row
+    ordered = sorted(best_by_ticker.items(), key=lambda item: (_research_key(item[1]), item[0]))
+    ranks = {ticker: index for index, (ticker, _row) in enumerate(ordered, start=1)}
+    for row in rows:
+        row["ranking_version"] = RANKING_VERSION
+        row["research_rank"] = ranks.get(_ticker(row))
+
+
+def _assign_trade_ranks(rows: list[dict[str, Any]]) -> None:
+    eligible: list[tuple[dict[str, Any], float]] = []
+    for row in rows:
+        fields = trade_rank_fields(row)
+        row.update(fields)
+        if fields["trade_rank_unavailable_reason"] is None:
+            eligible.append((row, _number(row["ticket"]["lower_confidence_expectancy_per_max_risk"]) or 0.0))
+    eligible.sort(key=lambda item: (
+        -item[1],
+        _rank_or_inf(item[0].get("research_rank")),
+        _ticker(item[0]),
+        str(item[0].get("structure") or ""),
+        str(item[0].get("decision_id") or item[0].get("candidate_event_id") or ""),
+    ))
+    for rank, (row, _expectancy) in enumerate(eligible, start=1):
+        row["trade_rank"] = rank
+
+
+def _research_key(row: dict[str, Any]) -> tuple[int, float, int, float, str, str]:
+    discovery_score = _number(row.get("discovery_score"))
+    priority_score = _number(row.get("research_priority_score"))
+    return (
+        0 if discovery_score is not None else 1,
+        -(discovery_score if discovery_score is not None else 0.0),
+        0 if priority_score is not None else 1,
+        -(priority_score if priority_score is not None else 0.0),
+        _ticker(row),
+        str(row.get("decision_id") or row.get("candidate_event_id") or ""),
+    )
+
+
+def _research_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            _rank_or_inf(row.get("research_rank")),
+            _ticker(row),
+            str(row.get("structure") or ""),
+            str(row.get("decision_id") or row.get("candidate_event_id") or ""),
+        ),
+    )
+
+
+def _rank_or_inf(value: Any) -> float:
+    number = _number(value)
+    return number if number is not None else float("inf")
+
+
+def _ticker(row: dict[str, Any]) -> str:
+    return str(row.get("ticker") or row.get("symbol") or "").strip().upper()
+
+
+def _lineage_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip()) and value.strip().lower() not in {"unknown", "unavailable", "missing"}
+    return True
+
+
+def _execution_quality_score(row: dict[str, Any]) -> float | None:
+    confidence = _number(row.get("execution_confidence"))
+    if confidence is None or not 0.0 <= confidence <= 1.0:
+        return None
+    return round(confidence * 100.0, 2)
+
+
 def publish_degraded_if_needed(repository: Any, code_version: str, feature_version: str, _strategy_key: str) -> dict[str, Any]:
     """Replace an incompatible legacy fallback when no usable quoted publication exists."""
     current = repository.publication_rows("options-radar", "option_radar_summary")
@@ -70,6 +253,7 @@ def publish_degraded_if_needed(repository: Any, code_version: str, feature_versi
     )
     summary = [{
         "stable_key": "global", "contract_version": 3, "feature_version": feature_version,
+        "ranking_version": RANKING_VERSION,
         "publication_cutoff": cutoff, "latest_complete_quote_time": None, "source": None,
         "market_session": "unavailable", "scanned_contracts": 0, "eligible_contracts": 0,
         "shortlist_count": 0, "cash_secured_put_count": 0, "ready_count": 0,
@@ -265,6 +449,8 @@ def publication_models(
         ).fetchone()
     all_rows = [dict(row) for row in rows]
     for row in all_rows:
+        row["analysis_run_id"] = str(run_id)
+    for row in all_rows:
         row["strategy_route"] = dict(row.get("strategy_route") or {})
         row["market_regime_detail"] = dict(row.get("market_regime_detail") or {})
         row.update(research_priority(row))
@@ -290,7 +476,7 @@ def publication_models(
         for key in (
             "stage", "primary_edge", "source_root_count", "evidence_completeness",
             "data_readiness", "execution_ready", "catalyst_start", "catalyst_end",
-            "timeliness", "next_evidence",
+            "timeliness", "next_evidence", "discovery_score",
         ):
             row[key] = discovery.get(key)
         row["data_readiness"] = _contract_readiness(row, readiness_evaluated_at)
@@ -318,6 +504,8 @@ def publication_models(
         risk_contexts=risk_contexts,
         calibration=calibration,
     )
+    _assign_research_ranks([*all_rows, *discovery_rows])
+    _assign_trade_ranks(all_rows)
     for row in all_rows:
         row["execution_ready"] = bool(
             row.get("state") == "READY"
@@ -327,9 +515,9 @@ def publication_models(
         )
         row.update(ticket_recommendation_fields(row))
         row["decision_truth"] = build_options_decision_truth(row)
-    actionable = _shortlist(_prefer_current_data([
+    actionable = _research_order(_shortlist(_prefer_current_data([
         row for row in all_rows if row.get("state") != "REJECTED"
-    ]))
+    ])))
     candidate_changes = candidate_set_changes(actionable, previous_opportunities or [])
     primary_by_ticker: dict[str, dict[str, Any]] = {}
     for row in actionable:
@@ -394,6 +582,7 @@ def publication_models(
         "contract_version": 3,
         "feature_version": feature_version,
         "strategy_revision": strategy_revision,
+        "ranking_version": RANKING_VERSION,
         "publication_cutoff": (discovery_run["manifest"] or {}).get("cutoff") if discovery_run else latest,
         "latest_complete_quote_time": latest,
         "source": latest_row.get("data_source") if latest_row else (discovery_run["provider"] if discovery_run else None),
@@ -454,6 +643,7 @@ def _add_contract_fields(
         row.update({
             "decision_id": row["candidate_event_id"],
             "rank_score": row.get("score"),
+            "execution_quality_score": _execution_quality_score(row),
             "calibrated_probability": row.get("probability_profit") if calibrated else None,
             "contract_version": 3,
             "feature_version": feature_version,
@@ -531,7 +721,10 @@ def _add_contract_fields(
                 "tail_loss": row.get("tail_cvar"),
             },
             provenance={
+                "publication_scope": "options-radar",
+                "analysis_run_id": row.get("analysis_run_id"),
                 "publication_cutoff": row.get("analysis_cutoff"),
+                "analysis_cutoff": row.get("analysis_cutoff"),
                 "quote_source": row.get("data_source"),
                 "thesis": {
                     "revision_id": row.get("thesis_revision_id"),
@@ -564,6 +757,17 @@ def _add_contract_fields(
         row["lower_confidence_expectancy_per_max_risk"] = ticket[
             "lower_confidence_expectancy_per_max_risk"
         ]
+        lineage = {
+            "publication_scope": "options-radar",
+            "analysis_run_id": row.get("analysis_run_id"),
+            "analysis_cutoff": row.get("analysis_cutoff"),
+            "feature_version": feature_version,
+            "strategy_revision": strategy_revision,
+            "policy_version": ticket["policy_version"],
+            "decision_revision": ticket["decision_revision"],
+        }
+        ticket["publication_lineage"] = lineage
+        row["publication_lineage"] = lineage
         row["blockers"] = ticket["blockers"]
 
 
@@ -647,6 +851,8 @@ def _summary_state(row: dict[str, Any]) -> str:
 
 
 def _rank_key(row: dict[str, Any]) -> tuple[int, float]:
+    """Legacy shortlist selector; never used to calculate trade_rank."""
+
     value = row.get("lower_confidence_expectancy_per_max_risk")
     if value is not None:
         return (1, float(value))
@@ -729,7 +935,7 @@ def _number(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number == number else None
+    return number if isfinite(number) else None
 
 
 def _age_minutes(evaluated_at: datetime, observed_at: datetime | None) -> float:

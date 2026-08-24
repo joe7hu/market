@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from functools import lru_cache
 from importlib.resources import files
 import json
+from math import isfinite
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -109,6 +110,11 @@ _DECISION_FIELDS = (
 _RADAR_FIELDS = (
     "ticker",
     "state",
+    "ranking_version",
+    "research_rank",
+    "trade_rank",
+    "trade_rank_unavailable_reason",
+    "execution_quality_score",
     "rank_score",
     "advisory_action",
     "structure",
@@ -178,9 +184,10 @@ def build_daily_research_prompt(
         if str(row.get("watch_state") or "").lower() in _ACTIVE_WATCH_STATES
     ]
     watchlist = _dedupe(watchlist, _symbol)
-    opportunities = _dedupe(rows_by_table.get("option_radar_opportunity", []), _symbol)[
-        :12
-    ]
+    opportunities = _dedupe(
+        sorted(rows_by_table.get("option_radar_opportunity", []), key=_option_research_key),
+        _symbol,
+    )[:12]
 
     portfolio_symbols = {_symbol(row) for row in positions if _symbol(row)}
     watchlist_symbols = {_symbol(row) for row in watchlist if _symbol(row)}
@@ -456,6 +463,14 @@ def _symbol(row: dict[str, Any]) -> str:
         .strip()
         .upper()
     )
+
+
+def _option_research_key(row: dict[str, Any]) -> tuple[int, float, str]:
+    try:
+        rank = float(row.get("research_rank"))
+    except (TypeError, ValueError):
+        rank = float("inf")
+    return (0 if isfinite(rank) else 1, rank, _symbol(row))
 
 
 def _dedupe(rows: list[dict[str, Any]], key) -> list[dict[str, Any]]:

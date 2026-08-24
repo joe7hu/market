@@ -18,6 +18,7 @@ from investment_panel.core.decision import is_us_market_day
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
+from investment_panel.database.options_publication import RANKING_VERSION
 from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.runtime import DatabaseRuntime
@@ -472,12 +473,22 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert opportunity["tier"] == "setup"
     assert opportunity["structure"] == "long_call"
     assert opportunity["contract_version"] == 3
+    assert opportunity["ranking_version"] == RANKING_VERSION
+    assert isinstance(opportunity["research_rank"], int)
+    assert opportunity["trade_rank"] is None
+    assert isinstance(opportunity["trade_rank_unavailable_reason"], str)
+    assert "execution_quality_score" in opportunity
+    assert set(opportunity["publication_lineage"]) >= {
+        "publication_scope", "analysis_run_id", "analysis_cutoff", "feature_version",
+        "strategy_revision", "policy_version", "decision_revision",
+    }
     assert opportunity["quality_status"] == "complete"
     assert opportunity["spread_pct"] == pytest.approx(0.08)
     assert opportunity["raw"]["feature_version"] == "option-professional-v3-ticket"
     summary = published_options_radar_rows(runtime, "option_radar_summary")
     assert len(summary) == 1
     assert summary[0]["stable_key"] == "global"
+    assert summary[0]["ranking_version"] == RANKING_VERSION
     assert summary[0]["scanned_contracts"] == result["option_features"]
     assert summary[0]["symbols_considered"] == 2
     assert summary[0]["symbols_with_chains"] == 1
