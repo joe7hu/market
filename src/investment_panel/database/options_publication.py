@@ -978,6 +978,7 @@ def _empty_symbol_summary(symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "ticker": symbol,
         "fire_count": 0,
+        "ready_count": 0,
         "setup_count": 0,
         "watch_count": 0,
         "reject_count": 0,

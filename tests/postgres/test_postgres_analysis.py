@@ -511,7 +511,7 @@ def test_postgresql_options_radar_builds_versioned_features_decisions_and_read_m
     assert summary[0]["shortlist_count"] == 1
     assert summary[0]["shadow_only"] is True
     assert published_options_radar_rows(runtime, "option_radar_symbol_summary") == [
-        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 0, "setup_count": 0, "watch_count": 1, "reject_count": 0}
+        {"symbol": "NVDA", "ticker": "NVDA", "fire_count": 0, "ready_count": 0, "setup_count": 0, "watch_count": 1, "reject_count": 0}
     ]
 
 
