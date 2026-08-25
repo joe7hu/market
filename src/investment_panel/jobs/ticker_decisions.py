@@ -665,8 +665,6 @@ def _current_rank_for_decision(
             return None, str(rank["trade_rank_unavailable_reason"])
         if not bool(rank.get("evaluated_universe_complete")):
             return None, "ranking_universe_incomplete"
-        if not bool(rank.get("evaluated_universe_complete")):
-            return None, "ranking_universe_incomplete"
         rank_utility = float(rank.get("trade_utility"))
         if int(rank.get("trade_rank")) <= 0 or not isfinite(rank_utility) or rank_utility <= 0:
             return None, "opportunity_rank_unavailable"

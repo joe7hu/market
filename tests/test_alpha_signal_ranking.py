@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from investment_panel.core.decision import (
+    ExpressionKind,
+    apply_opportunity_rank_safety,
     build_instrument_state_snapshot,
+    build_ticker_decision,
     calculate_trade_utility,
     rank_opportunities,
 )
@@ -14,7 +17,13 @@ from investment_panel.core.decision import (
 CUTOFF = datetime(2026, 8, 25, 14, tzinfo=UTC)
 
 
-def _candidate(ticker: str, *, utility: float = 0.2, kind: str = "STOCK") -> dict[str, object]:
+def _candidate(
+    ticker: str,
+    *,
+    utility: float = 0.2,
+    kind: str = "STOCK",
+    evaluation_stage: str | None = "out_of_sample",
+) -> dict[str, object]:
     episode = f"episode:{ticker}"
     revision = f"revision:{ticker}"
     snapshot = f"snapshot:{ticker}"
@@ -49,6 +58,7 @@ def _candidate(ticker: str, *, utility: float = 0.2, kind: str = "STOCK") -> dic
             "cohort_id": "cohort.test",
             "calibration_state": "calibrated_exact_cohort",
             "model_version": "model.test",
+            "evaluation_stage": evaluation_stage,
         },
         "portfolio_impact": {
             "opportunity_episode_id": episode,
@@ -120,6 +130,41 @@ def test_cash_is_a_zero_utility_comparator() -> None:
 
     assert rows[0].trade_rank is None
     assert rows[0].trade_rank_unavailable_reason == "cash_comparator"
+
+
+@pytest.mark.parametrize("evaluation_stage", [None, "research"])
+def test_trade_rank_requires_exact_cohort_out_of_sample_evidence(evaluation_stage: str | None) -> None:
+    row = rank_opportunities(
+        [_candidate("AAA", evaluation_stage=evaluation_stage)],
+        evaluated_universe_complete=True,
+    )[0]
+
+    assert row.trade_rank is None
+    assert row.trade_rank_unavailable_reason == "calibration_not_exact_out_of_sample"
+
+
+@pytest.mark.parametrize("tail_risk_penalty", [20.0, 25.0])
+def test_non_positive_trade_utility_selects_cash_and_cannot_order(tail_risk_penalty: float) -> None:
+    candidate = _candidate("AAA")
+    candidate["tail_risk_penalty"] = tail_risk_penalty
+    rank = rank_opportunities([candidate], evaluated_universe_complete=True)[0]
+
+    assert rank.trade_rank is None
+    assert rank.trade_utility is not None and rank.trade_utility <= 0
+    assert rank.trade_rank_unavailable_reason == "trade_utility_not_positive"
+    unsafe_rank = rank.model_dump(mode="json")
+    unsafe_rank.update({"trade_rank": 1, "trade_rank_unavailable_reason": None})
+
+    decision = build_ticker_decision(
+        "AAA",
+        {"decision_queue": [{"symbol": "AAA", "stance": "BULLISH", "action": "BUY", "available_at": CUTOFF}]},
+        as_of=CUTOFF,
+    )
+    safe = apply_opportunity_rank_safety(decision, unsafe_rank)
+    assert safe.selected_expression is not None
+    assert safe.selected_expression.kind is ExpressionKind.CASH
+    assert safe.resolution is not None and safe.resolution.action == "NO_TRADE"
+    assert safe.capital_action.action.value == "AVOID"
 
 
 def test_instrument_snapshot_excludes_rows_newer_than_cutoff() -> None:

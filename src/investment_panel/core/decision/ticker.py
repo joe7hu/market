@@ -1083,7 +1083,20 @@ def apply_opportunity_rank_safety(
     if isinstance(utility, Mapping):
         utility = utility.get("trade_utility")
     reason = str(payload.get("trade_rank_unavailable_reason") or "").strip()
-    if trade_rank is not None and utility is not None and not reason:
+    try:
+        trade_rank_value = float(trade_rank)
+        utility_value = float(utility)
+    except (TypeError, ValueError, OverflowError):
+        trade_rank_value = utility_value = None
+    if (
+        not reason
+        and trade_rank_value is not None
+        and math.isfinite(trade_rank_value)
+        and trade_rank_value > 0
+        and utility_value is not None
+        and math.isfinite(utility_value)
+        and utility_value > 0
+    ):
         return decision
 
     expressions = dict(decision.expressions)

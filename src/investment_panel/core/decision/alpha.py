@@ -442,11 +442,13 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
         return "alpha_signal_metadata_incomplete"
     calibration = str(signal.get("calibration_state") or candidate.get("calibration_state") or "").lower()
     stage = str(signal.get("evaluation_stage") or candidate.get("evaluation_stage") or "").lower()
-    exact = (
-        "exact" in calibration
-        and ("calibrat" in calibration or "out_of_sample" in calibration or "oos" in calibration)
-    )
-    if not exact:
+    exact_cohort = all(term in calibration for term in ("calibrat", "exact", "cohort"))
+    out_of_sample = stage.replace("-", "_").replace(" ", "_") in {
+        "out_of_sample",
+        "out_of_sample_evaluation",
+        "oos",
+    }
+    if not exact_cohort or not out_of_sample:
         return "calibration_not_exact_out_of_sample"
     if utility.lower_confidence_expected_gross_pnl is None or utility.expected_transaction_costs is None:
         return "transaction_cost_model_missing"
@@ -473,7 +475,8 @@ def _unavailable_reason(candidate: Mapping[str, Any], utility: TradeUtility, uni
         return "selected_expression_identity_incomplete"
     if not _lineage_matches(candidate, impact, policy, signal):
         return "publication_lineage_mismatch"
-    del stage
+    if utility.trade_utility is None or not isfinite(utility.trade_utility) or utility.trade_utility <= 0:
+        return "trade_utility_not_positive"
     return None
 
 

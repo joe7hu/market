@@ -115,6 +115,7 @@ def _publish_context(
         "cohort_id": "test-cohort",
         "calibration_state": "calibrated_exact_cohort",
         "model_version": "test-model",
+        "evaluation_stage": "out_of_sample",
         "as_of": as_of,
         "input_cutoff": as_of,
         "input_lineage": decision.input_lineage,
