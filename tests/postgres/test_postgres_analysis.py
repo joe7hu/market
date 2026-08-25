@@ -14,7 +14,7 @@ from app import dependencies
 from app.routers.options import encode_learning_cursor, router as options_router
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.actions import ActionRepository
-from investment_panel.core.decision import is_us_market_day
+from investment_panel.core.decision import build_ticker_decision, is_us_market_day
 from investment_panel.database.ingestion import IngestionRepository
 from investment_panel.database.migrations import upgrade_database
 from investment_panel.database.options_analysis import published_options_radar_rows, refresh_options_radar
@@ -22,6 +22,7 @@ from investment_panel.database.options_publication import RANKING_VERSION
 from investment_panel.database.outcomes import OutcomeRepository
 from investment_panel.database.panel_publications import published_tables
 from investment_panel.database.runtime import DatabaseRuntime
+from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from conftest import typed_config
 
 
@@ -264,6 +265,62 @@ def test_analysis_keeps_features_decisions_and_publication_separate(analysis_con
     assert truth[3] is False
     assert truth[4] == "quality_status_missing"
     assert truth[5].startswith("option-scorecard-truth-v1:")
+
+
+def test_opportunity_episode_persists_ticker_and_option_expressions(analysis_context) -> None:
+    runtime: DatabaseRuntime = analysis_context["runtime"]
+    with runtime.transaction() as connection:
+        connection.execute(
+            "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('EPIS', 'Episode Test', 'equity')"
+        )
+    decision = build_ticker_decision(
+        "EPIS",
+        {
+            "quotes": [{
+                "symbol": "EPIS", "price": 100,
+                "available_at": "2026-07-11T12:00:00Z", "confirmed": True,
+            }],
+            "portfolio_summary": [{
+                "net_liquidation": 100_000,
+                "available_at": "2026-07-11T12:00:00Z",
+            }],
+            "decision_queue": [{
+                "symbol": "EPIS", "stance": "BULLISH", "entry_low": 99,
+                "entry_high": 101, "invalidation_price": 90,
+                "available_at": "2026-07-11T12:00:00Z",
+            }],
+            "options_payoff_scenarios": [{
+                "symbol": "EPIS", "structure": "long_call", "max_loss": 250,
+                "expiration": "2026-10-16",
+                "available_at": "2026-07-11T12:00:00Z",
+                "legs": [{
+                    "contract_id": 1, "option_type": "call", "side": "long",
+                    "strike": 105, "bid": 2, "ask": 2.2,
+                    "bid_size": 10, "ask_size": 10,
+                    "quote_time": "2026-07-11T12:00:00Z",
+                }],
+            }],
+        },
+        as_of=datetime(2026, 7, 11, 12, 15, tzinfo=UTC),
+    )
+    repository = TickerDecisionRepository(runtime)
+    repository.publish(decision)
+    replay = repository.latest("EPIS")
+
+    assert replay is not None
+    assert replay.opportunity_episode is not None
+    assert replay.opportunity_episode.episode_id == decision.opportunity_episode.episode_id
+    assert len(replay.opportunity_episode.expressions) >= 2
+    assert sum(expression.selected for expression in replay.opportunity_episode.expressions.values()) <= 1
+    with runtime.read() as connection:
+        row = connection.execute(
+            "SELECT opportunity_episode_id, opportunity_cutoff, opportunity_episode "
+            "FROM analysis.ticker_decision WHERE decision_revision = %s",
+            [decision.decision_revision],
+        ).fetchone()
+    assert row["opportunity_episode_id"] == decision.opportunity_episode.episode_id
+    assert row["opportunity_cutoff"] == decision.opportunity_episode.cutoff
+    assert row["opportunity_episode"]["decision_revision"] == decision.decision_revision
 
 
 def test_publication_validation_failure_never_exposes_partial_state(analysis_context, postgres_dsn: str) -> None:

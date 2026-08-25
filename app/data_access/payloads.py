@@ -14,7 +14,13 @@ from app.data_access.types import PanelData
 from app.data_access.coerce import int_value as _int_value, jsonable
 from investment_panel.core.agent_config import ThesisMonitorAgentConfig
 from investment_panel.core.config import AppConfig, OptionAgentConfig
-from investment_panel.core.decision import build_ticker_decision, evaluate_ticker_policy, ticker_decision_brief
+from investment_panel.core.decision import (
+    build_ticker_decision,
+    evaluate_ticker_policy,
+    opportunity_episode_from_legacy,
+    opportunity_episode_id,
+    ticker_decision_brief,
+)
 
 DEFAULT_AGENT_THESIS_REQUEST_LIMIT = 12
 
@@ -183,6 +189,7 @@ def ticker_payload(panel_data: PanelData, ticker: str) -> dict[str, Any]:
         "capital_action": ticker_decision_payload["capital_action"],
         "resolution": ticker_decision_payload["resolution"],
         "policy_version": ticker_decision_payload["policy_version"],
+        "opportunity_episode": ticker_decision_payload["opportunity_episode"],
         "expressions": ticker_decision_payload["expressions"],
         "data_requests": ticker_decision_payload["data_requests"],
         "learning_history": ticker_decision_payload["learning_history"],
@@ -230,6 +237,77 @@ def _range_summary(value: Any) -> str | None:
     return str(low) if low == high else f"{low}–{high}"
 
 
+def _canonical_opportunity_fields(ticker_decision: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Read the canonical episode once and expose compatibility projections."""
+
+    try:
+        episode = opportunity_episode_from_legacy(ticker_decision)
+        ticker = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").upper()
+        if ticker and episode.ticker != ticker:
+            raise ValueError("episode ticker mismatch")
+        revision = str(ticker_decision.get("decision_revision") or "")
+        if revision and episode.decision_revision != revision:
+            raise ValueError("episode revision mismatch")
+        policy = str(ticker_decision.get("policy_version") or "")
+        if policy and episode.policy_version != policy:
+            raise ValueError("episode policy mismatch")
+        raw_cutoff = ticker_decision.get("cutoff") or ticker_decision.get("as_of")
+        if raw_cutoff:
+            parsed_cutoff = raw_cutoff
+            if isinstance(parsed_cutoff, str):
+                parsed_cutoff = datetime.fromisoformat(parsed_cutoff.replace("Z", "+00:00"))
+            if parsed_cutoff.tzinfo is None or parsed_cutoff.astimezone(UTC) != episode.cutoff:
+                raise ValueError("episode cutoff mismatch")
+        serialized = episode.model_dump(mode="json")
+        return {
+            "opportunity_episode": serialized,
+            "episode_id": episode.episode_id,
+            "opportunity_episode_id": episode.episode_id,
+            "decision_revision": episode.decision_revision,
+            "policy_version": episode.policy_version,
+            "cutoff": serialized["cutoff"],
+            "input_lineage": serialized["input_lineage"],
+        }, None
+    except (TypeError, ValueError, KeyError):
+        # Older direct consumers supplied partial expression dictionaries.  Do
+        # not pretend those are canonical expressions, but preserve a stable
+        # compatibility identity until the typed ticker route replaces them.
+        if any(key in ticker_decision for key in (
+            "opportunity_episode", "input_lineage", "lineage", "input_manifest",
+        )):
+            return {}, "opportunity_lineage_invalid"
+        ticker = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").strip().upper()
+        revision = str(ticker_decision.get("decision_revision") or "").strip()
+        raw_cutoff = ticker_decision.get("cutoff") or ticker_decision.get("as_of")
+        if not ticker or not revision or not raw_cutoff:
+            return {}, "opportunity_lineage_invalid"
+        cutoff = raw_cutoff
+        if isinstance(cutoff, str):
+            cutoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=UTC)
+        cutoff = cutoff.astimezone(UTC)
+        policy = str(ticker_decision.get("policy_version") or "risk-policy.v2:legacy")
+        lineage = [{
+            "field": "legacy_compatibility",
+            "source_id": "ticker-decision-compatibility",
+            "source_version": ticker_decision.get("decision_contract_version") or "ticker-decision.v1",
+            "available_at": cutoff.isoformat(),
+            "revision": revision,
+            "decision_revision": revision,
+            "policy_version": policy,
+            "cutoff": cutoff.isoformat(),
+        }]
+        return {
+            "episode_id": opportunity_episode_id(ticker, revision),
+            "opportunity_episode_id": opportunity_episode_id(ticker, revision),
+            "decision_revision": revision,
+            "policy_version": policy,
+            "cutoff": cutoff.isoformat(),
+            "input_lineage": lineage,
+        }, None
+
+
 def option_decision_adapter(
     ticker_decision: dict[str, Any],
     legacy_payload: dict[str, Any],
@@ -245,19 +323,41 @@ def option_decision_adapter(
     payload = dict(legacy_payload)
     capital = dict(ticker_decision.get("capital_action") or {})
     expressions = dict(ticker_decision.get("expressions") or {})
-    selected_kind = str((ticker_decision.get("selected_expression") or {}).get("kind") or "")
+    episode_fields, episode_blocker = _canonical_opportunity_fields(ticker_decision)
+    episode = episode_fields.get("opportunity_episode") or {}
+    selected_from_episode = episode.get("selected_expression") or {}
+    selected_kind = str(
+        selected_from_episode.get("kind")
+        or (ticker_decision.get("selected_expression") or {}).get("kind")
+        or ""
+    )
     option_expression = expressions.get(selected_kind) if selected_kind in {
         "CALL", "PUT", "DEBIT_SPREAD", "CASH_SECURED_PUT",
     } else None
     if not isinstance(option_expression, dict) or option_expression.get("status") not in {"eligible", "blocked"}:
         option_expression = None
-    candidate = _compatibility_option_candidate(ticker_decision, option_expression, capital) if option_expression else {}
+    candidate = (
+        _compatibility_option_candidate(ticker_decision, option_expression, capital)
+        if option_expression and not episode_blocker
+        else {}
+    )
     if candidate:
         # The legacy payload is intentionally not merged. The ticker
         # expression owns the contracts, quote package, thesis, and readiness;
         # this route only preserves the old envelope shape.
         candidate["ticker_decision_revision"] = ticker_decision.get("decision_revision")
         candidate["policy_version"] = ticker_decision.get("policy_version")
+        candidate.update(episode_fields)
+        if isinstance(candidate.get("ticket"), dict):
+            candidate["ticket"].update({
+                key: episode_fields[key]
+                for key in (
+                    "episode_id", "opportunity_episode_id", "decision_revision",
+                    "policy_version", "cutoff", "input_lineage", "opportunity_episode",
+                )
+                if key in episode_fields
+            })
+            candidate["ticket"]["trade_expression"] = option_expression
         candidate["resolution"] = ticker_decision.get("resolution")
         candidate["ticker_expression"] = option_expression
         candidate["ticker_thesis"] = {
@@ -279,6 +379,7 @@ def option_decision_adapter(
         # valid compatibility result.
         payload.pop("strongest_candidate", None)
     payload["ticker_decision_revision"] = ticker_decision.get("decision_revision")
+    payload.update(episode_fields)
     payload["summary"] = {
         **dict(payload.get("summary") or {}),
         "ticker_action": capital.get("action"),
@@ -289,6 +390,7 @@ def option_decision_adapter(
     }
     existing_truth = dict(payload.get("decision_truth") or {})
     ticker_blockers = [request.get("field") for request in ticker_decision.get("data_requests") or []]
+    lineage_blockers = [episode_blocker] if episode_blocker else []
     payload["decision_truth"] = {
         **existing_truth,
         "symbol": ticker_decision.get("ticker") or payload.get("symbol"),
@@ -297,10 +399,13 @@ def option_decision_adapter(
         "route_verdict": capital.get("action"),
         "readiness_state": "PAPER_READY" if candidate and candidate.get("execution_ready") else "WATCH",
         "execution_state": "PAPER_ONLY",
+        **episode_fields,
+        "primary_blocker": episode_blocker or existing_truth.get("primary_blocker"),
         "blockers": list(dict.fromkeys([
             *list(existing_truth.get("blockers") or []),
             *(list(candidate.get("blockers") or []) if candidate else []),
             *ticker_blockers,
+            *lineage_blockers,
         ])),
         "next_action": capital.get("rationale"),
         "route_version": ticker_decision.get("decision_contract_version", "ticker-decision.v1"),

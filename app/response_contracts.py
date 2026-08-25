@@ -33,6 +33,7 @@ from investment_panel.core.decision import (
     DecisionResolutionV2,
     ExpressionDecision,
     ExpressionKind,
+    OpportunityEpisode,
     TickerDecision,
 )
 
@@ -537,6 +538,7 @@ class TickerDetailResponse(FlexibleResponse):
     capital_action: CapitalAction
     resolution: DecisionResolutionV2 | None = None
     policy_version: str = "risk-policy.v2:legacy"
+    opportunity_episode: OpportunityEpisode | None = None
     expressions: dict[ExpressionKind, ExpressionDecision] = Field(default_factory=dict)
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning: JsonObject = Field(default_factory=dict)

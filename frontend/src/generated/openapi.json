@@ -2134,6 +2134,137 @@
         "title": "IVSurfaceGrid",
         "type": "object"
       },
+      "InputLineage": {
+        "additionalProperties": true,
+        "description": "One immutable, point-in-time input used by an opportunity episode.",
+        "properties": {
+          "available_at": {
+            "format": "date-time",
+            "title": "Available At",
+            "type": "string"
+          },
+          "cutoff": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutoff"
+          },
+          "decision_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Revision"
+          },
+          "event_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event At"
+          },
+          "field": {
+            "minLength": 1,
+            "title": "Field",
+            "type": "string"
+          },
+          "opportunity_episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Episode Id"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "source_id": {
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version"
+          }
+        },
+        "required": [
+          "field",
+          "source_id",
+          "available_at"
+        ],
+        "title": "InputLineage",
+        "type": "object"
+      },
       "InputManifest": {
         "properties": {
           "as_of": {
@@ -2314,6 +2445,82 @@
           "high"
         ],
         "title": "NumericRange",
+        "type": "object"
+      },
+      "OpportunityEpisode": {
+        "additionalProperties": true,
+        "description": "One point-in-time ticker thesis with competing trade expressions.",
+        "properties": {
+          "contract_version": {
+            "default": "opportunity-episode.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "cutoff": {
+            "format": "date-time",
+            "title": "Cutoff",
+            "type": "string"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "episode_id": {
+            "minLength": 1,
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "expressions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ExpressionDecision"
+            },
+            "minProperties": 1,
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Expressions",
+            "type": "object"
+          },
+          "input_lineage": {
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "minItems": 1,
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "policy_version": {
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "selected_expression": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExpressionDecision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ticker": {
+            "minLength": 1,
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "episode_id",
+          "ticker",
+          "decision_revision",
+          "policy_version",
+          "cutoff",
+          "input_lineage",
+          "expressions"
+        ],
+        "title": "OpportunityEpisode",
         "type": "object"
       },
       "OpportunityScorecardResponse": {
@@ -3753,6 +3960,18 @@
             "title": "Blockers",
             "type": "array"
           },
+          "cutoff": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutoff"
+          },
           "data_model_revisions": {
             "additionalProperties": true,
             "title": "Data Model Revisions",
@@ -3775,6 +3994,17 @@
           },
           "entry": {
             "$ref": "#/components/schemas/OptionTradeTicketEntry"
+          },
+          "episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Id"
           },
           "episode_key": {
             "anyOf": [
@@ -3822,6 +4052,13 @@
           "forecast": {
             "$ref": "#/components/schemas/OptionTradeTicketForecast"
           },
+          "input_lineage": {
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
           "lane": {
             "anyOf": [
               {
@@ -3850,6 +4087,27 @@
               }
             ],
             "title": "Lower Confidence Expectancy Per Max Risk"
+          },
+          "opportunity_episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunity_episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Episode Id"
           },
           "paper_only": {
             "default": true,
@@ -3924,6 +4182,18 @@
           "ticket_version": {
             "title": "Ticket Version",
             "type": "integer"
+          },
+          "trade_expression": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Expression"
           }
         },
         "required": [
@@ -5084,6 +5354,40 @@
             "title": "Candidate State",
             "type": "string"
           },
+          "cutoff": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutoff"
+          },
+          "decision_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Revision"
+          },
+          "episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Id"
+          },
           "evidence_refs": {
             "items": {
               "additionalProperties": true,
@@ -5095,6 +5399,13 @@
           "execution_state": {
             "title": "Execution State",
             "type": "string"
+          },
+          "input_lineage": {
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
           },
           "lane": {
             "title": "Lane",
@@ -5110,6 +5421,28 @@
               }
             ],
             "title": "Next Action"
+          },
+          "opportunity_episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opportunity Episode Id"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
           },
           "primary_blocker": {
             "anyOf": [
@@ -9251,6 +9584,16 @@
             "title": "Learning History",
             "type": "array"
           },
+          "opportunity_episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "policy_version": {
             "default": "risk-policy.v2:legacy",
             "title": "Policy Version",
@@ -9351,6 +9694,16 @@
             },
             "title": "Learning History",
             "type": "array"
+          },
+          "opportunity_episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "policy_version": {
             "default": "risk-policy.v2:legacy",
@@ -9463,6 +9816,16 @@
             },
             "title": "Learning History",
             "type": "array"
+          },
+          "opportunity_episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpportunityEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "policy_version": {
             "default": "risk-policy.v2:legacy",

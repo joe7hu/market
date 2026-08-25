@@ -27,6 +27,8 @@ from investment_panel.core.decision.resolution import (
 
 CONTRACT_VERSION = "ticker-decision.v1"
 EXPERIMENT_ID = "ticker-first-v1"
+OPPORTUNITY_EPISODE_CONTRACT_VERSION = "opportunity-episode.v1"
+TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
 
 
 class Stance(StrEnum):
@@ -155,6 +157,49 @@ class InputManifest(BaseModel):
     signal_declarations: list[SignalDeclaration] = Field(default_factory=list)
 
 
+class InputLineage(BaseModel):
+    """One immutable, point-in-time input used by an opportunity episode."""
+
+    model_config = ConfigDict(extra="allow")
+
+    field: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    source_version: str | None = None
+    event_at: datetime | None = None
+    published_at: datetime | None = None
+    available_at: datetime
+    received_at: datetime | None = None
+    revision: str | None = None
+    opportunity_episode_id: str | None = None
+    decision_revision: str | None = None
+    policy_version: str | None = None
+    cutoff: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_lineage_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        aliases = {
+            "source": "source_id",
+            "version": "source_version",
+            "episode_id": "opportunity_episode_id",
+        }
+        for old, new in aliases.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        return result
+
+    @model_validator(mode="after")
+    def timestamps_are_timezone_aware(self) -> "InputLineage":
+        for name in ("event_at", "published_at", "available_at", "received_at", "cutoff"):
+            value = getattr(self, name)
+            if value is not None and value.tzinfo is None:
+                raise ValueError(f"input lineage {name} must be timezone-aware")
+        return self
+
+
 class RiskPolicy(BaseModel):
     conviction_tier: str = Field(pattern="^(EXPLORATORY|STANDARD|HIGH)$")
     loss_budget_pct: float = Field(gt=0, le=0.02)
@@ -194,6 +239,302 @@ class ExpressionDecision(BaseModel):
     selected: bool = False
     rationale: str
     data_requests: list[DataRequest] = Field(default_factory=list)
+
+
+# The existing expression model is the source of truth.  The aliases and
+# adapters make the canonical name explicit without creating a second model or
+# a second decision owner.
+TradeExpression = ExpressionDecision
+
+
+def trade_expression_from_legacy(value: Any) -> TradeExpression:
+    if isinstance(value, ExpressionDecision):
+        return value
+    return TradeExpression.model_validate(value)
+
+
+def trade_expression_from_expression_decision(value: Any) -> TradeExpression:
+    return trade_expression_from_legacy(value)
+
+
+def expression_decision_from_trade_expression(value: Any) -> ExpressionDecision:
+    return trade_expression_from_legacy(value)
+
+
+def expression_decision_to_trade_expression(value: Any) -> TradeExpression:
+    return trade_expression_from_legacy(value)
+
+
+class OpportunityEpisode(BaseModel):
+    """One point-in-time ticker thesis with competing trade expressions."""
+
+    model_config = ConfigDict(extra="allow", use_enum_values=False)
+
+    contract_version: str = OPPORTUNITY_EPISODE_CONTRACT_VERSION
+    episode_id: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    policy_version: str = Field(min_length=1)
+    cutoff: datetime
+    input_lineage: list[InputLineage] = Field(min_length=1)
+    expressions: dict[ExpressionKind, TradeExpression] = Field(min_length=1)
+    selected_expression: TradeExpression | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_episode_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        aliases = {
+            "opportunity_episode_id": "episode_id",
+            "as_of": "cutoff",
+            "lineage": "input_lineage",
+        }
+        for old, new in aliases.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if not result.get("ticker") and result.get("symbol"):
+            result["ticker"] = result["symbol"]
+        if isinstance(result.get("ticker"), str):
+            result["ticker"] = result["ticker"].strip().upper()
+
+        expressions = result.get("expressions")
+        selected = result.get("selected_expression")
+        if isinstance(expressions, Mapping) and isinstance(selected, str):
+            for key, expression in expressions.items():
+                if str(key).upper() == selected.upper():
+                    result["selected_expression"] = expression
+                    break
+        elif isinstance(expressions, Mapping) and isinstance(selected, Mapping):
+            selected_kind = str(selected.get("kind") or "").upper()
+            if selected_kind and set(selected) <= {"kind"}:
+                for key, expression in expressions.items():
+                    if str(key).upper() == selected_kind:
+                        result["selected_expression"] = expression
+                        break
+        return result
+
+    @model_validator(mode="after")
+    def enforce_point_in_time_identity(self) -> "OpportunityEpisode":
+        if self.cutoff.tzinfo is None:
+            raise ValueError("opportunity episode cutoff must be timezone-aware")
+        cutoff = _utc(self.cutoff)
+        lineage_keys: set[tuple[Any, ...]] = set()
+        for lineage in self.input_lineage:
+            if _utc(lineage.available_at) > cutoff:
+                raise ValueError("opportunity episode lineage cannot be newer than its cutoff")
+            if lineage.opportunity_episode_id and lineage.opportunity_episode_id != self.episode_id:
+                raise ValueError("opportunity episode lineage id must match the episode")
+            if lineage.decision_revision and lineage.decision_revision != self.decision_revision:
+                raise ValueError("opportunity episode lineage revision must match the episode")
+            if lineage.policy_version and lineage.policy_version != self.policy_version:
+                raise ValueError("opportunity episode lineage policy must match the episode")
+            if lineage.cutoff and _utc(lineage.cutoff) != cutoff:
+                raise ValueError("opportunity episode lineage cutoff must match the episode")
+            key = (
+                lineage.field,
+                lineage.source_id,
+                lineage.source_version,
+                _utc(lineage.available_at),
+                lineage.revision,
+            )
+            if key in lineage_keys:
+                raise ValueError(f"opportunity episode input lineage contains a duplicate: {key!r}")
+            lineage_keys.add(key)
+
+        for kind, expression in self.expressions.items():
+            if expression.kind is not kind:
+                raise ValueError("opportunity episode expression key must match its kind")
+            if expression.ticker.strip().upper() != self.ticker:
+                raise ValueError("opportunity episode expression ticker must match the episode")
+
+        flagged = [expression for expression in self.expressions.values() if expression.selected]
+        if len(flagged) > 1:
+            raise ValueError("opportunity episode can select at most one expression")
+        selected = self.selected_expression
+        if selected is None and flagged:
+            selected = flagged[0]
+        if selected is not None:
+            canonical = self.expressions.get(selected.kind)
+            if canonical is None:
+                raise ValueError("selected opportunity expression must be in the expression set")
+            if canonical != selected:
+                raise ValueError("selected opportunity expression must match the expression set")
+            self.selected_expression = canonical
+        for expression in self.expressions.values():
+            expression.selected = selected is not None and expression.kind is selected.kind
+        self.cutoff = cutoff
+        return self
+
+    @property
+    def opportunity_episode_id(self) -> str:
+        return self.episode_id
+
+    @property
+    def selected_expression_kind(self) -> ExpressionKind | None:
+        return self.selected_expression.kind if self.selected_expression else None
+
+
+def opportunity_episode_id(ticker: str, decision_revision: str) -> str:
+    encoded = json.dumps(
+        {"ticker": ticker.strip().upper(), "decision_revision": decision_revision},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"{OPPORTUNITY_EPISODE_CONTRACT_VERSION}:{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
+
+
+def build_opportunity_episode(
+    *,
+    ticker: str,
+    decision_revision: str,
+    policy_version: str,
+    cutoff: datetime,
+    input_lineage: Iterable[InputLineage | Mapping[str, Any]],
+    expressions: Mapping[ExpressionKind | str, TradeExpression | Mapping[str, Any]],
+    selected_expression: TradeExpression | ExpressionKind | str | None = None,
+    episode_id: str | None = None,
+) -> OpportunityEpisode:
+    canonical_expressions = {
+        ExpressionKind(kind): trade_expression_from_legacy(expression)
+        for kind, expression in expressions.items()
+    }
+    selected_kind: ExpressionKind | None = None
+    if selected_expression is not None:
+        selected_kind = (
+            selected_expression.kind
+            if isinstance(selected_expression, ExpressionDecision)
+            else ExpressionKind(selected_expression.get("kind"))
+            if isinstance(selected_expression, Mapping)
+            else ExpressionKind(selected_expression)
+        )
+    canonical_episode_id = episode_id or opportunity_episode_id(ticker, decision_revision)
+    canonical_lineage = []
+    for item in input_lineage:
+        lineage = item if isinstance(item, InputLineage) else InputLineage.model_validate(item)
+        canonical_lineage.append(lineage.model_copy(update={
+            "opportunity_episode_id": lineage.opportunity_episode_id or canonical_episode_id,
+            "decision_revision": lineage.decision_revision or decision_revision,
+            "policy_version": lineage.policy_version or policy_version,
+            "cutoff": lineage.cutoff or cutoff,
+        }))
+    return OpportunityEpisode(
+        episode_id=canonical_episode_id,
+        ticker=ticker,
+        decision_revision=decision_revision,
+        policy_version=policy_version,
+        cutoff=cutoff,
+        input_lineage=canonical_lineage,
+        expressions=canonical_expressions,
+        selected_expression=(
+            canonical_expressions.get(selected_kind) if selected_kind is not None else None
+        ),
+    )
+
+
+def opportunity_episode_from_legacy(value: Any) -> OpportunityEpisode:
+    """Adapt an old ticker decision into the canonical episode boundary."""
+
+    if isinstance(value, OpportunityEpisode):
+        return value
+    raw = value.model_dump(mode="python") if isinstance(value, BaseModel) else dict(value or {})
+    if "opportunity_episode" in raw and raw["opportunity_episode"] is not None:
+        return OpportunityEpisode.model_validate(raw["opportunity_episode"])
+
+    ticker = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
+    decision_revision = str(raw.get("decision_revision") or "").strip()
+    if not ticker or not decision_revision:
+        raise ValueError("legacy ticker decision is missing episode identity")
+    resolution = raw.get("resolution") or {}
+    risk_policy = raw.get("risk_policy") or {}
+    policy_version = str(
+        raw.get("policy_version")
+        or (resolution.get("policy_version") if isinstance(resolution, Mapping) else None)
+        or (risk_policy.get("policy_version") if isinstance(risk_policy, Mapping) else None)
+        or "risk-policy.v2:legacy"
+    )
+    cutoff = _parse_datetime(raw.get("cutoff") or raw.get("as_of"))
+    if cutoff is None:
+        raise ValueError("legacy ticker decision is missing an episode cutoff")
+
+    raw_expressions = raw.get("expressions")
+    if not isinstance(raw_expressions, Mapping) or not raw_expressions:
+        raise ValueError("legacy ticker decision is missing expressions")
+    expressions: dict[ExpressionKind, TradeExpression] = {}
+    for raw_kind, raw_expression in raw_expressions.items():
+        expression = trade_expression_from_legacy(raw_expression)
+        kind = ExpressionKind(raw_kind)
+        if expression.kind is not kind:
+            raise ValueError("legacy expression key does not match its kind")
+        expressions[kind] = expression
+
+    selected_raw = raw.get("selected_expression")
+    selected_kind: ExpressionKind | None = None
+    if isinstance(selected_raw, Mapping):
+        selected_kind = ExpressionKind(str(selected_raw.get("kind") or ""))
+    elif selected_raw:
+        selected_kind = ExpressionKind(str(selected_raw))
+    if selected_kind is None:
+        flagged = [expression.kind for expression in expressions.values() if expression.selected]
+        if len(flagged) > 1:
+            raise ValueError("legacy ticker decision selects multiple expressions")
+        selected_kind = flagged[0] if flagged else None
+
+    raw_lineage = raw.get("input_lineage")
+    if raw_lineage is None and "lineage" in raw:
+        raw_lineage = raw.get("lineage")
+    manifest = raw.get("input_manifest") or {}
+    if raw_lineage is None and isinstance(manifest, Mapping) and "inputs" in manifest:
+        raw_lineage = []
+        source_versions = manifest.get("source_versions") or {}
+        for field, values in (manifest.get("inputs") or {}).items():
+            values = values if isinstance(values, list) else [values]
+            for item in values:
+                if not isinstance(item, Mapping):
+                    raise ValueError("legacy ticker decision contains invalid input lineage")
+                row = dict(item)
+                source_id = str(
+                    row.get("source_id") or row.get("source") or row.get("provider") or field
+                )
+                row.update({
+                    "field": str(field),
+                    "source_id": source_id,
+                    "source_version": row.get("source_version")
+                    or row.get("revision")
+                    or row.get("version")
+                    or source_versions.get(source_id)
+                    or "unknown",
+                    "opportunity_episode_id": raw.get("episode_id"),
+                    "decision_revision": decision_revision,
+                    "policy_version": policy_version,
+                    "cutoff": cutoff,
+                })
+                raw_lineage.append(row)
+    if raw_lineage is None:
+        raw_lineage = [{
+            "field": "legacy_compatibility",
+            "source_id": "ticker-decision-compatibility",
+            "source_version": raw.get("decision_contract_version") or CONTRACT_VERSION,
+            "available_at": cutoff,
+            "revision": decision_revision,
+            "decision_revision": decision_revision,
+            "policy_version": policy_version,
+            "cutoff": cutoff,
+        }]
+    if not raw_lineage:
+        raise ValueError("legacy ticker decision is missing input lineage")
+
+    return build_opportunity_episode(
+        ticker=ticker,
+        decision_revision=decision_revision,
+        policy_version=policy_version,
+        cutoff=cutoff,
+        input_lineage=raw_lineage,
+        expressions=expressions,
+        selected_expression=selected_kind,
+        episode_id=raw.get("episode_id") or raw.get("opportunity_episode_id"),
+    )
 
 
 class HorizonDecision(BaseModel):
@@ -289,6 +630,7 @@ class TickerDecision(BaseModel):
     risk_policy: RiskPolicy
     expressions: dict[ExpressionKind, ExpressionDecision]
     selected_expression: ExpressionDecision | None = None
+    opportunity_episode: OpportunityEpisode | None = None
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning_history: list[dict[str, Any]] = Field(default_factory=list)
     input_manifest: InputManifest
@@ -326,6 +668,45 @@ class TickerDecision(BaseModel):
             raise ValueError("ticker resolution policy must match the ticker decision")
         self.capital_action = capital_action_from_resolution(self.resolution)
         return self
+
+    @model_validator(mode="after")
+    def opportunity_episode_is_authority(self) -> "TickerDecision":
+        if self.opportunity_episode is None:
+            self.opportunity_episode = opportunity_episode_from_legacy(self)
+        else:
+            episode = self.opportunity_episode
+            if episode.ticker != self.ticker.strip().upper():
+                raise ValueError("opportunity episode ticker must match the ticker decision")
+            if episode.decision_revision != self.decision_revision:
+                raise ValueError("opportunity episode revision must match the ticker decision")
+            if episode.policy_version != self.policy_version:
+                raise ValueError("opportunity episode policy must match the ticker decision")
+            if _utc(episode.cutoff) != _utc(self.as_of):
+                raise ValueError("opportunity episode cutoff must match the ticker decision")
+            if set(episode.expressions) != set(self.expressions):
+                raise ValueError("opportunity episode expressions must match the ticker decision")
+            for kind in self.expressions:
+                if episode.expressions[kind] != self.expressions[kind]:
+                    raise ValueError("opportunity episode expressions must be the ticker decision expressions")
+            selected_kind = self.selected_expression.kind if self.selected_expression else None
+            episode_kind = episode.selected_expression.kind if episode.selected_expression else None
+            if selected_kind is not episode_kind:
+                raise ValueError("opportunity episode selected expression must match the ticker decision")
+            self.expressions = dict(self.opportunity_episode.expressions)
+        self.selected_expression = self.opportunity_episode.selected_expression
+        return self
+
+    @property
+    def opportunity_episode_id(self) -> str:
+        return self.opportunity_episode.episode_id if self.opportunity_episode else ""
+
+    @property
+    def cutoff(self) -> datetime:
+        return self.opportunity_episode.cutoff if self.opportunity_episode else _utc(self.as_of)
+
+    @property
+    def input_lineage(self) -> list[InputLineage]:
+        return list(self.opportunity_episode.input_lineage) if self.opportunity_episode else []
 
 
 def build_ticker_decision(
@@ -370,6 +751,7 @@ def build_ticker_decision(
                 "risk_policy": persisted.get("risk_policy"),
                 "expressions": persisted.get("expressions") or {},
                 "selected_expression": persisted.get("selected_expression"),
+                "opportunity_episode": persisted.get("opportunity_episode") or None,
                 "data_requests": persisted.get("data_requests") or [],
                 "learning_history": persisted.get("learning_history") or [],
                 "input_manifest": persisted.get("input_manifest") or {},
@@ -459,7 +841,24 @@ def build_ticker_decision(
         _catalyst(decision_row, usable),
     )
     selected = _selected_expression(expressions, capital.action)
+    for expression in expressions.values():
+        expression.selected = selected is not None and expression.kind is selected.kind
     decision_revision = f"{CONTRACT_VERSION}:{manifest.input_hash[:16]}"
+    input_lineage = _build_input_lineage(
+        manifest,
+        decision_revision=decision_revision,
+        policy_version=risk_policy.policy_version,
+        cutoff=reference,
+    )
+    episode = build_opportunity_episode(
+        ticker=symbol,
+        decision_revision=decision_revision,
+        policy_version=risk_policy.policy_version,
+        cutoff=reference,
+        input_lineage=input_lineage,
+        expressions=expressions,
+        selected_expression=selected,
+    )
     selected_entry = selected.entry_range if selected is not None else None
     selected_invalidation = selected.invalidation if selected is not None else None
     selected_exit = selected.target_range if selected is not None else None
@@ -513,6 +912,7 @@ def build_ticker_decision(
         risk_policy=risk_policy,
         expressions=expressions,
         selected_expression=selected,
+        opportunity_episode=episode,
         data_requests=requests,
         learning_history=learning,
         input_manifest=manifest,
@@ -1002,6 +1402,67 @@ def _build_manifest(usable: Mapping[str, list[dict[str, Any]]], as_of: datetime,
         source_versions=source_versions,
         signal_declarations=_signal_declarations(usable),
     )
+
+
+def _build_input_lineage(
+    manifest: InputManifest,
+    *,
+    decision_revision: str,
+    policy_version: str,
+    cutoff: datetime,
+) -> list[InputLineage]:
+    lineage: list[InputLineage] = []
+    for field, values in manifest.inputs.items():
+        rows = values if isinstance(values, list) else [values]
+        for value in rows:
+            if not isinstance(value, Mapping):
+                raise ValueError("ticker decision input lineage row must be an object")
+            source_id = str(
+                value.get("source_id")
+                or value.get("source")
+                or value.get("provider")
+                or field
+            ).strip()
+            available_at = _parse_datetime(
+                _pick(value, "available_at", "received_at", "publication_published_at")
+            )
+            if not source_id or available_at is None:
+                raise ValueError("ticker decision input lineage is incomplete")
+            source_version = str(
+                value.get("source_version")
+                or value.get("revision")
+                or value.get("version")
+                or manifest.source_versions.get(source_id)
+                or "unknown"
+            )
+            lineage.append(InputLineage(
+                field=str(field),
+                source_id=source_id,
+                source_version=source_version,
+                event_at=_parse_datetime(value.get("event_at") or value.get("event_time")),
+                published_at=_parse_datetime(value.get("published_at") or value.get("publication_time")),
+                available_at=available_at,
+                received_at=_parse_datetime(value.get("received_at") or value.get("receipt_time")),
+                revision=str(value.get("revision") or "") or None,
+                decision_revision=decision_revision,
+                policy_version=policy_version,
+                cutoff=cutoff,
+            ))
+    if not lineage:
+        # A fully empty source set is still a published, deterministic blocked
+        # decision.  The composer record makes the missing-input boundary
+        # explicit without inventing a provider observation.
+        lineage.append(InputLineage(
+            field="decision_composer",
+            source_id="deterministic-composer",
+            source_version=manifest.code_version,
+            available_at=cutoff,
+            revision=manifest.input_hash,
+            decision_revision=decision_revision,
+            policy_version=policy_version,
+            cutoff=cutoff,
+        ))
+    return lineage
 
 
 def _manifest_row(name: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1643,9 +2104,14 @@ def _jsonable(value: Any) -> Any:
 
 
 __all__ = [
-    "CONTRACT_VERSION", "CapitalAction", "CapitalActionType", "capital_action_from_resolution", "DataRequest",
-    "EvidenceItem", "EvidencePolarity", "ExpressionDecision", "ExpressionKind",
-    "Horizon", "HorizonDecision", "InputManifest", "Invalidation", "NumericRange",
+    "CONTRACT_VERSION", "EXPERIMENT_ID", "OPPORTUNITY_EPISODE_CONTRACT_VERSION",
+    "TRADE_EXPRESSION_CONTRACT_VERSION", "CapitalAction", "CapitalActionType",
+    "capital_action_from_resolution", "DataRequest", "EvidenceItem", "EvidencePolarity",
+    "ExpressionDecision", "ExpressionKind", "TradeExpression", "trade_expression_from_legacy",
+    "trade_expression_from_expression_decision", "expression_decision_from_trade_expression",
+    "expression_decision_to_trade_expression", "Horizon", "HorizonDecision", "InputManifest",
+    "InputLineage", "Invalidation", "NumericRange", "OpportunityEpisode",
+    "opportunity_episode_id", "opportunity_episode_from_legacy", "build_opportunity_episode",
     "PriceRange", "RiskPolicy", "ScenarioOutcome", "Stance", "TickerDecision",
     "SignalDeclaration", "SignalEvidenceState", "build_ticker_decision",
 ]

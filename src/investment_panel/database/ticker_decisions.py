@@ -48,12 +48,13 @@ class TickerDecisionRepository:
                 INSERT INTO analysis.ticker_decision (
                     instrument_id, decision_revision, contract_version, as_of,
                     published_at, input_hash, code_version, experiment_id,
-                    tactical, fundamental, capital_action, resolution, policy_version, risk_policy,
+                    tactical, fundamental, capital_action, resolution, policy_version,
+                    opportunity_episode_id, opportunity_cutoff, opportunity_episode, risk_policy,
                     expressions, selected_expression, data_requests,
                     learning_history, input_manifest, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published'
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published'
                 )
                 ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
@@ -66,7 +67,9 @@ class TickerDecisionRepository:
                     decision.input_manifest.experiment_id,
                     Jsonb(payload["tactical"]), Jsonb(payload["fundamental"]),
                     Jsonb(payload["capital_action"]), Jsonb(payload["resolution"]),
-                    decision.policy_version, Jsonb(payload["risk_policy"]),
+                    decision.policy_version, decision.opportunity_episode.episode_id,
+                    decision.opportunity_episode.cutoff,
+                    Jsonb(payload["opportunity_episode"]), Jsonb(payload["risk_policy"]),
                     Jsonb(payload["expressions"]), Jsonb(payload.get("selected_expression")),
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
                     Jsonb(payload["input_manifest"]),
@@ -105,7 +108,9 @@ class TickerDecisionRepository:
                 SELECT instrument.symbol AS ticker, decision.contract_version,
                        decision.as_of, decision.decision_revision,
                        decision.tactical, decision.fundamental, decision.capital_action,
-                       decision.resolution, decision.policy_version, decision.risk_policy, decision.expressions,
+                       decision.resolution, decision.policy_version,
+                       decision.opportunity_episode_id, decision.opportunity_cutoff,
+                       decision.opportunity_episode, decision.risk_policy, decision.expressions,
                        decision.selected_expression, decision.data_requests,
                        decision.learning_history, decision.input_manifest
                 FROM analysis.ticker_decision decision
@@ -808,6 +813,9 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "data_requests": row["data_requests"],
         "learning_history": row["learning_history"],
         "input_manifest": row["input_manifest"],
+        "opportunity_episode": (
+            row.get("opportunity_episode") if hasattr(row, "get") else None
+        ) or None,
     })
 
 

@@ -63,7 +63,6 @@ def publish(
                 raise RuntimeError("ticker input read models are unavailable")
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
-            tables.setdefault("ticker_benchmark_snapshot", []).append(benchmark)
             decision = build_ticker_decision(symbol, tables, as_of=reference)
             prior = repository.latest(symbol)
             if prior is not None and prior.input_manifest.input_hash == decision.input_manifest.input_hash:

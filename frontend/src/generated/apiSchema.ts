@@ -2051,6 +2051,41 @@ export interface components {
             /** Y */
             y: number[];
         };
+        /**
+         * InputLineage
+         * @description One immutable, point-in-time input used by an opportunity episode.
+         */
+        InputLineage: {
+            /**
+             * Available At
+             * Format: date-time
+             */
+            available_at: string;
+            /** Cutoff */
+            cutoff?: string | null;
+            /** Decision Revision */
+            decision_revision?: string | null;
+            /** Event At */
+            event_at?: string | null;
+            /** Field */
+            field: string;
+            /** Opportunity Episode Id */
+            opportunity_episode_id?: string | null;
+            /** Policy Version */
+            policy_version?: string | null;
+            /** Published At */
+            published_at?: string | null;
+            /** Received At */
+            received_at?: string | null;
+            /** Revision */
+            revision?: string | null;
+            /** Source Id */
+            source_id: string;
+            /** Source Version */
+            source_version?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** InputManifest */
         InputManifest: {
             /**
@@ -2117,6 +2152,39 @@ export interface components {
             high: number;
             /** Low */
             low: number;
+        };
+        /**
+         * OpportunityEpisode
+         * @description One point-in-time ticker thesis with competing trade expressions.
+         */
+        OpportunityEpisode: {
+            /**
+             * Contract Version
+             * @default opportunity-episode.v1
+             */
+            contract_version: string;
+            /**
+             * Cutoff
+             * Format: date-time
+             */
+            cutoff: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Episode Id */
+            episode_id: string;
+            /** Expressions */
+            expressions: {
+                [key: string]: components["schemas"]["ExpressionDecision"];
+            };
+            /** Input Lineage */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Policy Version */
+            policy_version: string;
+            selected_expression?: components["schemas"]["ExpressionDecision"] | null;
+            /** Ticker */
+            ticker: string;
+        } & {
+            [key: string]: unknown;
         };
         /** OpportunityScorecardResponse */
         OpportunityScorecardResponse: {
@@ -2596,6 +2664,8 @@ export interface components {
         OptionTradeTicket: {
             /** Blockers */
             blockers?: string[];
+            /** Cutoff */
+            cutoff?: string | null;
             /** Data Model Revisions */
             data_model_revisions?: {
                 [key: string]: unknown;
@@ -2605,6 +2675,8 @@ export interface components {
             /** Decision Revision */
             decision_revision?: string | null;
             entry?: components["schemas"]["OptionTradeTicketEntry"];
+            /** Episode Id */
+            episode_id?: string | null;
             /** Episode Key */
             episode_key?: string | null;
             /** Execution Ready At */
@@ -2618,12 +2690,17 @@ export interface components {
             /** Expires At */
             expires_at?: string | null;
             forecast?: components["schemas"]["OptionTradeTicketForecast"];
+            /** Input Lineage */
+            input_lineage?: components["schemas"]["InputLineage"][];
             /** Lane */
             lane?: string | null;
             /** Legs */
             legs?: components["schemas"]["OptionTradeTicketLeg"][];
             /** Lower Confidence Expectancy Per Max Risk */
             lower_confidence_expectancy_per_max_risk?: number | null;
+            opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id?: string | null;
             /**
              * Paper Only
              * @default true
@@ -2657,6 +2734,10 @@ export interface components {
             thesis?: components["schemas"]["OptionTradeTicketThesis"];
             /** Ticket Version */
             ticket_version: number;
+            /** Trade Expression */
+            trade_expression?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** OptionTradeTicketEntry */
         OptionTradeTicketEntry: {
@@ -3015,16 +3096,28 @@ export interface components {
             blockers?: string[];
             /** Candidate State */
             candidate_state: string;
+            /** Cutoff */
+            cutoff?: string | null;
+            /** Decision Revision */
+            decision_revision?: string | null;
+            /** Episode Id */
+            episode_id?: string | null;
             /** Evidence Refs */
             evidence_refs?: {
                 [key: string]: unknown;
             }[];
             /** Execution State */
             execution_state: string;
+            /** Input Lineage */
+            input_lineage?: components["schemas"]["InputLineage"][];
             /** Lane */
             lane: string;
             /** Next Action */
             next_action?: string | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id?: string | null;
+            /** Policy Version */
+            policy_version?: string | null;
             /** Primary Blocker */
             primary_blocker?: string | null;
             /** Publication Id */
@@ -4399,6 +4492,7 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
@@ -4441,6 +4535,7 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
@@ -4483,6 +4578,7 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy

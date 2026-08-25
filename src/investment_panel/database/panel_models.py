@@ -245,7 +245,9 @@ DIRECT_QUERIES: dict[str, str] = {
                decision.input_hash,
                decision.code_version, decision.experiment_id,
                decision.tactical, decision.fundamental, decision.capital_action,
-               decision.resolution, decision.policy_version, decision.risk_policy, decision.expressions,
+               decision.resolution, decision.policy_version,
+               decision.opportunity_episode_id, decision.opportunity_cutoff,
+               decision.opportunity_episode, decision.risk_policy, decision.expressions,
                decision.selected_expression, decision.data_requests,
                decision.learning_history, decision.input_manifest,
                decision.status

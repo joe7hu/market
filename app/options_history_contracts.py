@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from investment_panel.core.decision import DecisionResolutionV2
+from investment_panel.core.decision import DecisionResolutionV2, InputLineage, OpportunityEpisode
 
 
 class OptionSnapshotSummary(BaseModel):
@@ -229,6 +229,12 @@ class OptionsDecisionTruth(BaseModel):
     next_action: str | None = None
     route_version: str
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    episode_id: str | None = None
+    opportunity_episode_id: str | None = None
+    decision_revision: str | None = None
+    policy_version: str | None = None
+    cutoff: datetime | None = None
+    input_lineage: list[InputLineage] = Field(default_factory=list)
 
 
 class OptionsDecisionBrief(BaseModel):
@@ -443,6 +449,12 @@ class OptionTradeTicket(BaseModel):
     risk_policy_version: str | None = None
     policy_version: str | None = None
     decision_revision: str | None = None
+    episode_id: str | None = None
+    opportunity_episode_id: str | None = None
+    cutoff: datetime | None = None
+    input_lineage: list[InputLineage] = Field(default_factory=list)
+    opportunity_episode: OpportunityEpisode | None = None
+    trade_expression: dict[str, Any] | None = None
     resolution: DecisionResolutionV2 | None = None
     publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
@@ -477,6 +489,11 @@ class RecoveryOptionTradeTicketV4(BaseModel):
     risk_policy_version: str | None = None
     policy_version: str | None = None
     decision_revision: str | None = None
+    episode_id: str | None = None
+    opportunity_episode_id: str | None = None
+    cutoff: datetime | None = None
+    input_lineage: list[InputLineage] = Field(default_factory=list)
+    opportunity_episode: OpportunityEpisode | None = None
     resolution: DecisionResolutionV2 | None = None
     publication_lineage: dict[str, Any] = Field(default_factory=dict)
     symbol: str
