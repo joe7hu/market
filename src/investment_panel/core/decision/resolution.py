@@ -158,6 +158,8 @@ class DecisionResolutionV2(BaseModel):
                 raise ValueError("blocked resolution must expose exactly one primary blocker")
             if _is_order_action(self.action):
                 raise ValueError("blocked resolution cannot contain an order action")
+            if isinstance(self.size, (int, float)) and self.size > 0:
+                raise ValueError("blocked resolution cannot contain a positive size")
             if self.authorization_mode in {AuthorizationMode.PAPER, AuthorizationMode.LIVE}:
                 raise ValueError("blocked resolution cannot be paper or live authorized")
         if self.eligibility is ResolutionEligibility.ACTIONABLE:
@@ -262,6 +264,7 @@ def build_decision_resolution(
         action = ResolutionAction.NO_TRADE.value
         clean_blockers = [primary] if primary else []
         authorization_mode = AuthorizationMode.NONE.value
+        size = None
     return DecisionResolutionV2(
         lifecycle=lifecycle,
         eligibility=eligibility,

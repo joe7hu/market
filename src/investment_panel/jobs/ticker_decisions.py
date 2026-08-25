@@ -10,10 +10,18 @@ from typing import Any, Iterable
 from psycopg.types.json import Jsonb
 
 from investment_panel.core.config import AppConfig, load_config
-from investment_panel.core.decision import build_ticker_decision
+from investment_panel.core.decision import (
+    ExpressionKind,
+    MarketStateSnapshot,
+    PortfolioImpact,
+    build_ticker_decision,
+    trade_expression_identity,
+)
 from investment_panel.core.panel import TICKER_INITIAL_TABLES
 from investment_panel.database.authority import runtime_for_config
 from investment_panel.database.panel_models import load_postgres_tables
+from investment_panel.database.analysis import AnalysisRepository
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.runtime import JOB_PROFILE
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
@@ -46,6 +54,7 @@ def publish(
     selected = _normalise_symbols(benchmark_symbols, symbols, limit=limit)
     benchmark = _freeze_benchmark(runtime, benchmark_symbols, reference)
     repository = TickerDecisionRepository(runtime)
+    analysis_repository = AnalysisRepository(runtime)
     published: list[dict[str, Any]] = []
     decisions_for_paper: list[Any] = []
     skipped = 0
@@ -63,9 +72,54 @@ def publish(
                 raise RuntimeError("ticker input read models are unavailable")
             # The benchmark is written before the read so its membership is
             # part of the same point-in-time input manifest as the decision.
-            decision = build_ticker_decision(symbol, tables, as_of=reference)
+            replay = replay_portfolio_at(config, reference)
+            seed = build_ticker_decision(symbol, tables, as_of=reference, portfolio_replay=replay)
+            market_publication = analysis_repository.publication_at_or_before(
+                "market", cutoff=reference
+            )
+            snapshot = _market_snapshot_for_decision(market_publication, reference)
+            impacts = (
+                portfolio_impacts(seed, snapshot, market_publication["publication_id"], replay)
+                if snapshot is not None and market_publication is not None
+                else {}
+            )
+            decision = build_ticker_decision(
+                symbol,
+                tables,
+                as_of=reference,
+                market_state_snapshot=snapshot,
+                portfolio_impacts=impacts,
+                risk_policy_snapshot=seed.risk_policy_snapshot,
+                portfolio_replay=replay,
+            )
             prior = repository.latest(symbol)
-            if prior is not None and prior.input_manifest.input_hash == decision.input_manifest.input_hash:
+            same_context = prior is not None and (
+                prior.market_state_publication_id == decision.market_state_publication_id
+                and (
+                    prior.market_state_snapshot is None
+                    and decision.market_state_snapshot is None
+                    or prior.market_state_snapshot is not None
+                    and decision.market_state_snapshot is not None
+                    and prior.market_state_snapshot.model_dump(mode="json")
+                    == decision.market_state_snapshot.model_dump(mode="json")
+                )
+                and {
+                    kind.value: impact.model_dump(mode="json")
+                    for kind, impact in prior.portfolio_impacts.items()
+                } == {
+                    kind.value: impact.model_dump(mode="json")
+                    for kind, impact in decision.portfolio_impacts.items()
+                }
+                and (
+                    prior.risk_policy_snapshot is None
+                    and decision.risk_policy_snapshot is None
+                    or prior.risk_policy_snapshot is not None
+                    and decision.risk_policy_snapshot is not None
+                    and prior.risk_policy_snapshot.model_dump(mode="json")
+                    == decision.risk_policy_snapshot.model_dump(mode="json")
+                )
+            )
+            if prior is not None and prior.input_manifest.input_hash == decision.input_manifest.input_hash and same_context:
                 skipped += 1
                 decisions_for_paper.append(decision)
                 continue
@@ -93,6 +147,70 @@ def publish(
         "paper_staging": paper_staging,
         "paper_execution": paper_execution,
     }
+
+
+def _market_snapshot_for_decision(publication: dict[str, Any] | None, cutoff: datetime) -> Any:
+    if publication is None:
+        return None
+    rows = publication.get("models", {}).get("market_state_snapshot") or []
+    if not rows:
+        return None
+    snapshot = MarketStateSnapshot.model_validate(rows[0])
+    matrix = snapshot.coverage_matrix
+    if matrix is not None:
+        matrix = matrix.model_copy(update={
+            "as_of": cutoff,
+            "input_cutoff": cutoff,
+            "rows": tuple(row.model_copy(update={"input_cutoff": cutoff}) for row in matrix.rows),
+        })
+    return snapshot.model_copy(update={
+        "publication_id": publication["publication_id"],
+        "as_of": cutoff,
+        "input_cutoff": cutoff,
+        "coverage_matrix": matrix,
+    })
+
+
+def portfolio_impacts(
+    decision: Any,
+    snapshot: Any,
+    publication_id: str,
+    replay: dict[str, Any],
+) -> dict[ExpressionKind, PortfolioImpact]:
+    before = {
+        "cutoff": replay["cutoff"],
+        "positions": replay["positions"],
+        "portfolio_value": replay["portfolio_value"],
+        "transaction_count": replay["transaction_count"],
+    }
+    impacts: dict[ExpressionKind, PortfolioImpact] = {}
+    for kind, expression in decision.expressions.items():
+        planned_loss = float(expression.planned_loss or 0)
+        impacts[kind] = PortfolioImpact(
+            impact_id=f"portfolio-impact:{decision.opportunity_episode_id}:{kind.value}",
+            opportunity_episode_id=decision.opportunity_episode_id,
+            expression_kind=kind,
+            expression_identity=trade_expression_identity(expression),
+            decision_revision=decision.decision_revision,
+            risk_policy_version=decision.policy_version,
+            market_snapshot_id=snapshot.snapshot_id,
+            market_state_publication_id=publication_id,
+            cutoff=decision.cutoff,
+            input_lineage=tuple(decision.input_lineage),
+            portfolio_before=before,
+            portfolio_after={**before, "expression_kind": kind.value},
+            marginal_risk=0.0 if kind is ExpressionKind.CASH else planned_loss,
+            diversification_benefit=None,
+            risk_budget_consumed=0.0 if kind is ExpressionKind.CASH else planned_loss,
+            positions_most_correlated=(),
+            position_to_trim_or_replace=None,
+            scenario_pnl={"status": "zero_impact", "pnl": 0.0} if kind is ExpressionKind.CASH else None,
+            factor_exposure=None,
+            greeks=None,
+            liquidity={"status": "unavailable"},
+            availability="available",
+        )
+    return impacts
 
 
 def publish_benchmark(

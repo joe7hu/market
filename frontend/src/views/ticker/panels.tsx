@@ -100,9 +100,26 @@ export function TickerDecisionPanel({
         </div>
       </DataTableFrame>
       {dataRequests.length ? <DataRequestPanel requests={dataRequests} collecting={collecting} onCollect={onCollect} /> : null}
+      <SelectedPortfolioImpact decision={decision} />
       {disagreement ? <DisagreementPanel learning={learning} /> : null}
       {learning ? <LearningLoopPanel learning={learning} /> : null}
     </>
+  );
+}
+
+function SelectedPortfolioImpact({ decision }: { decision: TickerDecisionContract }) {
+  const kind = decision.selected_expression?.kind;
+  const impact = kind ? decision.portfolio_impacts?.[kind] : undefined;
+  const blockers = impact?.blockers ?? [];
+  return (
+    <DataTableFrame title="Selected portfolio impact" action={<StatusBadge tone={impact?.availability === "available" ? "good" : "warn"}>{impact?.availability ?? "unavailable"}</StatusBadge>}>
+      <div className="grid gap-2 p-4 text-xs sm:grid-cols-3">
+        <KeyValue label="Expression" value={kind ?? "No selected expression"} />
+        <KeyValue label="Marginal risk" value={impact?.marginal_risk == null ? "Unavailable" : String(impact.marginal_risk)} />
+        <KeyValue label="Risk budget" value={impact?.risk_budget_consumed == null ? "Unavailable" : String(impact.risk_budget_consumed)} />
+      </div>
+      {blockers.length ? <ReasonList title="Blockers" rows={blockers.map(String)} empty="No blockers" /> : null}
+    </DataTableFrame>
   );
 }
 

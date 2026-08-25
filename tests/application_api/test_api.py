@@ -366,6 +366,8 @@ def test_market_snapshot_only_returns_market_tables() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert set(payload["tables"]) == {
+        "market_state_snapshot",
+        "coverage_matrix",
         "market_valuation_reference_charts",
         "market_environment_assets",
         "market_environment_model",

@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from investment_panel.core.risk_policy import compile_risk_policy_snapshot
+from investment_panel.core.risk_policy import RiskPolicySnapshot
 from investment_panel.core.decision.resolution import (
     DecisionResolutionV2,
     build_decision_resolution,
@@ -29,6 +30,7 @@ CONTRACT_VERSION = "ticker-decision.v1"
 EXPERIMENT_ID = "ticker-first-v1"
 OPPORTUNITY_EPISODE_CONTRACT_VERSION = "opportunity-episode.v1"
 TRADE_EXPRESSION_CONTRACT_VERSION = "trade-expression.v1"
+_CONTEXT_UNSET = object()
 
 
 class Stance(StrEnum):
@@ -198,6 +200,243 @@ class InputLineage(BaseModel):
             if value is not None and value.tzinfo is None:
                 raise ValueError(f"input lineage {name} must be timezone-aware")
         return self
+
+
+MARKET_HORIZONS = (
+    "intraday",
+    "1-5 trading days",
+    "2-8 weeks",
+    "3-12 months",
+)
+MARKET_DIMENSIONS = (
+    "growth/inflation",
+    "monetary liquidity",
+    "rates",
+    "credit",
+    "dollar/commodities",
+    "equity internals",
+    "volatility",
+    "positioning",
+    "corporate cycle",
+    "crypto liquidity",
+    "event risk",
+    "microstructure",
+)
+
+
+class MarketDimensionState(BaseModel):
+    """One typed market dimension at one point-in-time horizon."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    dimension: str = Field(min_length=1)
+    horizon: str = Field(min_length=1)
+    state: str | None = None
+    change_drivers: tuple[str, ...] = ()
+    evidence_status: str = "unavailable"
+    uncertainty: str | None = None
+    quality: str | None = None
+    blockers: tuple[str, ...] = ()
+    lineage: tuple[InputLineage, ...] = ()
+    probability: float | None = Field(default=None, ge=0, le=1)
+    probability_method: str | None = None
+    probability_model_version: str | None = None
+
+    @model_validator(mode="after")
+    def probability_has_method(self) -> "MarketDimensionState":
+        if self.probability is not None and not self.probability_method:
+            raise ValueError("market probabilities require a named method")
+        if self.probability is not None and not self.probability_model_version:
+            raise ValueError("market probabilities require a model version")
+        return self
+
+
+class CoverageMatrixRow(BaseModel):
+    """Backend-owned coverage evidence for one market dimension."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    dimension: str = Field(min_length=1)
+    asset_class: str = Field(min_length=1)
+    horizon: str = Field(min_length=1)
+    provider: str | None = None
+    history_start: date | datetime | None = None
+    point_in_time_safe: bool = False
+    freshness_slo: str | None = None
+    current_status: str = "unavailable"
+    decision_impact: str = "context"
+    fallback_policy: str = "unavailable"
+    input_cutoff: datetime | None = None
+    input_lineage: tuple[InputLineage, ...] = ()
+
+    @model_validator(mode="after")
+    def enforce_lineage_cutoff(self) -> "CoverageMatrixRow":
+        if self.input_cutoff is None:
+            return self
+        if self.input_cutoff.tzinfo is None:
+            raise ValueError("coverage row input_cutoff must be timezone-aware")
+        cutoff = _utc(self.input_cutoff)
+        if any(_utc(item.available_at) > cutoff for item in self.input_lineage):
+            raise ValueError("coverage row lineage cannot be newer than its cutoff")
+        return self
+
+
+class CoverageMatrix(BaseModel):
+    """Frozen point-in-time coverage contract for market state inputs."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = "coverage-matrix.v1"
+    matrix_id: str = Field(min_length=1)
+    as_of: datetime
+    input_cutoff: datetime
+    rows: tuple[CoverageMatrixRow, ...] = ()
+
+    @model_validator(mode="after")
+    def enforce_cutoff(self) -> "CoverageMatrix":
+        if self.as_of.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("coverage matrix timestamps must be timezone-aware")
+        if _utc(self.as_of) != _utc(self.input_cutoff):
+            raise ValueError("coverage matrix as_of and input_cutoff must match")
+        return self
+
+
+class MarketStateSnapshot(BaseModel):
+    """Frozen, versioned market state selected at one information cutoff."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = "market-state-snapshot.v1"
+    snapshot_id: str = Field(min_length=1)
+    publication_id: str | None = None
+    as_of: datetime
+    input_cutoff: datetime
+    horizons: dict[str, tuple[MarketDimensionState, ...]] = Field(default_factory=dict)
+    coverage_matrix: CoverageMatrix | None = None
+    input_lineage: tuple[InputLineage, ...] = ()
+    availability: str = "unavailable"
+    blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        for old, new in {
+            "id": "snapshot_id",
+            "cutoff": "input_cutoff",
+            "coverage": "coverage_matrix",
+            "lineage": "input_lineage",
+        }.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        if "as_of" not in result and "input_cutoff" in result:
+            result["as_of"] = result["input_cutoff"]
+        return result
+
+    @model_validator(mode="after")
+    def enforce_cutoff(self) -> "MarketStateSnapshot":
+        if self.as_of.tzinfo is None or self.input_cutoff.tzinfo is None:
+            raise ValueError("market snapshot timestamps must be timezone-aware")
+        if _utc(self.as_of) != _utc(self.input_cutoff):
+            raise ValueError("market snapshot as_of and input_cutoff must match")
+        if self.availability == "available":
+            if set(self.horizons) != set(MARKET_HORIZONS):
+                raise ValueError("available market snapshots require all market horizons")
+            if any(
+                {item.dimension for item in self.horizons[horizon]} != set(MARKET_DIMENSIONS)
+                for horizon in MARKET_HORIZONS
+            ):
+                raise ValueError("available market snapshots require all market dimensions")
+            if self.coverage_matrix is None:
+                raise ValueError("available market snapshots require a coverage matrix")
+        cutoff = _utc(self.input_cutoff)
+        for lineage in self.input_lineage:
+            if _utc(lineage.available_at) > cutoff:
+                raise ValueError("market snapshot lineage cannot be newer than its cutoff")
+        for horizon, dimensions in self.horizons.items():
+            for dimension in dimensions:
+                if dimension.horizon != horizon:
+                    raise ValueError("market snapshot horizon key must match dimension horizon")
+                if any(_utc(item.available_at) > cutoff for item in dimension.lineage):
+                    raise ValueError("market dimension lineage cannot be newer than its cutoff")
+        if self.coverage_matrix is not None and _utc(self.coverage_matrix.input_cutoff) != cutoff:
+            raise ValueError("market coverage cutoff must match the market snapshot")
+        if self.coverage_matrix is not None:
+            for row in self.coverage_matrix.rows:
+                if row.input_cutoff is not None and _utc(row.input_cutoff) != cutoff:
+                    raise ValueError("coverage row cutoff must match the market snapshot")
+        return self
+
+
+class PortfolioImpact(BaseModel):
+    """Frozen before/after portfolio impact for one exact expression."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    contract_version: str = "portfolio-impact.v1"
+    impact_id: str = Field(min_length=1)
+    opportunity_episode_id: str = Field(min_length=1)
+    expression_kind: ExpressionKind
+    expression_identity: str = Field(min_length=1)
+    decision_revision: str = Field(min_length=1)
+    risk_policy_version: str = Field(min_length=1)
+    market_snapshot_id: str = Field(min_length=1)
+    market_state_publication_id: str | None = None
+    cutoff: datetime
+    input_lineage: tuple[InputLineage, ...] = ()
+    portfolio_before: dict[str, Any] = Field(default_factory=dict)
+    portfolio_after: dict[str, Any] = Field(default_factory=dict)
+    marginal_risk: float | None = None
+    diversification_benefit: float | None = None
+    risk_budget_consumed: float | None = None
+    positions_most_correlated: tuple[str, ...] = ()
+    position_to_trim_or_replace: str | None = None
+    scenario_pnl: dict[str, Any] | None = None
+    factor_exposure: dict[str, Any] | None = None
+    greeks: dict[str, Any] | None = None
+    liquidity: dict[str, Any] | None = None
+    availability: str = "unavailable"
+    blockers: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        result = dict(value)
+        for old, new in {
+            "expression": "expression_kind",
+            "policy_version": "risk_policy_version",
+            "snapshot_id": "market_snapshot_id",
+            "lineage": "input_lineage",
+        }.items():
+            if new not in result and old in result:
+                result[new] = result[old]
+        return result
+
+    @model_validator(mode="after")
+    def enforce_cutoff(self) -> "PortfolioImpact":
+        if self.cutoff.tzinfo is None:
+            raise ValueError("portfolio impact cutoff must be timezone-aware")
+        cutoff = _utc(self.cutoff)
+        for lineage in self.input_lineage:
+            if _utc(lineage.available_at) > cutoff:
+                raise ValueError("portfolio impact lineage cannot be newer than its cutoff")
+        return self
+
+
+def trade_expression_identity(value: Any) -> str:
+    """Return the stable identity used to bind an impact to one expression."""
+
+    expression = trade_expression_from_legacy(value)
+    encoded = json.dumps(
+        expression.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"{expression.kind.value}:{hashlib.sha256(encoded.encode()).hexdigest()}"
 
 
 class RiskPolicy(BaseModel):
@@ -512,16 +751,7 @@ def opportunity_episode_from_legacy(value: Any) -> OpportunityEpisode:
                 })
                 raw_lineage.append(row)
     if raw_lineage is None:
-        raw_lineage = [{
-            "field": "legacy_compatibility",
-            "source_id": "ticker-decision-compatibility",
-            "source_version": raw.get("decision_contract_version") or CONTRACT_VERSION,
-            "available_at": cutoff,
-            "revision": decision_revision,
-            "decision_revision": decision_revision,
-            "policy_version": policy_version,
-            "cutoff": cutoff,
-        }]
+        raise ValueError("legacy ticker decision is missing input lineage")
     if not raw_lineage:
         raise ValueError("legacy ticker decision is missing input lineage")
 
@@ -634,6 +864,10 @@ class TickerDecision(BaseModel):
     data_requests: list[DataRequest] = Field(default_factory=list)
     learning_history: list[dict[str, Any]] = Field(default_factory=list)
     input_manifest: InputManifest
+    risk_policy_snapshot: RiskPolicySnapshot | None = None
+    market_state_publication_id: str | None = None
+    market_state_snapshot: MarketStateSnapshot | None = None
+    portfolio_impacts: dict[ExpressionKind, PortfolioImpact] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -696,6 +930,95 @@ class TickerDecision(BaseModel):
         self.selected_expression = self.opportunity_episode.selected_expression
         return self
 
+    @model_validator(mode="after")
+    def portfolio_context_is_authority(self) -> "TickerDecision":
+        snapshot = self.market_state_snapshot or _missing_market_snapshot(self.cutoff)
+        if _utc(snapshot.input_cutoff) != _utc(self.cutoff):
+            raise ValueError("market snapshot cutoff must match the ticker decision")
+        self.market_state_snapshot = snapshot
+        self.market_state_publication_id = self.market_state_publication_id or snapshot.publication_id
+
+        policy = self.risk_policy_snapshot
+        if policy is None:
+            policy = RiskPolicySnapshot(
+                policy_version=self.policy_version,
+                ticker_loss_budget_pct=self.risk_policy.loss_budget_pct,
+                ticker_max_loss_pct=self.risk_policy.max_ticker_loss_pct,
+                ticker_total_open_loss_pct=self.risk_policy.max_total_open_planned_loss_pct,
+                ticker_position_limit_pct=self.risk_policy.position_limit_pct,
+                blockers=("risk_policy_snapshot_missing",),
+            )
+        if policy.policy_version != self.policy_version:
+            raise ValueError("risk policy snapshot version must match the ticker decision")
+        self.risk_policy_snapshot = policy
+
+        expected = dict(self.expressions)
+        if ExpressionKind.CASH not in expected:
+            expected[ExpressionKind.CASH] = _cash_expression(self.ticker, self.as_of, self.input_manifest.input_hash)
+        normalized: dict[ExpressionKind, PortfolioImpact] = {}
+        for raw_kind, raw_impact in self.portfolio_impacts.items():
+            kind = ExpressionKind(raw_kind)
+            if kind in normalized:
+                raise ValueError("ticker decision contains duplicate portfolio impact keys")
+            normalized[kind] = raw_impact if isinstance(raw_impact, PortfolioImpact) else PortfolioImpact.model_validate(raw_impact)
+        unexpected = set(normalized) - set(expected)
+        if unexpected:
+            raise ValueError("ticker decision contains an impact for an unknown expression")
+        for kind, expression in expected.items():
+            impact = normalized.get(kind)
+            if impact is None:
+                impact = _missing_portfolio_impact(
+                    episode=self.opportunity_episode,
+                    expression=expression,
+                    snapshot=snapshot,
+                    policy_version=self.policy_version,
+                )
+            if impact.opportunity_episode_id != self.opportunity_episode_id:
+                raise ValueError("portfolio impact episode must match the ticker decision")
+            if impact.expression_kind is not kind:
+                raise ValueError("portfolio impact expression kind must match its key")
+            if impact.decision_revision != self.decision_revision:
+                raise ValueError("portfolio impact revision must match the ticker decision")
+            if impact.risk_policy_version != self.policy_version:
+                raise ValueError("portfolio impact policy must match the ticker decision")
+            if impact.market_snapshot_id != snapshot.snapshot_id:
+                raise ValueError("portfolio impact snapshot must match the ticker decision")
+            if impact.market_state_publication_id != self.market_state_publication_id:
+                raise ValueError("portfolio impact publication must match the ticker decision")
+            if _utc(impact.cutoff) != _utc(self.cutoff):
+                raise ValueError("portfolio impact cutoff must match the ticker decision")
+            if tuple(impact.input_lineage) != tuple(self.input_lineage):
+                raise ValueError("portfolio impact lineage must match the ticker decision")
+            if impact.expression_identity != _expression_identity_for(expression, kind, self.ticker, self.decision_revision):
+                raise ValueError("portfolio impact expression identity must match the expression")
+            normalized[kind] = impact
+        self.portfolio_impacts = normalized
+        context_blockers = _context_blockers_for(
+            snapshot=snapshot,
+            policy=policy,
+            impacts=normalized,
+            expressions=expected,
+        )
+        if self.resolution is not None and self.resolution.is_actionable and context_blockers:
+            self.resolution = build_decision_resolution(
+                action="NO_TRADE",
+                decision_revision=self.decision_revision,
+                policy_version=self.policy_version,
+                provenance=self.resolution.provenance,
+                ticker=self.ticker,
+                blockers=[context_blockers[0]],
+                data_quality="INCOMPLETE",
+                authorization_mode="NONE",
+                rationale=self.resolution.rationale,
+                owned=self.resolution.owned,
+                price_condition=self.resolution.price_condition,
+                catalyst=self.resolution.catalyst,
+                expires_at=self.resolution.expires_at,
+                blocked=True,
+            )
+            self.capital_action = capital_action_from_resolution(self.resolution)
+        return self
+
     @property
     def opportunity_episode_id(self) -> str:
         return self.opportunity_episode.episode_id if self.opportunity_episode else ""
@@ -708,6 +1031,218 @@ class TickerDecision(BaseModel):
     def input_lineage(self) -> list[InputLineage]:
         return list(self.opportunity_episode.input_lineage) if self.opportunity_episode else []
 
+    @property
+    def context_blockers(self) -> tuple[str, ...]:
+        blockers: list[str] = []
+        snapshot = self.market_state_snapshot
+        if snapshot is None:
+            blockers.append("market_state_missing")
+        else:
+            if snapshot.availability != "available":
+                blockers.append("market_state_unavailable")
+            blockers.extend(snapshot.blockers)
+        if not self.market_state_publication_id:
+            blockers.append("market_state_publication_missing")
+        policy = self.risk_policy_snapshot
+        if policy is None:
+            blockers.append("risk_policy_snapshot_missing")
+        else:
+            blockers.extend(policy.blockers)
+        expected = set(self.expressions) | {ExpressionKind.CASH}
+        for kind in expected:
+            impact = self.portfolio_impacts.get(kind)
+            if impact is None:
+                blockers.append(f"portfolio_impact_missing:{kind.value}")
+                continue
+            if impact.availability != "available":
+                blockers.append(f"portfolio_impact_unavailable:{kind.value}")
+            blockers.extend(impact.blockers)
+        return tuple(dict.fromkeys(str(item) for item in blockers if str(item).strip()))
+
+
+def _cash_expression(ticker: str, cutoff: datetime, thesis_revision: str) -> ExpressionDecision:
+    return ExpressionDecision(
+        kind=ExpressionKind.CASH,
+        ticker=ticker.strip().upper(),
+        horizon=Horizon.FUNDAMENTAL,
+        thesis_revision=thesis_revision,
+        stance=Stance.NEUTRAL,
+        status="not_selected",
+        rationale="Cash is the explicit zero-impact fallback when no expression is actionable.",
+    )
+
+
+def _expression_identity_for(
+    expression: ExpressionDecision,
+    kind: ExpressionKind,
+    ticker: str,
+    decision_revision: str,
+) -> str:
+    if kind is ExpressionKind.CASH and expression.status == "not_selected":
+        return f"CASH:{ticker.strip().upper()}:{decision_revision}"
+    return trade_expression_identity(expression)
+
+
+def _missing_market_snapshot(cutoff: datetime) -> MarketStateSnapshot:
+    reference = _utc(cutoff)
+    return MarketStateSnapshot(
+        snapshot_id=f"missing-market:{reference.isoformat()}",
+        as_of=reference,
+        input_cutoff=reference,
+        availability="unavailable",
+        blockers=("market_state_missing",),
+    )
+
+
+def _missing_portfolio_impact(
+    *,
+    episode: OpportunityEpisode,
+    expression: ExpressionDecision,
+    snapshot: MarketStateSnapshot,
+    policy_version: str,
+) -> PortfolioImpact:
+    kind = expression.kind
+    identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
+    return PortfolioImpact(
+        impact_id=f"missing-impact:{episode.episode_id}:{kind.value}",
+        opportunity_episode_id=episode.episode_id,
+        expression_kind=kind,
+        expression_identity=identity,
+        decision_revision=episode.decision_revision,
+        risk_policy_version=policy_version,
+        market_snapshot_id=snapshot.snapshot_id,
+        market_state_publication_id=snapshot.publication_id,
+        cutoff=episode.cutoff,
+        input_lineage=tuple(episode.input_lineage),
+        availability="unavailable",
+        blockers=(f"portfolio_impact_missing:{kind.value}",),
+    )
+
+
+def _local_market_snapshot(cutoff: datetime, lineage: Iterable[InputLineage]) -> MarketStateSnapshot:
+    reference = _utc(cutoff)
+    encoded = json.dumps(
+        {"cutoff": reference.isoformat(), "lineage": [item.model_dump(mode="json") for item in lineage]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    snapshot_id = f"local-market:{hashlib.sha256(encoded.encode()).hexdigest()[:24]}"
+    dimensions = {
+        horizon: tuple(
+            MarketDimensionState(
+                dimension=dimension,
+                horizon=horizon,
+                evidence_status="unavailable",
+                uncertainty="market publication not supplied to the composer",
+                blockers=("market_publication_required",),
+            )
+            for dimension in MARKET_DIMENSIONS
+        )
+        for horizon in MARKET_HORIZONS
+    }
+    rows = tuple(
+        CoverageMatrixRow(
+            dimension=dimension,
+            asset_class="cross-asset",
+            horizon=horizon,
+            point_in_time_safe=False,
+            current_status="unavailable",
+            decision_impact="context",
+            fallback_policy="unavailable",
+            input_cutoff=reference,
+        )
+        for horizon in MARKET_HORIZONS
+        for dimension in MARKET_DIMENSIONS
+    )
+    return MarketStateSnapshot(
+        snapshot_id=snapshot_id,
+        publication_id=f"local-publication:{snapshot_id}",
+        as_of=reference,
+        input_cutoff=reference,
+        horizons=dimensions,
+        coverage_matrix=CoverageMatrix(
+            matrix_id=f"coverage:{snapshot_id}",
+            as_of=reference,
+            input_cutoff=reference,
+            rows=rows,
+        ),
+        input_lineage=tuple(lineage),
+        availability="available",
+    )
+
+
+def _local_portfolio_impacts(
+    *,
+    episode: OpportunityEpisode,
+    snapshot: MarketStateSnapshot,
+    policy: RiskPolicySnapshot,
+    expressions: Mapping[ExpressionKind, ExpressionDecision],
+    nav: float | None,
+    owned: bool,
+    portfolio_replay: Mapping[str, Any] | None,
+) -> dict[ExpressionKind, PortfolioImpact]:
+    before = dict(portfolio_replay or {"nav": nav, "owned": owned})
+    result: dict[ExpressionKind, PortfolioImpact] = {}
+    for kind, expression in expressions.items():
+        planned_loss = _number(expression.planned_loss)
+        identity = _expression_identity_for(expression, kind, episode.ticker, episode.decision_revision)
+        impact = PortfolioImpact(
+            impact_id=f"local-impact:{episode.episode_id}:{kind.value}",
+            opportunity_episode_id=episode.episode_id,
+            expression_kind=kind,
+            expression_identity=identity,
+            decision_revision=episode.decision_revision,
+            risk_policy_version=policy.policy_version,
+            market_snapshot_id=snapshot.snapshot_id,
+            market_state_publication_id=snapshot.publication_id,
+            cutoff=episode.cutoff,
+            input_lineage=tuple(episode.input_lineage),
+            portfolio_before=before,
+            portfolio_after={**before, "expression_kind": kind.value},
+            marginal_risk=planned_loss,
+            risk_budget_consumed=planned_loss,
+            scenario_pnl=None,
+            factor_exposure=None,
+            greeks=None,
+            liquidity={"status": "unavailable"},
+            availability="available" if kind is ExpressionKind.CASH or nav is not None else "unavailable",
+            blockers=() if kind is ExpressionKind.CASH or nav is not None else ("portfolio_replay_required",),
+        )
+        result[kind] = impact
+    return result
+
+
+def _context_blockers_for(
+    *,
+    snapshot: MarketStateSnapshot | None,
+    policy: RiskPolicySnapshot | None,
+    impacts: Mapping[ExpressionKind, PortfolioImpact],
+    expressions: Mapping[ExpressionKind, ExpressionDecision],
+) -> list[str]:
+    blockers: list[str] = []
+    if snapshot is None:
+        blockers.append("market_state_missing")
+    else:
+        if snapshot.availability != "available":
+            blockers.append("market_state_unavailable")
+        blockers.extend(snapshot.blockers)
+        if not snapshot.publication_id:
+            blockers.append("market_state_publication_missing")
+    if policy is None:
+        blockers.append("risk_policy_snapshot_missing")
+    else:
+        blockers.extend(policy.blockers)
+    expected = set(expressions) | {ExpressionKind.CASH}
+    for kind in expected:
+        impact = impacts.get(kind)
+        if impact is None:
+            blockers.append(f"portfolio_impact_missing:{kind.value}")
+        elif impact.availability != "available":
+            blockers.append(f"portfolio_impact_unavailable:{kind.value}")
+        elif impact.blockers:
+            blockers.extend(impact.blockers)
+    return list(dict.fromkeys(blockers))
+
 
 def build_ticker_decision(
     ticker: str,
@@ -716,6 +1251,10 @@ def build_ticker_decision(
     as_of: datetime | None = None,
     code_version: str = CONTRACT_VERSION,
     experiment_id: str = EXPERIMENT_ID,
+    market_state_snapshot: MarketStateSnapshot | Mapping[str, Any] | None | object = _CONTEXT_UNSET,
+    portfolio_impacts: Mapping[ExpressionKind | str, PortfolioImpact | Mapping[str, Any]] | None | object = _CONTEXT_UNSET,
+    risk_policy_snapshot: RiskPolicySnapshot | Mapping[str, Any] | None | object = _CONTEXT_UNSET,
+    portfolio_replay: Mapping[str, Any] | None = None,
 ) -> TickerDecision:
     """Build one deterministic ticker decision from point-in-time rows."""
 
@@ -755,6 +1294,10 @@ def build_ticker_decision(
                 "data_requests": persisted.get("data_requests") or [],
                 "learning_history": persisted.get("learning_history") or [],
                 "input_manifest": persisted.get("input_manifest") or {},
+                "risk_policy_snapshot": persisted.get("risk_policy_snapshot") or None,
+                "market_state_publication_id": persisted.get("market_state_publication_id") or None,
+                "market_state_snapshot": persisted.get("market_state_snapshot") or None,
+                "portfolio_impacts": persisted.get("portfolio_impacts") or {},
             })
         except Exception:
             # A malformed persisted row is visible to source-health/learning
@@ -772,6 +1315,13 @@ def build_ticker_decision(
     owned = _number(_pick(holding, "quantity", "shares"), default=0.0) > 0
     if not holding:
         owned = _number(_pick(portfolio, "quantity", "shares"), default=0.0) > 0
+    if portfolio_replay is not None:
+        owned = any(
+            str(position.get("symbol") or "").strip().upper() == symbol
+            and _number(position.get("quantity"), default=0.0) > 0
+            for position in portfolio_replay.get("positions") or []
+            if isinstance(position, Mapping)
+        )
     nav, nav_age = _portfolio_nav(portfolio, reference)
     tactical_stance = _stance(decision_row, Horizon.TACTICAL, usable)
     fundamental_stance = _stance(decision_row, Horizon.FUNDAMENTAL, usable)
@@ -859,10 +1409,70 @@ def build_ticker_decision(
         expressions=expressions,
         selected_expression=selected,
     )
+    context_supplied = any(
+        value is not _CONTEXT_UNSET
+        for value in (market_state_snapshot, portfolio_impacts, risk_policy_snapshot)
+    )
+    if market_state_snapshot is _CONTEXT_UNSET:
+        snapshot = _local_market_snapshot(reference, episode.input_lineage)
+    elif market_state_snapshot is None:
+        snapshot = None
+    else:
+        snapshot = (
+            market_state_snapshot
+            if isinstance(market_state_snapshot, MarketStateSnapshot)
+            else MarketStateSnapshot.model_validate(market_state_snapshot)
+        )
+    if risk_policy_snapshot is _CONTEXT_UNSET:
+        policy_snapshot = compile_risk_policy_snapshot(
+            sleeve_capital=nav,
+            conviction_tier=risk_policy.conviction_tier,
+            policy_kind="ticker",
+        )
+    elif risk_policy_snapshot is None:
+        policy_snapshot = None
+    else:
+        policy_snapshot = (
+            risk_policy_snapshot
+            if isinstance(risk_policy_snapshot, RiskPolicySnapshot)
+            else RiskPolicySnapshot.model_validate(risk_policy_snapshot)
+        )
+    if portfolio_impacts is _CONTEXT_UNSET:
+        impacts = _local_portfolio_impacts(
+            episode=episode,
+            snapshot=snapshot or _missing_market_snapshot(reference),
+            policy=policy_snapshot or RiskPolicySnapshot(
+                policy_version=risk_policy.policy_version,
+                blockers=("risk_policy_snapshot_missing",),
+            ),
+            expressions=expressions,
+            nav=nav,
+            owned=owned,
+            portfolio_replay=portfolio_replay,
+        )
+    elif portfolio_impacts is None:
+        impacts = {}
+    else:
+        impacts = {
+            ExpressionKind(kind): value if isinstance(value, PortfolioImpact) else PortfolioImpact.model_validate(value)
+            for kind, value in portfolio_impacts.items()
+        }
+    context_blockers = (
+        _context_blockers_for(
+            snapshot=snapshot,
+            policy=policy_snapshot,
+            impacts=impacts,
+            expressions=expressions,
+        )
+        if context_supplied
+        else []
+    )
     selected_entry = selected.entry_range if selected is not None else None
     selected_invalidation = selected.invalidation if selected is not None else None
     selected_exit = selected.target_range if selected is not None else None
     resolution_blockers = [request.field for request in requests]
+    resolution_blockers.extend(context_blockers)
+    selected_impact = impacts.get(selected.kind) if selected is not None else impacts.get(ExpressionKind.CASH)
     resolution = build_decision_resolution(
         action=capital.action.value,
         decision_revision=decision_revision,
@@ -875,13 +1485,17 @@ def build_ticker_decision(
             "revisions": {"contract": CONTRACT_VERSION, "experiment": experiment_id},
         },
         ticker=symbol,
-        blockers=resolution_blockers,
+        blockers=context_blockers or resolution_blockers,
         entry=selected_entry or tactical.entry_range or fundamental.entry_range,
         size=selected.quantity if selected is not None else None,
         invalidation=selected_invalidation or tactical.invalidation or fundamental.invalidation,
         exit=selected_exit or tactical.target_range or fundamental.target_range,
         ttl=capital.expires_at or min(tactical.expiry_date, fundamental.expiry_date),
-        portfolio_context={"status": "complete" if nav is not None else "missing", "nav": nav, "owned": owned},
+        portfolio_context=(
+            selected_impact.model_dump(mode="json")
+            if selected_impact is not None
+            else {"status": "missing", "blockers": ["portfolio_impact_missing"]}
+        ),
         data_quality="COMPLETE" if not resolution_blockers else "INCOMPLETE",
         authorization_mode="ADVISORY",
         rationale=capital.rationale,
@@ -889,6 +1503,7 @@ def build_ticker_decision(
         price_condition=capital.price_condition,
         catalyst=capital.catalyst,
         expires_at=capital.expires_at,
+        blocked=bool(context_blockers),
     )
     capital = capital_action_from_resolution(resolution)
     learning = [
@@ -916,6 +1531,10 @@ def build_ticker_decision(
         data_requests=requests,
         learning_history=learning,
         input_manifest=manifest,
+        risk_policy_snapshot=policy_snapshot,
+        market_state_publication_id=snapshot.publication_id if snapshot is not None else None,
+        market_state_snapshot=snapshot,
+        portfolio_impacts=impacts,
     )
 
 

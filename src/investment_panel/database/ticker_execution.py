@@ -12,7 +12,12 @@ from investment_panel.core.config import AppConfig
 from investment_panel.core.decision import (
     CapitalActionType,
     ExpressionKind,
+    MarketStateSnapshot,
+    OpportunityEpisode,
+    PortfolioImpact,
+    RiskPolicySnapshot,
     TickerDecision,
+    trade_expression_identity,
 )
 from investment_panel.core.options_recovery import FEE_PER_CONTRACT_LEG
 from investment_panel.database.options_paper_quotes import is_credit_structure, latest_option_legs, package_price
@@ -80,10 +85,13 @@ class TickerPaperExecutionRepository:
             raise ValueError("unsupported ticker expression") from exc
         if kind is ExpressionKind.CASH:
             raise ValueError("cash is a competing expression, not a paper order")
+        self._validate_decision_context(decision, kind)
         self._check_switches(kind)
         expression = decision.expressions.get(kind)
         if expression is None:
             raise ValueError("requested expression is not in the current ticker decision")
+        if decision.selected_expression is None or decision.selected_expression.kind is not kind:
+            raise ValueError("requested expression is not the selected ticker expression")
         if expression.status != "eligible":
             raise ValueError("requested expression is not eligible in the current ticker decision")
         if kind in OPTION_EXPRESSIONS and not _complete_option_legs(expression.legs):
@@ -122,24 +130,29 @@ class TickerPaperExecutionRepository:
                 raise ValueError("ticker instrument is not in the catalog")
             ticker_decision = connection.execute(
                 """
-                SELECT id::text, decision_revision, policy_version, resolution
+                SELECT id::text, decision_revision, policy_version, resolution,
+                       opportunity_episode_id, opportunity_cutoff, opportunity_episode,
+                       market_state_publication_id::text, market_state_snapshot,
+                       portfolio_impacts, risk_policy_snapshot
                 FROM analysis.ticker_decision
                 WHERE instrument_id = %s AND decision_revision = %s
                 LIMIT 1
                 """,
                 [instrument["id"], requested_revision],
             ).fetchone()
-            if ticker_decision is not None:
-                if str(ticker_decision["decision_revision"]) != requested_revision:
-                    raise ValueError("ticker decision revision is stale in PostgreSQL")
-                if str(ticker_decision["policy_version"] or "") != decision.policy_version:
-                    raise ValueError("ticker decision policy is stale in PostgreSQL")
-                persisted_resolution = dict(ticker_decision["resolution"] or {})
-                if persisted_resolution and (
-                    str(persisted_resolution.get("decision_revision") or "") != requested_revision
-                    or str(persisted_resolution.get("policy_version") or "") != decision.policy_version
-                ):
-                    raise ValueError("ticker decision resolution is stale in PostgreSQL")
+            if ticker_decision is None:
+                raise ValueError("ticker decision context is missing in PostgreSQL")
+            if str(ticker_decision["decision_revision"]) != requested_revision:
+                raise ValueError("ticker decision revision is stale in PostgreSQL")
+            if str(ticker_decision["policy_version"] or "") != decision.policy_version:
+                raise ValueError("ticker decision policy is stale in PostgreSQL")
+            persisted_resolution = dict(ticker_decision["resolution"] or {})
+            if persisted_resolution and (
+                str(persisted_resolution.get("decision_revision") or "") != requested_revision
+                or str(persisted_resolution.get("policy_version") or "") != decision.policy_version
+            ):
+                raise ValueError("ticker decision resolution is stale in PostgreSQL")
+            self._validate_persisted_context(connection, ticker_decision, decision, kind)
             if decision.capital_action.action in EXIT_ACTIONS:
                 if not decision.capital_action.owned:
                     raise ValueError("TRIM and EXIT require an existing paper position")
@@ -277,6 +290,88 @@ class TickerPaperExecutionRepository:
             "paper_only": True,
             "live_order_submission": False,
         }
+
+    @staticmethod
+    def _validate_decision_context(decision: TickerDecision, kind: ExpressionKind) -> None:
+        now = datetime.now(UTC)
+        if decision.cutoff > now:
+            raise ValueError("ticker decision cutoff is in the future")
+        if decision.context_blockers:
+            raise ValueError("ticker decision context is blocked: " + ", ".join(decision.context_blockers))
+        snapshot = decision.market_state_snapshot
+        if snapshot is None or not decision.market_state_publication_id:
+            raise ValueError("market snapshot publication context is required")
+        impact = decision.portfolio_impacts.get(kind)
+        if impact is None:
+            raise ValueError("selected expression portfolio impact is missing")
+        expression = decision.expressions.get(kind)
+        if expression is None or impact.expression_identity != trade_expression_identity(expression):
+            raise ValueError("selected expression portfolio impact identity is stale")
+        if impact.market_snapshot_id != snapshot.snapshot_id:
+            raise ValueError("selected expression market snapshot is stale")
+        if impact.market_state_publication_id != decision.market_state_publication_id:
+            raise ValueError("selected expression market publication is stale")
+        if impact.cutoff != decision.cutoff:
+            raise ValueError("selected expression portfolio impact cutoff is stale")
+        if impact.availability != "available" or impact.blockers:
+            raise ValueError("selected expression portfolio impact is blocked")
+
+    @staticmethod
+    def _validate_persisted_context(
+        connection: Any,
+        row: Any,
+        decision: TickerDecision,
+        kind: ExpressionKind,
+    ) -> None:
+        if not row["opportunity_episode"] or str(row["opportunity_episode_id"] or "") != decision.opportunity_episode_id:
+            raise ValueError("ticker opportunity episode context is missing in PostgreSQL")
+        if row["opportunity_cutoff"] is None or _utc(row["opportunity_cutoff"]) != decision.cutoff:
+            raise ValueError("ticker opportunity cutoff is stale in PostgreSQL")
+        persisted_episode = OpportunityEpisode.model_validate(row["opportunity_episode"])
+        if persisted_episode.model_dump(mode="json") != decision.opportunity_episode.model_dump(mode="json"):
+            raise ValueError("ticker opportunity episode is stale in PostgreSQL")
+        if str(row["market_state_publication_id"] or "") != decision.market_state_publication_id:
+            raise ValueError("ticker market publication is stale in PostgreSQL")
+        if not row["market_state_snapshot"] or not row["portfolio_impacts"] or not row["risk_policy_snapshot"]:
+            raise ValueError("ticker market and portfolio context is missing in PostgreSQL")
+        persisted_snapshot = MarketStateSnapshot.model_validate(row["market_state_snapshot"])
+        if (
+            persisted_snapshot.model_dump(mode="json")
+            != decision.market_state_snapshot.model_dump(mode="json")
+        ):
+            raise ValueError("ticker market snapshot is stale in PostgreSQL")
+        persisted_impacts = dict(row["portfolio_impacts"] or {})
+        persisted_impact = persisted_impacts.get(kind.value) or persisted_impacts.get(str(kind))
+        if persisted_impact is None:
+            raise ValueError("ticker portfolio impact is missing in PostgreSQL")
+        if PortfolioImpact.model_validate(persisted_impact).model_dump(mode="json") != decision.portfolio_impacts[kind].model_dump(mode="json"):
+            raise ValueError("ticker portfolio impact is stale in PostgreSQL")
+        persisted_policy = RiskPolicySnapshot.model_validate(row["risk_policy_snapshot"])
+        if (
+            persisted_policy.model_dump(mode="json")
+            != decision.risk_policy_snapshot.model_dump(mode="json")
+        ):
+            raise ValueError("ticker risk policy snapshot is stale in PostgreSQL")
+        publication = connection.execute(
+            """
+            SELECT publication.id::text, publication.scope, publication.status,
+                   publication.published_at, run.input_cutoff
+            FROM app.publication publication
+            JOIN analysis.run run ON run.id = publication.analysis_run_id
+            WHERE publication.id = %s::uuid
+            """,
+            [decision.market_state_publication_id],
+        ).fetchone()
+        if (
+            publication is None
+            or publication["scope"] != "market"
+            or publication["status"] not in {"published", "superseded"}
+            or publication["published_at"] is None
+            or _utc(publication["published_at"]) > decision.cutoff
+        ):
+            raise ValueError("ticker market publication is unavailable in PostgreSQL")
+        if publication["input_cutoff"] is None or _utc(publication["input_cutoff"]) > decision.cutoff:
+            raise ValueError("ticker market publication is newer than the decision cutoff")
 
     def process(
         self,

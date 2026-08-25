@@ -45,6 +45,16 @@ def test_blocked_and_actionable_invariants_are_fail_closed() -> None:
             decision_revision="decision-1",
         )
 
+    with pytest.raises(ValueError, match="positive size"):
+        DecisionResolutionV2(
+            action="NO_TRADE",
+            eligibility="BLOCKED",
+            primary_blocker="missing_fact",
+            blockers=["missing_fact"],
+            size=2,
+            decision_revision="decision-1",
+        )
+
     with pytest.raises(ValueError, match="trade-plan fields"):
         DecisionResolutionV2(
             action="BUY",

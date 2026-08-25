@@ -2,12 +2,148 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from investment_panel.core.decision.ticker import build_ticker_decision
+from investment_panel.core.decision import InputLineage, build_ticker_decision
+from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.ingestion import IngestionRepository
+from investment_panel.database.portfolio_ledger import replay_portfolio_at
 from investment_panel.database.runtime import DatabaseRuntime
 from investment_panel.database.ticker_decisions import TickerDecisionRepository
 from investment_panel.database.ticker_execution import TickerPaperExecutionRepository
+from investment_panel.jobs.ticker_decisions import portfolio_impacts
 from conftest import typed_config
+
+
+def _actionable_tables(
+    symbol: str,
+    as_of: datetime,
+    *,
+    legs: list[dict[str, object]],
+    structure: str = "long_call",
+    option_lower_expectancy: float = 0.01,
+) -> dict[str, list[dict[str, object]]]:
+    available_at = (as_of - timedelta(minutes=5)).isoformat()
+    return {
+        "quotes": [{"symbol": symbol, "price": 100, "available_at": available_at, "confirmed": True}],
+        "portfolio_summary": [{"symbol": symbol, "net_liquidation": 100_000, "available_at": available_at}],
+        "decision_queue": [{
+            "symbol": symbol, "stance": "BULLISH", "action": "BUY",
+            "entry_low": 99, "entry_high": 101, "target_low": 110, "target_high": 120,
+            "invalidation_price": 90, "conviction_tier": "STANDARD", "available_at": available_at,
+            "scenarios": {
+                "bear": {"probability": 0.2}, "base": {"probability": 0.5}, "bull": {"probability": 0.3},
+            },
+        }],
+        "valuations": [{"symbol": symbol, "upside_pct": 0.01, "available_at": available_at}],
+        "options_payoff_scenarios": [{
+            "symbol": symbol, "structure": structure, "entry_price": 2.2, "max_loss": 220,
+            "lower_confidence_expectancy": option_lower_expectancy,
+            "net_expected_value_per_loss_dollar": option_lower_expectancy,
+            "liquidity_score": 0.9, "fill_probability": 0.9, "expiration": "2026-10-16",
+            "legs": legs, "available_at": available_at,
+        }],
+        "fundamentals": [{"symbol": symbol, "source": "sec_companyfacts", "available_at": available_at}],
+        "earnings": [{"symbol": symbol, "available_at": available_at}],
+        "ticker_benchmark_snapshot": [{"symbol": symbol, "available_at": available_at}],
+        "macro": [{"symbol": symbol, "available_at": available_at}],
+        "disclosures": [{"symbol": symbol, "available_at": available_at}],
+        "short_interest": [{"symbol": symbol, "available_at": available_at}],
+    }
+
+
+def _publish_context(
+    runtime: DatabaseRuntime,
+    config,
+    symbol: str,
+    tables: dict[str, list[dict[str, object]]],
+    as_of: datetime,
+):
+    seed = build_ticker_decision(symbol, tables, as_of=as_of)
+    lineage = InputLineage(
+        field="market_test", source_id="market-test", source_version="1",
+        event_at=as_of - timedelta(minutes=5), available_at=as_of - timedelta(minutes=5), cutoff=as_of,
+    )
+    snapshot = seed.market_state_snapshot.model_copy(update={
+        "snapshot_id": f"market-test:{symbol}",
+        "publication_id": None,
+        "as_of": as_of,
+        "input_cutoff": as_of,
+        "input_lineage": (lineage,),
+        "availability": "available",
+        "blockers": (),
+    })
+    analysis = AnalysisRepository(runtime)
+    run_id = analysis.start_run(
+        "market", input_cutoff=as_of, code_version=f"market-test-{symbol}",
+        inputs={"source_lineage": [lineage.model_dump(mode="json")]},
+        feature_versions={"market_state": "test"},
+    )
+    publication_id = analysis.publish(
+        run_id, "market", {"market_state_snapshot": [snapshot.model_dump(mode="json")]},
+        complete_run_summary={"snapshot_id": snapshot.snapshot_id},
+    )
+    with runtime.transaction() as connection:
+        connection.execute(
+            "UPDATE app.publication SET published_at = %s WHERE id = %s",
+            [as_of, publication_id],
+        )
+    snapshot = snapshot.model_copy(update={"publication_id": str(publication_id)})
+    replay = replay_portfolio_at(config, as_of)
+    impacts = portfolio_impacts(seed, snapshot, str(publication_id), replay)
+    decision = build_ticker_decision(
+        symbol, tables, as_of=as_of, market_state_snapshot=snapshot,
+        portfolio_impacts=impacts, risk_policy_snapshot=seed.risk_policy_snapshot,
+        portfolio_replay=replay,
+    )
+    TickerDecisionRepository(runtime).publish(decision)
+    return decision
+
+
+def test_portfolio_replay_uses_execution_and_created_at_cutoffs(migrated_postgres_dsn: str) -> None:
+    runtime = DatabaseRuntime(migrated_postgres_dsn)
+    runtime.open()
+    try:
+        config = typed_config(migrated_postgres_dsn)
+        cutoff = datetime(2026, 8, 22, 14, tzinfo=UTC)
+        later = cutoff + timedelta(hours=3)
+        with runtime.transaction() as connection:
+            instrument = connection.execute(
+                "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('REPLAY', 'Replay', 'equity') RETURNING id"
+            ).fetchone()["id"]
+            initial = connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount, executed_at, created_at, idempotency_key)
+                VALUES (%s, 'opening_balance', 10, 100, 1000, %s, %s, 'replay-initial')
+                RETURNING id
+                """,
+                [instrument, cutoff - timedelta(hours=1), cutoff - timedelta(hours=1)],
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount, executed_at, created_at, idempotency_key)
+                VALUES (%s, 'buy', 2, 120, 240, %s, %s, 'replay-created-late')
+                """,
+                [instrument, cutoff - timedelta(minutes=10), later],
+            )
+            connection.execute(
+                """
+                INSERT INTO app.portfolio_transaction
+                    (instrument_id, transaction_type, quantity, price, amount, executed_at, created_at,
+                     idempotency_key, reverses_transaction_id)
+                VALUES (%s, 'opening_balance', 10, 100, 1000, %s, %s, 'replay-reversal', %s)
+                """,
+                [instrument, later, later, initial],
+            )
+
+        at_cutoff = replay_portfolio_at(config, cutoff)
+        after_reversal = replay_portfolio_at(config, later)
+        assert at_cutoff["transaction_count"] == 1
+        assert at_cutoff["positions"][0]["quantity"] == 10
+        assert after_reversal["transaction_count"] == 1
+        assert after_reversal["positions"][0]["quantity"] == 2
+    finally:
+        runtime.close()
 
 
 def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migrated_postgres_dsn: str) -> None:
@@ -18,20 +154,7 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
             instrument = connection.execute(
                 "INSERT INTO catalog.instrument (symbol, name, asset_class) VALUES ('ACME', 'Acme', 'equity') RETURNING id"
             ).fetchone()
-        decision = build_ticker_decision(
-            "ACME",
-            {
-                "quotes": [{"symbol": "ACME", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-                "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
-                "decision_queue": [{
-                    "symbol": "ACME", "stance": "BULLISH", "action": "BUY",
-                    "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
-                    "conviction_tier": "STANDARD",
-                    "available_at": "2026-08-22T13:55:00Z",
-                }],
-            },
-            as_of=datetime(2026, 8, 22, 14, tzinfo=UTC),
-        )
+        observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
         config = typed_config(
             migrated_postgres_dsn,
             raw={"analysis": {"options_decision_system": {
@@ -39,6 +162,18 @@ def test_stock_paper_entry_uses_shared_ticker_loss_budget_and_is_idempotent(migr
                 "ticker_paper_actions_enabled": True,
                 "stock_paper_actions_enabled": True,
             }}},
+        )
+        decision = _publish_context(
+            runtime, config, "ACME",
+            _actionable_tables(
+                "ACME", observed,
+                legs=[{
+                    "contract_id": 1, "option_type": "call", "side": "long", "strike": 105,
+                    "bid": 2.0, "ask": 2.2, "bid_size": 10, "ask_size": 10,
+                    "quote_time": observed, "expiration": "2026-10-16",
+                }],
+            ),
+            observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         result = repository.stage(
@@ -112,20 +247,7 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 "INSERT INTO raw.quote_confirmation (fact_id, fact_available_at, ingest_run_id) VALUES (%s, %s, %s)",
                 [quote_id, datetime(2026, 8, 22, 14, tzinfo=UTC), run_id],
             )
-        decision = build_ticker_decision(
-            "LIFE",
-            {
-                "quotes": [{"symbol": "LIFE", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-                "portfolio_summary": [{"net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
-                "decision_queue": [{
-                    "symbol": "LIFE", "stance": "BULLISH", "action": "BUY",
-                    "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
-                    "conviction_tier": "STANDARD",
-                    "available_at": "2026-08-22T13:55:00Z",
-                }],
-            },
-            as_of=datetime(2026, 8, 22, 14, tzinfo=UTC),
-        )
+        observed = datetime(2026, 8, 22, 14, tzinfo=UTC)
         config = typed_config(
             migrated_postgres_dsn,
             raw={"analysis": {"options_decision_system": {
@@ -133,6 +255,18 @@ def test_ticker_paper_lifecycle_supports_partial_fill_and_invalidation_exit(migr
                 "ticker_paper_actions_enabled": True,
                 "stock_paper_actions_enabled": True,
             }}},
+        )
+        decision = _publish_context(
+            runtime, config, "LIFE",
+            _actionable_tables(
+                "LIFE", observed,
+                legs=[{
+                    "contract_id": 1, "option_type": "call", "side": "long", "strike": 105,
+                    "bid": 2.0, "ask": 2.2, "bid_size": 10, "ask_size": 10,
+                    "quote_time": observed, "expiration": "2026-10-16",
+                }],
+            ),
+            observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         staged = repository.stage(
@@ -273,27 +407,6 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                 "quote_time": observed, "expiration": "2026-09-18",
             },
         ]
-        decision = build_ticker_decision(
-            "SPRD",
-            {
-                "quotes": [{"symbol": "SPRD", "price": 100, "available_at": "2026-08-22T13:55:00Z", "confirmed": True}],
-                "portfolio_summary": [{"symbol": "SPRD", "net_liquidation": 100_000, "available_at": "2026-08-22T13:55:00Z"}],
-                "decision_queue": [{
-                    "symbol": "SPRD", "stance": "BULLISH", "action": "BUY",
-                    "entry_low": 99, "entry_high": 101, "invalidation_price": 90,
-                    "conviction_tier": "STANDARD",
-                    "available_at": "2026-08-22T13:55:00Z",
-                }],
-                "options_payoff_scenarios": [{
-                    "symbol": "SPRD", "structure": "debit_spread", "entry_price": 2.2,
-                    "max_loss": 220, "lower_confidence_expectancy": 0.8,
-                    "liquidity_score": 0.9, "fill_probability": 0.9,
-                    "expiration": "2026-09-18", "legs": legs,
-                    "available_at": "2026-08-22T13:55:00Z",
-                }],
-            },
-            as_of=observed,
-        )
         config = typed_config(
             migrated_postgres_dsn,
             raw={"analysis": {"options_decision_system": {
@@ -302,6 +415,13 @@ def test_multi_leg_option_paper_lifecycle_uses_shared_quote_and_risk_ledger(
                 "stock_paper_actions_enabled": True,
                 "options_paper_actions_enabled": True,
             }}},
+        )
+        decision = _publish_context(
+            runtime, config, "SPRD",
+            _actionable_tables(
+                "SPRD", observed, legs=legs, structure="debit_spread", option_lower_expectancy=1.0,
+            ),
+            observed,
         )
         repository = TickerPaperExecutionRepository(runtime, config)
         staged = repository.stage(

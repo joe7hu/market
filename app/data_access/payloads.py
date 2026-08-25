@@ -18,7 +18,6 @@ from investment_panel.core.decision import (
     build_ticker_decision,
     evaluate_ticker_policy,
     opportunity_episode_from_legacy,
-    opportunity_episode_id,
     ticker_decision_brief,
 )
 
@@ -269,43 +268,9 @@ def _canonical_opportunity_fields(ticker_decision: dict[str, Any]) -> tuple[dict
             "input_lineage": serialized["input_lineage"],
         }, None
     except (TypeError, ValueError, KeyError):
-        # Older direct consumers supplied partial expression dictionaries.  Do
-        # not pretend those are canonical expressions, but preserve a stable
-        # compatibility identity until the typed ticker route replaces them.
-        if any(key in ticker_decision for key in (
-            "opportunity_episode", "input_lineage", "lineage", "input_manifest",
-        )):
-            return {}, "opportunity_lineage_invalid"
-        ticker = str(ticker_decision.get("ticker") or ticker_decision.get("symbol") or "").strip().upper()
-        revision = str(ticker_decision.get("decision_revision") or "").strip()
-        raw_cutoff = ticker_decision.get("cutoff") or ticker_decision.get("as_of")
-        if not ticker or not revision or not raw_cutoff:
-            return {}, "opportunity_lineage_invalid"
-        cutoff = raw_cutoff
-        if isinstance(cutoff, str):
-            cutoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
-        if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=UTC)
-        cutoff = cutoff.astimezone(UTC)
-        policy = str(ticker_decision.get("policy_version") or "risk-policy.v2:legacy")
-        lineage = [{
-            "field": "legacy_compatibility",
-            "source_id": "ticker-decision-compatibility",
-            "source_version": ticker_decision.get("decision_contract_version") or "ticker-decision.v1",
-            "available_at": cutoff.isoformat(),
-            "revision": revision,
-            "decision_revision": revision,
-            "policy_version": policy,
-            "cutoff": cutoff.isoformat(),
-        }]
-        return {
-            "episode_id": opportunity_episode_id(ticker, revision),
-            "opportunity_episode_id": opportunity_episode_id(ticker, revision),
-            "decision_revision": revision,
-            "policy_version": policy,
-            "cutoff": cutoff.isoformat(),
-            "input_lineage": lineage,
-        }, None
+        # Legacy or partial rows remain readable, but cannot become an
+        # actionable compatibility result without the canonical episode.
+        return {}, "opportunity_lineage_invalid"
 
 
 def option_decision_adapter(
@@ -325,6 +290,7 @@ def option_decision_adapter(
     expressions = dict(ticker_decision.get("expressions") or {})
     episode_fields, episode_blocker = _canonical_opportunity_fields(ticker_decision)
     episode = episode_fields.get("opportunity_episode") or {}
+    context_blockers = _portfolio_context_blockers(ticker_decision)
     selected_from_episode = episode.get("selected_expression") or {}
     selected_kind = str(
         selected_from_episode.get("kind")
@@ -337,7 +303,7 @@ def option_decision_adapter(
     if not isinstance(option_expression, dict) or option_expression.get("status") not in {"eligible", "blocked"}:
         option_expression = None
     candidate = (
-        _compatibility_option_candidate(ticker_decision, option_expression, capital)
+        _compatibility_option_candidate(ticker_decision, option_expression, capital, context_blockers)
         if option_expression and not episode_blocker
         else {}
     )
@@ -371,6 +337,7 @@ def option_decision_adapter(
         candidate["blockers"] = list(dict.fromkeys([
             *list(candidate.get("blockers") or []),
             *[request.get("field") for request in ticker_decision.get("data_requests") or []],
+            *context_blockers,
         ]))
         candidate["state_reasons"] = candidate["blockers"]
         payload["strongest_candidate"] = candidate
@@ -432,10 +399,40 @@ def option_decision_adapter(
     return payload
 
 
+def _portfolio_context_blockers(ticker_decision: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    snapshot = ticker_decision.get("market_state_snapshot")
+    if not isinstance(snapshot, dict):
+        blockers.append("market_state_missing")
+    else:
+        if snapshot.get("availability") != "available":
+            blockers.append("market_state_unavailable")
+        blockers.extend(str(item) for item in snapshot.get("blockers") or [])
+    if not ticker_decision.get("market_state_publication_id"):
+        blockers.append("market_state_publication_missing")
+    selected = ticker_decision.get("selected_expression") or {}
+    selected_kind = selected.get("kind") if isinstance(selected, dict) else selected
+    impacts = ticker_decision.get("portfolio_impacts")
+    impact = impacts.get(str(selected_kind)) if isinstance(impacts, dict) else None
+    if not isinstance(impact, dict):
+        blockers.append("portfolio_impact_missing")
+    else:
+        if impact.get("availability") != "available":
+            blockers.append("portfolio_impact_unavailable")
+        blockers.extend(str(item) for item in impact.get("blockers") or [])
+    policy = ticker_decision.get("risk_policy_snapshot")
+    if not isinstance(policy, dict):
+        blockers.append("risk_policy_snapshot_missing")
+    else:
+        blockers.extend(str(item) for item in policy.get("blockers") or [])
+    return list(dict.fromkeys(item for item in blockers if item))
+
+
 def _compatibility_option_candidate(
     ticker_decision: dict[str, Any],
     expression: dict[str, Any],
     capital: dict[str, Any],
+    context_blockers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the old candidate envelope without creating a second thesis."""
 
@@ -474,6 +471,7 @@ def _compatibility_option_candidate(
     if not expiration:
         return {}
     blockers = [str(request.get("field")) for request in ticker_decision.get("data_requests") or []]
+    blockers.extend(context_blockers or [])
     status = str(expression.get("status") or "unavailable")
     quantity = expression.get("quantity")
     try:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from investment_panel.database.analysis import AnalysisRepository
 from investment_panel.database.market_analysis import refresh_market_publication
@@ -63,7 +63,7 @@ def test_mungermode_refresh_persists_series_and_market_publication(
     runtime = DatabaseRuntime(migrated_postgres_dsn)
     runtime.open()
     try:
-        publication = refresh_market_publication(runtime, now=datetime(2026, 8, 22, tzinfo=UTC))
+        publication = refresh_market_publication(runtime, now=datetime.now(UTC) + timedelta(minutes=1))
         assert publication["valuation_series"] == 2
         rows = AnalysisRepository(runtime).publication_rows("market", "market_valuation_reference_charts")
     finally:

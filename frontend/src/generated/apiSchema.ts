@@ -1580,6 +1580,83 @@ export interface components {
          * @enum {string}
          */
         CapitalActionType: "BUY" | "ADD" | "HOLD" | "TRIM" | "EXIT" | "HEDGE" | "AVOID" | "WAIT_FOR_PRICE";
+        /**
+         * CoverageMatrix
+         * @description Frozen point-in-time coverage contract for market state inputs.
+         */
+        CoverageMatrix: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /**
+             * Contract Version
+             * @default coverage-matrix.v1
+             */
+            contract_version: string;
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /** Matrix Id */
+            matrix_id: string;
+            /**
+             * Rows
+             * @default []
+             */
+            rows: components["schemas"]["CoverageMatrixRow"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * CoverageMatrixRow
+         * @description Backend-owned coverage evidence for one market dimension.
+         */
+        CoverageMatrixRow: {
+            /** Asset Class */
+            asset_class: string;
+            /**
+             * Current Status
+             * @default unavailable
+             */
+            current_status: string;
+            /**
+             * Decision Impact
+             * @default context
+             */
+            decision_impact: string;
+            /** Dimension */
+            dimension: string;
+            /**
+             * Fallback Policy
+             * @default unavailable
+             */
+            fallback_policy: string;
+            /** Freshness Slo */
+            freshness_slo?: string | null;
+            /** History Start */
+            history_start?: string | null;
+            /** Horizon */
+            horizon: string;
+            /** Input Cutoff */
+            input_cutoff?: string | null;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /**
+             * Point In Time Safe
+             * @default false
+             */
+            point_in_time_safe: boolean;
+            /** Provider */
+            provider?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** DashboardResponse */
         DashboardResponse: {
             /** Metrics */
@@ -2119,6 +2196,50 @@ export interface components {
             /** Value */
             value: string | number;
         };
+        /**
+         * MarketDimensionState
+         * @description One typed market dimension at one point-in-time horizon.
+         */
+        MarketDimensionState: {
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Change Drivers
+             * @default []
+             */
+            change_drivers: string[];
+            /** Dimension */
+            dimension: string;
+            /**
+             * Evidence Status
+             * @default unavailable
+             */
+            evidence_status: string;
+            /** Horizon */
+            horizon: string;
+            /**
+             * Lineage
+             * @default []
+             */
+            lineage: components["schemas"]["InputLineage"][];
+            /** Probability */
+            probability?: number | null;
+            /** Probability Method */
+            probability_method?: string | null;
+            /** Probability Model Version */
+            probability_model_version?: string | null;
+            /** Quality */
+            quality?: string | null;
+            /** State */
+            state?: string | null;
+            /** Uncertainty */
+            uncertainty?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** MarketRegime */
         MarketRegime: {
             /** As Of */
@@ -2143,6 +2264,53 @@ export interface components {
             trend_state: string;
             /** Volatility State */
             volatility_state?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * MarketStateSnapshot
+         * @description Frozen, versioned market state selected at one information cutoff.
+         */
+        MarketStateSnapshot: {
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /**
+             * Availability
+             * @default unavailable
+             */
+            availability: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Contract Version
+             * @default market-state-snapshot.v1
+             */
+            contract_version: string;
+            coverage_matrix?: components["schemas"]["CoverageMatrix"] | null;
+            /** Horizons */
+            horizons?: {
+                [key: string]: components["schemas"]["MarketDimensionState"][];
+            };
+            /**
+             * Input Cutoff
+             * Format: date-time
+             */
+            input_cutoff: string;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Publication Id */
+            publication_id?: string | null;
+            /** Snapshot Id */
+            snapshot_id: string;
         } & {
             [key: string]: unknown;
         };
@@ -3481,6 +3649,91 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * PortfolioImpact
+         * @description Frozen before/after portfolio impact for one exact expression.
+         */
+        PortfolioImpact: {
+            /**
+             * Availability
+             * @default unavailable
+             */
+            availability: string;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /**
+             * Contract Version
+             * @default portfolio-impact.v1
+             */
+            contract_version: string;
+            /**
+             * Cutoff
+             * Format: date-time
+             */
+            cutoff: string;
+            /** Decision Revision */
+            decision_revision: string;
+            /** Diversification Benefit */
+            diversification_benefit?: number | null;
+            /** Expression Identity */
+            expression_identity: string;
+            expression_kind: components["schemas"]["ExpressionKind"];
+            /** Factor Exposure */
+            factor_exposure?: {
+                [key: string]: unknown;
+            } | null;
+            /** Greeks */
+            greeks?: {
+                [key: string]: unknown;
+            } | null;
+            /** Impact Id */
+            impact_id: string;
+            /**
+             * Input Lineage
+             * @default []
+             */
+            input_lineage: components["schemas"]["InputLineage"][];
+            /** Liquidity */
+            liquidity?: {
+                [key: string]: unknown;
+            } | null;
+            /** Marginal Risk */
+            marginal_risk?: number | null;
+            /** Market Snapshot Id */
+            market_snapshot_id: string;
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            /** Opportunity Episode Id */
+            opportunity_episode_id: string;
+            /** Portfolio After */
+            portfolio_after?: {
+                [key: string]: unknown;
+            };
+            /** Portfolio Before */
+            portfolio_before?: {
+                [key: string]: unknown;
+            };
+            /** Position To Trim Or Replace */
+            position_to_trim_or_replace?: string | null;
+            /**
+             * Positions Most Correlated
+             * @default []
+             */
+            positions_most_correlated: string[];
+            /** Risk Budget Consumed */
+            risk_budget_consumed?: number | null;
+            /** Risk Policy Version */
+            risk_policy_version: string;
+            /** Scenario Pnl */
+            scenario_pnl?: {
+                [key: string]: unknown;
+            } | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** PortfolioTransactionInput */
         PortfolioTransactionInput: {
             /**
@@ -3844,6 +4097,93 @@ export interface components {
              * @default 0.1
              */
             position_limit_pct: number;
+        };
+        /**
+         * RiskPolicySnapshot
+         * @description Point-in-time policy facts used for sizing and paper authorization.
+         */
+        RiskPolicySnapshot: {
+            /** Account Observed At */
+            account_observed_at?: string | null;
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /** Broker Available Capital */
+            broker_available_capital?: number | null;
+            /** Broker Net Liquidation */
+            broker_net_liquidation?: number | null;
+            /** Buying Power */
+            buying_power?: number | null;
+            /** Cash Balance */
+            cash_balance?: number | null;
+            /**
+             * Csp Symbol Fraction
+             * @default 0.05
+             */
+            csp_symbol_fraction: number;
+            /**
+             * Csp Total Fraction
+             * @default 0.15
+             */
+            csp_total_fraction: number;
+            /** Daily Loss Halt Pct */
+            daily_loss_halt_pct?: number | null;
+            /**
+             * Defined Symbol Fraction
+             * @default 0.005
+             */
+            defined_symbol_fraction: number;
+            /**
+             * Defined Total Fraction
+             * @default 0.01
+             */
+            defined_total_fraction: number;
+            /**
+             * Defined Trade Fraction
+             * @default 0.0025
+             */
+            defined_trade_fraction: number;
+            /**
+             * Max Open Positions
+             * @default 0
+             */
+            max_open_positions: number;
+            /** Max Open Risk Pct */
+            max_open_risk_pct?: number | null;
+            /** Max Risk Per Trade Pct */
+            max_risk_per_trade_pct?: number | null;
+            /** Max Symbol Risk Pct */
+            max_symbol_risk_pct?: number | null;
+            /**
+             * Policy Kind
+             * @default shared
+             */
+            policy_kind: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Sleeve Capital */
+            sleeve_capital?: number | null;
+            /** Ticker Loss Budget Pct */
+            ticker_loss_budget_pct?: number | null;
+            /**
+             * Ticker Max Loss Pct
+             * @default 0.04
+             */
+            ticker_max_loss_pct: number;
+            /**
+             * Ticker Position Limit Pct
+             * @default 0.1
+             */
+            ticker_position_limit_pct: number;
+            /**
+             * Ticker Total Open Loss Pct
+             * @default 0.1
+             */
+            ticker_total_open_loss_pct: number;
+        } & {
+            [key: string]: unknown;
         };
         /** ScenarioOutcome */
         ScenarioOutcome: {
@@ -4492,14 +4832,22 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
              */
             policy_version: string;
+            /** Portfolio Impacts */
+            portfolio_impacts?: {
+                [key: string]: components["schemas"]["PortfolioImpact"];
+            };
             resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk_policy: components["schemas"]["RiskPolicy"];
+            risk_policy_snapshot?: components["schemas"]["RiskPolicySnapshot"] | null;
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
             /** Ticker */
@@ -4535,14 +4883,22 @@ export interface components {
             learning_history?: {
                 [key: string]: unknown;
             }[];
+            /** Market State Publication Id */
+            market_state_publication_id?: string | null;
+            market_state_snapshot?: components["schemas"]["MarketStateSnapshot"] | null;
             opportunity_episode?: components["schemas"]["OpportunityEpisode"] | null;
             /**
              * Policy Version
              * @default risk-policy.v2:legacy
              */
             policy_version: string;
+            /** Portfolio Impacts */
+            portfolio_impacts?: {
+                [key: string]: components["schemas"]["PortfolioImpact"];
+            };
             resolution?: components["schemas"]["DecisionResolutionV2"] | null;
             risk_policy: components["schemas"]["RiskPolicy"];
+            risk_policy_snapshot?: components["schemas"]["RiskPolicySnapshot"] | null;
             selected_expression?: components["schemas"]["ExpressionDecision"] | null;
             tactical: components["schemas"]["HorizonDecision"];
             /** Ticker */

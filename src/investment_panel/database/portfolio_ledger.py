@@ -224,6 +224,164 @@ def portfolio_transaction_rows(
     return [_serialize_row(dict(row)) for row in rows]
 
 
+def replay_portfolio_at(
+    config: AppConfig,
+    cutoff: datetime,
+    *,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    """Replay the append-only ledger using only facts available at ``cutoff``."""
+
+    if cutoff.tzinfo is None:
+        raise ValueError("portfolio replay cutoff must be timezone-aware")
+    reference = cutoff.astimezone(UTC)
+    if connection is None:
+        runtime = runtime_for_config(config)
+        with runtime.read() as owned_connection:
+            return replay_portfolio_at(config, reference, connection=owned_connection)
+
+    rows = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT transaction.*, instrument.symbol, instrument.asset_class
+            FROM app.portfolio_transaction transaction
+            LEFT JOIN catalog.instrument instrument ON instrument.id = transaction.instrument_id
+            WHERE transaction.executed_at <= %s
+              AND transaction.created_at <= %s
+              AND transaction.reverses_transaction_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM app.portfolio_transaction reversal
+                  WHERE reversal.reverses_transaction_id = transaction.id
+                    AND reversal.executed_at <= %s
+                    AND reversal.created_at <= %s
+              )
+            ORDER BY transaction.executed_at, transaction.created_at, transaction.id
+            """,
+            [reference, reference, reference, reference],
+        ).fetchall()
+    ]
+    positions: dict[int, dict[str, Any]] = {}
+    realized_pnl = 0.0
+    income = 0.0
+    fees = 0.0
+    net_contributions = 0.0
+    for row in rows:
+        instrument_id = int(row["instrument_id"]) if row.get("instrument_id") is not None else None
+        position = positions.get(instrument_id) if instrument_id is not None else None
+        fields = {
+            "symbol": row.get("symbol"),
+            "transaction_type": row["transaction_type"],
+            "quantity": float(row["quantity"]) if row.get("quantity") is not None else None,
+            "price": float(row["price"]) if row.get("price") is not None else None,
+            "amount": float(row["amount"]) if row.get("amount") is not None else None,
+            "fees": float(row.get("fees") or 0),
+            "executed_at": row["executed_at"],
+            "notes": row.get("notes") or "",
+        }
+        preview = _transaction_preview(fields, position)
+        realized_pnl += float(preview.get("realized_pnl") or 0)
+        fees += float(row.get("fees") or 0)
+        if row["transaction_type"] == "dividend":
+            income += float(row.get("amount") or 0)
+        if row["transaction_type"] in {"opening_balance", "transfer_in"}:
+            net_contributions += float(row.get("amount") or 0)
+        if instrument_id is not None and row["transaction_type"] in POSITION_TYPES | {"split"}:
+            if preview["new_quantity"] > 0:
+                positions[instrument_id] = {
+                    "instrument_id": instrument_id,
+                    "symbol": row.get("symbol"),
+                    "asset_class": row.get("asset_class"),
+                    "quantity": preview["new_quantity"],
+                    "average_cost": preview["new_average_cost"],
+                    "avg_cost": preview["new_average_cost"],
+                    "purchase_date": (
+                        row["executed_at"].astimezone(MARKET_TIMEZONE).date().isoformat()
+                        if not preview["old_quantity"] else (position or {}).get("purchase_date")
+                    ),
+                }
+            else:
+                positions.pop(instrument_id, None)
+
+    instrument_ids = sorted(positions)
+    prices = {
+        int(row["instrument_id"]): dict(row)
+        for row in (
+            connection.execute(
+                "SELECT * FROM raw.current_price_at(%s, %s)",
+                [reference, instrument_ids],
+            ).fetchall()
+            if instrument_ids
+            else []
+        )
+    }
+    position_rows: list[dict[str, Any]] = []
+    portfolio_value = 0.0
+    for instrument_id in instrument_ids:
+        position = dict(positions[instrument_id])
+        price = prices.get(instrument_id)
+        quantity = float(position["quantity"])
+        cost_basis = quantity * float(position["avg_cost"] or 0)
+        market_value = quantity * float(price["price"]) if price and price.get("price") is not None else None
+        if market_value is not None:
+            portfolio_value += market_value
+        position.update({
+            "quantity": quantity,
+            "avg_cost": float(position["avg_cost"] or 0),
+            "cost_basis": cost_basis,
+            "price": float(price["price"]) if price and price.get("price") is not None else None,
+            "market_value": market_value,
+            "quote_observed_at": price.get("observed_at") if price else None,
+            "available_at": price.get("available_at") if price else None,
+            "valuation_status": price.get("valuation_status") if price else "unavailable",
+        })
+        position_rows.append(position)
+    for position in position_rows:
+        position["portfolio_weight"] = (
+            float(position["market_value"]) / portfolio_value if portfolio_value and position["market_value"] is not None else None
+        )
+    return {
+        "cutoff": reference.isoformat(),
+        "available_at": reference.isoformat(),
+        "positions": position_rows,
+        "portfolio_value": round(portfolio_value, 6),
+        "realized_pnl": round(realized_pnl, 6),
+        "income": round(income, 6),
+        "fees": round(fees, 6),
+        "net_contributions": round(net_contributions, 6),
+        "transaction_count": len(rows),
+        "lineage": [
+            {
+                "transaction_id": str(row["id"]),
+                "executed_at": row["executed_at"].isoformat(),
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ],
+    }
+
+
+def portfolio_replay_at(
+    config: AppConfig,
+    cutoff: datetime,
+    *,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    """Compatibility name for callers that describe the result as a replay."""
+
+    return replay_portfolio_at(config, cutoff, connection=connection)
+
+
+def portfolio_rows_at(
+    config: AppConfig,
+    cutoff: datetime,
+    *,
+    connection: Any | None = None,
+) -> list[dict[str, Any]]:
+    return replay_portfolio_at(config, cutoff, connection=connection)["positions"]
+
+
 def _normalize_transaction(fields: dict[str, Any]) -> dict[str, Any]:
     transaction_type = str(fields.get("transaction_type") or "").strip().lower()
     if transaction_type not in TRANSACTION_TYPES:

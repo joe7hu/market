@@ -236,14 +236,10 @@ def test_options_compatibility_adapter_cannot_reintroduce_a_legacy_thesis() -> N
     }
 
     result = option_decision_adapter(ticker_decision, legacy)
-    candidate = result["strongest_candidate"]
-
-    assert candidate["legs"][0]["contract_id"] == 1
-    assert candidate["thesis"]["capital_action"]["action"] == "BUY"
-    assert candidate["forecast"]["scenarios"][0]["name"] == "bull"
-    assert candidate["ticket"]["legs"][0]["contract_id"] == "1"
-    assert candidate["ticket"]["decision_revision"] == ticker_decision["decision_revision"]
-    assert result["state"] == "PAPER_READY"
+    assert "strongest_candidate" not in result
+    assert result["state"] == "WATCH"
+    assert result["decision_truth"]["readiness_state"] == "WATCH"
+    assert "opportunity_lineage_invalid" in result["decision_truth"]["blockers"]
     assert result["decision_truth"]["route_version"] == "ticker-decision.v1"
 
 
@@ -266,5 +262,7 @@ def test_options_compatibility_adapter_uses_the_selected_expression() -> None:
 
     result = option_decision_adapter(ticker_decision, {})
 
-    assert result["strongest_candidate"]["legs"][0]["contract_id"] == 2
+    assert "strongest_candidate" not in result
+    assert result["state"] == "WATCH"
+    assert "opportunity_lineage_invalid" in result["decision_truth"]["blockers"]
     assert result["summary"]["ticker_selected_expression"] == "PUT"

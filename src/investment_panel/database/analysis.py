@@ -482,11 +482,11 @@ class AnalysisRepository:
                 WHERE publication.scope = %s
                   AND publication.status IN ('published', 'superseded')
                   AND run.input_cutoff < %s
-                  AND run.inputs->>'source_id' IS NOT DISTINCT FROM %s
+                  AND (%s::text IS NULL OR run.inputs->>'source_id' = %s)
                 ORDER BY run.input_cutoff DESC, publication.published_at DESC NULLS LAST,
                          publication.id DESC LIMIT 1
                 """,
-                [scope, cutoff, source_id],
+                [scope, cutoff, source_id, source_id],
             ).fetchone()
             if predecessor is None:
                 return []
@@ -511,6 +511,96 @@ class AnalysisRepository:
                     [predecessor["id"], model_name],
                 ).fetchall()
         return [dict(row["payload"]) for row in rows]
+
+    def publication_at_or_before(
+        self,
+        scope: str,
+        *,
+        cutoff: datetime,
+        source_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Select the latest immutable publication available at a cutoff."""
+
+        if cutoff.tzinfo is None:
+            raise ValueError("publication cutoff must be timezone-aware")
+        with self.runtime.read() as connection:
+            row = connection.execute(
+                """
+                SELECT publication.id::text AS publication_id, publication.bundle_id,
+                       publication.published_at, publication.status, publication.scope,
+                       run.input_cutoff, run.code_version, run.feature_versions,
+                       run.input_hash, run.inputs, run.summary
+                FROM app.publication publication
+                JOIN analysis.run run ON run.id = publication.analysis_run_id
+                WHERE publication.scope = %s
+                  AND publication.status IN ('published', 'superseded')
+                  AND run.input_cutoff <= %s
+                  AND publication.published_at <= %s
+                  AND (%s::text IS NULL OR run.inputs->>'source_id' = %s)
+                ORDER BY run.input_cutoff DESC, publication.published_at DESC NULLS LAST,
+                         publication.id DESC
+                LIMIT 1
+                """,
+                [scope, cutoff, cutoff, source_id, source_id],
+            ).fetchone()
+            if row is None:
+                return None
+            if row["bundle_id"] is not None:
+                payload_rows = connection.execute(
+                    """
+                    SELECT item.model_name, item.rank, payload.payload
+                    FROM app.publication_bundle_item item
+                    JOIN app.publication_payload payload ON payload.content_hash = item.content_hash
+                    WHERE item.bundle_id = %s
+                    ORDER BY item.model_name, item.rank
+                    """,
+                    [row["bundle_id"]],
+                ).fetchall()
+            else:
+                payload_rows = connection.execute(
+                    """
+                    SELECT item.model_name, item.rank, item.payload
+                    FROM app.publication_item item
+                    WHERE item.publication_id = %s
+                    ORDER BY item.model_name, item.rank
+                    """,
+                    [row["publication_id"]],
+                ).fetchall()
+        run_inputs = dict(row["inputs"] or {})
+        source_lineage = run_inputs.get("source_lineage") or run_inputs.get("lineage") or run_inputs
+        metadata = {
+            "publication_id": str(row["publication_id"]),
+            "publication_status": str(row["status"]),
+            "publication_scope": str(row["scope"]),
+            "input_cutoff": _iso(row["input_cutoff"]),
+            "publication_input_cutoff": _iso(row["input_cutoff"]),
+            "published_at": _iso(row["published_at"]),
+            "publication_published_at": _iso(row["published_at"]),
+            "code_version": row["code_version"],
+            "feature_versions": dict(row["feature_versions"] or {}),
+            "input_hash": row["input_hash"],
+            "source_lineage": _jsonable(source_lineage),
+            "summary": _jsonable(dict(row["summary"] or {})),
+        }
+        models: dict[str, list[dict[str, Any]]] = {}
+        for payload_row in payload_rows:
+            payload = dict(payload_row["payload"] or {})
+            payload.update({key: value for key, value in metadata.items() if key not in payload})
+            models.setdefault(str(payload_row["model_name"]), []).append(payload)
+        return {**metadata, "models": models}
+
+    def publication_rows_at_or_before(
+        self,
+        scope: str,
+        model_name: str,
+        *,
+        cutoff: datetime,
+        source_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        publication = self.publication_at_or_before(scope, cutoff=cutoff, source_id=source_id)
+        if publication is None:
+            return []
+        return list(publication["models"].get(model_name) or [])
 
     def option_signal_detail(self, decision_id: UUID) -> dict[str, Any] | None:
         """Return immutable signal, publication, evidence, and outcome context."""
@@ -712,6 +802,10 @@ def _replace_current_projection(
 def _hash(value: Mapping[str, Any]) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, (datetime, date)) else str(value) if value is not None else None
 
 
 def _jsonable(value: Any) -> Any:

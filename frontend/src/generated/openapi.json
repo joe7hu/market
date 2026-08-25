@@ -746,6 +746,153 @@
         "title": "CapitalActionType",
         "type": "string"
       },
+      "CoverageMatrix": {
+        "additionalProperties": true,
+        "description": "Frozen point-in-time coverage contract for market state inputs.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "contract_version": {
+            "default": "coverage-matrix.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "matrix_id": {
+            "minLength": 1,
+            "title": "Matrix Id",
+            "type": "string"
+          },
+          "rows": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CoverageMatrixRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "matrix_id",
+          "as_of",
+          "input_cutoff"
+        ],
+        "title": "CoverageMatrix",
+        "type": "object"
+      },
+      "CoverageMatrixRow": {
+        "additionalProperties": true,
+        "description": "Backend-owned coverage evidence for one market dimension.",
+        "properties": {
+          "asset_class": {
+            "minLength": 1,
+            "title": "Asset Class",
+            "type": "string"
+          },
+          "current_status": {
+            "default": "unavailable",
+            "title": "Current Status",
+            "type": "string"
+          },
+          "decision_impact": {
+            "default": "context",
+            "title": "Decision Impact",
+            "type": "string"
+          },
+          "dimension": {
+            "minLength": 1,
+            "title": "Dimension",
+            "type": "string"
+          },
+          "fallback_policy": {
+            "default": "unavailable",
+            "title": "Fallback Policy",
+            "type": "string"
+          },
+          "freshness_slo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Slo"
+          },
+          "history_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History Start"
+          },
+          "horizon": {
+            "minLength": 1,
+            "title": "Horizon",
+            "type": "string"
+          },
+          "input_cutoff": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Cutoff"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "point_in_time_safe": {
+            "default": false,
+            "title": "Point In Time Safe",
+            "type": "boolean"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "dimension",
+          "asset_class",
+          "horizon"
+        ],
+        "title": "CoverageMatrixRow",
+        "type": "object"
+      },
       "DashboardResponse": {
         "additionalProperties": true,
         "properties": {
@@ -2349,6 +2496,125 @@
         "title": "Invalidation",
         "type": "object"
       },
+      "MarketDimensionState": {
+        "additionalProperties": true,
+        "description": "One typed market dimension at one point-in-time horizon.",
+        "properties": {
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "change_drivers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Change Drivers",
+            "type": "array"
+          },
+          "dimension": {
+            "minLength": 1,
+            "title": "Dimension",
+            "type": "string"
+          },
+          "evidence_status": {
+            "default": "unavailable",
+            "title": "Evidence Status",
+            "type": "string"
+          },
+          "horizon": {
+            "minLength": 1,
+            "title": "Horizon",
+            "type": "string"
+          },
+          "lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Lineage",
+            "type": "array"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          },
+          "probability_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Method"
+          },
+          "probability_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Model Version"
+          },
+          "quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "uncertainty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty"
+          }
+        },
+        "required": [
+          "dimension",
+          "horizon"
+        ],
+        "title": "MarketDimensionState",
+        "type": "object"
+      },
       "MarketRegime": {
         "additionalProperties": true,
         "properties": {
@@ -2427,6 +2693,91 @@
           }
         },
         "title": "MarketRegime",
+        "type": "object"
+      },
+      "MarketStateSnapshot": {
+        "additionalProperties": true,
+        "description": "Frozen, versioned market state selected at one information cutoff.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "availability": {
+            "default": "unavailable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "market-state-snapshot.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "coverage_matrix": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoverageMatrix"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "horizons": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/MarketDimensionState"
+              },
+              "type": "array"
+            },
+            "title": "Horizons",
+            "type": "object"
+          },
+          "input_cutoff": {
+            "format": "date-time",
+            "title": "Input Cutoff",
+            "type": "string"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Id"
+          },
+          "snapshot_id": {
+            "minLength": 1,
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "as_of",
+          "input_cutoff"
+        ],
+        "title": "MarketStateSnapshot",
         "type": "object"
       },
       "NumericRange": {
@@ -6758,6 +7109,209 @@
         "title": "PaperEntryResponse",
         "type": "object"
       },
+      "PortfolioImpact": {
+        "additionalProperties": true,
+        "description": "Frozen before/after portfolio impact for one exact expression.",
+        "properties": {
+          "availability": {
+            "default": "unavailable",
+            "title": "Availability",
+            "type": "string"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "portfolio-impact.v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "cutoff": {
+            "format": "date-time",
+            "title": "Cutoff",
+            "type": "string"
+          },
+          "decision_revision": {
+            "minLength": 1,
+            "title": "Decision Revision",
+            "type": "string"
+          },
+          "diversification_benefit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diversification Benefit"
+          },
+          "expression_identity": {
+            "minLength": 1,
+            "title": "Expression Identity",
+            "type": "string"
+          },
+          "expression_kind": {
+            "$ref": "#/components/schemas/ExpressionKind"
+          },
+          "factor_exposure": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Factor Exposure"
+          },
+          "greeks": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeks"
+          },
+          "impact_id": {
+            "minLength": 1,
+            "title": "Impact Id",
+            "type": "string"
+          },
+          "input_lineage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InputLineage"
+            },
+            "title": "Input Lineage",
+            "type": "array"
+          },
+          "liquidity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquidity"
+          },
+          "marginal_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marginal Risk"
+          },
+          "market_snapshot_id": {
+            "minLength": 1,
+            "title": "Market Snapshot Id",
+            "type": "string"
+          },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "opportunity_episode_id": {
+            "minLength": 1,
+            "title": "Opportunity Episode Id",
+            "type": "string"
+          },
+          "portfolio_after": {
+            "additionalProperties": true,
+            "title": "Portfolio After",
+            "type": "object"
+          },
+          "portfolio_before": {
+            "additionalProperties": true,
+            "title": "Portfolio Before",
+            "type": "object"
+          },
+          "position_to_trim_or_replace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position To Trim Or Replace"
+          },
+          "positions_most_correlated": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Positions Most Correlated",
+            "type": "array"
+          },
+          "risk_budget_consumed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Budget Consumed"
+          },
+          "risk_policy_version": {
+            "minLength": 1,
+            "title": "Risk Policy Version",
+            "type": "string"
+          },
+          "scenario_pnl": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Pnl"
+          }
+        },
+        "required": [
+          "impact_id",
+          "opportunity_episode_id",
+          "expression_kind",
+          "expression_identity",
+          "decision_revision",
+          "risk_policy_version",
+          "market_snapshot_id",
+          "cutoff"
+        ],
+        "title": "PortfolioImpact",
+        "type": "object"
+      },
       "PortfolioTransactionInput": {
         "properties": {
           "account": {
@@ -7946,6 +8500,217 @@
           "loss_budget_pct"
         ],
         "title": "RiskPolicy",
+        "type": "object"
+      },
+      "RiskPolicySnapshot": {
+        "additionalProperties": true,
+        "description": "Point-in-time policy facts used for sizing and paper authorization.",
+        "properties": {
+          "account_observed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Observed At"
+          },
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "broker_available_capital": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broker Available Capital"
+          },
+          "broker_net_liquidation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broker Net Liquidation"
+          },
+          "buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buying Power"
+          },
+          "cash_balance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cash Balance"
+          },
+          "csp_symbol_fraction": {
+            "default": 0.05,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Csp Symbol Fraction",
+            "type": "number"
+          },
+          "csp_total_fraction": {
+            "default": 0.15,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Csp Total Fraction",
+            "type": "number"
+          },
+          "daily_loss_halt_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Loss Halt Pct"
+          },
+          "defined_symbol_fraction": {
+            "default": 0.005,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Defined Symbol Fraction",
+            "type": "number"
+          },
+          "defined_total_fraction": {
+            "default": 0.01,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Defined Total Fraction",
+            "type": "number"
+          },
+          "defined_trade_fraction": {
+            "default": 0.0025,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Defined Trade Fraction",
+            "type": "number"
+          },
+          "max_open_positions": {
+            "default": 0,
+            "title": "Max Open Positions",
+            "type": "integer"
+          },
+          "max_open_risk_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Open Risk Pct"
+          },
+          "max_risk_per_trade_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Risk Per Trade Pct"
+          },
+          "max_symbol_risk_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Symbol Risk Pct"
+          },
+          "policy_kind": {
+            "default": "shared",
+            "title": "Policy Kind",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "sleeve_capital": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sleeve Capital"
+          },
+          "ticker_loss_budget_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker Loss Budget Pct"
+          },
+          "ticker_max_loss_pct": {
+            "default": 0.04,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Ticker Max Loss Pct",
+            "type": "number"
+          },
+          "ticker_position_limit_pct": {
+            "default": 0.1,
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Ticker Position Limit Pct",
+            "type": "number"
+          },
+          "ticker_total_open_loss_pct": {
+            "default": 0.1,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Ticker Total Open Loss Pct",
+            "type": "number"
+          }
+        },
+        "required": [
+          "policy_version"
+        ],
+        "title": "RiskPolicySnapshot",
         "type": "object"
       },
       "ScenarioOutcome": {
@@ -9584,6 +10349,27 @@
             "title": "Learning History",
             "type": "array"
           },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "market_state_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketStateSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "opportunity_episode": {
             "anyOf": [
               {
@@ -9599,6 +10385,16 @@
             "title": "Policy Version",
             "type": "string"
           },
+          "portfolio_impacts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PortfolioImpact"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Portfolio Impacts",
+            "type": "object"
+          },
           "resolution": {
             "anyOf": [
               {
@@ -9611,6 +10407,16 @@
           },
           "risk_policy": {
             "$ref": "#/components/schemas/RiskPolicy"
+          },
+          "risk_policy_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskPolicySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "selected_expression": {
             "anyOf": [
@@ -9695,6 +10501,27 @@
             "title": "Learning History",
             "type": "array"
           },
+          "market_state_publication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market State Publication Id"
+          },
+          "market_state_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketStateSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "opportunity_episode": {
             "anyOf": [
               {
@@ -9710,6 +10537,16 @@
             "title": "Policy Version",
             "type": "string"
           },
+          "portfolio_impacts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PortfolioImpact"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/ExpressionKind"
+            },
+            "title": "Portfolio Impacts",
+            "type": "object"
+          },
           "resolution": {
             "anyOf": [
               {
@@ -9722,6 +10559,16 @@
           },
           "risk_policy": {
             "$ref": "#/components/schemas/RiskPolicy"
+          },
+          "risk_policy_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskPolicySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "selected_expression": {
             "anyOf": [

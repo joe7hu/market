@@ -47,7 +47,13 @@ PANEL_SCOPE_TABLES: dict[str, tuple[str, ...]] = {
     # provenance. Do not duplicate the full raw disclosure corpus in this
     # user-facing scope; the direct disclosures endpoint remains available.
     "superinvestors": ("superinvestor_portfolios", "ownership_consensus"),
-    "market": ("market_valuation_reference_charts", "market_environment_assets", "market_environment_model"),
+    "market": (
+        "market_state_snapshot",
+        "coverage_matrix",
+        "market_valuation_reference_charts",
+        "market_environment_assets",
+        "market_environment_model",
+    ),
     "dashboard": (
         "decision_queue",
         "discovered_universe",

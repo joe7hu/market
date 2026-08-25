@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Activity, BarChart3, Gauge } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/market/workstation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { RowRecord } from "@/types";
 import { numberField, textField } from "@/views/rowFormat";
@@ -39,11 +40,15 @@ export function MarketEnvironmentPanel({
   rows,
   referenceRows,
   assetRows,
+  snapshotRows,
+  coverageRows,
   freshness,
 }: {
   rows: RowRecord[];
   referenceRows: RowRecord[];
   assetRows: RowRecord[];
+  snapshotRows: RowRecord[];
+  coverageRows: RowRecord[];
   freshness?: { status: string; reason: string };
 }) {
   const score = weightedDriverScore(rows);
@@ -82,9 +87,60 @@ export function MarketEnvironmentPanel({
           <MiniMetric label="Valuation Series" value={`${referenceRows.length}`} />
           <MiniMetric label="Market Asset Rows" value={`${assetRows.length}`} />
         </div>
+        <MarketStateProjection snapshotRows={snapshotRows} coverageRows={coverageRows} />
       </CardContent>
     </Card>
   );
+}
+
+function MarketStateProjection({ snapshotRows, coverageRows }: { snapshotRows: RowRecord[]; coverageRows: RowRecord[] }) {
+  const snapshot = snapshotRows[0];
+  const horizons = snapshot && isRecord(snapshot.horizons) ? snapshot.horizons : {};
+  const horizonEntries = Object.entries(horizons);
+  return (
+    <div className="space-y-3 rounded-md border border-border/80 bg-background/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold">Point-in-time market state</p>
+          <p className="text-xs text-muted-foreground">Four horizons · unavailable dimensions stay visible.</p>
+        </div>
+        <StatusBadge tone={textField(snapshot, ["availability"]) === "available" ? "good" : "warn"}>
+          {textField(snapshot, ["availability"], "unavailable")}
+        </StatusBadge>
+      </div>
+      {horizonEntries.length ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {horizonEntries.map(([horizon, value]) => (
+            <div key={horizon} className="rounded border border-border/70 p-2">
+              <p className="text-xs font-semibold">{horizon}</p>
+              <div className="mt-2 space-y-1">
+                {(Array.isArray(value) ? value : []).map((item, index) => {
+                  const row = isRecord(item) ? item : {};
+                  const state = typeof row.state === "string" ? row.state : "unavailable";
+                  const status = typeof row.evidence_status === "string" ? row.evidence_status : "unavailable";
+                  return <p key={`${horizon}:${String(row.dimension ?? index)}`} className="text-[11px] text-muted-foreground"><span className="text-foreground">{String(row.dimension ?? "dimension")}</span>: {state} · {status}</p>;
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : <EmptyChart label="Market state is unavailable at this cutoff" />}
+      <div>
+        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Coverage matrix · {coverageRows.length} rows</p>
+        <div className="grid gap-1 sm:grid-cols-2">
+          {coverageRows.map((row, index) => (
+            <p key={`${textField(row, ["horizon"])}:${textField(row, ["dimension"])}:${index}`} className="text-[11px] text-muted-foreground">
+              <span className="text-foreground">{textField(row, ["horizon"])} / {textField(row, ["dimension"])}</span> · {textField(row, ["current_status"], "unavailable")}
+            </p>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function DriverRows({ rows }: { rows: RowRecord[] }) {

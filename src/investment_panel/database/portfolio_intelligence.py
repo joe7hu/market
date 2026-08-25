@@ -12,7 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from investment_panel.core.config import AppConfig
-from investment_panel.database.portfolio_ledger import portfolio_transaction_rows
+from investment_panel.database.portfolio_ledger import portfolio_transaction_rows, replay_portfolio_at
 from investment_panel.database.portfolio_math import adjacent_session_dates, aligned_pair_returns
 from investment_panel.database.user_state import portfolio_rows
 from investment_panel.database.authority import runtime_for_config
@@ -28,15 +28,30 @@ def portfolio_summary(
     *,
     positions: list[dict[str, Any]] | None = None,
     performance: list[dict[str, Any]] | None = None,
+    cutoff: datetime | None = None,
     connection: Any | None = None,
 ) -> dict[str, Any]:
     if connection is None:
         runtime = runtime_for_config(config)
         with runtime.snapshot() as owned_connection:
-            return portfolio_summary(config, connection=owned_connection)
-    positions = portfolio_rows(config, connection=connection) if positions is None else positions
-    accounting = _portfolio_accounting_totals(config, connection=connection)
-    performance = portfolio_performance_rows(config, connection=connection) if performance is None else performance
+            return portfolio_summary(config, cutoff=cutoff, connection=owned_connection)
+    replay = replay_portfolio_at(config, cutoff, connection=connection) if cutoff is not None else None
+    positions = replay["positions"] if replay is not None else portfolio_rows(config, connection=connection) if positions is None else positions
+    accounting = (
+        {
+            "net_contributions": float(replay.get("net_contributions") or 0),
+            "realized_pnl": float(replay.get("realized_pnl") or 0),
+            "income": float(replay.get("income") or 0),
+            "fees": float(replay.get("fees") or 0),
+            "invested_capital": float(replay.get("net_contributions") or 0),
+        }
+        if replay is not None
+        else _portfolio_accounting_totals(config, connection=connection)
+    )
+    performance = (
+        (portfolio_performance_rows(config, connection=connection) if replay is None else [])
+        if performance is None else performance
+    )
     latest_performance = performance[-1] if performance else {}
     portfolio_value = sum(float(row.get("market_value") or 0) for row in positions)
     cost_basis = sum(float(row.get("quantity") or 0) * float(row.get("avg_cost") or 0) for row in positions)
@@ -64,7 +79,7 @@ def portfolio_summary(
     )
     previous_value = float(prior_performance.get("portfolio_value") or 0)
     return {
-        "as_of": max(quote_times).isoformat() if quote_times else None,
+        "as_of": cutoff.astimezone(UTC).isoformat() if cutoff is not None else max(quote_times).isoformat() if quote_times else None,
         "available_at": max(availability_times or quote_times).isoformat() if availability_times or quote_times else None,
         "oldest_quote_at": min(quote_times).isoformat() if quote_times else None,
         "portfolio_value": round(portfolio_value, 6),
@@ -86,6 +101,15 @@ def portfolio_summary(
         "currency": "USD",
         "performance_method": PERFORMANCE_METHOD,
     }
+
+
+def portfolio_summary_at(
+    config: AppConfig,
+    cutoff: datetime,
+    *,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    return portfolio_summary(config, cutoff=cutoff, connection=connection)
 
 
 def portfolio_performance_rows(

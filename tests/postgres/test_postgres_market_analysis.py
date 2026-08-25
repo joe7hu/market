@@ -32,7 +32,8 @@ def test_market_publication_builds_visible_models_from_normalized_quotes(migrate
         ingestion.store_price_bars(run_id, "market-test", rows, asset_classes={"SPY": "etf", "QQQ": "etf"})
         ingestion.finish_run(run_id, "succeeded", item_count=len(rows), instrument_count=2)
 
-        result = refresh_market_publication(runtime, now=datetime(2026, 7, 1, 12, tzinfo=UTC))
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        result = refresh_market_publication(runtime, now=cutoff)
         assert result["assets"] == 2
         assert result["drivers"] == 4
         repository = AnalysisRepository(runtime)
@@ -65,7 +66,7 @@ def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn:
             {"symbol": "SPY", "date": day, "open": price, "high": price, "low": price,
              "close": price, "volume": 1}
             for day, price in (
-                (datetime(2025, 7, 1, tzinfo=UTC).date(), 100),
+                (datetime(2025, 8, 1, tzinfo=UTC).date(), 100),
                 (datetime(2025, 12, 31, tzinfo=UTC).date(), 120),
                 (datetime(2026, 1, 2, tzinfo=UTC).date(), 121),
                 (datetime(2026, 7, 1, tzinfo=UTC).date(), 132),
@@ -73,7 +74,7 @@ def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn:
         ]
         ingestion.store_price_bars(run_id, "ytd-test", rows)
         ingestion.finish_run(run_id, "succeeded")
-        ingestion.register_source("ytd-override", name="YTD override", family="test", kind="quote")
+        ingestion.register_source("ytd-override", name="YTD override", family="test", kind="quote", origin="test")
         override_run = ingestion.start_run("ytd-override", "quotes")
         ingestion.store_price_bars(
             override_run,
@@ -83,7 +84,8 @@ def test_market_publication_uses_prior_year_close_for_ytd(migrated_postgres_dsn:
         )
         ingestion.finish_run(override_run, "succeeded")
 
-        refresh_market_publication(runtime, now=datetime(2026, 7, 1, 23, tzinfo=UTC))
+        cutoff = datetime.now(UTC) + timedelta(minutes=1)
+        refresh_market_publication(runtime, now=cutoff)
         asset = AnalysisRepository(runtime).publication_rows("market", "market_environment_assets")[0]
         assert asset["return_ytd"] == pytest.approx(16.6666667)
         assert asset["return_1d"] == pytest.approx((140 / 121 - 1) * 100)

@@ -14,6 +14,8 @@ export function MarketRoute() {
   const referenceRows = rows(data.marketValuationReferenceCharts);
   const assetRows = rows(data.marketEnvironmentAssets);
   const environmentRows = rows(data.marketEnvironmentModel);
+  const snapshotRows = rows(data.marketStateSnapshot);
+  const coverageRows = rows(data.coverageMatrix);
   const freshness = marketFreshness(data.dashboard.status?.metadata?.market_freshness);
   const drivers = environmentRows.filter((row) => textField(row, ["category"]) !== "Overall");
   const marketDrivers = drivers.filter((row) => isMarketDriver(textField(row, ["category"])));
@@ -24,7 +26,14 @@ export function MarketRoute() {
       title="Where the Market Stands"
       subtitle="Broad market valuation, trend, breadth, risk appetite, and leadership."
     >
-      <MarketEnvironmentPanel rows={marketDrivers} referenceRows={referenceRows} assetRows={assetRows} freshness={freshness} />
+      <MarketEnvironmentPanel
+        rows={marketDrivers}
+        referenceRows={referenceRows}
+        assetRows={assetRows}
+        snapshotRows={snapshotRows}
+        coverageRows={coverageRows}
+        freshness={freshness}
+      />
 
       <ReferenceValuationCharts rows={referenceRows} />
 

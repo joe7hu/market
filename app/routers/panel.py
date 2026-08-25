@@ -46,8 +46,6 @@ def today(
             **capital,
             "ticker": symbol,
             "decision_revision": row.get("decision_revision") or "",
-            "policy_version": resolution.policy_version,
-            "resolution": resolution.model_dump(mode="json"),
             "selected_expression": selected.get("kind"),
         })
     priority = {"EXIT": 0, "TRIM": 1, "HEDGE": 2, "BUY": 3, "ADD": 4, "WAIT_FOR_PRICE": 5, "HOLD": 6, "AVOID": 7}

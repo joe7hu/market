@@ -235,6 +235,8 @@ def test_new_ia_panel_scopes_are_backend_owned() -> None:
     assert payloads_owner.panel_snapshot_payload(panel_data, "superinvestors")["tables"]["ownership_consensus"]["count"] == 1
     market_tables = payloads_owner.panel_snapshot_payload(panel_data, "market")["tables"]
     assert set(market_tables) == {
+        "market_state_snapshot",
+        "coverage_matrix",
         "market_valuation_reference_charts",
         "market_environment_assets",
         "market_environment_model",

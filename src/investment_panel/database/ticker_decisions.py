@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
@@ -51,10 +52,12 @@ class TickerDecisionRepository:
                     tactical, fundamental, capital_action, resolution, policy_version,
                     opportunity_episode_id, opportunity_cutoff, opportunity_episode, risk_policy,
                     expressions, selected_expression, data_requests,
-                    learning_history, input_manifest, status
+                    learning_history, input_manifest, market_state_publication_id,
+                    market_state_snapshot, portfolio_impacts, risk_policy_snapshot, status
                 ) VALUES (
                     %s, %s, %s, %s, now(), %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published'
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, 'published'
                 )
                 ON CONFLICT (instrument_id, decision_revision) DO NOTHING
                 RETURNING id::text
@@ -73,6 +76,10 @@ class TickerDecisionRepository:
                     Jsonb(payload["expressions"]), Jsonb(payload.get("selected_expression")),
                     Jsonb(payload["data_requests"]), Jsonb(payload["learning_history"]),
                     Jsonb(payload["input_manifest"]),
+                    _uuid_or_none(decision.market_state_publication_id),
+                    Jsonb(payload.get("market_state_snapshot") or {}),
+                    Jsonb(payload.get("portfolio_impacts") or {}),
+                    Jsonb(payload.get("risk_policy_snapshot") or {}),
                 ],
             ).fetchone()
             if row is None:
@@ -112,7 +119,10 @@ class TickerDecisionRepository:
                        decision.opportunity_episode_id, decision.opportunity_cutoff,
                        decision.opportunity_episode, decision.risk_policy, decision.expressions,
                        decision.selected_expression, decision.data_requests,
-                       decision.learning_history, decision.input_manifest
+                       decision.learning_history, decision.input_manifest,
+                       decision.market_state_publication_id::text,
+                       decision.market_state_snapshot, decision.portfolio_impacts,
+                       decision.risk_policy_snapshot
                 FROM analysis.ticker_decision decision
                 JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
                 WHERE instrument.symbol = %s AND decision.status = 'published'
@@ -121,7 +131,14 @@ class TickerDecisionRepository:
                 """,
                 [ticker.strip().upper()],
             ).fetchone()
-        return _decision_from_row(row) if row else None
+        if not row:
+            return None
+        try:
+            return _decision_from_row(row)
+        except (TypeError, ValueError, KeyError):
+            # Legacy rows remain readable through the raw panel model, but a
+            # malformed row must not block a new canonical publication.
+            return None
 
     def refresh_outcomes(self, *, now: datetime | None = None, limit: int = 2_000) -> dict[str, int]:
         reference = _utc(now or datetime.now(UTC))
@@ -813,10 +830,23 @@ def _decision_from_row(row: Any) -> TickerDecision:
         "data_requests": row["data_requests"],
         "learning_history": row["learning_history"],
         "input_manifest": row["input_manifest"],
+        "market_state_publication_id": row.get("market_state_publication_id") if hasattr(row, "get") else None,
+        "market_state_snapshot": row.get("market_state_snapshot") if hasattr(row, "get") else None,
+        "portfolio_impacts": row.get("portfolio_impacts") if hasattr(row, "get") else {},
+        "risk_policy_snapshot": row.get("risk_policy_snapshot") if hasattr(row, "get") else None,
         "opportunity_episode": (
             row.get("opportunity_episode") if hasattr(row, "get") else None
         ) or None,
     })
+
+
+def _uuid_or_none(value: Any) -> UUID | None:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _first_statement(values: Any) -> str | None:

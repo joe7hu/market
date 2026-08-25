@@ -250,6 +250,9 @@ DIRECT_QUERIES: dict[str, str] = {
                decision.opportunity_episode, decision.risk_policy, decision.expressions,
                decision.selected_expression, decision.data_requests,
                decision.learning_history, decision.input_manifest,
+               decision.market_state_publication_id::text,
+               decision.market_state_snapshot, decision.portfolio_impacts,
+               decision.risk_policy_snapshot,
                decision.status
         FROM analysis.ticker_decision decision
         JOIN catalog.instrument instrument ON instrument.id = decision.instrument_id
@@ -720,7 +723,7 @@ PUBLICATION_MODELS = {
     "decision_queue", "decision_readiness", "symbol_decision_snapshots",
     "opportunities_ranked", "candidates", "feed_signals",
     "market_environment_assets", "market_environment_model",
-    "market_valuation_reference_charts",
+    "market_valuation_reference_charts", "market_state_snapshot", "coverage_matrix",
 }
 
 SPECIAL_MODELS = {
