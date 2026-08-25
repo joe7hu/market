@@ -202,6 +202,16 @@ class InputLineage(BaseModel):
         return self
 
 
+def _input_lineage_identity(lineage: InputLineage) -> tuple[Any, ...]:
+    return (
+        lineage.field,
+        lineage.source_id,
+        lineage.source_version,
+        _utc(lineage.available_at),
+        lineage.revision,
+    )
+
+
 MARKET_HORIZONS = (
     "intraday",
     "1-5 trading days",
@@ -571,13 +581,7 @@ class OpportunityEpisode(BaseModel):
                 raise ValueError("opportunity episode lineage policy must match the episode")
             if lineage.cutoff and _utc(lineage.cutoff) != cutoff:
                 raise ValueError("opportunity episode lineage cutoff must match the episode")
-            key = (
-                lineage.field,
-                lineage.source_id,
-                lineage.source_version,
-                _utc(lineage.available_at),
-                lineage.revision,
-            )
+            key = _input_lineage_identity(lineage)
             if key in lineage_keys:
                 raise ValueError(f"opportunity episode input lineage contains a duplicate: {key!r}")
             lineage_keys.add(key)
@@ -2031,6 +2035,7 @@ def _build_input_lineage(
     cutoff: datetime,
 ) -> list[InputLineage]:
     lineage: list[InputLineage] = []
+    seen_identities: set[tuple[Any, ...]] = set()
     for field, values in manifest.inputs.items():
         rows = values if isinstance(values, list) else [values]
         for value in rows:
@@ -2054,7 +2059,7 @@ def _build_input_lineage(
                 or manifest.source_versions.get(source_id)
                 or "unknown"
             )
-            lineage.append(InputLineage(
+            candidate = InputLineage(
                 field=str(field),
                 source_id=source_id,
                 source_version=source_version,
@@ -2066,7 +2071,14 @@ def _build_input_lineage(
                 decision_revision=decision_revision,
                 policy_version=policy_version,
                 cutoff=cutoff,
-            ))
+            )
+            # Panel joins can repeat one source row. Deduplicate only the
+            # canonical identity enforced by OpportunityEpisode; distinct
+            # source versions, timestamps, or revisions remain separate.
+            identity = _input_lineage_identity(candidate)
+            if identity not in seen_identities:
+                seen_identities.add(identity)
+                lineage.append(candidate)
     if not lineage:
         # A fully empty source set is still a published, deterministic blocked
         # decision.  The composer record makes the missing-input boundary
